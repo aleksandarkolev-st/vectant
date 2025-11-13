@@ -5,7 +5,7 @@ import json
 import sys
 from typing import List
 
-from analyzer.pythonAnalyzer import PythonAnalyzer
+from analyzer.AllLanguageAnalyzers import PythonAnalyzer
 
 
 def run_python_analyzer(code: str) -> List[dict]:

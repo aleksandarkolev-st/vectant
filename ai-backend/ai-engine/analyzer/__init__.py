@@ -3,10 +3,12 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Dict, Iterable, Tuple, Type
 
+from analyzer.AllLanguageAnalyzers import (
+    CppAnalyzer,
+    PythonAnalyzer,
+    TypeScriptAnalyzer,
+)
 from analyzer.baseAnalyzer import BaseAnalyzer
-from analyzer.cppAnalyzer import CppAnalyzer
-from analyzer.pythonAnalyzer import PythonAnalyzer
-from analyzer.tsAnalyzer import TypeScriptAnalyzer
 
 AnalyzerType = Type[BaseAnalyzer]
 

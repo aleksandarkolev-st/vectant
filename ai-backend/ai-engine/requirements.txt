@@ -1,5 +1,6 @@
 fastapi
 uvicorn
 openai
-tree_sitter
-tree_sitter_languages
+#tree_sitter
+#tree_sitter_languages
+python-dotenv

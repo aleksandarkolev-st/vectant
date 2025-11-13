@@ -4,8 +4,11 @@ import os
 from typing import Optional
 
 from openai import OpenAI
+from dotenv import load_dotenv
 
 from llm.prompts import build_prompt
+
+load_dotenv()
 
 _client: Optional[OpenAI] = None
 _MODEL_NAME = os.getenv("SYNTHI_AI_MODEL", "gpt-4.1-mini")

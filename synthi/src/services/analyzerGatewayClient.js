@@ -1,0 +1,317 @@
+const DEFAULT_WS_URL =
+  process.env.NEXT_PUBLIC_GATEWAY_WS_URL || 'ws://localhost:7070/ws';
+const DEFAULT_TIMEOUT = 30_000;
+
+const STATUS = {
+  IDLE: 'idle',
+  CONNECTING: 'connecting',
+  CONNECTED: 'connected',
+  DISCONNECTED: 'disconnected',
+  ERROR: 'error',
+};
+
+const READY_STATES = {
+  CONNECTING: 0,
+  OPEN: 1,
+  CLOSING: 2,
+  CLOSED: 3,
+};
+
+const createRequestId = () => {
+  const cryptoRef = globalThis?.crypto;
+  if (cryptoRef?.randomUUID) {
+    return cryptoRef.randomUUID();
+  }
+  return `req_${Math.random().toString(36).slice(2, 10)}`;
+};
+
+export class AnalyzerGatewayClient {
+  constructor({
+    url = DEFAULT_WS_URL,
+    timeout = DEFAULT_TIMEOUT,
+    autoReconnect = true,
+    maxReconnectDelay = 10_000,
+    debug = false,
+  } = {}) {
+    this.url = url;
+    this.timeout = timeout;
+    this.autoReconnect = autoReconnect;
+    this.maxReconnectDelay = maxReconnectDelay;
+    this.debug = debug;
+    this.socket = null;
+    this.status = STATUS.IDLE;
+    this.messageQueue = [];
+    this.pending = new Map();
+    this.statusListeners = new Set();
+    this.eventListeners = new Set();
+    this.reconnectAttempts = 0;
+    this.reconnectTimer = null;
+    this.isDisposed = false;
+  }
+
+  get readyState() {
+    return this.socket?.readyState ?? READY_STATES.CLOSED;
+  }
+
+  start() {
+    if (this.isDisposed || typeof window === 'undefined') {
+      return;
+    }
+
+    if (
+      this.socket &&
+      (this.readyState === READY_STATES.OPEN ||
+        this.readyState === READY_STATES.CONNECTING)
+    ) {
+      return;
+    }
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    try {
+      this.socket = new WebSocket(this.url);
+    } catch (err) {
+      this._setStatus(STATUS.ERROR);
+      this._emitEvent({ type: 'error', error: err });
+      this._scheduleReconnect();
+      return;
+    }
+
+    this._setStatus(STATUS.CONNECTING);
+
+    this.socket.addEventListener('open', this._handleOpen);
+    this.socket.addEventListener('message', this._handleMessage);
+    this.socket.addEventListener('error', this._handleSocketError);
+    this.socket.addEventListener('close', this._handleClose);
+  }
+
+  dispose() {
+    this.isDisposed = true;
+    this.autoReconnect = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this._cleanupSocket();
+    this._rejectAllPending(
+      new Error('Gateway disposed before receiving a response')
+    );
+  }
+
+  onStatusChange(listener) {
+    if (typeof listener !== 'function') return () => {};
+    this.statusListeners.add(listener);
+    listener(this.status);
+    return () => this.statusListeners.delete(listener);
+  }
+
+  onEvent(listener) {
+    if (typeof listener !== 'function') return () => {};
+    this.eventListeners.add(listener);
+    return () => this.eventListeners.delete(listener);
+  }
+
+  analyze(payload) {
+    return this._sendRequest('analyze', payload);
+  }
+
+  _sendRequest(action, data) {
+    if (this.isDisposed) {
+      return Promise.reject(new Error('Gateway client has been disposed'));
+    }
+
+    if (!data || typeof data !== 'object') {
+      return Promise.reject(new Error('Payload must be an object'));
+    }
+
+    const requestId = createRequestId();
+    const envelope = JSON.stringify({ action, requestId, data });
+
+    return new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        this.pending.delete(requestId);
+        reject(new Error(`Gateway request timed out after ${this.timeout}ms`));
+      }, this.timeout);
+
+      this.pending.set(requestId, {
+        resolve,
+        reject,
+        timeoutId,
+        action,
+      });
+
+      this._enqueue(envelope);
+      this.start();
+    });
+  }
+
+  _enqueue(payload) {
+    if (this.readyState === READY_STATES.OPEN) {
+      try {
+        this.socket.send(payload);
+      } catch (err) {
+        this._emitEvent({ type: 'error', error: err });
+      }
+      return;
+    }
+    this.messageQueue.push(payload);
+  }
+
+  _flushQueue() {
+    if (this.messageQueue.length === 0 || this.readyState !== READY_STATES.OPEN) {
+      return;
+    }
+    while (this.messageQueue.length > 0) {
+      const payload = this.messageQueue.shift();
+      try {
+        this.socket.send(payload);
+      } catch (err) {
+        this._emitEvent({ type: 'error', error: err });
+        break;
+      }
+    }
+  }
+
+  _handleOpen = () => {
+    this._setStatus(STATUS.CONNECTED);
+    this.reconnectAttempts = 0;
+    this._flushQueue();
+  };
+
+  _handleMessage = (event) => {
+    const raw = typeof event?.data === 'string' ? event.data : null;
+    if (!raw) {
+      return;
+    }
+
+    let payload;
+    try {
+      payload = JSON.parse(raw);
+    } catch (err) {
+      if (this.debug) {
+        console.warn('Gateway message parse error', err, raw);
+      }
+      return;
+    }
+
+    if (payload?.requestId && this.pending.has(payload.requestId)) {
+      const pending = this.pending.get(payload.requestId);
+      this.pending.delete(payload.requestId);
+      clearTimeout(pending.timeoutId);
+
+      if (payload.type === 'error') {
+        pending.reject(
+          new Error(payload.message || 'Gateway returned an error payload')
+        );
+      } else {
+        pending.resolve(payload);
+      }
+      return;
+    }
+
+    if (payload?.type === 'error') {
+      this._emitEvent({
+        type: 'error',
+        error: new Error(payload.message || 'Gateway error'),
+        payload,
+      });
+    } else {
+      this._emitEvent({ type: 'message', payload });
+    }
+  };
+
+  _handleSocketError = (event) => {
+    if (this.debug) {
+      console.error('Gateway socket error', event);
+    }
+    this._setStatus(STATUS.ERROR);
+    this._emitEvent({
+      type: 'error',
+      error: new Error('Gateway socket error'),
+      event,
+    });
+  };
+
+  _handleClose = () => {
+    if (this.isDisposed) {
+      return;
+    }
+
+    this._setStatus(STATUS.DISCONNECTED);
+    this._cleanupSocket();
+    this._rejectAllPending(new Error('Gateway connection closed'));
+    this._scheduleReconnect();
+  };
+
+  _cleanupSocket() {
+    if (!this.socket) return;
+    this.socket.removeEventListener('open', this._handleOpen);
+    this.socket.removeEventListener('message', this._handleMessage);
+    this.socket.removeEventListener('error', this._handleSocketError);
+    this.socket.removeEventListener('close', this._handleClose);
+    try {
+      if (
+        this.socket.readyState === READY_STATES.OPEN ||
+        this.socket.readyState === READY_STATES.CONNECTING
+      ) {
+        this.socket.close();
+      }
+    } catch (err) {
+      // Swallow close errors.
+    }
+    this.socket = null;
+  }
+
+  _rejectAllPending(reason) {
+    this.pending.forEach(({ reject, timeoutId }) => {
+      clearTimeout(timeoutId);
+      reject(reason);
+    });
+    this.pending.clear();
+  }
+
+  _scheduleReconnect() {
+    if (!this.autoReconnect || this.isDisposed) {
+      return;
+    }
+    this.reconnectAttempts += 1;
+    const delay = Math.min(
+      1000 * Math.pow(2, this.reconnectAttempts - 1),
+      this.maxReconnectDelay
+    );
+    this.reconnectTimer = setTimeout(() => {
+      this.start();
+    }, delay);
+  }
+
+  _setStatus(nextStatus) {
+    if (this.status === nextStatus) return;
+    this.status = nextStatus;
+    this.statusListeners.forEach((listener) => {
+      try {
+        listener(nextStatus);
+      } catch (err) {
+        if (this.debug) {
+          console.warn('Gateway status listener error', err);
+        }
+      }
+    });
+  }
+
+  _emitEvent(event) {
+    this.eventListeners.forEach((listener) => {
+      try {
+        listener(event);
+      } catch (err) {
+        if (this.debug) {
+          console.warn('Gateway event listener error', err);
+        }
+      }
+    });
+  }
+}
+
+export const GatewayStatus = STATUS;

@@ -1,8 +1,8 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { use } from 'react';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
-import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk } from '@/redux/workspaceSlice';
+import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent } from '@/redux/workspaceSlice';
 import { 
     selectShowTerminal, 
     selectTreeOnRight, 
@@ -17,10 +17,23 @@ import {
 } from '@/components/ui/resizable';
 import FileTreeView from "./FileTree.jsx";
 import EditorPanel from "./Editor.jsx";
+import { getFileLanguage } from '@/utils/fileUtils';
+import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
+import { AnalysisPanel } from '@/components/analysis/AnalysisPanel';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
     const [editor, setEditor] = useState(null);
+    const {
+        connectionStatus,
+        isAnalyzing,
+        lastResult,
+        lastError,
+        analyzeCode,
+        resetResult,
+        resetError,
+    } = useAnalyzerGateway();
+    const [analysisVisible, setAnalysisVisible] = useState(false);
     
     // 1. Consume the slug parameter and initiate fetch
     const { slug } = use(params);
@@ -35,6 +48,7 @@ export default function EditorPage({ params }) {
     const activeFile = useAppSelector(selectActiveFile);
     const showTerminal = useAppSelector(selectShowTerminal);
     const treeOnRight = useAppSelector(selectTreeOnRight);
+    const currentContent = useAppSelector(selectCurrentContent);
 
     const [initialContent, setInitialContent] = useState('');
     const [hasInitialSnapshot, setHasInitialSnapshot] = useState(false);
@@ -60,10 +74,38 @@ export default function EditorPage({ params }) {
         setPanelGroupKey(prev => prev + 1); // Force remount
     };
 
-    const handleRun = () => {
-        console.log("Running code via Redux...");
-        // Future: dispatch(terminal/runCodeThunk())
-    };
+    useEffect(() => {
+        if (!analysisVisible && (isAnalyzing || lastResult || lastError)) {
+            setAnalysisVisible(true);
+        }
+    }, [analysisVisible, isAnalyzing, lastResult, lastError]);
+
+    const handleRun = useCallback(async () => {
+        if (!activeFile) {
+            console.warn('No active file selected for analysis.');
+            return;
+        }
+        const langSource =
+            activeFile.language ||
+            (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
+            'plaintext';
+        const normalizedLang = langSource.toLowerCase();
+
+        try {
+            await analyzeCode({
+                lang: normalizedLang,
+                code: typeof currentContent === 'string' ? currentContent : '',
+            });
+        } catch (err) {
+            console.error('Failed to run analyzer', err);
+        }
+    }, [activeFile, currentContent, analyzeCode]);
+
+    const handleDismissAnalysis = useCallback(() => {
+        setAnalysisVisible(false);
+        resetResult();
+        resetError();
+    }, [resetError, resetResult]);
 
     const handleEditorMount = (editorInstance) => {
         setEditor(editorInstance);
@@ -115,6 +157,15 @@ export default function EditorPage({ params }) {
                 onToggleTerminal={() => dispatch(toggleTerminal())}
                 onUndo={handleUndo}
                 onRedo={handleRedo}
+            />
+            <AnalysisPanel
+                visible={analysisVisible}
+                status={connectionStatus}
+                result={lastResult}
+                error={lastError}
+                isAnalyzing={isAnalyzing}
+                onRetry={handleRun}
+                onClose={handleDismissAnalysis}
             />
             <ResizablePanelGroup
                 direction="horizontal"
