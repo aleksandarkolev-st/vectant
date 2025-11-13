@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+openai
+tree_sitter
+tree_sitter_languages
