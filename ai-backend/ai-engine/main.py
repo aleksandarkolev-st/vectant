@@ -1,6 +1,8 @@
 # PROTOTYPING AI ENGINE WITH PYTHON, LATER SWITCH TO RUST
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from analyzer import get_analyzer
+from analyzer import supported_languages
 
 from llm.providers import get_provider
 
@@ -14,12 +16,21 @@ class AnalyzeRequest(BaseModel):
 
 @app.post("/analyze")
 def analyze_code(req: AnalyzeRequest):
+    try:
+        analyzer = get_analyzer(req.lang)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    canonical_lang = analyzer.identifier()
+    static_results = analyzer.analyze(req.code)
+
     provider = get_provider()
-    ai_suggestion = provider.ask_llm(req.code, req.lang)
+    ai_suggestion = provider.ask_llm(req.code, canonical_lang)
 
     return {
         "ai_suggestion": ai_suggestion,
-        "lang": req.lang,
+        "static_analysis": static_results,
+        "lang": canonical_lang,
     }
 
 
@@ -27,5 +38,5 @@ def analyze_code(req: AnalyzeRequest):
 def root():
     return {
         "status": "ai-engine-online",
-        #"supported_languages": list(supported_languages()),
+        "supported_languages": list(supported_languages()),
     }
