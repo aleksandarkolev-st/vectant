@@ -12,12 +12,12 @@ import {
 import { GatewayStatus } from '@/services/analyzerGatewayClient';
 import { cn } from '@/lib/utils';
 
-const severityStyles = {
+/*const severityStyles = {
   error: 'bg-red-500/15 text-red-300 border border-red-600/40',
   warning: 'bg-amber-500/15 text-amber-200 border border-amber-500/30',
   info: 'bg-sky-500/15 text-sky-200 border border-sky-500/20',
   hint: 'bg-emerald-500/10 text-emerald-200 border border-emerald-500/30',
-};
+};*/
 
 const statusMeta = {
   [GatewayStatus.CONNECTED]: {
@@ -42,19 +42,19 @@ const statusMeta = {
   },
 };
 
-const severityIcon = {
+/*const severityIcon = {
   error: AlertTriangle,
   warning: AlertTriangle,
   info: Info,
   hint: Info,
-};
+};*/
 
-const severityLabel = {
+/*const severityLabel = {
   error: 'Error',
   warning: 'Warning',
   info: 'Info',
   hint: 'Hint',
-};
+};*/
 
 export function AnalysisPanel({
   visible,
@@ -69,7 +69,6 @@ export function AnalysisPanel({
     return null;
   }
 
-  const diagnostics = result?.static_analysis ?? [];
   const aiSuggestion = result?.ai_suggestion;
   const lang = result?.lang;
 
@@ -139,57 +138,10 @@ export function AnalysisPanel({
           </div>
         )}
 
-        {!isAnalyzing && !error && diagnostics.length === 0 && (
+        {!isAnalyzing && !error && !aiSuggestion && (
           <div className="flex items-center gap-2 text-sm text-gray-300">
             <CheckCircle2 className="h-4 w-4 text-emerald-400" />
             No diagnostics reported for the current file.
-          </div>
-        )}
-
-        {!isAnalyzing && !error && diagnostics.length > 0 && (
-          <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-gray-400">
-              Static Analysis
-            </p>
-            <ul className="space-y-2">
-              {diagnostics.map((diag, idx) => {
-                const severity = (diag.severity || 'info').toLowerCase();
-                const PillIcon = severityIcon[severity] ?? Info;
-                return (
-                  <li
-                    key={`${diag.code || 'diag'}-${idx}`}
-                    className="rounded border border-[#2e2e2e] bg-[#1a1a1a] p-3"
-                  >
-                    <div className="mb-1 flex items-center justify-between">
-                      <span
-                        className={cn(
-                          'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium capitalize',
-                          severityStyles[severity] ||
-                            'bg-gray-500/20 text-gray-200 border border-gray-600/40'
-                        )}
-                      >
-                        <PillIcon className="h-3.5 w-3.5" />
-                        {severityLabel[severity] || severity}
-                      </span>
-                      {typeof diag.line === 'number' && (
-                        <span className="text-[11px] text-gray-400">
-                          Line {diag.line + 1}
-                          {typeof diag.column === 'number'
-                            ? `, Col ${diag.column + 1}`
-                            : ''}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-sm text-gray-200">{diag.message}</p>
-                    {diag.code && (
-                      <p className="mt-1 text-[11px] uppercase tracking-widest text-gray-500">
-                        {diag.code}
-                      </p>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
           </div>
         )}
 
