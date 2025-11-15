@@ -57,7 +57,7 @@ from llm.prompts import build_prompt
 load_dotenv()
 
 _client: Optional[genai.GenerativeModel] = None
-_MODEL_NAME = os.getenv("SYNTHI_AI_MODEL", "gemini-1.5-flash")
+_MODEL_NAME = os.getenv("SYNTHI_AI_MODEL", "gemini-2.5-flash-lite")
 
 
 def _get_client() -> genai.GenerativeModel:

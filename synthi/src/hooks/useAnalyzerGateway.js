@@ -58,6 +58,7 @@ export function useAnalyzerGateway({
 
     try {
       const response = await clientRef.current.analyze({ code, lang });
+      console.log(`Response is ${JSON.stringify(response)}`)
       const payload = response?.data ?? response;
       setLastResult(payload);
       return payload;
