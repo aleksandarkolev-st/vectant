@@ -2,7 +2,7 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from llm.provider import ask_llm
+from llm.providers import get_provider
 
 app = FastAPI()
 
@@ -14,7 +14,8 @@ class AnalyzeRequest(BaseModel):
 
 @app.post("/analyze")
 def analyze_code(req: AnalyzeRequest):
-    ai_suggestion = ask_llm(req.code, req.lang)
+    provider = get_provider()
+    ai_suggestion = provider.ask_llm(req.code, req.lang)
 
     return {
         "ai_suggestion": ai_suggestion,
