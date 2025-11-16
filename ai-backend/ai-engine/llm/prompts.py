@@ -24,3 +24,32 @@ Once again, you must consult documentation, ensuring maximum accuracy. You must 
 Code:
 {code}
 """
+
+def build_prompt(code: str, lang: str, user_prompt: str = None):
+    base_instructions = """[all the existing methodology rules 1-14]"""
+    
+    if user_prompt and user_prompt.strip():
+        # User asked a specific question
+        return f"""{base_instructions}
+
+Language: {lang}
+
+Code:
+```{lang}
+{code}
+User's Question: {user_prompt}
+
+Provide a focused response."""
+    else:
+        # Standard code analysis
+        return f"""{base_instructions}
+
+        You should provide:
+
+        Where user can improve their code
+        Where issues may arise
+        Refactor suggestions
+        Code:
+        ```{lang}
+        {code}
+        Provide the three points in a structured format."""

@@ -207,9 +207,29 @@ export class AnalyzerGatewayClient {
       clearTimeout(pending.timeoutId);
 
       if (payload.type === 'error') {
-        pending.reject(
-          new Error(payload.message || 'Gateway returned an error payload')
-        );
+        // Build a more informative Error including backend details
+        const msgPart =
+          typeof payload.message === 'string'
+            ? payload.message
+            : JSON.stringify(payload.message || 'Gateway returned an error payload');
+        const detailPart = payload.detail
+          ? ` | detail: ${
+              typeof payload.detail === 'string' ? payload.detail : JSON.stringify(payload.detail)
+            }`
+          : '';
+        const statusPart = payload.status ? ` | status: ${payload.status}` : '';
+        const fullMessage = `${msgPart}${detailPart}${statusPart}`;
+
+        const err = new Error(fullMessage);
+        // Attach raw payload for callers that want to inspect more fields
+        err.gatewayPayload = payload;
+        if (payload.status) err.status = payload.status;
+
+        if (this.debug) {
+          console.warn('Gateway returned error payload for request', payload.requestId, payload);
+        }
+
+        pending.reject(err);
       } else {
         pending.resolve(payload);
       }

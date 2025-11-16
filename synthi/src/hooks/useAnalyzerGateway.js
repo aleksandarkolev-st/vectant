@@ -70,6 +70,32 @@ export function useAnalyzerGateway({
     }
   }, []);
 
+  const askAi = useCallback(async ({ code, lang, prompt }) => {
+    if (!clientRef.current) {
+      throw new Error('Gateway client is not ready yet');
+    }
+    if (typeof code !== 'string') {
+      throw new Error('`code` must be a string');
+    }
+    if (!lang) {
+      throw new Error('`lang` is required for AI analysis');
+    }
+    setIsAnalyzing(true);
+    setLastError(null);
+    try {
+      const response = await clientRef.current.analyzeAi({ code, lang, prompt });
+      console.log(`AI Response is ${JSON.stringify(response)}`)
+      const payload = response?.data ?? response;
+      setLastResult(payload);
+      return payload;
+    } catch (error) {
+      setLastError(error);
+      throw error;
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }, []);
+
   const resetResult = useCallback(() => setLastResult(null), []);
   const resetError = useCallback(() => setLastError(null), []);
 
@@ -88,6 +114,7 @@ export function useAnalyzerGateway({
     lastResult,
     lastError,
     analyzeCode,
+    askAi,
     resetResult,
     resetError,
     clientReady: Boolean(clientRef.current),

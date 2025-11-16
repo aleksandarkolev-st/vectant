@@ -1,14 +1,14 @@
 "use client";
 
 import { useEffect, useState } from 'react';
-import { Search, TerminalSquare, Play, Settings, Undo2, Redo2 } from 'lucide-react';
+import { Search, TerminalSquare, Play, Settings, Undo2, Redo2, MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { toggleAutoSave, selectAutoSaveEnabled, startCreate } from '@/redux/uiSlice';
 import { selectActiveFile, selectFilesTree, saveFileContentThunk } from '@/redux/workspaceSlice';
 
-export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo }) {
+export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo, onToggleChat, chatVisible }) {
   const dispatch = useAppDispatch();
   const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
   const activeFile = useAppSelector(selectActiveFile);
@@ -259,6 +259,15 @@ export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo 
           <Play className="w-4 h-4 " /> Run
         </Button>
         
+        <Button 
+          variant="outline" 
+          size="sm" 
+          className={`h-7 border-[#4b4b4b] bg-[#262626] hover:bg-[#2e2e2e] hover:border-emerald-500 hover:text-emerald-400 text-gray-200 transition-colors ${chatVisible ? 'ring-1 ring-emerald-500' : ''}`} 
+          onClick={onToggleChat}
+          aria-label="Toggle Chat"
+        >
+          <MessageSquare className="w-4 h-4 mr-1" /> Chat
+        </Button>
         <Popover>
           <PopoverTrigger asChild>
             <Button 

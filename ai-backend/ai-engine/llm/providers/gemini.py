@@ -35,14 +35,15 @@ class GeminiProvider(AiProvider):
             )
         return self._client
 
-    def ask_llm(self, code: str, lang: str) -> str:
+    def ask_llm(self, code: str, lang: str, prompt: str = None) -> str:
         if not os.getenv("GEMINI_API_KEY"):
             return "LLM disabled: set GEMINI_API_KEY to enable suggestions."
 
-        prompt = build_prompt(code, lang)
+        # Build prompt with user's question and code context
+        full_prompt = build_prompt(code, lang, user_prompt=prompt)
 
         try:
-            response = self._get_client().generate_content(prompt)
+            response = self._get_client().generate_content(full_prompt)
 
             if not response.candidates:
                 feedback = response.prompt_feedback

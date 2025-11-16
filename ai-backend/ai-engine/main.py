@@ -14,6 +14,12 @@ class AnalyzeRequest(BaseModel):
     lang: str
 
 
+class AnalyzeAiRequest(BaseModel):
+    code: str
+    lang: str
+    prompt: str = None
+
+
 @app.post("/analyze/static")
 def analyze_code(req: AnalyzeRequest):
     try:
@@ -30,9 +36,9 @@ def analyze_code(req: AnalyzeRequest):
     }
 
 @app.post("/analyze/ai")
-def analyze_code(req: AnalyzeRequest):
+def analyze_code_ai(req: AnalyzeAiRequest):
     provider = get_provider()
-    ai_suggestion = provider.ask_llm(req.code, req.lang)
+    ai_suggestion = provider.ask_llm(req.code, req.lang, req.prompt)
 
     return {
         "ai_suggestion": ai_suggestion,
