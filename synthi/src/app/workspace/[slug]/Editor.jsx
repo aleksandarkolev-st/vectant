@@ -1,6 +1,6 @@
 // src/app/Editor.jsx
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import { getMonacoLanguage } from '@/utils/languageMapper';
 import dynamic from 'next/dynamic';
@@ -52,6 +52,7 @@ const EditorPanel = ({
     const [position, setPosition] = useState({ lineNumber: 1, column: 1 });
     const [editorInstance, setEditorInstance] = useState(null);
     const [monacoInstance, setMonacoInstance] = useState(null);
+    const hoverProviderRef = useRef(null);
 
     // Update markers when analysis results change
     useEffect(() => {
@@ -97,6 +98,87 @@ const EditorPanel = ({
 
         monacoInstance.editor.setModelMarkers(editorInstance.getModel(), 'analysis', markers);
     }, [editorInstance, monacoInstance, analysisResult]);
+
+    // Register a hover provider so hovering over underlined diagnostics shows a popup
+    useEffect(() => {
+        if (!editorInstance || !monacoInstance) return;
+
+        // Dispose previous provider if any
+        try {
+            hoverProviderRef.current?.dispose?.();
+        } catch (e) {
+            // ignore
+        }
+
+        const language = activeFile ? getMonacoLanguage(activeFile.name) : 'plaintext';
+
+        hoverProviderRef.current = monacoInstance.languages.registerHoverProvider(
+            language,
+            {
+                provideHover: (model, position) => {
+                    const markers = monacoInstance.editor.getModelMarkers({ resource: model.uri });
+                    const hits = markers.filter((m) => {
+                        return (
+                            position.lineNumber >= m.startLineNumber &&
+                            position.lineNumber <= m.endLineNumber &&
+                            position.column >= m.startColumn &&
+                            position.column <= m.endColumn
+                        );
+                    });
+
+                    if (!hits.length) return null;
+
+                    // Build markdown contents for all hits at this position
+                    const contents = hits.map((m) => {
+                        const severity =
+                            m.severity === monacoInstance.MarkerSeverity.Error
+                                ? 'Error'
+                                : m.severity === monacoInstance.MarkerSeverity.Warning
+                                ? 'Warning'
+                                : 'Info';
+                        const code = m.code ? ` (${m.code})` : '';
+                        const md = `**${severity}**${code}\n\n${m.message}`;
+                        return { value: md };
+                    });
+
+                    const first = hits[0];
+                    const range = new monacoInstance.Range(
+                        first.startLineNumber,
+                        first.startColumn,
+                        first.endLineNumber,
+                        first.endColumn
+                    );
+
+                    const lineCount = model.getLineCount();
+                    const isNearTop = position.lineNumber <= 3;
+                    const isNearBottom = position.lineNumber >= lineCount - 2;
+
+                    monacoInstance.editor.updateOptions({
+                        hover: {
+                            enabled: true,
+                            sticky: true,
+                            above: !isNearTop,
+                            bottom: !isNearBottom
+                        },
+                    });
+
+                    return {
+                        range,
+                        contents
+                    };
+                },
+            }
+        );
+
+        return () => {
+            try {
+                hoverProviderRef.current?.dispose?.();
+            } catch (e) {
+                // ignore
+            }
+            hoverProviderRef.current = null;
+        };
+    }, [monacoInstance, editorInstance, activeFile, analysisResult]);
 
     // Handler to update content in Redux
     const handleCodeChange = (newCode) => {
