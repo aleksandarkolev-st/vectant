@@ -114,8 +114,12 @@ export class AnalyzerGatewayClient {
     return () => this.eventListeners.delete(listener);
   }
 
-  analyze(payload) {
-    return this._sendRequest('analyze', payload);
+  analyzeStatic(payload) {
+    return this._sendRequest('analyze/static', payload);
+  }
+
+  analyzeAi(payload) {
+    return this._sendRequest('analyze/ai', payload);
   }
 
   _sendRequest(action, data) {

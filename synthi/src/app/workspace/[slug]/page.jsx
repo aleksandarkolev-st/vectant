@@ -80,6 +80,26 @@ export default function EditorPage({ params }) {
         }
     }, [analysisVisible, isAnalyzing, lastResult, lastError]);
 
+    // Run static analysis whenever current file content changes
+    useEffect(() => {
+        if (activeFile && currentContent && hasLoadedInitialFile) {
+            const langSource =
+                activeFile.language ||
+                (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
+                'plaintext';
+            const normalizedLang = langSource.toLowerCase();
+
+            analyzeCode({
+                lang: normalizedLang,
+                code: typeof currentContent === 'string' ? currentContent : '',
+            }).catch((err) => {
+                console.error('Static analysis failed', err);
+            }).finally(() => {
+                console.log(`Static analysis completed: ${JSON.stringify(lastResult)}`);
+            });
+        }
+    }, [currentContent, activeFile, hasLoadedInitialFile, analyzeCode]);
+
     const handleRun = useCallback(async () => {
         if (!activeFile) {
             console.warn('No active file selected for analysis.');
@@ -100,6 +120,8 @@ export default function EditorPage({ params }) {
             console.error('Failed to run analyzer', err);
         }
     }, [activeFile, currentContent, analyzeCode]);
+
+    
 
     const handleDismissAnalysis = useCallback(() => {
         setAnalysisVisible(false);
@@ -138,6 +160,7 @@ export default function EditorPage({ params }) {
             onRun={handleRun}
             onToggleTerminal={() => dispatch(toggleTerminal())}
             onEditorMount={handleEditorMount}
+            analysisResult={lastResult}
         />
     );
 

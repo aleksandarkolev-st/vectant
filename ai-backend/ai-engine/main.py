@@ -14,7 +14,7 @@ class AnalyzeRequest(BaseModel):
     lang: str
 
 
-@app.post("/analyze")
+@app.post("/analyze/static")
 def analyze_code(req: AnalyzeRequest):
     try:
         analyzer = get_analyzer(req.lang)
@@ -24,13 +24,19 @@ def analyze_code(req: AnalyzeRequest):
     canonical_lang = analyzer.identifier()
     static_results = analyzer.analyze(req.code)
 
+    return {
+        "static_analysis": static_results,
+        "lang": canonical_lang,
+    }
+
+@app.post("/analyze/ai")
+def analyze_code(req: AnalyzeRequest):
     provider = get_provider()
-    ai_suggestion = provider.ask_llm(req.code, canonical_lang)
+    ai_suggestion = provider.ask_llm(req.code, req.lang)
 
     return {
         "ai_suggestion": ai_suggestion,
-        "static_analysis": static_results,
-        "lang": canonical_lang,
+        "lang": req.lang,
     }
 
 

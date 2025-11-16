@@ -35,7 +35,8 @@ const TerminalManagerDyn = dynamic(() => import('../TerminalManager.jsx'), {
 const EditorPanel = ({
     onRun,
     onToggleTerminal,
-    onEditorMount
+    onEditorMount,
+    analysisResult
 }) => {
     const dispatch = useAppDispatch();
     
@@ -50,6 +51,52 @@ const EditorPanel = ({
     // Local state retention
     const [position, setPosition] = useState({ lineNumber: 1, column: 1 });
     const [editorInstance, setEditorInstance] = useState(null);
+    const [monacoInstance, setMonacoInstance] = useState(null);
+
+    // Update markers when analysis results change
+    useEffect(() => {
+        if (!editorInstance || !monacoInstance || !analysisResult) return;
+
+        const markers = [];
+        
+        // Extract issues from analysis result - supports both 'static_analysis' and 'issues' arrays
+        const issues = analysisResult?.static_analysis || analysisResult?.issues || [];
+        
+        issues.forEach((issue) => {
+            const {
+                line = 1,
+                column = 0,
+                end_line,
+                end_column,
+                message = '',
+                severity = 'info', // 'error', 'warning', 'info'
+            } = issue;
+
+            // Map severity to Monaco severity
+            const monacoSeverity = {
+                error: monacoInstance.MarkerSeverity.Error,
+                warning: monacoInstance.MarkerSeverity.Warning,
+                info: monacoInstance.MarkerSeverity.Information,
+            }[severity.toLowerCase()] || monacoInstance.MarkerSeverity.Information;
+
+            // Line numbers in Monaco are 1-indexed, convert from 0-indexed if needed
+            const startLine = line === 0 ? 1 : line + 1;
+            const finishLine = end_line !== undefined ? (end_line === 0 ? 1 : end_line + 1) : startLine;
+            const finishColumn = end_column !== undefined ? Math.max(1, end_column + 1) : Math.max(2, column + 2);
+            
+            markers.push({
+                startLineNumber: startLine,
+                startColumn: Math.max(1, column + 1),
+                endLineNumber: finishLine,
+                endColumn: finishColumn,
+                message,
+                severity: monacoSeverity,
+                source: 'Static Analysis',
+            });
+        });
+
+        monacoInstance.editor.setModelMarkers(editorInstance.getModel(), 'analysis', markers);
+    }, [editorInstance, monacoInstance, analysisResult]);
 
     // Handler to update content in Redux
     const handleCodeChange = (newCode) => {
@@ -164,6 +211,7 @@ const EditorPanel = ({
                                             }}
                                             onMount={(editor, monaco) => {
                                                setEditorInstance(editor);
+                                               setMonacoInstance(monaco);
                                                 if (onEditorMount) {
                                                     onEditorMount(editor);
                                                 }

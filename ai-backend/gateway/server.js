@@ -10,7 +10,8 @@ const { fetch } = require("undici");
 const gatewayPort = parseInt(process.env.GATEWAY_PORT || "7070", 10);
 const websocketPath = process.env.GATEWAY_WS_PATH || "/ws";
 const backendUrl = process.env.BACKEND_URL || "http://127.0.0.1:8000";
-const backendAnalyzeUrl = new URL("/analyze", backendUrl).toString();
+const backendStaticAnalyzeUrl = new URL("/analyze/static", backendUrl).toString();
+const backendAiAnalyzeUrl = new URL("/analyze/ai", backendUrl).toString();
 
 const server = http.createServer(handleHttpRequest);
 const wss = new WebSocketServer({
@@ -99,15 +100,18 @@ async function handleClientMessage(socket, raw) {
   }
 
   switch (action) {
-    case "analyze":
-      await forwardAnalyzeRequest(socket, data, requestId);
+    case "analyze/static":
+      await forwardAnalyzeRequest(socket, data, requestId, false);
+      break;
+    case "analyze/ai":
+      await forwardAnalyzeRequest(socket, data, requestId, true);
       break;
     default:
       sendError(socket, `Unsupported action: ${action}`, { requestId });
   }
 }
 
-async function forwardAnalyzeRequest(socket, data, requestId) {
+async function forwardAnalyzeRequest(socket, data, requestId, useAi = false) {
   const lang = data?.lang;
   const code = data?.code;
 
@@ -123,7 +127,7 @@ async function forwardAnalyzeRequest(socket, data, requestId) {
 
   let backendResponse;
   try {
-    backendResponse = await fetch(backendAnalyzeUrl, {
+    backendResponse = await fetch(useAi ? backendAiAnalyzeUrl : backendStaticAnalyzeUrl, {
       method: "POST",
       headers: {
         "content-type": "application/json",

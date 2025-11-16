@@ -36,6 +36,8 @@ class PythonAnalyzer(BaseAnalyzer):
                     severity="error",
                     line=(exc.lineno or 1) - 1,
                     column=(exc.offset or 1) - 1,
+                    end_line=(exc.end_lineno or exc.lineno or 1) - 1,
+                    end_column=(exc.end_offset or exc.offset or 1) - 1,
                     code="PY001",
                 )
             )
@@ -48,11 +50,15 @@ class PythonAnalyzer(BaseAnalyzer):
         for idx, line in enumerate(code.splitlines()):
             upper_line = line.upper()
             if "TODO" in upper_line or "FIXME" in upper_line:
+                col = line.upper().index("TODO" if "TODO" in upper_line else "FIXME")
                 diagnostics.append(
                     make_diag(
                         msg="Address TODO/FIXME comment before shipping",
                         severity="info",
                         line=idx,
+                        column=col,
+                        end_line=idx,
+                        end_column=col + 4,
                         code="PY006",
                     )
                 )
@@ -89,6 +95,8 @@ class TypeScriptAnalyzer(BaseAnalyzer):
                     severity="warning",
                     line=line_no,
                     column=match.start(),
+                    end_line=line_no,
+                    end_column=match.end(),
                     code="TS001",
                 )
             )
@@ -102,30 +110,38 @@ class TypeScriptAnalyzer(BaseAnalyzer):
                     severity="info",
                     line=line_no,
                     column=match.start(),
+                    end_line=line_no,
+                    end_column=match.end(),
                     code="TS002",
                 )
             )
 
     def _detectVarUsage(self, line: str, line_no: int, diagnostics: List[dict]):
         if "var " in line:
+            var_col = line.index("var")
             diagnostics.append(
                 make_diag(
                     msg="Prefer `let` or `const` instead of `var`",
                     severity="warning",
                     line=line_no,
-                    column=line.index("var"),
+                    column=var_col,
+                    end_line=line_no,
+                    end_column=var_col + 3,
                     code="TS003",
                 )
             )
 
     def _detectConsoleLog(self, line: str, line_no: int, diagnostics: List[dict]):
         if "console.log" in line:
+            console_col = line.index("console.log")
             diagnostics.append(
                 make_diag(
                     msg="Remove `console.log` statements in production code",
                     severity="info",
                     line=line_no,
-                    column=line.index("console.log"),
+                    column=console_col,
+                    end_line=line_no,
+                    end_column=console_col + 11,
                     code="TS004",
                 )
             )
@@ -139,12 +155,15 @@ class TypeScriptAnalyzer(BaseAnalyzer):
             return
         if stripped.endswith(("=>", "))", "]")):
             return
+        line_len = len(raw_line.rstrip())
         diagnostics.append(
             make_diag(
                 msg="Possible missing semicolon",
                 severity="info",
                 line=line_no,
-                column=len(raw_line.rstrip()),
+                column=line_len,
+                end_line=line_no,
+                end_column=line_len,
                 code="TS005",
             )
         )
@@ -175,6 +194,8 @@ class CppAnalyzer(BaseAnalyzer):
                     msg="Missing `#include <iostream>` for cin/cout usage",
                     severity="error",
                     line=0,
+                    end_line=0,
+                    end_column=1,
                     code="CPP001",
                 )
             )
@@ -191,6 +212,8 @@ class CppAnalyzer(BaseAnalyzer):
                     severity="warning",
                     line=line,
                     column=column,
+                    end_line=line,
+                    end_column=column + len(match.group()),
                     code="CPP002",
                 )
             )
@@ -202,6 +225,8 @@ class CppAnalyzer(BaseAnalyzer):
                     msg="Raw `new` detected without matching `delete`",
                     severity="warning",
                     line=0,
+                    end_line=0,
+                    end_column=1,
                     code="CPP003",
                 )
             )
@@ -213,11 +238,15 @@ class CppAnalyzer(BaseAnalyzer):
             (idx for idx, line in enumerate(code.splitlines()) if "NULL" in line),
             0,
         )
+        null_col = code.splitlines()[first_line].index("NULL")
         diagnostics.append(
             make_diag(
                 msg="Prefer `nullptr` over legacy `NULL`",
                 severity="info",
                 line=first_line,
+                column=null_col,
+                end_line=first_line,
+                end_column=null_col + 4,
                 code="CPP004",
             )
         )
@@ -229,6 +258,8 @@ class CppAnalyzer(BaseAnalyzer):
                     msg="`int main` should return a status code",
                     severity="info",
                     line=0,
+                    end_line=0,
+                    end_column=1,
                     code="CPP005",
                 )
             )
@@ -264,6 +295,8 @@ class PythonAstVisitor(ast.NodeVisitor):
                     msg="Bare except detected; catch specific exceptions",
                     severity="warning",
                     line=node.lineno - 1,
+                    end_line=(node.end_lineno or node.lineno) - 1,
+                    end_column=node.end_col_offset,
                     code="PY004",
                 )
             )
@@ -276,6 +309,9 @@ class PythonAstVisitor(ast.NodeVisitor):
                     msg=f"Avoid `{node.func.id}`; it is unsafe in most cases",
                     severity="warning",
                     line=node.lineno - 1,
+                    column=node.col_offset,
+                    end_line=(node.end_lineno or node.lineno) - 1,
+                    end_column=node.end_col_offset,
                     code="PY005",
                 )
             )
@@ -303,6 +339,8 @@ class PythonAstVisitor(ast.NodeVisitor):
                 msg=f"Missing docstring for {entity_type} `{name}`",
                 severity="info",
                 line=(getattr(node, "lineno", 1) or 1) - 1,
+                end_line=(getattr(node, "end_lineno", 1) or 1) - 1,
+                end_column=getattr(node, "end_col_offset", None),
                 code="PY003",
             )
         )
@@ -315,6 +353,9 @@ class PythonAstVisitor(ast.NodeVisitor):
                         msg=f"Import `{name}` appears unused",
                         severity="warning",
                         line=line,
+                        column=0,
+                        end_line=line,
+                        end_column=1,
                         code="PY002",
                     )
                 )
