@@ -13,6 +13,8 @@ class Diagnostic:
     severity: Severity = _DEFAULT_SEVERITY
     line: int = 0
     column: Optional[int] = None
+    end_line: Optional[int] = None
+    end_column: Optional[int] = None
     code: Optional[str] = None
 
     def as_dict(self) -> dict:
@@ -23,6 +25,10 @@ class Diagnostic:
         }
         if self.column is not None:
             payload["column"] = max(0, self.column)
+        if self.end_line is not None:
+            payload["end_line"] = max(0, self.end_line)
+        if self.end_column is not None:
+            payload["end_column"] = max(0, self.end_column)
         if self.code:
             payload["code"] = self.code
         return payload
@@ -34,6 +40,8 @@ def make_diag(
     line: int = 0,
     *,
     column: Optional[int] = None,
+    end_line: Optional[int] = None,
+    end_column: Optional[int] = None,
     code: Optional[str] = None,
 ) -> dict:
     """Helper to ensure consistent diagnostic payloads."""
@@ -42,5 +50,7 @@ def make_diag(
         severity=severity,
         line=line,
         column=column,
+        end_line=end_line,
+        end_column=end_column,
         code=code,
     ).as_dict()

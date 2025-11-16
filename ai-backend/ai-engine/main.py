@@ -24,11 +24,7 @@ def analyze_code(req: AnalyzeRequest):
     canonical_lang = analyzer.identifier()
     static_results = analyzer.analyze(req.code)
 
-    provider = get_provider()
-    ai_suggestion = provider.ask_llm(req.code, canonical_lang)
-
     return {
-        "ai_suggestion": ai_suggestion,
         "static_analysis": static_results,
         "lang": canonical_lang,
     }
