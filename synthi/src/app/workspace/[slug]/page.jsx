@@ -20,9 +20,11 @@ import EditorPanel from "./Editor.jsx";
 import { getFileLanguage } from '@/utils/fileUtils';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
 import { AnalysisPanel } from '@/components/analysis/AnalysisPanel';
+import AIChatWindow from '@/components/chat/AIChatWindow';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
+    const [chatVisible, setChatVisible] = useState(false);
     const [editor, setEditor] = useState(null);
     const {
         connectionStatus,
@@ -139,6 +141,10 @@ export default function EditorPage({ params }) {
         }
     };
 
+    const handleToggleChat = useCallback(() => {
+        setChatVisible((v) => !v);
+    }, []);
+
     const handleUndo = () => {
         if (editor) {
             const currentValue = editor.getValue();
@@ -180,6 +186,8 @@ export default function EditorPage({ params }) {
                 onToggleTerminal={() => dispatch(toggleTerminal())}
                 onUndo={handleUndo}
                 onRedo={handleRedo}
+                onToggleChat={handleToggleChat}
+                chatVisible={chatVisible}
             />
             <AnalysisPanel
                 visible={analysisVisible}
@@ -209,6 +217,14 @@ export default function EditorPage({ params }) {
                     </>
                 )}
             </ResizablePanelGroup>
+
+            {/* AI Chat Window (right side) */}
+            <AIChatWindow
+                isVisible={chatVisible}
+                onClose={() => setChatVisible(false)}
+                activeFile={activeFile}
+                currentCode={currentContent}
+            />
         </div>
     );
 }

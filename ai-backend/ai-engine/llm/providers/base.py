@@ -16,5 +16,5 @@ class AiProvider(ABC):
         pass
 
     @abstractmethod
-    def ask_llm(self, code: str, lang: str) -> str:
+    def ask_llm(self, code: str, lang: str, prompt: str = None) -> str:
         pass

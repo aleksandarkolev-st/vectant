@@ -27,7 +27,6 @@ import {
     ContextMenuSeparator,
     ContextMenuTrigger,
 } from '@/components/ui/context-menu';
-import { editor } from 'monaco-editor';
 
 const TerminalManagerDyn = dynamic(() => import('../TerminalManager.jsx'), {
     ssr: false
