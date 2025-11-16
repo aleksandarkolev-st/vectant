@@ -27,6 +27,7 @@ import {
     ContextMenuSeparator,
     ContextMenuTrigger,
 } from '@/components/ui/context-menu';
+import { editor } from 'monaco-editor';
 
 const TerminalManagerDyn = dynamic(() => import('../TerminalManager.jsx'), {
     ssr: false
@@ -148,19 +149,6 @@ const EditorPanel = ({
                         first.endLineNumber,
                         first.endColumn
                     );
-
-                    const lineCount = model.getLineCount();
-                    const isNearTop = position.lineNumber <= 3;
-                    const isNearBottom = position.lineNumber >= lineCount - 2;
-
-                    monacoInstance.editor.updateOptions({
-                        hover: {
-                            enabled: true,
-                            sticky: true,
-                            above: !isNearTop,
-                            bottom: !isNearBottom
-                        },
-                    });
 
                     return {
                         range,
@@ -289,6 +277,11 @@ const EditorPanel = ({
                                                 scrollbar: {
                                                     verticalHasArrows: true,
                                                     horizontalHasArrows: true,
+                                                },
+                                                hover: {
+                                                    enabled: true,
+                                                    delay: 300,
+                                                    above: false
                                                 }
                                             }}
                                             onMount={(editor, monaco) => {
