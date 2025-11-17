@@ -20,17 +20,18 @@ const collectFileText = file => {
   return '';
 };
 
-const buildPrompt = (context, language) =>
+const buildPrompt = (context, language, cursor) =>
   [
-    'Output only the code and nothing else. Do not give any explanations. Do not write any comments.',
+    'Output only the competion code and nothing else. Dot not provide whole file, only completion for curretn cursor position. Do not give any explanations. Do not write any comments. If no completion is needed, respond with an EMPTY string. Provide only the code needed to complete the current cursor position.',
     `Language: ${language}`,
-    'Use the context below and continue from the cursor position.',
+    'Use the context below and continue from the cursor position. The cursor position is indicated by the special marker `<<CURSOR>>` inside the context when available. If the marker is not present, use the provided cursor coordinates to continue from the appropriate place.',
+    cursor && typeof cursor === 'object' ? `Cursor: line ${cursor.line || '?'} column ${cursor.column || '?'}` : null,
     'Insert the stop marker exactly once at the end of your completion:',
     AI_COMPLETION_STOP_SEQUENCE,
     'Context:',
     context,
     'Completion:',
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
 const buildPayload = prompt => ({
   contents: [
@@ -153,7 +154,35 @@ export async function POST(request) {
     );
   }
 
-  const rawContext = gatherContext(body);
+  // If caller provided a cursor position and code, insert a special marker into the code
+  // so the model can unambiguously locate where to continue. The marker is `<<CURSOR>>`.
+  let bodyForContext = body;
+  try {
+    if (
+      body &&
+      typeof body === 'object' &&
+      body.cursor &&
+      typeof body.cursor === 'object' &&
+      typeof body.code === 'string'
+    ) {
+      const { line, column } = body.cursor;
+      const lines = body.code.split(/\r?\n/);
+      const li = Math.max(0, Math.min(lines.length - 1, (Number(line) || 1) - 1));
+      const colIndex = Math.max(0, (Number(column) || 1) - 1);
+      const targetLine = lines[li] || '';
+      const insertAt = Math.max(0, Math.min(targetLine.length, colIndex));
+      const newLine = targetLine.slice(0, insertAt) + '<<CURSOR>>' + targetLine.slice(insertAt);
+      const newLines = [...lines];
+      newLines[li] = newLine;
+      const newCode = newLines.join('\n');
+      bodyForContext = { ...body, code: newCode };
+    }
+  } catch (err) {
+    // if anything fails, fall back to original body
+    bodyForContext = body;
+  }
+
+  const rawContext = gatherContext(bodyForContext);
   if (!rawContext) {
     return NextResponse.json({ completion: '' }, { status: 200 });
   }
@@ -165,7 +194,7 @@ export async function POST(request) {
       ? body.language.trim()
       : 'plaintext';
 
-  const prompt = buildPrompt(context, language);
+  const prompt = buildPrompt(context, language, body?.cursor);
   const payload = JSON.stringify(buildPayload(prompt));
 
   let response;
@@ -199,10 +228,11 @@ export async function POST(request) {
   completion = JSON.parse(completion);
   let candidates = [];
   completion.forEach(el => {
-    if (el.candidates[0].content.role === "model")
+    if (el.candidates[0].content.role === "model" && el.candidates[0].content.parts[0].text != '' && el.candidates[0].content.parts[0].text !== AI_COMPLETION_STOP_SEQUENCE)
         candidates.push(el.candidates[0].content.parts[0].text);
   });
   console.log(candidates);
 
-  return NextResponse.json({ completion: JSON.stringify(candidates)});
+  return NextResponse.json({ completion: candidates.join('') }, { status: 200 });
+
 }

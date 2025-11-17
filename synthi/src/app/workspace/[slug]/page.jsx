@@ -18,6 +18,7 @@ import {
 import FileTreeView from "./FileTree.jsx";
 import EditorPanel from "./Editor.jsx";
 import { getFileLanguage } from '@/utils/fileUtils';
+import { API_COMPLETION_ROUTE } from '@/lib/completion';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
 import { AnalysisPanel } from '@/components/analysis/AnalysisPanel';
 import AIChatWindow from '@/components/chat/AIChatWindow';
@@ -36,6 +37,7 @@ export default function EditorPage({ params }) {
         resetError,
     } = useAnalyzerGateway();
     const [analysisVisible, setAnalysisVisible] = useState(false);
+    const [latestCompletion, setLatestCompletion] = useState(null);
     
     // 1. Consume the slug parameter and initiate fetch
     const { slug } = use(params);
@@ -102,6 +104,56 @@ export default function EditorPage({ params }) {
         }
     }, [currentContent, activeFile, hasLoadedInitialFile, analyzeCode]);
 
+    // Send code completion requests when the code changes (debounced)
+    useEffect(() => {
+        if (!activeFile || !editor || typeof currentContent !== 'string') return;
+
+        let cancelled = false;
+        const timer = setTimeout(async () => {
+            try {
+                const pos = editor.getPosition?.();
+                const cursor = pos ? { line: pos.lineNumber, column: pos.column } : undefined;
+                const langSource =
+                    activeFile.language ||
+                    (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
+                    'plaintext';
+                const normalizedLang = langSource.toLowerCase();
+
+                const payload = {
+                    language: normalizedLang,
+                    code: currentContent,
+                    cursor,
+                };
+
+                const resp = await fetch(API_COMPLETION_ROUTE, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    console.warn('Completion API error', err);
+                    return;
+                }
+
+                const json = await resp.json().catch(() => null);
+                if (cancelled) return;
+                setLatestCompletion(json?.completion || null);
+                if (json?.completion) {
+                    console.debug('Received completion:', json.completion);
+                }
+            } catch (err) {
+                console.error('Completion request failed', err);
+            }
+        }, 500);
+
+        return () => {
+            cancelled = true;
+            clearTimeout(timer);
+        };
+    }, [currentContent, activeFile, editor]);
+
     const handleRun = useCallback(async () => {
         if (!activeFile) {
             console.warn('No active file selected for analysis.');
@@ -167,6 +219,7 @@ export default function EditorPage({ params }) {
             onToggleTerminal={() => dispatch(toggleTerminal())}
             onEditorMount={handleEditorMount}
             analysisResult={lastResult}
+            latestCompletion={latestCompletion}
         />
     );
 

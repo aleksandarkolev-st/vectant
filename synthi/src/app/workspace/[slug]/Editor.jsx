@@ -47,7 +47,8 @@ const EditorPanel = ({
     onRun,
     onToggleTerminal,
     onEditorMount,
-    analysisResult
+    analysisResult,
+    latestCompletion
 }) => {
     const dispatch = useAppDispatch();
     
@@ -66,6 +67,7 @@ const EditorPanel = ({
     const [aiCompletionState, setAiCompletionState] = useState('idle');
     const [aiCompletionSummary, setAiCompletionSummary] = useState(null);
     const hoverProviderRef = useRef(null);
+    const completionProviderRef = useRef(null);
     const aiCompletionCursorRef = useRef(null);
     const aiCompletionCacheRef = useRef({
         context: '',
@@ -73,6 +75,20 @@ const EditorPanel = ({
         suggestion: '',
     });
     const aiCompletionAbortControllerRef = useRef(null);
+    const [suggestionsMap, setSuggestionsMap] = useState({});
+    const suggestionsMapRef = useRef({});
+    const setSuggestionEntry = (key, value) => {
+        const next = Object.assign({}, suggestionsMapRef.current, { [key]: value });
+        suggestionsMapRef.current = next;
+        setSuggestionsMap(next);
+    };
+    const clearSuggestions = () => {
+        suggestionsMapRef.current = {};
+        setSuggestionsMap({});
+    };
+    const ghostDecorationIdsRef = useRef([]);
+    const ghostStyleElementRef = useRef(null);
+    const ghostClassRef = useRef(null);
     const activeLanguage = activeFile ? getMonacoLanguage(activeFile.name) : 'plaintext';
     const activeFileIdentity = activeFile ? `${activeFile.path ?? ''}-${activeFile.name ?? ''}` : 'no-file';
 
@@ -103,6 +119,28 @@ const EditorPanel = ({
             editorInstance.pushUndoStop();
             aiCompletionCursorRef.current = null;
 
+            // Clear the completion provider cache so the suggestion doesn't persist
+            aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
+
+            // Clear any ghost decorations/styles now that suggestion is applied
+            try {
+                if (ghostDecorationIdsRef.current?.length) {
+                    editorInstance.deltaDecorations(ghostDecorationIdsRef.current, []);
+                }
+            } catch (e) {
+                // ignore
+            }
+            ghostDecorationIdsRef.current = [];
+            try {
+                if (ghostStyleElementRef.current && ghostStyleElementRef.current.parentNode) {
+                    ghostStyleElementRef.current.parentNode.removeChild(ghostStyleElementRef.current);
+                }
+            } catch (e) {
+                // ignore
+            }
+            ghostStyleElementRef.current = null;
+            ghostClassRef.current = null;
+
             const lines = text.split(/\r?\n/);
             const preview = text.length > 120 ? `${text.slice(0, 120)}…` : text;
             setAiCompletionSummary({
@@ -112,6 +150,19 @@ const EditorPanel = ({
                 lineCount: lines.length,
                 status: 'applied',
             });
+
+            // Remove any saved suggestion for this cursor
+            try {
+                const key = `${start.lineNumber}:${start.column}`;
+                if (suggestionsMapRef.current && suggestionsMapRef.current[key]) {
+                    const copy = Object.assign({}, suggestionsMapRef.current);
+                    delete copy[key];
+                    suggestionsMapRef.current = copy;
+                    setSuggestionsMap(copy);
+                }
+            } catch (e) {
+                // ignore
+            }
         },
         [editorInstance, monacoInstance]
     );
@@ -227,6 +278,56 @@ const EditorPanel = ({
         };
     }, [monacoInstance, editorInstance, activeLanguage, analysisResult]);
 
+    // Register a completion provider to surface AI completions in the Monaco suggest widget
+    useEffect(() => {
+        if (!editorInstance || !monacoInstance) return;
+
+        try {
+            completionProviderRef.current?.dispose?.();
+        } catch (e) {
+            // ignore
+        }
+
+        completionProviderRef.current = monacoInstance.languages.registerCompletionItemProvider(
+            activeLanguage,
+            {
+                provideCompletionItems: (model, position) => {
+                    const cached = aiCompletionCacheRef.current;
+                    if (!cached || !cached.suggestion) return { suggestions: [] };
+
+                    const range = new monacoInstance.Range(
+                        position.lineNumber,
+                        position.column,
+                        position.lineNumber,
+                        position.column
+                    );
+
+                    return {
+                        suggestions: [
+                            {
+                                label: 'AI suggestion',
+                                kind: monacoInstance.languages.CompletionItemKind.Snippet,
+                                insertText: cached.suggestion,
+                                insertTextRules:
+                                    monacoInstance.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                                range,
+                            },
+                        ],
+                    };
+                },
+            }
+        );
+
+        return () => {
+            try {
+                completionProviderRef.current?.dispose?.();
+            } catch (e) {
+                // ignore
+            }
+            completionProviderRef.current = null;
+        };
+    }, [monacoInstance, editorInstance, activeLanguage]);
+
     const requestAiCompletion = useCallback(() => {
         if (!activeFile || !editorInstance) return;
         if (aiCompletionState === 'loading') return;
@@ -282,6 +383,17 @@ const EditorPanel = ({
                     language: activeLanguage,
                     suggestion: sanitized,
                 };
+
+                // Save suggestion into suggestions map keyed by the cursor used for this request
+                try {
+                    const pos = aiCompletionCursorRef.current;
+                    if (pos) {
+                        const key = `${pos.lineNumber}:${pos.column}`;
+                        setSuggestionEntry(key, sanitized);
+                    }
+                } catch (e) {
+                    // ignore
+                }
 
                 if (sanitized) {
                     const startLine = aiCompletionCursorRef.current?.lineNumber ?? 1;
@@ -352,8 +464,182 @@ const EditorPanel = ({
         applyAiCompletionText,
     ]);
 
+    // Integrate completions coming from parent (latestCompletion) into the editor's suggestion/cache
+    useEffect(() => {
+        if (!latestCompletion || !editorInstance || !monacoInstance) return;
+
+        try {
+            const raw = typeof latestCompletion === 'string' ? latestCompletion : (latestCompletion.completion || '');
+            const sanitized = raw
+                .split(AI_COMPLETION_STOP_SEQUENCE)[0]
+                .replace(/\r/g, '')
+                .trimEnd();
+
+            if (!sanitized) return;
+
+            const cursorPosition = editorInstance.getPosition();
+            aiCompletionCursorRef.current = cursorPosition
+                ? { lineNumber: cursorPosition.lineNumber, column: cursorPosition.column }
+                : null;
+
+            aiCompletionCacheRef.current = {
+                context: trimCompletionContext(code || ''),
+                language: activeLanguage,
+                suggestion: sanitized,
+            };
+
+            // Save suggestion into suggestions map keyed by the cursor position
+            try {
+                const pos = aiCompletionCursorRef.current || editorInstance.getPosition();
+                if (pos) {
+                    const key = `${pos.lineNumber}:${pos.column}`;
+                    setSuggestionEntry(key, sanitized);
+                }
+            } catch (e) {
+                // ignore
+            }
+
+            const lines = sanitized.split(/\r?\n/);
+            const preview = sanitized.length > 256 ? `${sanitized.slice(0, 256)}…` : sanitized;
+
+            setAiCompletionSummary({
+                preview,
+                startLine: aiCompletionCursorRef.current?.lineNumber ?? 1,
+                startColumn: aiCompletionCursorRef.current?.column ?? 1,
+                lineCount: lines.length,
+                status: 'preview',
+            });
+            setAiCompletionState('ready');
+
+            // Do not trigger the Monaco suggest widget automatically — show ghost text only
+        } catch (e) {
+            console.error('Failed to apply latestCompletion to editor', e);
+        }
+    }, [latestCompletion, editorInstance, monacoInstance, code, activeLanguage]);
+
+    // Show inline ghost text (grey) using a decoration + injected CSS
+    useEffect(() => {
+        // Clean up previous ghost
+        const clearGhost = () => {
+            try {
+                if (ghostDecorationIdsRef.current?.length && editorInstance) {
+                    editorInstance.deltaDecorations(ghostDecorationIdsRef.current, []);
+                }
+            } catch (e) {
+                // ignore
+            }
+            ghostDecorationIdsRef.current = [];
+
+            try {
+                if (ghostStyleElementRef.current && ghostStyleElementRef.current.parentNode) {
+                    ghostStyleElementRef.current.parentNode.removeChild(ghostStyleElementRef.current);
+                }
+            } catch (e) {
+                // ignore
+            }
+            ghostStyleElementRef.current = null;
+            ghostClassRef.current = null;
+        };
+
+        if (!editorInstance || !monacoInstance) {
+            clearGhost();
+            return;
+        }
+
+        // Only show ghost if we're in 'ready' state AND the suggestion belongs to the current cursor
+        const currentPos = editorInstance.getPosition();
+        const cursor = aiCompletionCursorRef.current;
+        if (
+            !currentPos ||
+            !cursor ||
+            cursor.lineNumber !== currentPos.lineNumber ||
+            cursor.column !== currentPos.column ||
+            aiCompletionState !== 'ready' ||
+            !aiCompletionCacheRef.current?.suggestion
+        ) {
+            clearGhost();
+            return;
+        }
+
+        const suggestion = aiCompletionCacheRef.current.suggestion;
+        if (!suggestion) {
+            clearGhost();
+            return;
+        }
+
+        try {
+            // create unique class name
+            const cls = `ai-ghost-${Date.now()}`;
+            ghostClassRef.current = cls;
+
+            // escape content for CSS string
+            const escapeForCss = (s) => {
+                return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\A ');
+            };
+
+            const cssText = escapeForCss(suggestion);
+            const style = document.createElement('style');
+            style.type = 'text/css';
+            style.innerHTML = `.${cls} { position: relative; }\n.${cls}::after { content: "${cssText}"; color: #9ca3af; opacity: 0.7; white-space: pre; pointer-events: none; }\n`;
+            document.head.appendChild(style);
+            ghostStyleElementRef.current = style;
+
+            const pos = aiCompletionCursorRef.current || editorInstance.getPosition();
+            if (!pos) return;
+
+            const range = new monacoInstance.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column);
+            const decoration = {
+                range,
+                options: {
+                    className: cls,
+                    stickiness: monacoInstance.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+                },
+            };
+
+            const ids = editorInstance.deltaDecorations([], [decoration]);
+            ghostDecorationIdsRef.current = ids;
+        } catch (e) {
+            console.error('Failed to render ghost suggestion', e);
+            // Ensure cleanup on error
+            try {
+                if (ghostStyleElementRef.current && ghostStyleElementRef.current.parentNode) {
+                    ghostStyleElementRef.current.parentNode.removeChild(ghostStyleElementRef.current);
+                }
+            } catch (err) {
+                // ignore
+            }
+            ghostStyleElementRef.current = null;
+            ghostDecorationIdsRef.current = [];
+            ghostClassRef.current = null;
+        }
+
+        // Cleanup when suggestion changes or on unmount
+        return () => {
+            clearGhost();
+        };
+    }, [aiCompletionState, editorInstance, monacoInstance, code]);
+
     // Handler to update content in Redux
     const handleCodeChange = (newCode) => {
+        // Clear any cached suggestions when the code changes
+        try {
+            clearSuggestions();
+        } catch (e) {
+            // ignore
+        }
+        // Clear local AI completion cache and UI
+        aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
+        setAiCompletionState('idle');
+        setAiCompletionSummary(null);
+        try {
+            if (ghostDecorationIdsRef.current?.length && editorInstance) {
+                editorInstance.deltaDecorations(ghostDecorationIdsRef.current, []);
+            }
+        } catch (e) {
+            // ignore
+        }
+        ghostDecorationIdsRef.current = [];
+
         dispatch(updateContent(newCode));
     };
     
@@ -528,10 +814,56 @@ const EditorPanel = ({
                                                     onEditorMount(editor);
                                                 }
                                                 editor.onDidChangeCursorPosition(e => {
-                                                    setPosition({
-                                                    lineNumber: e.position.lineNumber,
-                                                    column: e.position.column
-                                                    });
+                                                    const pos = e.position;
+                                                    setPosition({ lineNumber: pos.lineNumber, column: pos.column });
+
+                                                    // Clear any existing ghost decorations/styles for previous cursor
+                                                    try {
+                                                        if (ghostDecorationIdsRef.current?.length && editorInstance) {
+                                                            editorInstance.deltaDecorations(ghostDecorationIdsRef.current, []);
+                                                        }
+                                                    } catch (err) {
+                                                        // ignore
+                                                    }
+                                                    ghostDecorationIdsRef.current = [];
+                                                    try {
+                                                        if (ghostStyleElementRef.current && ghostStyleElementRef.current.parentNode) {
+                                                            ghostStyleElementRef.current.parentNode.removeChild(ghostStyleElementRef.current);
+                                                        }
+                                                    } catch (err) {
+                                                        // ignore
+                                                    }
+                                                    ghostStyleElementRef.current = null;
+                                                    ghostClassRef.current = null;
+
+                                                    // On cursor move: if we have a saved suggestion for this cursor, display it; otherwise fetch a new one
+                                                    const key = `${pos.lineNumber}:${pos.column}`;
+                                                    const saved = suggestionsMapRef.current?.[key];
+                                                    if (saved) {
+                                                        // populate cache and show ghost for this cursor
+                                                        aiCompletionCursorRef.current = { lineNumber: pos.lineNumber, column: pos.column };
+                                                        aiCompletionCacheRef.current = {
+                                                            context: trimCompletionContext(code || ''),
+                                                            language: activeLanguage,
+                                                            suggestion: saved,
+                                                        };
+                                                        const lines = saved.split(/\r?\n/);
+                                                        const preview = saved.length > 256 ? `${saved.slice(0, 256)}…` : saved;
+                                                        setAiCompletionSummary({
+                                                            preview,
+                                                            startLine: pos.lineNumber,
+                                                            startColumn: pos.column,
+                                                            lineCount: lines.length,
+                                                            status: 'preview',
+                                                        });
+                                                        setAiCompletionState('ready');
+                                                    } else {
+                                                        // Clear local cache and UI then fetch suggestion for new cursor
+                                                        aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
+                                                        setAiCompletionState('idle');
+                                                        setAiCompletionSummary(null);
+                                                        requestAiCompletion();
+                                                    }
                                                 });
                                                 window.MonacoEnvironment = {
                                                     getWorker: function (moduleId, label) {
