@@ -22,8 +22,7 @@ const collectFileText = file => {
 
 const buildPrompt = (context, language) =>
   [
-    'You are an expert code completion assistant.',
-    'Output only the code and nothing else.',
+    'Output only the code and nothing else. Do not give any explanations. Do not write any comments.',
     `Language: ${language}`,
     'Use the context below and continue from the cursor position.',
     'Insert the stop marker exactly once at the end of your completion:',
@@ -126,10 +125,7 @@ const parseAgentStream = raw => {
 
     out += extractAgentText(parsed);
 
-    if (
-      parsed?.event === 'final' ||
-      parsed?.response?.metadata?.is_final === true
-    ) {
+    if (parsed?.event === 'final') {
       break;
     }
   }
@@ -199,7 +195,14 @@ export async function POST(request) {
 
   const parsed = parseAgentStream(raw);
   const cleaned = sanitize(parsed);
-  const completion = cleaned || parsed || raw || '';
+  let completion = cleaned || parsed || raw || '';
+  completion = JSON.parse(completion);
+  let candidates = [];
+  completion.forEach(el => {
+    if (el.candidates[0].content.role === "model")
+        candidates.push(el.candidates[0].content.parts[0].text);
+  });
+  console.log(candidates);
 
-  return NextResponse.json({ completion });
+  return NextResponse.json({ completion: JSON.stringify(candidates)});
 }

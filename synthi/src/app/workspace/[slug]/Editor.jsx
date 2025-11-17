@@ -1,6 +1,6 @@
 // src/app/Editor.jsx
 'use client';
-import { useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import { getMonacoLanguage } from '@/utils/languageMapper';
 import dynamic from 'next/dynamic';
@@ -64,17 +64,57 @@ const EditorPanel = ({
     const [editorInstance, setEditorInstance] = useState(null);
     const [monacoInstance, setMonacoInstance] = useState(null);
     const [aiCompletionState, setAiCompletionState] = useState('idle');
+    const [aiCompletionSummary, setAiCompletionSummary] = useState(null);
     const hoverProviderRef = useRef(null);
-    const completionProviderRef = useRef(null);
+    const aiCompletionCursorRef = useRef(null);
     const aiCompletionCacheRef = useRef({
         context: '',
         language: '',
         suggestion: '',
     });
-    const aiCompletionTimerRef = useRef(null);
     const aiCompletionAbortControllerRef = useRef(null);
     const activeLanguage = activeFile ? getMonacoLanguage(activeFile.name) : 'plaintext';
     const activeFileIdentity = activeFile ? `${activeFile.path ?? ''}-${activeFile.name ?? ''}` : 'no-file';
+
+    const applyAiCompletionText = useCallback(
+        (text) => {
+            if (!text || !editorInstance || !monacoInstance) return;
+
+            const start =
+                aiCompletionCursorRef.current ||
+                editorInstance.getPosition() ||
+                undefined;
+            if (!start) return;
+
+            const range = new monacoInstance.Range(
+                start.lineNumber,
+                start.column,
+                start.lineNumber,
+                start.column
+            );
+
+            editorInstance.executeEdits('ai', [
+                {
+                    range,
+                    text,
+                    forceMoveMarkers: true,
+                },
+            ]);
+            editorInstance.pushUndoStop();
+            aiCompletionCursorRef.current = null;
+
+            const lines = text.split(/\r?\n/);
+            const preview = text.length > 120 ? `${text.slice(0, 120)}…` : text;
+            setAiCompletionSummary({
+                preview,
+                startLine: start.lineNumber,
+                startColumn: start.column,
+                lineCount: lines.length,
+                status: 'applied',
+            });
+        },
+        [editorInstance, monacoInstance]
+    );
 
     // Update markers when analysis results change
     useEffect(() => {
@@ -187,167 +227,130 @@ const EditorPanel = ({
         };
     }, [monacoInstance, editorInstance, activeLanguage, analysisResult]);
 
-    useEffect(() => {
-        if (!activeFile) {
-            aiCompletionCacheRef.current = {
-                context: '',
-                language: '',
-                suggestion: '',
-            };
-            setAiCompletionState('idle');
-            if (aiCompletionTimerRef.current) {
-                clearTimeout(aiCompletionTimerRef.current);
-                aiCompletionTimerRef.current = null;
-            }
-            return;
-        }
+    const requestAiCompletion = useCallback(() => {
+        if (!activeFile || !editorInstance) return;
+        if (aiCompletionState === 'loading') return;
 
         const context = trimCompletionContext(code || '');
         if (!context.trim()) {
+            return;
+        }
+
+        const cursorPosition = editorInstance.getPosition();
+        aiCompletionCursorRef.current = cursorPosition
+            ? {
+                  lineNumber: cursorPosition.lineNumber,
+                  column: cursorPosition.column,
+              }
+            : null;
+
+        aiCompletionAbortControllerRef.current?.abort?.();
+        const controller = new AbortController();
+        aiCompletionAbortControllerRef.current = controller;
+        setAiCompletionState('loading');
+        setAiCompletionSummary(null);
+
+        fetch(API_COMPLETION_ROUTE, {
+            method: 'POST',
+            signal: controller.signal,
+            headers: {
+                'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+                code: context,
+                language: activeLanguage,
+            }),
+        })
+            .then(async (response) => {
+                if (!response.ok) {
+                    const text = await response.text().catch(() => '');
+                    throw new Error(text || 'Completion request failed');
+                }
+                return response.json();
+            })
+            .then((data) => {
+                if (controller.signal.aborted) return;
+
+                const completionText = data?.completion || '';
+                const sanitized = completionText
+                    .split(AI_COMPLETION_STOP_SEQUENCE)[0]
+                    .replace(/\r/g, '')
+                    .trimEnd();
+
+                aiCompletionCacheRef.current = {
+                    context,
+                    language: activeLanguage,
+                    suggestion: sanitized,
+                };
+
+                if (sanitized) {
+                    const startLine = aiCompletionCursorRef.current?.lineNumber ?? 1;
+                    const startColumn = aiCompletionCursorRef.current?.column ?? 1;
+                    const lines = sanitized.split(/\r?\n/);
+                    const preview =
+                        sanitized.length > 256 ? `${sanitized.slice(0, 256)}…` : sanitized;
+
+                    setAiCompletionSummary({
+                        preview,
+                        startLine,
+                        startColumn,
+                        lineCount: lines.length,
+                        status: 'preview',
+                    });
+                    setAiCompletionState('ready');
+                } else {
+                    setAiCompletionState('idle');
+                    setAiCompletionSummary(null);
+                }
+            })
+            .catch((error) => {
+                if (controller.signal.aborted) return;
+                console.error('AI completion request failed', error);
+                setAiCompletionState('idle');
+                setAiCompletionSummary(null);
+            })
+            .finally(() => {
+                if (aiCompletionAbortControllerRef.current === controller) {
+                    aiCompletionAbortControllerRef.current = null;
+                }
+            });
+    }, [activeFile, activeLanguage, code, editorInstance, aiCompletionState]);
+
+    useEffect(() => {
+        if (!editorInstance || !monacoInstance) return;
+        const disposable = editorInstance.onKeyDown((event) => {
+            if (event.keyCode !== monacoInstance.KeyCode.Tab) return;
+            if (aiCompletionState !== 'ready') return;
+
+            const cached = aiCompletionCacheRef.current;
+            const currentContext = trimCompletionContext(code || '');
+            if (
+                !cached.suggestion ||
+                cached.context !== currentContext ||
+                cached.language !== activeLanguage
+            ) {
+                return;
+            }
+
+            event.preventDefault();
+            applyAiCompletionText(cached.suggestion);
             aiCompletionCacheRef.current = {
                 context: '',
                 language: '',
                 suggestion: '',
             };
-            setAiCompletionState('idle');
-            if (aiCompletionTimerRef.current) {
-                clearTimeout(aiCompletionTimerRef.current);
-                aiCompletionTimerRef.current = null;
-            }
-            return;
-        }
+            setAiCompletionState('applied');
+        });
 
-        if (
-            aiCompletionCacheRef.current.context === context &&
-            aiCompletionCacheRef.current.language === activeLanguage &&
-            aiCompletionCacheRef.current.suggestion
-        ) {
-            if (aiCompletionTimerRef.current) {
-                clearTimeout(aiCompletionTimerRef.current);
-                aiCompletionTimerRef.current = null;
-            }
-            return;
-        }
-
-        if (aiCompletionTimerRef.current) {
-            clearTimeout(aiCompletionTimerRef.current);
-        }
-
-        let isActive = true;
-        const timer = setTimeout(() => {
-            aiCompletionAbortControllerRef.current?.abort?.();
-            const controller = new AbortController();
-            aiCompletionAbortControllerRef.current = controller;
-            setAiCompletionState('loading');
-
-            fetch(API_COMPLETION_ROUTE, {
-                method: 'POST',
-                signal: controller.signal,
-                headers: {
-                    'content-type': 'application/json',
-                },
-                body: JSON.stringify({
-                    code: context,
-                    language: activeLanguage,
-                }),
-            })
-                .then(async (response) => {
-                    if (!response.ok) {
-                        const text = await response.text().catch(() => '');
-                        throw new Error(text || 'Completion request failed');
-                    }
-                    return response.json();
-                })
-                .then((data) => {
-                    if (!isActive || controller.signal.aborted) {
-                        return;
-                    }
-
-                    const completionText = data?.completion || '';
-                    const sanitized = completionText
-                        .split(AI_COMPLETION_STOP_SEQUENCE)[0]
-                        .replace(/\r/g, '')
-                        .trimEnd();
-
-                    aiCompletionCacheRef.current = {
-                        context,
-                        language: activeLanguage,
-                        suggestion: sanitized,
-                    };
-
-                    setAiCompletionState(sanitized ? 'ready' : 'idle');
-
-                    if (sanitized && editorInstance) {
-                        editorInstance.trigger('ai', 'editor.action.triggerSuggest');
-                    }
-                })
-                .catch((error) => {
-                    if (!isActive || controller.signal.aborted) {
-                        return;
-                    }
-                    console.error('AI completion background fetch failed', error);
-                    setAiCompletionState('idle');
-                })
-                .finally(() => {
-                    if (aiCompletionAbortControllerRef.current === controller) {
-                        aiCompletionAbortControllerRef.current = null;
-                    }
-                });
-        }, 600);
-
-        aiCompletionTimerRef.current = timer;
-
-        return () => {
-            isActive = false;
-            clearTimeout(timer);
-            aiCompletionTimerRef.current = null;
-        };
-    }, [code, activeFileIdentity, activeLanguage, editorInstance]);
-
-    useEffect(() => {
-        if (!editorInstance || !monacoInstance) return;
-
-        completionProviderRef.current?.dispose?.();
-
-        const provider = monacoInstance.languages.registerCompletionItemProvider(
-            activeLanguage,
-            {
-                triggerCharacters: ['.', ':', '"', "'", '/', '<', '>', '=', ' '],
-                provideCompletionItems(model) {
-                    const currentContext = trimCompletionContext(model.getValue());
-                    const cached = aiCompletionCacheRef.current;
-
-                    if (
-                        cached.language === activeLanguage &&
-                        cached.context === currentContext &&
-                        cached.suggestion
-                    ) {
-                        return {
-                            suggestions: [
-                                {
-                                    label: 'AI completion',
-                                    kind: monacoInstance.languages.CompletionItemKind.Snippet,
-                                    insertText: cached.suggestion,
-                                    insertTextRules:
-                                        monacoInstance.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-                                    detail: 'AI generated completion',
-                                },
-                            ],
-                        };
-                    }
-
-                    return { suggestions: [] };
-                },
-            }
-        );
-
-        completionProviderRef.current = provider;
-
-        return () => {
-            provider.dispose();
-            completionProviderRef.current = null;
-        };
-    }, [editorInstance, monacoInstance, activeLanguage]);
+        return () => disposable.dispose();
+    }, [
+        editorInstance,
+        monacoInstance,
+        code,
+        activeLanguage,
+        aiCompletionState,
+        applyAiCompletionText,
+    ]);
 
     // Handler to update content in Redux
     const handleCodeChange = (newCode) => {
@@ -391,13 +394,17 @@ const EditorPanel = ({
         aiCompletionState === 'loading'
             ? 'AI loading…'
             : aiCompletionState === 'ready'
-            ? 'AI ready'
+            ? 'AI ready (press Tab)'
+            : aiCompletionState === 'applied'
+            ? 'AI change applied'
             : 'AI idle';
     const aiStatusDotClass =
-        aiCompletionState === 'ready'
-            ? 'bg-emerald-400'
-            : aiCompletionState === 'loading'
+        aiCompletionState === 'loading'
             ? 'bg-amber-400 animate-pulse'
+            : aiCompletionState === 'ready'
+            ? 'bg-blue-400'
+            : aiCompletionState === 'applied'
+            ? 'bg-emerald-400'
             : 'bg-gray-500';
 
     return (
@@ -451,7 +458,39 @@ const EditorPanel = ({
                                     <span className={`w-2 h-2 rounded-full ${aiStatusDotClass}`}></span>
                                     <span className='text-xs text-gray-400'>{aiStatusLabel}</span>
                                 </div>
+                                <button
+                                    type='button'
+                                    onClick={requestAiCompletion}
+                                    disabled={aiCompletionState === 'loading'}
+                                    className='text-[11px] px-2 py-0.5 rounded border border-[#3a3a3a] text-gray-300 hover:border-gray-500 transition-colors disabled:opacity-50 disabled:cursor-default'
+                                >
+                                    {aiCompletionState === 'ready' ? 'Press Tab to insert' : 'Ask AI'}
+                                </button>
                             </div>
+                            {aiCompletionSummary && (
+                                <div className="px-3 py-1 text-[11px] text-gray-300 border-t border-[#3a3a3a]">
+                                    <div className="flex flex-wrap gap-2 items-center text-xs">
+                                        <span className="text-gray-400">
+                                            AI{' '}
+                                            {aiCompletionSummary.status === 'preview'
+                                                ? 'suggested'
+                                                : 'inserted'}{' '}
+                                            {aiCompletionSummary.lineCount} line
+                                            {aiCompletionSummary.lineCount === 1 ? '' : 's'} at Ln{' '}
+                                            {aiCompletionSummary.startLine}, Col{' '}
+                                            {aiCompletionSummary.startColumn}
+                                        </span>
+                                        {aiCompletionSummary.status === 'preview' && (
+                                            <span className="text-[10px] text-gray-500">
+                                                Press Tab to insert
+                                            </span>
+                                        )}
+                                    </div>
+                                    <p className="truncate max-w-[360px] text-emerald-300">
+                                        {aiCompletionSummary.preview}
+                                    </p>
+                                </div>
+                            )}
                         </div>
                         {/* Editor area */}
                         <div className="flex-1 overflow-hidden">
