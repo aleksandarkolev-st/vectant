@@ -50,6 +50,10 @@ const EditorPanel = ({
     analysisResult,
     latestCompletion
 }) => {
+    // Debug: log incoming latestCompletion prop for runtime tracing
+    try {
+        console.debug('[Editor] mount/render - latestCompletion prop', { latestCompletionPreview: typeof latestCompletion === 'string' ? latestCompletion.slice(0,120) : (latestCompletion?.completion?.slice(0,120) || null) });
+    } catch (e) {}
     const dispatch = useAppDispatch();
     
     // Global state access (Granular selectors for performance)
@@ -89,6 +93,7 @@ const EditorPanel = ({
     const ghostDecorationIdsRef = useRef([]);
     const ghostStyleElementRef = useRef(null);
     const ghostClassRef = useRef(null);
+    const eventDisposablesRef = useRef([]);
     const activeLanguage = activeFile ? getMonacoLanguage(activeFile.name) : 'plaintext';
     const activeFileIdentity = activeFile ? `${activeFile.path ?? ''}-${activeFile.name ?? ''}` : 'no-file';
 
@@ -102,21 +107,44 @@ const EditorPanel = ({
                 undefined;
             if (!start) return;
 
-            const range = new monacoInstance.Range(
-                start.lineNumber,
-                start.column,
-                start.lineNumber,
-                start.column
-            );
+            // Compute visible insertion to avoid duplicating text that already exists after the cursor
+            const model = editorInstance.getModel();
+            let insertText = text;
+            try {
+                if (model) {
+                    const offset = model.getOffsetAt(start);
+                    const existing = model.getValue().slice(offset, offset + text.length);
+                    let common = 0;
+                    while (
+                        common < text.length &&
+                        common < existing.length &&
+                        text.charAt(common) === existing.charAt(common)
+                    ) {
+                        common++;
+                    }
+                    insertText = text.slice(common);
+                }
+            } catch (e) {
+                insertText = text;
+            }
 
-            editorInstance.executeEdits('ai', [
-                {
-                    range,
-                    text,
-                    forceMoveMarkers: true,
-                },
-            ]);
-            editorInstance.pushUndoStop();
+            if (insertText) {
+                const range = new monacoInstance.Range(
+                    start.lineNumber,
+                    start.column,
+                    start.lineNumber,
+                    start.column
+                );
+
+                editorInstance.executeEdits('ai', [
+                    {
+                        range,
+                        text: insertText,
+                        forceMoveMarkers: true,
+                    },
+                ]);
+                editorInstance.pushUndoStop();
+            }
             aiCompletionCursorRef.current = null;
 
             // Clear the completion provider cache so the suggestion doesn't persist
@@ -153,13 +181,10 @@ const EditorPanel = ({
 
             // Remove any saved suggestion for this cursor
             try {
-                const key = `${start.lineNumber}:${start.column}`;
-                if (suggestionsMapRef.current && suggestionsMapRef.current[key]) {
-                    const copy = Object.assign({}, suggestionsMapRef.current);
-                    delete copy[key];
-                    suggestionsMapRef.current = copy;
-                    setSuggestionsMap(copy);
-                }
+                // Clear all previously fetched suggestions so nothing stale remains
+                clearSuggestions();
+                // also clear any provider cache
+                aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
             } catch (e) {
                 // ignore
             }
@@ -468,6 +493,11 @@ const EditorPanel = ({
     useEffect(() => {
         if (!latestCompletion || !editorInstance || !monacoInstance) return;
 
+        // Debug: show that the Editor effect for latestCompletion is running
+        try {
+            console.debug('[Editor] latestCompletion effect start', { latestCompletionType: typeof latestCompletion, editorReady: !!editorInstance, monacoReady: !!monacoInstance, codeLength: (code || '').length });
+        } catch (e) {}
+
         try {
             const raw = typeof latestCompletion === 'string' ? latestCompletion : (latestCompletion.completion || '');
             const sanitized = raw
@@ -517,8 +547,31 @@ const EditorPanel = ({
         }
     }, [latestCompletion, editorInstance, monacoInstance, code, activeLanguage]);
 
+    // Dispose any editor event listeners when editorInstance changes/unmounts
+    useEffect(() => {
+        return () => {
+            try {
+                eventDisposablesRef.current.forEach(d => d?.dispose && d.dispose());
+            } catch (e) {
+                // ignore
+            }
+            eventDisposablesRef.current = [];
+        };
+    }, [editorInstance]);
+
     // Show inline ghost text (grey) using a decoration + injected CSS
     useEffect(() => {
+        // Debug: log entry for ghost effect
+        try {
+            console.debug('[AI Ghost] effect enter', {
+                ready: aiCompletionState === 'ready',
+                suggestionLen: aiCompletionCacheRef.current?.suggestion?.length ?? 0,
+                cursor: aiCompletionCursorRef.current,
+                editorPos: editorInstance?.getPosition?.(),
+            });
+        } catch (e) {
+            // ignore
+        }
         // Clean up previous ghost
         const clearGhost = () => {
             try {
@@ -546,17 +599,12 @@ const EditorPanel = ({
             return;
         }
 
-        // Only show ghost if we're in 'ready' state AND the suggestion belongs to the current cursor
-        const currentPos = editorInstance.getPosition();
-        const cursor = aiCompletionCursorRef.current;
-        if (
-            !currentPos ||
-            !cursor ||
-            cursor.lineNumber !== currentPos.lineNumber ||
-            cursor.column !== currentPos.column ||
-            aiCompletionState !== 'ready' ||
-            !aiCompletionCacheRef.current?.suggestion
-        ) {
+        // Show ghost if we have a ready suggestion. Attach at the saved cursor position if available,
+        // otherwise use the current editor cursor. This makes rendering more robust if positions aren't exact.
+        if (aiCompletionState !== 'ready' || !aiCompletionCacheRef.current?.suggestion) {
+            try {
+                console.debug('[AI Ghost] not ready or no suggestion', { aiCompletionState, suggestion: !!aiCompletionCacheRef.current?.suggestion });
+            } catch (e) {}
             clearGhost();
             return;
         }
@@ -567,37 +615,61 @@ const EditorPanel = ({
             return;
         }
 
+        // Compute visible portion of suggestion that is not already present after the cursor
+        let visible = suggestion;
         try {
+            const model = editorInstance.getModel();
+            const pos = aiCompletionCursorRef.current || editorInstance.getPosition();
+            if (model && pos) {
+                const offset = model.getOffsetAt(pos);
+                const existing = model.getValue().slice(offset, offset + suggestion.length);
+                let common = 0;
+                while (common < suggestion.length && common < existing.length && suggestion.charAt(common) === existing.charAt(common)) {
+                    common++;
+                }
+                visible = suggestion.slice(common);
+            }
+        } catch (e) {
+            visible = suggestion;
+        }
+
+        if (!visible) {
+            clearGhost();
+            return;
+        }
+
+        try {
+            console.debug('[AI Ghost] have suggestion, computing visible portion', { suggestionPreview: (suggestion || '').slice(0,80) });
             // create unique class name
             const cls = `ai-ghost-${Date.now()}`;
             ghostClassRef.current = cls;
 
-            // escape content for CSS string
-            const escapeForCss = (s) => {
-                return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\A ');
-            };
-
-            const cssText = escapeForCss(suggestion);
+            // create a CSS rule to style the inline ghost content
             const style = document.createElement('style');
             style.type = 'text/css';
-            style.innerHTML = `.${cls} { position: relative; }\n.${cls}::after { content: "${cssText}"; color: #9ca3af; opacity: 0.7; white-space: pre; pointer-events: none; }\n`;
+            style.innerHTML = `.${cls} { color: #9ca3af !important; opacity: 0.85; pointer-events: none; }`;
             document.head.appendChild(style);
             ghostStyleElementRef.current = style;
 
             const pos = aiCompletionCursorRef.current || editorInstance.getPosition();
             if (!pos) return;
 
+            // Monaco decoration 'after' with contentText renders inline phantom text that occupies layout space
             const range = new monacoInstance.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column);
             const decoration = {
                 range,
                 options: {
-                    className: cls,
+                    after: {
+                        contentText: visible.replace(/\r?\n/g, ' '),
+                        inlineClassName: cls,
+                    },
                     stickiness: monacoInstance.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
                 },
             };
 
             const ids = editorInstance.deltaDecorations([], [decoration]);
             ghostDecorationIdsRef.current = ids;
+            try { console.debug('[AI Ghost] decoration applied', { ids, visibleLen: visible.length }); } catch (e) {}
         } catch (e) {
             console.error('Failed to render ghost suggestion', e);
             // Ensure cleanup on error
@@ -810,6 +882,7 @@ const EditorPanel = ({
                                             onMount={(editor, monaco) => {
                                                setEditorInstance(editor);
                                                setMonacoInstance(monaco);
+                                               try { console.debug('[Editor] onMount - editor and monaco set', { editorReady: !!editor, monacoReady: !!monaco }); } catch (e) {}
                                                 if (onEditorMount) {
                                                     onEditorMount(editor);
                                                 }
@@ -865,6 +938,35 @@ const EditorPanel = ({
                                                         requestAiCompletion();
                                                     }
                                                 });
+                                                // Clear suggestions on any content change (typing or programmatic edits)
+                                                const contentDisposable = editor.onDidChangeModelContent(() => {
+                                                    try {
+                                                        clearSuggestions();
+                                                    } catch (err) {
+                                                        // ignore
+                                                    }
+                                                    aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
+                                                    setAiCompletionState('idle');
+                                                    setAiCompletionSummary(null);
+                                                    try {
+                                                        if (ghostDecorationIdsRef.current?.length) {
+                                                            editor.deltaDecorations(ghostDecorationIdsRef.current, []);
+                                                        }
+                                                    } catch (e) {
+                                                        // ignore
+                                                    }
+                                                    ghostDecorationIdsRef.current = [];
+                                                    try {
+                                                        if (ghostStyleElementRef.current && ghostStyleElementRef.current.parentNode) {
+                                                            ghostStyleElementRef.current.parentNode.removeChild(ghostStyleElementRef.current);
+                                                        }
+                                                    } catch (e) {
+                                                        // ignore
+                                                    }
+                                                    ghostStyleElementRef.current = null;
+                                                    ghostClassRef.current = null;
+                                                });
+                                                eventDisposablesRef.current.push(contentDisposable);
                                                 window.MonacoEnvironment = {
                                                     getWorker: function (moduleId, label) {
                                                         if (label === 'json') {

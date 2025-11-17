@@ -22,7 +22,7 @@ const collectFileText = file => {
 
 const buildPrompt = (context, language, cursor) =>
   [
-    'Output only the competion code and nothing else. Dot not provide whole file, only completion for curretn cursor position. Do not give any explanations. Do not write any comments. If no completion is needed, respond with an EMPTY string. Provide only the code needed to complete the current cursor position.',
+    'Output only the competion code and nothing else. Dot not provide whole file, only completion for curretn cursor position. Do not give any explanations. Do not write any comments. If no completion is needed, respond with an EMPTY string. Provide only the code needed to be inserted at the cursor position.',
     `Language: ${language}`,
     'Use the context below and continue from the cursor position. The cursor position is indicated by the special marker `<<CURSOR>>` inside the context when available. If the marker is not present, use the provided cursor coordinates to continue from the appropriate place.',
     cursor && typeof cursor === 'object' ? `Cursor: line ${cursor.line || '?'} column ${cursor.column || '?'}` : null,

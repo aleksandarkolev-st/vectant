@@ -139,9 +139,13 @@ export default function EditorPage({ params }) {
 
                 const json = await resp.json().catch(() => null);
                 if (cancelled) return;
+                // Debug: log the raw completion payload received at page level
+                try {
+                    console.debug('[Page] completion response', { ok: resp.ok, body: json });
+                } catch (e) {}
                 setLatestCompletion(json?.completion || null);
                 if (json?.completion) {
-                    console.debug('Received completion:', json.completion);
+                    console.debug('[Page] Received completion (string length):', json.completion?.length);
                 }
             } catch (err) {
                 console.error('Completion request failed', err);
