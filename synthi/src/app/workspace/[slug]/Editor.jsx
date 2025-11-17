@@ -5,13 +5,13 @@ import Editor from '@monaco-editor/react';
 import { getMonacoLanguage } from '@/utils/languageMapper';
 import dynamic from 'next/dynamic';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
-import { 
-    selectActiveFile, 
-    selectCurrentContent, 
-    selectIsUnsaved, 
-    selectBreadcrumb, 
-    saveFileContentThunk, 
-    updateContent 
+import {
+    selectActiveFile,
+    selectCurrentContent,
+    selectIsUnsaved,
+    selectBreadcrumb,
+    saveFileContentThunk,
+    updateContent
 } from '@/redux/workspaceSlice';
 import { selectAutoSaveEnabled } from '@/redux/uiSlice';
 import { Folder, FileText, Circle, Save } from 'lucide-react';
@@ -32,6 +32,10 @@ import {
     AI_COMPLETION_MAX_INPUT_CHARS,
     API_COMPLETION_ROUTE,
 } from '@/lib/completion';
+import prettier from "prettier/standalone";
+import babel from "prettier/plugins/babel";
+import estree from "prettier/plugins/estree";
+
 
 const trimCompletionContext = (code) => {
     if (!code) return '';
@@ -52,10 +56,10 @@ const EditorPanel = ({
 }) => {
     // Debug: log incoming latestCompletion prop for runtime tracing
     try {
-        console.debug('[Editor] mount/render - latestCompletion prop', { latestCompletionPreview: typeof latestCompletion === 'string' ? latestCompletion.slice(0,120) : (latestCompletion?.completion?.slice(0,120) || null) });
-    } catch (e) {}
+        console.debug('[Editor] mount/render - latestCompletion prop', { latestCompletionPreview: typeof latestCompletion === 'string' ? latestCompletion.slice(0, 120) : (latestCompletion?.completion?.slice(0, 120) || null) });
+    } catch (e) { }
     const dispatch = useAppDispatch();
-    
+
     // Global state access (Granular selectors for performance)
     const activeFile = useAppSelector(selectActiveFile);
     const code = useAppSelector(selectCurrentContent);
@@ -63,7 +67,7 @@ const EditorPanel = ({
     const breadcrumb = useAppSelector(selectBreadcrumb);
     const showTerminal = useAppSelector(state => state.ui.showTerminal);
     const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
-    
+
     // Local state retention
     const [position, setPosition] = useState({ lineNumber: 1, column: 1 });
     const [editorInstance, setEditorInstance] = useState(null);
@@ -94,6 +98,8 @@ const EditorPanel = ({
     const ghostStyleElementRef = useRef(null);
     const ghostClassRef = useRef(null);
     const eventDisposablesRef = useRef([]);
+    const prevActiveFileRef = useRef(null);
+    const _loadedScripts = useRef({});
     const activeLanguage = activeFile ? getMonacoLanguage(activeFile.name) : 'plaintext';
     const activeFileIdentity = activeFile ? `${activeFile.path ?? ''}-${activeFile.name ?? ''}` : 'no-file';
 
@@ -197,10 +203,10 @@ const EditorPanel = ({
         if (!editorInstance || !monacoInstance || !analysisResult) return;
 
         const markers = [];
-        
+
         // Extract issues from analysis result - supports both 'static_analysis' and 'issues' arrays
         const issues = analysisResult?.static_analysis || analysisResult?.issues || [];
-        
+
         issues.forEach((issue) => {
             const {
                 line = 1,
@@ -222,7 +228,7 @@ const EditorPanel = ({
             const startLine = line === 0 ? 1 : line + 1;
             const finishLine = end_line !== undefined ? (end_line === 0 ? 1 : end_line + 1) : startLine;
             const finishColumn = end_column !== undefined ? Math.max(1, end_column + 1) : Math.max(2, column + 2);
-            
+
             markers.push({
                 startLineNumber: startLine,
                 startColumn: Math.max(1, column + 1),
@@ -270,8 +276,8 @@ const EditorPanel = ({
                             m.severity === monacoInstance.MarkerSeverity.Error
                                 ? 'Error'
                                 : m.severity === monacoInstance.MarkerSeverity.Warning
-                                ? 'Warning'
-                                : 'Info';
+                                    ? 'Warning'
+                                    : 'Info';
                         const code = m.code ? ` (${m.code})` : '';
                         const md = `**${severity}**${code}\n\n${m.message}`;
                         return { value: md };
@@ -365,9 +371,9 @@ const EditorPanel = ({
         const cursorPosition = editorInstance.getPosition();
         aiCompletionCursorRef.current = cursorPosition
             ? {
-                  lineNumber: cursorPosition.lineNumber,
-                  column: cursorPosition.column,
-              }
+                lineNumber: cursorPosition.lineNumber,
+                column: cursorPosition.column,
+            }
             : null;
 
         aiCompletionAbortControllerRef.current?.abort?.();
@@ -489,6 +495,232 @@ const EditorPanel = ({
         applyAiCompletionText,
     ]);
 
+    // Helper: dynamically load a script once (UMD builds from CDN)
+    const loadScript = (url) => {
+        if (_loadedScripts.current[url]) return _loadedScripts.current[url];
+        const p = new Promise((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = url;
+            s.async = true;
+            s.onload = () => resolve(true);
+            s.onerror = (e) => reject(e);
+            document.head.appendChild(s);
+        });
+        _loadedScripts.current[url] = p;
+        return p;
+    };
+
+    // Map Monaco language to Prettier parser name
+    const languageToPrettierParser = (lang) => {
+        switch ((lang || '').toLowerCase()) {
+            case 'javascript':
+            case 'javascriptreact':
+            case 'jsx':
+                return 'babel';
+            case 'typescript':
+            case 'typescriptreact':
+            case 'tsx':
+                return 'typescript';
+            case 'json':
+                return 'json';
+            case 'css':
+            case 'scss':
+            case 'less':
+                return 'css';
+            case 'html':
+                return 'html';
+            case 'markdown':
+                return 'markdown';
+            default:
+                return null;
+        }
+    };
+
+    // Load Prettier UMD and necessary parsers from unpkg. Returns global `prettier` and plugin references.
+    const loadPrettierWithParsers = async (parser) => {
+        prettier.format(code, {
+            parser: "babel",
+            plugins: [babel, estree]
+        });
+
+        // Prefer bundler (dynamic import) when available in the client bundle.
+        try {
+            // dynamic import paths used here assume `prettier` and parsers are installed as dependencies
+            const prettierModule = await import('prettier/standalone');
+            const plugins = [];
+
+            if (parser === 'babel' || parser === 'typescript') {
+                const mod = await import('prettier/parser-babel');
+                console.log(mod, mod.default);
+                plugins.push(mod.default);
+            }
+
+            if (parser === 'css') {
+                const mod = await import('prettier/parser-postcss');
+                plugins.push(mod.default);
+            }
+
+            if (parser === 'html') {
+                const mod = await import('prettier/parser-html');
+                plugins.push(mod.default);
+            }
+
+            if (parser === 'markdown') {
+                const mod = await import('prettier/parser-markdown');
+                plugins.push(mod.default);
+            }
+
+            if (parser === 'json') {
+                const mod = await import('prettier/parser-babel');
+                plugins.push(mod.default);
+            }
+
+            const prettier = prettierModule && (prettierModule.default || prettierModule);
+            return { prettier, plugins: plugins.map(m => (m && (m.default || m))) };
+        } catch (err) {
+            // If bundler imports fail (not installed), fallback to CDN UMD
+            try {
+                await loadScript('https://unpkg.com/prettier@2.8.8/standalone.js');
+
+                const pluginUrls = [];
+                if (['babel', 'typescript'].includes(parser)) {
+                    pluginUrls.push('https://unpkg.com/prettier@2.8.8/parser-babel.js');
+                }
+                if (parser === 'css') {
+                    pluginUrls.push('https://unpkg.com/prettier@2.8.8/parser-postcss.js');
+                }
+                if (parser === 'html') {
+                    pluginUrls.push('https://unpkg.com/prettier@2.8.8/parser-html.js');
+                }
+                if (parser === 'markdown') {
+                    pluginUrls.push('https://unpkg.com/prettier@2.8.8/parser-markdown.js');
+                }
+                if (parser === 'json') {
+                    pluginUrls.push('https://unpkg.com/prettier@2.8.8/parser-babel.js');
+                }
+
+                // Load parser plugins
+                await Promise.all(pluginUrls.map(u => loadScript(u).catch(e => { console.warn('Failed to load parser script', u, e); return null; })));
+
+                const p = window.prettier || null;
+                const plugins = [];
+
+                // Common UMD shapes: window.prettierPlugins as object (keys) or array
+                const available = window.prettierPlugins;
+                if (Array.isArray(available) && available.length) {
+                    plugins.push(...available);
+                } else if (available && typeof available === 'object') {
+                    // prefer the exact parser key
+                    if (available[parser]) {
+                        plugins.push(available[parser]);
+                    } else {
+                        // collect any common plugin keys that were loaded
+                        ['babel', 'postcss', 'html', 'markdown', 'typescript', 'json'].forEach((k) => {
+                            if (available[k]) plugins.push(available[k]);
+                        });
+                    }
+                } else {
+                    // Some UMD builds attach plugins to named globals (fallback checks)
+                    const fallbacks = {
+                        babel: window.prettierPlugins && window.prettierPlugins.babel,
+                        postcss: window.prettierPlugins && window.prettierPlugins.postcss,
+                        html: window.prettierPlugins && window.prettierPlugins.html,
+                        markdown: window.prettierPlugins && window.prettierPlugins.markdown,
+                        typescript: window.prettierPlugins && window.prettierPlugins.typescript,
+                    };
+                    if (fallbacks[parser]) plugins.push(fallbacks[parser]);
+                }
+
+                if (!p) {
+                    console.error('Prettier UMD loaded but `window.prettier` not found');
+                    return { prettier: null, plugins: [] };
+                }
+
+                if (!plugins.length) {
+                    // as a last resort, attempt to use any registered plugins array
+                    if (window.prettierPlugins && Array.isArray(window.prettierPlugins)) {
+                        return { prettier: p, plugins: window.prettierPlugins };
+                    }
+                    console.warn('No Prettier parsers were found after loading UMD plugins; formatting for this language may not be available', parser);
+                    return { prettier: p, plugins: [] };
+                }
+
+                return { prettier: p, plugins };
+            } catch (err2) {
+                console.error('Failed to load Prettier (both dynamic import and CDN fallback)', err, err2);
+                return { prettier: null, plugins: [] };
+            }
+        }
+    };
+
+    // Format via Prettier fallback
+    const formatWithPrettier = async (text, monacoLang) => {
+        const parser = languageToPrettierParser(monacoLang);
+        if (!parser) return null;
+
+        try {
+            const formatted = await prettier.format(text, {
+                parser: parser,
+                plugins: [babel, estree]
+            });
+
+            return formatted;
+        } catch (e) {
+            console.error("prettier failed", e);
+            return null;
+        }
+    };
+
+
+    // Run format: try Monaco's builtin action, if no change then fallback to Prettier
+    const runFormatDocument = async (editor) => {
+        if (!editor || !monacoInstance) return;
+        try {
+            const model = editor.getModel();
+            if (!model) return;
+            const before = model.getValue();
+
+            // Try Monaco action first, but don't wait forever — use a short timeout
+            try {
+                const action = editor.getAction && editor.getAction('editor.action.formatDocument');
+                if (action && typeof action.run === 'function') {
+                    try {
+                        const runPromise = action.run();
+                        const result = await Promise.race([
+                            // Some Monaco actions return a promise, some don't — handle both
+                            runPromise instanceof Promise ? runPromise : Promise.resolve(runPromise),
+                            new Promise((resolve) => setTimeout(() => resolve('__monaco_format_timeout__'), 1500)),
+                        ]);
+                        console.debug('[Editor] Monaco format action result', { result });
+                    } catch (e) {
+                        console.error('[Editor] Monaco format action threw', e);
+                    }
+                } else {
+                    console.debug('[Editor] Monaco format action not available', { action });
+                }
+            } catch (e) {
+                console.error('[Editor] Error invoking Monaco format action', e);
+            }
+
+            // small delay to allow provider edits to apply
+            await new Promise((r) => setTimeout(r, 120));
+
+            const after = model.getValue();
+            if (after !== before) return; // Monaco formatting applied
+
+            // Fallback: use Prettier
+            const lang = activeLanguage || (activeFile ? getMonacoLanguage(activeFile.name) : 'plaintext');
+            const formatted = await formatWithPrettier(before, lang);
+            if (formatted && formatted !== before) {
+                const fullRange = model.getFullModelRange();
+                editor.executeEdits('format', [{ range: fullRange, text: formatted, forceMoveMarkers: true }]);
+                editor.pushUndoStop();
+            }
+        } catch (e) {
+            console.error('runFormatDocument failed', e);
+        }
+    };
+
     // Integrate completions coming from parent (latestCompletion) into the editor's suggestion/cache
     useEffect(() => {
         if (!latestCompletion || !editorInstance || !monacoInstance) return;
@@ -496,7 +728,7 @@ const EditorPanel = ({
         // Debug: show that the Editor effect for latestCompletion is running
         try {
             console.debug('[Editor] latestCompletion effect start', { latestCompletionType: typeof latestCompletion, editorReady: !!editorInstance, monacoReady: !!monacoInstance, codeLength: (code || '').length });
-        } catch (e) {}
+        } catch (e) { }
 
         try {
             const raw = typeof latestCompletion === 'string' ? latestCompletion : (latestCompletion.completion || '');
@@ -604,7 +836,7 @@ const EditorPanel = ({
         if (aiCompletionState !== 'ready' || !aiCompletionCacheRef.current?.suggestion) {
             try {
                 console.debug('[AI Ghost] not ready or no suggestion', { aiCompletionState, suggestion: !!aiCompletionCacheRef.current?.suggestion });
-            } catch (e) {}
+            } catch (e) { }
             clearGhost();
             return;
         }
@@ -639,7 +871,7 @@ const EditorPanel = ({
         }
 
         try {
-            console.debug('[AI Ghost] have suggestion, computing visible portion', { suggestionPreview: (suggestion || '').slice(0,80) });
+            console.debug('[AI Ghost] have suggestion, computing visible portion', { suggestionPreview: (suggestion || '').slice(0, 80) });
             // create unique class name
             const cls = `ai-ghost-${Date.now()}`;
             ghostClassRef.current = cls;
@@ -669,7 +901,7 @@ const EditorPanel = ({
 
             const ids = editorInstance.deltaDecorations([], [decoration]);
             ghostDecorationIdsRef.current = ids;
-            try { console.debug('[AI Ghost] decoration applied', { ids, visibleLen: visible.length }); } catch (e) {}
+            try { console.debug('[AI Ghost] decoration applied', { ids, visibleLen: visible.length }); } catch (e) { }
         } catch (e) {
             console.error('Failed to render ghost suggestion', e);
             // Ensure cleanup on error
@@ -714,7 +946,7 @@ const EditorPanel = ({
 
         dispatch(updateContent(newCode));
     };
-    
+
     // Handler to save content via Thunk
     const handleSave = () => {
         if (activeFile && isUnsaved) {
@@ -725,45 +957,134 @@ const EditorPanel = ({
     // Auto-save functionality with debouncing
     useEffect(() => {
         if (!autoSaveEnabled || !isUnsaved || !activeFile) return;
-        
+
         const autoSaveTimer = setTimeout(() => {
             dispatch(saveFileContentThunk());
         }, 500);
-        
+
         return () => clearTimeout(autoSaveTimer);
     }, [code, autoSaveEnabled, isUnsaved, activeFile, dispatch]);
 
-    // Add keyboard shortcuts (Ctrl+S uses the centralized save function)
+    // Sync editor value only when switching active files to avoid flashing while typing
     useEffect(() => {
-        const handleKeyDown = (e) => {
-            if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        if (!editorInstance) return;
+        try {
+            if (prevActiveFileRef.current !== activeFileIdentity) {
+                // switching files - set the editor value to the current code
+                editorInstance.setValue(code || '');
+                prevActiveFileRef.current = activeFileIdentity;
+            }
+        } catch (e) {
+            // ignore
+        }
+    }, [editorInstance, activeFileIdentity, code]);
+
+    // Add keyboard shortcuts: Ctrl/Cmd+S to save, Alt+F to format document
+    useEffect(() => {
+        const handleKeyDown = async (e) => {
+            try { console.log('[Editor] document keydown', { key: e.key, ctrl: e.ctrlKey, meta: e.metaKey, shift: e.shiftKey, target: e.target?.tagName }); } catch (err) { }
+            // Save (Ctrl/Cmd+S)
+            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 's' || e.key === 'S')) {
                 e.preventDefault();
                 e.stopPropagation();
                 handleSave();
+                return;
+            }
+
+            // Format document (Alt+F)
+            if (e.altKey && (e.key === 'f' || e.key === 'F')) {
+                e.preventDefault();
+                e.stopPropagation();
+                try {
+                    console.log('[Editor] Alt+F detected - attempting format', { editorPresent: !!editorInstance, monacoPresent: !!monacoInstance });
+                    // Try the orchestrated formatter first
+                    await runFormatDocument(editorInstance);
+                } catch (err) {
+                    console.error('[Editor] runFormatDocument threw', err);
+                }
+
+                // As a fallback, invoke Monaco's format action directly
+                try {
+                    if (editorInstance?.getAction) {
+                        console.log('[Editor] invoking Monaco editor.action.formatDocument directly as fallback');
+                        try {
+                            const act = editorInstance.getAction('editor.action.formatDocument');
+                            if (act && typeof act.run === 'function') {
+                                const rp = act.run();
+                                const res = await Promise.race([
+                                    rp instanceof Promise ? rp : Promise.resolve(rp),
+                                    new Promise((resolve) => setTimeout(() => resolve('__monaco_format_timeout__'), 1500)),
+                                ]);
+                                console.debug('[Editor] direct Monaco format action result', { res });
+                            } else {
+                                console.debug('[Editor] direct Monaco action not present', { act });
+                            }
+                        } catch (e) {
+                            console.error('[Editor] direct Monaco format action failed', e);
+                        }
+                    }
+                } catch (err) {
+                    console.error('[Editor] direct Monaco format action failed', err);
+                }
+
+                return;
             }
         };
-        // The handleSave function is stable as its dependencies (dispatch, activeFile, isUnsaved)
-        // are accessed through closures or stable dispatch reference.
-        document.addEventListener('keydown', handleKeyDown);
-        return () => document.removeEventListener('keydown', handleKeyDown);
-    },); 
+
+        // Use capturing listeners on both document and window to catch keys
+        // even if Monaco or other handlers intercept them.
+        // Register capturing listeners (passive:false so we can preventDefault)
+        try { document.addEventListener('keydown', handleKeyDown, { capture: true, passive: false }); console.log('[Editor] attached document capturing keydown'); } catch (e) { console.error('failed to attach document keydown', e); }
+        try { window.addEventListener('keydown', handleKeyDown, { capture: true, passive: false }); console.log('[Editor] attached window capturing keydown'); } catch (e) { console.error('failed to attach window keydown', e); }
+        return () => {
+            try { document.removeEventListener('keydown', handleKeyDown, { capture: true }); } catch (e) { }
+            try { window.removeEventListener('keydown', handleKeyDown, { capture: true }); } catch (e) { }
+        };
+    }, [editorInstance, monacoInstance, handleSave]);
+
+    // Expose editor + monaco to window for interactive debugging and manual invocation
+    useEffect(() => {
+        try {
+            if (editorInstance) window.__synthiEditor = editorInstance;
+            if (monacoInstance) window.__synthiMonaco = monacoInstance;
+            // also expose a helper to run the formatter manually from console
+            window.__synthiRunFormat = async () => {
+                try {
+                    console.debug('[Editor] manual runFormatDocument invoked from window helper');
+                    await runFormatDocument(window.__synthiEditor);
+                    return { ok: true };
+                } catch (e) {
+                    console.error('[Editor] window.__synthiRunFormat error', e);
+                    return { ok: false, error: e };
+                }
+            };
+        } catch (e) { }
+
+        return () => {
+            try {
+                if (window.__synthiEditor === editorInstance) delete window.__synthiEditor;
+                if (window.__synthiMonaco === monacoInstance) delete window.__synthiMonaco;
+                if (window.__synthiRunFormat) delete window.__synthiRunFormat;
+            } catch (e) { }
+        };
+    }, [editorInstance, monacoInstance]);
 
     const aiStatusLabel =
         aiCompletionState === 'loading'
             ? 'AI loading…'
             : aiCompletionState === 'ready'
-            ? 'AI ready (press Tab)'
-            : aiCompletionState === 'applied'
-            ? 'AI change applied'
-            : 'AI idle';
+                ? 'AI ready (press Tab)'
+                : aiCompletionState === 'applied'
+                    ? 'AI change applied'
+                    : 'AI idle';
     const aiStatusDotClass =
         aiCompletionState === 'loading'
             ? 'bg-amber-400 animate-pulse'
             : aiCompletionState === 'ready'
-            ? 'bg-blue-400'
-            : aiCompletionState === 'applied'
-            ? 'bg-emerald-400'
-            : 'bg-gray-500';
+                ? 'bg-blue-400'
+                : aiCompletionState === 'applied'
+                    ? 'bg-emerald-400'
+                    : 'bg-gray-500';
 
     return (
         <ResizablePanel defaultSize={76} minSize={20}>
@@ -773,18 +1094,18 @@ const EditorPanel = ({
                         {/* Tab/Breadcrumb area */}
                         <div className="px-3 py-2 text-sm border-b border-[#545454] bg-[#252526] flex justify-between items-center gap-1 overflow-x-auto whitespace-nowrap">
                             <div className='flex flex-row items-center gap-2'>
-                                {breadcrumb && breadcrumb.length > 0? (
+                                {breadcrumb && breadcrumb.length > 0 ? (
                                     breadcrumb.map((name, idx) => {
                                         const isLast = idx === breadcrumb.length - 1;
                                         const isFile = isLast && activeFile && name === activeFile.name;
                                         return (
                                             <span key={`${name}-${idx}`} className="flex items-center">
-                                                {isFile? (
+                                                {isFile ? (
                                                     <FileText className="w-3.5 h-3.5 mr-1 text-gray-400" />
                                                 ) : (
                                                     <Folder className="w-3.5 h-3.5 mr-1 text-gray-400" />
                                                 )}
-                                                <span className={`text-xs ${isLast? 'text-gray-100' : 'text-gray-400'}`}>
+                                                <span className={`text-xs ${isLast ? 'text-gray-100' : 'text-gray-400'}`}>
                                                     {name}
                                                 </span>
                                                 {idx < breadcrumb.length - 1 && <span className="px-1 text-gray-500">›</span>}
@@ -856,9 +1177,9 @@ const EditorPanel = ({
                                 <ContextMenuTrigger asChild>
                                     <div className="h-full">
                                         <Editor
-                                            key={activeFile? activeFile.path : 'no-file'} // Use path for a better key
+                                            key={activeFile ? activeFile.path : 'no-file'} // Use path for a better key
                                             height="100%"
-                                            value={code}
+                                            defaultValue={code}
                                             language={activeFile ? getMonacoLanguage(activeFile.name) : 'plaintext'}
                                             onChange={handleCodeChange}
                                             theme="vs-dark"
@@ -880,9 +1201,9 @@ const EditorPanel = ({
                                                 }
                                             }}
                                             onMount={(editor, monaco) => {
-                                               setEditorInstance(editor);
-                                               setMonacoInstance(monaco);
-                                               try { console.debug('[Editor] onMount - editor and monaco set', { editorReady: !!editor, monacoReady: !!monaco }); } catch (e) {}
+                                                setEditorInstance(editor);
+                                                setMonacoInstance(monaco);
+                                                try { console.debug('[Editor] onMount - editor and monaco set', { editorReady: !!editor, monacoReady: !!monaco }); } catch (e) { }
                                                 if (onEditorMount) {
                                                     onEditorMount(editor);
                                                 }
@@ -938,6 +1259,48 @@ const EditorPanel = ({
                                                         requestAiCompletion();
                                                     }
                                                 });
+                                                // Register editor action so keybinding works while editor is focused
+                                                try {
+                                                    const actionDisposable = editor.addAction({
+                                                        id: 'synthi.formatDocument',
+                                                        label: 'Format Document',
+                                                        keybindings: [
+                                                            monaco.KeyMod.Alt | monaco.KeyCode.KeyF,
+                                                        ],
+                                                        run: (ed) => {
+                                                            try {
+                                                                console.debug('Running format action from editor keybinding');
+                                                                runFormatDocument(ed);
+                                                            } catch (err) {
+                                                                console.error('format action failed', err);
+                                                            }
+                                                            return null;
+                                                        },
+                                                    });
+                                                    eventDisposablesRef.current.push(actionDisposable);
+                                                    try {
+                                                        const commandDisposable = editor.addCommand(
+                                                            monaco.KeyMod.Alt | monaco.KeyCode.KeyF,
+                                                            () => {
+                                                                try {
+                                                                    console.debug('Running format command from editor.addCommand');
+                                                                    runFormatDocument(editor);
+                                                                } catch (err) {
+                                                                    console.error('format command failed', err);
+                                                                }
+                                                            }
+                                                        );
+                                                        eventDisposablesRef.current.push(commandDisposable);
+                                                    } catch (e) {
+                                                        // ignore if addCommand not supported
+                                                    }
+                                                } catch (e) {
+                                                    // ignore if Monaco API not available
+                                                }
+                                                // remember the active file identity so we can sync value when file changes
+                                                try {
+                                                    prevActiveFileRef.current = activeFileIdentity;
+                                                } catch (e) { }
                                                 // Clear suggestions on any content change (typing or programmatic edits)
                                                 const contentDisposable = editor.onDidChangeModelContent(() => {
                                                     try {
