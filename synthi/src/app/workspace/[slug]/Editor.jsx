@@ -27,6 +27,17 @@ import {
     ContextMenuSeparator,
     ContextMenuTrigger,
 } from '@/components/ui/context-menu';
+import {
+    AI_COMPLETION_STOP_SEQUENCE,
+    AI_COMPLETION_MAX_INPUT_CHARS,
+    API_COMPLETION_ROUTE,
+} from '@/lib/completion';
+
+const trimCompletionContext = (code) => {
+    if (!code) return '';
+    if (code.length <= AI_COMPLETION_MAX_INPUT_CHARS) return code;
+    return code.slice(-AI_COMPLETION_MAX_INPUT_CHARS);
+};
 
 const TerminalManagerDyn = dynamic(() => import('../TerminalManager.jsx'), {
     ssr: false
@@ -52,7 +63,18 @@ const EditorPanel = ({
     const [position, setPosition] = useState({ lineNumber: 1, column: 1 });
     const [editorInstance, setEditorInstance] = useState(null);
     const [monacoInstance, setMonacoInstance] = useState(null);
+    const [aiCompletionState, setAiCompletionState] = useState('idle');
     const hoverProviderRef = useRef(null);
+    const completionProviderRef = useRef(null);
+    const aiCompletionCacheRef = useRef({
+        context: '',
+        language: '',
+        suggestion: '',
+    });
+    const aiCompletionTimerRef = useRef(null);
+    const aiCompletionAbortControllerRef = useRef(null);
+    const activeLanguage = activeFile ? getMonacoLanguage(activeFile.name) : 'plaintext';
+    const activeFileIdentity = activeFile ? `${activeFile.path ?? ''}-${activeFile.name ?? ''}` : 'no-file';
 
     // Update markers when analysis results change
     useEffect(() => {
@@ -110,10 +132,8 @@ const EditorPanel = ({
             // ignore
         }
 
-        const language = activeFile ? getMonacoLanguage(activeFile.name) : 'plaintext';
-
         hoverProviderRef.current = monacoInstance.languages.registerHoverProvider(
-            language,
+            activeLanguage,
             {
                 provideHover: (model, position) => {
                     const markers = monacoInstance.editor.getModelMarkers({ resource: model.uri });
@@ -165,7 +185,169 @@ const EditorPanel = ({
             }
             hoverProviderRef.current = null;
         };
-    }, [monacoInstance, editorInstance, activeFile, analysisResult]);
+    }, [monacoInstance, editorInstance, activeLanguage, analysisResult]);
+
+    useEffect(() => {
+        if (!activeFile) {
+            aiCompletionCacheRef.current = {
+                context: '',
+                language: '',
+                suggestion: '',
+            };
+            setAiCompletionState('idle');
+            if (aiCompletionTimerRef.current) {
+                clearTimeout(aiCompletionTimerRef.current);
+                aiCompletionTimerRef.current = null;
+            }
+            return;
+        }
+
+        const context = trimCompletionContext(code || '');
+        if (!context.trim()) {
+            aiCompletionCacheRef.current = {
+                context: '',
+                language: '',
+                suggestion: '',
+            };
+            setAiCompletionState('idle');
+            if (aiCompletionTimerRef.current) {
+                clearTimeout(aiCompletionTimerRef.current);
+                aiCompletionTimerRef.current = null;
+            }
+            return;
+        }
+
+        if (
+            aiCompletionCacheRef.current.context === context &&
+            aiCompletionCacheRef.current.language === activeLanguage &&
+            aiCompletionCacheRef.current.suggestion
+        ) {
+            if (aiCompletionTimerRef.current) {
+                clearTimeout(aiCompletionTimerRef.current);
+                aiCompletionTimerRef.current = null;
+            }
+            return;
+        }
+
+        if (aiCompletionTimerRef.current) {
+            clearTimeout(aiCompletionTimerRef.current);
+        }
+
+        let isActive = true;
+        const timer = setTimeout(() => {
+            aiCompletionAbortControllerRef.current?.abort?.();
+            const controller = new AbortController();
+            aiCompletionAbortControllerRef.current = controller;
+            setAiCompletionState('loading');
+
+            fetch(API_COMPLETION_ROUTE, {
+                method: 'POST',
+                signal: controller.signal,
+                headers: {
+                    'content-type': 'application/json',
+                },
+                body: JSON.stringify({
+                    code: context,
+                    language: activeLanguage,
+                }),
+            })
+                .then(async (response) => {
+                    if (!response.ok) {
+                        const text = await response.text().catch(() => '');
+                        throw new Error(text || 'Completion request failed');
+                    }
+                    return response.json();
+                })
+                .then((data) => {
+                    if (!isActive || controller.signal.aborted) {
+                        return;
+                    }
+
+                    const completionText = data?.completion || '';
+                    const sanitized = completionText
+                        .split(AI_COMPLETION_STOP_SEQUENCE)[0]
+                        .replace(/\r/g, '')
+                        .trimEnd();
+
+                    aiCompletionCacheRef.current = {
+                        context,
+                        language: activeLanguage,
+                        suggestion: sanitized,
+                    };
+
+                    setAiCompletionState(sanitized ? 'ready' : 'idle');
+
+                    if (sanitized && editorInstance) {
+                        editorInstance.trigger('ai', 'editor.action.triggerSuggest');
+                    }
+                })
+                .catch((error) => {
+                    if (!isActive || controller.signal.aborted) {
+                        return;
+                    }
+                    console.error('AI completion background fetch failed', error);
+                    setAiCompletionState('idle');
+                })
+                .finally(() => {
+                    if (aiCompletionAbortControllerRef.current === controller) {
+                        aiCompletionAbortControllerRef.current = null;
+                    }
+                });
+        }, 600);
+
+        aiCompletionTimerRef.current = timer;
+
+        return () => {
+            isActive = false;
+            clearTimeout(timer);
+            aiCompletionTimerRef.current = null;
+        };
+    }, [code, activeFileIdentity, activeLanguage, editorInstance]);
+
+    useEffect(() => {
+        if (!editorInstance || !monacoInstance) return;
+
+        completionProviderRef.current?.dispose?.();
+
+        const provider = monacoInstance.languages.registerCompletionItemProvider(
+            activeLanguage,
+            {
+                triggerCharacters: ['.', ':', '"', "'", '/', '<', '>', '=', ' '],
+                provideCompletionItems(model) {
+                    const currentContext = trimCompletionContext(model.getValue());
+                    const cached = aiCompletionCacheRef.current;
+
+                    if (
+                        cached.language === activeLanguage &&
+                        cached.context === currentContext &&
+                        cached.suggestion
+                    ) {
+                        return {
+                            suggestions: [
+                                {
+                                    label: 'AI completion',
+                                    kind: monacoInstance.languages.CompletionItemKind.Snippet,
+                                    insertText: cached.suggestion,
+                                    insertTextRules:
+                                        monacoInstance.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                                    detail: 'AI generated completion',
+                                },
+                            ],
+                        };
+                    }
+
+                    return { suggestions: [] };
+                },
+            }
+        );
+
+        completionProviderRef.current = provider;
+
+        return () => {
+            provider.dispose();
+            completionProviderRef.current = null;
+        };
+    }, [editorInstance, monacoInstance, activeLanguage]);
 
     // Handler to update content in Redux
     const handleCodeChange = (newCode) => {
@@ -204,6 +386,19 @@ const EditorPanel = ({
         document.addEventListener('keydown', handleKeyDown);
         return () => document.removeEventListener('keydown', handleKeyDown);
     },); 
+
+    const aiStatusLabel =
+        aiCompletionState === 'loading'
+            ? 'AI loading…'
+            : aiCompletionState === 'ready'
+            ? 'AI ready'
+            : 'AI idle';
+    const aiStatusDotClass =
+        aiCompletionState === 'ready'
+            ? 'bg-emerald-400'
+            : aiCompletionState === 'loading'
+            ? 'bg-amber-400 animate-pulse'
+            : 'bg-gray-500';
 
     return (
         <ResizablePanel defaultSize={76} minSize={20}>
@@ -249,9 +444,13 @@ const EditorPanel = ({
                                     </button>
                                 )}
                             </div>
-                            <div className='flex flex-row gap-2'>
+                            <div className='flex flex-row gap-3 items-center'>
                                 <p className='text-xs text-gray-400'>Ln: {position.lineNumber}</p>
                                 <p className='text-xs text-gray-400'>Col: {position.column}</p>
+                                <div className='flex items-center gap-1'>
+                                    <span className={`w-2 h-2 rounded-full ${aiStatusDotClass}`}></span>
+                                    <span className='text-xs text-gray-400'>{aiStatusLabel}</span>
+                                </div>
                             </div>
                         </div>
                         {/* Editor area */}
