@@ -86,59 +86,12 @@ export default function EditorPage({ params }) {
         });
     }, [currentContent, activeFile, hasLoadedInitialFile, analyzeCode]);
 
-    // Send code completion requests when the code changes (debounced)
-    useEffect(() => {
-        if (!activeFile || !editor || typeof currentContent !== 'string') return;
-
-        let cancelled = false;
-        const timer = setTimeout(async () => {
-            try {
-                const pos = editor.getPosition?.();
-                const cursor = pos ? { line: pos.lineNumber, column: pos.column } : undefined;
-                const langSource =
-                    activeFile.language ||
-                    (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
-                    'plaintext';
-                const normalizedLang = langSource.toLowerCase();
-
-                const payload = {
-                    language: normalizedLang,
-                    code: currentContent,
-                    cursor,
-                };
-
-                const resp = await fetch(API_COMPLETION_ROUTE, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload),
-                });
-
-                if (!resp.ok) {
-                    const err = await resp.json().catch(() => ({}));
-                    console.warn('Completion API error', err);
-                    return;
-                }
-
-                const json = await resp.json().catch(() => null);
-                if (cancelled) return;
-                // Debug: log the raw completion payload received at page level
-                try {
-                    console.debug('[Page] completion response', { ok: resp.ok, body: json });
-                } catch (e) {}
-                setLatestCompletion(json?.completion || null);
-                if (json?.completion) {
-                    console.debug('[Page] Received completion (string length):', json.completion?.length);
-                }
-            } catch (err) {
-                console.error('Completion request failed', err);
-            }
-        }, 500);
-
-        return () => {
-            cancelled = true;
-            clearTimeout(timer);
-        };
-    }, [currentContent, activeFile, editor]);
+    // NOTE: Completion requests are handled centrally by the Editor component
+    // to avoid duplicate requests, races, and abort-related errors. If you need
+    // a page-level completion flow (for example, for collaborative features),
+    // reintroduce a single centralized caller with an AbortController and proper
+    // dedupe. Leaving this commented-out avoids the 'Canceled' errors caused by
+    // concurrent requests from both page and editor.
 
     const handleRun = useCallback(async () => {
         if (!activeFile) {

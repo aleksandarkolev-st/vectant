@@ -117,6 +117,7 @@ const EditorPanel = ({
     const aiCompletionCursorRef = useRef(null);
     const aiCompletionCacheRef = useRef({ context: '', language: '', suggestion: '' });
     const aiCompletionAbortControllerRef = useRef(null);
+    const aiLastRequestRef = useRef({ context: '', time: 0 });
     const aiDebounceTimerRef = useRef(null);
     const eventDisposablesRef = useRef([]);
     const prevActiveFileRef = useRef(null);
@@ -164,10 +165,11 @@ const EditorPanel = ({
         setAiCompletionState('applied');
     }, [editorInstance, monacoInstance]);
 
-    const requestAiCompletion = useCallback((isAutoTrigger = false) => {
+    const requestAiCompletion = useCallback((isAutoTrigger = false, manualContext = null) => {
         if (!activeFile || !editorInstance) return;
-        
-        const context = trimCompletionContext(code || '');
+
+        const rawContext = typeof manualContext === 'string' ? manualContext : (code || '');
+        const context = trimCompletionContext(rawContext);
         if (!context.trim()) return;
 
         const cursorPosition = editorInstance.getPosition();
@@ -180,6 +182,26 @@ const EditorPanel = ({
                  // return; // Uncomment if you want strictly end-of-line completion only
              }
         }
+
+        // If auto-triggering, only run after a whitespace/punctuation boundary to reduce calls
+        if (isAutoTrigger) {
+            const lastChar = rawContext.slice(-1);
+            if (!/[\s\(\{\[\.;,:]/.test(lastChar)) {
+                // If the last character isn't a boundary, skip auto-trigger to avoid excess calls
+                return;
+            }
+        }
+
+        // Avoid duplicate requests: if cache already has a suggestion for this exact context/language, skip
+        const cached = aiCompletionCacheRef.current;
+        if (cached?.suggestion && cached.context === context && cached.language === activeLanguage) return;
+
+        // Rate-limit identical requests: if we requested same context recently, skip
+        const now = Date.now();
+        if (aiLastRequestRef.current.context === context && (now - aiLastRequestRef.current.time) < 2000) {
+            return;
+        }
+        aiLastRequestRef.current = { context, time: now };
 
         aiCompletionCursorRef.current = cursorPosition ? { ...cursorPosition } : null;
         aiCompletionAbortControllerRef.current?.abort();
@@ -206,9 +228,12 @@ const EditorPanel = ({
             if (sanitized) {
                 aiCompletionCacheRef.current = { context, language: activeLanguage, suggestion: sanitized };
                 setAiCompletionState('ready');
-                // Force trigger the inline suggestion
+                // Force trigger the inline suggestion. `trigger` may return a Promise
+                // in some Monaco builds — attach a noop .catch to avoid unhandled
+                // promise rejections (e.g. 'Canceled').
                 try {
-                    editorInstance.trigger('ai-inline', 'editor.action.inlineSuggest.trigger', {});
+                    const p = editorInstance.trigger('ai-inline', 'editor.action.inlineSuggest.trigger', {});
+                    if (p && typeof p.then === 'function') p.catch(() => {});
                 } catch(e){}
             } else {
                 setAiCompletionState('idle');
@@ -259,7 +284,10 @@ const EditorPanel = ({
                     }]
                 };
             },
-            freeInlineCompletions: () => {}
+            freeInlineCompletions: () => {},
+            // Some Monaco builds call `disposeInlineCompletions` when disposing providers.
+            // Add an alias to be defensive across versions to avoid runtime errors.
+            disposeInlineCompletions: () => {}
         });
         inlineCompletionProviderRef.current = provider;
 
@@ -316,8 +344,8 @@ const EditorPanel = ({
         // Debounce AI Auto-Complete (The "Cursor" experience)
         if (aiDebounceTimerRef.current) clearTimeout(aiDebounceTimerRef.current);
         aiDebounceTimerRef.current = setTimeout(() => {
-            // Auto-trigger AI after 600ms of inactivity
-            requestAiCompletion(true);
+            // Auto-trigger AI after 600ms of inactivity using the latest buffer
+            requestAiCompletion(true, newCode);
         }, 600);
     };
 
@@ -377,7 +405,10 @@ const EditorPanel = ({
                     suggestion: sanitized
                 };
                 setAiCompletionState('ready');
-                try { editorInstance?.trigger('ai-external', 'editor.action.inlineSuggest.trigger', {}); } catch(e){}
+                try {
+                    const p = editorInstance?.trigger('ai-external', 'editor.action.inlineSuggest.trigger', {});
+                    if (p && typeof p.then === 'function') p.catch(() => {});
+                } catch(e){}
             }
         }
     }, [latestCompletion, editorInstance, code, activeLanguage]);
