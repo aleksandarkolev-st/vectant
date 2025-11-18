@@ -19,12 +19,14 @@ import FileTreeView from "./FileTree.jsx";
 import EditorPanel from "./Editor.jsx";
 import { getFileLanguage } from '@/utils/fileUtils';
 import { API_COMPLETION_ROUTE } from '@/lib/completion';
+import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
 import AIChatWindow from '@/components/chat/AIChatWindow';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
     const [chatVisible, setChatVisible] = useState(false);
     const [editor, setEditor] = useState(null);
+    const { analyzeCode, lastResult } = useAnalyzerGateway();
     const [latestCompletion, setLatestCompletion] = useState(null);
     
     // 1. Consume the slug parameter and initiate fetch
@@ -65,6 +67,24 @@ export default function EditorPage({ params }) {
         dispatch(setTreeOrientation());
         setPanelGroupKey(prev => prev + 1); // Force remount
     };
+
+    // Run static analysis whenever current file content changes
+    useEffect(() => {
+        if (!activeFile || !currentContent || !hasLoadedInitialFile) return;
+
+        const langSource =
+            activeFile.language ||
+            (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
+            'plaintext';
+        const normalizedLang = langSource.toLowerCase();
+
+        analyzeCode({
+            lang: normalizedLang,
+            code: typeof currentContent === 'string' ? currentContent : '',
+        }).catch((err) => {
+            console.error('Static analysis failed', err);
+        });
+    }, [currentContent, activeFile, hasLoadedInitialFile, analyzeCode]);
 
     // Send code completion requests when the code changes (debounced)
     useEffect(() => {
@@ -120,9 +140,27 @@ export default function EditorPage({ params }) {
         };
     }, [currentContent, activeFile, editor]);
 
-    const handleRun = useCallback(() => {
-        console.debug('Run action pressed, but analysis is disabled.');
-    }, []);
+    const handleRun = useCallback(async () => {
+        if (!activeFile) {
+            console.warn('No active file selected for analysis.');
+            return;
+        }
+
+        const langSource =
+            activeFile.language ||
+            (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
+            'plaintext';
+        const normalizedLang = langSource.toLowerCase();
+
+        try {
+            await analyzeCode({
+                lang: normalizedLang,
+                code: typeof currentContent === 'string' ? currentContent : '',
+            });
+        } catch (err) {
+            console.error('Failed to run analyzer', err);
+        }
+    }, [activeFile, currentContent, analyzeCode]);
 
     const handleEditorMount = (editorInstance) => {
         setEditor(editorInstance);
@@ -159,7 +197,7 @@ export default function EditorPage({ params }) {
             onRun={handleRun}
             onToggleTerminal={() => dispatch(toggleTerminal())}
             onEditorMount={handleEditorMount}
-            analysisResult={null}
+            analysisResult={lastResult}
             latestCompletion={latestCompletion}
         />
     );
