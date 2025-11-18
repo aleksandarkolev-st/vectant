@@ -156,8 +156,32 @@ const EditorPanel = ({
 
         if (!rangeToReplace) return;
 
-        // Execute edit: replace the computed range with the suggestion text.
+        // Trim common prefix between suggestion and existing text in the target range
         try {
+            if (model && rangeToReplace) {
+                const startPos = { lineNumber: rangeToReplace.startLineNumber, column: rangeToReplace.startColumn };
+                const startOffset = model.getOffsetAt(startPos);
+                const existing = model.getValue().slice(startOffset, startOffset + text.length);
+                let common = 0;
+                while (common < text.length && common < existing.length && text.charAt(common) === existing.charAt(common)) {
+                    common++;
+                }
+                if (common > 0) {
+                    // Advance start by `common` characters
+                    const newStartOffset = startOffset + common;
+                    const newStartPos = model.getPositionAt(newStartOffset);
+                    rangeToReplace = new monacoInstance.Range(newStartPos.lineNumber, newStartPos.column, rangeToReplace.endLineNumber, rangeToReplace.endColumn);
+                    text = text.slice(common);
+                }
+            }
+
+            if (!text) {
+                // Nothing to insert after trimming — consider applied
+                aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
+                setAiCompletionState('applied');
+                return;
+            }
+
             editorInstance.executeEdits('ai', [{ range: rangeToReplace, text, forceMoveMarkers: true }]);
             editorInstance.pushUndoStop();
         } catch (e) {
@@ -233,17 +257,17 @@ const EditorPanel = ({
             const sanitized = raw.split(AI_COMPLETION_STOP_SEQUENCE)[0].replace(/\r/g, '').trimEnd();
 
                 if (sanitized) {
-                // Compute a sensible replacement range: prefer the original cursor
-                // where the request was issued, and attempt to replace the current
-                // word or line tail so the suggestion can modify existing code.
-                let suggestionRange = null;
+                // Prefer server-provided suggestion range when available
+                let suggestionRange = data?.suggestionRange || null;
                 try {
-                    const cursor = aiCompletionCursorRef.current;
-                    const model = editorInstance.getModel();
-                    if (cursor && model) {
-                        const word = model.getWordAtPosition(cursor) || null;
-                        const endCol = word ? word.endColumn : (model.getLineContent(cursor.lineNumber).length + 1);
-                        suggestionRange = { start: { lineNumber: cursor.lineNumber, column: cursor.column }, end: { lineNumber: cursor.lineNumber, column: endCol } };
+                    if (!suggestionRange) {
+                        const cursor = aiCompletionCursorRef.current;
+                        const model = editorInstance.getModel();
+                        if (cursor && model) {
+                            const word = model.getWordAtPosition(cursor) || null;
+                            const endCol = word ? word.endColumn : (model.getLineContent(cursor.lineNumber).length + 1);
+                            suggestionRange = { start: { lineNumber: cursor.lineNumber, column: cursor.column }, end: { lineNumber: cursor.lineNumber, column: endCol } };
+                        }
                     }
                 } catch (e) { /* ignore */ }
 

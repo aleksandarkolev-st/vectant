@@ -24,13 +24,13 @@ const collectFileText = file => {
 
 const buildPrompt = (context, language, cursor) =>
   [
-    'You are a code assistant. Output ONLY a JSON object (no surrounding text) with the following fields: \n  - "text": the completion text that should replace or be inserted at the cursor position.\n  - "start": an object with "line" and "column" (1-based) indicating the start position of the replacement.\n  - "end": an object with "line" and "column" (1-based) indicating the end position (inclusive) of the replacement.\nIf no replacement is needed, return {"text": "" , "start": null, "end": null}. Do NOT include explanations, comments, or any additional output. Ensure the JSON is valid.\n',
+    'You are a code assistant. Return ONLY a JSON object wrapped between the markers <JSON> and </JSON>. The content between the markers MUST be valid JSON. The JSON object must have the following fields:\n  - "text": string — the replacement text to insert at the requested location.\n  - "start": { "line": number, "column": number } or null — 1-based inclusive start position of the replacement.\n  - "end": { "line": number, "column": number } or null — 1-based inclusive end position of the replacement.\nIf no replacement is needed, return {"text": "", "start": null, "end": null}. Do NOT output any other text outside the <JSON>...</JSON> markers.\n',
     `Language: ${language}`,
     'Use the context below and continue from the cursor position. The cursor position is indicated by the special marker `<<CURSOR>>` inside the context when available. If the marker is not present, use the provided cursor coordinates to continue from the appropriate place.',
     cursor && typeof cursor === 'object' ? `Cursor: line ${cursor.line || '?'} column ${cursor.column || '?'}` : null,
     'Context:',
     context,
-    'Return JSON only:',
+    'Important: wrap your single JSON output in <JSON>...</JSON> with no extra explanation.',
   ].filter(Boolean).join('\n');
 
 const gatherContext = body => {
@@ -71,24 +71,14 @@ export async function POST(request) {
   let body;
   try {
     body = await request.json();
-  } catch (e) {
-    return NextResponse.json(
-      { error: 'Bad payload', detail: e.message },
-      { status: 400 }
-    );
+  } catch (err) {
+    return NextResponse.json({ error: 'Bad payload', detail: err.message }, { status: 400 });
   }
 
-  // If caller provided a cursor position and code, insert a special marker into the code
-  // so the model can unambiguously locate where to continue. The marker is `<<CURSOR>>`.
+  // Build context, inserting a cursor marker when cursor + code provided
   let bodyForContext = body;
   try {
-    if (
-      body &&
-      typeof body === 'object' &&
-      body.cursor &&
-      typeof body.cursor === 'object' &&
-      typeof body.code === 'string'
-    ) {
+    if (body && typeof body === 'object' && body.cursor && typeof body.cursor === 'object' && typeof body.code === 'string') {
       const { line, column } = body.cursor;
       const lines = body.code.split(/\r?\n/);
       const li = Math.max(0, Math.min(lines.length - 1, (Number(line) || 1) - 1));
@@ -98,81 +88,75 @@ export async function POST(request) {
       const newLine = targetLine.slice(0, insertAt) + '<<CURSOR>>' + targetLine.slice(insertAt);
       const newLines = [...lines];
       newLines[li] = newLine;
-      const newCode = newLines.join('\n');
-      bodyForContext = { ...body, code: newCode };
+      bodyForContext = { ...body, code: newLines.join('\n') };
     }
-  } catch (err) {
-    // if anything fails, fall back to original body
+  } catch (e) {
     bodyForContext = body;
   }
 
   const rawContext = gatherContext(bodyForContext);
-  if (!rawContext) {
-    return NextResponse.json({ completion: '' }, { status: 200 });
-  }
+  if (!rawContext) return NextResponse.json({ completion: '' }, { status: 200 });
 
   const context = trimContext(rawContext);
-
-  const language =
-    typeof body.language === 'string' && body.language.trim()
-      ? body.language.trim()
-      : 'plaintext';
-
+  const language = typeof body.language === 'string' && body.language.trim() ? body.language.trim() : 'plaintext';
   const prompt = buildPrompt(context, language, body?.cursor);
 
   try {
-    // Use the official Google GenAI SDK
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash-lite",
-      contents: prompt,
-    });
-
-    // Extract the completion text
+    const response = await ai.models.generateContent({ model: 'gemini-2.5-flash-lite', contents: prompt });
     const completionText = response.text || '';
     const cleaned = sanitize(completionText);
 
-    // Try to extract JSON object from the model output. The model is asked
-    // to return JSON only, but be defensive: find the first JSON object
-    // in the output and attempt to parse it. If parsing fails, fall back
-    // to returning the cleaned text as the plain completion.
+    // Extract JSON between <JSON>...</JSON> markers
     let parsed = null;
     try {
-      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const candidate = jsonMatch[0];
-        parsed = JSON.parse(candidate);
+      const markerMatch = cleaned.match(/<JSON>[\s\S]*?<\/JSON>/i);
+      if (markerMatch) {
+        const jsonText = markerMatch[0].replace(/^<JSON>/i, '').replace(/<\/JSON>$/i, '');
+        parsed = JSON.parse(jsonText);
       }
     } catch (e) {
       parsed = null;
     }
 
-    if (parsed && typeof parsed === 'object' && 'text' in parsed) {
-      // Normalize coordinates to 1-based Monaco-style positions
-      const result = { completion: String(parsed.text || '') };
-      if (parsed.start && parsed.end) {
-        try {
-          const sLine = Number(parsed.start.line) || null;
-          const sCol = Number(parsed.start.column) || null;
-          const eLine = Number(parsed.end.line) || null;
-          const eCol = Number(parsed.end.column) || null;
-          if (sLine && sCol && eLine && eCol) {
-            result.suggestionRange = {
-              start: { lineNumber: sLine, column: sCol },
-              end: { lineNumber: eLine, column: eCol },
-            };
-          }
-        } catch (e) { /* ignore parsing issues */ }
-      }
-      return NextResponse.json(result, { status: 200 });
+    // Strict fallback: if parse failed, return empty completion (avoid bad edits)
+    if (!parsed || typeof parsed !== 'object' || !('text' in parsed)) {
+      return NextResponse.json({ completion: '' }, { status: 200 });
     }
 
-    // Fallback: return the cleaned plain-text completion
-    return NextResponse.json({ completion: cleaned }, { status: 200 });
+    const result = { completion: String(parsed.text || '') };
+    if (parsed.start && parsed.end) {
+      try {
+        const sLine = Number(parsed.start.line) || null;
+        const sCol = Number(parsed.start.column) || null;
+        const eLine = Number(parsed.end.line) || null;
+        const eCol = Number(parsed.end.column) || null;
+        if (sLine && sCol && eLine && eCol) {
+          const lines = (bodyForContext && typeof bodyForContext.code === 'string') ? bodyForContext.code.split(/\r?\n/) : [];
+          const maxLines = Math.max(1, lines.length);
+          const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
+          const sl = clamp(sLine, 1, maxLines);
+          const el = clamp(eLine, 1, maxLines);
+          const sc = clamp(sCol, 1, (lines[sl - 1] ? lines[sl - 1].length + 1 : 1));
+          const ec = clamp(eCol, 1, (lines[el - 1] ? lines[el - 1].length + 1 : 1));
+
+          const calcOffset = (ln, col) => {
+            try { return lines.slice(0, ln - 1).reduce((acc, ln) => acc + ln.length + 1, 0) + (col - 1); } catch (e) { return 0; }
+          };
+
+          let startPos = { lineNumber: sl, column: sc };
+          let endPos = { lineNumber: el, column: ec };
+          const startOff = calcOffset(startPos.lineNumber, startPos.column);
+          const endOff = calcOffset(endPos.lineNumber, endPos.column);
+          if (endOff < startOff) endPos = startPos;
+
+          result.suggestionRange = { start: startPos, end: endPos };
+        }
+      } catch (e) { /* ignore validation issues */ }
+    }
+
+    return NextResponse.json(result, { status: 200 });
   } catch (e) {
-    return NextResponse.json(
-      { error: 'Service error', detail: e.message },
-      { status: 502 }
-    );
+    return NextResponse.json({ error: 'Service error', detail: e.message }, { status: 502 });
   }
 }
