@@ -3,8 +3,10 @@ import {
   AI_COMPLETION_MAX_INPUT_CHARS,
   AI_COMPLETION_STOP_SEQUENCE,
 } from '@/lib/completion';
+import { GoogleGenAI } from "@google/genai";
 
-const STREAM_URL = `https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash-lite:streamGenerateContent?key=AQ.Ab8RN6LLjx5TxSQcFesUti-r3nkAlrt1ETEkWNKMVqKZwRKRQQ`;
+// Initialize the client with explicit API key from environment variable
+const ai = new GoogleGenAI({apiKey: process.env.GEMINI_API_KEY});
 
 const trimContext = code => {
   if (code.length <= AI_COMPLETION_MAX_INPUT_CHARS) return code;
@@ -22,7 +24,7 @@ const collectFileText = file => {
 
 const buildPrompt = (context, language, cursor) =>
   [
-    'Output only the competion code and nothing else. Dot not provide whole file, only completion for curretn cursor position. Do not give any explanations. Do not write any comments. If no completion is needed, respond with an EMPTY string. Provide only the code needed to be inserted at the cursor position.',
+    'Output only the completion code and nothing else. Do not provide whole file, only completion for current cursor position. Do not give any explanations. Do not write any comments. If no completion is needed, respond with an EMPTY string. Provide only the code needed to be inserted at the cursor position.',
     `Language: ${language}`,
     'Use the context below and continue from the cursor position. The cursor position is indicated by the special marker `<<CURSOR>>` inside the context when available. If the marker is not present, use the provided cursor coordinates to continue from the appropriate place.',
     cursor && typeof cursor === 'object' ? `Cursor: line ${cursor.line || '?'} column ${cursor.column || '?'}` : null,
@@ -32,15 +34,6 @@ const buildPrompt = (context, language, cursor) =>
     context,
     'Completion:',
   ].filter(Boolean).join('\n');
-
-const buildPayload = prompt => ({
-  contents: [
-    {
-    "role": "user",
-      parts: [{ text: prompt }],
-    },
-  ],
-});
 
 const gatherContext = body => {
   if (!body || typeof body !== 'object') return '';
@@ -65,73 +58,6 @@ const gatherContext = body => {
   }
 
   return parts.join('\n\n').trim();
-};
-
-const formatParts = parts =>
-  (parts || [])
-    .map(part => (typeof part.text === 'string' ? part.text : ''))
-    .join('');
-
-const extractAgentText = chunk => {
-  if (!chunk || typeof chunk !== 'object') return '';
-
-  const candidates =
-    chunk?.response?.candidates ||
-    chunk?.candidates ||
-    (Array.isArray(chunk?.content?.parts) ? [{ content: chunk.content }] : []);
-
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-
-    if (candidate.content?.parts?.length) {
-      const text = formatParts(candidate.content.parts);
-      if (text) return text;
-    }
-
-    if (candidate.output && typeof candidate.output === 'string') {
-      return candidate.output;
-    }
-  }
-
-  if (chunk?.content?.parts?.length) {
-    const text = formatParts(chunk.content.parts);
-    if (text) return text;
-  }
-
-  if (typeof chunk.text === 'string') {
-    return chunk.text;
-  }
-
-  return '';
-};
-
-const parseAgentStream = raw => {
-  if (!raw) return '';
-
-  const lines = raw.split(/\r?\n/);
-  let out = '';
-
-  for (const line of lines) {
-    if (!line.startsWith('data:')) continue;
-
-    const data = line.slice(5).trim();
-    if (!data || data === '[DONE]') continue;
-
-    let parsed;
-    try {
-      parsed = JSON.parse(data);
-    } catch {
-      continue;
-    }
-
-    out += extractAgentText(parsed);
-
-    if (parsed?.event === 'final') {
-      break;
-    }
-  }
-
-  return out;
 };
 
 const sanitize = raw => {
@@ -195,82 +121,24 @@ export async function POST(request) {
       : 'plaintext';
 
   const prompt = buildPrompt(context, language, body?.cursor);
-  const payload = JSON.stringify(buildPayload(prompt));
 
-  let response;
   try {
-    response = await fetch(STREAM_URL, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        accept: 'text/event-stream',
-      },
-      body: payload,
+    // Use the official Google GenAI SDK
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash-lite",
+      contents: prompt,
     });
+
+    // Extract the completion text
+    const completionText = response.text || '';
+    const cleaned = sanitize(completionText);
+
+    return NextResponse.json({ completion: cleaned }, { status: 200 });
+
   } catch (e) {
     return NextResponse.json(
-      { error: 'Service unreachable', detail: e.message },
+      { error: 'Service error', detail: e.message },
       { status: 502 }
     );
   }
-
-  const raw = await response.text();
-  if (!response.ok) {
-    return NextResponse.json(
-      { error: 'Service error', detail: raw || 'No body' },
-      { status: 502 }
-    );
-  }
-
-  const parsed = parseAgentStream(raw);
-  const cleaned = sanitize(parsed);
-  let completion = cleaned || parsed || raw || '';
-
-  // Attempt to parse structured completion output if it's JSON, but fall back
-  // to treating it as plain text when parsing fails. Be defensive about
-  // missing properties and use `.includes` for membership checks.
-  const candidates = [];
-  try {
-    const maybe = typeof completion === 'string' ? JSON.parse(completion) : completion;
-
-    if (Array.isArray(maybe)) {
-      for (const el of maybe) {
-        try {
-          const cand = el?.candidates?.[0];
-          const content = cand?.content;
-          const text = content?.parts?.[0]?.text ?? cand?.output ?? '';
-          const role = content?.role ?? '';
-
-          if (
-            role === 'model' &&
-            text &&
-            !['', AI_COMPLETION_STOP_SEQUENCE, '<<CURSOR>>'].includes(text)
-          ) {
-            candidates.push(text);
-          }
-        } catch (e) {
-          // skip malformed entry
-        }
-      }
-    } else if (typeof maybe === 'string') {
-      if (maybe && maybe !== AI_COMPLETION_STOP_SEQUENCE && maybe !== '<<CURSOR>>') {
-        candidates.push(maybe);
-      }
-    }
-  } catch (e) {
-    // Not JSON — treat as raw text result
-    try {
-      const rawText = String(completion || '').trim();
-      if (rawText && rawText !== AI_COMPLETION_STOP_SEQUENCE && rawText !== '<<CURSOR>>') {
-        candidates.push(rawText);
-      }
-    } catch (err) {
-      // nothing we can do
-    }
-  }
-
-  console.debug('[Completion] candidates count', candidates.length);
-
-  return NextResponse.json({ completion: candidates.join('') }, { status: 200 });
-
 }
