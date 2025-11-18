@@ -225,13 +225,51 @@ export async function POST(request) {
   const parsed = parseAgentStream(raw);
   const cleaned = sanitize(parsed);
   let completion = cleaned || parsed || raw || '';
-  completion = JSON.parse(completion);
-  let candidates = [];
-  completion.forEach(el => {
-    if (el.candidates[0].content.role === "model" && el.candidates[0].content.parts[0].text != '' && el.candidates[0].content.parts[0].text !== AI_COMPLETION_STOP_SEQUENCE)
-        candidates.push(el.candidates[0].content.parts[0].text);
-  });
-  console.log(candidates);
+
+  // Attempt to parse structured completion output if it's JSON, but fall back
+  // to treating it as plain text when parsing fails. Be defensive about
+  // missing properties and use `.includes` for membership checks.
+  const candidates = [];
+  try {
+    const maybe = typeof completion === 'string' ? JSON.parse(completion) : completion;
+
+    if (Array.isArray(maybe)) {
+      for (const el of maybe) {
+        try {
+          const cand = el?.candidates?.[0];
+          const content = cand?.content;
+          const text = content?.parts?.[0]?.text ?? cand?.output ?? '';
+          const role = content?.role ?? '';
+
+          if (
+            role === 'model' &&
+            text &&
+            !['', AI_COMPLETION_STOP_SEQUENCE, '<<CURSOR>>'].includes(text)
+          ) {
+            candidates.push(text);
+          }
+        } catch (e) {
+          // skip malformed entry
+        }
+      }
+    } else if (typeof maybe === 'string') {
+      if (maybe && maybe !== AI_COMPLETION_STOP_SEQUENCE && maybe !== '<<CURSOR>>') {
+        candidates.push(maybe);
+      }
+    }
+  } catch (e) {
+    // Not JSON — treat as raw text result
+    try {
+      const rawText = String(completion || '').trim();
+      if (rawText && rawText !== AI_COMPLETION_STOP_SEQUENCE && rawText !== '<<CURSOR>>') {
+        candidates.push(rawText);
+      }
+    } catch (err) {
+      // nothing we can do
+    }
+  }
+
+  console.debug('[Completion] candidates count', candidates.length);
 
   return NextResponse.json({ completion: candidates.join('') }, { status: 200 });
 
