@@ -24,15 +24,13 @@ const collectFileText = file => {
 
 const buildPrompt = (context, language, cursor) =>
   [
-    'Output only the completion code and nothing else. Do not provide whole file, only completion for current cursor position. Do not give any explanations. Do not write any comments. If no completion is needed, respond with an EMPTY string. Provide only the code needed to be inserted at the cursor position.',
+    'You are a code assistant. Output ONLY a JSON object (no surrounding text) with the following fields: \n  - "text": the completion text that should replace or be inserted at the cursor position.\n  - "start": an object with "line" and "column" (1-based) indicating the start position of the replacement.\n  - "end": an object with "line" and "column" (1-based) indicating the end position (inclusive) of the replacement.\nIf no replacement is needed, return {"text": "" , "start": null, "end": null}. Do NOT include explanations, comments, or any additional output. Ensure the JSON is valid.\n',
     `Language: ${language}`,
     'Use the context below and continue from the cursor position. The cursor position is indicated by the special marker `<<CURSOR>>` inside the context when available. If the marker is not present, use the provided cursor coordinates to continue from the appropriate place.',
     cursor && typeof cursor === 'object' ? `Cursor: line ${cursor.line || '?'} column ${cursor.column || '?'}` : null,
-    'Insert the stop marker exactly once at the end of your completion:',
-    AI_COMPLETION_STOP_SEQUENCE,
     'Context:',
     context,
-    'Completion:',
+    'Return JSON only:',
   ].filter(Boolean).join('\n');
 
 const gatherContext = body => {
@@ -133,6 +131,42 @@ export async function POST(request) {
     const completionText = response.text || '';
     const cleaned = sanitize(completionText);
 
+    // Try to extract JSON object from the model output. The model is asked
+    // to return JSON only, but be defensive: find the first JSON object
+    // in the output and attempt to parse it. If parsing fails, fall back
+    // to returning the cleaned text as the plain completion.
+    let parsed = null;
+    try {
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const candidate = jsonMatch[0];
+        parsed = JSON.parse(candidate);
+      }
+    } catch (e) {
+      parsed = null;
+    }
+
+    if (parsed && typeof parsed === 'object' && 'text' in parsed) {
+      // Normalize coordinates to 1-based Monaco-style positions
+      const result = { completion: String(parsed.text || '') };
+      if (parsed.start && parsed.end) {
+        try {
+          const sLine = Number(parsed.start.line) || null;
+          const sCol = Number(parsed.start.column) || null;
+          const eLine = Number(parsed.end.line) || null;
+          const eCol = Number(parsed.end.column) || null;
+          if (sLine && sCol && eLine && eCol) {
+            result.suggestionRange = {
+              start: { lineNumber: sLine, column: sCol },
+              end: { lineNumber: eLine, column: eCol },
+            };
+          }
+        } catch (e) { /* ignore parsing issues */ }
+      }
+      return NextResponse.json(result, { status: 200 });
+    }
+
+    // Fallback: return the cleaned plain-text completion
     return NextResponse.json({ completion: cleaned }, { status: 200 });
 
   } catch (e) {

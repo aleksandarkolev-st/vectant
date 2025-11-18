@@ -130,33 +130,40 @@ const EditorPanel = ({
 
     const applyAiCompletionText = useCallback((text) => {
         if (!text || !editorInstance || !monacoInstance) return;
-
         const start = aiCompletionCursorRef.current || editorInstance.getPosition();
         if (!start) return;
 
         const model = editorInstance.getModel();
-        let insertText = text;
+        let rangeToReplace = null;
 
-        // Smart merge to prevent duplicating existing text
-        try {
-            if (model) {
-                const offset = model.getOffsetAt(start);
-                const existing = model.getValue().slice(offset, offset + text.length);
-                let common = 0;
-                while (common < text.length && common < existing.length && text.charAt(common) === existing.charAt(common)) {
-                    common++;
-                }
-                insertText = text.slice(common);
+        // If provider computed a replacement range, prefer that. Otherwise
+        // attempt to replace the current word at the cursor to allow edits
+        // instead of append-only behavior.
+        const cached = aiCompletionCacheRef.current || {};
+        if (cached.suggestionRange && cached.suggestionRange.start) {
+            const s = cached.suggestionRange.start;
+            const e = cached.suggestionRange.end || cached.suggestionRange.start;
+            rangeToReplace = new monacoInstance.Range(s.lineNumber, s.column, e.lineNumber, e.column);
+        } else if (model) {
+            try {
+                const word = model.getWordAtPosition(start) || null;
+                const endCol = word ? word.endColumn : (model.getLineContent(start.lineNumber).length + 1);
+                rangeToReplace = new monacoInstance.Range(start.lineNumber, start.column, start.lineNumber, endCol);
+            } catch (e) {
+                rangeToReplace = new monacoInstance.Range(start.lineNumber, start.column, start.lineNumber, start.column);
             }
-        } catch (e) { /* ignore */ }
+        }
 
-        if (insertText) {
-            const range = new monacoInstance.Range(
-                start.lineNumber, start.column,
-                start.lineNumber, start.column
-            );
-            editorInstance.executeEdits('ai', [{ range, text: insertText, forceMoveMarkers: true }]);
+        if (!rangeToReplace) return;
+
+        // Execute edit: replace the computed range with the suggestion text.
+        try {
+            editorInstance.executeEdits('ai', [{ range: rangeToReplace, text, forceMoveMarkers: true }]);
             editorInstance.pushUndoStop();
+        } catch (e) {
+            // Fallback: insert at start if replace fails
+            const fallbackRange = new monacoInstance.Range(start.lineNumber, start.column, start.lineNumber, start.column);
+            try { editorInstance.executeEdits('ai', [{ range: fallbackRange, text, forceMoveMarkers: true }]); } catch (e2) {}
         }
         
         // Reset state
@@ -225,8 +232,22 @@ const EditorPanel = ({
             const raw = data?.completion || '';
             const sanitized = raw.split(AI_COMPLETION_STOP_SEQUENCE)[0].replace(/\r/g, '').trimEnd();
 
-            if (sanitized) {
-                aiCompletionCacheRef.current = { context, language: activeLanguage, suggestion: sanitized };
+                if (sanitized) {
+                // Compute a sensible replacement range: prefer the original cursor
+                // where the request was issued, and attempt to replace the current
+                // word or line tail so the suggestion can modify existing code.
+                let suggestionRange = null;
+                try {
+                    const cursor = aiCompletionCursorRef.current;
+                    const model = editorInstance.getModel();
+                    if (cursor && model) {
+                        const word = model.getWordAtPosition(cursor) || null;
+                        const endCol = word ? word.endColumn : (model.getLineContent(cursor.lineNumber).length + 1);
+                        suggestionRange = { start: { lineNumber: cursor.lineNumber, column: cursor.column }, end: { lineNumber: cursor.lineNumber, column: endCol } };
+                    }
+                } catch (e) { /* ignore */ }
+
+                aiCompletionCacheRef.current = { context, language: activeLanguage, suggestion: sanitized, suggestionRange };
                 setAiCompletionState('ready');
                 // Force trigger the inline suggestion. `trigger` may return a Promise
                 // in some Monaco builds — attach a noop .catch to avoid unhandled
