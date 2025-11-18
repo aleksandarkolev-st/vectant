@@ -19,24 +19,12 @@ import FileTreeView from "./FileTree.jsx";
 import EditorPanel from "./Editor.jsx";
 import { getFileLanguage } from '@/utils/fileUtils';
 import { API_COMPLETION_ROUTE } from '@/lib/completion';
-import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
-import { AnalysisPanel } from '@/components/analysis/AnalysisPanel';
 import AIChatWindow from '@/components/chat/AIChatWindow';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
     const [chatVisible, setChatVisible] = useState(false);
     const [editor, setEditor] = useState(null);
-    const {
-        connectionStatus,
-        isAnalyzing,
-        lastResult,
-        lastError,
-        analyzeCode,
-        resetResult,
-        resetError,
-    } = useAnalyzerGateway();
-    const [analysisVisible, setAnalysisVisible] = useState(false);
     const [latestCompletion, setLatestCompletion] = useState(null);
     
     // 1. Consume the slug parameter and initiate fetch
@@ -77,32 +65,6 @@ export default function EditorPage({ params }) {
         dispatch(setTreeOrientation());
         setPanelGroupKey(prev => prev + 1); // Force remount
     };
-
-    useEffect(() => {
-        if (!analysisVisible && (isAnalyzing || lastResult || lastError)) {
-            setAnalysisVisible(true);
-        }
-    }, [analysisVisible, isAnalyzing, lastResult, lastError]);
-
-    // Run static analysis whenever current file content changes
-    useEffect(() => {
-        if (activeFile && currentContent && hasLoadedInitialFile) {
-            const langSource =
-                activeFile.language ||
-                (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
-                'plaintext';
-            const normalizedLang = langSource.toLowerCase();
-
-            analyzeCode({
-                lang: normalizedLang,
-                code: typeof currentContent === 'string' ? currentContent : '',
-            }).catch((err) => {
-                console.error('Static analysis failed', err);
-            }).finally(() => {
-                console.log(`Static analysis completed: ${JSON.stringify(lastResult)}`);
-            });
-        }
-    }, [currentContent, activeFile, hasLoadedInitialFile, analyzeCode]);
 
     // Send code completion requests when the code changes (debounced)
     useEffect(() => {
@@ -158,34 +120,9 @@ export default function EditorPage({ params }) {
         };
     }, [currentContent, activeFile, editor]);
 
-    const handleRun = useCallback(async () => {
-        if (!activeFile) {
-            console.warn('No active file selected for analysis.');
-            return;
-        }
-        const langSource =
-            activeFile.language ||
-            (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
-            'plaintext';
-        const normalizedLang = langSource.toLowerCase();
-
-        try {
-            await analyzeCode({
-                lang: normalizedLang,
-                code: typeof currentContent === 'string' ? currentContent : '',
-            });
-        } catch (err) {
-            console.error('Failed to run analyzer', err);
-        }
-    }, [activeFile, currentContent, analyzeCode]);
-
-    
-
-    const handleDismissAnalysis = useCallback(() => {
-        setAnalysisVisible(false);
-        resetResult();
-        resetError();
-    }, [resetError, resetResult]);
+    const handleRun = useCallback(() => {
+        console.debug('Run action pressed, but analysis is disabled.');
+    }, []);
 
     const handleEditorMount = (editorInstance) => {
         setEditor(editorInstance);
@@ -222,7 +159,7 @@ export default function EditorPage({ params }) {
             onRun={handleRun}
             onToggleTerminal={() => dispatch(toggleTerminal())}
             onEditorMount={handleEditorMount}
-            analysisResult={lastResult}
+            analysisResult={null}
             latestCompletion={latestCompletion}
         />
     );
@@ -245,15 +182,6 @@ export default function EditorPage({ params }) {
                 onRedo={handleRedo}
                 onToggleChat={handleToggleChat}
                 chatVisible={chatVisible}
-            />
-            <AnalysisPanel
-                visible={analysisVisible}
-                status={connectionStatus}
-                result={lastResult}
-                error={lastError}
-                isAnalyzing={isAnalyzing}
-                onRetry={handleRun}
-                onClose={handleDismissAnalysis}
             />
             <ResizablePanelGroup
                 direction="horizontal"

@@ -97,6 +97,8 @@ const EditorPanel = ({
     const ghostDecorationIdsRef = useRef([]);
     const ghostStyleElementRef = useRef(null);
     const ghostClassRef = useRef(null);
+    const inlineCompletionProviderRef = useRef(null);
+    const inlineAcceptCommandIdRef = useRef(null);
     const eventDisposablesRef = useRef([]);
     const prevActiveFileRef = useRef(null);
     const _loadedScripts = useRef({});
@@ -459,6 +461,28 @@ const EditorPanel = ({
             });
     }, [activeFile, activeLanguage, code, editorInstance, aiCompletionState]);
 
+    const handleAiButtonClick = useCallback(() => {
+        if (aiCompletionState === 'ready') {
+            const cached = aiCompletionCacheRef.current;
+            if (!cached?.suggestion) return;
+
+            applyAiCompletionText(cached.suggestion);
+            aiCompletionCursorRef.current = null;
+            aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
+            clearSuggestions();
+            setAiCompletionState('applied');
+            setAiCompletionSummary((prev) => (prev ? { ...prev, status: 'applied' } : prev));
+            try {
+                editorInstance?.trigger('ai-inline', 'editor.action.inlineSuggest.hide', {});
+            } catch (e) {
+                // ignore
+            }
+            return;
+        }
+
+        requestAiCompletion();
+    }, [aiCompletionState, applyAiCompletionText, requestAiCompletion, editorInstance]);
+
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
         const disposable = editorInstance.onKeyDown((event) => {
@@ -791,137 +815,138 @@ const EditorPanel = ({
         };
     }, [editorInstance]);
 
-    // Show inline ghost text (grey) using a decoration + injected CSS
+    // Register a command that runs when Monaco inline suggestions are accepted so we can clear AI cache/state.
     useEffect(() => {
-        // Debug: log entry for ghost effect
+        if (!editorInstance) return;
+
+        const commandId = editorInstance.addCommand(0, () => {
+            const cached = aiCompletionCacheRef.current;
+            if (!cached?.suggestion) return;
+
+            aiCompletionCursorRef.current = null;
+            aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
+            setAiCompletionState('applied');
+            setAiCompletionSummary((prev) => (prev ? { ...prev, status: 'applied' } : prev));
+            clearSuggestions();
+            try {
+                editorInstance.trigger('ai-inline', 'editor.action.inlineSuggest.hide', {});
+            } catch (e) {
+                // ignore
+            }
+        });
+
+        inlineAcceptCommandIdRef.current = commandId;
+
+        return () => {
+            inlineAcceptCommandIdRef.current = null;
+        };
+    }, [editorInstance]);
+
+    // Register Monaco's inline completion provider so suggestions render exactly at the cursor similar to VS Code Copilot.
+    useEffect(() => {
+        if (!editorInstance || !monacoInstance) return;
+
         try {
-            console.debug('[AI Ghost] effect enter', {
-                ready: aiCompletionState === 'ready',
-                suggestionLen: aiCompletionCacheRef.current?.suggestion?.length ?? 0,
-                cursor: aiCompletionCursorRef.current,
-                editorPos: editorInstance?.getPosition?.(),
-            });
+            inlineCompletionProviderRef.current?.dispose?.();
         } catch (e) {
             // ignore
         }
-        // Clean up previous ghost
-        const clearGhost = () => {
-            try {
-                if (ghostDecorationIdsRef.current?.length && editorInstance) {
-                    editorInstance.deltaDecorations(ghostDecorationIdsRef.current, []);
+
+        const provider = monacoInstance.languages.registerInlineCompletionsProvider(activeLanguage, {
+            provideInlineCompletions: (model, position) => {
+                const cached = aiCompletionCacheRef.current;
+                const cursor = aiCompletionCursorRef.current;
+                if (!cached?.suggestion || !cursor) {
+                    return { items: [], dispose: () => { } };
                 }
-            } catch (e) {
-                // ignore
-            }
-            ghostDecorationIdsRef.current = [];
 
-            try {
-                if (ghostStyleElementRef.current && ghostStyleElementRef.current.parentNode) {
-                    ghostStyleElementRef.current.parentNode.removeChild(ghostStyleElementRef.current);
+                if (
+                    !position ||
+                    position.lineNumber !== cursor.lineNumber ||
+                    position.column !== cursor.column
+                ) {
+                    return { items: [], dispose: () => { } };
                 }
-            } catch (e) {
-                // ignore
-            }
-            ghostStyleElementRef.current = null;
-            ghostClassRef.current = null;
-        };
 
-        if (!editorInstance || !monacoInstance) {
-            clearGhost();
-            return;
-        }
-
-        // Show ghost if we have a ready suggestion. Attach at the saved cursor position if available,
-        // otherwise use the current editor cursor. This makes rendering more robust if positions aren't exact.
-        if (aiCompletionState !== 'ready' || !aiCompletionCacheRef.current?.suggestion) {
-            try {
-                console.debug('[AI Ghost] not ready or no suggestion', { aiCompletionState, suggestion: !!aiCompletionCacheRef.current?.suggestion });
-            } catch (e) { }
-            clearGhost();
-            return;
-        }
-
-        const suggestion = aiCompletionCacheRef.current.suggestion;
-        if (!suggestion) {
-            clearGhost();
-            return;
-        }
-
-        // Compute visible portion of suggestion that is not already present after the cursor
-        let visible = suggestion;
-        try {
-            const model = editorInstance.getModel();
-            const pos = aiCompletionCursorRef.current || editorInstance.getPosition();
-            if (model && pos) {
-                const offset = model.getOffsetAt(pos);
-                const existing = model.getValue().slice(offset, offset + suggestion.length);
-                let common = 0;
-                while (common < suggestion.length && common < existing.length && suggestion.charAt(common) === existing.charAt(common)) {
-                    common++;
+                let visibleText = cached.suggestion;
+                try {
+                    if (model) {
+                        const offset = model.getOffsetAt(cursor);
+                        const existing = model.getValue().slice(offset, offset + visibleText.length);
+                        let common = 0;
+                        while (
+                            common < visibleText.length &&
+                            common < existing.length &&
+                            visibleText.charAt(common) === existing.charAt(common)
+                        ) {
+                            common++;
+                        }
+                        visibleText = visibleText.slice(common);
+                    }
+                } catch (e) {
+                    // ignore, fallback to full text
                 }
-                visible = suggestion.slice(common);
-            }
-        } catch (e) {
-            visible = suggestion;
-        }
 
-        if (!visible) {
-            clearGhost();
-            return;
-        }
-
-        try {
-            console.debug('[AI Ghost] have suggestion, computing visible portion', { suggestionPreview: (suggestion || '').slice(0, 80) });
-            // create unique class name
-            const cls = `ai-ghost-${Date.now()}`;
-            ghostClassRef.current = cls;
-
-            // create a CSS rule to style the inline ghost content
-            const style = document.createElement('style');
-            style.type = 'text/css';
-            style.innerHTML = `.${cls} { color: #9ca3af !important; opacity: 0.85; pointer-events: none; }`;
-            document.head.appendChild(style);
-            ghostStyleElementRef.current = style;
-
-            const pos = aiCompletionCursorRef.current || editorInstance.getPosition();
-            if (!pos) return;
-
-            // Monaco decoration 'after' with contentText renders inline phantom text that occupies layout space
-            const range = new monacoInstance.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column);
-            const decoration = {
-                range,
-                options: {
-                    after: {
-                        contentText: visible.replace(/\r?\n/g, ' '),
-                        inlineClassName: cls,
-                    },
-                    stickiness: monacoInstance.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
-                },
-            };
-
-            const ids = editorInstance.deltaDecorations([], [decoration]);
-            ghostDecorationIdsRef.current = ids;
-            try { console.debug('[AI Ghost] decoration applied', { ids, visibleLen: visible.length }); } catch (e) { }
-        } catch (e) {
-            console.error('Failed to render ghost suggestion', e);
-            // Ensure cleanup on error
-            try {
-                if (ghostStyleElementRef.current && ghostStyleElementRef.current.parentNode) {
-                    ghostStyleElementRef.current.parentNode.removeChild(ghostStyleElementRef.current);
+                if (!visibleText) {
+                    return { items: [], dispose: () => { } };
                 }
-            } catch (err) {
-                // ignore
-            }
-            ghostStyleElementRef.current = null;
-            ghostDecorationIdsRef.current = [];
-            ghostClassRef.current = null;
-        }
 
-        // Cleanup when suggestion changes or on unmount
+                const range = new monacoInstance.Range(
+                    cursor.lineNumber,
+                    cursor.column,
+                    cursor.lineNumber,
+                    cursor.column
+                );
+
+                return {
+                    items: [
+                        {
+                            insertText: visibleText,
+                            filterText: visibleText,
+                            range,
+                            command: inlineAcceptCommandIdRef.current
+                                ? { id: inlineAcceptCommandIdRef.current, title: 'Apply AI suggestion' }
+                                : undefined,
+                        },
+                    ],
+                    dispose: () => { },
+                };
+            },
+            freeInlineCompletions: () => { },
+        });
+
+        inlineCompletionProviderRef.current = provider;
+
         return () => {
-            clearGhost();
+            try {
+                inlineCompletionProviderRef.current?.dispose?.();
+            } catch (e) {
+                // ignore
+            }
+            inlineCompletionProviderRef.current = null;
         };
-    }, [aiCompletionState, editorInstance, monacoInstance, code]);
+    }, [editorInstance, monacoInstance, activeLanguage]);
+
+    // Whenever AI state indicates a fresh suggestion, trigger Monaco's inline suggestions UI so it shows at the cursor immediately.
+    useEffect(() => {
+        if (!editorInstance) return;
+
+        const hasSuggestion = !!aiCompletionCacheRef.current?.suggestion;
+
+        if (aiCompletionState === 'ready' && hasSuggestion) {
+            try {
+                editorInstance.trigger('ai-inline', 'editor.action.inlineSuggest.trigger', {});
+            } catch (e) {
+                console.debug('Inline suggestions trigger failed', e);
+            }
+        } else {
+            try {
+                editorInstance.trigger('ai-inline', 'editor.action.inlineSuggest.hide', {});
+            } catch (e) {
+                // ignore
+            }
+        }
+    }, [aiCompletionState, aiCompletionSummary, editorInstance]);
 
     // Handler to update content in Redux
     const handleCodeChange = (newCode) => {
@@ -1139,37 +1164,13 @@ const EditorPanel = ({
                                 </div>
                                 <button
                                     type='button'
-                                    onClick={requestAiCompletion}
+                                    onClick={handleAiButtonClick}
                                     disabled={aiCompletionState === 'loading'}
                                     className='text-[11px] px-2 py-0.5 rounded border border-[#3a3a3a] text-gray-300 hover:border-gray-500 transition-colors disabled:opacity-50 disabled:cursor-default'
                                 >
-                                    {aiCompletionState === 'ready' ? 'Press Tab to insert' : 'Ask AI'}
+                                    {aiCompletionState === 'ready' ? 'Insert suggestion' : 'Ask AI'}
                                 </button>
                             </div>
-                            {aiCompletionSummary && (
-                                <div className="px-3 py-1 text-[11px] text-gray-300 border-t border-[#3a3a3a]">
-                                    <div className="flex flex-wrap gap-2 items-center text-xs">
-                                        <span className="text-gray-400">
-                                            AI{' '}
-                                            {aiCompletionSummary.status === 'preview'
-                                                ? 'suggested'
-                                                : 'inserted'}{' '}
-                                            {aiCompletionSummary.lineCount} line
-                                            {aiCompletionSummary.lineCount === 1 ? '' : 's'} at Ln{' '}
-                                            {aiCompletionSummary.startLine}, Col{' '}
-                                            {aiCompletionSummary.startColumn}
-                                        </span>
-                                        {aiCompletionSummary.status === 'preview' && (
-                                            <span className="text-[10px] text-gray-500">
-                                                Press Tab to insert
-                                            </span>
-                                        )}
-                                    </div>
-                                    <p className="truncate max-w-[360px] text-emerald-300">
-                                        {aiCompletionSummary.preview}
-                                    </p>
-                                </div>
-                            )}
                         </div>
                         {/* Editor area */}
                         <div className="flex-1 overflow-hidden">
