@@ -5,7 +5,7 @@ from .base import AiProvider
 import google.generativeai as genai
 from dotenv import load_dotenv
 
-from llm.prompts import build_prompt
+from llm.prompts import build_prompt, build_fullfile_prompt, build_patch_prompt
 
 load_dotenv()  # Load once at import
 
@@ -30,17 +30,34 @@ class GeminiProvider(AiProvider):
                     temperature=0.2,
                     top_p=0.8,
                     top_k=40,
-                    max_output_tokens=2048,
+                    # Increase output allowance to support larger returned patches or full-file outputs.
+                    # Note: input/context window size is determined by the model selection (e.g. gemini-2.5-flash-lite).
+                    max_output_tokens=131072,
                 ),
             )
         return self._client
 
-    def ask_llm(self, code: str, lang: str, prompt: str = None) -> str:
+    def ask_llm(self, code: str, lang: str, prompt: str = None, mode: str = None) -> str:
         if not os.getenv("GEMINI_API_KEY"):
             return "LLM disabled: set GEMINI_API_KEY to enable suggestions."
 
         # Build prompt with user's question and code context
-        full_prompt = build_prompt(code, lang, user_prompt=prompt)
+        # Prefer explicit mode flag. Support 'fullfile' (return full file in fenced block)
+        # and 'patch' (return a unified diff). For other cases, prefer the standard prompt
+        # but include the user's instruction.
+        if mode and isinstance(mode, str) and mode.lower() == 'fullfile':
+            full_prompt = build_fullfile_prompt(code, lang, prompt or '')
+        elif mode and isinstance(mode, str) and mode.lower() == 'patch':
+            full_prompt = build_patch_prompt(code, lang, prompt or '')
+        else:
+            # Backwards-compat: some clients include the instructive string in `prompt`.
+            if prompt and 'Respond only with the updated full file contents' in prompt:
+                full_prompt = build_fullfile_prompt(code, lang, prompt)
+            else:
+                # If user's prompt explicitly asks for minimal edits or renames,
+                # augment the prompt with an instruction to prefer minimal changes.
+                augmented = (prompt or '') + "\n\nWhen possible prefer minimal edits and only change what the user requests." 
+                full_prompt = build_prompt(code, lang, user_prompt=augmented)
 
         try:
             response = self._get_client().generate_content(full_prompt)

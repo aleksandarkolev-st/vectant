@@ -8,18 +8,16 @@ import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
 import { getFileLanguage } from '@/utils/fileUtils';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { diffLines, createPatch, applyPatch } from 'diff';
+import { diffLines, applyPatch } from 'diff';
 
 const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, editor = null, docked = false, onSuggest = null, onBusy = null }) => {
     const [messages, setMessages] = useState([]);
     const [inputValue, setInputValue] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [suggestedCode, setSuggestedCode] = useState(null);
-    const [suggestedRaw, setSuggestedRaw] = useState('');
-    const [showDiff, setShowDiff] = useState(false);
+    const [showDiff, setShowDiff] = useState(true);
     const scrollRef = useRef(null);
     const { askAi, clientReady } = useAnalyzerGateway();
-    const [forcePatchMode, setForcePatchMode] = useState(false);
 
     // Auto-scroll to bottom when new messages arrive
     useEffect(() => {
@@ -125,66 +123,47 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
                 activeFile?.language ||
                 (activeFile?.name ? getFileLanguage(activeFile.name) : undefined) ||
                 'plaintext';
-            const normalizedLang = langSource.toLowerCase();
+            const normalizedLang = (langSource || 'plaintext').toLowerCase();
             const code = currentCode || '';
             const userPrompt = inputValue;
+            const fullfileRequest = `${userPrompt}\n\nRespond only with the updated full file contents in a fenced code block (triple backticks) with the correct language tag. Do not include extra commentary.`;
 
-                // Decide prompt text based on chosen mode (default to patch mode unless user requests full file)
-                // Default behavior: return a unified diff (patch) to minimize edits.
-                const fullfileRequest = `${userPrompt}\n\nRespond only with the updated full file contents in a fenced code block (triple backticks) with the correct language tag. Do not include extra commentary.`;
-                const patchRequest = `${userPrompt}\n\nRespond only with a unified diff (unified patch) showing the minimal changes required. Return ONLY the diff in a single fenced code block or raw unified-diff text using --- a/ and +++ b/ headers and @@ hunk markers. Do not include any extra commentary.`;
+            try { if (typeof onBusy === 'function') onBusy(true); } catch (e) {}
 
-            // notify parent that we're working
-            try { if (typeof onBusy === 'function') onBusy(true); } catch(e){}
-
-            // Prepare streaming buffer
             let streamBuffer = '';
             let finalSuggestion = '';
 
-            // Decide mode: user-forced patch or heuristic detection of small edits
-            const patchKeywords = /\b(rename|rename variable|rename function|rename var|rename variables|change name|change variable|replace variable|replace name|only change|minimal|diff|patch|rename)\b/i;
-                // Default to patch mode; allow force toggle or explicit fullfile request
-                const fullfileKeywords = /\b(return full file|full file|fullfile|complete file|entire file)\b/i;
-                const chosenMode = forcePatchMode ? 'patch' : (fullfileKeywords.test(userPrompt) ? 'fullfile' : 'patch');
-
-                const response = await askAi({
-                    lang: normalizedLang,
-                    code,
-                    prompt: chosenMode === 'patch' ? patchRequest : fullfileRequest,
-                    mode: chosenMode,
-                    onProgress: (data) => {
-                    // `data` may be a string or { partial, final }
+            const response = await askAi({
+                lang: normalizedLang,
+                code,
+                prompt: fullfileRequest,
+                mode: 'fullfile',
+                onProgress: (data) => {
                     const chunk = typeof data === 'string' ? data : (data?.partial ?? '');
                     const isFinal = typeof data === 'object' ? Boolean(data.final) : false;
                     if (chunk) {
                         streamBuffer += chunk;
 
-                        // Try to derive partial code content from buffer
                         let partialCode = extractCodeFromMarkdown(streamBuffer);
                         if (!partialCode) {
-                            // If an opening fence exists, stream content inside it
                             const openIdx = streamBuffer.indexOf('```');
                             if (openIdx !== -1) {
-                                // Skip the opening fence and optional language tag
                                 const afterFence = streamBuffer.slice(openIdx + 3);
                                 const firstNewline = afterFence.indexOf('\n');
                                 const contentStart = firstNewline === -1 ? 0 : firstNewline + 1;
                                 partialCode = afterFence.slice(contentStart);
-                                // Remove any closing fence if present
                                 const closeIdx = partialCode.indexOf('```');
                                 if (closeIdx !== -1) partialCode = partialCode.slice(0, closeIdx);
                             } else if (streamBuffer.length > 40) {
-                                // Fallback: treat the buffer as code-like when it's long
                                 partialCode = streamBuffer;
                             }
                         }
 
                         if (partialCode) {
-                            setSuggestedCode(partialCode.replace(/\r/g, ''));
-                            setSuggestedRaw(streamBuffer);
-                            // Notify parent/page with partial completion for streaming ghost text
+                            const cleaned = partialCode.replace(/\r/g, '');
+                            setSuggestedCode(cleaned);
                             try {
-                                if (typeof onSuggest === 'function') onSuggest({ completion: partialCode, partial: true });
+                                if (typeof onSuggest === 'function') onSuggest({ completion: cleaned, partial: true });
                             } catch (e) {}
                         }
                     }
@@ -197,20 +176,17 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
 
             const suggestion = response?.ai_suggestion || response?.suggestion || finalSuggestion || '';
 
-                // Attempt to extract a code block from final suggestion or detect a raw unified diff
-                let codeOnly = extractCodeFromMarkdown(suggestion);
-                const isRawPatch = /(^---\s+a\/.+\n\+\+\+\s+b\/)|(^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@)/m.test(suggestion || '');
-                if (!codeOnly && isRawPatch) {
-                    // Treat the raw suggestion as the patch
-                    codeOnly = suggestion;
+            let codeOnly = extractCodeFromMarkdown(suggestion);
+            const isRawPatch = /(^---\s+a\/.+\n\+\+\+\s+b\/)|(^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@)/m.test(suggestion || '');
+            if (!codeOnly && isRawPatch) {
+                const patched = applyPatch(code, suggestion);
+                if (patched !== false) {
+                    codeOnly = patched;
                 }
+            }
 
-            // If the assistant returned a code block, strip it from the chat
-            // message and show an explanation instead. The actual code is
-            // shown only in the Suggested Changes preview/diff below.
             let displayedContent = suggestion || 'No response received';
             if (codeOnly) {
-                // Remove fenced code blocks and inline <pre><code> blocks
                 displayedContent = (suggestion || '').replace(/```[\s\S]*?```/g, '');
                 displayedContent = displayedContent.replace(/<pre[^>]*>[\s\S]*?<code[^>]*>[\s\S]*?<\/code>[\s\S]*?<\/pre>/gi, '');
                 displayedContent = displayedContent.replace(/<code[^>]*>[\s\S]*?<\/code>/gi, '');
@@ -220,55 +196,47 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
                 }
             }
 
-            const aiMessage = {
-                id: Date.now() + 1,
+            const now = Date.now();
+            const messagesToAppend = [{
+                id: now + 1,
                 role: 'assistant',
                 content: displayedContent,
                 timestamp: new Date(),
-            };
-                if (codeOnly) {
-                    setSuggestedCode(codeOnly);
-                    setSuggestedRaw(suggestion);
-                    // Build hunks to send to parent for editor integration
-                    let hunksForParent = [];
-                    try {
-                        let patchText = '';
-                        let rawHunks = [];
-                        // If the model already returned a unified diff/patch, parse it directly
-                        if (isRawPatch) {
-                            patchText = codeOnly;
-                            const idx = patchText.indexOf('\n@@ ');
-                            const rest = idx === -1 ? '' : patchText.slice(idx + 1);
-                            rawHunks = rest ? rest.split('\n@@ ').map((h, i) => (i === 0 ? '@@ ' + h : '@@ ' + h)) : [];
-                            const header = idx === -1 ? patchText : patchText.slice(0, idx + 1);
-                            hunksForParent = rawHunks.map((h, i) => ({ id: i, text: h, patchForHunk: header + h }));
-                        } else {
-                            // Otherwise the model returned a full file; compute a unified diff client-side
-                            const fileName = (activeFile && activeFile.name) ? activeFile.name : 'file';
-                            patchText = createPatch(fileName, currentCode || '', codeOnly);
-                            const idx = patchText.indexOf('\n@@ ');
-                            const rest = idx === -1 ? '' : patchText.slice(idx + 1);
-                            rawHunks = rest ? rest.split('\n@@ ').map((h, i) => (i === 0 ? '@@ ' + h : '@@ ' + h)) : [];
-                            hunksForParent = rawHunks.map((h, i) => ({ id: i, text: h, patchForHunk: (idx === -1 ? patchText : patchText.slice(0, idx + 1) + h) }));
-                        }
-                    } catch (e) {
-                        hunksForParent = [];
-                    }
+            }];
 
-                // Notify parent/page so the editor can display inline suggestion and hunks
+            if (codeOnly) {
+                setSuggestedCode(codeOnly);
                 try {
                     if (typeof onSuggest === 'function') {
-                        onSuggest({ completion: codeOnly, hunks: hunksForParent });
+                        onSuggest({ completion: codeOnly });
                     }
-                } catch (e) {
-                    // ignore
-                }
+                } catch (e) {}
+
+                const parts = diffLines(code, codeOnly);
+                const countLines = (value = '') => {
+                    if (!value) return 0;
+                    const lines = value.split('\n');
+                    if (lines.length && lines[lines.length - 1] === '') lines.pop();
+                    return lines.length;
+                };
+                let added = 0;
+                let removed = 0;
+                parts.forEach(part => {
+                    if (part.added) added += countLines(part.value);
+                    if (part.removed) removed += countLines(part.value);
+                });
+
+                messagesToAppend.push({
+                    id: now + 2,
+                    role: 'assistant',
+                    content: `AI suggested code changes — preview shown below. (+${added} / -${removed})`,
+                    timestamp: new Date(),
+                });
             } else {
                 setSuggestedCode(null);
-                setSuggestedRaw('');
             }
 
-            setMessages((prev) => [...prev, aiMessage]);
+            setMessages((prev) => [...prev, ...messagesToAppend]);
         } catch (error) {
             const errorMessage = {
                 id: Date.now() + 1,
@@ -297,7 +265,6 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
         }
         // Clear suggestion after applying
         setSuggestedCode(null);
-        setSuggestedRaw('');
         setShowDiff(false);
         // Add a small assistant confirmation message
         setMessages((prev) => [...prev, { id: Date.now(), role: 'assistant', content: 'Suggestion applied to editor.', timestamp: new Date() }]);
@@ -305,7 +272,6 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
 
     const rejectSuggestion = () => {
         setSuggestedCode(null);
-        setSuggestedRaw('');
         setShowDiff(false);
         setMessages((prev) => [...prev, { id: Date.now(), role: 'assistant', content: 'Suggestion rejected.', timestamp: new Date() }]);
     };
@@ -336,70 +302,9 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
         }
     };
 
-    // Build a unified patch and split into hunks for per-hunk application
-    const buildPatchAndHunks = (oldStr = '', newStr = '') => {
-        try {
-            const fileName = (activeFile && activeFile.name) ? activeFile.name : 'file';
-            const patch = createPatch(fileName, oldStr, newStr);
-            // Split into header and hunks
-            const idx = patch.indexOf('\n@@ ');
-            if (idx === -1) return { patch, header: patch, hunks: [] };
-            const header = patch.slice(0, idx + 1);
-            const rest = patch.slice(idx + 1);
-            // Each hunk starts with @@
-            const rawHunks = rest.split('\n@@ ').map((h, i) => (i === 0 ? '@@ ' + h : '@@ ' + h));
-            const hunks = rawHunks.map((h, i) => ({
-                id: i,
-                text: h,
-                patchForHunk: header + h
-            }));
-            return { patch, header, hunks };
-        } catch (e) {
-            return { patch: '', header: '', hunks: [] };
-        }
-    };
-
-    // Helpers: copy and apply hunk
-    const copyToClipboard = async (text) => {
-        try {
-            await navigator.clipboard.writeText(text);
-            setMessages((prev) => [...prev, { id: Date.now(), role: 'assistant', content: 'Hunk copied to clipboard.', timestamp: new Date() }]);
-        } catch (e) {
-            setMessages((prev) => [...prev, { id: Date.now(), role: 'assistant', content: 'Failed to copy hunk.', timestamp: new Date() }]);
-        }
-    };
-
-    const applyHunk = (hunk) => {
-        if (!hunk || !hunk.patchForHunk) return;
-        if (!editor || !editor.getModel) return;
-
-        try {
-            const model = editor.getModel();
-            const original = model.getValue();
-            const patched = applyPatch(original, hunk.patchForHunk);
-            if (patched === false) {
-                // applyPatch returns false when patch failed
-                setMessages((prev) => [...prev, { id: Date.now(), role: 'assistant', content: 'Failed to apply hunk: context mismatch.', timestamp: new Date() }]);
-                return;
-            }
-
-            // Apply new text to editor and update suggested preview
-            if (typeof editor.setValue === 'function') {
-                editor.setValue(patched);
-                setSuggestedCode(null);
-                setSuggestedRaw('');
-                setShowDiff(false);
-                setMessages((prev) => [...prev, { id: Date.now(), role: 'assistant', content: 'Hunk applied to editor.', timestamp: new Date() }]);
-            }
-        } catch (e) {
-            setMessages((prev) => [...prev, { id: Date.now(), role: 'assistant', content: `Error applying hunk: ${e.message}`, timestamp: new Date() }]);
-        }
-    };
-
     if (!isVisible) return null;
 
     const diffChunks = suggestedCode ? computeDiffChunks(currentCode || '', suggestedCode) : [];
-    const { patch, header, hunks } = buildPatchAndHunks(currentCode || '', suggestedCode || '');
 
     // Choose container classes based on docked/inline mode
     const containerClass = docked
@@ -474,6 +379,12 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
                             <div className="flex items-center justify-between mb-2">
                                 <div className="text-sm font-medium text-gray-200">Suggested Changes</div>
                                 <div className="flex items-center gap-2">
+                                    {isLoading ? (
+                                        <div className="flex items-center gap-2 text-xs text-gray-300">
+                                            <div className="w-3 h-3 rounded-full bg-gray-400 animate-pulse" aria-hidden></div>
+                                            <span>Thinking...</span>
+                                        </div>
+                                    ) : null}
                                     <button className="text-xs text-gray-300 hover:underline" onClick={() => setShowDiff(v => !v)}>
                                         {showDiff ? 'Hide Diff' : 'Preview Diff'}
                                     </button>
@@ -486,21 +397,7 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
                                 <pre className="max-h-40 overflow-auto text-xs bg-[#0f0f10] text-gray-100 p-2 rounded">{suggestedCode}</pre>
                             ) : (
                                 <div className="max-h-40 overflow-auto text-xs font-mono">
-                                    {hunks.length > 0 ? (
-                                        hunks.map((hunk) => (
-                                            <div key={`hunk-${hunk.id}`} className="border-b border-[#2b2b2b] py-1 px-1">
-                                                <pre className="whitespace-pre-wrap text-xs bg-transparent p-1 rounded font-mono">{hunk.text}</pre>
-                                                <div className="flex gap-2 mt-1">
-                                                    <Button size="sm" variant="outline" onClick={() => applyHunk(hunk)}>
-                                                        Apply Hunk
-                                                    </Button>
-                                                    <Button size="sm" variant="ghost" onClick={() => copyToClipboard(hunk.text)}>
-                                                        Copy Hunk
-                                                    </Button>
-                                                </div>
-                                            </div>
-                                        ))
-                                    ) : (
+                                    {diffChunks.length > 0 ? (
                                         diffChunks.map((chunk, ci) => {
                                             if (chunk.type === 'eq') {
                                                 return chunk.items.map((row) => (
@@ -531,7 +428,6 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
                                                 );
                                             }
 
-                                            // add/remove rows
                                             if (chunk.type === 'add') {
                                                 return chunk.items.map((row) => (
                                                     <div key={`add-${row.lineNew}`} className="px-1 flex gap-2 text-emerald-300 bg-emerald-900/5">
@@ -552,6 +448,8 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
 
                                             return null;
                                         })
+                                    ) : (
+                                        <div className="px-1 text-gray-500">No changes detected.</div>
                                     )}
                                 </div>
                             )}
@@ -563,15 +461,6 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
             {/* Input Area */}
             <div className="px-4 py-3 border-t border-[#545454] bg-[#252526]">
                 <div className="flex gap-2">
-                    <Button
-                        variant={forcePatchMode ? 'default' : 'ghost'}
-                        size="sm"
-                        onClick={() => setForcePatchMode(v => !v)}
-                        title="Toggle diff/patch mode (Alt+auto-detect)"
-                        className="self-center"
-                    >
-                        {forcePatchMode ? 'Diff ON' : 'Diff'}
-                    </Button>
                     <Input
                         value={inputValue}
                         onChange={(e) => setInputValue(e.target.value)}

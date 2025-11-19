@@ -126,16 +126,24 @@ async function forwardAnalyzeRequest(socket, data, requestId, useAi = false) {
   }
 
   let backendResponse;
-  try {
+    try {
+    // Include optional `prompt` when forwarding AI requests so backend LLM
+    // can receive explicit instructions from the client.
+    const forwardBody = { lang, code };
+    if (useAi && typeof data.prompt === 'string' && data.prompt.trim()) {
+      forwardBody.prompt = data.prompt;
+    }
+    // Optional mode field (e.g. 'fullfile') to instruct backend for strict responses
+    if (useAi && typeof data.mode === 'string' && data.mode.trim()) {
+      forwardBody.mode = data.mode;
+    }
+
     backendResponse = await fetch(useAi ? backendAiAnalyzeUrl : backendStaticAnalyzeUrl, {
       method: "POST",
       headers: {
         "content-type": "application/json",
       },
-      body: JSON.stringify({
-        lang,
-        code,
-      }),
+      body: JSON.stringify(forwardBody),
     });
   } catch (err) {
     console.error("Backend request failed", err);
@@ -168,6 +176,36 @@ async function forwardAnalyzeRequest(socket, data, requestId, useAi = false) {
     return;
   }
 
+  // If this was an AI request and the backend provided a suggestion string,
+  // emit simulated streaming chunks first (so the client can show token-by-token
+  // inline suggestions). Then send the final response (with requestId) to
+  // resolve the original pending request.
+  if (useAi) {
+    const suggestion = responseJson?.ai_suggestion || responseJson?.suggestion || null;
+    if (suggestion && typeof suggestion === 'string' && suggestion.length > 0) {
+      // Chunk size in characters — small enough to feel streaming but not too chatty
+      const chunkSize = 80;
+      for (let i = 0; i < suggestion.length; i += chunkSize) {
+        const chunk = suggestion.slice(i, i + chunkSize);
+        // Emit partial chunk with `streamId` so clients can map to the request
+        safeSend(socket, {
+          type: 'stream',
+          streamId: requestId,
+          action: 'analyze.stream',
+          data: { partial: chunk, final: false },
+        });
+      }
+      // Indicate stream finished
+      safeSend(socket, {
+        type: 'stream',
+        streamId: requestId,
+        action: 'analyze.stream',
+        data: { partial: '', final: true },
+      });
+    }
+  }
+
+  // Send final response (this resolves the pending promise client-side)
   safeSend(socket, {
     type: "response",
     action: "analyze",
