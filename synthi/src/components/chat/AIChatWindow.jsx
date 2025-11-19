@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import DOMPurify from 'dompurify';
-import { Send, X } from 'lucide-react';
+import { Send, X, Plus } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
 import { getFileLanguage } from '@/utils/fileUtils';
@@ -10,14 +10,62 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { diffLines, applyPatch } from 'diff';
 
+const createChatSession = (index = 1) => ({
+    id: `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    title: `Chat ${index}`,
+    messages: [],
+    suggestedCode: null,
+    showDiff: true,
+});
+
 const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, editor = null, docked = false, onSuggest = null, onBusy = null }) => {
-    const [messages, setMessages] = useState([]);
     const [inputValue, setInputValue] = useState('');
     const [isLoading, setIsLoading] = useState(false);
-    const [suggestedCode, setSuggestedCode] = useState(null);
-    const [showDiff, setShowDiff] = useState(true);
     const scrollRef = useRef(null);
     const { askAi, clientReady } = useAnalyzerGateway();
+    const sessionCounterRef = useRef(2);
+    const initialSessionRef = useRef(createChatSession(1));
+    const [chatSessions, setChatSessions] = useState([initialSessionRef.current]);
+    const [activeSessionId, setActiveSessionId] = useState(initialSessionRef.current.id);
+    const activeSession = chatSessions.find((session) => session.id === activeSessionId) || chatSessions[0] || null;
+    const messages = activeSession?.messages ?? [];
+    const suggestedCode = activeSession?.suggestedCode ?? null;
+    const showDiff = activeSession?.showDiff ?? true;
+
+    const mutateSession = (sessionId, mutator) => {
+        setChatSessions((prev) =>
+            prev.map((session) => {
+                if (session.id !== sessionId) return session;
+                return mutator(session);
+            })
+        );
+    };
+
+    const appendMessagesToSession = (sessionId, newMessages) => {
+        mutateSession(sessionId, (session) => ({
+            ...session,
+            messages: [...session.messages, ...newMessages],
+        }));
+    };
+
+    const handleNewSession = () => {
+        const newSession = createChatSession(sessionCounterRef.current);
+        sessionCounterRef.current += 1;
+        setChatSessions((prev) => [...prev, newSession]);
+        setActiveSessionId(newSession.id);
+    };
+
+    const handleCloseSession = (sessionId) => {
+        if (chatSessions.length <= 1) return;
+        setChatSessions((prev) => {
+            const filtered = prev.filter((session) => session.id !== sessionId);
+            if (activeSessionId === sessionId) {
+                const fallback = filtered[filtered.length - 1]?.id ?? filtered[0]?.id ?? null;
+                setActiveSessionId(fallback);
+            }
+            return filtered.length ? filtered : [createChatSession(1)];
+        });
+    };
 
     // Auto-scroll to bottom when new messages arrive
     useEffect(() => {
@@ -107,6 +155,8 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
     const handleSendMessage = async () => {
         if (!inputValue.trim()) return;
 
+        if (!activeSession) return;
+
         const userMessage = {
             id: Date.now(),
             role: 'user',
@@ -114,7 +164,7 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
             timestamp: new Date(),
         };
 
-        setMessages((prev) => [...prev, userMessage]);
+        appendMessagesToSession(activeSession.id, [userMessage]);
         setInputValue('');
         setIsLoading(true);
 
@@ -161,7 +211,10 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
 
                         if (partialCode) {
                             const cleaned = partialCode.replace(/\r/g, '');
-                            setSuggestedCode(cleaned);
+                            mutateSession(activeSession.id, (session) => ({
+                                ...session,
+                                suggestedCode: cleaned,
+                            }));
                             try {
                                 if (typeof onSuggest === 'function') onSuggest({ completion: cleaned, partial: true });
                             } catch (e) {}
@@ -205,7 +258,10 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
             }];
 
             if (codeOnly) {
-                setSuggestedCode(codeOnly);
+                mutateSession(activeSession.id, (session) => ({
+                    ...session,
+                    suggestedCode: codeOnly,
+                }));
                 try {
                     if (typeof onSuggest === 'function') {
                         onSuggest({ completion: codeOnly });
@@ -233,10 +289,13 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
                     timestamp: new Date(),
                 });
             } else {
-                setSuggestedCode(null);
+                mutateSession(activeSession.id, (session) => ({
+                    ...session,
+                    suggestedCode: null,
+                }));
             }
 
-            setMessages((prev) => [...prev, ...messagesToAppend]);
+            appendMessagesToSession(activeSession.id, messagesToAppend);
         } catch (error) {
             const errorMessage = {
                 id: Date.now() + 1,
@@ -244,7 +303,7 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
                 content: `Error: ${error.message || 'Failed to get AI response. Make sure the backend is running.'}`,
                 timestamp: new Date(),
             };
-            setMessages((prev) => [...prev, errorMessage]);
+            if (activeSession) appendMessagesToSession(activeSession.id, [errorMessage]);
         } finally {
             setIsLoading(false);
             try { if (typeof onBusy === 'function') onBusy(false); } catch(e){}
@@ -259,21 +318,36 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
     };
 
     const applySuggestion = () => {
-        if (!suggestedCode) return;
+        if (!activeSession || !suggestedCode) return;
         if (editor && typeof editor.setValue === 'function') {
             editor.setValue(suggestedCode);
         }
         // Clear suggestion after applying
-        setSuggestedCode(null);
-        setShowDiff(false);
+        mutateSession(activeSession.id, (session) => ({
+            ...session,
+            suggestedCode: null,
+            showDiff: false,
+        }));
         // Add a small assistant confirmation message
-        setMessages((prev) => [...prev, { id: Date.now(), role: 'assistant', content: 'Suggestion applied to editor.', timestamp: new Date() }]);
+        appendMessagesToSession(activeSession.id, [{ id: Date.now(), role: 'assistant', content: 'Suggestion applied to editor.', timestamp: new Date() }]);
     };
 
     const rejectSuggestion = () => {
-        setSuggestedCode(null);
-        setShowDiff(false);
-        setMessages((prev) => [...prev, { id: Date.now(), role: 'assistant', content: 'Suggestion rejected.', timestamp: new Date() }]);
+        if (!activeSession) return;
+        mutateSession(activeSession.id, (session) => ({
+            ...session,
+            suggestedCode: null,
+            showDiff: false,
+        }));
+        appendMessagesToSession(activeSession.id, [{ id: Date.now(), role: 'assistant', content: 'Suggestion rejected.', timestamp: new Date() }]);
+    };
+
+    const toggleDiffView = () => {
+        if (!activeSession) return;
+        mutateSession(activeSession.id, (session) => ({
+            ...session,
+            showDiff: !session.showDiff,
+        }));
     };
 
     const formatMessageContent = (content) => {
@@ -314,18 +388,55 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
     return (
         <div className={containerClass}>
             {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-[#545454] bg-[#252526]">
-                <h2 className="text-sm font-semibold text-gray-200">AI Assistant</h2>
-                <div className="flex items-center gap-2">
-                    {suggestedCode && (
-                        <div className="text-xs text-gray-300">Suggestion ready</div>
-                    )}
+            <div className="flex flex-col border-b border-[#545454] bg-[#252526]">
+                <div className="flex items-center justify-between px-4 py-3">
+                    <h2 className="text-sm font-semibold text-gray-200">AI Assistant</h2>
+                    <div className="flex items-center gap-2">
+                        {suggestedCode && (
+                            <div className="text-xs text-gray-300">Suggestion ready</div>
+                        )}
+                        <button
+                            onClick={onClose}
+                            className="p-1 hover:bg-[#3e3e42] rounded transition-colors"
+                            title="Close chat"
+                        >
+                            <X className="w-4 h-4 text-gray-400" />
+                        </button>
+                    </div>
+                </div>
+                <div className="px-3 pb-2 flex items-center gap-2 overflow-x-auto">
+                    {chatSessions.map((session) => {
+                        const isActive = session.id === activeSession?.id;
+                        return (
+                            <button
+                                key={session.id}
+                                onClick={() => setActiveSessionId(session.id)}
+                                className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs border transition-colors ${
+                                    isActive
+                                        ? 'bg-emerald-600/15 border-emerald-500 text-emerald-200'
+                                        : 'bg-[#1e1e1e] border-[#2f2f2f] text-gray-400 hover:text-gray-200'
+                                }`}
+                            >
+                                <span className="truncate max-w-[120px]">{session.title}</span>
+                                {chatSessions.length > 1 && (
+                                    <X
+                                        className="w-3 h-3 text-gray-400 hover:text-gray-200"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleCloseSession(session.id);
+                                        }}
+                                    />
+                                )}
+                            </button>
+                        );
+                    })}
                     <button
-                        onClick={onClose}
-                        className="p-1 hover:bg-[#3e3e42] rounded transition-colors"
-                        title="Close chat"
+                        onClick={handleNewSession}
+                        className="flex items-center gap-1 text-xs px-2 py-1 rounded-full border border-dashed border-[#3a3a3a] text-gray-300 hover:border-emerald-500 hover:text-emerald-200 transition-colors"
+                        title="Start a new chat"
                     >
-                        <X className="w-4 h-4 text-gray-400" />
+                        <Plus className="w-3 h-3" />
+                        New
                     </button>
                 </div>
             </div>
@@ -385,7 +496,7 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
                                             <span>Thinking...</span>
                                         </div>
                                     ) : null}
-                                    <button className="text-xs text-gray-300 hover:underline" onClick={() => setShowDiff(v => !v)}>
+                                    <button className="text-xs text-gray-300 hover:underline" onClick={toggleDiffView}>
                                         {showDiff ? 'Hide Diff' : 'Preview Diff'}
                                     </button>
                                     <Button variant="outline" size="sm" onClick={rejectSuggestion}>Reject</Button>
