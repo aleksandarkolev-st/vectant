@@ -118,11 +118,13 @@ export class AnalyzerGatewayClient {
     return this._sendRequest('analyze/static', payload);
   }
 
-  analyzeAi(payload) {
-    return this._sendRequest('analyze/ai', payload);
+  // `options` may include `{ onStream: (chunk) => {} }` to receive
+  // partial streaming chunks emitted by the gateway for this request.
+  analyzeAi(payload, options = {}) {
+    return this._sendRequest('analyze/ai', payload, options);
   }
 
-  _sendRequest(action, data) {
+  _sendRequest(action, data, options = {}) {
     if (this.isDisposed) {
       return Promise.reject(new Error('Gateway client has been disposed'));
     }
@@ -145,6 +147,8 @@ export class AnalyzerGatewayClient {
         reject,
         timeoutId,
         action,
+        // Optional streaming callback attached per-request
+        onStream: typeof options.onStream === 'function' ? options.onStream : undefined,
       });
 
       this._enqueue(envelope);
@@ -326,6 +330,22 @@ export class AnalyzerGatewayClient {
   }
 
   _emitEvent(event) {
+    // If the gateway emitted a streaming payload with a `streamId`, forward
+    // it to any pending request that registered an `onStream` callback.
+    try {
+      const payload = event?.payload;
+      if (payload && payload.streamId && this.pending.has(payload.streamId)) {
+        const pending = this.pending.get(payload.streamId);
+        try {
+          if (pending?.onStream) pending.onStream(payload?.data ?? payload);
+        } catch (e) {
+          if (this.debug) console.warn('onStream callback error', e);
+        }
+      }
+    } catch (e) {
+      if (this.debug) console.warn('Stream dispatch error', e);
+    }
+
     this.eventListeners.forEach((listener) => {
       try {
         listener(event);

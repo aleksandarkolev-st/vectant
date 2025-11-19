@@ -32,6 +32,7 @@ import {
     AI_COMPLETION_MAX_INPUT_CHARS,
     API_COMPLETION_ROUTE,
 } from '@/lib/completion';
+import { diffLines } from 'diff';
 import prettier from "prettier/standalone";
 import babel from "prettier/plugins/babel";
 import estree from "prettier/plugins/estree";
@@ -458,6 +459,81 @@ const EditorPanel = ({
             }
         }
     }, [latestCompletion, editorInstance, code, activeLanguage]);
+
+
+    // When a completion arrives that contains a full-file suggestion, compute
+    // a line-based diff and show inline decorations in the editor so changes
+    // are visible directly inside the file.
+    useEffect(() => {
+        if (!editorInstance || !monacoInstance) return;
+
+        // Remove previous decorations if any
+        const prevIds = aiCompletionCacheRef.current._decorationIds || [];
+
+        try {
+            const suggested = latestCompletion ? (typeof latestCompletion === 'string' ? latestCompletion : latestCompletion.completion) : null;
+            if (!suggested) {
+                if (prevIds.length) {
+                    editorInstance.deltaDecorations(prevIds, []);
+                    aiCompletionCacheRef.current._decorationIds = [];
+                }
+                return;
+            }
+
+            const model = editorInstance.getModel();
+            if (!model) return;
+
+            const original = model.getValue();
+            const parts = diffLines(original, suggested);
+
+            const newDecs = [];
+            let oldLine = 1;
+            let newLine = 1;
+
+            parts.forEach((part) => {
+                const lines = part.value.split('\n');
+                if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+
+                if (part.added) {
+                    // mark the previous line (or line 1) as having additions after it
+                    const insertAfter = Math.max(1, oldLine - 1);
+                    newDecs.push({
+                        range: new monacoInstance.Range(insertAfter, 1, insertAfter, 1),
+                        options: { isWholeLine: true, className: 'ai-added-line' }
+                    });
+                    newLine += lines.length;
+                } else if (part.removed) {
+                    for (let i = 0; i < lines.length; i++) {
+                        const ln = oldLine + i;
+                        newDecs.push({
+                            range: new monacoInstance.Range(ln, 1, ln, 1),
+                            options: { isWholeLine: true, className: 'ai-removed-line' }
+                        });
+                    }
+                    oldLine += lines.length;
+                } else {
+                    oldLine += lines.length;
+                    newLine += lines.length;
+                }
+            });
+
+            // Inject CSS for decoration classes if not present
+            if (!document.getElementById('ai-diff-styles')) {
+                const style = document.createElement('style');
+                style.id = 'ai-diff-styles';
+                style.innerHTML = `
+                    .ai-added-line { background: rgba(16,185,129,0.06) !important; }
+                    .ai-removed-line { background: rgba(239,68,68,0.05) !important; text-decoration: line-through; }
+                `;
+                document.head.appendChild(style);
+            }
+
+            const newIds = editorInstance.deltaDecorations(prevIds || [], newDecs);
+            aiCompletionCacheRef.current._decorationIds = newIds;
+        } catch (e) {
+            // ignore
+        }
+    }, [latestCompletion, editorInstance, monacoInstance]);
 
 
     // --- Render ---

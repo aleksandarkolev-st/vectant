@@ -70,7 +70,7 @@ export function useAnalyzerGateway({
     }
   }, []);
 
-  const askAi = useCallback(async ({ code, lang, prompt, mode } = {}) => {
+  const askAi = useCallback(async ({ code, lang, prompt, mode, onProgress } = {}) => {
     if (!clientRef.current) {
       throw new Error('Gateway client is not ready yet');
     }
@@ -86,7 +86,15 @@ export function useAnalyzerGateway({
       let payload = { code, lang };
       if (typeof prompt === 'string') payload.prompt = prompt;
       if (typeof mode === 'string') payload.mode = mode;
-      const response = await clientRef.current.analyzeAi(payload);
+      // If the caller provided an onProgress callback, forward it to the client
+      const options = {};
+      if (typeof onProgress === 'function') options.onStream = (data) => {
+        try {
+          // Expect `data` to be { partial: '...', final: boolean } or a string chunk
+          onProgress(data);
+        } catch (e) {}
+      };
+      const response = await clientRef.current.analyzeAi(payload, options);
       console.log(`AI Response is ${JSON.stringify(response)}`)
       const result = response?.data ?? response;
       setLastResult(result);

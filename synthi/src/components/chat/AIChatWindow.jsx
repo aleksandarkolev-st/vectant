@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import DOMPurify from 'dompurify';
 import { Send, X } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
@@ -118,58 +119,102 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
         setInputValue('');
         setIsLoading(true);
 
-        try {
-            const langSource =
-                activeFile?.language ||
-                (activeFile?.name ? getFileLanguage(activeFile.name) : undefined) ||
-                'plaintext';
-            const normalizedLang = langSource.toLowerCase();
-            const code = currentCode || '';
-            const userPrompt = inputValue;
+            try {
+                const langSource =
+                    activeFile?.language ||
+                    (activeFile?.name ? getFileLanguage(activeFile.name) : undefined) ||
+                    'plaintext';
+                const normalizedLang = langSource.toLowerCase();
+                const code = currentCode || '';
+                const userPrompt = inputValue;
 
-            // Encourage the model to return a full-file suggestion inside a code fence
-            const instructPrompt = `${userPrompt}\n\nRespond only with the updated full file contents in a fenced code block (triple backticks) with the correct language tag. Do not include extra commentary.`;
+                // Encourage the model to return a full-file suggestion inside a code fence
+                const instructPrompt = `${userPrompt}\n\nRespond only with the updated full file contents in a fenced code block (triple backticks) with the correct language tag. Do not include extra commentary.`;
 
-            // notify parent that we're working
-            try { if (typeof onBusy === 'function') onBusy(true); } catch(e){}
+                // notify parent that we're working
+                try { if (typeof onBusy === 'function') onBusy(true); } catch(e){}
 
-            const response = await askAi({
-                lang: normalizedLang,
-                code,
-                prompt: instructPrompt,
-                mode: 'fullfile',
-            });
+                // Prepare streaming buffer
+                let streamBuffer = '';
+                let finalSuggestion = '';
 
-            const suggestion = response?.ai_suggestion || response?.suggestion || '';
+                const response = await askAi({
+                    lang: normalizedLang,
+                    code,
+                    prompt: instructPrompt,
+                    mode: 'fullfile',
+                    onProgress: (data) => {
+                        // `data` may be a string or { partial, final }
+                        const chunk = typeof data === 'string' ? data : (data?.partial ?? '');
+                        const isFinal = typeof data === 'object' ? Boolean(data.final) : false;
+                        if (chunk) {
+                            streamBuffer += chunk;
 
-            const aiMessage = {
-                id: Date.now() + 1,
-                role: 'assistant',
-                content: suggestion || 'No response received',
-                timestamp: new Date(),
-            };
+                            // Try to derive partial code content from buffer
+                            let partialCode = extractCodeFromMarkdown(streamBuffer);
+                            if (!partialCode) {
+                                // If an opening fence exists, stream content inside it
+                                const openIdx = streamBuffer.indexOf('```');
+                                if (openIdx !== -1) {
+                                    // Skip the opening fence and optional language tag
+                                    const afterFence = streamBuffer.slice(openIdx + 3);
+                                    const firstNewline = afterFence.indexOf('\n');
+                                    const contentStart = firstNewline === -1 ? 0 : firstNewline + 1;
+                                    partialCode = afterFence.slice(contentStart);
+                                    // Remove any closing fence if present
+                                    const closeIdx = partialCode.indexOf('```');
+                                    if (closeIdx !== -1) partialCode = partialCode.slice(0, closeIdx);
+                                } else if (streamBuffer.length > 40) {
+                                    // Fallback: treat the buffer as code-like when it's long
+                                    partialCode = streamBuffer;
+                                }
+                            }
 
-            // Attempt to extract a code block
-            const codeOnly = extractCodeFromMarkdown(suggestion);
-            if (codeOnly) {
-                setSuggestedCode(codeOnly);
-                setSuggestedRaw(suggestion);
-                // Notify parent/page so the editor can display inline suggestion
-                try {
-                    if (typeof onSuggest === 'function') {
-                        // EditorPanel expects latestCompletion to be a string or object
-                        onSuggest(typeof codeOnly === 'string' ? { completion: codeOnly } : codeOnly);
+                            if (partialCode) {
+                                setSuggestedCode(partialCode.replace(/\r/g, ''));
+                                setSuggestedRaw(streamBuffer);
+                                // Notify parent/page with partial completion for streaming ghost text
+                                try {
+                                    if (typeof onSuggest === 'function') onSuggest({ completion: partialCode, partial: true });
+                                } catch (e) {}
+                            }
+                        }
+
+                        if (isFinal) {
+                            finalSuggestion = streamBuffer;
+                        }
                     }
-                } catch (e) {
-                    // ignore
-                }
-            } else {
-                setSuggestedCode(null);
-                setSuggestedRaw('');
-            }
+                });
 
-            setMessages((prev) => [...prev, aiMessage]);
-        } catch (error) {
+                const suggestion = response?.ai_suggestion || response?.suggestion || finalSuggestion || '';
+
+                const aiMessage = {
+                    id: Date.now() + 1,
+                    role: 'assistant',
+                    content: suggestion || 'No response received',
+                    timestamp: new Date(),
+                };
+
+                // Attempt to extract a code block from final suggestion
+                const codeOnly = extractCodeFromMarkdown(suggestion);
+                if (codeOnly) {
+                    setSuggestedCode(codeOnly);
+                    setSuggestedRaw(suggestion);
+                    // Notify parent/page so the editor can display inline suggestion
+                    try {
+                        if (typeof onSuggest === 'function') {
+                            onSuggest(typeof codeOnly === 'string' ? { completion: codeOnly } : codeOnly);
+                        }
+                    } catch (e) {
+                        // ignore
+                    }
+                } else {
+                    setSuggestedCode(null);
+                    setSuggestedRaw('');
+                }
+
+                setMessages((prev) => [...prev, aiMessage]);
+            } catch (error) {
             const errorMessage = {
                 id: Date.now() + 1,
                 role: 'assistant',
@@ -215,11 +260,21 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
         // to avoid breaking HTML tags that the model may return. We still
         // transform simple markdown-like emphasis and inline code to HTML.
         if (!content) return '';
-        return content
+        const html = content
             .replace(/\*\*(.*?)\*\*/g, '<strong class="font-semibold">$1</strong>')
             .replace(/\*(.*?)\*/g, '<em class="italic">$1</em>')
             .replace(/`([^`]+)`/g, '<code class="bg-[#3a3a3d] px-1 rounded text-xs">$1</code>')
             .replace(/\n/g, '<br />');
+
+        // Sanitize HTML to avoid XSS while allowing basic formatting and code blocks
+        try {
+            return DOMPurify.sanitize(html, {
+                ALLOWED_TAGS: ['strong', 'em', 'code', 'pre', 'br', 'div', 'span', 'p', 'ul', 'ol', 'li'],
+                ALLOWED_ATTR: ['class']
+            });
+        } catch (e) {
+            return html;
+        }
     };
 
     if (!isVisible) return null;
