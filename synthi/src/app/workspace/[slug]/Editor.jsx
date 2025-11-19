@@ -32,7 +32,7 @@ import {
     AI_COMPLETION_MAX_INPUT_CHARS,
     API_COMPLETION_ROUTE,
 } from '@/lib/completion';
-import { diffLines } from 'diff';
+import { diffLines, applyPatch } from 'diff';
 import prettier from "prettier/standalone";
 import babel from "prettier/plugins/babel";
 import estree from "prettier/plugins/estree";
@@ -86,6 +86,7 @@ const EDITOR_OPTIONS = {
         enabled: true,
         delay: 300,
     }
+    ,glyphMargin: true,
 };
 
 const EditorPanel = ({
@@ -114,6 +115,8 @@ const EditorPanel = ({
     
     // Refs
     const hoverProviderRef = useRef(null);
+    const floatingWidgetRef = useRef(null);
+    const hoverWidgetTimeoutRef = useRef(null);
     const completionProviderRef = useRef(null);
     const inlineCompletionProviderRef = useRef(null);
     const aiCompletionCursorRef = useRef(null);
@@ -359,21 +362,38 @@ const EditorPanel = ({
         hoverProviderRef.current?.dispose();
         hoverProviderRef.current = monacoInstance.languages.registerHoverProvider(activeLanguage, {
             provideHover: (model, position) => {
+                // First check analysis markers as before
                 const markers = monacoInstance.editor.getModelMarkers({ resource: model.uri });
                 const hits = markers.filter(m => 
                     position.lineNumber >= m.startLineNumber && position.lineNumber <= m.endLineNumber &&
                     position.column >= m.startColumn && position.column <= m.endColumn
                 );
-                if (!hits.length) return null;
-                
-                const contents = hits.map(m => ({ 
-                    value: `**${m.severity === 8 ? 'Error' : 'Warning'}**: ${m.message}` 
-                }));
-                
-                return {
-                    range: new monacoInstance.Range(hits[0].startLineNumber, hits[0].startColumn, hits[0].endLineNumber, hits[0].endColumn),
-                    contents
-                };
+                const contents = [];
+
+                if (hits.length) {
+                    hits.forEach(m => contents.push({ value: `**${m.severity === 8 ? 'Error' : 'Warning'}**: ${m.message}` }));
+                }
+
+                // If AI hunks are mapped to this line, show the full hunk as a diff in the hover
+                try {
+                    const hunkMap = aiCompletionCacheRef.current._hunksByLine || {};
+                    const lineHunks = hunkMap[position.lineNumber] || [];
+                    if (lineHunks.length) {
+                        lineHunks.forEach((h) => {
+                            // Render the hunk as a code block in the hover (markdown diff)
+                            const safeText = h.text || '';
+                            contents.push({ value: `\n\n\`\`\`diff\n${safeText.replace(/```/g, '```') }\n\`\`\`` });
+                        });
+                    }
+                } catch (e) {
+                    // ignore
+                }
+
+                if (!contents.length) return null;
+
+                // Prefer marker range if available, otherwise return a single-line range
+                const range = hits.length ? new monacoInstance.Range(hits[0].startLineNumber, hits[0].startColumn, hits[0].endLineNumber, hits[0].endColumn) : new monacoInstance.Range(position.lineNumber, 1, position.lineNumber, 1);
+                return { range, contents };
             }
         });
         return () => hoverProviderRef.current?.dispose();
@@ -419,6 +439,33 @@ const EditorPanel = ({
                 e.preventDefault();
                 editorInstance?.getAction('editor.action.formatDocument')?.run();
             }
+            // Apply hunk at cursor: Alt+Enter
+            if (e.altKey && (e.key === 'Enter' || e.key === 'Return')) {
+                try {
+                    e.preventDefault();
+                    const pos = editorInstance?.getPosition();
+                    if (!pos) return;
+                    const line = pos.lineNumber;
+                    const map = aiCompletionCacheRef.current._hunksByLine || {};
+                    const hunks = map[line] || [];
+                    if (!hunks.length) return;
+                    const hunk = hunks[0];
+                    const confirmApply = window.confirm('Apply this hunk to the editor? (Alt+Enter)');
+                    if (!confirmApply) return;
+                    const model = editorInstance.getModel();
+                    const original = model.getValue();
+                    const patched = applyPatch(original, hunk.patchForHunk);
+                    if (patched === false) {
+                        setAiCompletionState('idle');
+                        return;
+                    }
+                    editorInstance.setValue(patched);
+                    aiCompletionCacheRef.current._hunkDecorationIds = [];
+                    aiCompletionCacheRef.current._hunksByLine = {};
+                } catch (err) {
+                    // ignore
+                }
+            }
         };
         window.addEventListener('keydown', handleKeyDown, { capture: true });
         return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
@@ -460,6 +507,299 @@ const EditorPanel = ({
         }
     }, [latestCompletion, editorInstance, code, activeLanguage]);
 
+    // When parent provides hunks (from AIChatWindow), render glyph margin widgets
+    useEffect(() => {
+        if (!editorInstance || !monacoInstance) return;
+        const hunks = latestCompletion && typeof latestCompletion === 'object' ? latestCompletion.hunks || [] : [];
+        // Clear previous hunk mapping decorations
+        const prevIds = aiCompletionCacheRef.current._hunkDecorationIds || [];
+        try {
+            // Remove previous decorations
+            if (prevIds.length) editorInstance.deltaDecorations(prevIds, []);
+
+            if (!hunks || hunks.length === 0) {
+                aiCompletionCacheRef.current._hunkDecorationIds = [];
+                aiCompletionCacheRef.current._hunksByLine = {};
+                return;
+            }
+
+            const model = editorInstance.getModel();
+            if (!model) return;
+
+            const newDecs = [];
+            const hunkMap = {};
+
+            hunks.forEach((hunk) => {
+                // Parse the hunk header to discover affected old/new line ranges
+                // Header format: @@ -oldStart,oldCount +newStart,newCount @@
+                const m = hunk.text.match(/^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@/);
+                let oldStart = null, oldCount = 1, newStart = null, newCount = 1;
+                if (m) {
+                    oldStart = parseInt(m[1], 10);
+                    if (m[2]) oldCount = parseInt(m[2], 10);
+                    newStart = parseInt(m[3], 10);
+                    if (m[4]) newCount = parseInt(m[4], 10);
+                }
+
+                // Choose a primary decoration line (prefer the newStart if available)
+                const primaryLine = newStart ? Math.max(1, newStart) : (oldStart ? Math.max(1, oldStart) : model.getLineCount());
+
+                // Create a decoration with a glyph margin marker at the primary line
+                newDecs.push({
+                    range: new monacoInstance.Range(primaryLine, 1, primaryLine, 1),
+                    options: {
+                        isWholeLine: true,
+                        className: 'ai-hunk-line',
+                        glyphMarginClassName: 'ai-hunk-glyph',
+                        hoverMessage: { value: `Hunk: click (Alt+Click) to apply` }
+                    }
+                });
+
+                // Map every affected old and new line number to this hunk so the widget
+                // can appear when hovering any changed line.
+                if (oldStart) {
+                    for (let i = 0; i < oldCount; i++) {
+                        const ln = Math.max(1, oldStart + i);
+                        if (!hunkMap[ln]) hunkMap[ln] = [];
+                        hunkMap[ln].push(hunk);
+                    }
+                }
+                if (newStart) {
+                    for (let i = 0; i < newCount; i++) {
+                        const ln = Math.max(1, newStart + i);
+                        if (!hunkMap[ln]) hunkMap[ln] = [];
+                        hunkMap[ln].push(hunk);
+                    }
+                }
+            });
+
+            const ids = editorInstance.deltaDecorations([], newDecs);
+            aiCompletionCacheRef.current._hunkDecorationIds = ids;
+            aiCompletionCacheRef.current._hunksByLine = hunkMap;
+        } catch (e) {
+            // ignore errors
+        }
+    }, [latestCompletion, editorInstance, monacoInstance]);
+
+    // Handle Alt+click on editor to apply a hunk mapped to the clicked line
+    useEffect(() => {
+        if (!editorInstance || !monacoInstance) return;
+        const handler = editorInstance.onMouseDown((e) => {
+            try {
+                if (!e.event.altKey) return; // require Alt+click to avoid accidental applies
+                const pos = e.target.position;
+                if (!pos) return;
+                const line = pos.lineNumber;
+                const map = aiCompletionCacheRef.current._hunksByLine || {};
+                const hunks = map[line] || [];
+                if (!hunks.length) return;
+                // If multiple hunks, pick first; prompt user
+                const hunk = hunks[0];
+                const confirmApply = window.confirm('Apply this hunk to the editor? (Alt+Click)');
+                if (confirmApply) {
+                    // apply via the same logic used by chat (we'll call a small helper inline)
+                    const model = editorInstance.getModel();
+                    const original = model.getValue();
+                    const patched = applyPatch(original, hunk.patchForHunk);
+                    if (patched === false) {
+                        setAiCompletionState('idle');
+                        return;
+                    }
+                    editorInstance.setValue(patched);
+                    aiCompletionCacheRef.current._hunkDecorationIds = [];
+                    aiCompletionCacheRef.current._hunksByLine = {};
+                }
+            } catch (err) {
+                // ignore
+            }
+        });
+
+        return () => handler?.dispose?.();
+    }, [editorInstance, monacoInstance]);
+
+    // Floating inline hunk preview widget (non-modal) shown when hovering a hunk glyph/line
+    useEffect(() => {
+        if (!editorInstance || !monacoInstance) return;
+
+        const showWidget = (line, hunk) => {
+            try {
+                const domNode = editorInstance.getDomNode();
+                if (!domNode) return;
+
+                // Remove existing widget
+                if (floatingWidgetRef.current) {
+                    floatingWidgetRef.current.remove();
+                    floatingWidgetRef.current = null;
+                }
+
+                const pos = editorInstance.getScrolledVisiblePosition ? editorInstance.getScrolledVisiblePosition({ lineNumber: line, column: 1 }) : null;
+                const top = pos ? pos.top : (editorInstance.getTopForLineNumber ? editorInstance.getTopForLineNumber(line) : 0);
+
+                const widget = document.createElement('div');
+                widget.className = 'ai-hunk-widget';
+                widget.style.position = 'absolute';
+                widget.style.zIndex = 1000;
+                widget.style.maxWidth = '420px';
+                widget.style.left = '48px';
+                widget.style.top = `${top + 4}px`;
+                widget.style.background = '#0b0b0b';
+                widget.style.border = '1px solid rgba(69,69,69,0.6)';
+                widget.style.padding = '8px';
+                widget.style.borderRadius = '6px';
+                widget.style.boxShadow = '0 6px 18px rgba(0,0,0,0.6)';
+                widget.style.color = '#e6e6e6';
+                widget.style.fontSize = '12px';
+                widget.style.fontFamily = "'JetBrains Mono', monospace";
+
+                // Content: show a small diff preview plus actions
+                const pre = document.createElement('div');
+                pre.style.whiteSpace = 'pre-wrap';
+                pre.style.maxHeight = '160px';
+                pre.style.overflow = 'auto';
+                pre.style.margin = '0 0 8px 0';
+                pre.style.display = 'flex';
+                pre.style.flexDirection = 'column';
+                pre.style.gap = '6px';
+
+                // Render before (removed) in red and after (added) in green
+                const lines = (hunk.text || '').split('\n');
+                const beforeBlock = document.createElement('div');
+                const afterBlock = document.createElement('div');
+                beforeBlock.style.whiteSpace = 'pre-wrap';
+                afterBlock.style.whiteSpace = 'pre-wrap';
+                beforeBlock.style.color = '#ffdcdc';
+                afterBlock.style.color = '#d6ffd6';
+                beforeBlock.style.background = 'rgba(239,68,68,0.04)';
+                afterBlock.style.background = 'rgba(16,185,129,0.04)';
+                beforeBlock.style.padding = '6px';
+                afterBlock.style.padding = '6px';
+                beforeBlock.style.borderRadius = '4px';
+                afterBlock.style.borderRadius = '4px';
+
+                let hasBefore = false;
+                let hasAfter = false;
+                lines.forEach((ln) => {
+                    if (ln.startsWith('-')) {
+                        const el = document.createElement('div');
+                        el.textContent = ln.replace(/^-/,'');
+                        el.style.color = '#c53030';
+                        el.style.fontFamily = "'JetBrains Mono', monospace";
+                        beforeBlock.appendChild(el);
+                        hasBefore = true;
+                    } else if (ln.startsWith('+')) {
+                        const el = document.createElement('div');
+                        el.textContent = ln.replace(/^\+/,'');
+                        el.style.color = '#15803d';
+                        el.style.fontFamily = "'JetBrains Mono', monospace";
+                        afterBlock.appendChild(el);
+                        hasAfter = true;
+                    }
+                });
+
+                if (hasBefore) pre.appendChild(beforeBlock);
+                if (hasAfter) pre.appendChild(afterBlock);
+
+                const actions = document.createElement('div');
+                actions.style.display = 'flex';
+                actions.style.gap = '8px';
+
+                const applyBtn = document.createElement('button');
+                applyBtn.textContent = 'Apply Hunk';
+                applyBtn.className = 'ai-hunk-widget-apply';
+                applyBtn.onclick = () => {
+                    try {
+                        const model = editorInstance.getModel();
+                        const original = model.getValue();
+                        const patched = applyPatch(original, hunk.patchForHunk);
+                        if (patched === false) {
+                            setAiCompletionState('idle');
+                            alert('Failed to apply hunk: context mismatch.');
+                            return;
+                        }
+                        editorInstance.setValue(patched);
+                        // remove widget
+                        if (floatingWidgetRef.current) {
+                            floatingWidgetRef.current.remove();
+                            floatingWidgetRef.current = null;
+                        }
+                        aiCompletionCacheRef.current._hunkDecorationIds = [];
+                        aiCompletionCacheRef.current._hunksByLine = {};
+                    } catch (err) {
+                        // ignore
+                    }
+                };
+
+                const copyBtn = document.createElement('button');
+                copyBtn.textContent = 'Copy Hunk';
+                copyBtn.className = 'ai-hunk-widget-copy';
+                copyBtn.onclick = async () => {
+                    try {
+                        await navigator.clipboard.writeText(hunk.text || '');
+                    } catch (err) {}
+                };
+
+                actions.appendChild(applyBtn);
+                actions.appendChild(copyBtn);
+
+                widget.appendChild(pre);
+                widget.appendChild(actions);
+
+                domNode.appendChild(widget);
+                floatingWidgetRef.current = widget;
+            } catch (e) {
+                // ignore
+            }
+        };
+
+        const hideWidget = () => {
+            if (floatingWidgetRef.current) {
+                floatingWidgetRef.current.remove();
+                floatingWidgetRef.current = null;
+            }
+        };
+
+        // Use Monaco editor mouse events (gives position info) instead of raw DOM mousemove
+        const mouseMoveDisposable = editorInstance.onMouseMove((e) => {
+            try {
+                const pos = e.target.position;
+                if (!pos) {
+                    if (hoverWidgetTimeoutRef.current) clearTimeout(hoverWidgetTimeoutRef.current);
+                    hoverWidgetTimeoutRef.current = setTimeout(hideWidget, 300);
+                    return;
+                }
+                const line = pos.lineNumber;
+                const map = aiCompletionCacheRef.current._hunksByLine || {};
+                const hunks = map[line] || [];
+                if (hunks.length) {
+                    if (hoverWidgetTimeoutRef.current) clearTimeout(hoverWidgetTimeoutRef.current);
+                    showWidget(line, hunks[0]);
+                } else {
+                    if (hoverWidgetTimeoutRef.current) clearTimeout(hoverWidgetTimeoutRef.current);
+                    hoverWidgetTimeoutRef.current = setTimeout(hideWidget, 300);
+                }
+            } catch (err) {
+                // ignore
+            }
+        });
+
+        const mouseLeaveDisposable = editorInstance.onMouseLeave(() => {
+            if (hoverWidgetTimeoutRef.current) clearTimeout(hoverWidgetTimeoutRef.current);
+            hoverWidgetTimeoutRef.current = setTimeout(() => {
+                if (floatingWidgetRef.current) {
+                    floatingWidgetRef.current.remove();
+                    floatingWidgetRef.current = null;
+                }
+            }, 150);
+        });
+
+        return () => {
+            try { mouseMoveDisposable?.dispose(); } catch(e){}
+            try { mouseLeaveDisposable?.dispose(); } catch(e){}
+            hideWidget();
+            if (hoverWidgetTimeoutRef.current) clearTimeout(hoverWidgetTimeoutRef.current);
+        };
+    }, [editorInstance, monacoInstance]);
+
 
     // When a completion arrives that contains a full-file suggestion, compute
     // a line-based diff and show inline decorations in the editor so changes
@@ -495,19 +835,34 @@ const EditorPanel = ({
                 if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
 
                 if (part.added) {
-                    // mark the previous line (or line 1) as having additions after it
-                    const insertAfter = Math.max(1, oldLine - 1);
+                    // For added lines, highlight the nearest existing line (or
+                    // last line) and attach hover content showing the added text.
+                    const modelLineCount = model.getLineCount();
+                    // Place decoration on `oldLine` if valid, otherwise on last line.
+                    const insertAt = Math.min(Math.max(1, oldLine), modelLineCount);
+                    const addedText = lines.join('\n');
                     newDecs.push({
-                        range: new monacoInstance.Range(insertAfter, 1, insertAfter, 1),
-                        options: { isWholeLine: true, className: 'ai-added-line' }
+                        range: new monacoInstance.Range(insertAt, 1, insertAt, 1),
+                        options: {
+                            isWholeLine: true,
+                            className: 'ai-added-line',
+                            hoverMessage: { value: `+ ${addedText}` },
+                        }
                     });
                     newLine += lines.length;
                 } else if (part.removed) {
+                    // For removed lines, highlight the actual removed lines and
+                    // include hover text showing what was removed.
                     for (let i = 0; i < lines.length; i++) {
                         const ln = oldLine + i;
+                        const removedText = lines[i];
                         newDecs.push({
                             range: new monacoInstance.Range(ln, 1, ln, 1),
-                            options: { isWholeLine: true, className: 'ai-removed-line' }
+                            options: {
+                                isWholeLine: true,
+                                className: 'ai-removed-line',
+                                hoverMessage: { value: `- ${removedText}` },
+                            }
                         });
                     }
                     oldLine += lines.length;
@@ -524,6 +879,8 @@ const EditorPanel = ({
                 style.innerHTML = `
                     .ai-added-line { background: rgba(16,185,129,0.06) !important; }
                     .ai-removed-line { background: rgba(239,68,68,0.05) !important; text-decoration: line-through; }
+                    .ai-hunk-glyph { background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><circle cx="5" cy="5" r="4" fill="%2384cc16"/></svg>') center center no-repeat; }
+                    .ai-hunk-line { outline: 1px dashed rgba(132,204,22,0.15) !important; }
                 `;
                 document.head.appendChild(style);
             }
