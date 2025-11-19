@@ -92,7 +92,8 @@ const EditorPanel = ({
     onToggleTerminal,
     onEditorMount,
     analysisResult,
-    latestCompletion
+    latestCompletion,
+    aiBusy = false,
 }) => {
     const dispatch = useAppDispatch();
 
@@ -497,7 +498,7 @@ const EditorPanel = ({
                                 </div>
 
                                 {/* AI Status Indicator (Subtle) */}
-                                <div className={`transition-opacity duration-300 ${aiCompletionState === 'loading' ? 'opacity-100' : 'opacity-0'}`}>
+                                <div className={`transition-opacity duration-300 ${(aiCompletionState === 'loading' || aiBusy) ? 'opacity-100' : 'opacity-0'}`}>
                                     <Sparkles className="w-3.5 h-3.5 text-purple-400 animate-pulse" />
                                 </div>
                                 

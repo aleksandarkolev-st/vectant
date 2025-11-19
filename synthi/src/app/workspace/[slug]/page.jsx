@@ -28,6 +28,7 @@ export default function EditorPage({ params }) {
     const [editor, setEditor] = useState(null);
     const { analyzeCode, lastResult } = useAnalyzerGateway();
     const [latestCompletion, setLatestCompletion] = useState(null);
+    const [aiBusy, setAiBusy] = useState(false);
     
     // 1. Consume the slug parameter and initiate fetch
     const { slug } = use(params);
@@ -152,6 +153,7 @@ export default function EditorPage({ params }) {
             onEditorMount={handleEditorMount}
             analysisResult={lastResult}
             latestCompletion={latestCompletion}
+            aiBusy={aiBusy}
         />
     );
 
@@ -159,6 +161,21 @@ export default function EditorPage({ params }) {
         <ResizablePanel defaultSize={15} minSize={1} maxSize={35} className={`${treeOnRight? 'border-l' : 'border-r'} border-[#545454] bg-[#252526]`}>
             <FileTreeView
                 onToggleOrientation={toggleTreeOrientation}
+            />
+        </ResizablePanel>
+    );
+
+    const ChatPanel = (
+        <ResizablePanel defaultSize={24} minSize={12} maxSize={50} className="border-l border-[#545454] bg-[#171717]">
+            <AIChatWindow
+                docked={true}
+                isVisible={chatVisible}
+                onClose={() => setChatVisible(false)}
+                activeFile={activeFile}
+                currentCode={currentContent}
+                editor={editor}
+                onSuggest={(s) => setLatestCompletion(s)}
+                onBusy={(b) => setAiBusy(Boolean(b))}
             />
         </ResizablePanel>
     );
@@ -179,28 +196,34 @@ export default function EditorPage({ params }) {
                 className="flex-1 min-h-0"
                 key={panelGroupKey}
             >
-                {treeOnRight? (
+                {treeOnRight ? (
                     <>
                         {EditorPanelComponent}
                         <ResizableHandle withHandle className="!pointer-events-auto bg-[#545454] hover:bg-emerald-500 w-0.5 z-50" />
                         {FileTreePanel}
+                        {chatVisible && (
+                            <>
+                                            <ResizableHandle withHandle className="!pointer-events-auto bg-[#545454] hover:bg-emerald-500 w-0.5 z-50" />
+                                            {ChatPanel}
+                            </>
+                        )}
                     </>
                 ) : (
                     <>
                         {FileTreePanel}
                         <ResizableHandle withHandle className="!pointer-events-auto bg-[#545454] hover:bg-emerald-500 w-0.5 z-50" />
                         {EditorPanelComponent}
+                        {chatVisible && (
+                            <>
+                                <ResizableHandle withHandle className="!pointer-events-auto bg-[#545454] hover:bg-emerald-500 w-0.5 z-50" />
+                                {ChatPanel}
+                            </>
+                        )}
                     </>
                 )}
             </ResizablePanelGroup>
 
-            {/* AI Chat Window (right side) */}
-            <AIChatWindow
-                isVisible={chatVisible}
-                onClose={() => setChatVisible(false)}
-                activeFile={activeFile}
-                currentCode={currentContent}
-            />
+            {/* Chat is rendered inside the ResizablePanelGroup when visible (see `ChatPanel`) */}
         </div>
     );
 }
