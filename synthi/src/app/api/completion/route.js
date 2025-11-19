@@ -7,6 +7,66 @@ import { GoogleGenAI } from "@google/genai";
 
 // Initialize the client with explicit API key from environment variable
 const ai = new GoogleGenAI({apiKey: process.env.GEMINI_API_KEY});
+const COMPLETION_TIMEOUT_MS = 12_000;
+const MAX_BLOCK_CHARS = 3200;
+const HALF_BLOCK_CHARS = Math.floor(MAX_BLOCK_CHARS / 2);
+
+const limitText = (value, { max = MAX_BLOCK_CHARS, fromEnd = false } = {}) => {
+  if (typeof value !== 'string' || !value.trim()) return '';
+  if (value.length <= max) return value;
+  return fromEnd ? value.slice(value.length - max) : value.slice(0, max);
+};
+
+const buildStructuredContext = (blocks = {}) => {
+  if (!blocks || typeof blocks !== 'object') return '';
+
+  const segments = [];
+  if (blocks.filePath) segments.push(`File: ${blocks.filePath}`);
+  if (Array.isArray(blocks.breadcrumbs) && blocks.breadcrumbs.length) {
+    segments.push(`Breadcrumb: ${blocks.breadcrumbs.join(' / ')}`);
+  }
+  if (blocks.languageHint) segments.push(`Language hint: ${blocks.languageHint}`);
+  if (blocks.fileHeader) {
+    segments.push(`File header:\n${limitText(blocks.fileHeader)}`);
+  }
+
+  const before = limitText(blocks.beforeCursor, { max: HALF_BLOCK_CHARS, fromEnd: true });
+  const after = limitText(blocks.afterCursor, { max: HALF_BLOCK_CHARS, fromEnd: false });
+  if (before || after) {
+    segments.push(`${before}<<CURSOR>>${after}`);
+  }
+
+  if (blocks.selection) {
+    segments.push(`User selection:\n${limitText(blocks.selection, { max: HALF_BLOCK_CHARS })}`);
+  }
+  if (blocks.fileTail) {
+    segments.push(`File tail:\n${limitText(blocks.fileTail)}`);
+  }
+  if (blocks.notes) {
+    segments.push(`Notes:\n${limitText(blocks.notes)}`);
+  }
+
+  return segments.filter(Boolean).join('\n\n').trim();
+};
+
+const withTimeout = (promise, timeoutMs = COMPLETION_TIMEOUT_MS) => {
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      reject(new Error('AI completion timed out'));
+    }, timeoutMs);
+
+    promise.then(
+      (value) => {
+        clearTimeout(timeoutId);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timeoutId);
+        reject(err);
+      }
+    );
+  });
+};
 
 const trimContext = code => {
   if (code.length <= AI_COMPLETION_MAX_INPUT_CHARS) return code;
@@ -94,7 +154,8 @@ export async function POST(request) {
     bodyForContext = body;
   }
 
-  const rawContext = gatherContext(bodyForContext);
+  const structured = buildStructuredContext(body?.contextBlocks);
+  const rawContext = [structured, gatherContext(bodyForContext)].filter(Boolean).join('\n\n').trim();
   if (!rawContext) return NextResponse.json({ completion: '' }, { status: 200 });
 
   const context = trimContext(rawContext);
@@ -102,7 +163,10 @@ export async function POST(request) {
   const prompt = buildPrompt(context, language, body?.cursor);
 
   try {
-    const response = await ai.models.generateContent({ model: 'gemini-2.5-flash-lite', contents: prompt });
+    const response = await withTimeout(
+      ai.models.generateContent({ model: 'gemini-2.5-flash-lite', contents: prompt }),
+      COMPLETION_TIMEOUT_MS
+    );
     const completionText = response.text || '';
     const cleaned = sanitize(completionText);
 

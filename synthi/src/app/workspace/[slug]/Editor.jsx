@@ -37,10 +37,71 @@ import prettier from "prettier/standalone";
 import babel from "prettier/plugins/babel";
 import estree from "prettier/plugins/estree";
 
-const trimCompletionContext = (code) => {
+const trimCompletionContext = (code, cursorPosition = null) => {
     if (!code) return '';
     if (code.length <= AI_COMPLETION_MAX_INPUT_CHARS) return code;
-    return code.slice(-AI_COMPLETION_MAX_INPUT_CHARS);
+
+    if (!cursorPosition) {
+        return code.slice(-AI_COMPLETION_MAX_INPUT_CHARS);
+    }
+
+    const lines = code.split(/\r?\n/);
+    const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+    const lineIndex = clamp((cursorPosition.lineNumber || 1) - 1, 0, lines.length - 1);
+    const columnIndex = clamp((cursorPosition.column || 1) - 1, 0, lines[lineIndex]?.length ?? 0);
+
+    let offset = 0;
+    for (let i = 0; i < lineIndex; i++) {
+        offset += (lines[i]?.length ?? 0) + 1; // account for newline
+    }
+    offset += columnIndex;
+
+    const halfWindow = Math.floor(AI_COMPLETION_MAX_INPUT_CHARS / 2);
+    let start = Math.max(0, offset - halfWindow);
+    let end = Math.min(code.length, start + AI_COMPLETION_MAX_INPUT_CHARS);
+
+    if ((end - start) < AI_COMPLETION_MAX_INPUT_CHARS) {
+        start = Math.max(0, end - AI_COMPLETION_MAX_INPUT_CHARS);
+    }
+
+    const beforeBreak = code.lastIndexOf('\n', start - 1);
+    if (beforeBreak !== -1) start = beforeBreak + 1;
+    const afterBreak = code.indexOf('\n', end);
+    if (afterBreak !== -1 && afterBreak > end) end = afterBreak;
+
+    return code.slice(start, end);
+};
+
+const CONTEXT_SIDE_CHARS = 1600;
+const MAX_EDGE_LINES = 60;
+const MAX_SELECTION_CHARS = 1200;
+
+const takeLastChars = (value = '', max = CONTEXT_SIDE_CHARS) => {
+    if (typeof value !== 'string') return '';
+    if (value.length <= max) return value;
+    return value.slice(value.length - max);
+};
+
+const takeFirstChars = (value = '', max = CONTEXT_SIDE_CHARS) => {
+    if (typeof value !== 'string') return '';
+    if (value.length <= max) return value;
+    return value.slice(0, max);
+};
+
+const buildEdgePreview = (lines = [], count = MAX_EDGE_LINES) => {
+    if (!Array.isArray(lines) || !lines.length) {
+        return { head: '', tail: '' };
+    }
+    const safeCount = Math.max(1, count);
+    const head = lines.slice(0, safeCount).join('\n');
+    const tail = lines.slice(-safeCount).join('\n');
+    return { head, tail };
+};
+
+const clampSelection = (text = '') => {
+    if (typeof text !== 'string' || !text.trim()) return '';
+    if (text.length <= MAX_SELECTION_CHARS) return text;
+    return text.slice(-MAX_SELECTION_CHARS);
 };
 
 const TerminalManagerDyn = dynamic(() => import('../TerminalManager.jsx'), {
@@ -127,6 +188,32 @@ const EditorPanel = ({
     const eventDisposablesRef = useRef([]);
     const prevActiveFileRef = useRef(null);
     const inlineAcceptCommandIdRef = useRef(null);
+    const cancelActiveCompletion = useCallback(({ resetSuggestion = false, reason = 'user-cancelled' } = {}) => {
+        let changed = false;
+
+        if (aiCompletionAbortControllerRef.current) {
+            try {
+                aiCompletionAbortControllerRef.current.abort(reason);
+            } catch (e) {
+                // ignore abort errors
+            }
+            aiCompletionAbortControllerRef.current = null;
+            changed = true;
+        }
+
+        if (resetSuggestion) {
+            if (aiCompletionCacheRef.current?.suggestion || aiCompletionCursorRef.current) {
+                aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
+                aiCompletionCursorRef.current = null;
+                changed = true;
+            }
+            setAiCompletionState(prev => (prev === 'idle' ? prev : 'idle'));
+        } else if (changed) {
+            setAiCompletionState(prev => (prev === 'loading' ? 'idle' : prev));
+        }
+
+        return changed;
+    }, []);
     
     const activeLanguage = activeFile ? getMonacoLanguage(activeFile.name) : 'plaintext';
     const activeFileIdentity = activeFile ? `${activeFile.path ?? ''}-${activeFile.name ?? ''}` : 'no-file';
@@ -204,11 +291,12 @@ const EditorPanel = ({
     const requestAiCompletion = useCallback((isAutoTrigger = false, manualContext = null) => {
         if (!activeFile || !editorInstance) return;
 
-        const rawContext = typeof manualContext === 'string' ? manualContext : (code || '');
-        const context = trimCompletionContext(rawContext);
-        if (!context.trim()) return;
-
         const cursorPosition = editorInstance.getPosition();
+        const rawContext = typeof manualContext === 'string'
+            ? manualContext
+            : (editorInstance?.getValue?.() ?? code ?? '');
+        const context = trimCompletionContext(rawContext, cursorPosition);
+        if (!context.trim()) return;
         // Don't trigger auto-AI if we are in the middle of a line (usually annoying)
         // Only trigger if at end of line or end of file for cleaner UX
         if (isAutoTrigger && cursorPosition) {
@@ -234,23 +322,81 @@ const EditorPanel = ({
 
         // Rate-limit identical requests: if we requested same context recently, skip
         const now = Date.now();
-        if (aiLastRequestRef.current.context === context && (now - aiLastRequestRef.current.time) < 2000) {
+        if (aiLastRequestRef.current.context === context && (now - aiLastRequestRef.current.time) < 1200) {
             return;
         }
         aiLastRequestRef.current = { context, time: now };
 
+        cancelActiveCompletion({ resetSuggestion: true, reason: 'superseded' });
         aiCompletionCursorRef.current = cursorPosition ? { ...cursorPosition } : null;
-        aiCompletionAbortControllerRef.current?.abort();
-        
+
         const controller = new AbortController();
         aiCompletionAbortControllerRef.current = controller;
         setAiCompletionState('loading');
+
+        const model = editorInstance.getModel();
+        const fullDocument = typeof manualContext === 'string' ? manualContext : (model?.getValue?.() ?? rawContext);
+        let cursorOffset = fullDocument.length;
+        if (model && cursorPosition) {
+            try {
+                cursorOffset = model.getOffsetAt(cursorPosition);
+            } catch (e) {
+                cursorOffset = fullDocument.length;
+            }
+        }
+        const beforeCursor = takeLastChars(fullDocument.slice(0, cursorOffset));
+        const afterCursor = takeFirstChars(fullDocument.slice(cursorOffset));
+        const selectionRange = editorInstance.getSelection ? editorInstance.getSelection() : null;
+        let selectedText = '';
+        try {
+            if (selectionRange && !selectionRange.isEmpty() && model) {
+                selectedText = clampSelection(model.getValueInRange(selectionRange));
+            }
+        } catch (e) {
+            selectedText = '';
+        }
+        let fileHeader = '';
+        let fileTail = '';
+        try {
+            if (model?.getLinesContent) {
+                const lines = model.getLinesContent();
+                const edges = buildEdgePreview(lines, MAX_EDGE_LINES);
+                fileHeader = takeFirstChars(edges.head, CONTEXT_SIDE_CHARS);
+                fileTail = takeLastChars(edges.tail, CONTEXT_SIDE_CHARS);
+            }
+        } catch (e) {
+            // ignore preview errors
+        }
+
+        const payload = {
+            code: context,
+            language: activeLanguage,
+            cursor: cursorPosition ? { line: cursorPosition.lineNumber, column: cursorPosition.column } : null,
+            contextBlocks: {
+                beforeCursor,
+                afterCursor,
+                selection: selectedText || null,
+                filePath: activeFile?.path || activeFile?.name || null,
+                breadcrumbs: breadcrumb || null,
+                languageHint: activeLanguage,
+                fileHeader: fileHeader || null,
+                fileTail: fileTail || null,
+            },
+        };
+
+        if (activeFile?.name || activeFile?.path) {
+            const metadata = [
+                activeFile?.name ? `Active file: ${activeFile.name}` : null,
+                activeFile?.path ? `Path: ${activeFile.path}` : null,
+            ].filter(Boolean).join('\n');
+            if (metadata) payload.prompt = metadata;
+        }
 
         fetch(API_COMPLETION_ROUTE, {
             method: 'POST',
             signal: controller.signal,
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ code: context, language: activeLanguage }),
+            body: JSON.stringify(payload),
         })
         .then(async (res) => {
             if (!res.ok) throw new Error('Failed');
@@ -294,7 +440,7 @@ const EditorPanel = ({
                 setAiCompletionState('idle');
             }
         });
-    }, [activeFile, activeLanguage, code, editorInstance]);
+    }, [activeFile, activeLanguage, breadcrumb, cancelActiveCompletion, code, editorInstance]);
 
     // --- Monaco Providers ---
 
@@ -384,19 +530,35 @@ const EditorPanel = ({
 
     // --- Event Handlers ---
 
+    useEffect(() => {
+        if (!editorInstance) return;
+        const disposables = [];
+        try {
+            disposables.push(editorInstance.onDidType(() => {
+                cancelActiveCompletion({ resetSuggestion: true, reason: 'typing' });
+            }));
+            disposables.push(editorInstance.onDidChangeCursorSelection(() => {
+                cancelActiveCompletion({ resetSuggestion: true, reason: 'cursor-move' });
+            }));
+        } catch (e) {
+            // ignore if monaco is missing APIs
+        }
+
+        return () => {
+            disposables.forEach((disposable) => disposable?.dispose?.());
+        };
+    }, [editorInstance, cancelActiveCompletion]);
+
     const handleCodeChange = (newCode) => {
+        cancelActiveCompletion({ resetSuggestion: true, reason: 'edit' });
         dispatch(updateContent(newCode));
-        
-        // Reset specific AI state
-        setAiCompletionState('idle');
-        aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
         
         // Debounce AI Auto-Complete (The "Cursor" experience)
         if (aiDebounceTimerRef.current) clearTimeout(aiDebounceTimerRef.current);
         aiDebounceTimerRef.current = setTimeout(() => {
-            // Auto-trigger AI after 600ms of inactivity using the latest buffer
+            // Auto-trigger AI after a brief pause using the latest buffer
             requestAiCompletion(true, newCode);
-        }, 600);
+        }, 400);
     };
 
     const handleSave = useCallback(() => {
