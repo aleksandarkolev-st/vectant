@@ -1,0 +1,171 @@
+
+Purpose
+=======
+This document explains how to enable and supply multi-file context to the AI engine so the model
+can reason about multiple files in a workspace (imports/usages, cross-file refactors, whole-repo
+analysis). It describes the recommended payload shape, server/gateway changes, prompt formatting,
+frontend changes (including the `Editor.jsx` adjustments), size/trimming strategies and security
+considerations.
+
+Summary (one-liner)
+--------------------
+Send an ordered `files` array alongside the active file content; limit and trim files to respect
+token/input limits; build an explicit prompt that lists each file with a clear header so the LLM
+can find and reference files by path.
+
+API / Payload (recommended)
+---------------------------
+Use the existing AI analyze endpoints but accept an optional `files` array. Keep backwards
+compatibility by continuing to accept `code` (the active buffer). Example request body:
+
+{
+  "lang": "typescript",
+  "code": "// active file content...",
+  "cursor": { "line": 10, "column": 3 },
+  "prompt": "Make `foo` more efficient",
+  "mode": "patch",
+  "files": [
+    { "path": "src/lib/util.ts", "name": "util.ts", "content": "export function x() { ... }" },
+    { "path": "src/components/Button.tsx", "name": "Button.tsx", "content": "import {x} from '../lib/util'\n..." }
+  ]
+}
+
+Server / Gateway changes
+------------------------
+- Gateway (e.g. `gateway/server.js`): forward `data.files` to the backend when present. The gateway
+  currently forwards `{ lang, code, prompt, mode }` — add `files` passthrough.
+- Backend (FastAPI `main.py`): update request models `AnalyzeAiRequest` and `AnalyzeRequest` to allow
+  optional `files: list[dict]` (or `List[FileModel]`). Update the AI provider call to accept the files
+  argument and include it when building prompts.
+
+Prompt engineering / formatting rules
+------------------------------------
+The LLM understands structure best when files are delimited and labeled. Use a predictable, machine-
+parsable format. Example:
+
+==== FILE: src/lib/util.ts ====
+<file content here>
+==== END FILE: src/lib/util.ts ====
+
+Include the active/working file first (or last depending on preference) and include a short
+metadata header for each file (path, language, size). If you need to indicate which file the
+assistant should focus on, add a separate directive such as `FOCUS: src/components/Button.tsx`.
+
+Ordering & prioritization
+-------------------------
+- Include the active file and any files it imports/depends on (one level deep) first.
+- Add additional, high-level files (e.g. README, package.json, schema files) afterward.
+- If the repo is large, only include a focused subset: active file + direct imports + tests that mention
+  the active file + small config files.
+
+Size limits & trimming
+---------------------
+- Set a reasonable cap (e.g. total characters or tokens) per request to avoid exceeding model context.
+- Trim large files to heads/tails and place a cursor marker near the active location. Example:
+  include the first 1600 chars and last 1600 chars, and also an extract around the cursor position.
+- Provide `fileHeader` and `fileTail` fields (as `Editor.jsx` already computes) to help build a
+  structured context without sending entire files.
+
+Backend changes (implementation notes)
+--------------------------------------
+- Update Pydantic models:
+  from pydantic import BaseModel
+  class FileModel(BaseModel):
+      path: str
+      name: str | None = None
+      content: str
+
+  class AnalyzeAiRequest(BaseModel):
+      code: str
+      lang: str
+      prompt: str | None = None
+      mode: str | None = None
+      files: list[FileModel] | None = None
+
+- Pass `files` to provider.ask_llm as an extra parameter. Update GeminiProvider.ask_llm to accept
+  `files` and append them to the prompt (formatted with file markers). Ensure `max_output_tokens`
+  and model selection are adequate for larger prompts.
+
+Frontend changes (`Editor.jsx` and related)
+------------------------------------------
+What to change in `synthi/src/app/workspace/[slug]/Editor.jsx`:
+
+1. When building the completion payload (the `payload` variable before `fetch(API_COMPLETION_ROUTE, ...)`),
+   add a `files` array. Gather files from the workspace cache and the file tree. Example (pseudo):
+
+  const files = [];
+  // include active file fully or trimmed
+  files.push({ path: activeFile.path, name: activeFile.name, content: fullDocument });
+
+  // include other open/cached files that are directly referenced (simple heuristic: imports, imports scanned by regex)
+  const cachedKeys = Array.from(fileContentCache.keys()); // workspaceSlice keeps cache
+  for (const key of cachedKeys) {
+     if (key !== activeFile.path && shouldIncludeFile(key)) {
+        files.push({ path: key, name: basename(key), content: fileContentCache.get(key) });
+     }
+  }
+
+  payload.files = files;
+
+2. Where to get the cache: `workspaceSlice` already stores `fileContentCache`. Expose it via a selector
+   or add a small helper in the hook that can read cached contents. Make sure you do not serialize
+   non-serializable values across network boundaries.
+
+3. Size guard: before sending, trim each file's content to a safe size (e.g. heads/tails + cursor window)
+   using the existing `takeFirstChars`, `takeLastChars` utilities or `fileHeader`/`fileTail` logic in the editor.
+
+4. Optionally add a user preference / toggle to enable sending workspace files to AI (privacy).
+
+Server-side / API route changes in Next.js (completion route)
+---------------------------------------------------------
+- `src/app/api/completion/route.js` already supports `files` in `gatherContext` — ensure the editor sends
+  `files` as described. The route concatenates `files` contents when building the context, so the LLM
+  will see them. If you want more structured inputs (file headers, JSON metadata), modify `gatherContext`
+  to wrap files using `==== FILE: ... ====` markers.
+
+Prompt guidance for the AI
+-------------------------
+- Tell the model explicitly how to reference files: "When referring to other files, identify path and
+  code block, e.g. `src/lib/util.ts: function x()`. Only modify the active file unless asked to apply
+  cross-file changes." Add that instruction at the top of prompts when `files` are present.
+
+Security & privacy
+------------------
+- Do NOT include files with secrets (private keys, environment files) unless the user explicitly opts-in.
+- Add a toggle to the UI and warn users if large or sensitive files are being sent.
+
+Example prompt assembly (backend)
+---------------------------------
+Header: brief instructions + file index
+
+FILES:
+==== FILE: src/lib/util.ts ====
+<content...>
+==== END FILE ====
+
+FOCUS: src/components/Button.tsx
+
+User instruction: "Refactor button props to accept `variant` and update usages. Return a unified diff."
+
+The model will then be able to search the provided files by path and produce focused edits or explanations.
+
+Testing & rollout
+-----------------
+1. Start by enabling multi-file for small workspaces only (active + 1-3 files).
+2. Log total characters/token usage per request to monitor model context usage.
+3. Add server-side validation to reject overly large payloads.
+
+Further ideas
+-------------
+- Provide an index file with `import` graph (parse small number of files) and send only the import graph
+  plus resized file contents for the model to prioritize.
+- Support an explicit `focus` list of files from UI where the user chooses which files to include.
+
+Contact
+-------
+If you want, I can create a small patch that:
+- adds `files` passthrough in `gateway/server.js`,
+- extends `AnalyzeAiRequest` in `ai-backend/ai-engine/main.py`, and
+- updates `Editor.jsx` to send `files` from `fileContentCache` (with trimming). 
+
+End of guide.

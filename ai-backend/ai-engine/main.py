@@ -1,4 +1,8 @@
 # PROTOTYPING AI ENGINE WITH PYTHON, LATER SWITCH TO RUST
+from __future__ import annotations
+
+from typing import List, Optional
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from analyzer import get_analyzer
@@ -9,9 +13,17 @@ from llm.providers import get_provider
 app = FastAPI()
 
 
+class FileModel(BaseModel):
+    path: Optional[str] = None
+    name: Optional[str] = None
+    content: str
+
+
 class AnalyzeRequest(BaseModel):
     code: str
     lang: str
+    files: Optional[List[FileModel]] = None
+    focus: Optional[str] = None
 
 
 class AnalyzeAiRequest(BaseModel):
@@ -19,6 +31,8 @@ class AnalyzeAiRequest(BaseModel):
     lang: str
     prompt: str = None
     mode: str = None
+    files: Optional[List[FileModel]] = None
+    focus: Optional[str] = None
 
 
 @app.post("/analyze/static")
@@ -39,7 +53,14 @@ def analyze_code(req: AnalyzeRequest):
 @app.post("/analyze/ai")
 def analyze_code_ai(req: AnalyzeAiRequest):
     provider = get_provider()
-    ai_suggestion = provider.ask_llm(req.code, req.lang, req.prompt, mode=req.mode)
+    ai_suggestion = provider.ask_llm(
+        req.code,
+        req.lang,
+        req.prompt,
+        mode=req.mode,
+        files=req.files,
+        focus=req.focus,
+    )
 
     return {
         "ai_suggestion": ai_suggestion,

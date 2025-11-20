@@ -1,5 +1,5 @@
 import os
-from typing import Optional
+from typing import Any, Mapping, Optional, Sequence
 from .base import AiProvider
 
 import google.generativeai as genai
@@ -37,7 +37,15 @@ class GeminiProvider(AiProvider):
             )
         return self._client
 
-    def ask_llm(self, code: str, lang: str, prompt: str = None, mode: str = None) -> str:
+    def ask_llm(
+        self,
+        code: str,
+        lang: str,
+        prompt: str = None,
+        mode: str = None,
+        files: Optional[Sequence[Mapping[str, Any]]] = None,
+        focus: Optional[str] = None,
+    ) -> str:
         if not os.getenv("GEMINI_API_KEY"):
             return "LLM disabled: set GEMINI_API_KEY to enable suggestions."
 
@@ -46,18 +54,18 @@ class GeminiProvider(AiProvider):
         # and 'patch' (return a unified diff). For other cases, prefer the standard prompt
         # but include the user's instruction.
         if mode and isinstance(mode, str) and mode.lower() == 'fullfile':
-            full_prompt = build_fullfile_prompt(code, lang, prompt or '')
+            full_prompt = build_fullfile_prompt(code, lang, prompt or '', files=files, focus=focus)
         elif mode and isinstance(mode, str) and mode.lower() == 'patch':
-            full_prompt = build_patch_prompt(code, lang, prompt or '')
+            full_prompt = build_patch_prompt(code, lang, prompt or '', files=files, focus=focus)
         else:
             # Backwards-compat: some clients include the instructive string in `prompt`.
             if prompt and 'Respond only with the updated full file contents' in prompt:
-                full_prompt = build_fullfile_prompt(code, lang, prompt)
+                full_prompt = build_fullfile_prompt(code, lang, prompt, files=files, focus=focus)
             else:
                 # If user's prompt explicitly asks for minimal edits or renames,
                 # augment the prompt with an instruction to prefer minimal changes.
                 augmented = (prompt or '') + "\n\nWhen possible prefer minimal edits and only change what the user requests." 
-                full_prompt = build_prompt(code, lang, user_prompt=augmented)
+                full_prompt = build_prompt(code, lang, user_prompt=augmented, files=files, focus=focus)
 
         try:
             response = self._get_client().generate_content(full_prompt)

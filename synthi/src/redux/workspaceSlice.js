@@ -206,6 +206,17 @@ const workspaceSlice = createSlice({
         updateContent: (state, action) => {
             state.currentContent = action.payload || '';
         },
+        setExternalFileContent: (state, action) => {
+            const { path, content } = action.payload || {};
+            if (!path || typeof content !== 'string') return;
+            const newMap = new Map(state.fileContentCache);
+            newMap.set(path, content);
+            state.fileContentCache = newMap;
+            if (state.activeFile?.path === path) {
+                state.currentContent = content;
+                state.savedContent = content;
+            }
+        },
         // Utility reducer used by thunks for internal cleanup
         renameItemStateUpdate: (state, action) => {
             const { item, newName, newPath } = action.payload;
@@ -270,7 +281,9 @@ const workspaceSlice = createSlice({
                 
                 // Cache unsaved content of OLD active file before switching
                 if (state.activeFile && state.activeFile.path && state.currentContent!== state.savedContent) {
-                    state.fileContentCache.set(state.activeFile.path, state.currentContent);
+                    const updatedCache = new Map(state.fileContentCache);
+                    updatedCache.set(state.activeFile.path, state.currentContent);
+                    state.fileContentCache = updatedCache;
                 }
 
                 // Switch to new file
@@ -280,7 +293,9 @@ const workspaceSlice = createSlice({
                 
                 // Update cache if content was newly fetched (and not from cache)
                 if (!fromCache) {
-                    state.fileContentCache.set(file.path, content);
+                    const updatedCache = new Map(state.fileContentCache);
+                    updatedCache.set(file.path, content);
+                    state.fileContentCache = updatedCache;
                 }
             });
 
@@ -289,7 +304,9 @@ const workspaceSlice = createSlice({
           .addCase(saveFileContentThunk.fulfilled, (state, action) => {
                 if (action.payload) {
                     state.savedContent = action.payload;
-                    state.fileContentCache.set(state.activeFile.path, action.payload);
+                    const updatedCache = new Map(state.fileContentCache);
+                    updatedCache.set(state.activeFile.path, action.payload);
+                    state.fileContentCache = updatedCache;
                 }
             });
 
@@ -338,7 +355,7 @@ const workspaceSlice = createSlice({
     },
 });
 
-export const { updateContent, renameItemStateUpdate, setSlug } = workspaceSlice.actions;
+export const { updateContent, renameItemStateUpdate, setSlug, setExternalFileContent } = workspaceSlice.actions;
 
 // --- MEMOIZED SELECTORS ---
 
@@ -356,6 +373,13 @@ export const selectIsUnsaved = createSelector(
 export const selectBreadcrumb = createSelector(
     selectActiveFile,
     (activeFile) => activeFile? activeFile.path.split("/").filter(Boolean) : []
+);
+export const selectFileCacheEntries = createSelector(
+    (state) => state.workspace?.fileContentCache,
+    (cache) => {
+        if (!cache || typeof cache.entries !== 'function') return [];
+        return Array.from(cache.entries());
+    }
 );
 
 export default workspaceSlice.reducer;

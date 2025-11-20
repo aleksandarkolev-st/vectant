@@ -70,7 +70,7 @@ export function useAnalyzerGateway({
     }
   }, []);
 
-  const askAi = useCallback(async ({ code, lang, prompt, mode, onProgress } = {}) => {
+  const askAi = useCallback(async ({ code, lang, prompt, mode, files, focusPath, onProgress } = {}) => {
     if (!clientRef.current) {
       throw new Error('Gateway client is not ready yet');
     }
@@ -86,6 +86,10 @@ export function useAnalyzerGateway({
       let payload = { code, lang };
       if (typeof prompt === 'string') payload.prompt = prompt;
       if (typeof mode === 'string') payload.mode = mode;
+      if (Array.isArray(files) && files.length) payload.files = files;
+      if (typeof focusPath === 'string' && focusPath.trim()) {
+        payload.focus = focusPath.trim();
+      }
       // If the caller provided an onProgress callback, forward it to the client
       const options = {};
       if (typeof onProgress === 'function') options.onStream = (data) => {

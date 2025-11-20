@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import DOMPurify from 'dompurify';
 import { Send, X, Plus } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -9,6 +9,10 @@ import { getFileLanguage } from '@/utils/fileUtils';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { diffLines, applyPatch } from 'diff';
+import { useAppDispatch, useAppSelector } from '@/redux/hooks';
+import { selectFileCacheEntries, setExternalFileContent } from '@/redux/workspaceSlice';
+import { buildFilesPayload } from '@/utils/multiFileContext';
+import { api } from '@/services/api';
 
 const createChatSession = (index = 1) => ({
     id: `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -16,6 +20,7 @@ const createChatSession = (index = 1) => ({
     messages: [],
     suggestedCode: null,
     showDiff: true,
+    fileSuggestions: [],
 });
 
 const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, editor = null, docked = false, onSuggest = null, onBusy = null }) => {
@@ -31,6 +36,127 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
     const messages = activeSession?.messages ?? [];
     const suggestedCode = activeSession?.suggestedCode ?? null;
     const showDiff = activeSession?.showDiff ?? true;
+    const dispatch = useAppDispatch();
+    const fileCacheEntries = useAppSelector(selectFileCacheEntries);
+    const workspaceSlug = useAppSelector((state) => state.workspace.slug);
+    const rawFiles = useAppSelector((state) => state.workspace.rawFiles || []);
+    const cachedFileMap = useMemo(() => new Map(fileCacheEntries), [fileCacheEntries]);
+    const fileSuggestions = activeSession?.fileSuggestions ?? [];
+    const flattenWorkspaceFiles = useMemo(() => {
+        const output = [];
+        const walk = (nodes = []) => {
+            nodes.forEach((node) => {
+                if (!node) return;
+                if (node.isFolder && Array.isArray(node.children)) {
+                    walk(node.children);
+                } else if (!node.isFolder && node.path) {
+                    output.push(node.path);
+                }
+            });
+        };
+        walk(rawFiles);
+        return output;
+    }, [rawFiles]);
+
+    const resolveWorkspacePath = useCallback((inputPath) => {
+        if (!inputPath) return null;
+        const normalized = inputPath.replace(/^\.\/+/, '').trim();
+        if (!normalized) return null;
+        if (flattenWorkspaceFiles.includes(normalized)) {
+            return normalized;
+        }
+        const matches = flattenWorkspaceFiles.filter((p) => p.endsWith(normalized));
+        if (matches.length === 1) return matches[0];
+        // Prefer the shortest match if multiple hit the suffix
+        if (matches.length > 1) {
+            return matches.reduce((shortest, current) =>
+                current.length < shortest.length ? current : shortest,
+            matches[0]);
+        }
+        return null;
+    }, [flattenWorkspaceFiles]);
+
+    const renderDiffChunkList = (chunks = []) => {
+        if (!chunks || !Array.isArray(chunks) || chunks.length === 0) {
+            return <div className="px-1 text-gray-500">No changes detected.</div>;
+        }
+        return chunks.map((chunk, ci) => {
+            if (chunk.type === 'eq') {
+                return chunk.items.map((row) => (
+                    <div key={`eq-${row.lineOld}-${row.lineNew}-${ci}`} className="px-1 text-gray-400 flex gap-2">
+                        <div className="w-10 text-right text-[11px] text-gray-500">{row.lineNew}</div>
+                        <div className="flex-1 break-words">{row.text}</div>
+                    </div>
+                ));
+            }
+            if (chunk.type === 'eq-elide') {
+                return (
+                    <div key={`elide-${ci}`}>
+                        {chunk.head.map((row) => (
+                            <div key={`head-${row.lineNew}-${ci}`} className="px-1 text-gray-400 flex gap-2">
+                                <div className="w-10 text-right text-[11px] text-gray-500">{row.lineNew}</div>
+                                <div className="flex-1 break-words">{row.text}</div>
+                            </div>
+                        ))}
+                        <div className="px-1 text-gray-500 text-center">... {chunk.elidedCount} unchanged lines ...</div>
+                        {chunk.tail.map((row) => (
+                            <div key={`tail-${row.lineNew}-${ci}`} className="px-1 text-gray-400 flex gap-2">
+                                <div className="w-10 text-right text-[11px] text-gray-500">{row.lineNew}</div>
+                                <div className="flex-1 break-words">{row.text}</div>
+                            </div>
+                        ))}
+                    </div>
+                );
+            }
+            if (chunk.type === 'add') {
+                return chunk.items.map((row) => (
+                    <div key={`add-${row.lineNew}-${ci}`} className="px-1 flex gap-2 text-emerald-300 bg-emerald-900/5">
+                        <div className="w-10 text-right text-[11px] text-gray-500">{row.lineNew}</div>
+                        <div className="flex-1 break-words">+ {row.text}</div>
+                    </div>
+                ));
+            }
+            if (chunk.type === 'rem') {
+                return chunk.items.map((row) => (
+                    <div key={`rem-${row.lineOld}-${ci}`} className="px-1 flex gap-2 text-rose-300 bg-rose-900/5">
+                        <div className="w-10 text-right text-[11px] text-gray-500">{row.lineOld}</div>
+                        <div className="flex-1 break-words">- {row.text}</div>
+                    </div>
+                ));
+            }
+            return null;
+        });
+    };
+
+    const fileSuggestionStatusClasses = (status) => {
+        switch (status) {
+            case 'saving':
+                return 'text-amber-200 bg-amber-500/10 border border-amber-500/40';
+            case 'applied':
+                return 'text-emerald-200 bg-emerald-500/10 border border-emerald-500/40';
+            case 'rejected':
+                return 'text-gray-300 bg-gray-600/10 border border-gray-500/30';
+            case 'error':
+                return 'text-rose-200 bg-rose-500/10 border border-rose-500/40';
+            default:
+                return 'text-amber-200 bg-amber-500/10 border border-amber-500/40';
+        }
+    };
+
+    const fileSuggestionStatusLabel = (status) => {
+        switch (status) {
+            case 'saving':
+                return 'Saving...';
+            case 'applied':
+                return 'Applied';
+            case 'rejected':
+                return 'Dismissed';
+            case 'error':
+                return 'Error';
+            default:
+                return 'Pending';
+        }
+    };
 
     const mutateSession = (sessionId, mutator) => {
         setChatSessions((prev) =>
@@ -75,7 +201,7 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
                 scrollArea.scrollTop = scrollArea.scrollHeight;
             }
         }
-    }, [messages, suggestedCode]);
+    }, [messages, suggestedCode, fileSuggestions]);
 
     const extractCodeFromMarkdown = (text) => {
         if (!text) return null;
@@ -152,6 +278,165 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
         return chunks;
     };
 
+const parseFileDiffBlocks = (text = '') => {
+    if (!text) return [];
+    const blocks = [];
+    const segments = text.split(/(?=FILE:\s*)/i);
+    for (const segment of segments) {
+        if (!segment.trim().startsWith('FILE:')) continue;
+        const headerMatch = segment.match(/^FILE:\s*([^\n]+)\s*(?:\nLINES:[^\n]*\s*)?/i);
+        if (!headerMatch) continue;
+        const path = headerMatch[1]?.trim();
+        if (!path) continue;
+        const body = segment.slice(headerMatch[0].length).trim();
+        if (!body) continue;
+        const fenceMatch = body.match(/```(?:diff|patch)?\s*([\s\S]*?)```/i);
+        const raw = fenceMatch && fenceMatch[1] ? fenceMatch[1].trim() : body.trim();
+        if (!raw) continue;
+        const normalized = raw.replace(/\r\n/g, '\n').trim();
+        const looksLikeDiff = /^---\s+/m.test(normalized) && /^\+\+\+\s+/m.test(normalized) && /@@\s+/m.test(normalized);
+        blocks.push({ path, diffText: normalized, isValidDiff: looksLikeDiff });
+    }
+    return blocks;
+};
+
+    const getBaseContentForPath = async (targetPath) => {
+        if (!targetPath) return null;
+        const resolvedPath = resolveWorkspacePath(targetPath) || targetPath;
+        if (activeFile?.path === resolvedPath) {
+            if (editor?.getValue) {
+                return editor.getValue();
+            }
+            return currentCode || '';
+        }
+        if (cachedFileMap.has(resolvedPath)) {
+            return cachedFileMap.get(resolvedPath);
+        }
+        if (workspaceSlug) {
+            try {
+                return await api.fetchFileContent(workspaceSlug, resolvedPath);
+            } catch (err) {
+                console.error('Failed to load file content for AI suggestion', err);
+            }
+        }
+        return null;
+    };
+
+    const buildMultiFileSuggestions = async (rawText) => {
+        const blocks = parseFileDiffBlocks(rawText);
+        if (!blocks.length) return [];
+        const hydrated = [];
+        for (const block of blocks) {
+            if (!block.isValidDiff) {
+                hydrated.push({
+                    path: block.path,
+                    resolvedPath: resolveWorkspacePath(block.path) || block.path,
+                    diffText: block.diffText,
+                    status: 'error',
+                    error: 'AI response did not include a valid unified diff. Please ask again with patch mode.',
+                });
+                continue;
+            }
+            const resolvedPath = resolveWorkspacePath(block.path) || block.path;
+            const baseContent = await getBaseContentForPath(resolvedPath);
+            if (typeof baseContent !== 'string') {
+                hydrated.push({
+                    path: block.path,
+                    resolvedPath,
+                    diffText: block.diffText,
+                    status: 'error',
+                    error: 'Unable to load current file contents. Open the file and try again.',
+                });
+                continue;
+            }
+            const patched = applyPatch(baseContent, block.diffText);
+            if (patched === false) {
+                hydrated.push({
+                    path: block.path,
+                    resolvedPath,
+                    diffText: block.diffText,
+                    status: 'error',
+                    error: 'Failed to apply AI diff to the current file contents.',
+                });
+                continue;
+            }
+            hydrated.push({
+                path: block.path,
+                resolvedPath,
+                diffText: block.diffText,
+                originalContent: baseContent,
+                updatedContent: patched,
+                chunks: computeDiffChunks(baseContent, patched),
+                status: 'pending',
+            });
+        }
+        return hydrated;
+    };
+
+    const applyContentToPath = (path, newContent) => {
+        if (!path || typeof newContent !== 'string') return;
+        const resolvedPath = resolveWorkspacePath(path) || path;
+        if (activeFile?.path === resolvedPath && editor && typeof editor.setValue === 'function') {
+            editor.setValue(newContent);
+        }
+        dispatch(setExternalFileContent({ path: resolvedPath, content: newContent }));
+    };
+
+    const handleApplyFileSuggestion = async (sessionId, path) => {
+        if (!path) return;
+        const session = chatSessions.find((s) => s.id === sessionId);
+        const suggestion = session?.fileSuggestions?.find((fs) => fs.path === path);
+        if (!suggestion || suggestion.status !== 'pending') return;
+        if (!suggestion.updatedContent) {
+            mutateSession(sessionId, (s) => ({
+                ...s,
+                fileSuggestions: s.fileSuggestions.map((fs) =>
+                    fs.path === path ? { ...fs, status: 'error', error: 'Missing updated content from AI response.' } : fs
+                ),
+            }));
+            return;
+        }
+
+        mutateSession(sessionId, (s) => ({
+            ...s,
+            fileSuggestions: s.fileSuggestions.map((fs) =>
+                fs.path === path ? { ...fs, status: 'saving' } : fs
+            ),
+        }));
+
+        try {
+            const targetPath = suggestion.resolvedPath || resolveWorkspacePath(path) || path;
+            applyContentToPath(targetPath, suggestion.updatedContent);
+            if (workspaceSlug) {
+                const fileName = targetPath.split('/').pop() || 'file.txt';
+                await api.saveFileContent(workspaceSlug, targetPath, suggestion.updatedContent, fileName);
+            }
+            mutateSession(sessionId, (s) => ({
+                ...s,
+                fileSuggestions: s.fileSuggestions.map((fs) =>
+                    fs.path === path ? { ...fs, status: 'applied', error: null } : fs
+                ),
+            }));
+        } catch (error) {
+            mutateSession(sessionId, (s) => ({
+                ...s,
+                fileSuggestions: s.fileSuggestions.map((fs) =>
+                    fs.path === path ? { ...fs, status: 'error', error: error.message || 'Failed to save changes.' } : fs
+                ),
+            }));
+        }
+    };
+
+    const handleRejectFileSuggestion = (sessionId, path) => {
+        if (!path) return;
+        mutateSession(sessionId, (s) => ({
+            ...s,
+            fileSuggestions: s.fileSuggestions.map((fs) =>
+                fs.path === path ? { ...fs, status: 'rejected' } : fs
+            ),
+        }));
+    };
+
     const handleSendMessage = async () => {
         if (!inputValue.trim()) return;
 
@@ -176,7 +461,15 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
             const normalizedLang = (langSource || 'plaintext').toLowerCase();
             const code = currentCode || '';
             const userPrompt = inputValue;
-            const fullfileRequest = `${userPrompt}\n\nRespond only with the updated full file contents in a fenced code block (triple backticks) with the correct language tag. Do not include extra commentary.`;
+            let patchRequest = `${userPrompt}\n\nRespond ONLY with unified diffs (patch format) for every file you modify. Use fenced \`\`\`diff blocks that contain standard ---/+++ headers and @@ hunks. Include one FILE: <path> section per file. Do not include commentary outside the diff blocks.`;
+            const filesPayload = buildFilesPayload({
+                activeFile,
+                fullDocument: code,
+                cacheEntries: fileCacheEntries,
+            });
+            if (filesPayload.length) {
+                patchRequest = `${patchRequest}\n\nAdditional workspace files are attached. Reference them by their path when relevant.`;
+            }
 
             try { if (typeof onBusy === 'function') onBusy(true); } catch (e) {}
 
@@ -186,8 +479,10 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
             const response = await askAi({
                 lang: normalizedLang,
                 code,
-                prompt: fullfileRequest,
-                mode: 'fullfile',
+                prompt: patchRequest,
+                mode: 'patch',
+                files: filesPayload,
+                focusPath: activeFile?.path || activeFile?.name || null,
                 onProgress: (data) => {
                     const chunk = typeof data === 'string' ? data : (data?.partial ?? '');
                     const isFinal = typeof data === 'object' ? Boolean(data.final) : false;
@@ -229,23 +524,51 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
 
             const suggestion = response?.ai_suggestion || response?.suggestion || finalSuggestion || '';
 
-            let codeOnly = extractCodeFromMarkdown(suggestion);
-            const isRawPatch = /(^---\s+a\/.+\n\+\+\+\s+b\/)|(^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@)/m.test(suggestion || '');
-            if (!codeOnly && isRawPatch) {
-                const patched = applyPatch(code, suggestion);
-                if (patched !== false) {
-                    codeOnly = patched;
-                }
+            let multiFileSuggestions = [];
+            try {
+                multiFileSuggestions = await buildMultiFileSuggestions(suggestion || '');
+            } catch (e) {
+                multiFileSuggestions = [];
             }
+            const hasMultiFileSuggestions = multiFileSuggestions.length > 0;
 
+            let codeOnly = null;
             let displayedContent = suggestion || 'No response received';
-            if (codeOnly) {
-                displayedContent = (suggestion || '').replace(/```[\s\S]*?```/g, '');
-                displayedContent = displayedContent.replace(/<pre[^>]*>[\s\S]*?<code[^>]*>[\s\S]*?<\/code>[\s\S]*?<\/pre>/gi, '');
-                displayedContent = displayedContent.replace(/<code[^>]*>[\s\S]*?<\/code>/gi, '');
-                displayedContent = displayedContent.trim();
-                if (!displayedContent) {
-                    displayedContent = 'AI suggested code changes — preview shown below.';
+
+            if (hasMultiFileSuggestions) {
+                mutateSession(activeSession.id, (session) => ({
+                    ...session,
+                    fileSuggestions: multiFileSuggestions,
+                    suggestedCode: null,
+                    showDiff: true,
+                }));
+                try {
+                    if (typeof onSuggest === 'function') onSuggest(null);
+                } catch (e) {}
+                displayedContent = `AI suggested changes for ${multiFileSuggestions.length} file${multiFileSuggestions.length > 1 ? 's' : ''}. Review them below.`;
+            } else {
+                mutateSession(activeSession.id, (session) => ({
+                    ...session,
+                    fileSuggestions: [],
+                }));
+
+                codeOnly = extractCodeFromMarkdown(suggestion);
+                const isRawPatch = /(^---\s+a\/.+\n\+\+\+\s+b\/)|(^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@)/m.test(suggestion || '');
+                if (!codeOnly && isRawPatch) {
+                    const patched = applyPatch(code, suggestion);
+                    if (patched !== false) {
+                        codeOnly = patched;
+                    }
+                }
+
+                if (codeOnly) {
+                    displayedContent = (suggestion || '').replace(/```[\s\S]*?```/g, '');
+                    displayedContent = displayedContent.replace(/<pre[^>]*>[\s\S]*?<code[^>]*>[\s\S]*?<\/code>[\s\S]*?<\/pre>/gi, '');
+                    displayedContent = displayedContent.replace(/<code[^>]*>[\s\S]*?<\/code>/gi, '');
+                    displayedContent = displayedContent.trim();
+                    if (!displayedContent) {
+                        displayedContent = 'AI suggested code changes — preview shown below.';
+                    }
                 }
             }
 
@@ -257,7 +580,7 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
                 timestamp: new Date(),
             }];
 
-            if (codeOnly) {
+            if (!hasMultiFileSuggestions && codeOnly) {
                 mutateSession(activeSession.id, (session) => ({
                     ...session,
                     suggestedCode: codeOnly,
@@ -288,7 +611,7 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
                     content: `AI suggested code changes — preview shown below. (+${added} / -${removed})`,
                     timestamp: new Date(),
                 });
-            } else {
+            } else if (!hasMultiFileSuggestions) {
                 mutateSession(activeSession.id, (session) => ({
                     ...session,
                     suggestedCode: null,
@@ -398,8 +721,10 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
                 <div className="flex items-center justify-between px-4 py-3">
                     <h2 className="text-sm font-semibold text-gray-200">AI Assistant</h2>
                     <div className="flex items-center gap-2">
-                        {suggestedCode && (
-                            <div className="text-xs text-gray-300">Suggestion ready</div>
+                        {(suggestedCode || fileSuggestions.length > 0) && (
+                            <div className="text-xs text-gray-300">
+                                {fileSuggestions.length > 0 ? `${fileSuggestions.length} file${fileSuggestions.length > 1 ? 's' : ''} ready` : 'Suggestion ready'}
+                            </div>
                         )}
                         <button
                             onClick={onClose}
@@ -491,7 +816,49 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
                     )}
 
                     {/* Suggested code preview + diff controls */}
-                    {suggestedCode && (
+                    {fileSuggestions.length > 0 ? (
+                        <div className="space-y-3">
+                            {fileSuggestions.map((suggestion) => (
+                                <div key={suggestion.path} className="px-3 py-3 bg-[#171717] border border-[#3a3a3a] rounded">
+                                    <div className="flex items-center justify-between gap-2 mb-3">
+                                        <div>
+                                            <div className="text-sm font-medium text-gray-100 break-all">{suggestion.path}</div>
+                                            <div className={`inline-flex mt-1 px-2 py-0.5 rounded-full text-[11px] ${fileSuggestionStatusClasses(suggestion.status)}`}>
+                                                {fileSuggestionStatusLabel(suggestion.status)}
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <Button
+                                                variant="outline"
+                                                size="sm"
+                                                disabled={suggestion.status !== 'pending'}
+                                                onClick={() => handleRejectFileSuggestion(activeSession.id, suggestion.path)}
+                                            >
+                                                Reject
+                                            </Button>
+                                            <Button
+                                                variant="default"
+                                                size="sm"
+                                                disabled={suggestion.status !== 'pending' || Boolean(suggestion.error)}
+                                                onClick={() => handleApplyFileSuggestion(activeSession.id, suggestion.path)}
+                                            >
+                                                Apply
+                                            </Button>
+                                        </div>
+                                    </div>
+                                    {suggestion.error ? (
+                                        <div className="text-sm text-rose-300 bg-rose-500/5 border border-rose-500/40 px-3 py-2 rounded">
+                                            {suggestion.error}
+                                        </div>
+                                    ) : (
+                                        <div className="max-h-[55vh] overflow-auto text-xs font-mono bg-[#0f0f10] rounded p-2">
+                                            {renderDiffChunkList(suggestion.chunks)}
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    ) : suggestedCode && (
                         <div className="px-2 py-2 bg-[#171717] border border-[#3a3a3a] rounded">
                             <div className="flex items-center justify-between mb-2">
                                 <div className="text-sm font-medium text-gray-200">Suggested Changes</div>
@@ -514,60 +881,7 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
                                 <pre className="max-h-[55vh] overflow-auto text-xs bg-[#0f0f10] text-gray-100 p-2 rounded">{suggestedCode}</pre>
                             ) : (
                                 <div className="max-h-[55vh] overflow-auto text-xs font-mono">
-                                    {diffChunks.length > 0 ? (
-                                        diffChunks.map((chunk, ci) => {
-                                            if (chunk.type === 'eq') {
-                                                return chunk.items.map((row) => (
-                                                    <div key={`eq-${row.lineOld}-${row.lineNew}`} className="px-1 text-gray-400 flex gap-2">
-                                                        <div className="w-10 text-right text-[11px] text-gray-500">{row.lineNew}</div>
-                                                        <div className="flex-1 break-words">{row.text}</div>
-                                                    </div>
-                                                ));
-                                            }
-
-                                            if (chunk.type === 'eq-elide') {
-                                                return (
-                                                    <div key={`elide-${ci}`}>
-                                                        {chunk.head.map((row) => (
-                                                            <div key={`head-${row.lineNew}`} className="px-1 text-gray-400 flex gap-2">
-                                                                <div className="w-10 text-right text-[11px] text-gray-500">{row.lineNew}</div>
-                                                                <div className="flex-1 break-words">{row.text}</div>
-                                                            </div>
-                                                        ))}
-                                                        <div className="px-1 text-gray-500 text-center">... {chunk.elidedCount} unchanged lines ...</div>
-                                                        {chunk.tail.map((row) => (
-                                                            <div key={`tail-${row.lineNew}`} className="px-1 text-gray-400 flex gap-2">
-                                                                <div className="w-10 text-right text-[11px] text-gray-500">{row.lineNew}</div>
-                                                                <div className="flex-1 break-words">{row.text}</div>
-                                                            </div>
-                                                        ))}
-                                                    </div>
-                                                );
-                                            }
-
-                                            if (chunk.type === 'add') {
-                                                return chunk.items.map((row) => (
-                                                    <div key={`add-${row.lineNew}`} className="px-1 flex gap-2 text-emerald-300 bg-emerald-900/5">
-                                                        <div className="w-10 text-right text-[11px] text-gray-500">{row.lineNew}</div>
-                                                        <div className="flex-1 break-words">+ {row.text}</div>
-                                                    </div>
-                                                ));
-                                            }
-
-                                            if (chunk.type === 'rem') {
-                                                return chunk.items.map((row) => (
-                                                    <div key={`rem-${row.lineOld}`} className="px-1 flex gap-2 text-rose-300 bg-rose-900/5">
-                                                        <div className="w-10 text-right text-[11px] text-gray-500">{row.lineOld}</div>
-                                                        <div className="flex-1 break-words">- {row.text}</div>
-                                                    </div>
-                                                ));
-                                            }
-
-                                            return null;
-                                        })
-                                    ) : (
-                                        <div className="px-1 text-gray-500">No changes detected.</div>
-                                    )}
+                                    {renderDiffChunkList(diffChunks)}
                                 </div>
                             )}
                         </div>

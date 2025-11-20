@@ -137,6 +137,24 @@ async function forwardAnalyzeRequest(socket, data, requestId, useAi = false) {
     if (useAi && typeof data.mode === 'string' && data.mode.trim()) {
       forwardBody.mode = data.mode;
     }
+    if (useAi && Array.isArray(data?.files) && data.files.length) {
+      const sanitized = data.files
+        .map((file) => {
+          if (!file || typeof file !== 'object') return null;
+          const path = typeof file.path === 'string' ? file.path : null;
+          const name = typeof file.name === 'string' ? file.name : null;
+          const content = typeof file.content === 'string' ? file.content : '';
+          if (!content.trim()) return null;
+          return { path, name, content };
+        })
+        .filter(Boolean);
+      if (sanitized.length) {
+        forwardBody.files = sanitized;
+      }
+    }
+    if (useAi && typeof data?.focus === 'string' && data.focus.trim()) {
+      forwardBody.focus = data.focus.trim();
+    }
 
     backendResponse = await fetch(useAi ? backendAiAnalyzeUrl : backendStaticAnalyzeUrl, {
       method: "POST",

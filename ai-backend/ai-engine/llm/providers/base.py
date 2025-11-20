@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Any, Mapping, Optional, Sequence
 
 
 class AiProvider(ABC):
@@ -16,5 +16,13 @@ class AiProvider(ABC):
         pass
 
     @abstractmethod
-    def ask_llm(self, code: str, lang: str, prompt: str = None) -> str:
+    def ask_llm(
+        self,
+        code: str,
+        lang: str,
+        prompt: str = None,
+        mode: str = None,
+        files: Optional[Sequence[Mapping[str, Any]]] = None,
+        focus: Optional[str] = None,
+    ) -> str:
         pass

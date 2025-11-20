@@ -10,12 +10,14 @@ import {
     selectCurrentContent,
     selectIsUnsaved,
     selectBreadcrumb,
+    selectFileCacheEntries,
     saveFileContentThunk,
     updateContent
 } from '@/redux/workspaceSlice';
 import { selectAutoSaveEnabled } from '@/redux/uiSlice';
 import { Folder, FileText, Circle, Save, Sparkles } from 'lucide-react'; // Added Sparkles
 import { getFileIcon } from '@/utils/fileIcons';
+import { buildFilesPayload } from '@/utils/multiFileContext';
 import {
     ResizableHandle,
     ResizablePanel,
@@ -167,6 +169,7 @@ const EditorPanel = ({
     const code = useAppSelector(selectCurrentContent);
     const isUnsaved = useAppSelector(selectIsUnsaved);
     const breadcrumb = useAppSelector(selectBreadcrumb);
+    const fileCacheEntries = useAppSelector(selectFileCacheEntries);
     const showTerminal = useAppSelector(state => state.ui.showTerminal);
     const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
 
@@ -405,6 +408,21 @@ const EditorPanel = ({
             if (metadata) payload.prompt = metadata;
         }
 
+        const filesPayload = buildFilesPayload({
+            activeFile,
+            fullDocument,
+            beforeCursor,
+            afterCursor,
+            fileHeader,
+            fileTail,
+            cacheEntries: fileCacheEntries,
+        });
+        if (filesPayload.length) {
+            payload.files = filesPayload;
+            const multiFileNote = 'Multi-file context attached. Reference related files by their provided paths.';
+            payload.prompt = payload.prompt ? `${payload.prompt}\n${multiFileNote}` : multiFileNote;
+        }
+
         fetch(API_COMPLETION_ROUTE, {
             method: 'POST',
             signal: controller.signal,
@@ -453,7 +471,7 @@ const EditorPanel = ({
                 setAiCompletionState('idle');
             }
         });
-    }, [activeFile, activeLanguage, breadcrumb, cancelActiveCompletion, code, editorInstance]);
+    }, [activeFile, activeLanguage, breadcrumb, cancelActiveCompletion, code, editorInstance, fileCacheEntries]);
 
     const removeDiffChunkVisuals = useCallback((chunkId) => {
         if (!editorInstance) return;
