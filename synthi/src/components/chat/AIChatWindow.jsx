@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { diffLines, applyPatch } from 'diff';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
-import { selectFileCacheEntries, setExternalFileContent } from '@/redux/workspaceSlice';
+import { selectFileCacheEntries, setExternalFileContent, selectFileThunk } from '@/redux/workspaceSlice';
 import { buildFilesPayload } from '@/utils/multiFileContext';
 import { api } from '@/services/api';
 
@@ -56,6 +56,24 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
         };
         walk(rawFiles);
         return output;
+    }, [rawFiles]);
+
+    const findFileNodeByPath = useCallback((targetPath) => {
+        if (!targetPath) return null;
+        const walk = (nodes = []) => {
+            for (const node of nodes) {
+                if (!node) continue;
+                if (!node.isFolder && node.path === targetPath) {
+                    return node;
+                }
+                if (node.isFolder && Array.isArray(node.children)) {
+                    const found = walk(node.children);
+                    if (found) return found;
+                }
+            }
+            return null;
+        };
+        return walk(rawFiles);
     }, [rawFiles]);
 
     const resolveWorkspacePath = useCallback((inputPath) => {
@@ -373,6 +391,27 @@ const parseFileDiffBlocks = (text = '') => {
         return hydrated;
     };
 
+    const openFileByPath = useCallback(async (path) => {
+        if (!path) return null;
+        const resolvedPath = resolveWorkspacePath(path) || path;
+        if (activeFile?.path === resolvedPath) {
+            return resolvedPath;
+        }
+        const node = findFileNodeByPath(resolvedPath);
+        if (node) {
+            await dispatch(selectFileThunk(node));
+            return resolvedPath;
+        }
+        const fallbackName = resolvedPath.split('/').pop() || resolvedPath;
+        await dispatch(selectFileThunk({
+            path: resolvedPath,
+            name: fallbackName,
+            type: 'file',
+            language: getFileLanguage(fallbackName),
+        }));
+        return resolvedPath;
+    }, [activeFile?.path, dispatch, findFileNodeByPath, resolveWorkspacePath]);
+
     const applyContentToPath = (path, newContent) => {
         if (!path || typeof newContent !== 'string') return;
         const resolvedPath = resolveWorkspacePath(path) || path;
@@ -406,6 +445,7 @@ const parseFileDiffBlocks = (text = '') => {
 
         try {
             const targetPath = suggestion.resolvedPath || resolveWorkspacePath(path) || path;
+            await openFileByPath(targetPath);
             applyContentToPath(targetPath, suggestion.updatedContent);
             if (workspaceSlug) {
                 const fileName = targetPath.split('/').pop() || 'file.txt';
@@ -435,6 +475,16 @@ const parseFileDiffBlocks = (text = '') => {
                 fs.path === path ? { ...fs, status: 'rejected' } : fs
             ),
         }));
+    };
+
+    const handlePreviewFileSuggestion = async (sessionId, path) => {
+        if (!path || typeof onSuggest !== 'function') return;
+        const session = chatSessions.find((s) => s.id === sessionId);
+        const suggestion = session?.fileSuggestions?.find((fs) => fs.path === path);
+        if (!suggestion || suggestion.status === 'error') return;
+        const targetPath = suggestion.resolvedPath || resolveWorkspacePath(path) || path;
+        await openFileByPath(targetPath);
+        onSuggest({ completion: suggestion.updatedContent || '', filePath: targetPath });
     };
 
     const handleSendMessage = async () => {
@@ -671,14 +721,6 @@ const parseFileDiffBlocks = (text = '') => {
         appendMessagesToSession(activeSession.id, [{ id: Date.now(), role: 'assistant', content: 'Suggestion rejected.', timestamp: new Date() }]);
     };
 
-    const toggleDiffView = () => {
-        if (!activeSession) return;
-        mutateSession(activeSession.id, (session) => ({
-            ...session,
-            showDiff: !session.showDiff,
-        }));
-    };
-
     const formatMessageContent = (content) => {
         // We deliberately do not insert zero-width spaces around angle brackets
         // to avoid breaking HTML tags that the model may return. We still
@@ -827,7 +869,15 @@ const parseFileDiffBlocks = (text = '') => {
                                                 {fileSuggestionStatusLabel(suggestion.status)}
                                             </div>
                                         </div>
-                                        <div className="flex items-center gap-2">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                            <Button
+                                                variant="secondary"
+                                                size="sm"
+                                                disabled={Boolean(suggestion.error)}
+                                                onClick={() => handlePreviewFileSuggestion(activeSession.id, suggestion.path)}
+                                            >
+                                                Preview
+                                            </Button>
                                             <Button
                                                 variant="outline"
                                                 size="sm"
@@ -861,7 +911,7 @@ const parseFileDiffBlocks = (text = '') => {
                     ) : suggestedCode && (
                         <div className="px-2 py-2 bg-[#171717] border border-[#3a3a3a] rounded">
                             <div className="flex items-center justify-between mb-2">
-                                <div className="text-sm font-medium text-gray-200">Suggested Changes</div>
+                                <div className="text-sm font-medium text-gray-200">Suggestion</div>
                                 <div className="flex items-center gap-2">
                                     {isLoading ? (
                                         <div className="flex items-center gap-2 text-xs text-gray-300">
@@ -869,21 +919,14 @@ const parseFileDiffBlocks = (text = '') => {
                                             <span>Thinking...</span>
                                         </div>
                                     ) : null}
-                                    <button className="text-xs text-gray-300 hover:underline" onClick={toggleDiffView}>
-                                        {showDiff ? 'Hide Diff' : 'Preview Diff'}
-                                    </button>
                                     <Button variant="outline" size="sm" onClick={rejectSuggestion}>Reject</Button>
                                     <Button variant="default" size="sm" onClick={applySuggestion}>Accept</Button>
                                 </div>
                             </div>
 
-                            {!showDiff ? (
-                                <pre className="max-h-[55vh] overflow-auto text-xs bg-[#0f0f10] text-gray-100 p-2 rounded">{suggestedCode}</pre>
-                            ) : (
-                                <div className="max-h-[55vh] overflow-auto text-xs font-mono">
-                                    {renderDiffChunkList(diffChunks)}
-                                </div>
-                            )}
+                            <div className="max-h-[55vh] overflow-auto text-xs font-mono">
+                                {renderDiffChunkList(diffChunks)}
+                            </div>
                         </div>
                     )}
                 </div>
