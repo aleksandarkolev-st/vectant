@@ -28,7 +28,11 @@ export default function EditorPage({ params }) {
     const [editor, setEditor] = useState(null);
     const { analyzeCode, lastResult } = useAnalyzerGateway();
     const [latestCompletion, setLatestCompletion] = useState(null);
-    const handleClearLatestCompletion = useCallback(() => setLatestCompletion(null), []);
+    const [completionClearSignal, setCompletionClearSignal] = useState(0);
+    const handleClearLatestCompletion = useCallback(() => {
+        setLatestCompletion(null);
+        setCompletionClearSignal((v) => v + 1);
+    }, []);
     const [aiBusy, setAiBusy] = useState(false);
     
     // 1. Consume the slug parameter and initiate fetch
@@ -178,6 +182,7 @@ export default function EditorPage({ params }) {
                 editor={editor}
                 onSuggest={(s) => setLatestCompletion(s)}
                 onBusy={(b) => setAiBusy(Boolean(b))}
+                clearSignal={completionClearSignal}
             />
         </ResizablePanel>
     );

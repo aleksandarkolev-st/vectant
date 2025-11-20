@@ -122,7 +122,7 @@ const EDITOR_OPTIONS = {
     lineHeight: 24,
     letterSpacing: 0.5,
     wordWrap: 'off',
-    scrollBeyondLastLine: false,
+    scrollBeyondLastLine: true,
     automaticLayout: true,
     cursorBlinking: "smooth", // Smooth fading cursor
     cursorSmoothCaretAnimation: "off", // Cursor glides
@@ -158,6 +158,7 @@ const EditorPanel = ({
     analysisResult,
     latestCompletion,
     aiBusy = false,
+    onClearCompletion = null,
 }) => {
     const dispatch = useAppDispatch();
 
@@ -190,6 +191,15 @@ const EditorPanel = ({
     const prevActiveFileRef = useRef(null);
     const inlineAcceptCommandIdRef = useRef(null);
     const aiDiffChunksRef = useRef(new Map());
+    const notifyCompletionCleared = useCallback(() => {
+        if (typeof onClearCompletion === 'function') {
+            try {
+                onClearCompletion();
+            } catch (e) {
+                // ignore downstream errors
+            }
+        }
+    }, [onClearCompletion]);
     const cancelActiveCompletion = useCallback(({ resetSuggestion = false, reason = 'user-cancelled' } = {}) => {
         let changed = false;
 
@@ -466,7 +476,10 @@ const EditorPanel = ({
     const handleRejectDiffChunk = useCallback((chunkId) => {
         removeDiffChunkVisuals(chunkId);
         aiDiffChunksRef.current.delete(chunkId);
-    }, [removeDiffChunkVisuals]);
+        if (aiDiffChunksRef.current.size === 0) {
+            notifyCompletionCleared();
+        }
+    }, [removeDiffChunkVisuals, notifyCompletionCleared]);
 
     const handleAcceptDiffChunk = useCallback((chunkId) => {
         if (!editorInstance || !monacoInstance) return;
@@ -498,7 +511,10 @@ const EditorPanel = ({
         }
 
         handleRejectDiffChunk(chunkId);
-    }, [editorInstance, monacoInstance, handleRejectDiffChunk]);
+        if (aiDiffChunksRef.current.size === 0) {
+            notifyCompletionCleared();
+        }
+    }, [editorInstance, monacoInstance, handleRejectDiffChunk, notifyCompletionCleared]);
 
     // --- Monaco Providers ---
 
@@ -713,8 +729,10 @@ const EditorPanel = ({
         const model = editorInstance.getModel();
         if (!model) return;
 
-        const original = model.getValue();
-        const parts = diffLines(original, suggested);
+        const normalizeEol = (v = '') => v.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        const original = normalizeEol(model.getValue());
+        const normalizedSuggested = normalizeEol(suggested);
+        const parts = diffLines(original, normalizedSuggested);
 
         const chunks = [];
         let chunkCounter = 0;
@@ -778,14 +796,21 @@ const EditorPanel = ({
             style.innerHTML = `
                 .ai-remove-chunk { background: rgba(239,68,68,0.18) !important; border-left: 3px solid rgba(239,68,68,0.6); }
                 .ai-remove-gutter { border-color: rgba(239,68,68,0.7) !important; }
-                .ai-insert-zone { background: rgba(16,185,129,0.08); border: 1px solid rgba(16,185,129,0.35); border-radius: 6px; padding: 8px; margin: 6px 4px; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #c7f9e7; }
-                .ai-insert-zone pre { margin: 0; white-space: pre-wrap; background: rgba(16,185,129,0.12); padding: 6px; border-radius: 4px; color: #e6fffb; }
-                .ai-insert-zone .controls { display: flex; gap: 8px; margin-top: 8px; }
-                .ai-insert-zone button { font-size: 11px; padding: 4px 10px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.15); cursor: pointer; }
-                .ai-insert-zone button.accept { background: rgba(16,185,129,0.25); color: #befae6; border-color: rgba(16,185,129,0.4); }
-                .ai-insert-zone button.reject { background: transparent; color: #fca5a5; border-color: rgba(248,113,113,0.4); }
-                .ai-insert-zone button.accept:hover { background: rgba(16,185,129,0.4); }
-                .ai-insert-zone button.reject:hover { background: rgba(248,113,113,0.18); }
+                .ai-insert-zone, .ai-remove-zone { display: flex; flex-direction: column; gap: 6px; font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 4px 6px 14px 6px; margin: 0; border-radius: 6px; }
+                .ai-insert-zone { background: rgba(16,185,129,0.08); color: rgba(190,250,230,0.82); border: 1px dashed rgba(16,185,129,0.35); }
+                .ai-remove-zone { background: rgba(248,113,113,0.1); color: rgba(255,228,230,0.9); border: 1px dashed rgba(248,113,113,0.35); }
+                .ai-insert-zone pre, .ai-remove-zone pre { margin: 0; padding: 2px 4px; background: transparent; border: none; border-radius: 6px; color: rgba(190,250,230,0.74); line-height: 1.35; }
+                .ai-remove-zone pre { color: rgba(255,228,230,0.78); }
+                .ai-insert-zone .controls, .ai-remove-zone .controls { display: flex; gap: 8px; margin-top: 2px; align-items: center; flex-wrap: wrap; justify-content: flex-start; }
+                .ai-action-btn { font-size: 11px; padding: 5px 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.18); cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,0.25); transition: background 120ms ease, border-color 120ms ease, color 120ms ease; }
+                .ai-action-btn.accept-add { background: rgba(16,185,129,0.25); color: #befae6; border-color: rgba(16,185,129,0.45); }
+                .ai-action-btn.reject-add { background: rgba(16,185,129,0.05); color: #fca5a5; border-color: rgba(248,113,113,0.4); }
+                .ai-action-btn.accept-rem { background: rgba(248,113,113,0.22); color: #ffe4e6; border-color: rgba(248,113,113,0.5); }
+                .ai-action-btn.reject-rem { background: rgba(248,113,113,0.05); color: #fca5a5; border-color: rgba(248,113,113,0.35); }
+                .ai-action-btn.accept-add:hover { background: rgba(16,185,129,0.4); }
+                .ai-action-btn.reject-add:hover { background: rgba(248,113,113,0.16); }
+                .ai-action-btn.accept-rem:hover { background: rgba(248,113,113,0.32); }
+                .ai-action-btn.reject-rem:hover { background: rgba(248,113,113,0.16); }
             `;
             document.head.appendChild(style);
         }
@@ -812,36 +837,48 @@ const EditorPanel = ({
                 chunk.decorationIds = ids;
             }
 
-            if (chunk.addLines.length) {
+            chunk.addLines = chunk.addLines || [];
+            const hasAdditions = chunk.addLines.length > 0;
+            const hasOnlyRemovals = !hasAdditions && chunk.removeLines.length > 0;
+
+            if (hasAdditions) {
                 const zoneWrapper = document.createElement('div');
                 zoneWrapper.style.pointerEvents = 'auto';
                 zoneWrapper.style.userSelect = 'none';
                 zoneWrapper.style.position = 'relative';
                 zoneWrapper.style.zIndex = '5';
+                zoneWrapper.style.marginBottom = '12px';
 
                 const domNode = document.createElement('div');
                 domNode.className = 'ai-insert-zone';
                 domNode.style.pointerEvents = 'auto';
                 domNode.style.userSelect = 'text';
                 domNode.style.position = 'relative';
+                domNode.style.overflow = 'visible';
+                domNode.style.paddingBottom = '6px';
 
                 const title = document.createElement('div');
-                title.style.fontSize = '11px';
+                title.style.fontSize = '13px';
                 title.style.textTransform = 'uppercase';
                 title.style.letterSpacing = '0.08em';
                 title.style.marginBottom = '6px';
                 title.textContent = `AI suggestion · ${chunk.addLines.length} ${chunk.addLines.length === 1 ? 'line' : 'lines'}`;
                 domNode.appendChild(title);
 
-                const code = document.createElement('pre');
-                code.textContent = chunk.addLines.join('\n') || '(blank)';
-                domNode.appendChild(code);
+                if (chunk.addLines.length) {
+                    const code = document.createElement('pre');
+                    code.style.fontSize = '14px';
+                    code.textContent = chunk.addLines.join('\n');
+                    domNode.appendChild(code);
+                }
 
                 const controls = document.createElement('div');
                 controls.className = 'controls';
+                controls.style.marginBottom = '1px';
+                controls.style.marginTop = '8px';
 
                 const acceptBtn = document.createElement('button');
-                acceptBtn.className = 'accept';
+                acceptBtn.className = 'ai-action-btn accept-add';
                 acceptBtn.textContent = 'Accept';
                 acceptBtn.onclick = (e) => {
                     e.preventDefault();
@@ -850,7 +887,7 @@ const EditorPanel = ({
                 };
 
                 const rejectBtn = document.createElement('button');
-                rejectBtn.className = 'reject';
+                rejectBtn.className = 'ai-action-btn reject-add';
                 rejectBtn.textContent = 'Reject';
                 rejectBtn.onclick = (e) => {
                     e.preventDefault();
@@ -864,11 +901,76 @@ const EditorPanel = ({
 
                 zoneWrapper.appendChild(domNode);
 
-                const height = Math.min(chunk.addLines.length * (lineHeight + 6) + 70, 320);
+                const baseAddHeight = Math.max(chunk.addLines.length, 1) * lineHeight + 110;
+                const height = Math.min(baseAddHeight, 400);
                 let zoneId = null;
                 editorInstance.changeViewZones(accessor => {
                     zoneId = accessor.addZone({
                         afterLineNumber: Math.max(0, chunk.additionAfterLine),
+                        heightInPx: height,
+                        domNode: zoneWrapper
+                    });
+                });
+                chunk.viewZoneId = zoneId;
+            }
+
+            if (hasOnlyRemovals) {
+                const zoneWrapper = document.createElement('div');
+                zoneWrapper.style.pointerEvents = 'auto';
+                zoneWrapper.style.userSelect = 'none';
+                zoneWrapper.style.position = 'relative';
+                zoneWrapper.style.zIndex = '5';
+                zoneWrapper.style.marginBottom = '12px';
+
+                const domNode = document.createElement('div');
+                domNode.className = 'ai-remove-zone';
+                domNode.style.pointerEvents = 'auto';
+                domNode.style.userSelect = 'text';
+                domNode.style.position = 'relative';
+                domNode.style.overflow = 'visible';
+                domNode.style.paddingBottom = '6px';
+                domNode.style.paddingTop = '28px';
+
+                const controls = document.createElement('div');
+                controls.className = 'controls';
+                controls.style.marginBottom = '10px';
+                controls.style.marginTop = '0';
+                controls.style.position = 'absolute';
+                controls.style.top = '4px';
+                controls.style.right = '6px';
+                controls.style.justifyContent = 'flex-end';
+                controls.style.width = 'fit-content';
+
+                const acceptBtn = document.createElement('button');
+                acceptBtn.className = 'ai-action-btn accept-rem';
+                acceptBtn.textContent = 'Accept removal';
+                acceptBtn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleAcceptDiffChunk(chunk.id);
+                };
+
+                const rejectBtn = document.createElement('button');
+                rejectBtn.className = 'ai-action-btn reject-rem';
+                rejectBtn.textContent = 'Keep code';
+                rejectBtn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleRejectDiffChunk(chunk.id);
+                };
+
+                controls.appendChild(acceptBtn);
+                controls.appendChild(rejectBtn);
+                domNode.appendChild(controls);
+
+                zoneWrapper.appendChild(domNode);
+
+                const baseRemHeight = Math.max(chunk.removeLines.length, 1) * lineHeight + 110;
+                const height = Math.min(baseRemHeight, 360);
+                let zoneId = null;
+                editorInstance.changeViewZones(accessor => {
+                    zoneId = accessor.addZone({
+                        afterLineNumber: Math.max(0, chunk.removeStartLine + chunk.removeLines.length - 1),
                         heightInPx: height,
                         domNode: zoneWrapper
                     });
