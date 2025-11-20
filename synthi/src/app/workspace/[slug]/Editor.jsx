@@ -15,6 +15,7 @@ import {
 } from '@/redux/workspaceSlice';
 import { selectAutoSaveEnabled } from '@/redux/uiSlice';
 import { Folder, FileText, Circle, Save, Sparkles } from 'lucide-react'; // Added Sparkles
+import { getFileIcon } from '@/utils/fileIcons';
 import {
     ResizableHandle,
     ResizablePanel,
@@ -124,7 +125,7 @@ const EDITOR_OPTIONS = {
     scrollBeyondLastLine: false,
     automaticLayout: true,
     cursorBlinking: "smooth", // Smooth fading cursor
-    cursorSmoothCaretAnimation: "on", // Cursor glides
+    cursorSmoothCaretAnimation: "off", // Cursor glides
     smoothScrolling: true,
     contextmenu: false, // We use our own custom context menu
     padding: { top: 16, bottom: 16 },
@@ -188,6 +189,7 @@ const EditorPanel = ({
     const eventDisposablesRef = useRef([]);
     const prevActiveFileRef = useRef(null);
     const inlineAcceptCommandIdRef = useRef(null);
+    const aiDiffChunksRef = useRef(new Map());
     const cancelActiveCompletion = useCallback(({ resetSuggestion = false, reason = 'user-cancelled' } = {}) => {
         let changed = false;
 
@@ -217,6 +219,7 @@ const EditorPanel = ({
     
     const activeLanguage = activeFile ? getMonacoLanguage(activeFile.name) : 'plaintext';
     const activeFileIdentity = activeFile ? `${activeFile.path ?? ''}-${activeFile.name ?? ''}` : 'no-file';
+    const activeFileIcon = activeFile ? getFileIcon(activeFile.name || activeFile.path || '') : null;
 
     // --- AI Logic ---
 
@@ -442,6 +445,61 @@ const EditorPanel = ({
         });
     }, [activeFile, activeLanguage, breadcrumb, cancelActiveCompletion, code, editorInstance]);
 
+    const removeDiffChunkVisuals = useCallback((chunkId) => {
+        if (!editorInstance) return;
+        const chunk = aiDiffChunksRef.current.get(chunkId);
+        if (!chunk) return;
+        try {
+            if (chunk.decorationIds?.length) {
+                editorInstance.deltaDecorations(chunk.decorationIds, []);
+                chunk.decorationIds = [];
+            }
+        } catch (e) {}
+        try {
+            if (chunk.viewZoneId) {
+                editorInstance.changeViewZones(accessor => accessor.removeZone(chunk.viewZoneId));
+                chunk.viewZoneId = null;
+            }
+        } catch (e) {}
+    }, [editorInstance]);
+
+    const handleRejectDiffChunk = useCallback((chunkId) => {
+        removeDiffChunkVisuals(chunkId);
+        aiDiffChunksRef.current.delete(chunkId);
+    }, [removeDiffChunkVisuals]);
+
+    const handleAcceptDiffChunk = useCallback((chunkId) => {
+        if (!editorInstance || !monacoInstance) return;
+        const chunk = aiDiffChunksRef.current.get(chunkId);
+        if (!chunk) return;
+        const model = editorInstance.getModel();
+        if (!model) return;
+
+        const addedText = chunk.addLines.length
+            ? chunk.addLines.join('\n') + (chunk.addTrailingNewline ? '\n' : '')
+            : '';
+
+        let range = null;
+        if (chunk.removeLines.length) {
+            const startLine = Math.max(1, chunk.removeStartLine);
+            const endLine = Math.max(startLine, startLine + chunk.removeLines.length - 1);
+            const endColumn = model.getLineLength(endLine) + 1;
+            range = new monacoInstance.Range(startLine, 1, endLine, endColumn);
+        } else {
+            const insertLine = Math.min(model.getLineCount() + 1, Math.max(0, chunk.additionAfterLine) + 1);
+            range = new monacoInstance.Range(insertLine, 1, insertLine, 1);
+        }
+
+        try {
+            editorInstance.executeEdits('ai-chunk', [{ range, text: addedText, forceMoveMarkers: true }]);
+            editorInstance.pushUndoStop();
+        } catch (e) {
+            console.error('Failed to apply diff chunk', e);
+        }
+
+        handleRejectDiffChunk(chunkId);
+    }, [editorInstance, monacoInstance, handleRejectDiffChunk]);
+
     // --- Monaco Providers ---
 
     // 1. Inline Completion Provider (The "Ghost Text")
@@ -627,160 +685,202 @@ const EditorPanel = ({
 
 
     // When a completion arrives that contains a full-file suggestion, compute
-    // a line-based diff and show inline decorations in the editor so changes
-    // are visible directly inside the file.
+    // a line-based diff and render inline highlights so changes are obvious.
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
 
-        const removeDiffViewZones = () => {
-            try {
-                const prevZones = aiCompletionCacheRef.current._diffViewZoneIds || [];
-                if (prevZones.length) {
-                    editorInstance.changeViewZones(accessor => {
-                        prevZones.forEach(id => accessor.removeZone(id));
-                    });
-                }
-            } catch (e) {
-                // ignore
-            } finally {
-                aiCompletionCacheRef.current._diffViewZoneIds = [];
-            }
+        const clearAllChunks = () => {
+            aiDiffChunksRef.current.forEach((_, chunkId) => removeDiffChunkVisuals(chunkId));
+            aiDiffChunksRef.current.clear();
+            aiCompletionCacheRef.current._decorationIds = [];
+            aiCompletionCacheRef.current._diffViewZoneIds = [];
         };
 
-        // Remove previous decorations if any
-        const prevIds = aiCompletionCacheRef.current._decorationIds || [];
+        const resolved = typeof latestCompletion === 'string'
+            ? { completion: latestCompletion }
+            : (latestCompletion || null);
+        const suggested = resolved?.completion || null;
+        const isPartial = Boolean(resolved?.partial);
 
-        try {
-            const suggested = latestCompletion ? (typeof latestCompletion === 'string' ? latestCompletion : latestCompletion.completion) : null;
-            if (!suggested) {
-                if (prevIds.length) {
-                    editorInstance.deltaDecorations(prevIds, []);
-                    aiCompletionCacheRef.current._decorationIds = [];
-                }
-                removeDiffViewZones();
-                return;
-            }
-
-            const model = editorInstance.getModel();
-            if (!model) return;
-
-            const original = model.getValue();
-            const parts = diffLines(original, suggested);
-
-            const newDecs = [];
-            const additionBlocks = [];
-            let oldLine = 1;
-            let newLine = 1;
-            const modelLineCount = model.getLineCount();
-
-            parts.forEach((part) => {
-                const lines = part.value.split('\n');
-                if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
-
-                if (part.added) {
-                    // Highlight the host line (if any) and capture a view zone to show inserted lines.
-                    const insertAtLine = Math.min(Math.max(1, oldLine), modelLineCount);
-                    newDecs.push({
-                        range: new monacoInstance.Range(insertAtLine, 1, insertAtLine, 1),
-                        options: {
-                            isWholeLine: true,
-                            className: 'ai-added-line'
-                        }
-                    });
-                    additionBlocks.push({
-                        afterLineNumber: Math.max(0, Math.min(modelLineCount, oldLine - 1)),
-                        lines
-                    });
-                    newLine += lines.length;
-                } else if (part.removed) {
-                    for (let i = 0; i < lines.length; i++) {
-                        const ln = oldLine + i;
-                        newDecs.push({
-                            range: new monacoInstance.Range(ln, 1, ln, 1),
-                            options: {
-                                isWholeLine: true,
-                                className: 'ai-removed-line'
-                            }
-                        });
-                    }
-                    oldLine += lines.length;
-                } else {
-                    oldLine += lines.length;
-                    newLine += lines.length;
-                }
-            });
-
-            // Inject CSS for decoration classes if not present
-            if (!document.getElementById('ai-diff-styles')) {
-                const style = document.createElement('style');
-                style.id = 'ai-diff-styles';
-                style.innerHTML = `
-                    .ai-added-line { background: rgba(16,185,129,0.06) !important; }
-                    .ai-removed-line { background: rgba(239,68,68,0.05) !important; text-decoration: line-through; }
-                `;
-                document.head.appendChild(style);
-            }
-
-            const newIds = editorInstance.deltaDecorations(prevIds || [], newDecs);
-            aiCompletionCacheRef.current._decorationIds = newIds;
-
-            // Update inline view zones for inserted blocks
-            removeDiffViewZones();
-            if (additionBlocks.length) {
-                const lineHeight = editorInstance.getOption
-                    ? editorInstance.getOption(monacoInstance.editor.EditorOption.lineHeight) || 20
-                    : 20;
-                const zoneIds = [];
-                editorInstance.changeViewZones(accessor => {
-                    additionBlocks.forEach((block) => {
-                        if (!block.lines.length) return;
-                        const domNode = document.createElement('div');
-                        domNode.className = 'ai-diff-zone';
-                        domNode.style.background = 'rgba(16,185,129,0.08)';
-                        domNode.style.border = '1px solid rgba(16,185,129,0.25)';
-                        domNode.style.borderRadius = '4px';
-                        domNode.style.padding = '6px 8px';
-                        domNode.style.margin = '4px 0';
-                        domNode.style.fontFamily = "'JetBrains Mono', monospace";
-                        domNode.style.fontSize = '12px';
-                        domNode.style.color = '#bbf7d0';
-                        domNode.style.whiteSpace = 'pre-wrap';
-
-                        const header = document.createElement('div');
-                        header.textContent = `+ ${block.lines.length} ${block.lines.length === 1 ? 'line' : 'lines'}`;
-                        header.style.fontSize = '11px';
-                        header.style.fontWeight = '600';
-                        header.style.color = '#34d399';
-                        header.style.marginBottom = '4px';
-                        domNode.appendChild(header);
-
-                        block.lines.forEach((line) => {
-                            const lineEl = document.createElement('div');
-                            lineEl.textContent = line || ' ';
-                            lineEl.style.borderLeft = '3px solid rgba(16,185,129,0.6)';
-                            lineEl.style.paddingLeft = '6px';
-                            lineEl.style.marginBottom = '2px';
-                            domNode.appendChild(lineEl);
-                        });
-
-                        const zoneId = accessor.addZone({
-                            afterLineNumber: block.afterLineNumber,
-                            heightInPx: (block.lines.length * lineHeight) + 12,
-                            domNode
-                        });
-                        zoneIds.push(zoneId);
-                    });
-                });
-                aiCompletionCacheRef.current._diffViewZoneIds = zoneIds;
-            }
-        } catch (e) {
-            // ignore
+        if (isPartial) {
+            return;
         }
 
-        return () => {
-            removeDiffViewZones();
+        clearAllChunks();
+
+        if (!suggested) return;
+
+        const model = editorInstance.getModel();
+        if (!model) return;
+
+        const original = model.getValue();
+        const parts = diffLines(original, suggested);
+
+        const chunks = [];
+        let chunkCounter = 0;
+        let activeChunk = null;
+        let oldLine = 1;
+        let newLine = 1;
+
+        const finalizeChunk = () => {
+            if (!activeChunk) return;
+            const removeCount = activeChunk.removeLines.length;
+            const additionAfterLine = removeCount
+                ? activeChunk.removeStartLine + removeCount - 1
+                : activeChunk.contextBeforeLine;
+            activeChunk.additionAfterLine = Math.max(0, additionAfterLine);
+            if (!removeCount) {
+                activeChunk.removeStartLine = Math.max(1, activeChunk.contextBeforeLine + 1);
+            }
+            chunks.push(activeChunk);
+            activeChunk = null;
         };
-    }, [latestCompletion, editorInstance, monacoInstance]);
+
+        parts.forEach((part) => {
+            const rawValue = part.value || '';
+            const lines = rawValue.split('\n');
+            if (lines.length && lines[lines.length - 1] === '') lines.pop();
+
+            if (part.added || part.removed) {
+                if (!activeChunk) {
+                    activeChunk = {
+                        id: `chunk-${chunkCounter++}`,
+                        removeStartLine: Math.max(1, oldLine),
+                        contextBeforeLine: Math.max(0, oldLine - 1),
+                        removeLines: [],
+                        addLines: [],
+                        addTrailingNewline: false,
+                        additionAfterLine: Math.max(0, oldLine - 1),
+                        decorationIds: [],
+                        viewZoneId: null,
+                    };
+                }
+                if (part.removed && lines.length) {
+                    activeChunk.removeLines.push(...lines);
+                    oldLine += lines.length;
+                }
+                if (part.added && lines.length) {
+                    activeChunk.addLines.push(...lines);
+                    activeChunk.addTrailingNewline = rawValue.endsWith('\n');
+                    newLine += lines.length;
+                }
+            } else {
+                finalizeChunk();
+                oldLine += lines.length;
+                newLine += lines.length;
+            }
+        });
+        finalizeChunk();
+
+        if (!document.getElementById('ai-inline-diff-style')) {
+            const style = document.createElement('style');
+            style.id = 'ai-inline-diff-style';
+            style.innerHTML = `
+                .ai-remove-chunk { background: rgba(239,68,68,0.18) !important; border-left: 3px solid rgba(239,68,68,0.6); }
+                .ai-remove-gutter { border-color: rgba(239,68,68,0.7) !important; }
+                .ai-insert-zone { background: rgba(16,185,129,0.08); border: 1px solid rgba(16,185,129,0.35); border-radius: 6px; padding: 8px; margin: 6px 4px; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #c7f9e7; }
+                .ai-insert-zone pre { margin: 0; white-space: pre-wrap; background: rgba(16,185,129,0.12); padding: 6px; border-radius: 4px; color: #e6fffb; }
+                .ai-insert-zone .controls { display: flex; gap: 8px; margin-top: 8px; }
+                .ai-insert-zone button { font-size: 11px; padding: 4px 10px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.15); cursor: pointer; }
+                .ai-insert-zone button.accept { background: rgba(16,185,129,0.25); color: #befae6; border-color: rgba(16,185,129,0.4); }
+                .ai-insert-zone button.reject { background: transparent; color: #fca5a5; border-color: rgba(248,113,113,0.4); }
+                .ai-insert-zone button.accept:hover { background: rgba(16,185,129,0.4); }
+                .ai-insert-zone button.reject:hover { background: rgba(248,113,113,0.18); }
+            `;
+            document.head.appendChild(style);
+        }
+
+        const lineHeight = editorInstance.getOption
+            ? editorInstance.getOption(monacoInstance.editor.EditorOption.lineHeight) || 20
+            : 20;
+
+        chunks.forEach((chunk) => {
+            aiDiffChunksRef.current.set(chunk.id, chunk);
+
+            if (chunk.removeLines.length) {
+                const startLine = Math.max(1, chunk.removeStartLine);
+                const endLine = Math.max(startLine, startLine + chunk.removeLines.length - 1);
+                const endColumn = model.getLineLength(endLine) + 1;
+                const ids = editorInstance.deltaDecorations([], [{
+                    range: new monacoInstance.Range(startLine, 1, endLine, endColumn),
+                    options: {
+                        isWholeLine: true,
+                        className: 'ai-remove-chunk',
+                        linesDecorationsClassName: 'ai-remove-gutter'
+                    }
+                }]);
+                chunk.decorationIds = ids;
+            }
+
+            if (chunk.addLines.length) {
+                const zoneWrapper = document.createElement('div');
+                zoneWrapper.style.pointerEvents = 'auto';
+                zoneWrapper.style.userSelect = 'none';
+                zoneWrapper.style.position = 'relative';
+                zoneWrapper.style.zIndex = '5';
+
+                const domNode = document.createElement('div');
+                domNode.className = 'ai-insert-zone';
+                domNode.style.pointerEvents = 'auto';
+                domNode.style.userSelect = 'text';
+                domNode.style.position = 'relative';
+
+                const title = document.createElement('div');
+                title.style.fontSize = '11px';
+                title.style.textTransform = 'uppercase';
+                title.style.letterSpacing = '0.08em';
+                title.style.marginBottom = '6px';
+                title.textContent = `AI suggestion · ${chunk.addLines.length} ${chunk.addLines.length === 1 ? 'line' : 'lines'}`;
+                domNode.appendChild(title);
+
+                const code = document.createElement('pre');
+                code.textContent = chunk.addLines.join('\n') || '(blank)';
+                domNode.appendChild(code);
+
+                const controls = document.createElement('div');
+                controls.className = 'controls';
+
+                const acceptBtn = document.createElement('button');
+                acceptBtn.className = 'accept';
+                acceptBtn.textContent = 'Accept';
+                acceptBtn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleAcceptDiffChunk(chunk.id);
+                };
+
+                const rejectBtn = document.createElement('button');
+                rejectBtn.className = 'reject';
+                rejectBtn.textContent = 'Reject';
+                rejectBtn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleRejectDiffChunk(chunk.id);
+                };
+
+                controls.appendChild(acceptBtn);
+                controls.appendChild(rejectBtn);
+                domNode.appendChild(controls);
+
+                zoneWrapper.appendChild(domNode);
+
+                const height = Math.min(chunk.addLines.length * (lineHeight + 6) + 70, 320);
+                let zoneId = null;
+                editorInstance.changeViewZones(accessor => {
+                    zoneId = accessor.addZone({
+                        afterLineNumber: Math.max(0, chunk.additionAfterLine),
+                        heightInPx: height,
+                        domNode: zoneWrapper
+                    });
+                });
+                chunk.viewZoneId = zoneId;
+            }
+        });
+
+        return () => {
+            clearAllChunks();
+        };
+    }, [latestCompletion, editorInstance, monacoInstance, handleAcceptDiffChunk, handleRejectDiffChunk, removeDiffChunkVisuals]);
 
 
     // --- Render ---
@@ -795,6 +895,11 @@ const EditorPanel = ({
                             
                             {/* Breadcrumbs */}
                             <div className="flex items-center gap-2 overflow-hidden">
+                                {activeFileIcon ? (
+                                    <span className="flex items-center text-gray-300" aria-hidden="true">
+                                        {activeFileIcon}
+                                    </span>
+                                ) : null}
                                 {breadcrumb?.length > 0 ? (
                                     breadcrumb.map((name, idx) => {
                                         const isLast = idx === breadcrumb.length - 1;
@@ -810,7 +915,7 @@ const EditorPanel = ({
                                 ) : (
                                     <span className="text-gray-500 text-xs italic">No file selected</span>
                                 )}
-                                {isUnsaved && <Circle className="w-2 h-2 ml-2 text-blue-400 fill-blue-400" />}
+                                {isUnsaved && <Circle className="w-2 h-2 ml-2 text-orange-400 fill-orange-400" />}
                             </div>
 
                             {/* Status & Controls */}

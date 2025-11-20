@@ -28,6 +28,7 @@ export default function EditorPage({ params }) {
     const [editor, setEditor] = useState(null);
     const { analyzeCode, lastResult } = useAnalyzerGateway();
     const [latestCompletion, setLatestCompletion] = useState(null);
+    const handleClearLatestCompletion = useCallback(() => setLatestCompletion(null), []);
     const [aiBusy, setAiBusy] = useState(false);
     
     // 1. Consume the slug parameter and initiate fetch
@@ -154,6 +155,7 @@ export default function EditorPage({ params }) {
             analysisResult={lastResult}
             latestCompletion={latestCompletion}
             aiBusy={aiBusy}
+            onClearCompletion={handleClearLatestCompletion}
         />
     );
 

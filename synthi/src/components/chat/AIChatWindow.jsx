@@ -328,6 +328,9 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
             suggestedCode: null,
             showDiff: false,
         }));
+        try {
+            if (typeof onSuggest === 'function') onSuggest(null);
+        } catch (e) {}
         // Add a small assistant confirmation message
         appendMessagesToSession(activeSession.id, [{ id: Date.now(), role: 'assistant', content: 'Suggestion applied to editor.', timestamp: new Date() }]);
     };
@@ -339,6 +342,9 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
             suggestedCode: null,
             showDiff: false,
         }));
+        try {
+            if (typeof onSuggest === 'function') onSuggest(null);
+        } catch (e) {}
         appendMessagesToSession(activeSession.id, [{ id: Date.now(), role: 'assistant', content: 'Suggestion rejected.', timestamp: new Date() }]);
     };
 
@@ -505,9 +511,9 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
                             </div>
 
                             {!showDiff ? (
-                                <pre className="max-h-40 overflow-auto text-xs bg-[#0f0f10] text-gray-100 p-2 rounded">{suggestedCode}</pre>
+                                <pre className="max-h-[55vh] overflow-auto text-xs bg-[#0f0f10] text-gray-100 p-2 rounded">{suggestedCode}</pre>
                             ) : (
-                                <div className="max-h-40 overflow-auto text-xs font-mono">
+                                <div className="max-h-[55vh] overflow-auto text-xs font-mono">
                                     {diffChunks.length > 0 ? (
                                         diffChunks.map((chunk, ci) => {
                                             if (chunk.type === 'eq') {
