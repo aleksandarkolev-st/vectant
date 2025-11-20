@@ -1,3 +1,5 @@
+import SynthiException from "@/components/SynthiException";
+
 const DEFAULT_WS_URL =
   process.env.NEXT_PUBLIC_GATEWAY_WS_URL || 'ws://localhost:7070/ws';
 const DEFAULT_TIMEOUT = 30_000;
@@ -97,7 +99,7 @@ export class AnalyzerGatewayClient {
     }
     this._cleanupSocket();
     this._rejectAllPending(
-      new Error('Gateway disposed before receiving a response')
+      new SynthiException('Gateway disposed before receiving a response', 'The analyzer gateway client has been disposed and can no longer process requests.')
     );
   }
 
@@ -126,11 +128,11 @@ export class AnalyzerGatewayClient {
 
   _sendRequest(action, data, options = {}) {
     if (this.isDisposed) {
-      return Promise.reject(new Error('Gateway client has been disposed'));
+      return Promise.reject(new SynthiException('Gateway client has been disposed', 'The analyzer gateway client has been disposed and can no longer process requests.'));
     }
 
     if (!data || typeof data !== 'object') {
-      return Promise.reject(new Error('Payload must be an object'));
+      return Promise.reject(new SynthiException('Payload must be an object', 'The payload provided to the analyzer gateway client must be an object.'));
     }
 
     const requestId = createRequestId();
@@ -139,7 +141,7 @@ export class AnalyzerGatewayClient {
     return new Promise((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         this.pending.delete(requestId);
-        reject(new Error(`Gateway request timed out after ${this.timeout}ms`));
+        reject(new SynthiException(`Gateway request timed out after ${this.timeout}ms`, `The request to the analyzer gateway timed out after ${this.timeout} milliseconds.`));
       }, this.timeout);
 
       this.pending.set(requestId, {
@@ -217,14 +219,12 @@ export class AnalyzerGatewayClient {
             ? payload.message
             : JSON.stringify(payload.message || 'Gateway returned an error payload');
         const detailPart = payload.detail
-          ? ` | detail: ${
+          ? `${
               typeof payload.detail === 'string' ? payload.detail : JSON.stringify(payload.detail)
             }`
           : '';
-        const statusPart = payload.status ? ` | status: ${payload.status}` : '';
-        const fullMessage = `${msgPart}${detailPart}${statusPart}`;
 
-        const err = new Error(fullMessage);
+        const err = new SynthiException(msgPart, detailPart);
         // Attach raw payload for callers that want to inspect more fields
         err.gatewayPayload = payload;
         if (payload.status) err.status = payload.status;
@@ -243,7 +243,7 @@ export class AnalyzerGatewayClient {
     if (payload?.type === 'error') {
       this._emitEvent({
         type: 'error',
-        error: new Error(payload.message || 'Gateway error'),
+        error: new SynthiException(payload.message || 'Gateway error', ''),
         payload,
       });
     } else {
@@ -258,7 +258,7 @@ export class AnalyzerGatewayClient {
     this._setStatus(STATUS.ERROR);
     this._emitEvent({
       type: 'error',
-      error: new Error('Gateway socket error'),
+      error: new SynthiException('Gateway socket error', ''),
       event,
     });
   };
@@ -270,7 +270,7 @@ export class AnalyzerGatewayClient {
 
     this._setStatus(STATUS.DISCONNECTED);
     this._cleanupSocket();
-    this._rejectAllPending(new Error('Gateway connection closed'));
+    this._rejectAllPending(new SynthiException('Gateway connection closed', 'The connection to the analyzer gateway was closed.'));
     this._scheduleReconnect();
   };
 

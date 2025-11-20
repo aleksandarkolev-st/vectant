@@ -5,6 +5,7 @@ import {
   AnalyzerGatewayClient,
   GatewayStatus,
 } from '@/services/analyzerGatewayClient';
+import SynthiException from '@/components/SynthiException';
 
 const DEFAULT_WS_URL =
   process.env.NEXT_PUBLIC_GATEWAY_WS_URL || 'ws://localhost:7070/ws';
@@ -44,13 +45,13 @@ export function useAnalyzerGateway({
 
   const analyzeCode = useCallback(async ({ code, lang }) => {
     if (!clientRef.current) {
-      throw new Error('Gateway client is not ready yet');
+      throw new SynthiException('Gateway client is not ready yet');
     }
     if (typeof code !== 'string') {
-      throw new Error('`code` must be a string');
+      throw new SynthiException('`code` must be a string');
     }
     if (!lang) {
-      throw new Error('`lang` is required for analysis');
+      throw new SynthiException('`lang` is required for analysis');
     }
 
     setIsAnalyzing(true);
@@ -72,13 +73,13 @@ export function useAnalyzerGateway({
 
   const askAi = useCallback(async ({ code, lang, prompt, mode, files, focusPath, onProgress } = {}) => {
     if (!clientRef.current) {
-      throw new Error('Gateway client is not ready yet');
+      throw new SynthiException('Gateway client is not ready yet', 'The analyzer gateway client has not been initialized. Please try again later.');
     }
     if (typeof code !== 'string') {
-      throw new Error('`code` must be a string');
+      throw new SynthiException('`code` must be a string', 'The provided code for AI analysis is invalid.');
     }
     if (!lang) {
-      throw new Error('`lang` is required for AI analysis');
+      throw new SynthiException('`lang` is required for AI analysis', 'The programming language must be specified for AI analysis.');
     }
     setIsAnalyzing(true);
     setLastError(null);

@@ -1,5 +1,7 @@
 // src/services/api.js
 
+import SynthiException from "@/components/SynthiException";
+
 // Utility to handle JSON responses and errors
 const handleResponse = async (response) => {
     if (!response.ok) {
@@ -9,7 +11,7 @@ const handleResponse = async (response) => {
         } catch (e) {
             // Ignore if response isn't JSON
         }
-        throw new Error(errorData.error || `API Error: ${response.statusText}`);
+        throw new SynthiException(errorData.error || `API Error: ${response.statusText}`, `Status: ${response.status}`);
     }
     return response;
 };

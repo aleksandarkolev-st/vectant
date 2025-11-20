@@ -39,6 +39,7 @@ import { diffLines } from 'diff';
 import prettier from "prettier/standalone";
 import babel from "prettier/plugins/babel";
 import estree from "prettier/plugins/estree";
+import SynthiException from '@/components/SynthiException.js';
 
 const trimCompletionContext = (code, cursorPosition = null) => {
     if (!code) return '';
@@ -430,7 +431,7 @@ const EditorPanel = ({
             body: JSON.stringify(payload),
         })
         .then(async (res) => {
-            if (!res.ok) throw new Error('Failed');
+            if (!res.ok) throw new SynthiException('AI completion request failed', `The AI service responded with status ${res.status}. Please try again later.`);
             return res.json();
         })
         .then((data) => {
