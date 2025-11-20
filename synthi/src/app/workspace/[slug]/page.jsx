@@ -87,9 +87,10 @@ export default function EditorPage({ params }) {
         analyzeCode({
             lang: normalizedLang,
             code: typeof currentContent === 'string' ? currentContent : '',
-        }).catch((err) => {
+        })
+        /*.catch((err) => {
             console.error('Static analysis failed', err);
-        });
+        });*/
     }, [currentContent, activeFile, hasLoadedInitialFile, analyzeCode]);
 
     // NOTE: Completion requests are handled centrally by the Editor component
