@@ -192,7 +192,7 @@ def build_patch_prompt(
 ):
     """Build a prompt that asks the model to return a unified diff describing minimal changes.
 
-    The model should reply ONLY with a single fenced code block with the `diff`/`patch` content
+    The model should reply ONLY with a single fenced code block with the `diff`/`patch` content without
     using standard unified diff format (--- a/file, +++ b/file, @@ hunks @@). Do not include
     any explanatory text.
     """
@@ -205,8 +205,12 @@ def build_patch_prompt(
         header += f"User instruction: {user_prompt}\n\n"
 
     header += (
-        "You are given the CURRENT file contents below. Produce ONLY a unified diff (unified patch) that makes the minimal edits required to satisfy the user's instruction. "
-        "Do NOT change unrelated code or perform broad refactors. The diff must be a valid unified diff that can be applied with the `patch` or `git apply` tools."
+        "You are given the CURRENT file contents below. Produce ONLY the full updated file contents for the requested file. "
+        "Do NOT use unified diff format. Do NOT include `+++`, `---`, `@@`, or leading `+`/`-` markers. "
+        "Wrap the updated file content in a single fenced code block. Precede each update with `FILE: <path>` (one per file). "
+        "Do NOT add new files unless explicitly requested. Preserve every existing line outside the requested change; do not truncate, reorder includes, or refactor unrelated code. "
+        "If the user names a specific file, update exactly that file path and no others. "
+        "If the request is unclear or cannot be completed safely, reply with `FILE: <path>` followed by `NO_CHANGES` and a single clarifying question."
     )
 
     if file_section:

@@ -13,6 +13,8 @@ export function useAnalyzerGateway({
   url = DEFAULT_WS_URL,
   autoConnect = true,
 } = {}) {
+  // Static analyzer supports only a small set; skip early to avoid noisy rejections.
+  const SUPPORTED_ANALYZER_LANGS = useMemo(() => ['cpp', 'python', 'typescript'], []);
   const clientRef = useRef(null);
   const [connectionStatus, setConnectionStatus] = useState(GatewayStatus.IDLE);
   const [lastResult, setLastResult] = useState(null);
@@ -49,15 +51,22 @@ export function useAnalyzerGateway({
     if (typeof code !== 'string') {
       throw new Error('`code` must be a string');
     }
-    if (!lang) {
+    const normalizedLang = (lang || '').toString().trim().toLowerCase();
+    if (!normalizedLang) {
       throw new Error('`lang` is required for analysis');
+    }
+    if (!SUPPORTED_ANALYZER_LANGS.includes(normalizedLang)) {
+      // Skip unsupported languages quietly; prevents repeated unhandled rejections.
+      setLastResult(null);
+      setLastError(null);
+      return { skipped: true, reason: 'unsupported-language', lang: normalizedLang };
     }
 
     setIsAnalyzing(true);
     setLastError(null);
 
     try {
-      const response = await clientRef.current.analyzeStatic({ code, lang });
+      const response = await clientRef.current.analyzeStatic({ code, lang: normalizedLang });
       console.log(`Response is ${JSON.stringify(response)}`)
       let payload = response?.data ?? response;
       setLastResult(payload);

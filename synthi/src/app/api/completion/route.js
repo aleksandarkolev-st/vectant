@@ -2,13 +2,15 @@ import { NextResponse } from 'next/server';
 import {
   AI_COMPLETION_MAX_INPUT_CHARS,
   AI_COMPLETION_STOP_SEQUENCE,
+  AI_COMPLETION_MAX_OUTPUT_TOKENS,
 } from '@/lib/completion';
 import { GoogleGenAI } from "@google/genai";
 
 // Initialize the client with explicit API key from environment variable
 const ai = new GoogleGenAI({apiKey: process.env.GEMINI_API_KEY});
 const COMPLETION_TIMEOUT_MS = 12_000;
-const MAX_BLOCK_CHARS = 3200;
+// Smaller blocks mean less prompt size and faster responses.
+const MAX_BLOCK_CHARS = 2000;
 const HALF_BLOCK_CHARS = Math.floor(MAX_BLOCK_CHARS / 2);
 
 const limitText = (value, { max = MAX_BLOCK_CHARS, fromEnd = false } = {}) => {
@@ -164,7 +166,14 @@ export async function POST(request) {
 
   try {
     const response = await withTimeout(
-      ai.models.generateContent({ model: 'gemini-2.5-flash-lite', contents: prompt }),
+      ai.models.generateContent({
+        model: 'gemini-2.5-flash-lite',
+        contents: prompt,
+        generationConfig: {
+          maxOutputTokens: AI_COMPLETION_MAX_OUTPUT_TOKENS,
+          temperature: 0.2,
+        },
+      }),
       COMPLETION_TIMEOUT_MS
     );
     const completionText = response.text || '';

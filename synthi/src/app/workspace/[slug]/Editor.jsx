@@ -194,6 +194,19 @@ const EditorPanel = ({
     const prevActiveFileRef = useRef(null);
     const inlineAcceptCommandIdRef = useRef(null);
     const aiDiffChunksRef = useRef(new Map());
+    // Swallow Monaco's cancel-notifications so they don't spam the console when
+    // inline suggestions are abandoned mid-flight.
+    useEffect(() => {
+        const handler = (event) => {
+            const reason = event?.reason;
+            const msg = typeof reason === 'string' ? reason : reason?.message;
+            if (msg && msg.toLowerCase().includes('canceled')) {
+                event.preventDefault?.();
+            }
+        };
+        window.addEventListener('unhandledrejection', handler);
+        return () => window.removeEventListener('unhandledrejection', handler);
+    }, []);
     const notifyCompletionCleared = useCallback(() => {
         if (typeof onClearCompletion === 'function') {
             try {
@@ -203,6 +216,9 @@ const EditorPanel = ({
             }
         }
     }, [onClearCompletion]);
+    const lastSelectionRef = useRef(null);
+    const aiRequestCounterRef = useRef(0);
+    const hasActiveDiff = useCallback(() => aiDiffChunksRef.current.size > 0, []);
     const cancelActiveCompletion = useCallback(({ resetSuggestion = false, reason = 'user-cancelled' } = {}) => {
         let changed = false;
 
@@ -306,6 +322,7 @@ const EditorPanel = ({
 
     const requestAiCompletion = useCallback((isAutoTrigger = false, manualContext = null) => {
         if (!activeFile || !editorInstance) return;
+        if (hasActiveDiff()) return;
 
         const cursorPosition = editorInstance.getPosition();
         const rawContext = typeof manualContext === 'string'
@@ -626,11 +643,25 @@ const EditorPanel = ({
         if (!editorInstance) return;
         const disposables = [];
         try {
-            disposables.push(editorInstance.onDidType(() => {
+            disposables.push(editorInstance.onDidType((text) => {
                 cancelActiveCompletion({ resetSuggestion: true, reason: 'typing' });
+                const lastChar = (text || '').slice(-1);
+                const isPunctuation = /[\(\)\{\}\[\];,]/.test(lastChar);
+                const isEnter = lastChar === '\n';
+                if (hasActiveDiff()) return;
+                if (isPunctuation || isEnter) {
+                    requestAiCompletion(true, null, { reason: isEnter ? 'enter' : 'punctuation', enterTrigger: isEnter });
+                }
             }));
-            disposables.push(editorInstance.onDidChangeCursorSelection(() => {
-                cancelActiveCompletion({ resetSuggestion: true, reason: 'cursor-move' });
+            disposables.push(editorInstance.onDidChangeCursorSelection((e) => {
+                // Ignore cursor moves that come from normal typing; only cancel if the
+                // user actually moves/extends the selection (mouse or keyboard select).
+                const source = e?.source;
+                const selection = e?.selection;
+                const hasSelection = selection && !selection.isEmpty();
+                const isMouse = source === 'mouse';
+                if (!isMouse && !hasSelection) return;
+                cancelActiveCompletion({ resetSuggestion: true, reason: isMouse ? 'cursor-move' : 'selection-change' });
             }));
         } catch (e) {
             // ignore if monaco is missing APIs
@@ -639,7 +670,7 @@ const EditorPanel = ({
         return () => {
             disposables.forEach((disposable) => disposable?.dispose?.());
         };
-    }, [editorInstance, cancelActiveCompletion]);
+    }, [editorInstance, cancelActiveCompletion, requestAiCompletion, hasActiveDiff]);
 
     const handleCodeChange = (newCode) => {
         cancelActiveCompletion({ resetSuggestion: true, reason: 'edit' });
@@ -649,7 +680,9 @@ const EditorPanel = ({
         if (aiDebounceTimerRef.current) clearTimeout(aiDebounceTimerRef.current);
         aiDebounceTimerRef.current = setTimeout(() => {
             // Auto-trigger AI after a brief pause using the latest buffer
-            requestAiCompletion(true, newCode);
+            if (!hasActiveDiff()) {
+                requestAiCompletion(true, newCode, { reason: 'pause', pauseTrigger: true, recentEditSnippet: takeLastChars(newCode, 512) });
+            }
         }, 400);
     };
 
@@ -687,7 +720,7 @@ const EditorPanel = ({
         const issues = analysisResult?.static_analysis || analysisResult?.issues || [];
         const markers = issues.map(issue => ({
             startLineNumber: issue.line === 0 ? 1 : issue.line + 1,
-            startColumn: Math.max(1, (issue.column || 0) + 1),
+                startColumn: Math.max(1, (issue.column || 0) + 1),
             endLineNumber: issue.end_line ? issue.end_line + 1 : (issue.line === 0 ? 1 : issue.line + 1),
             endColumn: issue.end_column ? issue.end_column + 1 : 100,
             message: issue.message,
@@ -699,6 +732,7 @@ const EditorPanel = ({
     // Handle external completion triggering (e.g. from Chat UI)
     useEffect(() => {
         if (latestCompletion) {
+            cancelActiveCompletion({ resetSuggestion: true, reason: 'external-completion' });
             // If parent passed a completion, inject it into cache and trigger
             const text = typeof latestCompletion === 'string' ? latestCompletion : latestCompletion.completion;
             if (text) {

@@ -244,7 +244,7 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
     };
 
     // Compute a compact diff with line numbers and collapsed equal blocks using `diff`.
-    const computeDiffChunks = (oldStr = '', newStr = '') => {
+const computeDiffChunks = (oldStr = '', newStr = '') => {
         const parts = diffLines(oldStr, newStr);
         const rows = [];
         let oldLine = 1;
@@ -293,10 +293,20 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
             }
         }
 
-        return chunks;
-    };
+    return chunks;
+};
 
-const parseFileDiffBlocks = (text = '') => {
+const stripDiffMarkers = (text = '') => {
+    if (!text) return '';
+    return text
+        .split('\n')
+        .filter((line) => !/^@@\s|^---\s|^\+\+\+\s/.test(line))
+        .map((line) => line.replace(/^[+-]/, ''))
+        .join('\n')
+        .trimEnd();
+};
+
+const parseFileDiffBlocks = (text = '', fallbackPath = null) => {
     if (!text) return [];
     const blocks = [];
     const segments = text.split(/(?=FILE:\s*)/i);
@@ -306,14 +316,28 @@ const parseFileDiffBlocks = (text = '') => {
         if (!headerMatch) continue;
         const path = headerMatch[1]?.trim();
         if (!path) continue;
-        const body = segment.slice(headerMatch[0].length).trim();
+        let body = segment.slice(headerMatch[0].length).trim();
         if (!body) continue;
-        const fenceMatch = body.match(/```(?:diff|patch)?\s*([\s\S]*?)```/i);
-        const raw = fenceMatch && fenceMatch[1] ? fenceMatch[1].trim() : body.trim();
+        const raw = stripFence(body).trim();
         if (!raw) continue;
         const normalized = raw.replace(/\r\n/g, '\n').trim();
         const looksLikeDiff = /^---\s+/m.test(normalized) && /^\+\+\+\s+/m.test(normalized) && /@@\s+/m.test(normalized);
-        blocks.push({ path, diffText: normalized, isValidDiff: looksLikeDiff });
+        blocks.push({
+            path,
+            diffText: looksLikeDiff ? normalized : null,
+            contentText: looksLikeDiff ? null : normalized,
+            isValidDiff: looksLikeDiff || Boolean(normalized),
+        });
+    }
+    if (!blocks.length && fallbackPath) {
+        const raw = stripFence(text).replace(/\r\n/g, '\n').trim();
+        const looksLikeDiff = /^---\s+/m.test(raw) && /^\+\+\+\s+/m.test(raw) && /@@\s+/m.test(raw);
+        blocks.push({
+            path: fallbackPath,
+            diffText: looksLikeDiff ? raw : null,
+            contentText: looksLikeDiff ? null : raw,
+            isValidDiff: looksLikeDiff || Boolean(raw),
+        });
     }
     return blocks;
 };
@@ -341,40 +365,53 @@ const parseFileDiffBlocks = (text = '') => {
     };
 
     const buildMultiFileSuggestions = async (rawText) => {
-        const blocks = parseFileDiffBlocks(rawText);
+        const fallbackPath = activeFile?.path || activeFile?.name || null;
+        const blocks = parseFileDiffBlocks(rawText, fallbackPath);
         if (!blocks.length) return [];
         const hydrated = [];
         for (const block of blocks) {
-            if (!block.isValidDiff) {
+            const resolvedPath = resolveWorkspacePath(block.path) || block.path;
+            const baseContent = await getBaseContentForPath(resolvedPath);
+            const baseIsMissing = typeof baseContent !== 'string';
+            const currentContent = baseIsMissing ? '' : baseContent;
+
+            // If the model returned full content instead of a diff, accept it.
+            if (block.contentText && !block.diffText) {
                 hydrated.push({
                     path: block.path,
-                    resolvedPath: resolveWorkspacePath(block.path) || block.path,
-                    diffText: block.diffText,
-                    status: 'error',
-                    error: 'AI response did not include a valid unified diff. Please ask again with patch mode.',
+                    resolvedPath,
+                    diffText: null,
+                    originalContent: currentContent,
+                    updatedContent: block.contentText,
+                    isNewFile: baseIsMissing,
+                    chunks: computeDiffChunks(currentContent, block.contentText),
+                    status: 'pending',
                 });
                 continue;
             }
-            const resolvedPath = resolveWorkspacePath(block.path) || block.path;
-            const baseContent = await getBaseContentForPath(resolvedPath);
-            if (typeof baseContent !== 'string') {
+
+            if (!block.isValidDiff || !block.diffText) {
                 hydrated.push({
                     path: block.path,
                     resolvedPath,
                     diffText: block.diffText,
                     status: 'error',
-                    error: 'Unable to load current file contents. Open the file and try again.',
+                    error: 'AI response did not include usable diff or content. Ask again with a specific file path.',
                 });
                 continue;
             }
-            const patched = applyPatch(baseContent, block.diffText);
+
+            let patched = applyPatch(currentContent, block.diffText);
+            if (patched === false && baseIsMissing) {
+                patched = stripDiffMarkers(block.diffText);
+            }
             if (patched === false) {
                 hydrated.push({
                     path: block.path,
                     resolvedPath,
                     diffText: block.diffText,
                     status: 'error',
-                    error: 'Failed to apply AI diff to the current file contents.',
+                    error: baseIsMissing ? 'File not found; unable to apply AI diff.' : 'Failed to apply AI diff to the current file contents.',
                 });
                 continue;
             }
@@ -382,9 +419,10 @@ const parseFileDiffBlocks = (text = '') => {
                 path: block.path,
                 resolvedPath,
                 diffText: block.diffText,
-                originalContent: baseContent,
+                originalContent: currentContent,
                 updatedContent: patched,
-                chunks: computeDiffChunks(baseContent, patched),
+                isNewFile: baseIsMissing,
+                chunks: computeDiffChunks(currentContent, patched),
                 status: 'pending',
             });
         }
@@ -412,13 +450,14 @@ const parseFileDiffBlocks = (text = '') => {
         return resolvedPath;
     }, [activeFile?.path, dispatch, findFileNodeByPath, resolveWorkspacePath]);
 
-    const applyContentToPath = (path, newContent) => {
+    const applyContentToPath = (path, newContent, { skipSave = false } = {}) => {
         if (!path || typeof newContent !== 'string') return;
         const resolvedPath = resolveWorkspacePath(path) || path;
         if (activeFile?.path === resolvedPath && editor && typeof editor.setValue === 'function') {
             editor.setValue(newContent);
         }
         dispatch(setExternalFileContent({ path: resolvedPath, content: newContent }));
+        return { resolvedPath, saved: !skipSave };
     };
 
     const handleApplyFileSuggestion = async (sessionId, path) => {
@@ -446,8 +485,8 @@ const parseFileDiffBlocks = (text = '') => {
         try {
             const targetPath = suggestion.resolvedPath || resolveWorkspacePath(path) || path;
             await openFileByPath(targetPath);
-            applyContentToPath(targetPath, suggestion.updatedContent);
-            if (workspaceSlug) {
+            applyContentToPath(targetPath, suggestion.updatedContent, { skipSave: suggestion.isNewFile });
+            if (workspaceSlug && !suggestion.isNewFile) {
                 const fileName = targetPath.split('/').pop() || 'file.txt';
                 await api.saveFileContent(workspaceSlug, targetPath, suggestion.updatedContent, fileName);
             }
@@ -511,7 +550,17 @@ const parseFileDiffBlocks = (text = '') => {
             const normalizedLang = (langSource || 'plaintext').toLowerCase();
             const code = currentCode || '';
             const userPrompt = inputValue;
-            let patchRequest = `${userPrompt}\n\nRespond ONLY with unified diffs (patch format) for every file you modify. Use fenced \`\`\`diff blocks that contain standard ---/+++ headers and @@ hunks. Include one FILE: <path> section per file. Do not include commentary outside the diff blocks.`;
+            let patchRequest = `${userPrompt}
+
+Only modify the file(s) explicitly mentioned or the active file. Do not add new files unless explicitly asked.
+
+Return one or more sections in this exact format:
+FILE: <path>
+\`\`\`
+<full updated file content only; no diff markers, no +/-, no @@, no ---/+++>
+\`\`\`
+
+Do not include any other text, commentary, or summary. Preserve all code outside the requested change. If unclear, return FILE: <path> then NO_CHANGES and a brief clarifying question.`;
             const filesPayload = buildFilesPayload({
                 activeFile,
                 fullDocument: code,
