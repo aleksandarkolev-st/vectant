@@ -6,6 +6,8 @@ export default function TerminalPane() {
   const termRef = useRef(null);
   const wsRef = useRef(null);
   const initializedRef = useRef(false);
+  const MACHINE_URL = "lumpish-undevoutly-sonja.ngrok-free.dev"
+
 
   useEffect(() => {
     // Prevent multiple initializations
@@ -35,7 +37,7 @@ export default function TerminalPane() {
       term.open(containerRef.current);
       fitAddon.fit();
 
-      ws = new WebSocket('ws://lumpish-undevoutly-sonja.ngrok-free.dev');
+      ws = new WebSocket(`ws://${MACHINE_URL}`);
       wsRef.current = ws;
       ws.binaryType = 'arraybuffer'; // Handle binary data
 
