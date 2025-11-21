@@ -1,45 +1,46 @@
-"use client"
+"use client";
 
 import { useEffect } from "react";
 import { toast } from "sonner";
 
 export default function GlobalErrorHandler() {
   useEffect(() => {
-    // quick mount debug to confirm the handler is active
-    // eslint-disable-next-line no-console
-    console.debug("GlobalErrorHandler mounted");
-    const onError = (event) => {
+    const handleError = (error) => {
       try {
+        if (error && (error.name === "SynthiException" || (error.title && error.description))) {
+          toast.error(error.title, {
+            description: error.description,
+            duration: 5000,
+          });
+          // eslint-disable-next-line no-console
+          console.error("SynthiException captured:", error);
+          return;
+        }
+
+        const message = error?.message || (typeof error === "string" ? error : "An unexpected error occurred");
+        toast.error(message);
+
         // eslint-disable-next-line no-console
-        console.debug("Global error captured event:", event);
-        const message = event?.message || (event?.error && event.error.message) || String(event);
-        // show toast with short message
-        toast.error(message || "An unexpected error occurred");
-        // also log full event
-        // eslint-disable-next-line no-console
-        console.error("Global error captured:", event);
+        console.error("Global error captured:", error);
       } catch (e) {
-        // ignore
+        // eslint-disable-next-line no-console
+        console.error("Error in GlobalErrorHandler:", e);
       }
+    };
+
+    const onWindowError = (event) => {
+      handleError(event.error || event.message);
     };
 
     const onRejection = (event) => {
-      try {
-        const reason = event?.reason || event;
-        const message = reason && reason.message ? reason.message : String(reason);
-        toast.error(message || "Unhandled promise rejection");
-        // eslint-disable-next-line no-console
-        console.error("Unhandled rejection:", event);
-      } catch (e) {
-        // ignore
-      }
+      handleError(event.reason);
     };
 
-    window.addEventListener("error", onError);
+    window.addEventListener("error", onWindowError);
     window.addEventListener("unhandledrejection", onRejection);
 
     return () => {
-      window.removeEventListener("error", onError);
+      window.removeEventListener("error", onWindowError);
       window.removeEventListener("unhandledrejection", onRejection);
     };
   }, []);

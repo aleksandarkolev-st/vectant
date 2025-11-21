@@ -150,7 +150,7 @@ export default function Home() {
     }).then(async (response) => {
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to join waitlist');
+        throw new SynthiException(data.error || 'Failed to join waitlist', 'There was an issue adding your email to the waitlist. Please try again later.');
       }
       return data;
     });

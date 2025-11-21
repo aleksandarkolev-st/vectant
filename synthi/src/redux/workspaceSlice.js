@@ -9,6 +9,7 @@ import {
     getFileLanguage,
     getItemPathInBucket,
 } from '@/utils/fileUtils'; 
+import SynthiException from '@/components/SynthiException';
 
 // --- Initial State and Utilities ---
 
@@ -96,12 +97,12 @@ export const handleCreateItemThunk = createAsyncThunk(
         
         const isFolder = mode === 'create-folder';
         let finalName = name.trim();
-        if (!finalName) throw new Error("Name cannot be empty.");
+        if (!finalName) throw new SynthiException("Name cannot be empty.", "The name for the new item cannot be empty.");
 
         // Validation logic (replicated from original hook)
         const invalidChars = /[<>:"/\\|?*]/;
         if (invalidChars.test(finalName)) {
-            throw new Error(`The name contains invalid characters.`);
+            throw new SynthiException(`The name contains invalid characters.`, "The name contains characters that are not allowed.");
         }
 
         const parentPath = (target && target.path)? `${target.path}/` : '';
@@ -113,12 +114,12 @@ export const handleCreateItemThunk = createAsyncThunk(
             }
             fullPath = parentPath + finalName;
             if (findFileInTree(workspace.rawFiles, fullPath)) {
-                throw new Error('A file with this name already exists.');
+                throw new SynthiException('A file with this name already exists.', "A file with this name already exists.");
             }
         } else {
             fullPath = parentPath + finalName;
             if (findFolderInTree(workspace.rawFiles, fullPath)) {
-                throw new Error('A folder with this name already exists.');
+                throw new SynthiException('A folder with this name already exists.', "A folder with this name already exists.");
             }
         }
 
@@ -156,7 +157,7 @@ export const handleRenameItemThunk = createAsyncThunk(
 
         const invalidChars = /[<>:"/\\|?*]/;
         if (invalidChars.test(newName)) {
-            throw new Error('New name contains invalid characters.');
+            throw new SynthiException('New name contains invalid characters.', "The new name contains characters that are not allowed.");
         }
 
         const newPath = item.path.split('/').slice(0, -1).concat(newName).join('/') + (item.isFolder ? '/' : '');
