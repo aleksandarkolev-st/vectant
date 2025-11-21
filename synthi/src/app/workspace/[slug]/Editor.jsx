@@ -135,7 +135,7 @@ const EDITOR_OPTIONS = {
     bracketPairColorization: { enabled: true }, // VS Code style brackets
     guides: {
         indentation: true,
-        bracketPairs: true,
+        bracketPairs: false,
     },
     scrollbar: {
         verticalScrollbarSize: 10,
@@ -900,7 +900,7 @@ const EditorPanel = ({
                 zoneWrapper.style.userSelect = 'none';
                 zoneWrapper.style.position = 'relative';
                 zoneWrapper.style.zIndex = '5';
-                zoneWrapper.style.marginBottom = '12px';
+                zoneWrapper.style.marginBottom = '16px';
 
                 const domNode = document.createElement('div');
                 domNode.className = 'ai-insert-zone';
@@ -908,13 +908,13 @@ const EditorPanel = ({
                 domNode.style.userSelect = 'text';
                 domNode.style.position = 'relative';
                 domNode.style.overflow = 'visible';
-                domNode.style.paddingBottom = '6px';
+                domNode.style.padding = '8px 8px 10px 8px';
 
                 const title = document.createElement('div');
                 title.style.fontSize = '13px';
                 title.style.textTransform = 'uppercase';
                 title.style.letterSpacing = '0.08em';
-                title.style.marginBottom = '6px';
+                title.style.marginBottom = '8px';
                 title.textContent = `AI suggestion · ${chunk.addLines.length} ${chunk.addLines.length === 1 ? 'line' : 'lines'}`;
                 domNode.appendChild(title);
 
@@ -927,8 +927,8 @@ const EditorPanel = ({
 
                 const controls = document.createElement('div');
                 controls.className = 'controls';
-                controls.style.marginBottom = '1px';
-                controls.style.marginTop = '8px';
+                controls.style.marginBottom = '2px';
+                controls.style.marginTop = '10px';
 
                 const acceptBtn = document.createElement('button');
                 acceptBtn.className = 'ai-action-btn accept-add';
@@ -954,17 +954,34 @@ const EditorPanel = ({
 
                 zoneWrapper.appendChild(domNode);
 
-                const baseAddHeight = Math.max(chunk.addLines.length, 1) * lineHeight + 110;
-                const height = Math.min(baseAddHeight, 400);
+                const estimatedAddHeight = Math.max(chunk.addLines.length, 1) * (lineHeight + 2) + 90;
+                const initialHeight = Math.min(estimatedAddHeight, 420);
                 let zoneId = null;
                 editorInstance.changeViewZones(accessor => {
                     zoneId = accessor.addZone({
                         afterLineNumber: Math.max(0, chunk.additionAfterLine),
-                        heightInPx: height,
+                        heightInPx: initialHeight,
                         domNode: zoneWrapper
                     });
                 });
                 chunk.viewZoneId = zoneId;
+                // Adjust height after render to match actual content height (prevents overlap)
+                if (zoneId) {
+                    requestAnimationFrame(() => {
+                        const desired = Math.min(Math.max(zoneWrapper.scrollHeight + 4, initialHeight), 540);
+                        if (desired !== initialHeight) {
+                            editorInstance.changeViewZones(accessor => {
+                                accessor.removeZone(zoneId);
+                                const newId = accessor.addZone({
+                                    afterLineNumber: Math.max(0, chunk.additionAfterLine),
+                                    heightInPx: desired,
+                                    domNode: zoneWrapper
+                                });
+                                chunk.viewZoneId = newId;
+                            });
+                        }
+                    });
+                }
             }
 
             if (hasOnlyRemovals) {
@@ -973,7 +990,7 @@ const EditorPanel = ({
                 zoneWrapper.style.userSelect = 'none';
                 zoneWrapper.style.position = 'relative';
                 zoneWrapper.style.zIndex = '5';
-                zoneWrapper.style.marginBottom = '12px';
+                zoneWrapper.style.marginBottom = '16px';
 
                 const domNode = document.createElement('div');
                 domNode.className = 'ai-remove-zone';
@@ -981,18 +998,15 @@ const EditorPanel = ({
                 domNode.style.userSelect = 'text';
                 domNode.style.position = 'relative';
                 domNode.style.overflow = 'visible';
-                domNode.style.paddingBottom = '6px';
-                domNode.style.paddingTop = '28px';
+                domNode.style.padding = '12px 10px 10px 10px';
 
                 const controls = document.createElement('div');
                 controls.className = 'controls';
-                controls.style.marginBottom = '10px';
-                controls.style.marginTop = '0';
-                controls.style.position = 'absolute';
-                controls.style.top = '4px';
-                controls.style.right = '6px';
-                controls.style.justifyContent = 'flex-end';
-                controls.style.width = 'fit-content';
+                controls.style.marginBottom = '6px';
+                controls.style.marginTop = '4px';
+                controls.style.display = 'flex';
+                controls.style.gap = '8px';
+                controls.style.justifyContent = 'flex-start';
 
                 const acceptBtn = document.createElement('button');
                 acceptBtn.className = 'ai-action-btn accept-rem';
@@ -1018,17 +1032,33 @@ const EditorPanel = ({
 
                 zoneWrapper.appendChild(domNode);
 
-                const baseRemHeight = Math.max(chunk.removeLines.length, 1) * lineHeight + 110;
-                const height = Math.min(baseRemHeight, 360);
+                const baseRemHeight = Math.max(chunk.removeLines.length, 1) * (lineHeight + 2) + 90;
+                const initialHeight = Math.min(baseRemHeight, 80);
                 let zoneId = null;
                 editorInstance.changeViewZones(accessor => {
                     zoneId = accessor.addZone({
                         afterLineNumber: Math.max(0, chunk.removeStartLine + chunk.removeLines.length - 1),
-                        heightInPx: height,
+                        heightInPx: initialHeight,
                         domNode: zoneWrapper
                     });
                 });
                 chunk.viewZoneId = zoneId;
+                if (zoneId) {
+                    requestAnimationFrame(() => {
+                        const desired = Math.min(Math.max(zoneWrapper.scrollHeight + 4, initialHeight), 540);
+                        if (desired !== initialHeight) {
+                            editorInstance.changeViewZones(accessor => {
+                                accessor.removeZone(zoneId);
+                                const newId = accessor.addZone({
+                                    afterLineNumber: Math.max(0, chunk.removeStartLine + chunk.removeLines.length - 1),
+                                    heightInPx: desired,
+                                    domNode: zoneWrapper
+                                });
+                                chunk.viewZoneId = newId;
+                            });
+                        }
+                    });
+                }
             }
         });
 

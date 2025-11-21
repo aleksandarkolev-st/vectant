@@ -207,7 +207,7 @@ def build_patch_prompt(
     header += (
         "You are given the CURRENT file contents below. Produce ONLY the full updated file contents for the requested file. "
         "Do NOT use unified diff format. Do NOT include `+++`, `---`, `@@`, or leading `+`/`-` markers. "
-        "Wrap the updated file content in a single fenced code block. Precede each update with `FILE: <path>` (one per file). "
+        "Start with a brief (3-4 sentences) summary of the change. Then, for each file, precede the update with `FILE: <path>` (one per file) and wrap the updated file content in a single fenced code block. "
         "Do NOT add new files unless explicitly requested. Preserve every existing line outside the requested change; do not truncate, reorder includes, or refactor unrelated code. "
         "If the user names a specific file, update exactly that file path and no others. "
         "If the request is unclear or cannot be completed safely, reply with `FILE: <path>` followed by `NO_CHANGES` and a single clarifying question."

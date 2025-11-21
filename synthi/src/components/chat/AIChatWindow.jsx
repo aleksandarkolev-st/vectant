@@ -23,7 +23,7 @@ const createChatSession = (index = 1) => ({
     fileSuggestions: [],
 });
 
-const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, editor = null, docked = false, onSuggest = null, onBusy = null }) => {
+const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, editor = null, docked = false, onSuggest = null, onBusy = null, clearSignal = 0 }) => {
     const [inputValue, setInputValue] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const scrollRef = useRef(null);
@@ -36,6 +36,7 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
     const messages = activeSession?.messages ?? [];
     const suggestedCode = activeSession?.suggestedCode ?? null;
     const showDiff = activeSession?.showDiff ?? true;
+    const lastClearSignalRef = useRef(clearSignal);
     const dispatch = useAppDispatch();
     const fileCacheEntries = useAppSelector(selectFileCacheEntries);
     const workspaceSlug = useAppSelector((state) => state.workspace.slug);
@@ -220,6 +221,21 @@ const AIChatWindow = ({ onClose, isVisible = true, activeFile, currentCode, edit
             }
         }
     }, [messages, suggestedCode, fileSuggestions]);
+
+    useEffect(() => {
+        if (clearSignal === lastClearSignalRef.current) return;
+        lastClearSignalRef.current = clearSignal;
+        // If upstream clears completions, wipe suggestions for the active session and inform parent
+        mutateSession(activeSessionId, (session) => ({
+            ...session,
+            suggestedCode: null,
+            fileSuggestions: [],
+            showDiff: false,
+        }));
+        try {
+            if (typeof onSuggest === 'function') onSuggest(null);
+        } catch (e) {}
+    }, [clearSignal, activeSessionId, mutateSession, onSuggest]);
 
     const extractCodeFromMarkdown = (text) => {
         if (!text) return null;
@@ -554,19 +570,23 @@ const parseFileDiffBlocks = (text = '', fallbackPath = null) => {
 
 Only modify the file(s) explicitly mentioned or the active file. Do not add new files unless explicitly asked.
 
-Return one or more sections in this exact format:
+Start with a brief (3-4 sentences) summary of the change. After the summary, return one or more sections in this exact format:
 FILE: <path>
 \`\`\`
 <full updated file content only; no diff markers, no +/-, no @@, no ---/+++>
 \`\`\`
 
-Do not include any other text, commentary, or summary. Preserve all code outside the requested change. If unclear, return FILE: <path> then NO_CHANGES and a brief clarifying question.`;
-            const filesPayload = buildFilesPayload({
+Do not include any other commentary. Preserve all code outside the requested change. Do not add speculative comments or boilerplate. If unclear, return FILE: <path> then NO_CHANGES and a brief clarifying question.`;
+            const filesPayloadRaw = buildFilesPayload({
                 activeFile,
                 fullDocument: code,
                 cacheEntries: fileCacheEntries,
             });
-            if (filesPayload.length) {
+            const mentionsOtherFile = /\b[a-zA-Z0-9_-]+\.[a-zA-Z0-9]{1,5}\b/.test(userPrompt) || /other file|another file|files/i.test(userPrompt);
+            const filesPayload = mentionsOtherFile
+                ? filesPayloadRaw
+                : filesPayloadRaw.filter((f) => f.path === (activeFile?.path || activeFile?.name));
+            if (filesPayload.length > 1 || mentionsOtherFile) {
                 patchRequest = `${patchRequest}\n\nAdditional workspace files are attached. Reference them by their path when relevant.`;
             }
 
@@ -622,6 +642,11 @@ Do not include any other text, commentary, or summary. Preserve all code outside
             });
 
             const suggestion = response?.ai_suggestion || response?.suggestion || finalSuggestion || '';
+            const summaryText = (() => {
+                const parts = suggestion.split(/FILE:/i);
+                const prefix = (parts[0] || '').trim();
+                return prefix ? prefix.split('\n').slice(0, 4).join('\n').trim() : '';
+            })();
 
             let multiFileSuggestions = [];
             try {
@@ -644,7 +669,8 @@ Do not include any other text, commentary, or summary. Preserve all code outside
                 try {
                     if (typeof onSuggest === 'function') onSuggest(null);
                 } catch (e) {}
-                displayedContent = `AI suggested changes for ${multiFileSuggestions.length} file${multiFileSuggestions.length > 1 ? 's' : ''}. Review them below.`;
+                const prefix = summaryText ? `${summaryText}\n\n` : '';
+                displayedContent = `${prefix}AI suggested changes for ${multiFileSuggestions.length} file${multiFileSuggestions.length > 1 ? 's' : ''}. Review them below.`;
             } else {
                 mutateSession(activeSession.id, (session) => ({
                     ...session,
@@ -661,13 +687,15 @@ Do not include any other text, commentary, or summary. Preserve all code outside
                 }
 
                 if (codeOnly) {
-                    displayedContent = (suggestion || '').replace(/```[\s\S]*?```/g, '');
+                    displayedContent = summaryText || (suggestion || '').replace(/```[\s\S]*?```/g, '');
                     displayedContent = displayedContent.replace(/<pre[^>]*>[\s\S]*?<code[^>]*>[\s\S]*?<\/code>[\s\S]*?<\/pre>/gi, '');
                     displayedContent = displayedContent.replace(/<code[^>]*>[\s\S]*?<\/code>/gi, '');
                     displayedContent = displayedContent.trim();
                     if (!displayedContent) {
                         displayedContent = 'AI suggested code changes — preview shown below.';
                     }
+                } else if (summaryText) {
+                    displayedContent = summaryText;
                 }
             }
 
@@ -689,27 +717,6 @@ Do not include any other text, commentary, or summary. Preserve all code outside
                         onSuggest({ completion: codeOnly });
                     }
                 } catch (e) {}
-
-                const parts = diffLines(code, codeOnly);
-                const countLines = (value = '') => {
-                    if (!value) return 0;
-                    const lines = value.split('\n');
-                    if (lines.length && lines[lines.length - 1] === '') lines.pop();
-                    return lines.length;
-                };
-                let added = 0;
-                let removed = 0;
-                parts.forEach(part => {
-                    if (part.added) added += countLines(part.value);
-                    if (part.removed) removed += countLines(part.value);
-                });
-
-                messagesToAppend.push({
-                    id: now + 2,
-                    role: 'assistant',
-                    content: `AI suggested code changes — preview shown below. (+${added} / -${removed})`,
-                    timestamp: new Date(),
-                });
             } else if (!hasMultiFileSuggestions) {
                 mutateSession(activeSession.id, (session) => ({
                     ...session,
@@ -884,7 +891,7 @@ Do not include any other text, commentary, or summary. Preserve all code outside
                                     }`}
                                 >
                                     <div 
-                                        className="break-all whitespace-pre-wrap text-sm leading-relaxed"
+                                        className="break-all whitespace-pre-wrap text-xs leading-relaxed"
                                         dangerouslySetInnerHTML={{ __html: formatMessageContent(msg.content) }}
                                     />
                                     <span className="text-xs opacity-70 mt-1 block">
