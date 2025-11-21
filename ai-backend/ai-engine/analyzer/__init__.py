@@ -5,6 +5,9 @@ from typing import Dict, Iterable, Tuple, Type
 
 from analyzer.AllLanguageAnalyzers import (
     CppAnalyzer,
+    CAnalyzer,
+    GoAnalyzer,
+    JavaAnalyzer,
     PythonAnalyzer,
     TypeScriptAnalyzer,
 )
@@ -16,6 +19,9 @@ _ANALYZER_TYPES: Tuple[AnalyzerType, ...] = (
     PythonAnalyzer,
     TypeScriptAnalyzer,
     CppAnalyzer,
+    CAnalyzer,
+    JavaAnalyzer,
+    GoAnalyzer,
 )
 
 _LANGUAGE_TO_ANALYZER: Dict[str, AnalyzerType] = {}

@@ -15,6 +15,17 @@ _DECLARATION = re.compile(r"^(?:export\s+)?(?:const|let)\s+.+$")
 _IO_HEADER = "#include <iostream>"
 _IO_USAGE = re.compile(r"\b(?:std::)?c(?:out|in)\b")
 _USING_NAMESPACE_STD = re.compile(r"using\s+namespace\s+std\s*;")
+_JAVA_STRING_EQ = re.compile(r'"[^"]*"\s*==\s*[^;\n]+|"[^"]*"\s*!=\s*[^;\n]+')
+_JAVA_RAW_NEW = re.compile(r"\bnew\s+[A-Z]\w*\s*\(")
+_GO_RAW_HTTP = re.compile(r"\bhttp\.Get\([^)]*\)")
+_GO_PANIC = re.compile(r"\bpanic\(")
+_GO_GLOBAL_VAR = re.compile(r"^var\s+\w+\s*=\s*", re.MULTILINE)
+_C_STDIO = "#include <stdio.h>"
+_C_PRINTF = re.compile(r"\bprintf\s*\(")
+_C_MALLOC = re.compile(r"\bmalloc\s*\(")
+_C_FREE = re.compile(r"\bfree\s*\(")
+_CPP_GOTO = re.compile(r"\bgoto\s+\w+")
+_CPP_CSTYLE_CAST = re.compile(r"\(\s*(int|float|double|char|long|short)\s*\)")
 
 
 class PythonAnalyzer(BaseAnalyzer):
@@ -62,6 +73,31 @@ class PythonAnalyzer(BaseAnalyzer):
                         code="PY006",
                     )
                 )
+            if re.search(r"def\s+\w+\([^)]*=\s*(\[\]|\{\}|set\(|dict\(|list\(|set\()", line):
+                col = line.index("=")
+                diagnostics.append(
+                    make_diag(
+                        msg="Avoid mutable default arguments; use None and assign inside.",
+                        severity="warning",
+                        line=idx,
+                        column=col,
+                        end_line=idx,
+                        end_column=col + 5,
+                        code="PY007",
+                    )
+                )
+            if "print(" in line and not line.strip().startswith("#"):
+                diagnostics.append(
+                    make_diag(
+                        msg="Remove debug `print` statements before shipping",
+                        severity="info",
+                        line=idx,
+                        column=line.index("print("),
+                        end_line=idx,
+                        end_column=line.index("print(") + 5,
+                        code="PY008",
+                    )
+                )
 
         return diagnostics
 
@@ -83,6 +119,7 @@ class TypeScriptAnalyzer(BaseAnalyzer):
             self._detectAnyType(line, line_no, diagnostics)
             self._detectVarUsage(line, line_no, diagnostics)
             self._detectConsoleLog(line, line_no, diagnostics)
+            self._detectAlertEval(line, line_no, diagnostics)
             self._detectMissingSemicolon(stripped, line, line_no, diagnostics)
 
         return diagnostics
@@ -146,6 +183,32 @@ class TypeScriptAnalyzer(BaseAnalyzer):
                 )
             )
 
+    def _detectAlertEval(self, line: str, line_no: int, diagnostics: List[dict]):
+        if "alert(" in line:
+            diagnostics.append(
+                make_diag(
+                    msg="Avoid `alert`; prefer in-app notifications or dev-only logging",
+                    severity="info",
+                    line=line_no,
+                    column=line.index("alert("),
+                    end_line=line_no,
+                    end_column=line.index("alert(") + 6,
+                    code="TS006",
+                )
+            )
+        if "eval(" in line:
+            diagnostics.append(
+                make_diag(
+                    msg="Avoid `eval`; it is unsafe and blocks optimizations",
+                    severity="warning",
+                    line=line_no,
+                    column=line.index("eval("),
+                    end_line=line_no,
+                    end_column=line.index("eval(") + 4,
+                    code="TS007",
+                )
+            )
+
     def _detectMissingSemicolon(
         self, stripped: str, raw_line: str, line_no: int, diagnostics: List[dict]
     ):
@@ -184,6 +247,8 @@ class CppAnalyzer(BaseAnalyzer):
         self._checkRawNewUsage(code, diagnostics)
         self._checkNullUsage(code, diagnostics)
         self._checkMainReturn(code, diagnostics)
+        self._checkGoto(code, diagnostics)
+        self._checkCStyleCast(code, diagnostics)
 
         return diagnostics
 
@@ -263,6 +328,180 @@ class CppAnalyzer(BaseAnalyzer):
                     code="CPP005",
                 )
             )
+
+    def _checkGoto(self, code: str, diagnostics: List[dict]):
+        match = _CPP_GOTO.search(code)
+        if match:
+            line = code[: match.start()].count("\n")
+            diagnostics.append(
+                make_diag(
+                    msg="Avoid `goto`; refactor with loops/conditions",
+                    severity="warning",
+                    line=line,
+                    column=0,
+                    end_line=line,
+                    end_column=0,
+                    code="CPP006",
+                )
+            )
+
+    def _checkCStyleCast(self, code: str, diagnostics: List[dict]):
+        match = _CPP_CSTYLE_CAST.search(code)
+        if not match:
+            return
+        line = code[: match.start()].count("\n")
+        col = match.start() - (code.rfind("\n", 0, match.start()) + 1)
+        diagnostics.append(
+            make_diag(
+                msg="Prefer C++ static_cast/reinterpret_cast over C-style casts",
+                severity="info",
+                line=line,
+                column=col,
+                end_line=line,
+                end_column=col + (match.end() - match.start()),
+                code="CPP007",
+            )
+        )
+
+
+class CAnalyzer(BaseAnalyzer):
+    language = "c"
+    aliases = ("c99", "c11")
+
+    def analyze(self, code: str):
+        diagnostics: List[dict] = []
+        stripped = code.strip()
+        if not stripped:
+            return diagnostics
+
+        if _C_PRINTF.search(code) and _C_STDIO not in code:
+            diagnostics.append(
+                make_diag(
+                    msg="Missing `#include <stdio.h>` for printf usage",
+                    severity="error",
+                    line=0,
+                    end_line=0,
+                    end_column=1,
+                    code="C001",
+                )
+            )
+        if _C_MALLOC.search(code) and not _C_FREE.search(code):
+            diagnostics.append(
+                make_diag(
+                    msg="Calls to malloc should have matching free to avoid leaks",
+                    severity="warning",
+                    line=0,
+                    end_line=0,
+                    end_column=1,
+                    code="C002",
+                )
+            )
+        if "int main" in code and "return" not in code:
+            diagnostics.append(
+                make_diag(
+                    msg="`int main` should return a status code",
+                    severity="info",
+                    line=0,
+                    end_line=0,
+                    end_column=1,
+                    code="C003",
+                )
+            )
+        return diagnostics
+
+
+class JavaAnalyzer(BaseAnalyzer):
+    language = "java"
+    aliases = ("jav",)
+
+    def analyze(self, code: str):
+        diagnostics: List[dict] = []
+        lines = code.splitlines()
+        for i, line in enumerate(lines):
+            if "System.out.println" in line and "//" not in line:
+                diagnostics.append(
+                    make_diag(
+                        msg="Remove debug prints (`System.out.println`) before shipping",
+                        severity="info",
+                        line=i,
+                        column=line.index("System.out.println"),
+                        end_line=i,
+                        end_column=line.index("System.out.println") + len("System.out.println"),
+                        code="JAVA001",
+                    )
+                )
+            if _JAVA_STRING_EQ.search(line):
+                diagnostics.append(
+                    make_diag(
+                        msg="Use `.equals()` to compare strings instead of `==`/`!=`",
+                        severity="warning",
+                        line=i,
+                        column=_JAVA_STRING_EQ.search(line).start(),
+                        end_line=i,
+                        end_column=_JAVA_STRING_EQ.search(line).end(),
+                        code="JAVA002",
+                    )
+                )
+            if _JAVA_RAW_NEW.search(line) and "try" in "".join(lines[max(0, i - 2): i + 2]):
+                pass  # allow within try-blocks
+        if "ClassNotFoundException" in code and "try" not in code:
+            diagnostics.append(
+                make_diag(
+                    msg="Wrap reflection/Class.forName usage in try-catch",
+                    severity="info",
+                    line=0,
+                    end_line=0,
+                    end_column=1,
+                    code="JAVA003",
+                )
+            )
+        return diagnostics
+
+
+class GoAnalyzer(BaseAnalyzer):
+    language = "go"
+    aliases = ("golang",)
+
+    def analyze(self, code: str):
+        diagnostics: List[dict] = []
+        lines = code.splitlines()
+        for i, line in enumerate(lines):
+            if _GO_RAW_HTTP.search(line) and "defer resp.Body.Close()" not in code:
+                diagnostics.append(
+                    make_diag(
+                        msg="Remember to close HTTP response bodies: `defer resp.Body.Close()`",
+                        severity="warning",
+                        line=i,
+                        column=_GO_RAW_HTTP.search(line).start(),
+                        end_line=i,
+                        end_column=_GO_RAW_HTTP.search(line).end(),
+                        code="GO001",
+                    )
+                )
+            if _GO_PANIC.search(line):
+                diagnostics.append(
+                    make_diag(
+                        msg="Avoid `panic`; return errors instead in production code",
+                        severity="info",
+                        line=i,
+                        column=_GO_PANIC.search(line).start(),
+                        end_line=i,
+                        end_column=_GO_PANIC.search(line).end(),
+                        code="GO002",
+                    )
+                )
+        if _GO_GLOBAL_VAR.search(code):
+            diagnostics.append(
+                make_diag(
+                    msg="Prefer local variables or type-safe consts over package-level mutable vars",
+                    severity="info",
+                    line=0,
+                    end_line=0,
+                    end_column=1,
+                    code="GO003",
+                )
+            )
+        return diagnostics
 
 
 @dataclass

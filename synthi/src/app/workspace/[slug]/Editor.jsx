@@ -131,7 +131,7 @@ const EDITOR_OPTIONS = {
     cursorSmoothCaretAnimation: "off", // Cursor glides
     smoothScrolling: true,
     contextmenu: false, // We use our own custom context menu
-    padding: { top: 16, bottom: 16 },
+    padding: { top: 0, bottom: 16 },
     bracketPairColorization: { enabled: true }, // VS Code style brackets
     guides: {
         indentation: true,
@@ -509,6 +509,17 @@ const EditorPanel = ({
         } catch (e) {}
     }, [editorInstance]);
 
+    // Reset completions/diffs when switching files
+    useEffect(() => {
+        cancelActiveCompletion({ resetSuggestion: true, reason: 'file-changed' });
+        aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
+        aiDiffChunksRef.current.forEach((_, chunkId) => {
+            try { removeDiffChunkVisuals(chunkId); } catch (e) {}
+        });
+        aiDiffChunksRef.current.clear();
+        notifyCompletionCleared();
+    }, [activeFileIdentity, cancelActiveCompletion, removeDiffChunkVisuals, notifyCompletionCleared]);
+
     const handleRejectDiffChunk = useCallback((chunkId) => {
         removeDiffChunkVisuals(chunkId);
         aiDiffChunksRef.current.delete(chunkId);
@@ -735,7 +746,13 @@ const EditorPanel = ({
         if (latestCompletion) {
             cancelActiveCompletion({ resetSuggestion: true, reason: 'external-completion' });
             // If parent passed a completion, inject it into cache and trigger
+            const isPartial = typeof latestCompletion === 'object' && latestCompletion?.partial;
+            if (isPartial) return;
             const text = typeof latestCompletion === 'string' ? latestCompletion : latestCompletion.completion;
+            const sourceLang = typeof latestCompletion === 'object' ? latestCompletion?.language : null;
+            const sourcePath = typeof latestCompletion === 'object' ? latestCompletion?.filePath : null;
+            if (sourceLang && sourceLang !== activeLanguage) return;
+            if (sourcePath && (sourcePath !== (activeFile?.path || activeFile?.name))) return;
             if (text) {
                 const sanitized = text.split(AI_COMPLETION_STOP_SEQUENCE)[0];
                 aiCompletionCacheRef.current = {
@@ -770,10 +787,15 @@ const EditorPanel = ({
             : (latestCompletion || null);
         const suggested = resolved?.completion || null;
         const isPartial = Boolean(resolved?.partial);
+        const sourceLang = resolved?.language || null;
+        const sourcePath = resolved?.filePath || null;
 
         if (isPartial) {
             return;
         }
+
+        if (sourceLang && sourceLang !== activeLanguage) return;
+        if (sourcePath && (sourcePath !== (activeFile?.path || activeFile?.name))) return;
 
         clearAllChunks();
 

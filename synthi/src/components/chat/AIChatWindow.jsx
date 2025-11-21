@@ -630,7 +630,7 @@ Do not include any other commentary. Preserve all code outside the requested cha
                                 suggestedCode: cleaned,
                             }));
                             try {
-                                if (typeof onSuggest === 'function') onSuggest({ completion: cleaned, partial: true });
+                                if (typeof onSuggest === 'function') onSuggest({ completion: cleaned, partial: true, language: normalizedLang, filePath: activeFile?.path || activeFile?.name || null });
                             } catch (e) {}
                         }
                     }
@@ -714,7 +714,7 @@ Do not include any other commentary. Preserve all code outside the requested cha
                 }));
                 try {
                     if (typeof onSuggest === 'function') {
-                        onSuggest({ completion: codeOnly });
+                        onSuggest({ completion: codeOnly, language: normalizedLang, filePath: activeFile?.path || activeFile?.name || null });
                     }
                 } catch (e) {}
             } else if (!hasMultiFileSuggestions) {
