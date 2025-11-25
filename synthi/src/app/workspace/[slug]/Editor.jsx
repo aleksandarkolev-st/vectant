@@ -201,8 +201,11 @@ const EditorPanel = ({
         const handler = (event) => {
             const reason = event?.reason;
             const msg = typeof reason === 'string' ? reason : reason?.message;
-            if (msg && msg.toLowerCase().includes('canceled')) {
+            const isCancel = msg && msg.toLowerCase().includes('canceled');
+            const hasCancelCode = reason?.name === 'Canceled' || reason?.code === 'Canceled' || reason?.code === 'ERR_CANCELED';
+            if (isCancel || hasCancelCode) {
                 event.preventDefault?.();
+                event.stopImmediatePropagation?.();
             }
         };
         window.addEventListener('unhandledrejection', handler);
@@ -477,8 +480,13 @@ const EditorPanel = ({
                 // in some Monaco builds — attach a noop .catch to avoid unhandled
                 // promise rejections (e.g. 'Canceled').
                 try {
-                    const p = editorInstance.trigger('ai-inline', 'editor.action.inlineSuggest.trigger', {});
-                    if (p && typeof p.then === 'function') p.catch(() => {});
+                    const action = editorInstance.getAction?.('editor.action.inlineSuggest.trigger');
+                    if (action?.run) {
+                        Promise.resolve(action.run()).catch(() => {});
+                    } else {
+                        const p = editorInstance.trigger('ai-inline', 'editor.action.inlineSuggest.trigger', {});
+                        if (p && typeof p.then === 'function') Promise.resolve(p).catch(() => {});
+                    }
                 } catch(e){}
             } else {
                 setAiCompletionState('idle');

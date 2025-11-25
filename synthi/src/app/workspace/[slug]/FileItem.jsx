@@ -156,7 +156,7 @@ useEffect(() => {
   const isExpandable =
     item.isFolder &&
     ((item.children && item.children.length > 0) || isParentForCreation);
-  const paddingStyle = { paddingLeft: `${level * 16 + 8}px` };
+  const itemStyle = { paddingLeft: `${level * 16 + 8}px`, '--indent-level': level };
 
   const currentIcon = item.isFolder
     ? <FolderIcon isOpen={isOpen} />
@@ -225,10 +225,10 @@ useEffect(() => {
         ref={fileContentRef}
         data-node-path={item.path}
         data-node-name={item.name}
-        className={`file-item group flex items-center py-1 px-2 rounded hover:bg-[#2a2d2e] cursor-pointer ${
+        className={`file-item relative group flex items-center py-1 px-2 rounded hover:bg-[#2a2d2e] cursor-pointer ${
           isSelected ? 'bg-[#2a2d2e]' : ''
         }`}
-        style={paddingStyle}
+        style={itemStyle}
         onClick={handleClick}
         onContextMenu={handleClick}
       >
@@ -273,8 +273,8 @@ useEffect(() => {
         <div className="flex flex-col">
           {isParentForCreation && (
             <div
-              className="py-1 px-2"
-              style={{ paddingLeft: `${(level + 1) * 16 + 8}px` }}
+              className="file-item relative flex items-center py-1 px-2"
+              style={{ paddingLeft: `${(level + 1) * 16 + 8}px`, '--indent-level': level + 1 }}
             >
               <div className="flex items-center">
                 <div className="w-4 h-4 mr-2 flex-shrink-0 flex items-center justify-center">
