@@ -570,7 +570,7 @@ const parseFileDiffBlocks = (text = '', fallbackPath = null) => {
 
 Only modify the file(s) explicitly mentioned or the active file. Do not add new files unless explicitly asked.
 
-Start with a brief (3-4 sentences) summary of the change. After the summary, return one or more sections in this exact format:
+Start with a brief (6-7 sentences) summary of the change. After the summary, return one or more sections in this exact format:
 FILE: <path>
 \`\`\`
 <full updated file content only; no diff markers, no +/-, no @@, no ---/+++>
@@ -891,7 +891,7 @@ Do not include any other commentary. Preserve all code outside the requested cha
                                     }`}
                                 >
                                     <div 
-                                        className="break-all whitespace-pre-wrap text-xs leading-relaxed"
+                                        className="break-normal whitespace-normal text-xs leading-relaxed"
                                         dangerouslySetInnerHTML={{ __html: formatMessageContent(msg.content) }}
                                     />
                                     <span className="text-xs opacity-70 mt-1 block">

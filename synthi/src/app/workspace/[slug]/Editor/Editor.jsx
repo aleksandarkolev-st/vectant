@@ -14,7 +14,7 @@ import {
     saveFileContentThunk,
     updateContent
 } from '@/redux/workspaceSlice';
-import { selectAutoSaveEnabled } from '@/redux/uiSlice';
+import { selectAutoSaveEnabled, selectAutoCompletionEnabled, toggleAutoCompletion } from '@/redux/uiSlice';
 import { Circle, Save, Sparkles } from 'lucide-react'; // Added Sparkles
 import { getFileIcon } from '@/utils/fileIcons';
 import {
@@ -65,6 +65,7 @@ const EditorPanel = ({
     const fileCacheEntries = useAppSelector(selectFileCacheEntries);
     const showTerminal = useAppSelector(state => state.ui.showTerminal);
     const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
+    const aiAutoEnabled = useAppSelector(selectAutoCompletionEnabled);
 
     // Local state
     const [position, setPosition] = useState({ lineNumber: 1, column: 1 });
@@ -156,7 +157,8 @@ const EditorPanel = ({
         editorInstance,
         cancelActiveCompletion,
         requestAiCompletion,
-        hasActiveDiff: activeDiffCheck
+        hasActiveDiff: activeDiffCheck,
+        aiAutoEnabled
     });
 
     const handleCodeChange = (newCode) => {
@@ -165,6 +167,7 @@ const EditorPanel = ({
         
         // Debounce AI Auto-Complete (The "Cursor" experience)
         if (aiDebounceTimerRef.current) clearTimeout(aiDebounceTimerRef.current);
+        if (!aiAutoEnabled) return;
         aiDebounceTimerRef.current = setTimeout(() => {
             // Auto-trigger AI after a brief pause using the latest buffer
             if (!activeDiffCheck()) {
@@ -196,10 +199,22 @@ const EditorPanel = ({
                 e.preventDefault();
                 editorInstance?.getAction('editor.action.formatDocument')?.run();
             }
+            // Toggle AI auto-completion: Ctrl/Cmd + K
+            if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+                e.preventDefault();
+                dispatch(toggleAutoCompletion());
+            }
         };
         window.addEventListener('keydown', handleKeyDown, { capture: true });
         return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
-    }, [handleSave, editorInstance]);
+    }, [handleSave, editorInstance, requestAiCompletion, cancelActiveCompletion, dispatch]);
+
+    // Ensure disabling auto AI clears any pending/computed suggestions
+    useEffect(() => {
+        if (aiAutoEnabled) return;
+        cancelActiveCompletion({ resetSuggestion: true, reason: 'auto-disabled' });
+        if (aiDebounceTimerRef.current) clearTimeout(aiDebounceTimerRef.current);
+    }, [aiAutoEnabled, cancelActiveCompletion]);
 
     // Handle updates from analysis (Markers)
     useEffect(() => {
@@ -290,8 +305,13 @@ const EditorPanel = ({
                                 </div>
 
                                 {/* AI Status Indicator (Subtle) */}
-                                <div className={`transition-opacity duration-300 ${(aiCompletionState === 'loading' || aiBusy) ? 'opacity-100' : 'opacity-0'}`}>
-                                    <Sparkles className="w-3.5 h-3.5 text-purple-400 animate-pulse" />
+                                <div className="flex items-center gap-2 text-[11px]">
+                                    <div className={`transition-opacity duration-300 ${(aiCompletionState === 'loading' || aiBusy) ? 'opacity-100' : 'opacity-0'}`}>
+                                        <Sparkles className="w-3.5 h-3.5 text-purple-400 animate-pulse" />
+                                    </div>
+                                    <span className={`uppercase tracking-wide ${aiAutoEnabled ? 'text-emerald-300' : 'text-gray-500'}`}>
+                                        AI Auto {aiAutoEnabled ? 'On' : 'Off'}
+                                    </span>
                                 </div>
                                 
                                 {/* Manual Save (Optional since we have auto-save) */}

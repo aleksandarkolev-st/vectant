@@ -11,6 +11,7 @@ const initialState = {
     showTerminal: false,
     treeOnRight: false,
     autoSaveEnabled: false,
+    autoCompletionEnabled: true,
     uiActionState: initialUiActionState,
 };
 
@@ -27,6 +28,9 @@ const uiSlice = createSlice({
         },
         toggleAutoSave: (state) => {
             state.autoSaveEnabled = !state.autoSaveEnabled;
+        },
+        toggleAutoCompletion: (state) => {
+            state.autoCompletionEnabled = !state.autoCompletionEnabled;
         },
         
         // UI Action State Machine Reducers
@@ -59,6 +63,7 @@ export const {
     toggleTerminal,
     setTreeOrientation,
     toggleAutoSave,
+    toggleAutoCompletion,
     startCreate,
     startRename,
     setUiActionName,
@@ -69,6 +74,7 @@ export const {
 export const selectShowTerminal = (state) => state.ui.showTerminal;
 export const selectTreeOnRight = (state) => state.ui.treeOnRight;
 export const selectAutoSaveEnabled = (state) => state.ui.autoSaveEnabled;
+export const selectAutoCompletionEnabled = (state) => state.ui.autoCompletionEnabled;
 export const selectUiActionState = (state) => state.ui.uiActionState;
 
 export default uiSlice.reducer;

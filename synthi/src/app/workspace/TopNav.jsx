@@ -5,12 +5,13 @@ import { Search, TerminalSquare, Play, Settings, Undo2, Redo2, MessageSquare } f
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
-import { toggleAutoSave, selectAutoSaveEnabled, startCreate } from '@/redux/uiSlice';
+import { toggleAutoSave, selectAutoSaveEnabled, toggleAutoCompletion, selectAutoCompletionEnabled, startCreate } from '@/redux/uiSlice';
 import { selectActiveFile, selectFilesTree, saveFileContentThunk } from '@/redux/workspaceSlice';
 
 export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo, onToggleChat, chatVisible }) {
   const dispatch = useAppDispatch();
   const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
+  const autoCompletionEnabled = useAppSelector(selectAutoCompletionEnabled);
   const activeFile = useAppSelector(selectActiveFile);
   const filesTree = useAppSelector(selectFilesTree);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -293,6 +294,22 @@ export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo,
                   <span
                     className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
                       autoSaveEnabled ? 'translate-x-5' : 'translate-x-0.5'
+                    }`}
+                  />
+                </button>
+              </div>
+              {/* AI Auto-completion toggle */}
+              <div className="flex items-center justify-between py-1">
+                <span className="text-sm px-1 text-gray-200">AI Auto Completion</span>
+                <button
+                  onClick={() => dispatch(toggleAutoCompletion())}
+                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                    autoCompletionEnabled ? 'bg-emerald-500' : 'bg-gray-600'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      autoCompletionEnabled ? 'translate-x-5' : 'translate-x-0.5'
                     }`}
                   />
                 </button>

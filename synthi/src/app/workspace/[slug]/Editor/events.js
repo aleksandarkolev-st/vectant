@@ -4,7 +4,8 @@ export const useEditorEvents = ({
     editorInstance,
     cancelActiveCompletion,
     requestAiCompletion,
-    hasActiveDiff
+    hasActiveDiff,
+    aiAutoEnabled = true
 }) => {
     useEffect(() => {
         if (!editorInstance) return;
@@ -16,6 +17,7 @@ export const useEditorEvents = ({
                 const isPunctuation = /[\(\)\{\}\[\];,]/.test(lastChar);
                 const isEnter = lastChar === '\n';
                 if (hasActiveDiff()) return;
+                if (!aiAutoEnabled) return;
                 if (isPunctuation || isEnter) {
                     requestAiCompletion(true, null, { reason: isEnter ? 'enter' : 'punctuation', enterTrigger: isEnter });
                 }
@@ -37,5 +39,5 @@ export const useEditorEvents = ({
         return () => {
             disposables.forEach((disposable) => disposable?.dispose?.());
         };
-    }, [editorInstance, cancelActiveCompletion, requestAiCompletion, hasActiveDiff]);
+    }, [editorInstance, cancelActiveCompletion, requestAiCompletion, hasActiveDiff, aiAutoEnabled]);
 };
