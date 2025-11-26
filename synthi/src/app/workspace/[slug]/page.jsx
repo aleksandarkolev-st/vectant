@@ -16,7 +16,7 @@ import {
     ResizablePanelGroup,
 } from '@/components/ui/resizable';
 import FileTreeView from "./FileTree.jsx";
-import EditorPanel from "./Editor.jsx";
+import EditorPanel from "./Editor/Editor.jsx";
 import { getFileLanguage } from '@/utils/fileUtils';
 import { API_COMPLETION_ROUTE } from '@/lib/completion';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';

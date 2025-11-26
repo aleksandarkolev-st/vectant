@@ -927,7 +927,7 @@ Do not include any other commentary. Preserve all code outside the requested cha
                                         </div>
                                         <div className="flex items-center gap-2 flex-wrap">
                                             <Button
-                                                variant="secondary"
+                                                variant="ghost"
                                                 size="sm"
                                                 disabled={Boolean(suggestion.error)}
                                                 onClick={() => handlePreviewFileSuggestion(activeSession.id, suggestion.path)}
@@ -935,7 +935,7 @@ Do not include any other commentary. Preserve all code outside the requested cha
                                                 Preview
                                             </Button>
                                             <Button
-                                                variant="outline"
+                                                variant="secondary"
                                                 size="sm"
                                                 disabled={suggestion.status !== 'pending'}
                                                 onClick={() => handleRejectFileSuggestion(activeSession.id, suggestion.path)}
@@ -975,7 +975,7 @@ Do not include any other commentary. Preserve all code outside the requested cha
                                             <span>Thinking...</span>
                                         </div>
                                     ) : null}
-                                    <Button variant="outline" size="sm" onClick={rejectSuggestion}>Reject</Button>
+                                    <Button variant="secondary" size="sm" onClick={rejectSuggestion}>Reject</Button>
                                     <Button variant="default" size="sm" onClick={applySuggestion}>Accept</Button>
                                 </div>
                             </div>
