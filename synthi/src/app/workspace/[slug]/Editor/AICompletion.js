@@ -59,6 +59,9 @@ export const useAiCompletion = ({
     }, []);
 
     const applyAiCompletionText = useCallback((text) => {
+        // 1. Safety check: prevent applying if diff is active
+        if (hasActiveDiff()) return; 
+
         if (!text || !editorInstance || !monacoInstance) return;
         const start = aiCompletionCursorRef.current || editorInstance.getPosition();
         if (!start) return;
@@ -124,10 +127,12 @@ export const useAiCompletion = ({
         aiCompletionCursorRef.current = null;
         aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
         setAiCompletionState('applied');
-    }, [editorInstance, monacoInstance]);
+    }, [editorInstance, monacoInstance, hasActiveDiff]); // Added dependency
 
     const requestAiCompletion = useCallback((isAutoTrigger = false, manualContext = null, _meta = {}) => {
         if (!activeFile || !editorInstance) return;
+        
+        // Check 1: Prevent starting a new request if diff is active
         if (hasActiveDiff()) return;
 
         const cursorPosition = editorInstance.getPosition();
@@ -136,8 +141,7 @@ export const useAiCompletion = ({
             : (editorInstance?.getValue?.() ?? code ?? '');
         const context = trimCompletionContext(rawContext, cursorPosition);
         if (!context.trim()) return;
-        // Don't trigger auto-AI if we are in the middle of a line (usually annoying)
-        // Only trigger if at end of line or end of file for cleaner UX
+        
         if (isAutoTrigger && cursorPosition) {
              const model = editorInstance.getModel();
              const lineContent = model.getLineContent(cursorPosition.lineNumber);
@@ -146,20 +150,16 @@ export const useAiCompletion = ({
              }
         }
 
-        // If auto-triggering, only run after a whitespace/punctuation boundary to reduce calls
         if (isAutoTrigger) {
             const lastChar = rawContext.slice(-1);
             if (!/[\s\(\{\[\.;,:]/.test(lastChar)) {
-                // If the last character isn't a boundary, skip auto-trigger to avoid excess calls
                 return;
             }
         }
 
-        // Avoid duplicate requests: if cache already has a suggestion for this exact context/language, skip
         const cached = aiCompletionCacheRef.current;
         if (cached?.suggestion && cached.context === context && cached.language === activeLanguage) return;
 
-        // Rate-limit identical requests: if we requested same context recently, skip
         const now = Date.now();
         if (aiLastRequestRef.current.context === context && (now - aiLastRequestRef.current.time) < 1200) {
             return;
@@ -258,11 +258,17 @@ export const useAiCompletion = ({
         })
         .then((data) => {
             if (controller.signal.aborted) return;
+
+            // Check 2: If the user switched to Diff Mode while the request was in flight, discard the result.
+            if (hasActiveDiff()) {
+                setAiCompletionState('idle');
+                return;
+            }
+
             const raw = data?.completion || '';
             const sanitized = raw.split(AI_COMPLETION_STOP_SEQUENCE)[0].replace(/\r/g, '').trimEnd();
 
             if (sanitized) {
-                // Prefer server-provided suggestion range when available
                 let suggestionRange = data?.suggestionRange || null;
                 try {
                     if (!suggestionRange) {
@@ -278,9 +284,7 @@ export const useAiCompletion = ({
 
                 aiCompletionCacheRef.current = { context, language: activeLanguage, suggestion: sanitized, suggestionRange };
                 setAiCompletionState('ready');
-                // Force trigger the inline suggestion. `trigger` may return a Promise
-                // in some Monaco builds — attach a noop .catch to avoid unhandled
-                // promise rejections (e.g. 'Canceled').
+                
                 try {
                     const action = editorInstance.getAction?.('editor.action.inlineSuggest.trigger');
                     if (action?.run) {
