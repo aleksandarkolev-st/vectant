@@ -18,9 +18,9 @@ import {
 import FileTreeView from "./FileTree.jsx";
 import EditorPanel from "./Editor/Editor.jsx";
 import { getFileLanguage } from '@/utils/fileUtils';
-import { API_COMPLETION_ROUTE } from '@/lib/completion';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
 import AIChatWindow from '@/components/chat/AIChatWindow';
+import { compileWithWorker } from '@/services/compilerClient';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -29,6 +29,7 @@ export default function EditorPage({ params }) {
     const { analyzeCode, lastResult } = useAnalyzerGateway();
     const [latestCompletion, setLatestCompletion] = useState(null);
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
+    const [buildLogs, setBuildLogs] = useState([]);
     const handleClearLatestCompletion = useCallback(() => {
         setLatestCompletion(null);
         setCompletionClearSignal((v) => v + 1);
@@ -100,27 +101,33 @@ export default function EditorPage({ params }) {
     // dedupe. Leaving this commented-out avoids the 'Canceled' errors caused by
     // concurrent requests from both page and editor.
 
+    const appendBuildLog = useCallback((line) => {
+        setBuildLogs((prev) => [...prev, line].slice(-200));
+    }, []);
+
     const handleRun = useCallback(async () => {
         if (!activeFile) {
-            console.warn('No active file selected for analysis.');
+            console.warn('No active file selected for compilation.');
             return;
         }
-
-        const langSource =
-            activeFile.language ||
-            (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
-            'plaintext';
-        const normalizedLang = langSource.toLowerCase();
-
+        const source = typeof currentContent === 'string' ? currentContent : '';
+        const filename = activeFile?.name || activeFile?.path || 'main';
+        setBuildLogs([`Running build for ${filename}...`]);
         try {
-            await analyzeCode({
-                lang: normalizedLang,
-                code: typeof currentContent === 'string' ? currentContent : '',
+            await compileWithWorker({
+                filename,
+                source,
+                onLog: (line) => {
+                    appendBuildLog(line);
+                    console.log('[build]', line);
+                },
             });
+            appendBuildLog('Build succeeded.');
         } catch (err) {
-            console.error('Failed to run analyzer', err);
+            console.error('Compile failed', err);
+            appendBuildLog(`error: ${err?.message || err}`);
         }
-    }, [activeFile, currentContent, analyzeCode]);
+    }, [activeFile, currentContent, appendBuildLog]);
 
     const handleEditorMount = (editorInstance) => {
         setEditor(editorInstance);
@@ -199,6 +206,13 @@ export default function EditorPage({ params }) {
                 onToggleChat={handleToggleChat}
                 chatVisible={chatVisible}
             />
+            {buildLogs.length > 0 && (
+                <div className="border-b border-[#2b2b2b] bg-[#121212] px-3 py-2 text-xs font-mono text-gray-200 max-h-28 overflow-auto">
+                    {buildLogs.map((line, idx) => (
+                        <div key={idx} className="leading-5 whitespace-pre-wrap">{line}</div>
+                    ))}
+                </div>
+            )}
             <ResizablePanelGroup
                 direction="horizontal"
                 className="flex-1 min-h-0"
