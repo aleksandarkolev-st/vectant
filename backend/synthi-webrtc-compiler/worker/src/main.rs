@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::process::Stdio;
+use std::env;
 
 use anyhow::{Context, Result};
 use futures::{FutureExt, StreamExt, SinkExt};
@@ -19,6 +20,15 @@ use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::RTCPeerConnection;
+
+#[derive(Debug, Deserialize)]
+struct IceServerEnv {
+    urls: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credential: Option<String>,
+}
 
 const REQUIRED_TOOLS: &[&str] = &["g++", "rustc", "tsc"];
 
@@ -167,11 +177,39 @@ async fn create_peer(signal_tx: mpsc::UnboundedSender<SignalMessage>) -> Result<
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
     let api = APIBuilder::new().with_media_engine(m).build();
-    let config = RTCConfiguration {
-        ice_servers: vec![webrtc::ice_transport::ice_server::RTCIceServer {
+    // Allow configuring ICE servers via COMPILER_ICE_SERVERS environment variable as JSON
+    // Example: COMPILER_ICE_SERVERS='[{"urls":["stun:stun.l.google.com:19302"]},{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]'
+    let ice_servers_env = env::var("COMPILER_ICE_SERVERS").ok();
+    let mut ice_servers: Vec<webrtc::ice_transport::ice_server::RTCIceServer> = Vec::new();
+    if let Some(raw) = ice_servers_env {
+        match serde_json::from_str::<Vec<IceServerEnv>>(&raw) {
+            Ok(parsed) => {
+                for srv in parsed {
+                    ice_servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
+                        urls: srv.urls,
+                        username: srv.username.unwrap_or_default(),
+                        credential: srv.credential.unwrap_or_default(),
+                        ..Default::default()
+                    });
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to parse COMPILER_ICE_SERVERS - falling back to default STUN: {}", e);
+                ice_servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
+                    urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                    ..Default::default()
+                });
+            }
+        }
+    } else {
+        ice_servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
             urls: vec!["stun:stun.l.google.com:19302".to_string()],
             ..Default::default()
-        }],
+        });
+    }
+
+    let config = RTCConfiguration {
+        ice_servers,
         ..Default::default()
     };
 

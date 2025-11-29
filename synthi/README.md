@@ -52,3 +52,24 @@ npm run dev
 ```
 
 With both services online, the **Run** button in the workspace editor will stream analysis requests through the gateway and surface the diagnostics/LLM suggestions inside the editor.
+
+## WebRTC and ICE servers
+
+For WebRTC compiler connections, you may need TURN servers to ensure connectivity between the browser and backend workers (especially when NATs or restrictive networks are involved). By default, the client and worker will use Google's public STUN server.
+
+To configure your own ICE / TURN servers for the frontend and worker, set the following environment variables:
+
+- `NEXT_PUBLIC_ICE_SERVERS` (frontend) — JSON array, available client-side in Next.js:
+	- Example `.env.local` entry:
+
+```bash
+NEXT_PUBLIC_ICE_SERVERS='[{"urls":["stun:stun.l.google.com:19302"]},{"urls":["turn:turn.example.com:3478"],"username":"turnuser","credential":"turnpass"}]'
+```
+
+- `COMPILER_ICE_SERVERS` (worker) — same format; set in the environment where the worker runs.
+
+If you still see ICE failures after setting TURN, use browser internals to debug:
+- Firefox: open `about:webrtc` and inspect the candidate pairs and logs
+- Chrome: open `chrome://webrtc-internals`
+
+Also ensure the TURN server is reachable from both the browser network (internet or local network) and the backend worker's network, credentials are correct, and ports (3478/5349) are open.

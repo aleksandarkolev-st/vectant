@@ -1,4 +1,20 @@
 const SIGNAL_URL = process.env.NEXT_PUBLIC_COMPILE_SIGNAL_URL || 'ws://localhost:9000';
+// Optional: supply ICE servers through NEXT_PUBLIC_ICE_SERVERS as a JSON array of
+// RTCIceServer objects. Example (in .env.local):
+// NEXT_PUBLIC_ICE_SERVERS='[{"urls":["stun:stun.l.google.com:19302"]},{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]'
+const parseIceServers = (raw) => {
+    if (!raw) return [{ urls: 'stun:stun.l.google.com:19302' }];
+    try {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [{ urls: 'stun:stun.l.google.com:19302' }];
+        return parsed;
+    } catch (e) {
+        // If parsing fails, fallback to a single Google STUN server
+        console.warn('Failed to parse NEXT_PUBLIC_ICE_SERVERS, falling back to default STUN server', e);
+        return [{ urls: 'stun:stun.l.google.com:19302' }];
+    }
+};
+const ICE_SERVERS = parseIceServers(process.env.NEXT_PUBLIC_ICE_SERVERS);
 
 let ws = null;
 let pc = null;
@@ -24,12 +40,23 @@ const notifyLog = (msg) => {
 const ensureConnection = () => {
     if (readyPromise) return readyPromise;
     readyPromise = new Promise((resolve, reject) => {
-        pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+        pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
         pc.onicecandidate = (event) => {
             if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: 'candidate', candidate: event.candidate }));
             }
+        };
+
+        pc.oniceconnectionstatechange = () => {
+            try { console.debug('compilerClient ICE connection state:', pc.iceConnectionState); } catch (e) {}
+        };
+
+        pc.onicegatheringstatechange = () => {
+            try { console.debug('compilerClient ICE gathering state:', pc.iceGatheringState); } catch (e) {}
+        };
+        pc.onconnectionstatechange = () => {
+            try { console.debug('compilerClient connection state:', pc.connectionState); } catch (e) {}
         };
 
         pc.ondatachannel = (event) => {
