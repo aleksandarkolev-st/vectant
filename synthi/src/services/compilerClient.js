@@ -35,6 +35,16 @@ const notifyLog = (msg) => {
     logHandlers.forEach((fn) => {
         try { fn(msg); } catch (e) { /* ignore */ }
     });
+    try {
+        // Also emit a global browser event so UI components (like TerminalPane)
+        // can subscribe to real-time build output without importing this module.
+        if (typeof window !== 'undefined' && window.dispatchEvent) {
+            const ev = new CustomEvent('synthi:build-log', { detail: msg });
+            window.dispatchEvent(ev);
+        }
+    } catch (e) {
+        // ignore
+    }
 };
 
 const ensureConnection = () => {

@@ -6,7 +6,10 @@ export default function TerminalPane() {
   const termRef = useRef(null);
   const wsRef = useRef(null);
   const initializedRef = useRef(false);
-  const MACHINE_URL = "lumpish-undevoutly-sonja.ngrok-free.dev"
+  // Use the same SIGNAL URL as compilerClient when available, fallback to localhost
+  const MACHINE_WS = typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_COMPILE_SIGNAL_URL
+    ? process.env.NEXT_PUBLIC_COMPILE_SIGNAL_URL
+    : 'ws://localhost:9000';
 
 
   useEffect(() => {
@@ -37,7 +40,13 @@ export default function TerminalPane() {
       term.open(containerRef.current);
       fitAddon.fit();
 
-      ws = new WebSocket(`ws://${MACHINE_URL}`);
+      try {
+        console.debug('TerminalPane connecting to', MACHINE_WS);
+        ws = new WebSocket(MACHINE_WS);
+      } catch (e) {
+        console.error('Failed to construct WebSocket with', MACHINE_WS, e);
+        ws = null;
+      }
       wsRef.current = ws;
       ws.binaryType = 'arraybuffer'; // Handle binary data
 
@@ -49,15 +58,24 @@ export default function TerminalPane() {
       };
 
       // Display backend output in terminal
-      ws.onmessage = (event) => {
-        if (event.data instanceof ArrayBuffer) {
-          // Convert ArrayBuffer to Uint8Array to string
-          const uint8Array = new Uint8Array(event.data);
-          term.write(uint8Array);
-        } else if (typeof event.data === 'string') {
-          term.write(event.data);
-        }
-      };
+      if (ws) {
+        ws.onmessage = (event) => {
+          try {
+            if (event.data instanceof ArrayBuffer) {
+              const decoder = new TextDecoder();
+              const text = decoder.decode(new Uint8Array(event.data));
+              term.write(text);
+            } else if (typeof event.data === 'string') {
+              term.write(event.data);
+            } else {
+              // fallback
+              term.write(String(event.data));
+            }
+          } catch (e) {
+            console.error('Error handling ws message in TerminalPane', e);
+          }
+        };
+      }
 
       ws.onerror = (error) => {
         term.write('\r\n\x1b[31mWebSocket connection error. Terminal unavailable.\x1b[0m\r\n');
@@ -135,8 +153,31 @@ export default function TerminalPane() {
       // Initial fit after a short delay to ensure DOM is ready
       setTimeout(() => handleResize(), 100);
 
-      // Store for cleanup
+      // Store for cleanup (include buildLogListener reference)
       termRef.current = { term, fitAddon, handleResize, resizeObserver };
+
+      // Listen for build log events from compilerClient and write to terminal
+      const buildLogListener = (ev) => {
+        try {
+          const data = ev?.detail;
+          if (!data) return;
+          // If message is JSON (structured), try to pretty-print; otherwise write raw
+          if (typeof data === 'string') {
+            term.write(data);
+          } else {
+            try {
+              term.write(JSON.stringify(data) + '\r\n');
+            } catch (_) {
+              term.write(String(data));
+            }
+          }
+        } catch (e) {
+          console.error('Error writing build log to terminal', e);
+        }
+      };
+      window.addEventListener('synthi:build-log', buildLogListener);
+      // keep listener reference for cleanup
+      termRef.current.buildLogListener = buildLogListener;
     };
 
     init();
@@ -151,6 +192,10 @@ export default function TerminalPane() {
       if (wsRef.current) {
         wsRef.current.close();
       }
+      try {
+        const listener = termRef.current?.buildLogListener;
+        if (listener) window.removeEventListener('synthi:build-log', listener);
+      } catch (e) {}
     };
   }, []);
 
