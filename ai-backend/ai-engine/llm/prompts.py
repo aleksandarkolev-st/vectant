@@ -171,7 +171,7 @@ def build_fullfile_prompt(
 
     header += (
         "IMPORTANT: Only perform the exact changes requested by the user. Prefer minimal edits: do not refactor, reorder, or rename unrelated symbols unless explicitly asked. "
-        "If the user's instruction is focused (for example: \"rename variables foo->bar\"), make only those renames and preserve all other code identical. "
+        "If the user's instruction is focused (for example: \"rename variables foo->bar\"), make only those renames and every usage of those renames, and preserve all other code identical. "
         "If a minimal change can be represented as a unified diff and the client requested a patch, return a unified diff instead (see `patch` mode)."
     )
 
