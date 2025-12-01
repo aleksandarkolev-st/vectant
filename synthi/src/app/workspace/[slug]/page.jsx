@@ -112,6 +112,14 @@ export default function EditorPage({ params }) {
         }
         const source = typeof currentContent === 'string' ? currentContent : '';
         const filename = activeFile?.name || activeFile?.path || 'main';
+        // Ensure a terminal is visible when running so output is shown
+        try {
+            if (!showTerminal) dispatch(toggleTerminal());
+        } catch (e) {
+            // continue even if toggling the terminal fails
+            console.debug('toggleTerminal failed or not available', e);
+        }
+
         setBuildLogs([`Running build for ${filename}...`]);
         try {
             await compileWithWorker({
@@ -127,7 +135,7 @@ export default function EditorPage({ params }) {
             console.error('Compile failed', err);
             appendBuildLog(`error: ${err?.message || err}`);
         }
-    }, [activeFile, currentContent, appendBuildLog]);
+    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal]);
 
     const handleEditorMount = (editorInstance) => {
         setEditor(editorInstance);
