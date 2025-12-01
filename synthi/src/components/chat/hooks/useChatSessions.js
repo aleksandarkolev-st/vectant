@@ -7,6 +7,7 @@ const createChatSession = (index = 1) => ({
     suggestedCode: null,
     showDiff: true,
     fileSuggestions: [],
+    suggestionTimestamp: null,
 });
 
 export const useChatSessions = () => {
@@ -61,6 +62,7 @@ export const useChatSessions = () => {
             suggestedCode: null,
             fileSuggestions: [],
             showDiff: false,
+            suggestionTimestamp: null,
         }));
     }, [mutateSession]);
 

@@ -155,3 +155,18 @@ export const renderDiffChunkList = (chunks = []) => {
         return null;
     });
 };
+
+export const diffStats = (chunks = []) => {
+    if (!Array.isArray(chunks)) return { adds: 0, removals: 0 };
+    return chunks.reduce(
+        (acc, chunk) => {
+            if (chunk.type === 'add' && Array.isArray(chunk.items)) {
+                acc.adds += chunk.items.length;
+            } else if (chunk.type === 'rem' && Array.isArray(chunk.items)) {
+                acc.removals += chunk.items.length;
+            }
+            return acc;
+        },
+        { adds: 0, removals: 0 }
+    );
+};

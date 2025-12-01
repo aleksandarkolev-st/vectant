@@ -47,6 +47,17 @@ export const useAISuggestions = ({
     const [isLoading, setIsLoading] = useState(false);
     const lastClearSignalRef = useRef(clearSignal);
     const cachedFileMap = useMemo(() => new Map(fileCacheEntries), [fileCacheEntries]);
+    const lastSuggestionSnapshotRef = useRef(null);
+    const onSuggestRef = useRef(onSuggest);
+    const currentCodeRef = useRef(currentCode);
+
+    useEffect(() => {
+        onSuggestRef.current = onSuggest;
+    }, [onSuggest]);
+
+    useEffect(() => {
+        currentCodeRef.current = currentCode;
+    }, [currentCode]);
 
     const flattenWorkspaceFiles = useMemo(() => {
         const output = [];
@@ -100,14 +111,42 @@ export const useAISuggestions = ({
     }, [flattenWorkspaceFiles]);
 
     useEffect(() => {
-        if (!activeSession) return;
+        const session = activeSession;
+        if (!session) return;
         if (clearSignal === lastClearSignalRef.current) return;
         lastClearSignalRef.current = clearSignal;
-        resetSuggestionsForSession(activeSession.id);
+        const hasLive = (session.fileSuggestions?.length || 0) > 0 || Boolean(session.suggestedCode);
+        if (hasLive) {
+            const snapshot = {
+                fileSuggestions: session.fileSuggestions || [],
+                suggestedCode: session.suggestedCode || null,
+                diffChunks: session.suggestedCode ? computeDiffChunks(currentCodeRef.current || '', session.suggestedCode) : [],
+                timestamp: new Date(),
+            };
+            mutateSession(session.id, (s) => ({
+                ...s,
+                messages: [
+                    ...s.messages,
+                    {
+                        id: `suggestion-${Date.now()}`,
+                        role: 'suggestion-history',
+                        timestamp: snapshot.timestamp,
+                        snapshot,
+                    }
+                ],
+                fileSuggestions: [],
+                suggestedCode: null,
+                showDiff: false,
+                suggestionTimestamp: null,
+            }));
+            lastSuggestionSnapshotRef.current = null;
+        } else {
+            resetSuggestionsForSession(session.id);
+        }
         try {
-            if (typeof onSuggest === 'function') onSuggest(null);
+            if (typeof onSuggestRef.current === 'function') onSuggestRef.current(null);
         } catch (e) {}
-    }, [activeSession, clearSignal, onSuggest, resetSuggestionsForSession]);
+    }, [activeSession, clearSignal, mutateSession, resetSuggestionsForSession]);
 
     const getBaseContentForPath = useCallback(async (targetPath) => {
         if (!targetPath) return null;
@@ -289,6 +328,58 @@ export const useAISuggestions = ({
         }));
     }, [mutateSession]);
 
+    const buildSuggestionSnapshot = useCallback((session) => {
+        try {
+            if (!session) return null;
+            const hasLive = (session.fileSuggestions?.length || 0) > 0 || session.suggestedCode;
+            const fallback = lastSuggestionSnapshotRef.current;
+            const source = hasLive ? session : fallback;
+            if (!source) return null;
+            const fileSuggestions = hasLive ? (session.fileSuggestions || []) : (fallback?.fileSuggestions || []);
+            const suggestedCode = hasLive ? session.suggestedCode : (fallback?.suggestedCode || null);
+            if (!fileSuggestions.length && !suggestedCode) return null;
+            let diffChunks = [];
+            try {
+                diffChunks = suggestedCode
+                    ? computeDiffChunks(currentCodeRef.current || currentCode || '', suggestedCode)
+                    : (fallback?.diffChunks || []);
+            } catch (e) {
+                diffChunks = fallback?.diffChunks || [];
+            }
+            const timestamp = session.suggestionTimestamp
+                ? new Date(session.suggestionTimestamp)
+                : (fallback?.timestamp ? new Date(fallback.timestamp) : new Date());
+            return { fileSuggestions, suggestedCode, diffChunks, timestamp };
+        } catch (e) {
+            return null;
+        }
+    }, [currentCode, currentCodeRef]);
+
+    const pushSnapshotToHistory = useCallback((sessionId, snapshot) => {
+        try {
+            if (!sessionId || !snapshot) return;
+            mutateSession(sessionId, (s) => ({
+                ...s,
+                messages: [
+                    ...s.messages,
+                    {
+                        id: `suggestion-${Date.now()}`,
+                        role: 'suggestion-history',
+                        timestamp: snapshot.timestamp || new Date(),
+                        snapshot,
+                    }
+                ],
+                fileSuggestions: [],
+                suggestedCode: null,
+                showDiff: false,
+                suggestionTimestamp: null,
+            }));
+            lastSuggestionSnapshotRef.current = null;
+        } catch (e) {
+            // swallow to avoid bubbling to global error handler
+        }
+    }, [mutateSession]);
+
     const handlePreviewFileSuggestion = useCallback(async (sessionId, path) => {
         if (!path || typeof onSuggest !== 'function') return;
         const session = chatSessions.find((s) => s.id === sessionId);
@@ -302,36 +393,56 @@ export const useAISuggestions = ({
     const applySuggestion = useCallback(() => {
         if (!activeSession || !activeSession.suggestedCode) return;
         const suggestedCode = activeSession.suggestedCode;
-        if (editor && typeof editor.setValue === 'function') {
-            editor.setValue(suggestedCode);
+        try {
+            const snapshotRaw = buildSuggestionSnapshot(activeSession);
+            const snapshot = snapshotRaw ? { ...snapshotRaw, timestamp: new Date() } : null;
+            if (editor && typeof editor.setValue === 'function') {
+                editor.setValue(suggestedCode);
+            }
+            pushSnapshotToHistory(activeSession.id, snapshot);
+        } catch (e) {
+            // ignore snapshot errors; still continue
         }
-        mutateSession(activeSession.id, (session) => ({
-            ...session,
-            suggestedCode: null,
-            showDiff: false,
-        }));
         try {
             if (typeof onSuggest === 'function') onSuggest(null);
         } catch (e) {}
         appendMessagesToSession(activeSession.id, [{ id: Date.now(), role: 'assistant', content: 'Suggestion applied to editor.', timestamp: new Date() }]);
-    }, [activeSession, appendMessagesToSession, editor, mutateSession, onSuggest]);
+    }, [activeSession, appendMessagesToSession, buildSuggestionSnapshot, editor, onSuggest, pushSnapshotToHistory]);
 
     const rejectSuggestion = useCallback(() => {
         if (!activeSession) return;
-        mutateSession(activeSession.id, (session) => ({
-            ...session,
-            suggestedCode: null,
-            showDiff: false,
-        }));
+        try {
+            const snapshotRaw = buildSuggestionSnapshot(activeSession);
+            const snapshot = snapshotRaw ? { ...snapshotRaw, timestamp: new Date() } : null;
+            pushSnapshotToHistory(activeSession.id, snapshot);
+        } catch (e) {
+            // ignore snapshot errors
+        }
         try {
             if (typeof onSuggest === 'function') onSuggest(null);
         } catch (e) {}
         appendMessagesToSession(activeSession.id, [{ id: Date.now(), role: 'assistant', content: 'Suggestion rejected.', timestamp: new Date() }]);
-    }, [activeSession, appendMessagesToSession, mutateSession, onSuggest]);
+        lastSuggestionSnapshotRef.current = null;
+    }, [activeSession, appendMessagesToSession, buildSuggestionSnapshot, onSuggest, pushSnapshotToHistory]);
+
+    const archiveCurrentSuggestion = useCallback(() => {
+        const session = activeSession;
+        if (!session) return;
+        try {
+            const snapshotRaw = buildSuggestionSnapshot(session);
+            const snapshot = snapshotRaw ? { ...snapshotRaw, timestamp: new Date() } : null;
+            if (!snapshot) return;
+            pushSnapshotToHistory(session.id, snapshot);
+        } catch (e) {
+            // ignore snapshot errors
+        }
+    }, [activeSession, buildSuggestionSnapshot, pushSnapshotToHistory]);
 
     const handleSendMessage = useCallback(async (inputValue) => {
         if (!inputValue?.trim()) return;
         if (!activeSession) return;
+
+        archiveCurrentSuggestion();
 
         const userMessage = {
             id: Date.now(),
@@ -450,7 +561,14 @@ Do not include any other commentary. Preserve all code outside the requested cha
                     fileSuggestions: multiFileSuggestions,
                     suggestedCode: null,
                     showDiff: true,
+                    suggestionTimestamp: Date.now(),
                 }));
+                lastSuggestionSnapshotRef.current = {
+                    fileSuggestions: multiFileSuggestions,
+                    suggestedCode: null,
+                    diffChunks: [],
+                    timestamp: new Date(),
+                };
                 try {
                     if (typeof onSuggest === 'function') onSuggest(null);
                 } catch (e) {}
@@ -460,7 +578,9 @@ Do not include any other commentary. Preserve all code outside the requested cha
                 mutateSession(activeSession.id, (session) => ({
                     ...session,
                     fileSuggestions: [],
+                    suggestionTimestamp: null,
                 }));
+                lastSuggestionSnapshotRef.current = null;
 
                 codeOnly = extractCodeFromMarkdown(suggestion);
                 const isRawPatch = /(^---\s+a\/.+\n\+\+\+\s+b\/)|(^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@)/m.test(suggestion || '');
@@ -496,7 +616,14 @@ Do not include any other commentary. Preserve all code outside the requested cha
                 mutateSession(activeSession.id, (session) => ({
                     ...session,
                     suggestedCode: codeOnly,
+                    suggestionTimestamp: Date.now(),
                 }));
+                lastSuggestionSnapshotRef.current = {
+                    fileSuggestions: [],
+                    suggestedCode: codeOnly,
+                    diffChunks: computeDiffChunks(currentCode || '', codeOnly),
+                    timestamp: new Date(),
+                };
                 try {
                     if (typeof onSuggest === 'function') {
                         onSuggest({ completion: codeOnly, language: normalizedLang, filePath: activeFile?.path || activeFile?.name || null });
@@ -506,7 +633,9 @@ Do not include any other commentary. Preserve all code outside the requested cha
                 mutateSession(activeSession.id, (session) => ({
                     ...session,
                     suggestedCode: null,
+                    suggestionTimestamp: null,
                 }));
+                lastSuggestionSnapshotRef.current = null;
             }
 
             appendMessagesToSession(activeSession.id, messagesToAppend);
@@ -522,7 +651,7 @@ Do not include any other commentary. Preserve all code outside the requested cha
             setIsLoading(false);
             try { if (typeof onBusy === 'function') onBusy(false); } catch(e){}
         }
-    }, [activeSession, activeFile, appendMessagesToSession, askAi, buildMultiFileSuggestions, currentCode, fileCacheEntries, mutateSession, onBusy, onSuggest]);
+    }, [activeSession, activeFile, appendMessagesToSession, archiveCurrentSuggestion, askAi, buildMultiFileSuggestions, currentCode, fileCacheEntries, mutateSession, onBusy, onSuggest]);
 
     const suggestedCode = activeSession?.suggestedCode ?? null;
     const fileSuggestions = activeSession?.fileSuggestions ?? [];

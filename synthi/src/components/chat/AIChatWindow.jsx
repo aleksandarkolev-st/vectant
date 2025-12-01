@@ -10,7 +10,7 @@ import { selectFileCacheEntries } from '@/redux/workspaceSlice';
 import { useChatSessions } from './hooks/useChatSessions';
 import { useChatInput } from './hooks/useChatInput';
 import { useAISuggestions } from './hooks/useAISuggestions';
-import { renderDiffChunkList } from './utils/diffUtils';
+import { renderDiffChunkList, diffStats } from './utils/diffUtils';
 import { fileSuggestionStatusClasses, fileSuggestionStatusLabel } from './utils/fileSuggestionsUtils';
 import { formatMessageContent } from './utils/formatMessage';
 
@@ -85,6 +85,14 @@ const AIChatWindow = ({
     });
 
     const messages = activeSession?.messages ?? [];
+    const suggestionTimestamp = activeSession?.suggestionTimestamp
+        ? new Date(activeSession.suggestionTimestamp)
+        : null;
+    const liveSuggestionEntry = (fileSuggestions.length > 0 || suggestedCode) && suggestionTimestamp
+        ? { id: 'suggestion-live', role: 'suggestion-live', timestamp: suggestionTimestamp, snapshot: { fileSuggestions, suggestedCode, diffChunks } }
+        : null;
+    const timeline = liveSuggestionEntry ? [...messages, liveSuggestionEntry] : [...messages];
+    timeline.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
     useEffect(() => {
         if (scrollRef.current) {
@@ -162,33 +170,133 @@ const AIChatWindow = ({
             {/* Messages Area */}
             <ScrollArea ref={scrollRef} className="flex-1 px-4 py-2 min-h-0">
                 <div className="space-y-3">
-                    {messages.length === 0 ? (
+                    {timeline.length === 0 ? (
                         <div className="flex items-center justify-center h-32 text-gray-500 text-sm">
                             <p>Start a conversation with the AI assistant</p>
                         </div>
                     ) : (
-                        messages.map((msg) => (
-                            <div
-                                key={msg.id}
-                                className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                            >
+                        timeline.map((msg) => {
+                            if (msg.role === 'suggestion-live' || msg.role === 'suggestion-history') {
+                                const snapshot = msg.snapshot || {};
+                                const hasFiles = (snapshot.fileSuggestions || []).length > 0;
+                                return (
+                                    <div key={msg.id} className="flex justify-start">
+                                        <div className="w-full">
+                                            {hasFiles ? (
+                                                <div className="space-y-3">
+                                                    {snapshot.fileSuggestions.map((suggestion) => {
+                                                        const stats = diffStats(suggestion.chunks);
+                                                        const badgeText = `${fileSuggestionStatusLabel(suggestion.status)}`;
+                                                        const statsAddText = `+${stats.adds}`;
+                                                        const statsRemText = `-${stats.removals}`;
+                                                        return (
+                                                        <div key={suggestion.path} className="px-3 py-3 bg-[#171717] border border-[#3a3a3a] rounded">
+                                                            <div className="flex items-center justify-between gap-2 mb-3">
+                                                                <div>
+                                                                    <div className="text-sm font-medium text-gray-100 break-all">{suggestion.path}</div>
+                                                                    <div className={`inline-flex mt-1 px-2 py-0.5 rounded-full text-[11px] ${fileSuggestionStatusClasses(suggestion.status)}`}>
+                                                                        {badgeText}
+                                                                    </div>
+                                                                    <div className={`inline-flex mt-1 px-2 py-0.5 text-[11px] text-emerald-400`}>
+                                                                        {statsAddText} 
+                                                                    </div>
+                                                                    <div className={`inline-flex mt-1 py-0.5 text-[11px] text-rose-400`}>
+                                                                        {statsRemText}
+                                                                    </div>
+                                                                </div>
+                                                                {suggestion.status === 'pending' && msg.role === 'suggestion-live' && (
+                                                                    <div className="flex items-center gap-2 flex-wrap">
+                                                                        <Button
+                                                                            variant="ghost"
+                                                                            size="sm"
+                                                                            disabled={Boolean(suggestion.error)}
+                                                                            onClick={() => handlePreviewFileSuggestion(activeSession?.id || activeSessionId, suggestion.path)}
+                                                                        >
+                                                                            Preview
+                                                                        </Button>
+                                                                        <Button
+                                                                            variant="secondary"
+                                                                            size="sm"
+                                                                            disabled={suggestion.status !== 'pending'}
+                                                                            onClick={() => handleRejectFileSuggestion(activeSession?.id || activeSessionId, suggestion.path)}
+                                                                        >
+                                                                            Reject
+                                                                        </Button>
+                                                                        <Button
+                                                                            variant="default"
+                                                                            size="sm"
+                                                                            disabled={suggestion.status !== 'pending' || Boolean(suggestion.error)}
+                                                                            onClick={() => handleApplyFileSuggestion(activeSession?.id || activeSessionId, suggestion.path)}
+                                                                        >
+                                                                            Apply
+                                                                        </Button>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                            {suggestion.error ? (
+                                                                <div className="text-sm text-rose-300 bg-rose-500/5 border border-rose-500/40 px-3 py-2 rounded">
+                                                                    {suggestion.error}
+                                                                </div>
+                                                            ) : (
+                                                                <div className="max-h-[55vh] overflow-auto text-xs font-mono bg-[#0f0f10] rounded p-2">
+                                                                    {renderDiffChunkList(suggestion.chunks)}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                    })}
+                                                </div>
+                                            ) : snapshot.suggestedCode ? (
+                                                <div className="px-2 py-2 bg-[#171717] border border-[#3a3a3a] rounded">
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <div className="text-sm font-medium text-gray-200">Suggestion</div>
+                                                        {snapshot.suggestedCode && msg.role === 'suggestion-live' && (
+                                                            <div className="flex items-center gap-2">
+                                                                {isLoading ? (
+                                                                    <div className="flex items-center gap-2 text-xs text-gray-300">
+                                                                        <div className="w-3 h-3 rounded-full bg-gray-400 animate-pulse" aria-hidden></div>
+                                                                        <span>Thinking...</span>
+                                                                    </div>
+                                                                ) : null}
+                                                                <Button variant="secondary" size="sm" onClick={rejectSuggestion}>Reject</Button>
+                                                                <Button variant="default" size="sm" onClick={applySuggestion}>Accept</Button>
+                                                            </div>
+                                                        )}
+                                                    </div>
+
+                                                    <div className="max-h-[55vh] overflow-auto text-xs font-mono">
+                                                        {renderDiffChunkList(snapshot.diffChunks || [])}
+                                                    </div>
+                                                </div>
+                                            ) : null}
+                                        </div>
+                                    </div>
+                                );
+                            }
+
+                            return (
                                 <div
-                                    className={`max-w-[80%] px-3 py-2 rounded-lg text-sm ${
-                                        msg.role === 'user'
-                                            ? 'bg-emerald-600 text-white'
-                                            : 'bg-[#2d2d30] text-gray-200 border border-[#454545]'
-                                    }`}
+                                    key={msg.id}
+                                    className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                                 >
                                     <div
-                                        className="break-normal whitespace-normal text-xs leading-relaxed"
-                                        dangerouslySetInnerHTML={{ __html: formatMessageContent(msg.content) }}
-                                    />
-                                    <span className="text-xs opacity-70 mt-1 block">
-                                        {formatTimestamp(msg.timestamp)}
-                                    </span>
+                                        className={`max-w-[80%] px-3 py-2 rounded-lg text-sm ${
+                                            msg.role === 'user'
+                                                ? 'bg-emerald-600 text-white'
+                                                : 'bg-[#2d2d30] text-gray-200 border border-[#454545]'
+                                        }`}
+                                    >
+                                        <div
+                                            className="break-normal whitespace-normal text-xs leading-relaxed"
+                                            dangerouslySetInnerHTML={{ __html: formatMessageContent(msg.content) }}
+                                        />
+                                        <span className="text-xs opacity-70 mt-1 block">
+                                            {formatTimestamp(msg.timestamp)}
+                                        </span>
+                                    </div>
                                 </div>
-                            </div>
-                        ))
+                            );
+                        })
                     )}
                     {isLoading && (
                         <div className="flex justify-start">
@@ -198,79 +306,6 @@ const AIChatWindow = ({
                                     <div className="w-2 h-2 bg-gray-500 rounded-full animate-pulse delay-100"></div>
                                     <div className="w-2 h-2 bg-gray-500 rounded-full animate-pulse delay-200"></div>
                                 </div>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Suggested code preview + diff controls */}
-                    {fileSuggestions.length > 0 ? (
-                        <div className="space-y-3">
-                            {fileSuggestions.map((suggestion) => (
-                                <div key={suggestion.path} className="px-3 py-3 bg-[#171717] border border-[#3a3a3a] rounded">
-                                    <div className="flex items-center justify-between gap-2 mb-3">
-                                        <div>
-                                            <div className="text-sm font-medium text-gray-100 break-all">{suggestion.path}</div>
-                                            <div className={`inline-flex mt-1 px-2 py-0.5 rounded-full text-[11px] ${fileSuggestionStatusClasses(suggestion.status)}`}>
-                                                {fileSuggestionStatusLabel(suggestion.status)}
-                                            </div>
-                                        </div>
-                                        <div className="flex items-center gap-2 flex-wrap">
-                                            <Button
-                                                variant="ghost"
-                                                size="sm"
-                                                disabled={Boolean(suggestion.error)}
-                                                onClick={() => handlePreviewFileSuggestion(activeSession?.id || activeSessionId, suggestion.path)}
-                                            >
-                                                Preview
-                                            </Button>
-                                            <Button
-                                                variant="secondary"
-                                                size="sm"
-                                                disabled={suggestion.status !== 'pending'}
-                                                onClick={() => handleRejectFileSuggestion(activeSession?.id || activeSessionId, suggestion.path)}
-                                            >
-                                                Reject
-                                            </Button>
-                                            <Button
-                                                variant="default"
-                                                size="sm"
-                                                disabled={suggestion.status !== 'pending' || Boolean(suggestion.error)}
-                                                onClick={() => handleApplyFileSuggestion(activeSession?.id || activeSessionId, suggestion.path)}
-                                            >
-                                                Apply
-                                            </Button>
-                                        </div>
-                                    </div>
-                                    {suggestion.error ? (
-                                        <div className="text-sm text-rose-300 bg-rose-500/5 border border-rose-500/40 px-3 py-2 rounded">
-                                            {suggestion.error}
-                                        </div>
-                                    ) : (
-                                        <div className="max-h-[55vh] overflow-auto text-xs font-mono bg-[#0f0f10] rounded p-2">
-                                            {renderDiffChunkList(suggestion.chunks)}
-                                        </div>
-                                    )}
-                                </div>
-                            ))}
-                        </div>
-                    ) : suggestedCode && (
-                        <div className="px-2 py-2 bg-[#171717] border border-[#3a3a3a] rounded">
-                            <div className="flex items-center justify-between mb-2">
-                                <div className="text-sm font-medium text-gray-200">Suggestion</div>
-                                <div className="flex items-center gap-2">
-                                    {isLoading ? (
-                                        <div className="flex items-center gap-2 text-xs text-gray-300">
-                                            <div className="w-3 h-3 rounded-full bg-gray-400 animate-pulse" aria-hidden></div>
-                                            <span>Thinking...</span>
-                                        </div>
-                                    ) : null}
-                                    <Button variant="secondary" size="sm" onClick={rejectSuggestion}>Reject</Button>
-                                    <Button variant="default" size="sm" onClick={applySuggestion}>Accept</Button>
-                                </div>
-                            </div>
-
-                            <div className="max-h-[55vh] overflow-auto text-xs font-mono">
-                                {renderDiffChunkList(diffChunks)}
                             </div>
                         </div>
                     )}
