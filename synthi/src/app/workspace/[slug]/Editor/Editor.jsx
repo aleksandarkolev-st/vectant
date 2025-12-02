@@ -159,6 +159,7 @@ const EditorPanel = ({
     // --- Event Handlers ---
     useEditorEvents({
         editorInstance,
+        monacoInstance,
         cancelActiveCompletion,
         requestAiCompletion,
         hasActiveDiff: activeDiffCheck,
