@@ -71,6 +71,9 @@ const EditorPanel = ({
     const [position, setPosition] = useState({ lineNumber: 1, column: 1 });
     const [editorInstance, setEditorInstance] = useState(null);
     const [monacoInstance, setMonacoInstance] = useState(null);
+    const latestCodeRef = useRef(code);
+    const pendingContentFrameRef = useRef(null);
+    const pendingPositionFrameRef = useRef(null);
     
     // Swallow Monaco's cancel-notifications so they don't spam the console when
     // inline suggestions are abandoned mid-flight.
@@ -161,20 +164,42 @@ const EditorPanel = ({
         aiAutoEnabled
     });
 
-    const handleCodeChange = (newCode) => {
+    useEffect(() => {
+        latestCodeRef.current = code;
+    }, [code]);
+
+    useEffect(() => {
+        return () => {
+            if (pendingContentFrameRef.current) {
+                cancelAnimationFrame(pendingContentFrameRef.current);
+                pendingContentFrameRef.current = null;
+            }
+            if (aiDebounceTimerRef.current) {
+                clearTimeout(aiDebounceTimerRef.current);
+                aiDebounceTimerRef.current = null;
+            }
+        };
+    }, []);
+
+    const handleCodeChange = useCallback((newCode) => {
         cancelActiveCompletion({ resetSuggestion: true, reason: 'edit' });
-        dispatch(updateContent(newCode));
-        
+        latestCodeRef.current = newCode;
+        if (!pendingContentFrameRef.current) {
+            pendingContentFrameRef.current = requestAnimationFrame(() => {
+                dispatch(updateContent(latestCodeRef.current));
+                pendingContentFrameRef.current = null;
+            });
+        }
+
         // Debounce AI Auto-Complete (The "Cursor" experience)
         if (aiDebounceTimerRef.current) clearTimeout(aiDebounceTimerRef.current);
         if (!aiAutoEnabled) return;
         aiDebounceTimerRef.current = setTimeout(() => {
-            // Auto-trigger AI after a brief pause using the latest buffer
             if (!activeDiffCheck()) {
-                requestAiCompletion(true, newCode, { reason: 'pause', pauseTrigger: true, recentEditSnippet: takeLastChars(newCode, 512) });
+                requestAiCompletion(true, latestCodeRef.current, { reason: 'pause', pauseTrigger: true, recentEditSnippet: takeLastChars(latestCodeRef.current, 512) });
             }
         }, 400);
-    };
+    }, [aiAutoEnabled, activeDiffCheck, cancelActiveCompletion, dispatch, requestAiCompletion]);
 
     const handleSave = useCallback(() => {
         if (activeFile && isUnsaved) dispatch(saveFileContentThunk());
@@ -338,7 +363,14 @@ const EditorPanel = ({
                                                 setEditorInstance(editor);
                                                 setMonacoInstance(monaco);
                                                 if (onEditorMount) onEditorMount(editor);
-                                                editor.onDidChangeCursorPosition(e => setPosition(e.position));
+                                                editor.onDidChangeCursorPosition(e => {
+                                                    const nextPos = e.position;
+                                                    if (pendingPositionFrameRef.current) return;
+                                                    pendingPositionFrameRef.current = requestAnimationFrame(() => {
+                                                        setPosition(nextPos);
+                                                        pendingPositionFrameRef.current = null;
+                                                    });
+                                                });
                                                 
                                                 // Ensure layout refreshes on mount
                                                 setTimeout(() => editor.layout(), 100);
