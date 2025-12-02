@@ -168,6 +168,7 @@ const EditorPanel = ({
         hasActiveDiff: activeDiffCheck,
         aiAutoEnabled,
         rawFiles,
+        fileCacheEntries,
         dispatch,
         activeFile
     });
