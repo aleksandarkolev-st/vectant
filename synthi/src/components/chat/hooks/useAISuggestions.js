@@ -458,7 +458,24 @@ export const useAISuggestions = ({
         }
     }, [activeSession, buildSuggestionSnapshot, pushSnapshotToHistory]);
 
-    const handleSendMessage = useCallback(async (inputValue) => {
+    const buildAttachmentText = (attachments = []) => {
+        if (!Array.isArray(attachments) || attachments.length === 0) return '';
+        return attachments.map((att) => {
+            const header = `FILE: ${att.name || 'attachment'} (${att.type || 'unknown'}, ${att.size || 0} bytes)`;
+            if (att.kind === 'image' && att.content) {
+                const snippet = att.content.length > 4000 ? `${att.content.slice(0, 4000)}\n... [truncated data URI]` : att.content;
+                return `${header}\nImage data (base64 data URI). Extract any visible text/code from the image and use it to satisfy the request.\n\`\`\`\n${snippet}\n\`\`\``;
+            }
+            if (att.kind === 'text' && att.content) {
+                const snippet = att.content.length > 4000 ? `${att.content.slice(0, 4000)}\n... [truncated]` : att.content;
+                return `${header}\n\`\`\`\n${snippet}\n\`\`\``;
+            }
+            const note = att.note || 'Binary attachment; content not inlined.';
+            return `${header}\n${note}`;
+        }).join('\n\n');
+    };
+
+    const handleSendMessage = useCallback(async (inputValue, attachments = []) => {
         if (!inputValue?.trim()) return;
         if (!activeSession) return;
 
@@ -469,6 +486,7 @@ export const useAISuggestions = ({
             role: 'user',
             content: inputValue,
             timestamp: new Date(),
+            attachments,
         };
 
         appendMessagesToSession(activeSession.id, [userMessage]);
@@ -492,7 +510,9 @@ FILE: <path>
 <full updated file content only; no diff markers, no +/-, no @@, no ---/+++>
 \`\`\`
 
-Do not include any other commentary. Preserve all code outside the requested change. Do not add speculative comments or boilerplate. If unclear, return FILE: <path> then NO_CHANGES and a brief clarifying question.`;
+Do not include any other commentary. Preserve all code outside the requested change. Do not add speculative comments or boilerplate. If unclear, return FILE: <path> then NO_CHANGES and a brief clarifying question.
+
+If image attachments are present, read/ocr the images and extract any text or code they contain. Use the extracted content to fulfill the request, rewriting it as needed into the target file(s).`;
             const filesPayloadRaw = buildFilesPayload({
                 activeFile,
                 fullDocument: code,
@@ -504,6 +524,10 @@ Do not include any other commentary. Preserve all code outside the requested cha
                 : filesPayloadRaw.filter((f) => f.path === (activeFile?.path || activeFile?.name));
             if (filesPayload.length > 1 || mentionsOtherFile) {
                 patchRequest = `${patchRequest}\n\nAdditional workspace files are attached. Reference them by their path when relevant.`;
+            }
+            const attachmentText = buildAttachmentText(attachments);
+            if (attachmentText) {
+                patchRequest = `${patchRequest}\n\nUser attachments:\n${attachmentText}`;
             }
 
             try { if (typeof onBusy === 'function') onBusy(true); } catch (e) {}

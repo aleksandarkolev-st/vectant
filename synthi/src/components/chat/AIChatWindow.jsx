@@ -10,6 +10,7 @@ import { selectFileCacheEntries } from '@/redux/workspaceSlice';
 import { useChatSessions } from './hooks/useChatSessions';
 import { useChatInput } from './hooks/useChatInput';
 import { useAISuggestions } from './hooks/useAISuggestions';
+import { useChatAttachments } from './hooks/useChatAttachments';
 import { renderDiffChunkList, diffStats } from './utils/diffUtils';
 import { fileSuggestionStatusClasses, fileSuggestionStatusLabel } from './utils/fileSuggestionsUtils';
 import { formatMessageContent } from './utils/formatMessage';
@@ -79,8 +80,19 @@ const AIChatWindow = ({
         dispatch,
     });
 
+    const {
+        attachments,
+        isDragging,
+        handleDrop,
+        handleDragOver,
+        handleDragLeave,
+        handlePaste,
+        removeAttachment,
+        formatBytes,
+    } = useChatAttachments();
+
     const { inputValue, setInputValue, handleKeyPress, handleSubmit } = useChatInput((value) => {
-        handleSendMessage(value);
+        handleSendMessage(value, attachments);
         setInputValue('');
     });
 
@@ -110,7 +122,14 @@ const AIChatWindow = ({
         : 'fixed top-10 right-0 bottom-0 w-96 bg-[#1e1e1e] border-l border-[#545454] rounded-l-lg shadow-2xl flex flex-col min-h-0 z-40';
 
     return (
-        <div className={containerClass}>
+        <div
+            className={`${containerClass} ${isDragging ? 'ring-2 ring-emerald-500/50' : ''}`}
+            onDragOver={handleDragOver}
+            onDragEnter={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onPaste={handlePaste}
+        >
             {/* Header */}
             <div className="flex flex-col border-b border-[#545454] bg-[#252526]">
                 <div className="flex items-center justify-between px-4 py-3">
@@ -286,10 +305,35 @@ const AIChatWindow = ({
                                                 : 'bg-[#2d2d30] text-gray-200 border border-[#454545]'
                                         }`}
                                     >
-                                        <div
-                                            className="break-normal whitespace-normal text-xs leading-relaxed"
-                                            dangerouslySetInnerHTML={{ __html: formatMessageContent(msg.content) }}
-                                        />
+                                    {Array.isArray(msg.attachments) && msg.attachments.length > 0 && (
+                                        <div className="mb-2 space-y-2">
+                                            {msg.attachments.map((att) => (
+                                                <div key={att.id || att.name} className="bg-[#1a1a1a] border border-[#3a3a3a] rounded p-2">
+                                                    <div className="flex items-center justify-between text-xs text-gray-300 mb-1">
+                                                        <span className="truncate max-w-[200px]">{att.name || 'Attachment'}</span>
+                                                        {att.size ? <span className="text-gray-500">{att.size} bytes</span> : null}
+                                                    </div>
+                                                    {att.kind === 'image' && att.content ? (
+                                                        <img
+                                                            src={att.content}
+                                                            alt={att.name || 'image'}
+                                                            className="max-h-48 rounded border border-[#2f2f2f]"
+                                                        />
+                                                    ) : att.kind === 'text' ? (
+                                                        <pre className="text-[11px] whitespace-pre-wrap max-h-32 overflow-auto bg-[#0f0f10] rounded p-2">
+                                                            {att.content?.slice(0, 2000) || ''}
+                                                        </pre>
+                                                    ) : (
+                                                        <div className="text-[11px] text-gray-400 italic">Binary attachment</div>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                    <div
+                                        className="break-normal whitespace-normal text-xs leading-relaxed"
+                                        dangerouslySetInnerHTML={{ __html: formatMessageContent(msg.content) }}
+                                    />
                                         <span className="text-xs opacity-70 mt-1 block">
                                             {formatTimestamp(msg.timestamp)}
                                         </span>
@@ -314,6 +358,23 @@ const AIChatWindow = ({
 
             {/* Input Area */}
             <div className="px-4 py-3 border-t border-[#545454] bg-[#252526]">
+                {attachments.length > 0 && (
+                    <div className="mb-2 flex flex-wrap gap-2">
+                        {attachments.map((att) => (
+                            <div key={att.id} className="flex items-center gap-2 bg-[#1e1e1e] border border-[#3a3a3a] px-2 py-1 rounded text-xs">
+                                <span className="truncate max-w-[160px]">{att.name}</span>
+                                <span className="text-gray-400">{formatBytes(att.size)}</span>
+                                <button
+                                    onClick={() => removeAttachment(att.id)}
+                                    className="p-1 text-gray-400 hover:text-gray-200"
+                                    title="Remove attachment"
+                                >
+                                    <X className="w-3 h-3" />
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                )}
                 <div className="flex gap-2">
                     <Input
                         value={inputValue}
