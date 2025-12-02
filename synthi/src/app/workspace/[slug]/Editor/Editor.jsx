@@ -354,7 +354,7 @@ const EditorPanel = ({
                                         <Editor
                                             key={activeFileIdentity}
                                             height="100%"
-                                            defaultValue={code}
+                                            value={code ?? ''}
                                             language={activeLanguage}
                                             theme="vs-dark"
                                             options={EDITOR_OPTIONS}
