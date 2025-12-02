@@ -7,6 +7,11 @@ export default function GlobalErrorHandler() {
   useEffect(() => {
     const handleError = (error) => {
       try {
+        // Ignore Canceled errors from Monaco or other promises
+        if (error === 'Canceled' || error?.message === 'Canceled' || error?.name === 'Canceled' || error?.code === 'Canceled' || (typeof error === 'string' && error.includes('Canceled'))) {
+            return;
+        }
+
         if (error && (error.name === "SynthiException" || (error.title && error.description))) {
           toast.error(error.title, {
             description: error.description,
