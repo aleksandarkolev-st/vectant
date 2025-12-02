@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use futures::{FutureExt, StreamExt, SinkExt};
 use serde::{Deserialize, Serialize};
 use tempfile::tempdir;
-use tokio::io::{AsyncBufReadExt, BufReader, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -334,36 +334,50 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
     // process (the produced binary) so that terminal input is routed to the
     // running program's stdin.
 
-    if let Some(out) = stdout {
+    if let Some(mut out) = stdout {
         let dc = log_dc.clone();
         let sid = session_id.clone();
         tokio::spawn(async move {
-            let mut lines = out.lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let payload = serde_json::json!({
-                    "sessionId": sid.clone(),
-                    "type": "stdout",
-                    "line": line
-                });
-                let txt = serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""));
-                let _ = dc.send_text(txt).await;
+            let mut buf = vec![0u8; 1024];
+            loop {
+                match out.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+                        let payload = serde_json::json!({
+                            "sessionId": sid.clone(),
+                            "type": "stdout",
+                            "line": chunk
+                        });
+                        let txt = serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""));
+                        let _ = dc.send_text(txt).await;
+                    }
+                    Err(_) => break,
+                }
             }
         });
     }
 
-    if let Some(err) = stderr {
+    if let Some(mut err) = stderr {
         let dc = log_dc.clone();
         let sid = session_id.clone();
         tokio::spawn(async move {
-            let mut lines = err.lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let payload = serde_json::json!({
-                    "sessionId": sid.clone(),
-                    "type": "stderr",
-                    "line": line
-                });
-                let txt = serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""));
-                let _ = dc.send_text(txt).await;
+            let mut buf = vec![0u8; 1024];
+            loop {
+                match err.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+                        let payload = serde_json::json!({
+                            "sessionId": sid.clone(),
+                            "type": "stderr",
+                            "line": chunk
+                        });
+                        let txt = serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""));
+                        let _ = dc.send_text(txt).await;
+                    }
+                    Err(_) => break,
+                }
             }
         });
     }
@@ -420,37 +434,51 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
             });
         }
 
-        if let Some(out) = run_stdout {
+        if let Some(mut out) = run_stdout {
             let dc = log_dc.clone();
             let sid = session_id.clone();
             tokio::spawn(async move {
-                let mut lines = out.lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        let payload = serde_json::json!({
-                            "sessionId": sid.clone(),
-                            "type": "run-stdout",
-                            "line": line
-                        });
-                        let txt = serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""));
-                        let _ = dc.send_text(txt).await;
+                let mut buf = vec![0u8; 1024];
+                loop {
+                    match out.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+                            let payload = serde_json::json!({
+                                "sessionId": sid.clone(),
+                                "type": "run-stdout",
+                                "line": chunk
+                            });
+                            let txt = serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""));
+                            let _ = dc.send_text(txt).await;
+                        }
+                        Err(_) => break,
                     }
+                }
             });
         }
 
-        if let Some(err) = run_stderr {
+        if let Some(mut err) = run_stderr {
             let dc = log_dc.clone();
             let sid = session_id.clone();
             tokio::spawn(async move {
-                let mut lines = err.lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        let payload = serde_json::json!({
-                            "sessionId": sid.clone(),
-                            "type": "run-stderr",
-                            "line": line
-                        });
-                        let txt = serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""));
-                        let _ = dc.send_text(txt).await;
+                let mut buf = vec![0u8; 1024];
+                loop {
+                    match err.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+                            let payload = serde_json::json!({
+                                "sessionId": sid.clone(),
+                                "type": "run-stderr",
+                                "line": chunk
+                            });
+                            let txt = serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""));
+                            let _ = dc.send_text(txt).await;
+                        }
+                        Err(_) => break,
                     }
+                }
             });
         }
 

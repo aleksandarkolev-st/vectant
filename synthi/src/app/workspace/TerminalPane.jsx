@@ -281,8 +281,10 @@ export default function TerminalPane() {
             }
           }
 
-          // Ensure we write a newline-terminated string to the terminal
-          const toWrite = typeof out === 'string' ? (out.endsWith('\n') ? out : out + '\r\n') : String(out) + '\r\n';
+          // Write the output exactly as received from the worker. The worker
+          // now streams raw chunks (not only newline-terminated lines), so
+          // avoid forcing newlines here to ensure prompts appear immediately.
+          const toWrite = typeof out === 'string' ? out : String(out);
           term.write(toWrite);
         } catch (e) {
           console.error('Error writing build log to terminal', e);
