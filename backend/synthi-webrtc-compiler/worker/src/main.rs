@@ -48,12 +48,20 @@ struct SignalMessage {
 }
 
 #[derive(Debug, Deserialize)]
+struct FileEntry {
+    name: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct CompileRequest {
     language: String,
     filename: String,
     source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session_id: Option<String>,
+    #[serde(default)]
+    files: Vec<FileEntry>,
 }
 
 #[tokio::main]
@@ -294,16 +302,33 @@ async fn create_peer(signal_tx: mpsc::UnboundedSender<SignalMessage>) -> Result<
 
 async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, terminal_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>) -> Result<()> {
     let dir = tempdir().context("failed to create temp dir")?;
+    
+    // Write the main file
     let file_path = dir.path().join(&req.filename);
-    tokio::fs::write(&file_path, req.source).await?;
     // Clone session id locally so we can move it into spawned tasks without
     // invalidating the `req` value for later use.
     let session_id = req.session_id.clone();
+    if let Some(parent) = file_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(&file_path, &req.source).await?;
+    println!("Main file written to {:?}", file_path);
+
+    // Write additional files
+    for file in req.files {
+        println!("Writing additional file: {}", file.name);
+        let p = dir.path().join(&file.name);
+        // Ensure parent directories exist if the file is in a subdirectory
+        if let Some(parent) = p.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(&p, file.content).await?;
+    }
 
     let mut cmd = match req.language.as_str() {
         "cpp" => {
             let mut c = Command::new("g++");
-            c.arg(&req.filename).arg("-o").arg("main.out");
+            c.arg(&req.filename).arg("-I.").arg("-o").arg("main.out");
             c
         }
         "rust" => {

@@ -180,7 +180,7 @@ const ensureConnection = () => {
     return readyPromise;
 };
 
-export const compileWithWorker = async ({ filename, source, language, onLog } = {}) => {
+export const compileWithWorker = async ({ filename, source, language, files = [], onLog } = {}) => {
     const lang = language || mapLanguage(filename);
     if (!lang) throw new Error('Unsupported language for compilation');
     await ensureConnection();
@@ -232,9 +232,13 @@ export const compileWithWorker = async ({ filename, source, language, onLog } = 
         logHandlers.add(handleLog);
 
         try {
-            // Send compile request and include session id so backends can tag responses if supported
-            // Use snake_case `session_id` to match worker's expected field name.
-            compileChannel.send(JSON.stringify({ language: lang, filename: filename || `main.${lang}`, source: source || '', session_id: sessionId }));
+            compileChannel.send(JSON.stringify({
+                language: lang,
+                filename: filename || `main.${lang}`,
+                source: source || '',
+                files: files,
+                session_id: sessionId
+            }));
         } catch (e) {
             logHandlers.delete(handleLog);
             if (onLog) logHandlers.delete(onLog);

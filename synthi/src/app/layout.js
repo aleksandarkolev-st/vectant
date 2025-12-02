@@ -1,5 +1,6 @@
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import "./editor-overrides.css";
+import { Geist, Geist_Mono } from "next/font/google";
 import NextAuthSessionProvider from "./SessionProvider";
 import { ReduxProvider } from "./ReduxProvider";
 import { Toaster } from "../components/ui/sonner";
