@@ -205,9 +205,9 @@ const AIChatWindow = ({
                                                                     </div>
                                                                 </div>
                                                                 {suggestion.status === 'pending' && msg.role === 'suggestion-live' && (
-                                                                    <div className="flex items-center gap-2 flex-wrap">
+                                                                    <div className="flex items-center gap-2 flex-wrap justify-end">
                                                                         <Button
-                                                                            variant="ghost"
+                                                                            variant="secondary"
                                                                             size="sm"
                                                                             disabled={Boolean(suggestion.error)}
                                                                             onClick={() => handlePreviewFileSuggestion(activeSession?.id || activeSessionId, suggestion.path)}
@@ -215,7 +215,7 @@ const AIChatWindow = ({
                                                                             Preview
                                                                         </Button>
                                                                         <Button
-                                                                            variant="secondary"
+                                                                            variant="ghost"
                                                                             size="sm"
                                                                             disabled={suggestion.status !== 'pending'}
                                                                             onClick={() => handleRejectFileSuggestion(activeSession?.id || activeSessionId, suggestion.path)}
@@ -223,7 +223,7 @@ const AIChatWindow = ({
                                                                             Reject
                                                                         </Button>
                                                                         <Button
-                                                                            variant="default"
+                                                                            variant="ghost"
                                                                             size="sm"
                                                                             disabled={suggestion.status !== 'pending' || Boolean(suggestion.error)}
                                                                             onClick={() => handleApplyFileSuggestion(activeSession?.id || activeSessionId, suggestion.path)}
@@ -238,7 +238,7 @@ const AIChatWindow = ({
                                                                     {suggestion.error}
                                                                 </div>
                                                             ) : (
-                                                                <div className="max-h-[55vh] overflow-auto text-xs font-mono bg-[#0f0f10] rounded p-2">
+                                                                <div className="max-h-[55vh] overflow-auto overflow-x-auto text-xs font-mono bg-[#0f0f10] rounded p-2">
                                                                     {renderDiffChunkList(suggestion.chunks)}
                                                                 </div>
                                                             )}

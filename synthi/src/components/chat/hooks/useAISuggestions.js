@@ -203,6 +203,20 @@ export const useAISuggestions = ({
             }
 
             if (!block.isValidDiff || !block.diffText) {
+                // If the model returned no diff/content but referenced a file, interpret as clearing the file.
+                if (!block.diffText && !block.contentText) {
+                    hydrated.push({
+                        path: block.path,
+                        resolvedPath,
+                        diffText: null,
+                        originalContent: currentContent,
+                        updatedContent: '',
+                        isNewFile: baseIsMissing,
+                        chunks: computeDiffChunks(currentContent, ''),
+                        status: 'pending',
+                    });
+                    continue;
+                }
                 hydrated.push({
                     path: block.path,
                     resolvedPath,
@@ -308,6 +322,9 @@ export const useAISuggestions = ({
                     fs.path === path ? { ...fs, status: 'applied', error: null } : fs
                 ),
             }));
+            try {
+                if (typeof onSuggestRef.current === 'function') onSuggestRef.current({ clear: true });
+            } catch (e) {}
         } catch (error) {
             mutateSession(sessionId, (s) => ({
                 ...s,
@@ -326,6 +343,9 @@ export const useAISuggestions = ({
                 fs.path === path ? { ...fs, status: 'rejected' } : fs
             ),
         }));
+        try {
+            if (typeof onSuggestRef.current === 'function') onSuggestRef.current({ clear: true });
+        } catch (e) {}
     }, [mutateSession]);
 
     const buildSuggestionSnapshot = useCallback((session) => {
@@ -554,6 +574,16 @@ Do not include any other commentary. Preserve all code outside the requested cha
 
             let codeOnly = null;
             let displayedContent = suggestion || 'No response received';
+            const isPlaceholderText = (text = '') => {
+                const normalized = text.toLowerCase();
+                return (
+                    normalized.includes('no_changes') ||
+                    normalized.includes('no changes') ||
+                    normalized.includes('cannot make any changes') ||
+                    normalized.includes('need the content') ||
+                    normalized.includes('provide the content')
+                );
+            };
 
             if (hasMultiFileSuggestions) {
                 mutateSession(activeSession.id, (session) => ({
@@ -591,14 +621,43 @@ Do not include any other commentary. Preserve all code outside the requested cha
                     }
                 }
 
-                if (codeOnly) {
+                if (codeOnly && !isPlaceholderText(codeOnly) && !isPlaceholderText(displayedContent)) {
                     displayedContent = summaryText || (suggestion || '').replace(/```[\s\S]*?```/g, '');
                     displayedContent = displayedContent.replace(/<pre[^>]*>[\s\S]*?<code[^>]*>[\s\S]*?<\/code>[\s\S]*?<\/pre>/gi, '');
                     displayedContent = displayedContent.replace(/<code[^>]*>[\s\S]*?<\/code>/gi, '');
                     displayedContent = displayedContent.trim();
                     if (!displayedContent) {
                         displayedContent = 'AI suggested code changes — preview shown below.';
+                    }} else {
+                    codeOnly = null;
+                    if (summaryText) {
+                        displayedContent = summaryText;
+                    } else if (isPlaceholderText(suggestion || '')) {
+                        displayedContent = 'AI could not produce changes for the active file. Please clarify the request or provide file content.';
                     }
+                }
+            }
+
+            // Drop any pending placeholder suggestions from multi-file results
+            if (hasMultiFileSuggestions) {
+                const filtered = multiFileSuggestions.filter((sugg) => {
+                    const text = sugg.updatedContent || sugg.diffText || '';
+                    return !isPlaceholderText(text);
+                });
+                if (filtered.length !== multiFileSuggestions.length) {
+                    mutateSession(activeSession.id, (session) => ({
+                        ...session,
+                        fileSuggestions: filtered,
+                    }));
+                }
+                if (filtered.length === 0) {
+                    displayedContent = 'AI could not produce usable changes. Please provide more context or a specific path.';
+                }
+            }
+
+            if (!hasMultiFileSuggestions) {
+                if (codeOnly) {
+                    displayedContent = summaryText || displayedContent;
                 } else if (summaryText) {
                     displayedContent = summaryText;
                 }

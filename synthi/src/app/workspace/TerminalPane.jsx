@@ -9,7 +9,7 @@ export default function TerminalPane() {
   // Use the same SIGNAL URL as compilerClient when available, fallback to localhost
   const MACHINE_WS = typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_COMPILE_SIGNAL_URL
     ? process.env.NEXT_PUBLIC_COMPILE_SIGNAL_URL
-    : 'ws://localhost:9000';
+    : 'https://lumpish-undevoutly-sonja.ngrok-free.dev/';
 
 
   useEffect(() => {
