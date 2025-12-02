@@ -9,23 +9,9 @@ export default function TerminalPane() {
   const inputBufferRef = useRef('');
   const initializedRef = useRef(false);
   // Use the same SIGNAL URL as compilerClient when available, fallback to localhost
-  // Normalize HTTP(S) urls to WS(S) so `new WebSocket(...)` uses the correct scheme.
-  const rawSignalUrl = typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_COMPILE_SIGNAL_URL
+  const MACHINE_WS = typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_COMPILE_SIGNAL_URL
     ? process.env.NEXT_PUBLIC_COMPILE_SIGNAL_URL
-    : 'http://localhost:9000';
-
-  const normalizeToWs = (url) => {
-    if (!url) return null;
-    // Already a ws/wss URL
-    if (url.startsWith('ws://') || url.startsWith('wss://')) return url;
-    if (url.startsWith('http://')) return 'ws://' + url.slice('http://'.length);
-    if (url.startsWith('https://')) return 'wss://' + url.slice('https://'.length);
-    // No scheme provided: assume wss for production-like hosts, ws for localhost
-    if (url.includes('localhost') || url.startsWith('127.') || url.startsWith('::1')) return 'ws://' + url;
-    return 'wss://' + url;
-  };
-
-  const MACHINE_WS = normalizeToWs(rawSignalUrl);
+    : 'https://lumpish-undevoutly-sonja.ngrok-free.dev/';
 
 
   useEffect(() => {
@@ -54,13 +40,6 @@ export default function TerminalPane() {
       fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
       term.open(containerRef.current);
-      // Ensure terminal receives keyboard focus so `onData` fires when user types.
-      try {
-        if (containerRef.current && containerRef.current instanceof HTMLElement) {
-          containerRef.current.tabIndex = 0; // make focusable and focusable by click
-        }
-      } catch (e) {}
-      try { term.focus(); } catch (e) {}
       fitAddon.fit();
 
       try {
@@ -73,26 +52,13 @@ export default function TerminalPane() {
       wsRef.current = ws;
       if (ws) {
         try { ws.binaryType = 'arraybuffer'; } catch (e) { /* ignore */ }
-      } else {
-        // If we couldn't create a WebSocket, write a helpful message into the
-        // terminal so the user sees why the pane is not connected.
-        try {
-          const { term } = termRef.current || {};
-          if (term && typeof term.write === 'function') {
-            term.write('\r\n\x1b[31mWebSocket: failed to create connection to ' + String(MACHINE_WS) + '\x1b[0m\r\n');
-          }
-        } catch (e) { /* ignore */ }
-      }
-
-      ws.onopen = () => {
-        console.log('WebSocket connected');
-        // Optionally send initial terminal size
-        const { cols, rows } = term;
-        console.log(`Terminal size: ${cols}x${rows}`);
-      };
-
-      // Display backend output in terminal
-      if (ws) {
+        ws.onopen = () => {
+          console.log('WebSocket connected');
+          try {
+            const { cols, rows } = term;
+            console.log(`Terminal size: ${cols}x${rows}`);
+          } catch (_) {}
+        };
         ws.onmessage = (event) => {
           try {
             if (event.data instanceof ArrayBuffer) {
@@ -102,93 +68,53 @@ export default function TerminalPane() {
             } else if (typeof event.data === 'string') {
               term.write(event.data);
             } else {
-              // fallback
               term.write(String(event.data));
             }
           } catch (e) {
             console.error('Error handling ws message in TerminalPane', e);
           }
         };
+        ws.onerror = (error) => {
+          try { term.write('\r\n\x1b[31mWebSocket connection error. Terminal unavailable.\x1b[0m\r\n'); } catch (_) {}
+          console.error('WebSocket error:', error);
+        };
+        ws.onclose = (event) => {
+          console.log('WebSocket closed', event.code, event.reason, event.wasClean);
+        };
+      } else {
+        try { term.write('\r\n\x1b[31mWebSocket: failed to create connection to ' + String(MACHINE_WS) + '\x1b[0m\r\n'); } catch (_) {}
       }
-
-      ws.onerror = (error) => {
-        term.write('\r\n\x1b[31mWebSocket connection error. Terminal unavailable.\x1b[0m\r\n');
-        console.error('WebSocket error:', error);
-        console.error('WebSocket readyState:', ws.readyState);
-        console.error('WebSocket url:', ws.url);
-      };
-
-      ws.onclose = (event) => {
-        console.log('WebSocket closed');
-        console.log('Close code:', event.code);
-        console.log('Close reason:', event.reason);
-        console.log('Was clean:', event.wasClean);
-      };
       
       let isResizing = false;
       let resizeTimeout = null;
 
-      // Send user input to backend by emitting a synthi:terminal-input event.
-      // This lets `compilerClient` forward the input over the WebRTC `terminal`
-      // datachannel to the worker, which will route it to the running process's stdin.
+      // Send user input to backend and forward to WebRTC path.
+      // Also provide a local-echo fallback when no backend is connected so
+      // the user sees their keystrokes while offline/disconnected.
       term.onData((data) => {
-        // Don't send data while resizing
         if (isResizing) return;
+        const wsLocal = wsRef.current;
 
+        // Dispatch `synthi:terminal-input` for the WebRTC/compile path.
+        // Include current session id when available so the handler can
+        // associate input with the right run session.
         try {
-          // Diagnostic log: show typed data and current session id
-          try { console.debug('[TerminalPane] onData', { data, sessionId: currentSessionIdRef.current }); } catch (e) {}
-
-          // Handle input carefully to avoid writing raw escape/control sequences
-          // directly into xterm which can cause parsing errors.
-          // Maintain a small local input buffer for echoing printable characters
-          let buf = inputBufferRef.current || '';
-
-          // Data may contain multiple chars; process one by one
-          for (let i = 0; i < data.length; i++) {
-            const ch = data[i];
-            const code = ch.charCodeAt(0);
-
-            // Carriage return / Enter: echo CRLF and send '\n' to remote
-            if (ch === '\r' || ch === '\n') {
-              try { term.write('\r\n'); } catch (_) {}
-              buf = '';
-              const ev = new CustomEvent('synthi:terminal-input', { detail: { sessionId: currentSessionIdRef.current, data: '\n' } });
-              window.dispatchEvent(ev);
-              continue;
-            }
-
-            // Backspace (DEL or BS): remove last local char and erase on terminal
-            if (code === 127 || code === 8) {
-              if (buf.length > 0) {
-                buf = buf.slice(0, -1);
-                try { term.write('\b \b'); } catch (_) {}
-              } else {
-                // nothing to erase locally; still forward backspace to remote
-              }
-              const ev = new CustomEvent('synthi:terminal-input', { detail: { sessionId: currentSessionIdRef.current, data: ch } });
-              window.dispatchEvent(ev);
-              continue;
-            }
-
-            // Escape sequences / control characters (non-printable except tab) - forward, do not echo
-            if (code < 32 && code !== 9) {
-              // send as-is
-              const ev = new CustomEvent('synthi:terminal-input', { detail: { sessionId: currentSessionIdRef.current, data: ch } });
-              window.dispatchEvent(ev);
-              continue;
-            }
-
-            // Printable characters: local echo and buffer
-            buf += ch;
-            try { term.write(ch); } catch (_) {}
-            const ev = new CustomEvent('synthi:terminal-input', { detail: { sessionId: currentSessionIdRef.current, data: ch } });
-            window.dispatchEvent(ev);
-          }
-
-          inputBufferRef.current = buf;
+          const detail = { data, sessionId: currentSessionIdRef.current };
+          window.dispatchEvent(new CustomEvent('synthi:terminal-input', { detail }));
         } catch (e) {
-          console.error('Failed to dispatch terminal input event', e);
+          // ignore dispatch errors
+        }
+
+        // If the pane WebSocket is open, send raw bytes there as well.
+        if (wsLocal && wsLocal.readyState === WebSocket.OPEN) {
+          try {
+            const encoder = new TextEncoder();
+            wsLocal.send(encoder.encode(data));
+          } catch (e) { /* ignore send errors */ }
+        } else {
+          // Local echo fallback so user can see typed characters when no
+          // backend is connected (prevents 'cannot type' appearance).
+          try { term.write(data); } catch (_) { /* ignore */ }
         }
       });
 
@@ -214,15 +140,8 @@ export default function TerminalPane() {
           handleResize();
         });
       });
-      let clickHandler = null;
-      let keydownHandler = null;
       if (containerRef.current) {
         resizeObserver.observe(containerRef.current);
-        // clicking the container should focus the terminal so keyboard input works
-        clickHandler = () => { try { term.focus(); } catch (e) {} };
-        keydownHandler = (ev) => { try { console.debug('[TerminalPane] container keydown', ev.key); } catch (_) {} };
-        containerRef.current.addEventListener('click', clickHandler);
-        containerRef.current.addEventListener('keydown', keydownHandler);
       }
 
       window.addEventListener('resize', handleResize);
@@ -255,46 +174,69 @@ export default function TerminalPane() {
           const data = ev?.detail;
           if (!data) return;
 
-          // Track most recent sessionId so user input can be forwarded to the
-          // correct running compilation/process.
-          if (data.sessionId) {
-            currentSessionIdRef.current = data.sessionId;
+          // If `data` is a string, try to parse JSON from it; otherwise treat
+          // it as an object. We support two shapes from the worker:
+          // 1) { sessionId, type, line }  -- streaming chunks
+          // 2) { sessionId, status: 'done', stage, success, code, start_time, end_time, elapsed }
+          let obj = null;
+          if (typeof data === 'string') {
+            // try parse JSON, otherwise write raw string
+            try { obj = JSON.parse(data); } catch (_) { term.write(data); return; }
+          } else if (typeof data === 'object') {
+            obj = data;
+          } else {
+            term.write(String(data));
+            return;
           }
 
-          // Determine the raw string payload (may be a string or an object with `line`)
-          let rawLine = null;
-          if (typeof data === 'string') rawLine = data;
-          else if (data && typeof data === 'object' && data.line !== undefined) rawLine = data.line;
-          else rawLine = String(data);
+          if (obj.sessionId) currentSessionIdRef.current = obj.sessionId;
 
-          // The rawLine itself may be a JSON string emitted by the worker.
-          // Try to parse it and extract the inner `line` if present.
-          let out = rawLine;
-          if (typeof rawLine === 'string') {
-            try {
-              const p = JSON.parse(rawLine);
-              if (p && typeof p === 'object' && p.line !== undefined) {
-                out = p.line;
-              }
-            } catch (_) {
-              // not JSON, keep rawLine
+          // Streaming chunk
+          if (obj.line !== undefined) {
+            const chunk = String(obj.line);
+            const t = obj.type || '';
+            if (t === 'stderr' || t === 'run-stderr') {
+              term.write('\x1b[31m' + chunk + '\x1b[0m');
+            } else {
+              term.write(chunk);
             }
+            return;
           }
 
-          // Write the output exactly as received from the worker. The worker
-          // now streams raw chunks (not only newline-terminated lines), so
-          // avoid forcing newlines here to ensure prompts appear immediately.
-          const toWrite = typeof out === 'string' ? out : String(out);
-          term.write(toWrite);
+          // Final status
+          if (obj.status !== undefined) {
+            const stage = obj.stage || 'unknown';
+            const success = !!obj.success;
+            const start = obj.start_time;
+            const end = obj.end_time;
+            const elapsed = obj.elapsed;
+            if (success) {
+              term.write('\r\n\x1b[32m[done] ' + stage + ' (success)\x1b[0m');
+            } else {
+              const code = obj.code !== undefined ? String(obj.code) : 'unknown';
+              term.write('\r\n\x1b[31m[done] ' + stage + ' (failure, code=' + code + ')\x1b[0m');
+            }
+            if (start) term.write(' \x1b[36m(start: ' + String(start) + ')\x1b[0m');
+            if (end) term.write(' \x1b[36m(end: ' + String(end) + ')\x1b[0m');
+            if (elapsed) term.write(' \x1b[33m(elapsed: ' + String(elapsed) + ')\x1b[0m');
+            term.write('\r\n');
+            return;
+          }
+
+          // run-start
+          if (obj.type === 'run-start' || obj.start_time) {
+            const st = obj.start_time || '';
+            term.write('\r\n\x1b[36m[run] started at ' + String(st) + '\x1b[0m\r\n');
+            return;
+          }
+
+          // fallback
+          term.write(JSON.stringify(obj) + '\r\n');
         } catch (e) {
           console.error('Error writing build log to terminal', e);
         }
       };
-
-      // Prefer session-scoped streaming events. Listen only to the unified stream
-      // event to avoid duplicate writes (older code also emitted `synthi:build-log`).
-      window.addEventListener('synthi:build-stream', buildLogListener);
-      // keep listener reference for cleanup
+      window.addEventListener('synthi:build-log', buildLogListener);
       termRef.current.buildLogListener = buildLogListener;
     };
 
@@ -312,16 +254,8 @@ export default function TerminalPane() {
       }
       try {
         const listener = termRef.current?.buildLogListener;
-        if (listener) {
-          window.removeEventListener('synthi:build-stream', listener);
-        }
+        if (listener) window.removeEventListener('synthi:build-log', listener);
       } catch (e) {}
-      try {
-        if (containerRef.current) {
-          if (typeof clickHandler === 'function') containerRef.current.removeEventListener('click', clickHandler);
-          if (typeof keydownHandler === 'function') containerRef.current.removeEventListener('keydown', keydownHandler);
-        }
-      } catch (_) {}
     };
   }, []);
 

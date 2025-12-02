@@ -8,6 +8,7 @@ use futures::{FutureExt, StreamExt, SinkExt};
 use serde::{Deserialize, Serialize};
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader, AsyncWriteExt};
+use chrono::{Utc, SecondsFormat};
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -433,8 +434,18 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
         run_cmd.stdout(Stdio::piped());
         run_cmd.stderr(Stdio::piped());
 
+        // Record start time (seconds precision), spawn the run child, and notify listeners
+        let start_dt = Utc::now();
+        let start_time = start_dt.to_rfc3339_opts(SecondsFormat::Secs, true);
         let mut run_child = run_cmd.spawn()?;
         let mut run_child_stdin = run_child.stdin.take();
+        // Notify that the run started (so UI can display start time)
+        let start_payload = serde_json::json!({
+            "sessionId": session_id.clone(),
+            "type": "run-start",
+            "start_time": start_time.clone()
+        });
+        let _ = log_dc.send_text(serde_json::to_string(&start_payload).unwrap_or_else(|_| String::from(""))).await;
         let run_stdout = run_child.stdout.take().map(BufReader::new);
         let run_stderr = run_child.stderr.take().map(BufReader::new);
 
@@ -508,12 +519,26 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
         }
 
         let run_status = run_child.wait().await?;
+        let end_dt = Utc::now();
+        let end_time = end_dt.to_rfc3339_opts(SecondsFormat::Secs, true);
+        let elapsed = end_dt.signed_duration_since(start_dt);
+        let elapsed_ms = elapsed.num_milliseconds();
+        let elapsed_str = if elapsed_ms >= 1000 {
+            format!("{:.3}s", elapsed_ms as f64 / 1000.0)
+        } else {
+            format!("{}ms", elapsed_ms)
+        };
+
         let payload = serde_json::json!({
             "sessionId": session_id.clone(),
             "status": "done",
             "success": run_status.success(),
             "stage": "run",
-            "code": run_status.code()
+            "code": run_status.code(),
+            "start_time": start_time,
+            "end_time": end_time,
+            "elapsed_ms": elapsed_ms,
+            "elapsed": elapsed_str
         });
         let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""))).await;
         // Cleanup terminal sender for this session
