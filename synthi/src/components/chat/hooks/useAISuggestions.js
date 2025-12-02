@@ -5,7 +5,7 @@ import { getFileLanguage } from '@/utils/fileUtils';
 import { buildFilesPayload } from '@/utils/multiFileContext';
 import { api } from '@/services/api';
 import { computeDiffChunks, parseFileDiffBlocks, stripDiffMarkers } from '../utils/diffUtils';
-import { selectFileThunk, setExternalFileContent } from '@/redux/workspaceSlice';
+import { selectFileThunk, setExternalFileContent, fetchFilesThunk } from '@/redux/workspaceSlice';
 
 // Pulls the first code block or multiline text segment out of a markdown-ish AI response.
 const extractCodeFromMarkdown = (text) => {
@@ -54,6 +54,7 @@ export const useAISuggestions = ({
     const lastSuggestionSnapshotRef = useRef(null);
     const onSuggestRef = useRef(onSuggest);
     const currentCodeRef = useRef(currentCode);
+    const fallbackPathRef = useRef(activeFile?.path || activeFile?.name || null);
 
     // Keep the latest onSuggest callback reference in sync.
     useEffect(() => {
@@ -109,12 +110,17 @@ export const useAISuggestions = ({
         if (flattenWorkspaceFiles.includes(normalized)) {
             return normalized;
         }
-        const matches = flattenWorkspaceFiles.filter((p) => p.endsWith(normalized));
-        if (matches.length === 1) return matches[0];
-        if (matches.length > 1) {
-            return matches.reduce((shortest, current) =>
-                current.length < shortest.length ? current : shortest,
-            matches[0]);
+        // Only attempt suffix matching when the provided path includes a folder,
+        // to avoid hijacking similarly named files in other directories.
+        const hasFolderHint = normalized.includes('/');
+        if (hasFolderHint) {
+            const matches = flattenWorkspaceFiles.filter((p) => p.endsWith(normalized));
+            if (matches.length === 1) return matches[0];
+            if (matches.length > 1) {
+                return matches.reduce((shortest, current) =>
+                    current.length < shortest.length ? current : shortest,
+                matches[0]);
+            }
         }
         return null;
     }, [flattenWorkspaceFiles]);
@@ -153,7 +159,11 @@ export const useAISuggestions = ({
             try {
                 return await api.fetchFileContent(workspaceSlug, resolvedPath);
             } catch (err) {
-                console.error('Failed to load file content for AI suggestion', err);
+                const isNotFound = typeof err?.description === 'string' && err.description.includes('Status: 404');
+                if (!isNotFound) {
+                    console.error('Failed to load file content for AI suggestion', err);
+                }
+                return null;
             }
         }
         return null;
@@ -161,13 +171,17 @@ export const useAISuggestions = ({
 
     // Convert AI diff/plaintext responses into structured multi-file suggestions.
     const buildMultiFileSuggestions = useCallback(async (rawText) => {
-        const fallbackPath = activeFile?.path || activeFile?.name || null;
+        const fallbackPath = fallbackPathRef.current;
         const blocks = parseFileDiffBlocks(rawText, fallbackPath);
         if (!blocks.length) return [];
         const hydrated = [];
         const isNoChangeText = (contentText = '') => {
             const firstLine = (contentText || '').split('\n')[0].trim().toUpperCase();
             return firstLine.startsWith('NO_CHANGES') || firstLine.startsWith('NO CHANGES') || firstLine.startsWith('NO CHANGE');
+        };
+        const isDeleteInstruction = (contentText = '') => {
+            const norm = (contentText || '').trim().toUpperCase();
+            return norm === 'DELETE' || norm === 'DELETE FILE' || norm === 'DELETE_FILE' || norm === 'REMOVE FILE';
         };
         for (const block of blocks) {
             const resolvedPath = resolveWorkspacePath(block.path) || block.path;
@@ -176,6 +190,23 @@ export const useAISuggestions = ({
             const currentContent = baseIsMissing ? '' : baseContent;
 
             if (block.contentText && !block.diffText) {
+                if (isDeleteInstruction(block.contentText)) {
+                    if (baseIsMissing) {
+                        continue;
+                    }
+                    hydrated.push({
+                        path: block.path,
+                        resolvedPath,
+                        diffText: null,
+                        originalContent: currentContent,
+                        updatedContent: '',
+                        isNewFile: false,
+                        deleteFile: true,
+                        chunks: computeDiffChunks(currentContent, ''),
+                        status: 'pending',
+                    });
+                    continue;
+                }
                 if (isNoChangeText(block.contentText)) {
                     continue;
                 }
@@ -231,6 +262,7 @@ export const useAISuggestions = ({
                 });
                 continue;
             }
+            const isDelete = !baseIsMissing && typeof patched === 'string' && patched.length === 0;
             hydrated.push({
                 path: block.path,
                 resolvedPath,
@@ -238,6 +270,7 @@ export const useAISuggestions = ({
                 originalContent: currentContent,
                 updatedContent: patched,
                 isNewFile: baseIsMissing,
+                deleteFile: isDelete,
                 chunks: computeDiffChunks(currentContent, patched),
                 status: 'pending',
             });
@@ -303,29 +336,105 @@ export const useAISuggestions = ({
 
         try {
             const targetPath = suggestion.resolvedPath || resolveWorkspacePath(path) || path;
-            await openFileByPath(targetPath);
-            applyContentToPath(targetPath, suggestion.updatedContent, { skipSave: suggestion.isNewFile });
-            if (workspaceSlug && !suggestion.isNewFile) {
-                const fileName = targetPath.split('/').pop() || 'file.txt';
-                await api.saveFileContent(workspaceSlug, targetPath, suggestion.updatedContent, fileName);
+            if (suggestion.isNewFile) {
+                mutateSession(sessionId, (s) => ({
+                    ...s,
+                    fileSuggestions: s.fileSuggestions.map((fs) =>
+                        fs.path === path ? { ...fs, status: 'saving' } : fs
+                    ),
+                }));
+                try {
+                    const allowed = typeof window !== 'undefined'
+                        ? window.confirm(`Create new file "${targetPath}" from AI suggestion?`)
+                        : true;
+                    if (!allowed) {
+                        mutateSession(sessionId, (s) => ({
+                            ...s,
+                            fileSuggestions: s.fileSuggestions.map((fs) =>
+                                fs.path === path ? { ...fs, status: 'pending' } : fs
+                            ),
+                        }));
+                        return;
+                    }
+                } catch (e) {
+                    // fallback to proceed
+                }
+            }
+            if (suggestion.deleteFile) {
+                const allowedDelete = typeof window !== 'undefined'
+                    ? window.confirm(`Delete file "${targetPath}" from AI suggestion?`)
+                    : true;
+                if (!allowedDelete) {
+                    mutateSession(sessionId, (s) => ({
+                        ...s,
+                        fileSuggestions: s.fileSuggestions.map((fs) =>
+                            fs.path === path ? { ...fs, status: 'pending' } : fs
+                        ),
+                    }));
+                    return;
+                }
+            }
+            if (workspaceSlug && suggestion.isNewFile) {
+                try {
+                    try { if (typeof onBusy === 'function') onBusy(true); } catch (e) {}
+                    await api.createItem(workspaceSlug, targetPath, false);
+                    await dispatch(fetchFilesThunk(workspaceSlug));
+                } catch (createErr) {
+                    mutateSession(sessionId, (s) => ({
+                        ...s,
+                        fileSuggestions: s.fileSuggestions.map((fs) =>
+                            fs.path === path ? { ...fs, status: 'error', error: createErr?.message || 'Failed to create file.' } : fs
+                        ),
+                    }));
+                    return;
+                } finally {
+                    try { if (typeof onBusy === 'function') onBusy(false); } catch (e) {}
+                }
+            }
+            if (workspaceSlug && suggestion.deleteFile) {
+                try {
+                    try { if (typeof onBusy === 'function') onBusy(true); } catch (e) {}
+                    await api.deleteItem(workspaceSlug, targetPath);
+                    await dispatch(fetchFilesThunk(workspaceSlug));
+                } catch (delErr) {
+                    mutateSession(sessionId, (s) => ({
+                        ...s,
+                        fileSuggestions: s.fileSuggestions.map((fs) =>
+                            fs.path === path ? { ...fs, status: 'error', error: delErr?.message || 'Failed to delete file.' } : fs
+                        ),
+                    }));
+                    return;
+                } finally {
+                    try { if (typeof onBusy === 'function') onBusy(false); } catch (e) {}
+                }
+            } else {
+                await openFileByPath(targetPath);
+                // Always persist new files after user approval.
+                applyContentToPath(targetPath, suggestion.updatedContent, { skipSave: false });
+                if (workspaceSlug) {
+                    const fileName = targetPath.split('/').pop() || 'file.txt';
+                    await api.saveFileContent(workspaceSlug, targetPath, suggestion.updatedContent, fileName);
+                }
             }
             mutateSession(sessionId, (s) => ({
                 ...s,
-                fileSuggestions: s.fileSuggestions.map((fs) =>
-                    fs.path === path ? { ...fs, status: 'applied', error: null } : fs
-                ),
+                fileSuggestions: s.fileSuggestions.map((fs) => {
+                    if (fs.path !== path) return fs;
+                    const finalStatus = suggestion.deleteFile ? 'deleted' : 'applied';
+                    return { ...fs, status: finalStatus, error: null };
+                }),
             }));
             try {
                 if (typeof onSuggestRef.current === 'function') onSuggestRef.current({ clear: true });
             } catch (e) {}
         } catch (error) {
-            mutateSession(sessionId, (s) => ({
-                ...s,
-                fileSuggestions: s.fileSuggestions.map((fs) =>
-                    fs.path === path ? { ...fs, status: 'error', error: error.message || 'Failed to save changes.' } : fs
-                ),
-            }));
-        }
+        mutateSession(sessionId, (s) => ({
+            ...s,
+            fileSuggestions: s.fileSuggestions.map((fs) =>
+                fs.path === path ? { ...fs, status: 'error', error: error.message || 'Failed to save changes.' } : fs
+            ),
+        }));
+    }
     }, [applyContentToPath, chatSessions, mutateSession, openFileByPath, resolveWorkspacePath, workspaceSlug]);
 
     // Mark a file suggestion as rejected and notify listeners.
@@ -401,7 +510,7 @@ export const useAISuggestions = ({
         if (!path || typeof onSuggest !== 'function') return;
         const session = chatSessions.find((s) => s.id === sessionId);
         const suggestion = session?.fileSuggestions?.find((fs) => fs.path === path);
-        if (!suggestion || suggestion.status === 'error') return;
+        if (!suggestion || suggestion.status === 'error' || suggestion.deleteFile) return;
         const targetPath = suggestion.resolvedPath || resolveWorkspacePath(path) || path;
         await openFileByPath(targetPath);
         onSuggest({ completion: suggestion.updatedContent || '', filePath: targetPath });
@@ -504,7 +613,7 @@ export const useAISuggestions = ({
             const userPrompt = inputValue;
             let patchRequest = `${userPrompt}
 
-Only modify the file(s) explicitly mentioned or the active file. Do not add new files unless explicitly asked.
+If the user asks for a new file, you may create it in the requested folder/path within the workspace. If the user asks to delete a file, you may delete it when they provide a path; return an empty content block or the literal text DELETE to mark deletion. Otherwise, prefer modifying the active file or files explicitly mentioned. Always respect the workspace tree when creating or deleting files.
 
 Start with a brief (6-7 sentences) summary of the change. After the summary, return one or more sections in this exact format:
 FILE: <path>
@@ -512,7 +621,7 @@ FILE: <path>
 <full updated file content only; no diff markers, no +/-, no @@, no ---/+++>
 \`\`\`
 
-Do not include any other commentary. Preserve all code outside the requested change. Do not add speculative comments or boilerplate. If unclear, return FILE: <path> then NO_CHANGES and a brief clarifying question.
+Do not include any other commentary. Do not restate the user's request or any instructions; only describe what you changed/created/deleted. Preserve all code outside the requested change. Do not add speculative comments or boilerplate. If unclear, return FILE: <path> then NO_CHANGES and a brief clarifying question.
 
 If image attachments are present, read/ocr the images and extract any text or code they contain. Use the extracted content to fulfill the request, rewriting it as needed into the target file(s).`;
             const filesPayloadRaw = buildFilesPayload({
@@ -520,10 +629,12 @@ If image attachments are present, read/ocr the images and extract any text or co
                 fullDocument: code,
                 cacheEntries: fileCacheEntries,
             });
-            const mentionsOtherFile = /\b[a-zA-Z0-9_-]+\.[a-zA-Z0-9]{1,5}\b/.test(userPrompt) || /other file|another file|files/i.test(userPrompt);
+            const mentionsOtherFile = /\b[a-zA-Z0-9_-]+\.[a-zA-Z0-9]{1,5}\b/.test(userPrompt) || /other file|another file|files/i.test(userPrompt) || /delete\s+\w+/i.test(userPrompt) || /remove\s+\w+/i.test(userPrompt) || /create\s+\w+/i.test(userPrompt) || /new file/i.test(userPrompt);
             const filesPayload = mentionsOtherFile
                 ? filesPayloadRaw
                 : filesPayloadRaw.filter((f) => f.path === (activeFile?.path || activeFile?.name));
+            // Disable fallback to active file when prompt targets other files (creates/deletes) to avoid hijacking the active file.
+            fallbackPathRef.current = mentionsOtherFile ? null : (activeFile?.path || activeFile?.name || null);
             if (filesPayload.length > 1 || mentionsOtherFile) {
                 patchRequest = `${patchRequest}\n\nAdditional workspace files are attached. Reference them by their path when relevant.`;
             }

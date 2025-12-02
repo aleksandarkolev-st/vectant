@@ -339,14 +339,16 @@ const AIChatWindow = ({
                                                                 </div>
                                                                 {suggestion.status === 'pending' && msg.role === 'suggestion-live' && (
                                                                     <div className="flex items-center gap-2 flex-wrap justify-end">
-                                                                        <Button
-                                                                            variant="secondary"
-                                                                            size="sm"
-                                                                            disabled={Boolean(suggestion.error)}
-                                                                            onClick={() => handlePreviewFileSuggestion(activeSession?.id || activeSessionId, suggestion.path)}
-                                                                        >
-                                                                            Preview
-                                                                        </Button>
+                                                                        {!suggestion.isNewFile && !suggestion.deleteFile && (
+                                                                            <Button
+                                                                                variant="secondary"
+                                                                                size="sm"
+                                                                                disabled={Boolean(suggestion.error)}
+                                                                                onClick={() => handlePreviewFileSuggestion(activeSession?.id || activeSessionId, suggestion.path)}
+                                                                            >
+                                                                                Preview
+                                                                            </Button>
+                                                                        )}
                                                                         <Button
                                                                             variant="ghost"
                                                                             size="sm"
