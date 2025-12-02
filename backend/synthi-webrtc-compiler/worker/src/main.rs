@@ -1,12 +1,13 @@
 use std::sync::Arc;
 use std::process::Stdio;
+use std::collections::HashMap;
 use std::env;
 
 use anyhow::{Context, Result};
 use futures::{FutureExt, StreamExt, SinkExt};
 use serde::{Deserialize, Serialize};
 use tempfile::tempdir;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -85,6 +86,9 @@ async fn main() -> Result<()> {
     let pc = create_peer(signal_tx.clone()).await?;
     let log_channel_store: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
     let compile_store = log_channel_store.clone();
+    // Store of sessionId -> stdin sender so datachannel 'terminal' messages can be
+    // routed to the running process's stdin.
+    let terminal_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> = Arc::new(Mutex::new(HashMap::new()));
 
     let build_log_dc = pc
         .create_data_channel("build-log", Some(RTCDataChannelInit::default()))
@@ -101,21 +105,32 @@ async fn main() -> Result<()> {
         .boxed()
     }));
 
+    let term_store = terminal_input_store.clone();
     pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
         let store = compile_store.clone();
+        let term_store = term_store.clone();
         async move {
             let label = dc.label();
             if label == "compile" {
+                // Clone terminal store out of the FnMut closure into a local
+                // that can be moved into the async block below without
+                // consuming the captured `term_store`.
                 dc.on_message(Box::new(move |msg| {
                     let store = store.clone();
+                    let term_store_for_msg = term_store.clone();
                     async move {
                         if msg.is_string {
+                            // Try to parse as a CompileRequest
                             if let Ok(req) = serde_json::from_slice::<CompileRequest>(&msg.data) {
                                 let log_dc = { store.lock().await.clone() };
                                 if let Some(log) = log_dc {
-                                    tokio::spawn(handle_compile(req, log));
+                                    let ts = term_store_for_msg.clone();
+                                    tokio::spawn(handle_compile(req, log, ts));
                                 }
+                                return;
                             }
+                            // Not a compile request - ignore here. Terminal messages arrive on
+                            // the separate 'terminal' datachannel.
                         }
                     }
                     .boxed()
@@ -123,6 +138,37 @@ async fn main() -> Result<()> {
             } else if label == "build-log" {
                 let mut guard = store.lock().await;
                 *guard = Some(dc.clone());
+            } else if label == "terminal" {
+                    // Terminal datachannel - used to receive stdin messages for running
+                    // processes. Messages are expected as JSON: { type: 'stdin', sessionId, data }
+                    dc.on_message(Box::new(move |msg| {
+                        let term_store_for_msg = term_store.clone();
+                        async move {
+                            if msg.is_string {
+                                // diagnostic log
+                                if let Ok(s) = String::from_utf8(msg.data.to_vec()) {
+                                    println!("[worker] terminal msg: {}", s);
+                                }
+                                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&msg.data) {
+                                    if let Some(t) = v.get("type").and_then(|x| x.as_str()) {
+                                        if t == "stdin" {
+                                            if let Some(sid) = v.get("sessionId").and_then(|x| x.as_str()) {
+                                                if let Some(d) = v.get("data").and_then(|x| x.as_str()) {
+                                                    let mut guard = term_store_for_msg.lock().await;
+                                                    if let Some(sender) = guard.get(sid) {
+                                                        let _ = sender.send(d.to_string());
+                                                    } else {
+                                                        println!("[worker] no stdin sender for session {}", sid);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        .boxed()
+                    }));
             }
         }
         .boxed()
@@ -246,7 +292,7 @@ async fn create_peer(signal_tx: mpsc::UnboundedSender<SignalMessage>) -> Result<
     Ok(pc)
 }
 
-async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>) -> Result<()> {
+async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, terminal_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>) -> Result<()> {
     let dir = tempdir().context("failed to create temp dir")?;
     let file_path = dir.path().join(&req.filename);
     tokio::fs::write(&file_path, req.source).await?;
@@ -273,12 +319,20 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>) -> Res
         _ => return Ok(()),
     };
     cmd.current_dir(dir.path());
+    cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
     let mut child = cmd.spawn()?;
+    let mut child_stdin = child.stdin.take();
     let stdout = child.stdout.take().map(BufReader::new);
     let stderr = child.stderr.take().map(BufReader::new);
+
+    // NOTE: We don't register a terminal stdin sender for the compiler process
+    // itself (g++, rustc, tsc) because those tools typically do not read from
+    // stdin. Instead, we will register a sender when we spawn the runtime
+    // process (the produced binary) so that terminal input is routed to the
+    // running program's stdin.
 
     if let Some(out) = stdout {
         let dc = log_dc.clone();
@@ -334,12 +388,37 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>) -> Res
         let bin_path = dir.path().join("main.out");
         let mut run_cmd = Command::new(bin_path);
         run_cmd.current_dir(dir.path());
+        // Ensure the runtime process has a piped stdin so we can forward
+        // terminal input into it.
+        run_cmd.stdin(Stdio::piped());
         run_cmd.stdout(Stdio::piped());
         run_cmd.stderr(Stdio::piped());
 
         let mut run_child = run_cmd.spawn()?;
+        let mut run_child_stdin = run_child.stdin.take();
         let run_stdout = run_child.stdout.take().map(BufReader::new);
         let run_stderr = run_child.stderr.take().map(BufReader::new);
+
+        // If we have a session id, register a sender so 'terminal' messages
+        // are routed into the running child's stdin.
+        if let Some(sid_opt) = session_id.clone() {
+            let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+            {
+                let mut guard = terminal_store.lock().await;
+                guard.insert(sid_opt.clone(), tx);
+            }
+
+            // Spawn a task that writes incoming stdin messages into the run child's stdin
+            tokio::spawn(async move {
+                while let Some(chunk) = rx.recv().await {
+                    if let Some(mut s) = run_child_stdin.take() {
+                        let _ = s.write_all(chunk.as_bytes()).await;
+                        // put stdin back for subsequent writes
+                        run_child_stdin = Some(s);
+                    }
+                }
+            });
+        }
 
         if let Some(out) = run_stdout {
             let dc = log_dc.clone();
@@ -384,6 +463,11 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>) -> Res
             "code": run_status.code()
         });
         let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""))).await;
+        // Cleanup terminal sender for this session
+        if let Some(sid_opt) = session_id.clone() {
+            let mut guard = terminal_store.lock().await;
+            guard.remove(&sid_opt);
+        }
         return Ok(());
     }
 
@@ -394,6 +478,12 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>) -> Res
         "stage": "compile"
     });
     let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""))).await;
+
+    // Cleanup terminal sender for this session (if any)
+    if let Some(sid_opt) = session_id.clone() {
+        let mut guard = terminal_store.lock().await;
+        guard.remove(&sid_opt);
+    }
 
     Ok(())
 }

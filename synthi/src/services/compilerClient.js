@@ -20,8 +20,11 @@ let ws = null;
 let pc = null;
 let compileChannel = null;
 let buildLogChannel = null;
+let terminalChannel = null;
 let readyPromise = null;
 const logHandlers = new Set();
+const textDecoder = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
+let terminalInputBuffer = [];
 
 const mapLanguage = (filename = '') => {
     const ext = filename.split('.').pop().toLowerCase();
@@ -32,8 +35,22 @@ const mapLanguage = (filename = '') => {
 };
 
 const notifyLog = (msg) => {
+    // Normalize incoming payload to a string so handlers can parse it reliably.
+    let text = msg;
+    try {
+        if (msg instanceof ArrayBuffer && textDecoder) {
+            text = textDecoder.decode(new Uint8Array(msg));
+        } else if (msg && typeof msg === 'object' && msg.data instanceof ArrayBuffer && textDecoder) {
+            text = textDecoder.decode(new Uint8Array(msg.data));
+        } else if (typeof msg !== 'string') {
+            text = String(msg);
+        }
+    } catch (e) {
+        text = String(msg);
+    }
+
     logHandlers.forEach((fn) => {
-        try { fn(msg); } catch (e) { /* ignore */ }
+        try { fn(text); } catch (e) { /* ignore */ }
     });
     try {
         // Also emit a global browser event so UI components (like TerminalPane)
@@ -108,6 +125,8 @@ const ensureConnection = () => {
         ws.onopen = async () => {
             ws.send(JSON.stringify({ type: 'register', role: 'browser' }));
             compileChannel = pc.createDataChannel('compile', { ordered: true });
+            // Terminal channel for stdin forwarding
+            terminalChannel = pc.createDataChannel('terminal', { ordered: true });
             compileChannel.onclose = () => {};
 
             const offer = await pc.createOffer();
@@ -115,6 +134,47 @@ const ensureConnection = () => {
             ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp, sdp_type: offer.type }));
 
             compileChannel.onopen = () => resolve(true);
+            // Listen for terminal input events only after the terminal channel is open.
+            const terminalListener = (ev) => {
+                try {
+                    const d = ev?.detail || {};
+                    const payload = JSON.stringify({ type: 'stdin', sessionId: d.sessionId, data: d.data });
+                    try { console.debug('[compilerClient] terminalListener received', { payload, terminalReady: !!(terminalChannel && terminalChannel.readyState === 'open') }); } catch (_) {}
+                    if (terminalChannel && terminalChannel.readyState === 'open') {
+                        terminalChannel.send(payload);
+                        try { console.debug('[compilerClient] sent payload over terminalChannel'); } catch (_) {}
+                    } else {
+                        // Buffer until channel opens
+                        terminalInputBuffer.push(payload);
+                        try { console.debug('[compilerClient] buffered terminal input (channel not open)'); } catch (_) {}
+                    }
+                } catch (e) { console.error('[compilerClient] terminalListener error', e); }
+            };
+            if (terminalChannel) {
+                terminalChannel.onopen = () => {
+                    if (typeof window !== 'undefined' && window.addEventListener) {
+                        window.addEventListener('synthi:terminal-input', terminalListener);
+                    }
+                    // flush buffer
+                    while (terminalInputBuffer.length > 0) {
+                        const p = terminalInputBuffer.shift();
+                        try { terminalChannel.send(p); } catch (_) { /* ignore */ }
+                    }
+                };
+                // If the channel is already open, attach immediately
+                if (terminalChannel.readyState === 'open') {
+                    if (typeof window !== 'undefined' && window.addEventListener) {
+                        window.addEventListener('synthi:terminal-input', terminalListener);
+                    }
+                }
+                terminalChannel.onclose = () => {
+                    try { window.removeEventListener('synthi:terminal-input', terminalListener); } catch (_) {}
+                };
+            }
+            // Remove listener when the WebSocket closes as a backup
+            ws.addEventListener('close', () => {
+                try { window.removeEventListener('synthi:terminal-input', terminalListener); } catch (_) {}
+            });
         };
     });
     return readyPromise;
@@ -131,41 +191,50 @@ export const compileWithWorker = async ({ filename, source, language, onLog } = 
         // Unique session id for this compile - allows streaming and session-scoped events
         const sessionId = `sess-${Date.now()}-${Math.floor(Math.random()*100000)}`;
 
-        const handleLog = (line) => {
+        const handleLog = (msg) => {
+            // `msg` is normalized to a string by notifyLog. Ensure we have a string.
+            const line = typeof msg === 'string' ? msg : String(msg);
+
+            // Try to parse JSON to determine session and status.
+            let parsed = null;
+            try { parsed = JSON.parse(line); } catch (_) { parsed = null; }
+
+            // If the worker included a sessionId and it doesn't match this run, ignore.
+            if (parsed && parsed.sessionId && parsed.sessionId !== sessionId) return;
+
             // Forward raw log line to caller callback if provided
             try { if (onLog) onLog(line); } catch (e) { /* ignore */ }
+
+            // Determine which sessionId to expose to UI consumers: prefer worker-provided sessionId
+            const sidToExpose = parsed && parsed.sessionId ? parsed.sessionId : sessionId;
 
             // Emit a stream event for UI consumers that want session-scoped streaming
             try {
                 if (typeof window !== 'undefined' && window.dispatchEvent) {
-                    const ev = new CustomEvent('synthi:build-stream', { detail: { sessionId, line } });
+                    const ev = new CustomEvent('synthi:build-stream', { detail: { sessionId: sidToExpose, line } });
                     window.dispatchEvent(ev);
                 }
             } catch (e) { /* ignore */ }
 
-            // Check for final JSON status message to resolve/reject
-            try {
-                const parsed = JSON.parse(line);
-                if (parsed && parsed.status === 'done') {
-                    // cleanup
-                    logHandlers.delete(handleLog);
-                    if (onLog) logHandlers.delete(onLog);
-                    if (parsed.success) {
-                        resolve(parsed);
-                    } else {
-                        reject(new Error('Compilation failed'));
-                    }
-                    return;
+            // Check for final JSON status message to resolve/reject for this session
+            if (parsed && parsed.status === 'done') {
+                // cleanup
+                logHandlers.delete(handleLog);
+                if (onLog) logHandlers.delete(onLog);
+                if (parsed.success) {
+                    resolve(parsed);
+                } else {
+                    reject(new Error('Compilation failed'));
                 }
-            } catch (_) {
-                // not JSON, just streaming text
+                return;
             }
         };
         logHandlers.add(handleLog);
 
         try {
             // Send compile request and include session id so backends can tag responses if supported
-            compileChannel.send(JSON.stringify({ language: lang, filename: filename || `main.${lang}`, source: source || '', sessionId }));
+            // Use snake_case `session_id` to match worker's expected field name.
+            compileChannel.send(JSON.stringify({ language: lang, filename: filename || `main.${lang}`, source: source || '', session_id: sessionId }));
         } catch (e) {
             logHandlers.delete(handleLog);
             if (onLog) logHandlers.delete(onLog);
