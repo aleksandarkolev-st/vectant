@@ -190,9 +190,9 @@ export default function TerminalPane() {
         }
       };
 
-      // Prefer session-scoped streaming events; fall back to generic build-log events
+      // Prefer session-scoped streaming events. Listen only to the unified stream
+      // event to avoid duplicate writes (older code also emitted `synthi:build-log`).
       window.addEventListener('synthi:build-stream', buildLogListener);
-      window.addEventListener('synthi:build-log', buildLogListener);
       // keep listener reference for cleanup
       termRef.current.buildLogListener = buildLogListener;
     };
@@ -213,7 +213,6 @@ export default function TerminalPane() {
         const listener = termRef.current?.buildLogListener;
         if (listener) {
           window.removeEventListener('synthi:build-stream', listener);
-          window.removeEventListener('synthi:build-log', listener);
         }
       } catch (e) {}
     };
