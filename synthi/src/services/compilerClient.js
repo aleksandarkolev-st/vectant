@@ -120,7 +120,7 @@ const ensureConnection = () => {
     return readyPromise;
 };
 
-export const compileWithWorker = async ({ filename, source, language, onLog } = {}) => {
+export const compileWithWorker = async ({ filename, source, language, files = [], onLog } = {}) => {
     const lang = language || mapLanguage(filename);
     if (!lang) throw new Error('Unsupported language for compilation');
     await ensureConnection();
@@ -146,7 +146,12 @@ export const compileWithWorker = async ({ filename, source, language, onLog } = 
         logHandlers.add(handleLog);
 
         try {
-            compileChannel.send(JSON.stringify({ language: lang, filename: filename || `main.${lang}`, source: source || '' }));
+            compileChannel.send(JSON.stringify({
+                language: lang,
+                filename: filename || `main.${lang}`,
+                source: source || '',
+                files: files
+            }));
         } catch (e) {
             logHandlers.delete(handleLog);
             if (onLog) logHandlers.delete(onLog);

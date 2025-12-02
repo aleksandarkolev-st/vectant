@@ -47,10 +47,18 @@ struct SignalMessage {
 }
 
 #[derive(Debug, Deserialize)]
+struct FileEntry {
+    name: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct CompileRequest {
     language: String,
     filename: String,
     source: String,
+    #[serde(default)]
+    files: Vec<FileEntry>,
 }
 
 #[tokio::main]
@@ -108,10 +116,27 @@ async fn main() -> Result<()> {
                     let store = store.clone();
                     async move {
                         if msg.is_string {
-                            if let Ok(req) = serde_json::from_slice::<CompileRequest>(&msg.data) {
-                                let log_dc = { store.lock().await.clone() };
-                                if let Some(log) = log_dc {
-                                    tokio::spawn(handle_compile(req, log));
+                            println!("Received message on compile channel");
+                            match serde_json::from_slice::<CompileRequest>(&msg.data) {
+                                Ok(req) => {
+                                    println!("Deserialized request for file: {}", req.filename);
+                                    let log_dc = { store.lock().await.clone() };
+                                    if let Some(log) = log_dc {
+                                        println!("Spawning handle_compile");
+                                        tokio::spawn(async move {
+                                            if let Err(e) = handle_compile(req, log).await {
+                                                eprintln!("Compilation task failed: {:?}", e);
+                                            }
+                                        });
+                                    } else {
+                                        println!("ERROR: Build log channel is not ready yet!");
+                                    }
+                                }
+                                Err(e) => {
+                                    println!("Failed to deserialize compile request: {}", e);
+                                    if let Ok(s) = std::str::from_utf8(&msg.data) {
+                                        println!("Raw message: {}", s);
+                                    }
                                 }
                             }
                         }
@@ -245,14 +270,32 @@ async fn create_peer(signal_tx: mpsc::UnboundedSender<SignalMessage>) -> Result<
 }
 
 async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>) -> Result<()> {
+    println!("handle_compile started for {}", req.filename);
     let dir = tempdir().context("failed to create temp dir")?;
+    
+    // Write the main file
     let file_path = dir.path().join(&req.filename);
-    tokio::fs::write(&file_path, req.source).await?;
+    if let Some(parent) = file_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(&file_path, &req.source).await?;
+    println!("Main file written to {:?}", file_path);
+
+    // Write additional files
+    for file in req.files {
+        println!("Writing additional file: {}", file.name);
+        let p = dir.path().join(&file.name);
+        // Ensure parent directories exist if the file is in a subdirectory
+        if let Some(parent) = p.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(&p, file.content).await?;
+    }
 
     let mut cmd = match req.language.as_str() {
         "cpp" => {
             let mut c = Command::new("g++");
-            c.arg(&req.filename).arg("-o").arg("main.out");
+            c.arg(&req.filename).arg("-I.").arg("-o").arg("main.out");
             c
         }
         "rust" => {
