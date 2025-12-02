@@ -82,7 +82,7 @@ const EditorPanel = ({
         const handler = (event) => {
             const reason = event?.reason;
             const msg = typeof reason === 'string' ? reason : reason?.message;
-            const isCancel = msg && msg.toLowerCase().includes('canceled');
+            const isCancel = msg && (msg.toLowerCase().includes('canceled') || msg === 'Canceled');
             const hasCancelCode = reason?.name === 'Canceled' || reason?.code === 'Canceled' || reason?.code === 'ERR_CANCELED';
             if (isCancel || hasCancelCode) {
                 event.preventDefault?.();
@@ -90,7 +90,26 @@ const EditorPanel = ({
             }
         };
         window.addEventListener('unhandledrejection', handler);
-        return () => window.removeEventListener('unhandledrejection', handler);
+
+        // Also patch console.error to suppress "Canceled" logs from libraries
+        const originalError = console.error;
+        console.error = (...args) => {
+            if (args.length > 0) {
+                const first = args[0];
+                if (first === 'Canceled' || (typeof first === 'string' && first.includes('Canceled'))) {
+                    return;
+                }
+                if (first?.message === 'Canceled' || first?.name === 'Canceled') {
+                    return;
+                }
+            }
+            originalError.apply(console, args);
+        };
+
+        return () => {
+            window.removeEventListener('unhandledrejection', handler);
+            console.error = originalError;
+        };
     }, []);
     const notifyCompletionCleared = useCallback(() => {
         if (typeof onClearCompletion === 'function') {
@@ -153,7 +172,10 @@ const EditorPanel = ({
         aiCompletionCacheRef,
         aiCompletionCursorRef,
         inlineAcceptCommandIdRef,
-        applyAiCompletionText
+        applyAiCompletionText,
+        rawFiles,
+        fileCacheEntries,
+        activeFile
     });
 
     // --- Event Handlers ---
@@ -165,6 +187,7 @@ const EditorPanel = ({
         hasActiveDiff: activeDiffCheck,
         aiAutoEnabled,
         rawFiles,
+        fileCacheEntries,
         dispatch,
         activeFile
     });
