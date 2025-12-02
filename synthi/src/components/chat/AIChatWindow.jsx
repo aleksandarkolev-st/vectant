@@ -371,7 +371,7 @@ const AIChatWindow = ({
                                                                     {suggestion.error}
                                                                 </div>
                                                             ) : (
-                                                                <div className="max-h-[55vh] overflow-auto overflow-x-auto text-xs font-mono bg-[#0f0f10] rounded p-2">
+                                                                <div className="max-h-[55vh] min-h-[140px] overflow-auto overflow-x-auto text-xs font-mono bg-[#0f0f10] rounded p-2">
                                                                     {renderDiffChunkList(suggestion.chunks)}
                                                                 </div>
                                                             )}
@@ -397,7 +397,7 @@ const AIChatWindow = ({
                                                         )}
                                                     </div>
 
-                                                    <div className="max-h-[55vh] overflow-auto text-xs font-mono">
+                                                    <div className="max-h-[55vh] min-h-[140px] overflow-auto text-xs font-mono">
                                                         {renderDiffChunkList(snapshot.diffChunks || [])}
                                                     </div>
                                                 </div>
