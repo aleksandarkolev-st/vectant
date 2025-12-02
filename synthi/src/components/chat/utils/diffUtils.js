@@ -2,7 +2,7 @@ import { diffLines } from 'diff';
 
 export const computeDiffChunks = (oldStr = '', newStr = '') => {
     const parts = diffLines(oldStr, newStr);
-    const rows = [];
+    let rows = [];
     let oldLine = 1;
     let newLine = 1;
 
@@ -21,8 +21,29 @@ export const computeDiffChunks = (oldStr = '', newStr = '') => {
                 rows.push({ type: 'eq', lineOld: oldLine, lineNew: newLine, text: line });
                 oldLine++;
                 newLine++;
+        }
+    });
+
+    // Collapse removal/addition pairs that are actually identical text to avoid noisy diffs/stats.
+    const merged = [];
+    for (let i = 0; i < rows.length; i++) {
+        const curr = rows[i];
+        const next = rows[i + 1];
+        if (curr?.type === 'rem' && next?.type === 'add') {
+            if (curr.text.trim() === next.text.trim()) {
+                merged.push({
+                    type: 'eq',
+                    lineOld: curr.lineOld,
+                    lineNew: next.lineNew,
+                    text: curr.text,
+                });
+                i += 1;
+                continue;
             }
-        });
+        }
+        merged.push(curr);
+    }
+    rows = merged;
     });
 
     const chunks = [];

@@ -73,6 +73,9 @@ export const useChatAttachments = () => {
         setAttachments((prev) => prev.filter((att) => att.id !== id));
     }, []);
 
+    // Clear all attachments after a send or when resetting the composer.
+    const clearAttachments = useCallback(() => setAttachments([]), []);
+
     const formatBytes = useCallback((bytes) => {
         if (!bytes && bytes !== 0) return '';
         if (bytes < 1024) return `${bytes} B`;
@@ -90,6 +93,7 @@ export const useChatAttachments = () => {
         handleDragLeave,
         handlePaste,
         removeAttachment,
+        clearAttachments,
         formatBytes,
     };
 };

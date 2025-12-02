@@ -137,6 +137,12 @@ async function forwardAnalyzeRequest(socket, data, requestId, useAi = false) {
     if (useAi && typeof data.mode === 'string' && data.mode.trim()) {
       forwardBody.mode = data.mode;
     }
+    if (useAi && typeof data.model === 'string' && data.model.trim()) {
+      forwardBody.model = data.model.trim();
+    }
+    if (useAi && typeof data.apiKey === 'string' && data.apiKey.trim()) {
+      forwardBody.api_key = data.apiKey.trim();
+    }
     if (useAi && Array.isArray(data?.files) && data.files.length) {
       const sanitized = data.files
         .map((file) => {

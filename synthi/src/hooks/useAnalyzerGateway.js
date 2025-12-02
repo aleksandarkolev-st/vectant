@@ -80,7 +80,7 @@ export function useAnalyzerGateway({
     }
   }, []);
 
-  const askAi = useCallback(async ({ code, lang, prompt, mode, files, focusPath, onProgress } = {}) => {
+  const askAi = useCallback(async ({ code, lang, prompt, mode, files, focusPath, onProgress, model, apiKey } = {}) => {
     if (!clientRef.current) {
       throw new SynthiException('Gateway client is not ready yet', 'The analyzer gateway client has not been initialized. Please try again later.');
     }
@@ -99,6 +99,12 @@ export function useAnalyzerGateway({
       if (Array.isArray(files) && files.length) payload.files = files;
       if (typeof focusPath === 'string' && focusPath.trim()) {
         payload.focus = focusPath.trim();
+      }
+      if (typeof model === 'string' && model.trim()) {
+        payload.model = model.trim();
+      }
+      if (typeof apiKey === 'string' && apiKey.trim()) {
+        payload.apiKey = apiKey.trim();
       }
       // If the caller provided an onProgress callback, forward it to the client
       const options = {};

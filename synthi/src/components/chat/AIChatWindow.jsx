@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Send, X, Plus } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
@@ -50,6 +50,56 @@ const AIChatWindow = ({
         resetSuggestionsForSession,
     } = useChatSessions();
 
+    const [modelMenuOpen, setModelMenuOpen] = useState(false);
+    const [modelChoice, setModelChoice] = useState('gemini');
+    const [customModel, setCustomModel] = useState('');
+    const [customApiKey, setCustomApiKey] = useState('');
+    const modelButtonRef = useRef(null);
+    const [modelMenuPos, setModelMenuPos] = useState({ top: 0, left: 0 });
+
+    useEffect(() => {
+        try {
+            const savedChoice = localStorage.getItem('synthi-ai-model-choice');
+            const savedModel = localStorage.getItem('synthi-ai-custom-model');
+            const savedKey = localStorage.getItem('synthi-ai-custom-api-key');
+            if (savedChoice) setModelChoice(savedChoice);
+            if (savedModel) setCustomModel(savedModel);
+            if (savedKey) setCustomApiKey(savedKey);
+        } catch (e) {}
+    }, []);
+
+    useEffect(() => {
+        try {
+            localStorage.setItem('synthi-ai-model-choice', modelChoice);
+            localStorage.setItem('synthi-ai-custom-model', customModel);
+            if (customApiKey) {
+                localStorage.setItem('synthi-ai-custom-api-key', customApiKey);
+            }
+        } catch (e) {}
+    }, [modelChoice, customModel, customApiKey]);
+
+    const effectiveModel = modelChoice === 'custom' && customModel.trim() ? customModel.trim() : null;
+    const effectiveApiKey = modelChoice === 'custom' && customApiKey.trim() ? customApiKey.trim() : null;
+
+    const updateModelMenuPosition = () => {
+        const el = modelButtonRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        setModelMenuPos({ top: rect.bottom + 6, left: rect.left });
+    };
+
+    useEffect(() => {
+        if (!modelMenuOpen) return;
+        updateModelMenuPosition();
+        const handler = () => updateModelMenuPosition();
+        window.addEventListener('resize', handler);
+        window.addEventListener('scroll', handler, true);
+        return () => {
+            window.removeEventListener('resize', handler);
+            window.removeEventListener('scroll', handler, true);
+        };
+    }, [modelMenuOpen]);
+
     const {
         isLoading,
         clientReady,
@@ -78,6 +128,8 @@ const AIChatWindow = ({
         workspaceSlug,
         rawFiles,
         dispatch,
+        aiModel: effectiveModel,
+        aiApiKey: effectiveApiKey,
     });
 
     const {
@@ -88,11 +140,13 @@ const AIChatWindow = ({
         handleDragLeave,
         handlePaste,
         removeAttachment,
+        clearAttachments,
         formatBytes,
     } = useChatAttachments();
 
     const { inputValue, setInputValue, handleKeyPress, handleSubmit } = useChatInput((value) => {
         handleSendMessage(value, attachments);
+        clearAttachments();
         setInputValue('');
     });
 
@@ -118,7 +172,7 @@ const AIChatWindow = ({
     if (!isVisible) return null;
 
     const containerClass = docked
-        ? 'h-full w-full bg-transparent flex flex-col min-h-0'
+        ? 'h-full w-full min-w-0 max-w-full bg-transparent flex flex-col min-h-0'
         : 'fixed top-10 right-0 bottom-0 w-96 bg-[#1e1e1e] border-l border-[#545454] rounded-l-lg shadow-2xl flex flex-col min-h-0 z-40';
 
     return (
@@ -132,8 +186,68 @@ const AIChatWindow = ({
         >
             {/* Header */}
             <div className="flex flex-col border-b border-[#545454] bg-[#252526]">
-                <div className="flex items-center justify-between px-4 py-3">
-                    <h2 className="text-sm font-semibold text-gray-200">AI Assistant</h2>
+                <div className="flex items-center justify-between px-4 py-3 relative">
+                    <div className="flex items-center gap-2">
+                        <h2 className="text-sm font-semibold text-gray-200">AI Assistant</h2>
+                        <div className="relative">
+                            <Button
+                                ref={modelButtonRef}
+                                variant="ghost"
+                                size="sm"
+                                className="text-xs px-2 py-1 border border-[#3a3a3a] text-gray-200 hover:text-emerald-200"
+                                onClick={() => setModelMenuOpen((v) => !v)}
+                                title="Switch AI model"
+                            >
+                                {modelChoice === 'custom' ? 'Model: Custom' : 'Model: Gemini'}
+                            </Button>
+                            {modelMenuOpen && (
+                                <div
+                                    className="fixed w-72 bg-[#1f1f1f] border border-[#3a3a3a] rounded shadow-xl z-[9999] p-3 space-y-2"
+                                    style={{ top: modelMenuPos.top, left: modelMenuPos.left }}
+                                >
+                                    <div className="text-xs text-gray-300 font-semibold">Model selection</div>
+                                    <div className="flex gap-2 text-xs text-gray-200">
+                                        <button
+                                            className={`px-2 py-1 rounded border ${modelChoice === 'gemini' ? 'border-emerald-500 text-emerald-200' : 'border-[#3a3a3a]'}`}
+                                            onClick={() => setModelChoice('gemini')}
+                                        >
+                                            Gemini (default)
+                                        </button>
+                                        <button
+                                            className={`px-2 py-1 rounded border ${modelChoice === 'custom' ? 'border-emerald-500 text-emerald-200' : 'border-[#3a3a3a]'}`}
+                                            onClick={() => setModelChoice('custom')}
+                                        >
+                                            Custom
+                                        </button>
+                                    </div>
+                                    {modelChoice === 'custom' && (
+                                        <div className="space-y-2">
+                                            <div>
+                                                <label className="block text-[11px] text-gray-400 mb-1">Model ID</label>
+                                                <Input
+                                                    value={customModel}
+                                                    onChange={(e) => setCustomModel(e.target.value)}
+                                                    placeholder="e.g. gpt-4.1, gemini-1.5-pro"
+                                                    className="text-xs"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-[11px] text-gray-400 mb-1">API Key</label>
+                                                <Input
+                                                    type="password"
+                                                    value={customApiKey}
+                                                    onChange={(e) => setCustomApiKey(e.target.value)}
+                                                    placeholder="Enter custom API key"
+                                                    className="text-xs"
+                                                />
+                                            </div>
+                                            <div className="text-[11px] text-gray-500">Key is stored locally in your browser for this device.</div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    </div>
                     <div className="flex items-center gap-2">
                         {(suggestedCode || fileSuggestions.length > 0) && (
                             <div className="text-xs text-gray-300">
@@ -187,8 +301,8 @@ const AIChatWindow = ({
             </div>
 
             {/* Messages Area */}
-            <ScrollArea ref={scrollRef} className="flex-1 px-4 py-2 min-h-0">
-                <div className="space-y-3">
+            <ScrollArea ref={scrollRef} className="flex-1 px-4 py-2 min-h-0 min-w-0">
+                <div className="space-y-3 min-w-0">
                     {timeline.length === 0 ? (
                         <div className="flex items-center justify-center h-32 text-gray-500 text-sm">
                             <p>Start a conversation with the AI assistant</p>
@@ -203,13 +317,13 @@ const AIChatWindow = ({
                                         <div className="w-full">
                                             {hasFiles ? (
                                                 <div className="space-y-3">
-                                                    {snapshot.fileSuggestions.map((suggestion) => {
+                                                    {snapshot.fileSuggestions.map((suggestion, idx) => {
                                                         const stats = diffStats(suggestion.chunks);
                                                         const badgeText = `${fileSuggestionStatusLabel(suggestion.status)}`;
                                                         const statsAddText = `+${stats.adds}`;
                                                         const statsRemText = `-${stats.removals}`;
                                                         return (
-                                                        <div key={suggestion.path} className="px-3 py-3 bg-[#171717] border border-[#3a3a3a] rounded">
+                                                        <div key={`${suggestion.path}-${suggestion.status}-${idx}`} className="px-3 py-3 bg-[#171717] border border-[#3a3a3a] rounded">
                                                             <div className="flex items-center justify-between gap-2 mb-3">
                                                                 <div>
                                                                     <div className="text-sm font-medium text-gray-100 break-all">{suggestion.path}</div>
@@ -299,7 +413,7 @@ const AIChatWindow = ({
                                     className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                                 >
                                     <div
-                                        className={`max-w-[80%] px-3 py-2 rounded-lg text-sm ${
+                                        className={`max-w-[80%] px-3 py-2 rounded-lg text-sm ai-chat-message ${
                                             msg.role === 'user'
                                                 ? 'bg-emerald-600 text-white'
                                                 : 'bg-[#2d2d30] text-gray-200 border border-[#454545]'
@@ -331,7 +445,7 @@ const AIChatWindow = ({
                                         </div>
                                     )}
                                     <div
-                                        className="break-normal whitespace-normal text-xs leading-relaxed"
+                                        className="break-normal whitespace-normal text-xs leading-relaxed ai-chat-content"
                                         dangerouslySetInnerHTML={{ __html: formatMessageContent(msg.content) }}
                                     />
                                         <span className="text-xs opacity-70 mt-1 block">
@@ -395,6 +509,21 @@ const AIChatWindow = ({
                     </Button>
                 </div>
             </div>
+            <style jsx global>{`
+                .ai-chat-message pre {
+                    white-space: pre;
+                    overflow-x: auto;
+                    overflow-y: hidden;
+                    max-width: 100%;
+                }
+                .ai-chat-message code {
+                    white-space: pre;
+                    overflow-x: auto;
+                    display: inline-block;
+                    max-width: 100%;
+                    vertical-align: top;
+                }
+            `}</style>
         </div>
     );
 };

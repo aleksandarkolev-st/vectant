@@ -7,6 +7,7 @@ import { api } from '@/services/api';
 import { computeDiffChunks, parseFileDiffBlocks, stripDiffMarkers } from '../utils/diffUtils';
 import { selectFileThunk, setExternalFileContent } from '@/redux/workspaceSlice';
 
+// Pulls the first code block or multiline text segment out of a markdown-ish AI response.
 const extractCodeFromMarkdown = (text) => {
     if (!text) return null;
     const fenceRe = /```(?:\w+)?\n([\s\S]*?)```/m;
@@ -26,6 +27,7 @@ const extractCodeFromMarkdown = (text) => {
     return null;
 };
 
+// Main hook that orchestrates sending prompts, streaming responses, and managing suggestion state.
 export const useAISuggestions = ({
     activeSession,
     chatSessions,
@@ -42,6 +44,8 @@ export const useAISuggestions = ({
     workspaceSlug,
     rawFiles,
     dispatch,
+    aiModel = null,
+    aiApiKey = null,
 }) => {
     const { askAi, clientReady } = useAnalyzerGateway();
     const [isLoading, setIsLoading] = useState(false);
@@ -51,14 +55,17 @@ export const useAISuggestions = ({
     const onSuggestRef = useRef(onSuggest);
     const currentCodeRef = useRef(currentCode);
 
+    // Keep the latest onSuggest callback reference in sync.
     useEffect(() => {
         onSuggestRef.current = onSuggest;
     }, [onSuggest]);
 
+    // Track the latest editor code snapshot for diffing partial suggestions.
     useEffect(() => {
         currentCodeRef.current = currentCode;
     }, [currentCode]);
 
+    // Flatten workspace file tree into a simple list of paths for quick lookups.
     const flattenWorkspaceFiles = useMemo(() => {
         const output = [];
         const walk = (nodes = []) => {
@@ -75,6 +82,7 @@ export const useAISuggestions = ({
         return output;
     }, [rawFiles]);
 
+    // Resolve a file node object given a path in the workspace tree.
     const findFileNodeByPath = useCallback((targetPath) => {
         if (!targetPath) return null;
         const walk = (nodes = []) => {
@@ -93,6 +101,7 @@ export const useAISuggestions = ({
         return walk(rawFiles);
     }, [rawFiles]);
 
+    // Normalize and resolve a possibly partial path to a known workspace path.
     const resolveWorkspacePath = useCallback((inputPath) => {
         if (!inputPath) return null;
         const normalized = inputPath.replace(/^\.\/+/, '').trim();
@@ -110,6 +119,7 @@ export const useAISuggestions = ({
         return null;
     }, [flattenWorkspaceFiles]);
 
+    // Clear inline suggestion previews when a clear signal is triggered.
     useEffect(() => {
         const session = activeSession;
         if (!session) return;
@@ -126,6 +136,7 @@ export const useAISuggestions = ({
         } catch (e) {}
     }, [activeSession, clearSignal, mutateSession]);
 
+    // Load the current content for a path from editor cache or remote storage.
     const getBaseContentForPath = useCallback(async (targetPath) => {
         if (!targetPath) return null;
         const resolvedPath = resolveWorkspacePath(targetPath) || targetPath;
@@ -148,6 +159,7 @@ export const useAISuggestions = ({
         return null;
     }, [activeFile?.path, cachedFileMap, currentCode, editor, resolveWorkspacePath, workspaceSlug]);
 
+    // Convert AI diff/plaintext responses into structured multi-file suggestions.
     const buildMultiFileSuggestions = useCallback(async (rawText) => {
         const fallbackPath = activeFile?.path || activeFile?.name || null;
         const blocks = parseFileDiffBlocks(rawText, fallbackPath);
@@ -233,6 +245,7 @@ export const useAISuggestions = ({
         return hydrated;
     }, [activeFile?.name, activeFile?.path, getBaseContentForPath, resolveWorkspacePath]);
 
+    // Ensure the requested file is active in the editor, selecting or creating it as needed.
     const openFileByPath = useCallback(async (path) => {
         if (!path) return null;
         const resolvedPath = resolveWorkspacePath(path) || path;
@@ -254,6 +267,7 @@ export const useAISuggestions = ({
         return resolvedPath;
     }, [activeFile?.path, dispatch, findFileNodeByPath, resolveWorkspacePath]);
 
+    // Push new content into editor/redux for a given path and flag if it should be saved.
     const applyContentToPath = useCallback((path, newContent, { skipSave = false } = {}) => {
         if (!path || typeof newContent !== 'string') return;
         const resolvedPath = resolveWorkspacePath(path) || path;
@@ -264,6 +278,7 @@ export const useAISuggestions = ({
         return { resolvedPath, saved: !skipSave };
     }, [activeFile?.path, dispatch, editor, resolveWorkspacePath]);
 
+    // Apply a pending file suggestion to the workspace and mark its status.
     const handleApplyFileSuggestion = useCallback(async (sessionId, path) => {
         if (!path) return;
         const session = chatSessions.find((s) => s.id === sessionId);
@@ -313,6 +328,7 @@ export const useAISuggestions = ({
         }
     }, [applyContentToPath, chatSessions, mutateSession, openFileByPath, resolveWorkspacePath, workspaceSlug]);
 
+    // Mark a file suggestion as rejected and notify listeners.
     const handleRejectFileSuggestion = useCallback((sessionId, path) => {
         if (!path) return;
         mutateSession(sessionId, (s) => ({
@@ -326,6 +342,7 @@ export const useAISuggestions = ({
         } catch (e) {}
     }, [mutateSession]);
 
+    // Build a snapshot of current suggestions for history or fallback reuse.
     const buildSuggestionSnapshot = useCallback((session) => {
         try {
             if (!session) return null;
@@ -353,6 +370,7 @@ export const useAISuggestions = ({
         }
     }, [currentCode, currentCodeRef]);
 
+    // Persist a suggestion snapshot into the message history and clear live state.
     const pushSnapshotToHistory = useCallback((sessionId, snapshot) => {
         try {
             if (!sessionId || !snapshot) return;
@@ -378,6 +396,7 @@ export const useAISuggestions = ({
         }
     }, [mutateSession]);
 
+    // Open a suggested file and surface its proposed content to the editor preview.
     const handlePreviewFileSuggestion = useCallback(async (sessionId, path) => {
         if (!path || typeof onSuggest !== 'function') return;
         const session = chatSessions.find((s) => s.id === sessionId);
@@ -388,6 +407,7 @@ export const useAISuggestions = ({
         onSuggest({ completion: suggestion.updatedContent || '', filePath: targetPath });
     }, [chatSessions, onSuggest, openFileByPath, resolveWorkspacePath]);
 
+    // Apply a single-file inline suggestion to the editor and archive it to history.
     const applySuggestion = useCallback(() => {
         if (!activeSession || !activeSession.suggestedCode) return;
         const suggestedCode = activeSession.suggestedCode;
@@ -407,6 +427,7 @@ export const useAISuggestions = ({
         appendMessagesToSession(activeSession.id, [{ id: Date.now(), role: 'assistant', content: 'Suggestion applied to editor.', timestamp: new Date() }]);
     }, [activeSession, appendMessagesToSession, buildSuggestionSnapshot, editor, onSuggest, pushSnapshotToHistory]);
 
+    // Reject the current inline suggestion and push it into history for reference.
     const rejectSuggestion = useCallback(() => {
         if (!activeSession) return;
         try {
@@ -423,6 +444,7 @@ export const useAISuggestions = ({
         lastSuggestionSnapshotRef.current = null;
     }, [activeSession, appendMessagesToSession, buildSuggestionSnapshot, onSuggest, pushSnapshotToHistory]);
 
+    // Archive any active suggestion snapshot without applying it.
     const archiveCurrentSuggestion = useCallback(() => {
         const session = activeSession;
         if (!session) return;
@@ -436,6 +458,7 @@ export const useAISuggestions = ({
         }
     }, [activeSession, buildSuggestionSnapshot, pushSnapshotToHistory]);
 
+    // Format attachments into a text block the AI prompt can consume.
     const buildAttachmentText = (attachments = []) => {
         if (!Array.isArray(attachments) || attachments.length === 0) return '';
         return attachments.map((att) => {
@@ -453,6 +476,7 @@ export const useAISuggestions = ({
         }).join('\n\n');
     };
 
+    // Send a user prompt to the AI, stream partial responses, and update suggestion state.
     const handleSendMessage = useCallback(async (inputValue, attachments = []) => {
         if (!inputValue?.trim()) return;
         if (!activeSession) return;
@@ -520,6 +544,8 @@ If image attachments are present, read/ocr the images and extract any text or co
                 mode: 'patch',
                 files: filesPayload,
                 focusPath: activeFile?.path || activeFile?.name || null,
+                model: aiModel,
+                apiKey: aiApiKey,
                 onProgress: (data) => {
                     const chunk = typeof data === 'string' ? data : (data?.partial ?? '');
                     const isFinal = typeof data === 'object' ? Boolean(data.final) : false;
@@ -712,7 +738,7 @@ If image attachments are present, read/ocr the images and extract any text or co
             setIsLoading(false);
             try { if (typeof onBusy === 'function') onBusy(false); } catch(e){}
         }
-    }, [activeSession, activeFile, appendMessagesToSession, archiveCurrentSuggestion, askAi, buildMultiFileSuggestions, currentCode, fileCacheEntries, mutateSession, onBusy, onSuggest]);
+    }, [activeSession, activeFile, appendMessagesToSession, archiveCurrentSuggestion, askAi, buildMultiFileSuggestions, currentCode, fileCacheEntries, mutateSession, onBusy, onSuggest, aiApiKey, aiModel]);
 
     const suggestedCode = activeSession?.suggestedCode ?? null;
     const fileSuggestions = activeSession?.fileSuggestions ?? [];

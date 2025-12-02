@@ -1,5 +1,5 @@
 import os
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence, Dict
 from .base import AiProvider
 
 import google.generativeai as genai
@@ -11,31 +11,35 @@ load_dotenv()  # Load once at import
 
 
 class GeminiProvider(AiProvider):
-    _client: Optional[genai.GenerativeModel] = None
+    _clients: Dict[str, genai.GenerativeModel] = {}
 
     def __init__(self) -> None:
         super().__init__(name="gemini")
         self.model_name = os.getenv("SYNTHI_GEMINI_MODEL", "gemini-2.5-flash-lite")
+        # Keep generation parameters centralized so they can be passed into each stream request.
+        self.generation_config = genai.GenerationConfig(
+            temperature=0.2,
+            top_p=0.8,
+            top_k=40,
+            # Increase output allowance to support larger returned patches or full-file outputs.
+            # Note: input/context window size is determined by the model selection (e.g. gemini-2.5-flash-lite).
+            max_output_tokens=131072,
+        )
 
-    def _get_client(self) -> genai.GenerativeModel:
-        if self._client is None:
-            api_key = os.getenv("GEMINI_API_KEY")
-            if not api_key:
-                raise ValueError("GEMINI_API_KEY is not set in environment variables.")
+    def _get_client(self, api_key: Optional[str], model_name: str) -> genai.GenerativeModel:
+        key = api_key or os.getenv("GEMINI_API_KEY")
+        if not key:
+            raise ValueError("GEMINI_API_KEY is not set in environment variables.")
 
-            genai.configure(api_key=api_key)
-            self._client = genai.GenerativeModel(
-                self.model_name,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.2,
-                    top_p=0.8,
-                    top_k=40,
-                    # Increase output allowance to support larger returned patches or full-file outputs.
-                    # Note: input/context window size is determined by the model selection (e.g. gemini-2.5-flash-lite).
-                    max_output_tokens=131072,
-                ),
+        cache_key = f"{key}:{model_name}"
+        if cache_key not in self._clients:
+            # Configure the SDK for callers that use the legacy global configuration.
+            genai.configure(api_key=key)
+            self._clients[cache_key] = genai.GenerativeModel(
+                model_name,
+                generation_config=self.generation_config,
             )
-        return self._client
+        return self._clients[cache_key]
 
     def ask_llm(
         self,
@@ -45,9 +49,11 @@ class GeminiProvider(AiProvider):
         mode: str = None,
         files: Optional[Sequence[Mapping[str, Any]]] = None,
         focus: Optional[str] = None,
+        model: Optional[str] = None,
+        api_key: Optional[str] = None,
     ) -> str:
-        if not os.getenv("GEMINI_API_KEY"):
-            return "LLM disabled: set GEMINI_API_KEY to enable suggestions."
+        if not api_key and not os.getenv("GEMINI_API_KEY"):
+            return "LLM disabled: set GEMINI_API_KEY or provide api_key to enable suggestions."
 
         # Build prompt with user's question and code context
         # Prefer explicit mode flag. Support 'fullfile' (return full file in fenced block)
@@ -68,15 +74,35 @@ class GeminiProvider(AiProvider):
                 full_prompt = build_prompt(code, lang, user_prompt=augmented, files=files, focus=focus)
 
         try:
-            response = self._get_client().generate_content(full_prompt)
+            model_name = model or self.model_name
+            client = self._get_client(api_key, model_name)
+            # Stream tokens from the Gemini API, accumulating text so the AI chat window
+            # can display the final suggestion as a plain string.
+            stream = client.generate_content(full_prompt, stream=True)
 
-            if not response.candidates:
-                feedback = response.prompt_feedback
+            chunks = []
+            prompt_feedback = None
+            for chunk in stream:
+                if getattr(chunk, "prompt_feedback", None):
+                    prompt_feedback = chunk.prompt_feedback
+                text = getattr(chunk, "text", None)
+                if text:
+                    chunks.append(text)
+
+            combined = "".join(chunks).strip()
+
+            if not combined:
+                feedback = prompt_feedback or getattr(stream, "prompt_feedback", None)
                 if feedback:
                     return f"Blocked: {feedback}"
+                fallback = getattr(stream, "text", None)
+                if fallback:
+                    combined = str(fallback).strip()
+
+            if not combined:
                 return "No suggestion returned."
 
-            return response.text.strip()
+            return combined
 
         except Exception as e:
             return f"LLM error: {type(e).__name__}: {e}"
