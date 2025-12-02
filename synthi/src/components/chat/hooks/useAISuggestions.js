@@ -115,38 +115,16 @@ export const useAISuggestions = ({
         if (!session) return;
         if (clearSignal === lastClearSignalRef.current) return;
         lastClearSignalRef.current = clearSignal;
-        const hasLive = (session.fileSuggestions?.length || 0) > 0 || Boolean(session.suggestedCode);
-        if (hasLive) {
-            const snapshot = {
-                fileSuggestions: session.fileSuggestions || [],
-                suggestedCode: session.suggestedCode || null,
-                diffChunks: session.suggestedCode ? computeDiffChunks(currentCodeRef.current || '', session.suggestedCode) : [],
-                timestamp: new Date(),
-            };
-            mutateSession(session.id, (s) => ({
-                ...s,
-                messages: [
-                    ...s.messages,
-                    {
-                        id: `suggestion-${Date.now()}`,
-                        role: 'suggestion-history',
-                        timestamp: snapshot.timestamp,
-                        snapshot,
-                    }
-                ],
-                fileSuggestions: [],
-                suggestedCode: null,
-                showDiff: false,
-                suggestionTimestamp: null,
-            }));
-            lastSuggestionSnapshotRef.current = null;
-        } else {
-            resetSuggestionsForSession(session.id);
-        }
+        // Only clear inline suggestion preview; keep multi-file suggestions intact.
+        mutateSession(session.id, (s) => ({
+            ...s,
+            suggestedCode: null,
+            showDiff: false,
+        }));
         try {
             if (typeof onSuggestRef.current === 'function') onSuggestRef.current(null);
         } catch (e) {}
-    }, [activeSession, clearSignal, mutateSession, resetSuggestionsForSession]);
+    }, [activeSession, clearSignal, mutateSession]);
 
     const getBaseContentForPath = useCallback(async (targetPath) => {
         if (!targetPath) return null;
@@ -291,7 +269,7 @@ export const useAISuggestions = ({
         const session = chatSessions.find((s) => s.id === sessionId);
         const suggestion = session?.fileSuggestions?.find((fs) => fs.path === path);
         if (!suggestion || suggestion.status !== 'pending') return;
-        if (!suggestion.updatedContent) {
+        if (suggestion.updatedContent == null) {
             mutateSession(sessionId, (s) => ({
                 ...s,
                 fileSuggestions: s.fileSuggestions.map((fs) =>

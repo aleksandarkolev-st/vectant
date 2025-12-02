@@ -110,7 +110,7 @@ const AIChatWindow = ({
         if (scrollRef.current) {
             const scrollArea = scrollRef.current.querySelector('[data-slot="scroll-area-viewport"], [data-radix-scroll-area-viewport]');
             if (scrollArea) {
-                scrollArea.scrollTop = scrollArea.scrollHeight;
+                scrollArea.scrollTo({ top: scrollArea.scrollHeight, behavior: 'smooth' });
             }
         }
     }, [messages, suggestedCode, fileSuggestions]);
@@ -376,13 +376,15 @@ const AIChatWindow = ({
                     </div>
                 )}
                 <div className="flex gap-2">
-                    <Input
+                    <textarea
                         value={inputValue}
                         onChange={(e) => setInputValue(e.target.value)}
                         onKeyPress={handleKeyPress}
                         placeholder="Ask AI for suggestions... (Enter to send)"
                         disabled={isLoading || !clientReady}
-                        className="flex-1"
+                        className="flex-1 min-h-[42px] max-h-[140px] resize-y overflow-auto file:text-foreground placeholder:text-muted-foreground selection:bg-primary selection:text-primary-foreground dark:bg-input/30 border-input w-full min-w-0 rounded-md border bg-transparent px-3 py-2 text-base shadow-xs transition-[color,box-shadow] outline-none disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive"
+                        rows={1}
+                        style={{ minHeight: '42px', maxHeight: '140px' }}
                     />
                     <Button
                         onClick={handleSubmit}
