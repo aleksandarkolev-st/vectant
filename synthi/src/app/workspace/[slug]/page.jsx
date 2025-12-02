@@ -21,6 +21,8 @@ import { getFileLanguage } from '@/utils/fileUtils';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
 import AIChatWindow from '@/components/chat/AIChatWindow';
 import { compileWithWorker } from '@/services/compilerClient';
+import { api } from '@/services/api';
+import { resolveDependencies } from '@/utils/dependencyResolver';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -50,6 +52,8 @@ export default function EditorPage({ params }) {
     const showTerminal = useAppSelector(selectShowTerminal);
     const treeOnRight = useAppSelector(selectTreeOnRight);
     const currentContent = useAppSelector(selectCurrentContent);
+    const rawFiles = useAppSelector(state => state.workspace.rawFiles);
+    const fileContentCache = useAppSelector(state => state.workspace.fileContentCache);
 
     const [initialContent, setInitialContent] = useState('');
     const [hasInitialSnapshot, setHasInitialSnapshot] = useState(false);
@@ -111,7 +115,8 @@ export default function EditorPage({ params }) {
             return;
         }
         const source = typeof currentContent === 'string' ? currentContent : '';
-        const filename = activeFile?.name || activeFile?.path || 'main';
+        // Use the full path to preserve directory structure in the worker
+        const filename = activeFile?.path || activeFile?.name || 'main';
         // Ensure a terminal is visible when running so output is shown
         try {
             if (!showTerminal) dispatch(toggleTerminal());
@@ -121,10 +126,34 @@ export default function EditorPage({ params }) {
         }
 
         setBuildLogs([`Running build for ${filename}...`]);
+
+        // Define a getter for content that checks current editor state, cache, or API
+        const getContentForDependency = async (path) => {
+            // If it's the active file, use the current editor content (which might be unsaved)
+            if (path === activeFile.path) {
+                return typeof currentContent === 'string' ? currentContent : '';
+            }
+            // Check cache
+            if (fileContentCache.has(path)) {
+                return fileContentCache.get(path);
+            }
+            // Fetch
+            return await api.fetchFileContent(slug, path);
+        };
+
+        let additionalFiles = [];
+        try {
+             additionalFiles = await resolveDependencies(activeFile, rawFiles, getContentForDependency);
+        } catch (e) {
+             console.error("Dependency resolution failed", e);
+             appendBuildLog(`Warning: Dependency resolution failed: ${e.message}`);
+        }
+
         try {
             await compileWithWorker({
                 filename,
                 source,
+                files: additionalFiles,
                 onLog: (line) => {
                     appendBuildLog(line);
                     console.log('[build]', line);
@@ -135,7 +164,7 @@ export default function EditorPage({ params }) {
             console.error('Compile failed', err);
             appendBuildLog(`error: ${err?.message || err}`);
         }
-    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal]);
+    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, fileContentCache, slug]);
 
     const handleEditorMount = (editorInstance) => {
         setEditor(editorInstance);
