@@ -209,7 +209,7 @@ export default function EditorPage({ params }) {
     );
 
     const FileTreePanel = (
-        <ResizablePanel defaultSize={15} minSize={1} maxSize={35} className={`${treeOnRight? 'border-l' : 'border-r'} border-[#545454] bg-[#252526]`}>
+        <ResizablePanel defaultSize={15} minSize={10} maxSize={35} className={`${treeOnRight? 'border-l' : 'border-r'} border-[#545454] bg-[#252526]`}>
             <FileTreeView
                 onToggleOrientation={toggleTreeOrientation}
             />
@@ -217,7 +217,7 @@ export default function EditorPage({ params }) {
     );
 
     const ChatPanel = (
-        <ResizablePanel defaultSize={24} minSize={12} maxSize={50} className="border-l border-[#545454] bg-[#171717]">
+        <ResizablePanel defaultSize={26} minSize={26} maxSize={45} className="border-l border-[#545454] bg-[#171717] min-w-0">
             <AIChatWindow
                 docked={true}
                 isVisible={chatVisible}

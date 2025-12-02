@@ -9,6 +9,10 @@
 !.yarn/plugins
 !.yarn/releases
 !.yarn/versions
+__pycache__/
+*/__pycache__/
+*.pyc
+*.pyo
 
 # testing
 /coverage

@@ -33,6 +33,8 @@ class AnalyzeAiRequest(BaseModel):
     mode: str = None
     files: Optional[List[FileModel]] = None
     focus: Optional[str] = None
+    model: Optional[str] = None
+    api_key: Optional[str] = None
 
 
 @app.post("/analyze/static")
@@ -52,7 +54,16 @@ def analyze_code(req: AnalyzeRequest):
 
 @app.post("/analyze/ai")
 def analyze_code_ai(req: AnalyzeAiRequest):
-    provider = get_provider()
+    def select_provider_name() -> str | None:
+        if req.api_key:
+            model_name = (req.model or '').lower()
+            if 'gemini' in model_name:
+                return 'gemini'
+            # default to OpenAI when a custom key is present but model is not explicitly Gemini
+            return 'chatgpt'
+        return None
+
+    provider = get_provider(provider_name=select_provider_name(), use_custom=bool(req.api_key))
     ai_suggestion = provider.ask_llm(
         req.code,
         req.lang,
@@ -60,6 +71,8 @@ def analyze_code_ai(req: AnalyzeAiRequest):
         mode=req.mode,
         files=req.files,
         focus=req.focus,
+        model=req.model,
+        api_key=req.api_key,
     )
 
     return {
