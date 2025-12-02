@@ -57,7 +57,7 @@ const EditorPanel = ({
 }) => {
     const dispatch = useAppDispatch();
 
-    //Global state access
+    //Global state access djsaiodjasiodjasiodjasiodjaoidjasoidjsaiodjasiodjasjdnsaj
     const activeFile = useAppSelector(selectActiveFile);
     const code = useAppSelector(selectCurrentContent);
     const isUnsaved = useAppSelector(selectIsUnsaved);
