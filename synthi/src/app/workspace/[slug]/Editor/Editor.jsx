@@ -153,7 +153,10 @@ const EditorPanel = ({
         aiCompletionCacheRef,
         aiCompletionCursorRef,
         inlineAcceptCommandIdRef,
-        applyAiCompletionText
+        applyAiCompletionText,
+        rawFiles,
+        fileCacheEntries,
+        activeFile
     });
 
     // --- Event Handlers ---
