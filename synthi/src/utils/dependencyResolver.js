@@ -37,7 +37,7 @@ const getImports = (content, language) => {
     return imports;
 };
 
-const resolvePath = (currentPath, importPath) => {
+export const resolvePath = (currentPath, importPath) => {
     const currentDir = currentPath.split('/').slice(0, -1);
     const parts = importPath.split('/');
     

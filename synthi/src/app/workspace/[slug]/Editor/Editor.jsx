@@ -63,6 +63,7 @@ const EditorPanel = ({
     const isUnsaved = useAppSelector(selectIsUnsaved);
     const breadcrumb = useAppSelector(selectBreadcrumb);
     const fileCacheEntries = useAppSelector(selectFileCacheEntries);
+    const rawFiles = useAppSelector(state => state.workspace.rawFiles);
     const showTerminal = useAppSelector(state => state.ui.showTerminal);
     const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
     const aiAutoEnabled = useAppSelector(selectAutoCompletionEnabled);
@@ -161,7 +162,10 @@ const EditorPanel = ({
         cancelActiveCompletion,
         requestAiCompletion,
         hasActiveDiff: activeDiffCheck,
-        aiAutoEnabled
+        aiAutoEnabled,
+        rawFiles,
+        dispatch,
+        activeFile
     });
 
     useEffect(() => {
