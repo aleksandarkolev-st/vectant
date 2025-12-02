@@ -51,6 +51,8 @@ struct CompileRequest {
     language: String,
     filename: String,
     source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
 }
 
 #[tokio::main]
@@ -248,6 +250,9 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>) -> Res
     let dir = tempdir().context("failed to create temp dir")?;
     let file_path = dir.path().join(&req.filename);
     tokio::fs::write(&file_path, req.source).await?;
+    // Clone session id locally so we can move it into spawned tasks without
+    // invalidating the `req` value for later use.
+    let session_id = req.session_id.clone();
 
     let mut cmd = match req.language.as_str() {
         "cpp" => {
@@ -277,20 +282,34 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>) -> Res
 
     if let Some(out) = stdout {
         let dc = log_dc.clone();
+        let sid = session_id.clone();
         tokio::spawn(async move {
             let mut lines = out.lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                let _ = dc.send_text(format!("stdout: {line}")).await;
+                let payload = serde_json::json!({
+                    "sessionId": sid.clone(),
+                    "type": "stdout",
+                    "line": line
+                });
+                let txt = serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""));
+                let _ = dc.send_text(txt).await;
             }
         });
     }
 
     if let Some(err) = stderr {
         let dc = log_dc.clone();
+        let sid = session_id.clone();
         tokio::spawn(async move {
             let mut lines = err.lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                let _ = dc.send_text(format!("stderr: {line}")).await;
+                let payload = serde_json::json!({
+                    "sessionId": sid.clone(),
+                    "type": "stderr",
+                    "line": line
+                });
+                let txt = serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""));
+                let _ = dc.send_text(txt).await;
             }
         });
     }
@@ -299,9 +318,14 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>) -> Res
 
     // If compile failed, send status and return
     if !compile_status.success() {
-        let _ = log_dc
-            .send_text(serde_json::to_string(&serde_json::json!({ "status": "done", "success": false, "stage": "compile", "code": compile_status.code() }))?)
-            .await;
+        let payload = serde_json::json!({
+            "sessionId": session_id.clone(),
+            "status": "done",
+            "success": false,
+            "stage": "compile",
+            "code": compile_status.code()
+        });
+        let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""))).await;
         return Ok(());
     }
 
@@ -319,39 +343,57 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>) -> Res
 
         if let Some(out) = run_stdout {
             let dc = log_dc.clone();
+            let sid = session_id.clone();
             tokio::spawn(async move {
                 let mut lines = out.lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    let _ = dc.send_text(format!("run stdout: {line}")).await;
-                }
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        let payload = serde_json::json!({
+                            "sessionId": sid.clone(),
+                            "type": "run-stdout",
+                            "line": line
+                        });
+                        let txt = serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""));
+                        let _ = dc.send_text(txt).await;
+                    }
             });
         }
 
         if let Some(err) = run_stderr {
             let dc = log_dc.clone();
+            let sid = session_id.clone();
             tokio::spawn(async move {
                 let mut lines = err.lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    let _ = dc.send_text(format!("run stderr: {line}")).await;
-                }
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        let payload = serde_json::json!({
+                            "sessionId": sid.clone(),
+                            "type": "run-stderr",
+                            "line": line
+                        });
+                        let txt = serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""));
+                        let _ = dc.send_text(txt).await;
+                    }
             });
         }
 
         let run_status = run_child.wait().await?;
-        let _ = log_dc
-            .send_text(serde_json::to_string(&serde_json::json!({
-                "status": "done",
-                "success": run_status.success(),
-                "stage": "run",
-                "code": run_status.code()
-            }))?)
-            .await;
+        let payload = serde_json::json!({
+            "sessionId": session_id.clone(),
+            "status": "done",
+            "success": run_status.success(),
+            "stage": "run",
+            "code": run_status.code()
+        });
+        let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""))).await;
         return Ok(());
     }
 
-    let _ = log_dc
-        .send_text(serde_json::to_string(&serde_json::json!({ "status": "done", "success": true, "stage": "compile" }))?)
-        .await;
+    let payload = serde_json::json!({
+        "sessionId": session_id.clone(),
+        "status": "done",
+        "success": true,
+        "stage": "compile"
+    });
+    let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""))).await;
 
     Ok(())
 }

@@ -161,20 +161,37 @@ export default function TerminalPane() {
         try {
           const data = ev?.detail;
           if (!data) return;
-          // If message is JSON (structured), try to pretty-print; otherwise write raw
-          if (typeof data === 'string') {
-            term.write(data);
-          } else {
+
+          // Determine the raw string payload (may be a string or an object with `line`)
+          let rawLine = null;
+          if (typeof data === 'string') rawLine = data;
+          else if (data && typeof data === 'object' && data.line !== undefined) rawLine = data.line;
+          else rawLine = String(data);
+
+          // The rawLine itself may be a JSON string emitted by the worker.
+          // Try to parse it and extract the inner `line` if present.
+          let out = rawLine;
+          if (typeof rawLine === 'string') {
             try {
-              term.write(JSON.stringify(data) + '\r\n');
+              const p = JSON.parse(rawLine);
+              if (p && typeof p === 'object' && p.line !== undefined) {
+                out = p.line;
+              }
             } catch (_) {
-              term.write(String(data));
+              // not JSON, keep rawLine
             }
           }
+
+          // Ensure we write a newline-terminated string to the terminal
+          const toWrite = typeof out === 'string' ? (out.endsWith('\n') ? out : out + '\r\n') : String(out) + '\r\n';
+          term.write(toWrite);
         } catch (e) {
           console.error('Error writing build log to terminal', e);
         }
       };
+
+      // Prefer session-scoped streaming events; fall back to generic build-log events
+      window.addEventListener('synthi:build-stream', buildLogListener);
       window.addEventListener('synthi:build-log', buildLogListener);
       // keep listener reference for cleanup
       termRef.current.buildLogListener = buildLogListener;
@@ -194,7 +211,10 @@ export default function TerminalPane() {
       }
       try {
         const listener = termRef.current?.buildLogListener;
-        if (listener) window.removeEventListener('synthi:build-log', listener);
+        if (listener) {
+          window.removeEventListener('synthi:build-stream', listener);
+          window.removeEventListener('synthi:build-log', listener);
+        }
       } catch (e) {}
     };
   }, []);

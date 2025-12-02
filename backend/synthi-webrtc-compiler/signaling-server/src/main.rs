@@ -76,6 +76,12 @@ async fn handle_connection(
         if let Some(ref r) = role {
             let target = if r == "browser" { "worker" } else { "browser" };
             if let Some(target_tx) = state.lock().await.get(target).cloned() {
+                // If the message contains a sessionId, log it for debugging
+                if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if let Some(sid) = json_val.get("sessionId").and_then(|v| v.as_str()) {
+                        println!("Forwarding message for session {} from {} -> {}", sid, r, target);
+                    }
+                }
                 let _ = target_tx.send(Message::text(text));
             }
         }

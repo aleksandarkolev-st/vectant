@@ -128,10 +128,26 @@ export const compileWithWorker = async ({ filename, source, language, onLog } = 
     if (onLog) logHandlers.add(onLog);
 
     return new Promise((resolve, reject) => {
+        // Unique session id for this compile - allows streaming and session-scoped events
+        const sessionId = `sess-${Date.now()}-${Math.floor(Math.random()*100000)}`;
+
         const handleLog = (line) => {
+            // Forward raw log line to caller callback if provided
+            try { if (onLog) onLog(line); } catch (e) { /* ignore */ }
+
+            // Emit a stream event for UI consumers that want session-scoped streaming
+            try {
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    const ev = new CustomEvent('synthi:build-stream', { detail: { sessionId, line } });
+                    window.dispatchEvent(ev);
+                }
+            } catch (e) { /* ignore */ }
+
+            // Check for final JSON status message to resolve/reject
             try {
                 const parsed = JSON.parse(line);
                 if (parsed && parsed.status === 'done') {
+                    // cleanup
                     logHandlers.delete(handleLog);
                     if (onLog) logHandlers.delete(onLog);
                     if (parsed.success) {
@@ -141,12 +157,15 @@ export const compileWithWorker = async ({ filename, source, language, onLog } = 
                     }
                     return;
                 }
-            } catch (_) {}
+            } catch (_) {
+                // not JSON, just streaming text
+            }
         };
         logHandlers.add(handleLog);
 
         try {
-            compileChannel.send(JSON.stringify({ language: lang, filename: filename || `main.${lang}`, source: source || '' }));
+            // Send compile request and include session id so backends can tag responses if supported
+            compileChannel.send(JSON.stringify({ language: lang, filename: filename || `main.${lang}`, source: source || '', sessionId }));
         } catch (e) {
             logHandlers.delete(handleLog);
             if (onLog) logHandlers.delete(onLog);
