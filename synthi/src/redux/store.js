@@ -34,7 +34,8 @@ function loadOpenTabs() {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return undefined;
     // Expect array of { path, name, language }
-    return parsed;
+    // Ensure boolean isUnsaved default
+    return parsed.map(p => ({ path: p.path, name: p.name, language: p.language, isUnsaved: !!p.isUnsaved }));
   } catch (e) {
     console.warn('Failed to load open tabs from localStorage', e);
     return undefined;
@@ -72,8 +73,8 @@ function saveUiPrefs(uiState) {
 function saveOpenTabs(openFiles) {
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
-    // Persist minimal info to restore tabs: path, name, language
-    const toSave = (openFiles || []).map(f => ({ path: f.path, name: f.name, language: f.language }));
+    // Persist minimal info to restore tabs: path, name, language, isUnsaved
+    const toSave = (openFiles || []).map(f => ({ path: f.path, name: f.name, language: f.language, isUnsaved: !!f.isUnsaved }));
     localStorage.setItem(OPEN_TABS_KEY, JSON.stringify(toSave));
   } catch (e) {
     console.warn('Failed to save open tabs to localStorage', e);
@@ -102,15 +103,17 @@ const preloadedState = (() => {
   if (preloadedUi) state.ui = { ...initialUiState, ...preloadedUi };
   if (preloadedOpenTabs) {
     // Merge openTabs into the workspace initial state to ensure other keys remain.
-    state.workspace = { ...initialWorkspaceState, openFiles: preloadedOpenTabs };
+    // Ensure restored entries include isUnsaved boolean
+    const normalized = (preloadedOpenTabs || []).map(f => ({ path: f.path, name: f.name, language: f.language, isUnsaved: !!f.isUnsaved }));
+    state.workspace = { ...initialWorkspaceState, openFiles: normalized };
     // If there was an active tab saved, try to set activeFile to the matching entry
     if (preloadedActive && preloadedActive.path) {
-      const match = (preloadedOpenTabs || []).find(f => f.path === preloadedActive.path);
-      if (match) state.workspace.activeFile = match; else state.workspace.activeFile = preloadedActive;
+      const match = normalized.find(f => f.path === preloadedActive.path);
+      if (match) state.workspace.activeFile = match; else state.workspace.activeFile = { path: preloadedActive.path, name: preloadedActive.name, language: preloadedActive.language };
     }
   } else if (preloadedActive && preloadedActive.path) {
     // No open tabs list, but active tab stored — set activeFile minimally so UI can trigger load
-    state.workspace = { ...initialWorkspaceState, activeFile: preloadedActive };
+    state.workspace = { ...initialWorkspaceState, activeFile: { path: preloadedActive.path, name: preloadedActive.name, language: preloadedActive.language } };
   }
   return Object.keys(state).length > 0 ? state : undefined;
 })();
