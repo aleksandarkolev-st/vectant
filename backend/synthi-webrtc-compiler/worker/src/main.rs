@@ -25,7 +25,9 @@ use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
-use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
+use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType};
+use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
+use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use webrtc::rtp::packet::Packet;
 use webrtc::util::marshal::Unmarshal;
 
@@ -283,6 +285,17 @@ async fn create_peer(signal_tx: mpsc::UnboundedSender<SignalMessage>) -> Result<
 
     let pc = Arc::new(api.new_peer_connection(config).await?);
 
+    // Add transceivers for video and audio so they are negotiated initially
+    pc.add_transceiver_from_kind(RTPCodecType::Video, Some(RTCRtpTransceiverInit {
+        direction: RTCRtpTransceiverDirection::Sendonly,
+        send_encodings: vec![],
+    })).await?;
+    
+    pc.add_transceiver_from_kind(RTPCodecType::Audio, Some(RTCRtpTransceiverInit {
+        direction: RTCRtpTransceiverDirection::Sendonly,
+        send_encodings: vec![],
+    })).await?;
+
     {
         let tx = signal_tx.clone();
         pc.on_ice_candidate(Box::new(move |candidate| {
@@ -510,8 +523,18 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
                 "webrtc-rs".to_owned(),
             ));
 
-            let _ = pc.add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>).await;
-            let _ = pc.add_track(Arc::clone(&audio_track) as Arc<dyn TrackLocal + Send + Sync>).await;
+            // Find existing transceivers and replace track
+            let transceivers = pc.get_transceivers().await;
+            for t in transceivers {
+                let kind = t.kind();
+                if kind == RTPCodecType::Video {
+                    let sender = t.sender().await;
+                    let _ = sender.replace_track(Some(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>)).await;
+                } else if kind == RTPCodecType::Audio {
+                    let sender = t.sender().await;
+                    let _ = sender.replace_track(Some(Arc::clone(&audio_track) as Arc<dyn TrackLocal + Send + Sync>)).await;
+                }
+            }
 
             let v_track_clone = video_track.clone();
             tokio::spawn(async move {
@@ -535,10 +558,14 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
 
             let payload = serde_json::json!({
                 "sessionId": session_id.clone(),
-                "type": "run-gui-started",
+                "type": "run-gui-start",
+                "width": 1280,
+                "height": 720,
                 "display": display_str
             });
-            let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+            let json_str = serde_json::to_string(&payload).unwrap_or_default();
+            println!("Sending GUI start message: {}", json_str);
+            let _ = log_dc.send_text(json_str).await;
 
             run_cmd.env("DISPLAY", display_str);
         }
@@ -629,6 +656,14 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
 
         let run_status = run_child.wait().await?;
         
+        if req.is_gui {
+            let payload = serde_json::json!({
+                "sessionId": session_id.clone(),
+                "type": "run-gui-end"
+            });
+            let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+        }
+
         if let Some(mut child) = xvfb_process { let _ = child.kill().await; }
         if let Some(mut child) = gst_process { let _ = child.kill().await; }
 

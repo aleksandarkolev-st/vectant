@@ -49,6 +49,25 @@ const notifyLog = (msg) => {
         text = String(msg);
     }
 
+    // Check for GUI control messages
+    try {
+        const parsed = JSON.parse(text);
+        console.log('[compilerClient] Parsed log message:', parsed);
+        if (parsed && parsed.type === 'run-gui-start') {
+            console.log('[compilerClient] Dispatching synthi:gui-start', parsed);
+            if (typeof window !== 'undefined' && window.dispatchEvent) {
+                window.dispatchEvent(new CustomEvent('synthi:gui-start', { detail: parsed }));
+            }
+        } else if (parsed && parsed.type === 'run-gui-end') {
+            console.log('[compilerClient] Dispatching synthi:gui-end', parsed);
+            if (typeof window !== 'undefined' && window.dispatchEvent) {
+                window.dispatchEvent(new CustomEvent('synthi:gui-end', { detail: parsed }));
+            }
+        }
+    } catch (e) {
+        // ignore
+    }
+
     logHandlers.forEach((fn) => {
         try { fn(text); } catch (e) { /* ignore */ }
     });
@@ -137,7 +156,7 @@ const ensureConnection = () => {
             terminalChannel = pc.createDataChannel('terminal', { ordered: true });
             compileChannel.onclose = () => {};
 
-            const offer = await pc.createOffer();
+            const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
             await pc.setLocalDescription(offer);
             ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp, sdp_type: offer.type }));
 
