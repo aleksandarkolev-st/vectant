@@ -3,12 +3,16 @@ use std::process::Stdio;
 use std::collections::HashMap;
 use std::env;
 
+use gstreamer as gst;
+use gstreamer::prelude::*;
+use gstreamer_app as gst_app;
+use gstreamer_app::prelude::*;
+
 use anyhow::{Context, Result};
 use futures::{FutureExt, StreamExt, SinkExt};
 use serde::{Deserialize, Serialize};
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader, AsyncWriteExt};
-use tokio::net::UdpSocket;
 use chrono::{Utc, SecondsFormat};
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
@@ -77,6 +81,7 @@ struct CompileRequest {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    gst::init()?;
     verify_tooling().await?;
     let (ws_stream, _) = connect_async("ws://localhost:9000").await?;
     let (mut ws_write, mut ws_read) = ws_stream.split();
@@ -458,7 +463,7 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
         run_cmd.stderr(Stdio::piped());
 
         let mut xvfb_process: Option<tokio::process::Child> = None;
-        let mut gst_process: Option<tokio::process::Child> = None;
+        let mut gst_pipeline: Option<gst::Pipeline> = None;
 
         if req.is_gui {
             let mut display_str = String::new();
@@ -492,24 +497,53 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
                 Err(e) => eprintln!("Failed to spawn Xvfb: {}", e),
             }
 
-            let v_sock = UdpSocket::bind("127.0.0.1:0").await?;
-            let v_port = v_sock.local_addr()?.port();
-            let a_sock = UdpSocket::bind("127.0.0.1:0").await?;
-            let a_port = a_sock.local_addr()?.port();
+            let (v_tx, mut v_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+            let (a_tx, mut a_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-            let gst_cmd = format!(
-                "ximagesrc display-name={} use-damage=false ! video/x-raw,framerate=30/1 ! queue ! videoconvert ! vp8enc deadline=1 ! rtpvp8pay ! queue ! udpsink host=127.0.0.1 port={} \
-                 pulsesrc ! audio/x-raw,rate=48000,channels=2 ! queue ! opusenc ! rtpopuspay ! queue ! udpsink host=127.0.0.1 port={}",
-                display_str, v_port, a_port
+            let gst_pipeline_str = format!(
+                "ximagesrc display-name={} use-damage=false ! video/x-raw,framerate=30/1 ! queue ! videoconvert ! vp8enc deadline=1 ! rtpvp8pay ! queue ! appsink name=video_sink \
+                 pulsesrc ! audio/x-raw,rate=48000,channels=2 ! queue ! opusenc ! rtpopuspay ! queue ! appsink name=audio_sink",
+                display_str
             );
 
-            let gst = Command::new("gst-launch-1.0")
-                .args(gst_cmd.split_whitespace())
-                .spawn();
-            
-            match gst {
-                Ok(child) => gst_process = Some(child),
-                Err(e) => eprintln!("Failed to spawn GStreamer: {}", e),
+            match gst::parse_launch(&gst_pipeline_str) {
+                Ok(pipeline) => {
+                    let pipeline = pipeline.downcast::<gst::Pipeline>().expect("Expected pipeline");
+                    
+                    if let Ok(video_sink) = pipeline.by_name("video_sink").context("Sink not found").and_then(|s| s.downcast::<gst_app::AppSink>().map_err(|_| anyhow::anyhow!("Expected AppSink"))) {
+                        video_sink.set_callbacks(
+                            gst_app::AppSinkCallbacks::builder()
+                                .new_sample(move |sink| {
+                                    let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                                    let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
+                                    let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                                    let _ = v_tx.send(map.to_vec());
+                                    Ok(gst::FlowSuccess::Ok)
+                                })
+                                .build()
+                        );
+                    }
+
+                    if let Ok(audio_sink) = pipeline.by_name("audio_sink").context("Sink not found").and_then(|s| s.downcast::<gst_app::AppSink>().map_err(|_| anyhow::anyhow!("Expected AppSink"))) {
+                        audio_sink.set_callbacks(
+                            gst_app::AppSinkCallbacks::builder()
+                                .new_sample(move |sink| {
+                                    let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                                    let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
+                                    let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                                    let _ = a_tx.send(map.to_vec());
+                                    Ok(gst::FlowSuccess::Ok)
+                                })
+                                .build()
+                        );
+                    }
+
+                    if let Err(e) = pipeline.set_state(gst::State::Playing) {
+                        eprintln!("Failed to set pipeline to playing: {}", e);
+                    }
+                    gst_pipeline = Some(pipeline);
+                }
+                Err(e) => eprintln!("Failed to create GStreamer pipeline: {}", e),
             }
 
             let video_track = Arc::new(TrackLocalStaticRTP::new(
@@ -538,9 +572,8 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
 
             let v_track_clone = video_track.clone();
             tokio::spawn(async move {
-                let mut buf = vec![0u8; 1500];
-                while let Ok((n, _)) = v_sock.recv_from(&mut buf).await {
-                    if let Ok(packet) = Packet::unmarshal(&mut &buf[..n]) {
+                while let Some(mut buf) = v_rx.recv().await {
+                    if let Ok(packet) = Packet::unmarshal(&mut &buf[..]) {
                         let _ = v_track_clone.write_rtp(&packet).await;
                     }
                 }
@@ -548,9 +581,8 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
 
             let a_track_clone = audio_track.clone();
             tokio::spawn(async move {
-                let mut buf = vec![0u8; 1500];
-                while let Ok((n, _)) = a_sock.recv_from(&mut buf).await {
-                    if let Ok(packet) = Packet::unmarshal(&mut &buf[..n]) {
+                while let Some(mut buf) = a_rx.recv().await {
+                    if let Ok(packet) = Packet::unmarshal(&mut &buf[..]) {
                         let _ = a_track_clone.write_rtp(&packet).await;
                     }
                 }
@@ -665,7 +697,9 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
         }
 
         if let Some(mut child) = xvfb_process { let _ = child.kill().await; }
-        if let Some(mut child) = gst_process { let _ = child.kill().await; }
+        if let Some(pipeline) = gst_pipeline {
+            let _ = pipeline.set_state(gst::State::Null);
+        }
 
         let end_dt = Utc::now();
         let end_time = end_dt.to_rfc3339_opts(SecondsFormat::Secs, true);

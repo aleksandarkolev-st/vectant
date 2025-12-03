@@ -334,7 +334,7 @@ export default function EditorPage({ params }) {
                         <video
                             autoPlay
                             playsInline
-                            controls
+                            muted
                             className="w-full h-full object-contain"
                             ref={video => {
                                 if (video && mediaStream && video.srcObject !== mediaStream) {
