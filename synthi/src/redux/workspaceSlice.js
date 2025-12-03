@@ -13,9 +13,12 @@ import SynthiException from '@/components/SynthiException';
 
 // --- Initial State and Utilities ---
 
-const initialState = {
-    slug: null, 
+export const initialWorkspaceState = {
+    slug: null,
     rawFiles: [],
+    // Tracks files that the user has opened in tabs (order matters)
+    // Each item: { path, name, language, isUnsaved }
+    openFiles: [],
     activeFile: null,
     currentContent: '',
     savedContent: '',
@@ -201,12 +204,65 @@ export const deleteItemThunk = createAsyncThunk(
 
 const workspaceSlice = createSlice({
     name: 'workspace',
-    initialState,
+    initialState: initialWorkspaceState,
     reducers: {
         // Synchronous reducers for quick state updates
         updateContent: (state, action) => {
-            state.currentContent = action.payload || '';
+            const newContent = action.payload || '';
+            state.currentContent = newContent;
+            // Mark active file's tab as unsaved when content differs from savedContent
+            try {
+                if (state.activeFile && state.activeFile.path) {
+                    const activePath = state.activeFile.path;
+                    const isUnsaved = newContent !== state.savedContent;
+                    const idx = state.openFiles.findIndex(f => f.path === activePath);
+                    if (idx !== -1) {
+                        state.openFiles[idx] = { ...state.openFiles[idx], isUnsaved };
+                    }
+                }
+            } catch (e) { /* ignore */ }
         },
+            // Open a file in the tab bar (keeps order and uniqueness)
+            openFile: (state, action) => {
+                const file = action.payload;
+                if (!file) return;
+                const exists = state.openFiles.find(f => f.path === file.path);
+                const entry = { ...file, isUnsaved: false };
+                if (!exists) state.openFiles.push(entry);
+            },
+            // Close a tab by path. If the closed tab is active, pick the previous
+            // tab (or next) as the new active file and load cached content if available.
+            closeFile: (state, action) => {
+                const path = action.payload;
+                if (!path) return;
+                const idx = state.openFiles.findIndex(f => f.path === path);
+                if (idx === -1) return;
+                state.openFiles.splice(idx, 1);
+
+                // If active file was closed, pick a neighbor
+                if (state.activeFile && state.activeFile.path === path) {
+                    const newIndex = Math.max(0, idx - 1);
+                    const newFile = state.openFiles[newIndex] || null;
+                    state.activeFile = newFile;
+                    if (newFile && newFile.path && state.fileContentCache.has(newFile.path)) {
+                        state.currentContent = state.fileContentCache.get(newFile.path);
+                        state.savedContent = state.fileContentCache.get(newFile.path);
+                    } else {
+                        state.currentContent = '';
+                        state.savedContent = '';
+                    }
+                }
+            },
+
+            // Reorder open tabs by moving element at fromIndex to toIndex
+            reorderOpenFiles: (state, action) => {
+                const { fromIndex, toIndex } = action.payload || {};
+                if (typeof fromIndex !== 'number' || typeof toIndex !== 'number') return;
+                if (fromIndex < 0 || fromIndex >= state.openFiles.length) return;
+                if (toIndex < 0 || toIndex >= state.openFiles.length) return;
+                const item = state.openFiles.splice(fromIndex, 1)[0];
+                state.openFiles.splice(toIndex, 0, item);
+            },
         setExternalFileContent: (state, action) => {
             const { path, content } = action.payload || {};
             if (!path || typeof content !== 'string') return;
@@ -298,6 +354,13 @@ const workspaceSlice = createSlice({
                     updatedCache.set(file.path, content);
                     state.fileContentCache = updatedCache;
                 }
+
+                // Ensure the file appears in the open tabs list
+                try {
+                    const exists = state.openFiles.find(f => f.path === file.path);
+                    const entry = { ...file, isUnsaved: false };
+                    if (!exists) state.openFiles.push(entry);
+                } catch (e) { /* ignore */ }
             });
 
         // --- SAVE CONTENT ---
@@ -306,8 +369,17 @@ const workspaceSlice = createSlice({
                 if (action.payload) {
                     state.savedContent = action.payload;
                     const updatedCache = new Map(state.fileContentCache);
-                    updatedCache.set(state.activeFile.path, action.payload);
+                    if (state.activeFile && state.activeFile.path) {
+                        updatedCache.set(state.activeFile.path, action.payload);
+                    }
                     state.fileContentCache = updatedCache;
+                    // Mark active tab as saved
+                    try {
+                        if (state.activeFile && state.activeFile.path) {
+                            const idx = state.openFiles.findIndex(f => f.path === state.activeFile.path);
+                            if (idx !== -1) state.openFiles[idx] = { ...state.openFiles[idx], isUnsaved: false };
+                        }
+                    } catch (e) { /* ignore */ }
                 }
             });
 
@@ -356,7 +428,7 @@ const workspaceSlice = createSlice({
     },
 });
 
-export const { updateContent, renameItemStateUpdate, setSlug, setExternalFileContent } = workspaceSlice.actions;
+export const { updateContent, renameItemStateUpdate, setSlug, setExternalFileContent, openFile, closeFile, reorderOpenFiles } = workspaceSlice.actions;
 
 // --- MEMOIZED SELECTORS ---
 
@@ -365,6 +437,7 @@ export const selectFilesTree = (state) => state.workspace.rawFiles;
 
 
 export const selectActiveFile = (state) => state.workspace.activeFile;
+export const selectOpenFiles = (state) => state.workspace.openFiles || [];
 export const selectCurrentContent = (state) => state.workspace.currentContent;
 export const selectIsUnsaved = createSelector(
     selectCurrentContent,

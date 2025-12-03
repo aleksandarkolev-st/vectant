@@ -7,7 +7,7 @@ const initialUiActionState = {
     name: '', // current name in the input
 };
 
-const initialState = {
+export const initialUiState = {
     showTerminal: false,
     treeOnRight: false,
     autoSaveEnabled: false,
@@ -17,7 +17,7 @@ const initialState = {
 
 const uiSlice = createSlice({
     name: 'ui',
-    initialState,
+    initialState: initialUiState,
     reducers: {
         // Layout Reducers
         toggleTerminal: (state) => {
