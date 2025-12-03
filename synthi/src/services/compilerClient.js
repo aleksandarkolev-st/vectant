@@ -22,9 +22,17 @@ let compileChannel = null;
 let buildLogChannel = null;
 let terminalChannel = null;
 let readyPromise = null;
+let currentStreams = [];
 const logHandlers = new Set();
 const textDecoder = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
 let terminalInputBuffer = [];
+
+export const getMediaStream = () => {
+    if (currentStreams && currentStreams.length > 0) {
+        return currentStreams[0];
+    }
+    return null;
+};
 
 const mapLanguage = (filename = '') => {
     const ext = filename.split('.').pop().toLowerCase();
@@ -52,7 +60,6 @@ const notifyLog = (msg) => {
     // Check for GUI control messages
     try {
         const parsed = JSON.parse(text);
-        console.log('[compilerClient] Parsed log message:', parsed);
         if (parsed && parsed.type === 'run-gui-start') {
             console.log('[compilerClient] Dispatching synthi:gui-start', parsed);
             if (typeof window !== 'undefined' && window.dispatchEvent) {
@@ -107,6 +114,9 @@ const ensureConnection = () => {
 
         pc.ontrack = (event) => {
             console.log('Received remote track', event.track.kind);
+            if (event.streams && event.streams.length > 0) {
+                currentStreams = event.streams;
+            }
             if (typeof window !== 'undefined' && window.dispatchEvent) {
                 const ev = new CustomEvent('synthi:media-track', { detail: { track: event.track, streams: event.streams } });
                 window.dispatchEvent(ev);
