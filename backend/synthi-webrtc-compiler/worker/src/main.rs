@@ -29,7 +29,7 @@ use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
-use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType};
+use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType, RTCRtpCodecParameters};
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use webrtc::rtp::packet::Packet;
@@ -251,6 +251,23 @@ async fn main() -> Result<()> {
 async fn create_peer(signal_tx: mpsc::UnboundedSender<SignalMessage>) -> Result<Arc<RTCPeerConnection>> {
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
+    
+    // Manually register H265 as it might not be in default codecs
+    let _ = m.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: "video/H265".to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "".to_owned(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 96,
+            ..Default::default()
+        },
+        RTPCodecType::Video,
+    );
+
     let api = APIBuilder::new().with_media_engine(m).build();
     // Allow configuring ICE servers via COMPILER_ICE_SERVERS environment variable as JSON
     // Example: COMPILER_ICE_SERVERS='[{"urls":["stun:stun.l.google.com:19302"]},{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]'
@@ -500,54 +517,86 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
             let (v_tx, mut v_rx) = mpsc::unbounded_channel::<Vec<u8>>();
             let (a_tx, mut a_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-            let gst_pipeline_str = format!(
-                "ximagesrc display-name={} use-damage=false ! video/x-raw,framerate=30/1 ! queue ! videoconvert ! vp8enc deadline=1 ! rtpvp8pay ! queue ! appsink name=video_sink \
-                 pulsesrc ! audio/x-raw,rate=48000,channels=2 ! queue ! opusenc ! rtpopuspay ! queue ! appsink name=audio_sink",
-                display_str
-            );
+            let encoders = [
+                ("nvh265enc preset=low-latency-hp zerolatency=true", "rtph265pay", "video/H265"),
+                ("vaapih265enc", "rtph265pay", "video/H265"),
+                ("msdkh265enc", "rtph265pay", "video/H265"),
+                ("v4l2h265enc", "rtph265pay", "video/H265"),
+                ("mfh265enc low-latency=true", "rtph265pay", "video/H265"),
+                ("d3d11h265enc", "rtph265pay", "video/H265"),
+                ("amfh265enc", "rtph265pay", "video/H265"),
+                ("x265enc tune=zerolatency speed-preset=ultrafast ! video/x-h265,stream-format=byte-stream", "rtph265pay", "video/H265"),
+                ("openh265enc ! video/x-h265,stream-format=byte-stream", "rtph265pay", "video/H265"),
+                // H264 Fallbacks
+                ("nvh264enc preset=low-latency-hp zerolatency=true", "rtph264pay", "video/H264"),
+                ("vaapih264enc", "rtph264pay", "video/H264"),
+                ("msdkh264enc", "rtph264pay", "video/H264"),
+                ("v4l2h264enc", "rtph264pay", "video/H264"),
+                ("mfh264enc low-latency=true", "rtph264pay", "video/H264"),
+                ("d3d11h264enc", "rtph264pay", "video/H264"),
+                ("amfh264enc", "rtph264pay", "video/H264"),
+                ("x264enc tune=zerolatency speed-preset=ultrafast ! video/x-h264,stream-format=byte-stream", "rtph264pay", "video/H264"),
+                ("openh264enc ! video/x-h264,stream-format=byte-stream", "rtph264pay", "video/H264"),
+            ];
 
-            match gst::parse_launch(&gst_pipeline_str) {
-                Ok(pipeline) => {
-                    let pipeline = pipeline.downcast::<gst::Pipeline>().expect("Expected pipeline");
-                    
-                    if let Ok(video_sink) = pipeline.by_name("video_sink").context("Sink not found").and_then(|s| s.downcast::<gst_app::AppSink>().map_err(|_| anyhow::anyhow!("Expected AppSink"))) {
-                        video_sink.set_callbacks(
-                            gst_app::AppSinkCallbacks::builder()
-                                .new_sample(move |sink| {
-                                    let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-                                    let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
-                                    let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                                    let _ = v_tx.send(map.to_vec());
-                                    Ok(gst::FlowSuccess::Ok)
-                                })
-                                .build()
-                        );
-                    }
+            let mut selected_mime_type = "video/H265".to_owned();
 
-                    if let Ok(audio_sink) = pipeline.by_name("audio_sink").context("Sink not found").and_then(|s| s.downcast::<gst_app::AppSink>().map_err(|_| anyhow::anyhow!("Expected AppSink"))) {
-                        audio_sink.set_callbacks(
-                            gst_app::AppSinkCallbacks::builder()
-                                .new_sample(move |sink| {
-                                    let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-                                    let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
-                                    let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                                    let _ = a_tx.send(map.to_vec());
-                                    Ok(gst::FlowSuccess::Ok)
-                                })
-                                .build()
-                        );
-                    }
+            for (encoder, payloader, mime_type) in encoders {
+                let gst_pipeline_str = format!(
+                    "ximagesrc display-name={} use-damage=false ! video/x-raw,framerate=30/1 ! queue ! videoconvert ! {} ! {} config-interval=1 ! queue ! appsink name=video_sink \
+                     pulsesrc ! audio/x-raw,rate=48000,channels=2 ! queue ! opusenc ! rtpopuspay ! queue ! appsink name=audio_sink",
+                    display_str, encoder, payloader
+                );
 
-                    if let Err(e) = pipeline.set_state(gst::State::Playing) {
-                        eprintln!("Failed to set pipeline to playing: {}", e);
+                match gst::parse_launch(&gst_pipeline_str) {
+                    Ok(pipeline) => {
+                        let pipeline = pipeline.downcast::<gst::Pipeline>().expect("Expected pipeline");
+                        
+                        let v_tx_clone = v_tx.clone();
+                        if let Ok(video_sink) = pipeline.by_name("video_sink").context("Sink not found").and_then(|s| s.downcast::<gst_app::AppSink>().map_err(|_| anyhow::anyhow!("Expected AppSink"))) {
+                            video_sink.set_callbacks(
+                                gst_app::AppSinkCallbacks::builder()
+                                    .new_sample(move |sink| {
+                                        let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                                        let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
+                                        let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                                        let _ = v_tx_clone.send(map.to_vec());
+                                        Ok(gst::FlowSuccess::Ok)
+                                    })
+                                    .build()
+                            );
+                        }
+
+                        let a_tx_clone = a_tx.clone();
+                        if let Ok(audio_sink) = pipeline.by_name("audio_sink").context("Sink not found").and_then(|s| s.downcast::<gst_app::AppSink>().map_err(|_| anyhow::anyhow!("Expected AppSink"))) {
+                            audio_sink.set_callbacks(
+                                gst_app::AppSinkCallbacks::builder()
+                                    .new_sample(move |sink| {
+                                        let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                                        let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
+                                        let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                                        let _ = a_tx_clone.send(map.to_vec());
+                                        Ok(gst::FlowSuccess::Ok)
+                                    })
+                                    .build()
+                            );
+                        }
+
+                        if let Err(e) = pipeline.set_state(gst::State::Playing) {
+                            eprintln!("Failed to set pipeline to playing with encoder {}: {}", encoder, e);
+                            continue;
+                        }
+                        println!("Successfully started pipeline with encoder: {}", encoder);
+                        gst_pipeline = Some(pipeline);
+                        selected_mime_type = mime_type.to_owned();
+                        break;
                     }
-                    gst_pipeline = Some(pipeline);
+                    Err(e) => eprintln!("Failed to create GStreamer pipeline with encoder {}: {}", encoder, e),
                 }
-                Err(e) => eprintln!("Failed to create GStreamer pipeline: {}", e),
             }
 
             let video_track = Arc::new(TrackLocalStaticRTP::new(
-                RTCRtpCodecCapability { mime_type: "video/vp8".to_owned(), ..Default::default() },
+                RTCRtpCodecCapability { mime_type: selected_mime_type, ..Default::default() },
                 "video".to_owned(),
                 "webrtc-rs".to_owned(),
             ));
