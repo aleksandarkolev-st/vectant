@@ -457,6 +457,8 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
                 .arg("-screen")
                 .arg("0")
                 .arg("1280x720x24")
+                .arg("-nolisten")
+                .arg("tcp")
                 .spawn();
             
             match xvfb {
@@ -473,8 +475,8 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
             let a_port = a_sock.local_addr()?.port();
 
             let gst_cmd = format!(
-                "ximagesrc display-name={} use-damage=false ! video/x-raw,framerate=30/1 ! videoconvert ! vp8enc deadline=1 ! rtpvp8pay ! udpsink host=127.0.0.1 port={} \
-                 pulsesrc ! audio/x-raw,rate=48000,channels=2 ! opusenc ! rtpopuspay ! udpsink host=127.0.0.1 port={}",
+                "ximagesrc display-name={} use-damage=false ! video/x-raw,framerate=30/1 ! queue ! videoconvert ! vp8enc deadline=1 ! rtpvp8pay ! queue ! udpsink host=127.0.0.1 port={} \
+                 pulsesrc ! audio/x-raw,rate=48000,channels=2 ! queue ! opusenc ! rtpopuspay ! queue ! udpsink host=127.0.0.1 port={}",
                 display_str, v_port, a_port
             );
 
