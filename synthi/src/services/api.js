@@ -2,35 +2,39 @@
 
 import SynthiException from "@/components/SynthiException";
 
-// Utility to handle JSON responses and errors
-const handleResponse = async (response) => {
-    if (!response.ok) {
-        let errorData = {};
-        try {
-            errorData = await response.json();
-        } catch (e) {
-            // Ignore if response isn't JSON
-        }
-        throw new SynthiException(errorData.error || `API Error: ${response.statusText}`, `Status: ${response.status}`);
+export class ApiClient {
+    constructor(baseUrl = '/api/workspace') {
+        this.baseUrl = baseUrl;
     }
-    return response;
-};
 
-export const api = {
+    async _handleResponse(response) {
+        if (!response.ok) {
+            let errorData = {};
+            try {
+                errorData = await response.json();
+            } catch (e) {
+                // Ignore if response isn't JSON
+            }
+            throw new SynthiException(errorData.error || `API Error: ${response.statusText}`, `Status: ${response.status}`);
+        }
+        return response;
+    }
+
     // READ
-    fetchFiles: async (slug) => {
-        const response = await fetch(`/api/workspace/${slug}`);
-        const data = await handleResponse(response).then(r => r.json());
+    async fetchFiles(slug) {
+        const response = await fetch(`${this.baseUrl}/${slug}`);
+        const data = await this._handleResponse(response).then(r => r.json());
         // Simulating the tree structure creation here (or it happens in a selector)
         return data.files;
-    },
-    fetchFileContent: async (slug, filePath) => {
-        const response = await fetch(`/api/workspace/${slug}/item?filePath=${encodeURIComponent(filePath)}`);
-        return handleResponse(response).then(r => r.text());
-    },
+    }
+
+    async fetchFileContent(slug, filePath) {
+        const response = await fetch(`${this.baseUrl}/${slug}/item?filePath=${encodeURIComponent(filePath)}`);
+        return this._handleResponse(response).then(r => r.text());
+    }
 
     // MUTATIONS (Write Operations)
-    saveFileContent: async (slug, filePath, content, fileName) => {
+    async saveFileContent(slug, filePath, content, fileName) {
         const formData = new FormData();
         const blob = new Blob([content], { type: 'text/plain' });
         formData.append('file', blob, fileName);
@@ -39,20 +43,19 @@ export const api = {
         // This runs in background, retuning an early positive -> IIFE
         (async () => {
           try {
-            const res = await fetch(`/api/workspace/${slug}/item/`, {
+            const res = await fetch(`${this.baseUrl}/${slug}/item/`, {
               method: 'POST',
               body: formData,
             });
-            await handleResponse(res);
+            await this._handleResponse(res);
           } catch (err) {
             console.error('Background save failed:', err);
           }
         })();
         return { ok: true, optimistic: true };
-      },
+    }
 
-
-    createItem: async (slug, fullPath, isFolder) => {
+    async createItem(slug, fullPath, isFolder) {
         const formData = new FormData();
         // Extract file name from full path for blob append
         const fileName = fullPath.split('/').pop();
@@ -60,28 +63,30 @@ export const api = {
         formData.append('file', blob, fileName);
         formData.append('filePath', isFolder ? `${fullPath}/` : fullPath);
 
-        const response = await fetch(`/api/workspace/${slug}/item`, {
+        const response = await fetch(`${this.baseUrl}/${slug}/item`, {
             method: 'POST',
             body: formData,
         });
-        return handleResponse(response);
-    },
+        return this._handleResponse(response);
+    }
 
-    renameItem: async (slug, itemPath, newPath) => {
-        const response = await fetch(`/api/workspace/${slug}/item`, {
+    async renameItem(slug, itemPath, newPath) {
+        const response = await fetch(`${this.baseUrl}/${slug}/item`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ itemPath, newPath }),
         });
-        return handleResponse(response);
-    },
+        return this._handleResponse(response);
+    }
 
-    deleteItem: async (slug, itemPath) => {
-        const response = await fetch(`/api/workspace/${slug}/item`, {
+    async deleteItem(slug, itemPath) {
+        const response = await fetch(`${this.baseUrl}/${slug}/item`, {
             method: 'DELETE',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ itemPath }),
         });
-        return handleResponse(response);
-    },
-};
+        return this._handleResponse(response);
+    }
+}
+
+export const api = new ApiClient();
