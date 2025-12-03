@@ -12,6 +12,7 @@ enableMapSet();
 // environment).
 const UI_STORAGE_KEY = 'synthi:ui';
 const OPEN_TABS_KEY = 'synthi:openTabs';
+const ACTIVE_TAB_KEY = 'synthi:activeTab';
 
 function loadUiPrefs() {
   if (typeof window === 'undefined' || !window.localStorage) return undefined;
@@ -36,6 +37,18 @@ function loadOpenTabs() {
     return parsed;
   } catch (e) {
     console.warn('Failed to load open tabs from localStorage', e);
+    return undefined;
+  }
+}
+
+function loadActiveTab() {
+  if (typeof window === 'undefined' || !window.localStorage) return undefined;
+  try {
+    const raw = localStorage.getItem(ACTIVE_TAB_KEY);
+    if (!raw) return undefined;
+    return JSON.parse(raw);
+  } catch (e) {
+    console.warn('Failed to load active tab from localStorage', e);
     return undefined;
   }
 }
@@ -67,8 +80,19 @@ function saveOpenTabs(openFiles) {
   }
 }
 
+function saveActiveTab(activeFile) {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    const toSave = activeFile && activeFile.path ? { path: activeFile.path, name: activeFile.name, language: activeFile.language } : null;
+    if (toSave) localStorage.setItem(ACTIVE_TAB_KEY, JSON.stringify(toSave)); else localStorage.removeItem(ACTIVE_TAB_KEY);
+  } catch (e) {
+    console.warn('Failed to save active tab to localStorage', e);
+  }
+}
+
 const preloadedUi = loadUiPrefs();
 const preloadedOpenTabs = loadOpenTabs();
+const preloadedActive = loadActiveTab();
 
 // Merge persisted UI prefs into the slice's initial state so we don't
 // accidentally overwrite properties (like `uiActionState`) that the
@@ -79,6 +103,14 @@ const preloadedState = (() => {
   if (preloadedOpenTabs) {
     // Merge openTabs into the workspace initial state to ensure other keys remain.
     state.workspace = { ...initialWorkspaceState, openFiles: preloadedOpenTabs };
+    // If there was an active tab saved, try to set activeFile to the matching entry
+    if (preloadedActive && preloadedActive.path) {
+      const match = (preloadedOpenTabs || []).find(f => f.path === preloadedActive.path);
+      if (match) state.workspace.activeFile = match; else state.workspace.activeFile = preloadedActive;
+    }
+  } else if (preloadedActive && preloadedActive.path) {
+    // No open tabs list, but active tab stored — set activeFile minimally so UI can trigger load
+    state.workspace = { ...initialWorkspaceState, activeFile: preloadedActive };
   }
   return Object.keys(state).length > 0 ? state : undefined;
 })();
@@ -104,6 +136,7 @@ export const store = configureStore({
 if (typeof window !== 'undefined') {
   let lastUi = null;
   let lastOpenTabs = null;
+  let lastActiveTabPath = null;
   store.subscribe(() => {
     try {
       const state = store.getState();
@@ -121,6 +154,15 @@ if (typeof window !== 'undefined') {
         if (openSnapshot !== lastOpenTabs) {
           lastOpenTabs = openSnapshot;
           saveOpenTabs(openFiles);
+        }
+      } catch (_) {}
+      // Persist active tab when it changes
+      try {
+        const active = state?.workspace?.activeFile || null;
+        const activePath = active && active.path ? active.path : null;
+        if (activePath !== (lastActiveTabPath || null)) {
+          lastActiveTabPath = activePath;
+          saveActiveTab(active);
         }
       } catch (_) {}
     } catch (e) {
