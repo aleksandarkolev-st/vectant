@@ -332,10 +332,12 @@ export default function EditorPage({ params }) {
                     </div>
                     {mediaStream ? (
                         <video
+                            width={guiConfig.width}
+                            height={guiConfig.height}
                             autoPlay
                             playsInline
                             muted
-                            className="w-full h-full object-contain"
+                            className="block"
                             ref={video => {
                                 if (video && mediaStream && video.srcObject !== mediaStream) {
                                     video.srcObject = mediaStream;

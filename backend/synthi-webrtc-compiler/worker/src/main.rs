@@ -77,6 +77,10 @@ struct CompileRequest {
     files: Vec<FileEntry>,
     #[serde(default)]
     is_gui: bool,
+    #[serde(default)]
+    width: Option<u32>,
+    #[serde(default)]
+    height: Option<u32>,
 }
 
 #[tokio::main]
@@ -483,12 +487,16 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
         let mut gst_pipeline: Option<gst::Pipeline> = None;
 
         if req.is_gui {
+            let width = req.width.unwrap_or(1280);
+            let height = req.height.unwrap_or(720);
+            let resolution = format!("{}x{}x24", width, height);
+
             let mut display_str = String::new();
             let mut xvfb = Command::new("Xvfb");
             xvfb.arg("-displayfd").arg("1")
                 .arg("-screen")
                 .arg("0")
-                .arg("1280x720x24")
+                .arg(&resolution)
                 .arg("-ac")
                 .arg("-listen")
                 .arg("tcp")
@@ -640,8 +648,8 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
             let payload = serde_json::json!({
                 "sessionId": session_id.clone(),
                 "type": "run-gui-start",
-                "width": 1280,
-                "height": 720,
+                "width": width,
+                "height": height,
                 "display": display_str
             });
             let json_str = serde_json::to_string(&payload).unwrap_or_default();
