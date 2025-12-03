@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { applyPatch } from 'diff';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
-import { getFileLanguage } from '@/utils/fileUtils';
+import { getFileLanguage, findFirstFile } from '@/utils/fileUtils';
 import { buildFilesPayload } from '@/utils/multiFileContext';
 import { api } from '@/services/api';
 import { computeDiffChunks, parseFileDiffBlocks, stripDiffMarkers } from '../utils/diffUtils';
@@ -55,6 +55,7 @@ export const useAISuggestions = ({
     const onSuggestRef = useRef(onSuggest);
     const currentCodeRef = useRef(currentCode);
     const fallbackPathRef = useRef(activeFile?.path || activeFile?.name || null);
+    const activeFileRef = useRef(activeFile);
 
     // Keep the latest onSuggest callback reference in sync.
     useEffect(() => {
@@ -65,6 +66,10 @@ export const useAISuggestions = ({
     useEffect(() => {
         currentCodeRef.current = currentCode;
     }, [currentCode]);
+
+    useEffect(() => {
+        activeFileRef.current = activeFile;
+    }, [activeFile]);
 
     // Flatten workspace file tree into a simple list of paths for quick lookups.
     const flattenWorkspaceFiles = useMemo(() => {
@@ -181,19 +186,19 @@ export const useAISuggestions = ({
         };
         const isDeleteInstruction = (contentText = '') => {
             const norm = (contentText || '').trim().toUpperCase();
-            return norm === 'DELETE' || norm === 'DELETE FILE' || norm === 'DELETE_FILE' || norm === 'REMOVE FILE';
+            return norm === 'DELETE' || norm === 'DELETE FILE' || norm === 'DELETE_FILE' || norm === 'REMOVE FILE' || norm === 'DELETE FOLDER' || norm === 'REMOVE FOLDER';
         };
+        const isFolderPath = (p = '') => p.endsWith('/') || p.toLowerCase().includes('[folder]');
+
         for (const block of blocks) {
             const resolvedPath = resolveWorkspacePath(block.path) || block.path;
-            const baseContent = await getBaseContentForPath(resolvedPath);
-            const baseIsMissing = typeof baseContent !== 'string';
+            const folderFlag = isFolderPath(block.path);
+            const baseContent = folderFlag ? '' : await getBaseContentForPath(resolvedPath);
+            const baseIsMissing = folderFlag ? false : typeof baseContent !== 'string';
             const currentContent = baseIsMissing ? '' : baseContent;
 
             if (block.contentText && !block.diffText) {
                 if (isDeleteInstruction(block.contentText)) {
-                    if (baseIsMissing) {
-                        continue;
-                    }
                     hydrated.push({
                         path: block.path,
                         resolvedPath,
@@ -201,8 +206,10 @@ export const useAISuggestions = ({
                         originalContent: currentContent,
                         updatedContent: '',
                         isNewFile: false,
-                        deleteFile: true,
-                        chunks: computeDiffChunks(currentContent, ''),
+                        isFolder: folderFlag,
+                        deleteFile: !folderFlag,
+                        deleteFolder: folderFlag,
+                        chunks: [],
                         status: 'pending',
                     });
                     continue;
@@ -216,7 +223,8 @@ export const useAISuggestions = ({
                     diffText: null,
                     originalContent: currentContent,
                     updatedContent: block.contentText,
-                    isNewFile: baseIsMissing,
+                    isNewFile: baseIsMissing && !folderFlag,
+                    isFolder: folderFlag,
                     chunks: computeDiffChunks(currentContent, block.contentText),
                     status: 'pending',
                 });
@@ -232,8 +240,11 @@ export const useAISuggestions = ({
                         diffText: null,
                         originalContent: currentContent,
                         updatedContent: '',
-                        isNewFile: baseIsMissing,
-                        chunks: computeDiffChunks(currentContent, ''),
+                        isNewFile: baseIsMissing && !folderFlag,
+                        isFolder: folderFlag,
+                        deleteFile: folderFlag ? false : baseIsMissing ? false : true,
+                        deleteFolder: folderFlag,
+                        chunks: [],
                         status: 'pending',
                     });
                     continue;
@@ -269,9 +280,11 @@ export const useAISuggestions = ({
                 diffText: block.diffText,
                 originalContent: currentContent,
                 updatedContent: patched,
-                isNewFile: baseIsMissing,
-                deleteFile: isDelete,
-                chunks: computeDiffChunks(currentContent, patched),
+                isNewFile: baseIsMissing && !folderFlag,
+                isFolder: folderFlag,
+                deleteFile: isDelete && !folderFlag,
+                deleteFolder: isDelete && folderFlag,
+                chunks: folderFlag ? [] : computeDiffChunks(currentContent, patched),
                 status: 'pending',
             });
         }
@@ -304,8 +317,15 @@ export const useAISuggestions = ({
     const applyContentToPath = useCallback((path, newContent, { skipSave = false } = {}) => {
         if (!path || typeof newContent !== 'string') return;
         const resolvedPath = resolveWorkspacePath(path) || path;
-        if (activeFile?.path === resolvedPath && editor && typeof editor.setValue === 'function') {
-            editor.setValue(newContent);
+        if (activeFile?.path === resolvedPath && editor) {
+            const model = editor.getModel ? editor.getModel() : null;
+            if (model && typeof editor.executeEdits === 'function') {
+                const fullRange = model.getFullModelRange();
+                editor.executeEdits('ai-apply', [{ range: fullRange, text: newContent }]);
+                if (typeof editor.pushUndoStop === 'function') editor.pushUndoStop();
+            } else if (typeof editor.setValue === 'function') {
+                editor.setValue(newContent);
+            }
         }
         dispatch(setExternalFileContent({ path: resolvedPath, content: newContent }));
         return { resolvedPath, saved: !skipSave };
@@ -336,7 +356,7 @@ export const useAISuggestions = ({
 
         try {
             const targetPath = suggestion.resolvedPath || resolveWorkspacePath(path) || path;
-            if (suggestion.isNewFile) {
+            if (suggestion.isNewFile || suggestion.isFolder) {
                 mutateSession(sessionId, (s) => ({
                     ...s,
                     fileSuggestions: s.fileSuggestions.map((fs) =>
@@ -345,7 +365,7 @@ export const useAISuggestions = ({
                 }));
                 try {
                     const allowed = typeof window !== 'undefined'
-                        ? window.confirm(`Create new file "${targetPath}" from AI suggestion?`)
+                        ? window.confirm(`Create new ${suggestion.isFolder ? 'folder' : 'file'} "${targetPath}" from AI suggestion?`)
                         : true;
                     if (!allowed) {
                         mutateSession(sessionId, (s) => ({
@@ -374,16 +394,17 @@ export const useAISuggestions = ({
                     return;
                 }
             }
-            if (workspaceSlug && suggestion.isNewFile) {
+            if (workspaceSlug && (suggestion.isNewFile || suggestion.isFolder)) {
                 try {
                     try { if (typeof onBusy === 'function') onBusy(true); } catch (e) {}
-                    await api.createItem(workspaceSlug, targetPath, false);
+                    const createPath = suggestion.isFolder && !targetPath.endsWith('/') ? `${targetPath}/` : targetPath;
+                    await api.createItem(workspaceSlug, createPath, Boolean(suggestion.isFolder));
                     await dispatch(fetchFilesThunk(workspaceSlug));
                 } catch (createErr) {
                     mutateSession(sessionId, (s) => ({
                         ...s,
                         fileSuggestions: s.fileSuggestions.map((fs) =>
-                            fs.path === path ? { ...fs, status: 'error', error: createErr?.message || 'Failed to create file.' } : fs
+                            fs.path === path ? { ...fs, status: 'error', error: createErr?.message || 'Failed to create item.' } : fs
                         ),
                     }));
                     return;
@@ -394,13 +415,66 @@ export const useAISuggestions = ({
             if (workspaceSlug && suggestion.deleteFile) {
                 try {
                     try { if (typeof onBusy === 'function') onBusy(true); } catch (e) {}
+                    const allowedDelete = typeof window !== 'undefined'
+                        ? window.confirm(`Delete file "${targetPath}" from AI suggestion?`)
+                        : true;
+                    if (!allowedDelete) {
+                        mutateSession(sessionId, (s) => ({
+                            ...s,
+                            fileSuggestions: s.fileSuggestions.map((fs) =>
+                                fs.path === path ? { ...fs, status: 'pending' } : fs
+                            ),
+                        }));
+                        return;
+                    }
                     await api.deleteItem(workspaceSlug, targetPath);
-                    await dispatch(fetchFilesThunk(workspaceSlug));
+                    const result = await dispatch(fetchFilesThunk(workspaceSlug));
+                    // If the deleted file was active, pick a fallback (same folder or first file)
+                    if (activeFileRef.current && activeFileRef.current.path === targetPath) {
+                        const files = result?.payload?.files || [];
+                        const nextFile = (() => {
+                            const deletedFolder = targetPath.includes('/') ? targetPath.split('/').slice(0, -1).join('/') : '';
+                            const siblings = files.filter(f => !f.isFolder && (deletedFolder ? f.path.startsWith(`${deletedFolder}/`) : !f.path.includes('/')));
+                            if (siblings.length) return siblings[0];
+                            return findFirstFile(files);
+                        })();
+                        if (nextFile) {
+                            dispatch(selectFileThunk(nextFile));
+                        }
+                    }
                 } catch (delErr) {
                     mutateSession(sessionId, (s) => ({
                         ...s,
                         fileSuggestions: s.fileSuggestions.map((fs) =>
                             fs.path === path ? { ...fs, status: 'error', error: delErr?.message || 'Failed to delete file.' } : fs
+                        ),
+                    }));
+                    return;
+                } finally {
+                    try { if (typeof onBusy === 'function') onBusy(false); } catch (e) {}
+                }
+            } else if (workspaceSlug && suggestion.deleteFolder) {
+                try {
+                    try { if (typeof onBusy === 'function') onBusy(true); } catch (e) {}
+                    const allowedDelete = typeof window !== 'undefined'
+                        ? window.confirm(`Delete folder "${targetPath}" from AI suggestion?`)
+                        : true;
+                    if (!allowedDelete) {
+                        mutateSession(sessionId, (s) => ({
+                            ...s,
+                            fileSuggestions: s.fileSuggestions.map((fs) =>
+                                fs.path === path ? { ...fs, status: 'pending' } : fs
+                            ),
+                        }));
+                        return;
+                    }
+                    await api.deleteItem(workspaceSlug, targetPath.endsWith('/') ? targetPath : `${targetPath}/`);
+                    await dispatch(fetchFilesThunk(workspaceSlug));
+                } catch (delErr) {
+                    mutateSession(sessionId, (s) => ({
+                        ...s,
+                        fileSuggestions: s.fileSuggestions.map((fs) =>
+                            fs.path === path ? { ...fs, status: 'error', error: delErr?.message || 'Failed to delete folder.' } : fs
                         ),
                     }));
                     return;
@@ -420,7 +494,7 @@ export const useAISuggestions = ({
                 ...s,
                 fileSuggestions: s.fileSuggestions.map((fs) => {
                     if (fs.path !== path) return fs;
-                    const finalStatus = suggestion.deleteFile ? 'deleted' : 'applied';
+                    const finalStatus = (suggestion.deleteFile || suggestion.deleteFolder) ? 'deleted' : 'applied';
                     return { ...fs, status: finalStatus, error: null };
                 }),
             }));
@@ -523,7 +597,16 @@ export const useAISuggestions = ({
         try {
             const snapshotRaw = buildSuggestionSnapshot(activeSession);
             const snapshot = snapshotRaw ? { ...snapshotRaw, timestamp: new Date() } : null;
-            if (editor && typeof editor.setValue === 'function') {
+            if (editor && typeof editor.executeEdits === 'function' && editor.getModel) {
+                const model = editor.getModel();
+                if (model) {
+                    const fullRange = model.getFullModelRange();
+                    editor.executeEdits('ai-apply', [{ range: fullRange, text: suggestedCode }]);
+                    if (typeof editor.pushUndoStop === 'function') editor.pushUndoStop();
+                } else if (typeof editor.setValue === 'function') {
+                    editor.setValue(suggestedCode);
+                }
+            } else if (editor && typeof editor.setValue === 'function') {
                 editor.setValue(suggestedCode);
             }
             pushSnapshotToHistory(activeSession.id, snapshot);

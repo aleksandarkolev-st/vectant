@@ -2,7 +2,8 @@ import SynthiException from "@/components/SynthiException";
 
 const DEFAULT_WS_URL =
   process.env.NEXT_PUBLIC_GATEWAY_WS_URL || 'ws://localhost:7070/ws';
-const DEFAULT_TIMEOUT = 30_000;
+// Increase timeout to better accommodate long-running AI/gateway requests.
+const DEFAULT_TIMEOUT = 120_000;
 
 const STATUS = {
   IDLE: 'idle',

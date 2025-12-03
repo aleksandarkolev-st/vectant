@@ -339,7 +339,7 @@ const AIChatWindow = ({
                                                                 </div>
                                                                 {suggestion.status === 'pending' && msg.role === 'suggestion-live' && (
                                                                     <div className="flex items-center gap-2 flex-wrap justify-end">
-                                                                        {!suggestion.isNewFile && !suggestion.deleteFile && (
+                                                                        {!suggestion.isNewFile && !suggestion.deleteFile && !suggestion.deleteFolder && !suggestion.isFolder && (
                                                                             <Button
                                                                                 variant="secondary"
                                                                                 size="sm"
@@ -373,7 +373,7 @@ const AIChatWindow = ({
                                                                     {suggestion.error}
                                                                 </div>
                                                             ) : (
-                                                                <div className="max-h-[55vh] min-h-[140px] overflow-auto overflow-x-auto text-xs font-mono bg-[#0f0f10] rounded p-2">
+                                                                <div className="max-h-[70vh] min-h-[140px] overflow-auto overflow-x-auto text-xs font-mono bg-[#0f0f10] rounded p-2">
                                                                     {renderDiffChunkList(suggestion.chunks)}
                                                                 </div>
                                                             )}
@@ -399,7 +399,7 @@ const AIChatWindow = ({
                                                         )}
                                                     </div>
 
-                                                    <div className="max-h-[55vh] min-h-[140px] overflow-auto text-xs font-mono">
+                                                    <div className="max-h-[70vh] min-h-[140px] overflow-auto text-xs font-mono">
                                                         {renderDiffChunkList(snapshot.diffChunks || [])}
                                                     </div>
                                                 </div>
