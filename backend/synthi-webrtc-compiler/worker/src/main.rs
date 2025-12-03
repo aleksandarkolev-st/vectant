@@ -448,23 +448,32 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
         let mut gst_process: Option<tokio::process::Child> = None;
 
         if req.is_gui {
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-            let display_n = 1000 + (now % 100) as u32;
-            let display_str = format!(":{}", display_n);
-
-            let xvfb = Command::new("Xvfb")
-                .arg(&display_str)
+            let mut display_str = String::new();
+            let mut xvfb = Command::new("Xvfb");
+            xvfb.arg("-displayfd").arg("1")
                 .arg("-screen")
                 .arg("0")
                 .arg("1280x720x24")
                 .arg("-nolisten")
                 .arg("tcp")
-                .spawn();
-            
-            match xvfb {
-                Ok(child) => {
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit());
+
+            match xvfb.spawn() {
+                Ok(mut child) => {
+                    if let Some(stdout) = child.stdout.take() {
+                        let mut reader = BufReader::new(stdout);
+                        let mut line = String::new();
+                        match reader.read_line(&mut line).await {
+                            Ok(n) if n > 0 => {
+                                let display_num = line.trim();
+                                display_str = format!(":{}", display_num);
+                                println!("Xvfb started on display {}", display_str);
+                            }
+                            _ => eprintln!("Xvfb failed to output a display number"),
+                        }
+                    }
                     xvfb_process = Some(child);
-                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                 }
                 Err(e) => eprintln!("Failed to spawn Xvfb: {}", e),
             }
