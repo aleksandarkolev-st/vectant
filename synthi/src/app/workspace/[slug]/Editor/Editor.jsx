@@ -51,6 +51,17 @@ const TerminalManagerDyn = dynamic(() => import('../../TerminalManager.jsx'), {
     ssr: false
 });
 
+// Design tokens for tab styling (tunable) — tuned to a VSCode-like palette
+const TAB_TOKENS = {
+    activeBg: '#0f1724',
+    inactiveBg: '#0b0c10',
+    hoverBg: '#0f1114',
+    primary: '#007acc',
+    separator: 'rgba(255,255,255,0.06)',
+    unsaved: '#ff8b3d',
+    inactiveText: '#c7c9cc'
+};
+
 const EditorPanel = ({
     onRun,
     onToggleTerminal,
@@ -341,13 +352,22 @@ const EditorPanel = ({
                                                 const isActive = activeFile && file.path === activeFile.path;
                                             const fileIcon = getFileIcon(file.name || file.path || '');
                                             return (
+                                                <div key={`tab-wrap-${file.path}`} className="flex items-center">
+                                                    {/* Separator between tabs (subtle) */}
+                                                    {idx > 0 && (
+                                                        <div
+                                                            key={`sep-${file.path}`}
+                                                            style={{ width: 1, height: 22, backgroundColor: TAB_TOKENS.separator, marginRight: 6 }}
+                                                            aria-hidden="true"
+                                                        />
+                                                    )}
+
                                                     <div
                                                         key={file.path}
                                                         draggable
                                                         onDragStart={(e) => {
                                                             e.dataTransfer?.setData('text/tab-index', String(idx));
                                                             e.dataTransfer?.setData('text/tab-path', file.path);
-                                                            // small effect to show dragging
                                                         }}
                                                         onDragOver={(e) => { e.preventDefault(); }}
                                                         onDrop={(e) => {
@@ -365,9 +385,18 @@ const EditorPanel = ({
                                                             e.preventDefault();
                                                             setTabContext({ visible: true, x: e.clientX, y: e.clientY, file, index: idx });
                                                         }}
-                                                        className={`flex items-center gap-2 px-3 py-1 mr-1 rounded-t-md cursor-pointer select-none transition-colors duration-150 ${isActive ? 'bg-gradient-to-b from-[#1f6feb] to-[#165fb8] text-white shadow-[0_4px_12px_rgba(0,0,0,0.5)]' : 'bg-[#2b2b2b] text-gray-300 hover:bg-[#313131]'}`}
+                                                        className={`group flex items-center gap-2 px-3 py-1 mr-0 rounded-t-md cursor-pointer select-none transition-all duration-180 ease-out ${isActive ? 'text-white' : 'text-gray-200'}`}
                                                         title={file.path}
-                                                        style={{ minWidth: 80, maxWidth: 360 }}
+                                                        style={{
+                                                            minWidth: 84,
+                                                            maxWidth: 420,
+                                                            backgroundColor: isActive ? TAB_TOKENS.activeBg : TAB_TOKENS.inactiveBg,
+                                                            borderBottom: isActive ? `2px solid ${TAB_TOKENS.primary}` : '2px solid transparent',
+                                                            boxShadow: isActive ? '0 6px 20px rgba(8,15,30,0.6)' : 'none',
+                                                            transitionProperty: 'background-color, border-bottom-color, box-shadow',
+                                                            transitionDuration: '180ms',
+                                                            transitionTimingFunction: 'ease-out'
+                                                        }}
                                                     >
                                                         <span className="flex-shrink-0 text-sm opacity-90" aria-hidden="true">
                                                             {fileIcon}
@@ -375,21 +404,28 @@ const EditorPanel = ({
                                                         <span className={`text-sm font-medium truncate max-w-[220px] ${isActive ? 'text-white' : 'text-gray-200'}`}>
                                                             {file.name}
                                                         </span>
-                                                        {/* Unsaved marker for any tab */}
-                                                        {file.isUnsaved && (
-                                                            <span className="w-2 h-2 bg-orange-400 rounded-full ml-1 flex-shrink-0" aria-hidden="true" />
-                                                        )}
+
+                                                        {/* Unsaved marker (VSCode-style) - small dot near filename, visible when unsaved */}
+                                                        <span aria-hidden="true" className={`ml-2 w-2 h-2 rounded-full flex-shrink-0 transition-opacity ${file.isUnsaved ? '' : 'opacity-0'}`} style={{ backgroundColor: TAB_TOKENS.unsaved }} />
+
+                                                        {/* Close button appears on hover (VSCode behavior) */}
                                                         <button
                                                             onClick={(e) => { e.stopPropagation(); dispatch(closeFile(file.path)); }}
-                                                            className={`ml-2 flex items-center justify-center w-6 h-6 rounded hover:bg-white/6 transition-colors ${isActive ? 'text-white/80 hover:text-white' : 'text-gray-300 hover:text-white'}`}
+                                                            className={`ml-3 flex items-center justify-center w-6 h-6 rounded transition-opacity duration-150 ${isActive ? 'text-white/80' : 'text-gray-300'}`}
                                                             aria-label={`Close ${file.name}`}
+                                                            style={{ opacity: 0 }}
                                                         >
                                                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="pointer-events-none">
                                                                 <path d="M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                                                                 <path d="M6 6L18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                                                             </svg>
                                                         </button>
+
+                                                        <style jsx>{`
+                                                            .group:hover button { opacity: 1 !important; }
+                                                        `}</style>
                                                     </div>
+                                                </div>
                                             );
                                             }) : (
                                             <span className="text-gray-500 text-xs italic">No file open</span>
@@ -421,7 +457,7 @@ const EditorPanel = ({
                                                 </div>
                                             </div>
                                         )}
-                                    {isUnsaved && <Circle className="w-2 h-2 ml-2 text-orange-400 fill-orange-400" />}
+                                    {/* Removed global right-side unsaved dot; per-tab markers are used now */}
                                 </div>
 
                             {/* Status & Controls */}
