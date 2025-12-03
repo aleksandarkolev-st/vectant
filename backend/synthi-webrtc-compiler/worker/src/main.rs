@@ -3,12 +3,16 @@ use std::process::Stdio;
 use std::collections::HashMap;
 use std::env;
 
+use gstreamer as gst;
+use gstreamer::prelude::*;
+use gstreamer_app as gst_app;
+use gstreamer_app::prelude::*;
+
 use anyhow::{Context, Result};
 use futures::{FutureExt, StreamExt, SinkExt};
 use serde::{Deserialize, Serialize};
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader, AsyncWriteExt};
-use tokio::net::UdpSocket;
 use chrono::{Utc, SecondsFormat};
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
@@ -25,7 +29,7 @@ use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
-use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType};
+use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType, RTCRtpCodecParameters};
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use webrtc::rtp::packet::Packet;
@@ -73,10 +77,15 @@ struct CompileRequest {
     files: Vec<FileEntry>,
     #[serde(default)]
     is_gui: bool,
+    #[serde(default)]
+    width: Option<u32>,
+    #[serde(default)]
+    height: Option<u32>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    gst::init()?;
     verify_tooling().await?;
     let (ws_stream, _) = connect_async("ws://localhost:9000").await?;
     let (mut ws_write, mut ws_read) = ws_stream.split();
@@ -246,6 +255,23 @@ async fn main() -> Result<()> {
 async fn create_peer(signal_tx: mpsc::UnboundedSender<SignalMessage>) -> Result<Arc<RTCPeerConnection>> {
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
+    
+    // Manually register H265 as it might not be in default codecs
+    let _ = m.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: "video/H265".to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "".to_owned(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 96,
+            ..Default::default()
+        },
+        RTPCodecType::Video,
+    );
+
     let api = APIBuilder::new().with_media_engine(m).build();
     // Allow configuring ICE servers via COMPILER_ICE_SERVERS environment variable as JSON
     // Example: COMPILER_ICE_SERVERS='[{"urls":["stun:stun.l.google.com:19302"]},{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]'
@@ -458,15 +484,19 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
         run_cmd.stderr(Stdio::piped());
 
         let mut xvfb_process: Option<tokio::process::Child> = None;
-        let mut gst_process: Option<tokio::process::Child> = None;
+        let mut gst_pipeline: Option<gst::Pipeline> = None;
 
         if req.is_gui {
+            let width = req.width.unwrap_or(1280);
+            let height = req.height.unwrap_or(720);
+            let resolution = format!("{}x{}x24", width, height);
+
             let mut display_str = String::new();
             let mut xvfb = Command::new("Xvfb");
             xvfb.arg("-displayfd").arg("1")
                 .arg("-screen")
                 .arg("0")
-                .arg("1280x720x24")
+                .arg(&resolution)
                 .arg("-ac")
                 .arg("-listen")
                 .arg("tcp")
@@ -492,28 +522,89 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
                 Err(e) => eprintln!("Failed to spawn Xvfb: {}", e),
             }
 
-            let v_sock = UdpSocket::bind("127.0.0.1:0").await?;
-            let v_port = v_sock.local_addr()?.port();
-            let a_sock = UdpSocket::bind("127.0.0.1:0").await?;
-            let a_port = a_sock.local_addr()?.port();
+            let (v_tx, mut v_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+            let (a_tx, mut a_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-            let gst_cmd = format!(
-                "ximagesrc display-name={} use-damage=false ! video/x-raw,framerate=30/1 ! queue ! videoconvert ! vp8enc deadline=1 ! rtpvp8pay ! queue ! udpsink host=127.0.0.1 port={} \
-                 pulsesrc ! audio/x-raw,rate=48000,channels=2 ! queue ! opusenc ! rtpopuspay ! queue ! udpsink host=127.0.0.1 port={}",
-                display_str, v_port, a_port
-            );
+            let encoders = [
+                ("nvh265enc preset=low-latency-hp zerolatency=true", "rtph265pay", "video/H265"),
+                ("vaapih265enc", "rtph265pay", "video/H265"),
+                ("msdkh265enc", "rtph265pay", "video/H265"),
+                ("v4l2h265enc", "rtph265pay", "video/H265"),
+                ("mfh265enc low-latency=true", "rtph265pay", "video/H265"),
+                ("d3d11h265enc", "rtph265pay", "video/H265"),
+                ("amfh265enc", "rtph265pay", "video/H265"),
+                ("x265enc tune=zerolatency speed-preset=ultrafast ! video/x-h265,stream-format=byte-stream", "rtph265pay", "video/H265"),
+                ("openh265enc ! video/x-h265,stream-format=byte-stream", "rtph265pay", "video/H265"),
+                // H264 Fallbacks
+                ("nvh264enc preset=low-latency-hp zerolatency=true", "rtph264pay", "video/H264"),
+                ("vaapih264enc", "rtph264pay", "video/H264"),
+                ("msdkh264enc", "rtph264pay", "video/H264"),
+                ("v4l2h264enc", "rtph264pay", "video/H264"),
+                ("mfh264enc low-latency=true", "rtph264pay", "video/H264"),
+                ("d3d11h264enc", "rtph264pay", "video/H264"),
+                ("amfh264enc", "rtph264pay", "video/H264"),
+                ("x264enc tune=zerolatency speed-preset=ultrafast ! video/x-h264,stream-format=byte-stream", "rtph264pay", "video/H264"),
+                ("openh264enc ! video/x-h264,stream-format=byte-stream", "rtph264pay", "video/H264"),
+            ];
 
-            let gst = Command::new("gst-launch-1.0")
-                .args(gst_cmd.split_whitespace())
-                .spawn();
-            
-            match gst {
-                Ok(child) => gst_process = Some(child),
-                Err(e) => eprintln!("Failed to spawn GStreamer: {}", e),
+            let mut selected_mime_type = "video/H265".to_owned();
+
+            for (encoder, payloader, mime_type) in encoders {
+                let gst_pipeline_str = format!(
+                    "ximagesrc display-name={} use-damage=false ! video/x-raw,framerate=30/1 ! queue ! videoconvert ! {} ! {} config-interval=1 ! queue ! appsink name=video_sink \
+                     pulsesrc ! audio/x-raw,rate=48000,channels=2 ! queue ! opusenc ! rtpopuspay ! queue ! appsink name=audio_sink",
+                    display_str, encoder, payloader
+                );
+
+                match gst::parse_launch(&gst_pipeline_str) {
+                    Ok(pipeline) => {
+                        let pipeline = pipeline.downcast::<gst::Pipeline>().expect("Expected pipeline");
+                        
+                        let v_tx_clone = v_tx.clone();
+                        if let Ok(video_sink) = pipeline.by_name("video_sink").context("Sink not found").and_then(|s| s.downcast::<gst_app::AppSink>().map_err(|_| anyhow::anyhow!("Expected AppSink"))) {
+                            video_sink.set_callbacks(
+                                gst_app::AppSinkCallbacks::builder()
+                                    .new_sample(move |sink| {
+                                        let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                                        let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
+                                        let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                                        let _ = v_tx_clone.send(map.to_vec());
+                                        Ok(gst::FlowSuccess::Ok)
+                                    })
+                                    .build()
+                            );
+                        }
+
+                        let a_tx_clone = a_tx.clone();
+                        if let Ok(audio_sink) = pipeline.by_name("audio_sink").context("Sink not found").and_then(|s| s.downcast::<gst_app::AppSink>().map_err(|_| anyhow::anyhow!("Expected AppSink"))) {
+                            audio_sink.set_callbacks(
+                                gst_app::AppSinkCallbacks::builder()
+                                    .new_sample(move |sink| {
+                                        let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                                        let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
+                                        let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                                        let _ = a_tx_clone.send(map.to_vec());
+                                        Ok(gst::FlowSuccess::Ok)
+                                    })
+                                    .build()
+                            );
+                        }
+
+                        if let Err(e) = pipeline.set_state(gst::State::Playing) {
+                            eprintln!("Failed to set pipeline to playing with encoder {}: {}", encoder, e);
+                            continue;
+                        }
+                        println!("Successfully started pipeline with encoder: {}", encoder);
+                        gst_pipeline = Some(pipeline);
+                        selected_mime_type = mime_type.to_owned();
+                        break;
+                    }
+                    Err(e) => eprintln!("Failed to create GStreamer pipeline with encoder {}: {}", encoder, e),
+                }
             }
 
             let video_track = Arc::new(TrackLocalStaticRTP::new(
-                RTCRtpCodecCapability { mime_type: "video/vp8".to_owned(), ..Default::default() },
+                RTCRtpCodecCapability { mime_type: selected_mime_type, ..Default::default() },
                 "video".to_owned(),
                 "webrtc-rs".to_owned(),
             ));
@@ -538,9 +629,8 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
 
             let v_track_clone = video_track.clone();
             tokio::spawn(async move {
-                let mut buf = vec![0u8; 1500];
-                while let Ok((n, _)) = v_sock.recv_from(&mut buf).await {
-                    if let Ok(packet) = Packet::unmarshal(&mut &buf[..n]) {
+                while let Some(mut buf) = v_rx.recv().await {
+                    if let Ok(packet) = Packet::unmarshal(&mut &buf[..]) {
                         let _ = v_track_clone.write_rtp(&packet).await;
                     }
                 }
@@ -548,9 +638,8 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
 
             let a_track_clone = audio_track.clone();
             tokio::spawn(async move {
-                let mut buf = vec![0u8; 1500];
-                while let Ok((n, _)) = a_sock.recv_from(&mut buf).await {
-                    if let Ok(packet) = Packet::unmarshal(&mut &buf[..n]) {
+                while let Some(mut buf) = a_rx.recv().await {
+                    if let Ok(packet) = Packet::unmarshal(&mut &buf[..]) {
                         let _ = a_track_clone.write_rtp(&packet).await;
                     }
                 }
@@ -559,8 +648,8 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
             let payload = serde_json::json!({
                 "sessionId": session_id.clone(),
                 "type": "run-gui-start",
-                "width": 1280,
-                "height": 720,
+                "width": width,
+                "height": height,
                 "display": display_str
             });
             let json_str = serde_json::to_string(&payload).unwrap_or_default();
@@ -665,7 +754,9 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
         }
 
         if let Some(mut child) = xvfb_process { let _ = child.kill().await; }
-        if let Some(mut child) = gst_process { let _ = child.kill().await; }
+        if let Some(pipeline) = gst_pipeline {
+            let _ = pipeline.set_state(gst::State::Null);
+        }
 
         let end_dt = Utc::now();
         let end_time = end_dt.to_rfc3339_opts(SecondsFormat::Secs, true);

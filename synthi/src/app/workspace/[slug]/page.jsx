@@ -20,7 +20,7 @@ import EditorPanel from "./Editor/Editor.jsx";
 import { getFileLanguage } from '@/utils/fileUtils';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
 import AIChatWindow from '@/components/chat/AIChatWindow';
-import { compileWithWorker } from '@/services/compilerClient';
+import { compileWithWorker, getMediaStream } from '@/services/compilerClient';
 import { api } from '@/services/api';
 import { resolveDependencies } from '@/utils/dependencyResolver';
 
@@ -28,14 +28,22 @@ export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
     const [chatVisible, setChatVisible] = useState(false);
     const [guiConfig, setGuiConfig] = useState(null);
+    const [isGuiRunning, setIsGuiRunning] = useState(false);
     const [editor, setEditor] = useState(null);
     const { analyzeCode, lastResult } = useAnalyzerGateway();
     const [latestCompletion, setLatestCompletion] = useState(null);
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
     const [mediaStream, setMediaStream] = useState(null);
+    const [isGuiMode, setIsGuiMode] = useState(false);
 
     useEffect(() => {
+        // Check if we already have a stream from a previous session
+        const existingStream = getMediaStream();
+        if (existingStream) {
+            setMediaStream(existingStream);
+        }
+
         const handleTrack = (e) => {
             const { track, streams } = e.detail;
             console.log('Page received track:', track.kind);
@@ -60,11 +68,15 @@ export default function EditorPage({ params }) {
         const handleGuiStart = (e) => {
             console.log('GUI Start event received in page', e.detail);
             setGuiConfig(e.detail);
+            setIsGuiRunning(true);
         };
         const handleGuiEnd = (e) => {
             console.log('GUI End event received in page', e.detail);
-            setGuiConfig(null);
-            setMediaStream(null);
+            setIsGuiRunning(false);
+            // Do not clear guiConfig automatically so the window stays open
+            // setGuiConfig(null);
+            // Do not clear mediaStream so it can be reused if the connection persists
+            // setMediaStream(null);
         };
 
         if (typeof window !== 'undefined') {
@@ -196,8 +208,8 @@ export default function EditorPage({ params }) {
              appendBuildLog(`Warning: Dependency resolution failed: ${e.message}`);
         }
 
-        // Simple heuristic for testing GUI
-        const isGui = source.includes('#include <X11/Xlib.h>') || source.includes('XOpenDisplay');
+        // Use the manual toggle for GUI mode
+        const isGui = isGuiMode;
 
         try {
             await compileWithWorker({
@@ -215,7 +227,7 @@ export default function EditorPage({ params }) {
             console.error('Compile failed', err);
             appendBuildLog(`error: ${err?.message || err}`);
         }
-    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, fileContentCache, slug]);
+    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, fileContentCache, slug, isGuiMode]);
 
     const handleEditorMount = (editorInstance) => {
         setEditor(editorInstance);
@@ -293,6 +305,8 @@ export default function EditorPage({ params }) {
                 onRedo={handleRedo}
                 onToggleChat={handleToggleChat}
                 chatVisible={chatVisible}
+                isGuiMode={isGuiMode}
+                onToggleGuiMode={() => setIsGuiMode(v => !v)}
             />
             {buildLogs.length > 0 && (
                 <div className="border-b border-[#2b2b2b] bg-[#121212] px-3 py-2 text-xs font-mono text-gray-200 max-h-28 overflow-auto">
@@ -301,31 +315,40 @@ export default function EditorPage({ params }) {
                     ))}
                 </div>
             )}
-            {(mediaStream || guiConfig) && (
+            {(guiConfig) && (
                 <div 
                     className="fixed bottom-4 right-4 bg-black border border-gray-600 shadow-lg z-50 resize overflow-auto"
                     style={{ 
-                        width: guiConfig ? guiConfig.width : '20rem', 
-                        height: guiConfig ? guiConfig.height : '15rem',
+                        width: guiConfig.width, 
+                        height: guiConfig.height,
                         maxWidth: '90vw',
                         maxHeight: '90vh'
                     }}
                 >
-                    <div className="absolute top-0 left-0 bg-gray-800 text-white text-xs px-2 py-1 z-10">
-                        GUI Output {guiConfig ? `(${guiConfig.width}x${guiConfig.height})` : ''}
-                        <button onClick={() => { setMediaStream(null); setGuiConfig(null); }} className="ml-2 text-red-400 hover:text-red-300">x</button>
+                    <div className="absolute top-0 left-0 bg-gray-800 text-white text-xs px-2 py-1 z-10 flex items-center gap-2">
+                        <span>GUI Output ({guiConfig.width}x{guiConfig.height})</span>
+                        {!isGuiRunning && <span className="text-red-400 font-bold">[STOPPED]</span>}
+                        <button onClick={() => { setGuiConfig(null); setIsGuiRunning(false); }} className="ml-2 text-red-400 hover:text-red-300">x</button>
                     </div>
-                    <video
-                        autoPlay
-                        playsInline
-                        controls
-                        className="w-full h-full object-contain"
-                        ref={video => {
-                            if (video && mediaStream && video.srcObject !== mediaStream) {
-                                video.srcObject = mediaStream;
-                            }
-                        }}
-                    />
+                    {mediaStream ? (
+                        <video
+                            width={guiConfig.width}
+                            height={guiConfig.height}
+                            autoPlay
+                            playsInline
+                            muted
+                            className="block"
+                            ref={video => {
+                                if (video && mediaStream && video.srcObject !== mediaStream) {
+                                    video.srcObject = mediaStream;
+                                }
+                            }}
+                        />
+                    ) : (
+                        <div className="w-full h-full flex items-center justify-center text-gray-500">
+                            {isGuiRunning ? 'Waiting for video stream...' : 'Application exited'}
+                        </div>
+                    )}
                 </div>
             )}
             <ResizablePanelGroup

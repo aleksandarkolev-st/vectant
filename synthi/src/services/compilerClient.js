@@ -22,9 +22,17 @@ let compileChannel = null;
 let buildLogChannel = null;
 let terminalChannel = null;
 let readyPromise = null;
+let currentStreams = [];
 const logHandlers = new Set();
 const textDecoder = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
 let terminalInputBuffer = [];
+
+export const getMediaStream = () => {
+    if (currentStreams && currentStreams.length > 0) {
+        return currentStreams[0];
+    }
+    return null;
+};
 
 const mapLanguage = (filename = '') => {
     const ext = filename.split('.').pop().toLowerCase();
@@ -52,7 +60,6 @@ const notifyLog = (msg) => {
     // Check for GUI control messages
     try {
         const parsed = JSON.parse(text);
-        console.log('[compilerClient] Parsed log message:', parsed);
         if (parsed && parsed.type === 'run-gui-start') {
             console.log('[compilerClient] Dispatching synthi:gui-start', parsed);
             if (typeof window !== 'undefined' && window.dispatchEvent) {
@@ -88,6 +95,20 @@ const ensureConnection = () => {
     readyPromise = new Promise((resolve, reject) => {
         pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
+        // Log supported codecs for debugging
+        try {
+            if (RTCRtpReceiver.getCapabilities) {
+                const capabilities = RTCRtpReceiver.getCapabilities('video');
+                if (capabilities && capabilities.codecs) {
+                    console.log('Browser supported video codecs:', capabilities.codecs.map(c => c.mimeType));
+                    const hasH265 = capabilities.codecs.some(c => c.mimeType.toLowerCase() === 'video/h265');
+                    console.log('H.265 supported by browser:', hasH265);
+                }
+            }
+        } catch (e) {
+            console.warn('Failed to check codec capabilities', e);
+        }
+
         pc.onicecandidate = (event) => {
             if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: 'candidate', candidate: event.candidate }));
@@ -107,6 +128,9 @@ const ensureConnection = () => {
 
         pc.ontrack = (event) => {
             console.log('Received remote track', event.track.kind);
+            if (event.streams && event.streams.length > 0) {
+                currentStreams = event.streams;
+            }
             if (typeof window !== 'undefined' && window.dispatchEvent) {
                 const ev = new CustomEvent('synthi:media-track', { detail: { track: event.track, streams: event.streams } });
                 window.dispatchEvent(ev);
@@ -207,7 +231,7 @@ const ensureConnection = () => {
     return readyPromise;
 };
 
-export const compileWithWorker = async ({ filename, source, language, files = [], isGui = false, onLog } = {}) => {
+export const compileWithWorker = async ({ filename, source, language, files = [], isGui = false, width, height, onLog } = {}) => {
     const lang = language || mapLanguage(filename);
     if (!lang) throw new Error('Unsupported language for compilation');
     await ensureConnection();
@@ -265,7 +289,9 @@ export const compileWithWorker = async ({ filename, source, language, files = []
                 source: source || '',
                 files: files,
                 session_id: sessionId,
-                is_gui: isGui
+                is_gui: isGui,
+                width: width,
+                height: height
             }));
         } catch (e) {
             logHandlers.delete(handleLog);
