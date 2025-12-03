@@ -41,6 +41,7 @@ import { useDiffManager } from './diffManager';
 import { useEditorProviders } from './providers';
 import { useEditorEvents } from './events';
 import { takeLastChars } from './utils';
+import { SYNTHI_THEME } from './theme';
 
 const TerminalManagerDyn = dynamic(() => import('../../TerminalManager.jsx'), {
     ssr: false
@@ -57,7 +58,7 @@ const EditorPanel = ({
 }) => {
     const dispatch = useAppDispatch();
 
-    // Global state access
+    //Global state access djsaiodjasiodjasiodjasiodjaoidjasoidjsaiodjasiodjasjdnsaj
     const activeFile = useAppSelector(selectActiveFile);
     const code = useAppSelector(selectCurrentContent);
     const isUnsaved = useAppSelector(selectIsUnsaved);
@@ -75,7 +76,7 @@ const EditorPanel = ({
     const latestCodeRef = useRef(code);
     const pendingContentFrameRef = useRef(null);
     const pendingPositionFrameRef = useRef(null);
-    
+
     // Swallow Monaco's cancel-notifications so they don't spam the console when
     // inline suggestions are abandoned mid-flight.
     useEffect(() => {
@@ -275,7 +276,7 @@ const EditorPanel = ({
         const issues = analysisResult?.static_analysis || analysisResult?.issues || [];
         const markers = issues.map(issue => ({
             startLineNumber: issue.line === 0 ? 1 : issue.line + 1,
-                startColumn: Math.max(1, (issue.column || 0) + 1),
+            startColumn: Math.max(1, (issue.column || 0) + 1),
             endLineNumber: issue.end_line ? issue.end_line + 1 : (issue.line === 0 ? 1 : issue.line + 1),
             endColumn: issue.end_column ? issue.end_column + 1 : 100,
             message: issue.message,
@@ -306,14 +307,14 @@ const EditorPanel = ({
                 setAiCompletionState('ready');
                 try {
                     const p = editorInstance?.trigger('ai-external', 'editor.action.inlineSuggest.trigger', {});
-                    if (p && typeof p.then === 'function') p.catch(() => {});
-                } catch(e){}
+                    if (p && typeof p.then === 'function') p.catch(() => { });
+                } catch (e) { }
             }
         }
     }, [latestCompletion, editorInstance, code, activeLanguage]);
 
 
-    
+
     // --- Render ---
 
 
@@ -324,7 +325,7 @@ const EditorPanel = ({
                     <div className="h-full flex flex-col bg-[#1e1e1e]">
                         {/* Minimal Sleek Header */}
                         <div className="h-9 px-3 border-b border-[#2b2b2b] bg-[#1e1e1e] flex justify-between items-center select-none">
-                            
+
                             {/* Breadcrumbs */}
                             <div className="flex items-center gap-2 overflow-hidden">
                                 {activeFileIcon ? (
@@ -366,7 +367,7 @@ const EditorPanel = ({
                                         AI Auto {aiAutoEnabled ? 'On' : 'Off'}
                                     </span>
                                 </div>
-                                
+
                                 {/* Manual Save (Optional since we have auto-save) */}
                                 <button onClick={handleSave} className="opacity-60 hover:opacity-100 transition-opacity">
                                     <Save className="w-4 h-4 text-gray-400" />
@@ -384,8 +385,14 @@ const EditorPanel = ({
                                             height="100%"
                                             value={code ?? ''}
                                             language={activeLanguage}
-                                            theme="vs-dark"
-                                            options={EDITOR_OPTIONS}
+                                            theme="synthi-theme"
+                                            options={{
+                                                ...EDITOR_OPTIONS,
+                                                semanticHighlighting: { enabled: true }
+                                            }}
+                                            beforeMount={(monaco) => {
+                                                monaco.editor.defineTheme('synthi-theme', SYNTHI_THEME);
+                                            }}
                                             onChange={handleCodeChange}
                                             onMount={(editor, monaco) => {
                                                 setEditorInstance(editor);
@@ -399,7 +406,7 @@ const EditorPanel = ({
                                                         pendingPositionFrameRef.current = null;
                                                     });
                                                 });
-                                                
+
                                                 // Ensure layout refreshes on mount
                                                 setTimeout(() => editor.layout(), 100);
                                             }}
@@ -423,7 +430,7 @@ const EditorPanel = ({
                         </div>
                     </div>
                 </ResizablePanel>
-                
+
                 {showTerminal && (
                     <>
                         <ResizableHandle withHandle className="bg-[#1e1e1e] border-t border-[#2b2b2b]" />

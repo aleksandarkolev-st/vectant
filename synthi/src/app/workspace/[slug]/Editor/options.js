@@ -1,7 +1,7 @@
 export const EDITOR_OPTIONS = {
-    minimap: { 
-        enabled: true, 
-        scale: 0.75, 
+    minimap: {
+        enabled: true,
+        scale: 0.75,
         renderCharacters: false // Cleaner look
     },
     fontFamily: "'JetBrains Mono', 'Fira Code', Consolas, 'Courier New', monospace",
@@ -35,6 +35,7 @@ export const EDITOR_OPTIONS = {
     hover: {
         enabled: true,
         delay: 300,
-    }
-    ,glyphMargin: true,
+    },
+    glyphMargin: true,
+    semanticHighlighting: { enabled: true },
 };
