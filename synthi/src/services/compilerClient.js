@@ -95,6 +95,20 @@ const ensureConnection = () => {
     readyPromise = new Promise((resolve, reject) => {
         pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
+        // Log supported codecs for debugging
+        try {
+            if (RTCRtpReceiver.getCapabilities) {
+                const capabilities = RTCRtpReceiver.getCapabilities('video');
+                if (capabilities && capabilities.codecs) {
+                    console.log('Browser supported video codecs:', capabilities.codecs.map(c => c.mimeType));
+                    const hasH265 = capabilities.codecs.some(c => c.mimeType.toLowerCase() === 'video/h265');
+                    console.log('H.265 supported by browser:', hasH265);
+                }
+            }
+        } catch (e) {
+            console.warn('Failed to check codec capabilities', e);
+        }
+
         pc.onicecandidate = (event) => {
             if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: 'candidate', candidate: event.candidate }));
