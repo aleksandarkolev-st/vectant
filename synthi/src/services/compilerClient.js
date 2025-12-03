@@ -49,6 +49,25 @@ const notifyLog = (msg) => {
         text = String(msg);
     }
 
+    // Check for GUI control messages
+    try {
+        const parsed = JSON.parse(text);
+        console.log('[compilerClient] Parsed log message:', parsed);
+        if (parsed && parsed.type === 'run-gui-start') {
+            console.log('[compilerClient] Dispatching synthi:gui-start', parsed);
+            if (typeof window !== 'undefined' && window.dispatchEvent) {
+                window.dispatchEvent(new CustomEvent('synthi:gui-start', { detail: parsed }));
+            }
+        } else if (parsed && parsed.type === 'run-gui-end') {
+            console.log('[compilerClient] Dispatching synthi:gui-end', parsed);
+            if (typeof window !== 'undefined' && window.dispatchEvent) {
+                window.dispatchEvent(new CustomEvent('synthi:gui-end', { detail: parsed }));
+            }
+        }
+    } catch (e) {
+        // ignore
+    }
+
     logHandlers.forEach((fn) => {
         try { fn(text); } catch (e) { /* ignore */ }
     });
@@ -84,6 +103,14 @@ const ensureConnection = () => {
         };
         pc.onconnectionstatechange = () => {
             try { console.debug('compilerClient connection state:', pc.connectionState); } catch (e) {}
+        };
+
+        pc.ontrack = (event) => {
+            console.log('Received remote track', event.track.kind);
+            if (typeof window !== 'undefined' && window.dispatchEvent) {
+                const ev = new CustomEvent('synthi:media-track', { detail: { track: event.track, streams: event.streams } });
+                window.dispatchEvent(ev);
+            }
         };
 
         pc.ondatachannel = (event) => {
@@ -129,7 +156,7 @@ const ensureConnection = () => {
             terminalChannel = pc.createDataChannel('terminal', { ordered: true });
             compileChannel.onclose = () => {};
 
-            const offer = await pc.createOffer();
+            const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
             await pc.setLocalDescription(offer);
             ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp, sdp_type: offer.type }));
 
@@ -180,7 +207,7 @@ const ensureConnection = () => {
     return readyPromise;
 };
 
-export const compileWithWorker = async ({ filename, source, language, files = [], onLog } = {}) => {
+export const compileWithWorker = async ({ filename, source, language, files = [], isGui = false, onLog } = {}) => {
     const lang = language || mapLanguage(filename);
     if (!lang) throw new Error('Unsupported language for compilation');
     await ensureConnection();
@@ -237,7 +264,8 @@ export const compileWithWorker = async ({ filename, source, language, files = []
                 filename: filename || `main.${lang}`,
                 source: source || '',
                 files: files,
-                session_id: sessionId
+                session_id: sessionId,
+                is_gui: isGui
             }));
         } catch (e) {
             logHandlers.delete(handleLog);

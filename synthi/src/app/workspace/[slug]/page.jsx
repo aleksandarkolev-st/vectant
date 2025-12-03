@@ -27,11 +27,58 @@ import { resolveDependencies } from '@/utils/dependencyResolver';
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
     const [chatVisible, setChatVisible] = useState(false);
+    const [guiConfig, setGuiConfig] = useState(null);
     const [editor, setEditor] = useState(null);
     const { analyzeCode, lastResult } = useAnalyzerGateway();
     const [latestCompletion, setLatestCompletion] = useState(null);
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
+    const [mediaStream, setMediaStream] = useState(null);
+
+    useEffect(() => {
+        const handleTrack = (e) => {
+            const { track, streams } = e.detail;
+            console.log('Page received track:', track.kind);
+            if (streams && streams.length > 0) {
+                setMediaStream(streams[0]);
+            } else {
+                // Create a new stream if none provided
+                setMediaStream(prev => {
+                    if (prev) {
+                        prev.addTrack(track);
+                        return prev;
+                    }
+                    return new MediaStream([track]);
+                });
+            }
+        };
+        window.addEventListener('synthi:media-track', handleTrack);
+        return () => window.removeEventListener('synthi:media-track', handleTrack);
+    }, []);
+
+    useEffect(() => {
+        const handleGuiStart = (e) => {
+            console.log('GUI Start event received in page', e.detail);
+            setGuiConfig(e.detail);
+        };
+        const handleGuiEnd = (e) => {
+            console.log('GUI End event received in page', e.detail);
+            setGuiConfig(null);
+            setMediaStream(null);
+        };
+
+        if (typeof window !== 'undefined') {
+            window.addEventListener('synthi:gui-start', handleGuiStart);
+            window.addEventListener('synthi:gui-end', handleGuiEnd);
+        }
+        return () => {
+            if (typeof window !== 'undefined') {
+                window.removeEventListener('synthi:gui-start', handleGuiStart);
+                window.removeEventListener('synthi:gui-end', handleGuiEnd);
+            }
+        };
+    }, []);
+
     const handleClearLatestCompletion = useCallback(() => {
         setLatestCompletion(null);
         setCompletionClearSignal((v) => v + 1);
@@ -149,11 +196,15 @@ export default function EditorPage({ params }) {
              appendBuildLog(`Warning: Dependency resolution failed: ${e.message}`);
         }
 
+        // Simple heuristic for testing GUI
+        const isGui = source.includes('#include <X11/Xlib.h>') || source.includes('XOpenDisplay');
+
         try {
             await compileWithWorker({
                 filename,
                 source,
                 files: additionalFiles,
+                isGui,
                 onLog: (line) => {
                     appendBuildLog(line);
                     console.log('[build]', line);
@@ -248,6 +299,33 @@ export default function EditorPage({ params }) {
                     {buildLogs.map((line, idx) => (
                         <div key={idx} className="leading-5 whitespace-pre-wrap">{line}</div>
                     ))}
+                </div>
+            )}
+            {(mediaStream || guiConfig) && (
+                <div 
+                    className="fixed bottom-4 right-4 bg-black border border-gray-600 shadow-lg z-50 resize overflow-auto"
+                    style={{ 
+                        width: guiConfig ? guiConfig.width : '20rem', 
+                        height: guiConfig ? guiConfig.height : '15rem',
+                        maxWidth: '90vw',
+                        maxHeight: '90vh'
+                    }}
+                >
+                    <div className="absolute top-0 left-0 bg-gray-800 text-white text-xs px-2 py-1 z-10">
+                        GUI Output {guiConfig ? `(${guiConfig.width}x${guiConfig.height})` : ''}
+                        <button onClick={() => { setMediaStream(null); setGuiConfig(null); }} className="ml-2 text-red-400 hover:text-red-300">x</button>
+                    </div>
+                    <video
+                        autoPlay
+                        playsInline
+                        controls
+                        className="w-full h-full object-contain"
+                        ref={video => {
+                            if (video && mediaStream && video.srcObject !== mediaStream) {
+                                video.srcObject = mediaStream;
+                            }
+                        }}
+                    />
                 </div>
             )}
             <ResizablePanelGroup
