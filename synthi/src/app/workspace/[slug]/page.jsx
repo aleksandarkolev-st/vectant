@@ -34,6 +34,7 @@ export default function EditorPage({ params }) {
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
     const [mediaStream, setMediaStream] = useState(null);
+    const [isGuiMode, setIsGuiMode] = useState(false);
 
     useEffect(() => {
         const handleTrack = (e) => {
@@ -64,7 +65,8 @@ export default function EditorPage({ params }) {
         const handleGuiEnd = (e) => {
             console.log('GUI End event received in page', e.detail);
             setGuiConfig(null);
-            setMediaStream(null);
+            // Do not clear mediaStream so it can be reused if the connection persists
+            // setMediaStream(null);
         };
 
         if (typeof window !== 'undefined') {
@@ -196,8 +198,8 @@ export default function EditorPage({ params }) {
              appendBuildLog(`Warning: Dependency resolution failed: ${e.message}`);
         }
 
-        // Simple heuristic for testing GUI
-        const isGui = source.includes('#include <X11/Xlib.h>') || source.includes('XOpenDisplay');
+        // Use the manual toggle for GUI mode
+        const isGui = isGuiMode;
 
         try {
             await compileWithWorker({
@@ -293,6 +295,8 @@ export default function EditorPage({ params }) {
                 onRedo={handleRedo}
                 onToggleChat={handleToggleChat}
                 chatVisible={chatVisible}
+                isGuiMode={isGuiMode}
+                onToggleGuiMode={() => setIsGuiMode(v => !v)}
             />
             {buildLogs.length > 0 && (
                 <div className="border-b border-[#2b2b2b] bg-[#121212] px-3 py-2 text-xs font-mono text-gray-200 max-h-28 overflow-auto">
@@ -301,19 +305,19 @@ export default function EditorPage({ params }) {
                     ))}
                 </div>
             )}
-            {(mediaStream || guiConfig) && (
+            {(guiConfig && mediaStream) && (
                 <div 
                     className="fixed bottom-4 right-4 bg-black border border-gray-600 shadow-lg z-50 resize overflow-auto"
                     style={{ 
-                        width: guiConfig ? guiConfig.width : '20rem', 
-                        height: guiConfig ? guiConfig.height : '15rem',
+                        width: guiConfig.width, 
+                        height: guiConfig.height,
                         maxWidth: '90vw',
                         maxHeight: '90vh'
                     }}
                 >
                     <div className="absolute top-0 left-0 bg-gray-800 text-white text-xs px-2 py-1 z-10">
-                        GUI Output {guiConfig ? `(${guiConfig.width}x${guiConfig.height})` : ''}
-                        <button onClick={() => { setMediaStream(null); setGuiConfig(null); }} className="ml-2 text-red-400 hover:text-red-300">x</button>
+                        GUI Output ({guiConfig.width}x{guiConfig.height})
+                        <button onClick={() => { setGuiConfig(null); }} className="ml-2 text-red-400 hover:text-red-300">x</button>
                     </div>
                     <video
                         autoPlay
