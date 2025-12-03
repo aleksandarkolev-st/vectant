@@ -454,7 +454,8 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
                 .arg("-screen")
                 .arg("0")
                 .arg("1280x720x24")
-                .arg("-nolisten")
+                .arg("-ac")
+                .arg("-listen")
                 .arg("tcp")
                 .stdout(Stdio::piped())
                 .stderr(Stdio::inherit());
@@ -467,7 +468,7 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
                         match reader.read_line(&mut line).await {
                             Ok(n) if n > 0 => {
                                 let display_num = line.trim();
-                                display_str = format!(":{}", display_num);
+                                display_str = format!("127.0.0.1:{}", display_num);
                                 println!("Xvfb started on display {}", display_str);
                             }
                             _ => eprintln!("Xvfb failed to output a display number"),
