@@ -8,6 +8,7 @@ use futures::{FutureExt, StreamExt, SinkExt};
 use serde::{Deserialize, Serialize};
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader, AsyncWriteExt};
+use tokio::net::UdpSocket;
 use chrono::{Utc, SecondsFormat};
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
@@ -22,6 +23,11 @@ use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
+use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
+use webrtc::rtp::packet::Packet;
+use webrtc::util::marshal::Unmarshal;
 
 #[derive(Debug, Deserialize)]
 struct IceServerEnv {
@@ -63,6 +69,8 @@ struct CompileRequest {
     session_id: Option<String>,
     #[serde(default)]
     files: Vec<FileEntry>,
+    #[serde(default)]
+    is_gui: bool,
 }
 
 #[tokio::main]
@@ -115,9 +123,11 @@ async fn main() -> Result<()> {
     }));
 
     let term_store = terminal_input_store.clone();
+    let pc_clone = pc.clone();
     pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
         let store = compile_store.clone();
         let term_store = term_store.clone();
+        let pc_for_callback = pc_clone.clone();
         async move {
             let label = dc.label();
             if label == "compile" {
@@ -127,6 +137,7 @@ async fn main() -> Result<()> {
                 dc.on_message(Box::new(move |msg| {
                     let store = store.clone();
                     let term_store_for_msg = term_store.clone();
+                    let pc_for_compile = pc_for_callback.clone();
                     async move {
                         if msg.is_string {
                             // Try to parse as a CompileRequest
@@ -134,7 +145,7 @@ async fn main() -> Result<()> {
                                 let log_dc = { store.lock().await.clone() };
                                 if let Some(log) = log_dc {
                                     let ts = term_store_for_msg.clone();
-                                    tokio::spawn(handle_compile(req, log, ts));
+                                    tokio::spawn(handle_compile(req, log, ts, pc_for_compile));
                                 }
                                 return;
                             }
@@ -301,7 +312,7 @@ async fn create_peer(signal_tx: mpsc::UnboundedSender<SignalMessage>) -> Result<
     Ok(pc)
 }
 
-async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, terminal_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>) -> Result<()> {
+async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, terminal_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>, pc: Arc<RTCPeerConnection>) -> Result<()> {
     let dir = tempdir().context("failed to create temp dir")?;
     
     // Write the main file
@@ -329,7 +340,7 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
     let mut cmd = match req.language.as_str() {
         "cpp" => {
             let mut c = Command::new("g++");
-            c.arg(&req.filename).arg("-I.").arg("-o").arg("main.out");
+            c.arg(&req.filename).arg("-I.").arg("-lX11").arg("-o").arg("main.out");
             c
         }
         "rust" => {
@@ -350,7 +361,6 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
     cmd.stderr(Stdio::piped());
 
     let mut child = cmd.spawn()?;
-    let mut child_stdin = child.stdin.take();
     let stdout = child.stdout.take().map(BufReader::new);
     let stderr = child.stderr.take().map(BufReader::new);
 
@@ -433,6 +443,93 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
         run_cmd.stdin(Stdio::piped());
         run_cmd.stdout(Stdio::piped());
         run_cmd.stderr(Stdio::piped());
+
+        let mut xvfb_process: Option<tokio::process::Child> = None;
+        let mut gst_process: Option<tokio::process::Child> = None;
+
+        if req.is_gui {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            let display_n = 1000 + (now % 100) as u32;
+            let display_str = format!(":{}", display_n);
+
+            let xvfb = Command::new("Xvfb")
+                .arg(&display_str)
+                .arg("-screen")
+                .arg("0")
+                .arg("1280x720x24")
+                .spawn();
+            
+            match xvfb {
+                Ok(child) => {
+                    xvfb_process = Some(child);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                }
+                Err(e) => eprintln!("Failed to spawn Xvfb: {}", e),
+            }
+
+            let v_sock = UdpSocket::bind("127.0.0.1:0").await?;
+            let v_port = v_sock.local_addr()?.port();
+            let a_sock = UdpSocket::bind("127.0.0.1:0").await?;
+            let a_port = a_sock.local_addr()?.port();
+
+            let gst_cmd = format!(
+                "ximagesrc display-name={} use-damage=false ! video/x-raw,framerate=30/1 ! videoconvert ! vp8enc deadline=1 ! rtpvp8pay ! udpsink host=127.0.0.1 port={} \
+                 pulsesrc ! audio/x-raw,rate=48000,channels=2 ! opusenc ! rtpopuspay ! udpsink host=127.0.0.1 port={}",
+                display_str, v_port, a_port
+            );
+
+            let gst = Command::new("gst-launch-1.0")
+                .args(gst_cmd.split_whitespace())
+                .spawn();
+            
+            match gst {
+                Ok(child) => gst_process = Some(child),
+                Err(e) => eprintln!("Failed to spawn GStreamer: {}", e),
+            }
+
+            let video_track = Arc::new(TrackLocalStaticRTP::new(
+                RTCRtpCodecCapability { mime_type: "video/vp8".to_owned(), ..Default::default() },
+                "video".to_owned(),
+                "webrtc-rs".to_owned(),
+            ));
+            let audio_track = Arc::new(TrackLocalStaticRTP::new(
+                RTCRtpCodecCapability { mime_type: "audio/opus".to_owned(), ..Default::default() },
+                "audio".to_owned(),
+                "webrtc-rs".to_owned(),
+            ));
+
+            let _ = pc.add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>).await;
+            let _ = pc.add_track(Arc::clone(&audio_track) as Arc<dyn TrackLocal + Send + Sync>).await;
+
+            let v_track_clone = video_track.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 1500];
+                while let Ok((n, _)) = v_sock.recv_from(&mut buf).await {
+                    if let Ok(packet) = Packet::unmarshal(&mut &buf[..n]) {
+                        let _ = v_track_clone.write_rtp(&packet).await;
+                    }
+                }
+            });
+
+            let a_track_clone = audio_track.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 1500];
+                while let Ok((n, _)) = a_sock.recv_from(&mut buf).await {
+                    if let Ok(packet) = Packet::unmarshal(&mut &buf[..n]) {
+                        let _ = a_track_clone.write_rtp(&packet).await;
+                    }
+                }
+            });
+
+            let payload = serde_json::json!({
+                "sessionId": session_id.clone(),
+                "type": "run-gui-started",
+                "display": display_str
+            });
+            let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+
+            run_cmd.env("DISPLAY", display_str);
+        }
 
         // Record start time (seconds precision), spawn the run child, and notify listeners
         let start_dt = Utc::now();
@@ -519,6 +616,10 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
         }
 
         let run_status = run_child.wait().await?;
+        
+        if let Some(mut child) = xvfb_process { let _ = child.kill().await; }
+        if let Some(mut child) = gst_process { let _ = child.kill().await; }
+
         let end_dt = Utc::now();
         let end_time = end_dt.to_rfc3339_opts(SecondsFormat::Secs, true);
         let elapsed = end_dt.signed_duration_since(start_dt);

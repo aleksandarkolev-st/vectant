@@ -86,6 +86,14 @@ const ensureConnection = () => {
             try { console.debug('compilerClient connection state:', pc.connectionState); } catch (e) {}
         };
 
+        pc.ontrack = (event) => {
+            console.log('Received remote track', event.track.kind);
+            if (typeof window !== 'undefined' && window.dispatchEvent) {
+                const ev = new CustomEvent('synthi:media-track', { detail: { track: event.track, streams: event.streams } });
+                window.dispatchEvent(ev);
+            }
+        };
+
         pc.ondatachannel = (event) => {
             const ch = event.channel;
             if (ch.label === 'build-log') {
@@ -180,7 +188,7 @@ const ensureConnection = () => {
     return readyPromise;
 };
 
-export const compileWithWorker = async ({ filename, source, language, files = [], onLog } = {}) => {
+export const compileWithWorker = async ({ filename, source, language, files = [], isGui = false, onLog } = {}) => {
     const lang = language || mapLanguage(filename);
     if (!lang) throw new Error('Unsupported language for compilation');
     await ensureConnection();
@@ -237,7 +245,8 @@ export const compileWithWorker = async ({ filename, source, language, files = []
                 filename: filename || `main.${lang}`,
                 source: source || '',
                 files: files,
-                session_id: sessionId
+                session_id: sessionId,
+                is_gui: isGui
             }));
         } catch (e) {
             logHandlers.delete(handleLog);

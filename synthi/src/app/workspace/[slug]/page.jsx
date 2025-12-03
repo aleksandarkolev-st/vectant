@@ -32,6 +32,29 @@ export default function EditorPage({ params }) {
     const [latestCompletion, setLatestCompletion] = useState(null);
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
+    const [mediaStream, setMediaStream] = useState(null);
+
+    useEffect(() => {
+        const handleTrack = (e) => {
+            const { track, streams } = e.detail;
+            console.log('Page received track:', track.kind);
+            if (streams && streams.length > 0) {
+                setMediaStream(streams[0]);
+            } else {
+                // Create a new stream if none provided
+                setMediaStream(prev => {
+                    if (prev) {
+                        prev.addTrack(track);
+                        return prev;
+                    }
+                    return new MediaStream([track]);
+                });
+            }
+        };
+        window.addEventListener('synthi:media-track', handleTrack);
+        return () => window.removeEventListener('synthi:media-track', handleTrack);
+    }, []);
+
     const handleClearLatestCompletion = useCallback(() => {
         setLatestCompletion(null);
         setCompletionClearSignal((v) => v + 1);
@@ -149,11 +172,15 @@ export default function EditorPage({ params }) {
              appendBuildLog(`Warning: Dependency resolution failed: ${e.message}`);
         }
 
+        // Simple heuristic for testing GUI
+        const isGui = source.includes('#include <X11/Xlib.h>') || source.includes('XOpenDisplay');
+
         try {
             await compileWithWorker({
                 filename,
                 source,
                 files: additionalFiles,
+                isGui,
                 onLog: (line) => {
                     appendBuildLog(line);
                     console.log('[build]', line);
@@ -248,6 +275,25 @@ export default function EditorPage({ params }) {
                     {buildLogs.map((line, idx) => (
                         <div key={idx} className="leading-5 whitespace-pre-wrap">{line}</div>
                     ))}
+                </div>
+            )}
+            {mediaStream && (
+                <div className="fixed bottom-4 right-4 w-80 h-60 bg-black border border-gray-600 shadow-lg z-50 resize overflow-auto">
+                    <div className="absolute top-0 left-0 bg-gray-800 text-white text-xs px-2 py-1 z-10">
+                        GUI Output
+                        <button onClick={() => setMediaStream(null)} className="ml-2 text-red-400 hover:text-red-300">x</button>
+                    </div>
+                    <video
+                        autoPlay
+                        playsInline
+                        controls
+                        className="w-full h-full object-contain"
+                        ref={video => {
+                            if (video && video.srcObject !== mediaStream) {
+                                video.srcObject = mediaStream;
+                            }
+                        }}
+                    />
                 </div>
             )}
             <ResizablePanelGroup
