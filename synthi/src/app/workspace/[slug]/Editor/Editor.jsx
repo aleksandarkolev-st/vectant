@@ -12,7 +12,11 @@ import {
     selectBreadcrumb,
     selectFileCacheEntries,
     saveFileContentThunk,
-    updateContent
+    updateContent,
+    selectOpenFiles,
+    selectFileThunk,
+    closeFile,
+    reorderOpenFiles
 } from '@/redux/workspaceSlice';
 import { selectAutoSaveEnabled, selectAutoCompletionEnabled, toggleAutoCompletion } from '@/redux/uiSlice';
 import { Circle, Save, Sparkles } from 'lucide-react'; // Added Sparkles
@@ -64,6 +68,7 @@ const EditorPanel = ({
     const isUnsaved = useAppSelector(selectIsUnsaved);
     const breadcrumb = useAppSelector(selectBreadcrumb);
     const fileCacheEntries = useAppSelector(selectFileCacheEntries);
+    const openFiles = useAppSelector(selectOpenFiles);
     const rawFiles = useAppSelector(state => state.workspace.rawFiles);
     const showTerminal = useAppSelector(state => state.ui.showTerminal);
     const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
@@ -76,6 +81,7 @@ const EditorPanel = ({
     const latestCodeRef = useRef(code);
     const pendingContentFrameRef = useRef(null);
     const pendingPositionFrameRef = useRef(null);
+    const [tabContext, setTabContext] = useState({ visible: false, x: 0, y: 0, file: null, index: -1 });
 
     // Swallow Monaco's cancel-notifications so they don't spam the console when
     // inline suggestions are abandoned mid-flight.
@@ -258,10 +264,11 @@ const EditorPanel = ({
                 e.preventDefault();
                 dispatch(toggleAutoCompletion());
             }
+            // (Removed Ctrl/Cmd+W to avoid closing the browser tab)
         };
         window.addEventListener('keydown', handleKeyDown, { capture: true });
         return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
-    }, [handleSave, editorInstance, requestAiCompletion, cancelActiveCompletion, dispatch]);
+    }, [handleSave, editorInstance, requestAiCompletion, cancelActiveCompletion, dispatch, activeFile]);
 
     // Ensure disabling auto AI clears any pending/computed suggestions
     useEffect(() => {
@@ -327,29 +334,95 @@ const EditorPanel = ({
                         <div className="h-9 px-3 border-b border-[#2b2b2b] bg-[#1e1e1e] flex justify-between items-center select-none">
 
                             {/* Breadcrumbs */}
-                            <div className="flex items-center gap-2 overflow-hidden">
-                                {activeFileIcon ? (
-                                    <span className="flex items-center text-gray-300" aria-hidden="true">
-                                        {activeFileIcon}
-                                    </span>
-                                ) : null}
-                                {breadcrumb?.length > 0 ? (
-                                    breadcrumb.map((name, idx) => {
-                                        const isLast = idx === breadcrumb.length - 1;
-                                        return (
-                                            <div key={idx} className="flex items-center text-[13px]">
-                                                <span className={`${isLast ? 'text-gray-200 font-medium' : 'text-gray-500'}`}>
-                                                    {name}
-                                                </span>
-                                                {!isLast && <span className="text-gray-600 mx-1">/</span>}
+                                <div className="flex items-center gap-2 overflow-hidden min-w-0">
+                                    {/* Tabs bar (sleek) */}
+                                    <div className="flex items-center gap-2 overflow-x-auto scrollbar-hide min-w-0">
+                                        {openFiles && openFiles.length > 0 ? openFiles.map((file, idx) => {
+                                                const isActive = activeFile && file.path === activeFile.path;
+                                            const fileIcon = getFileIcon(file.name || file.path || '');
+                                            return (
+                                                    <div
+                                                        key={file.path}
+                                                        draggable
+                                                        onDragStart={(e) => {
+                                                            e.dataTransfer?.setData('text/tab-index', String(idx));
+                                                            e.dataTransfer?.setData('text/tab-path', file.path);
+                                                            // small effect to show dragging
+                                                        }}
+                                                        onDragOver={(e) => { e.preventDefault(); }}
+                                                        onDrop={(e) => {
+                                                            e.preventDefault();
+                                                            const raw = e.dataTransfer?.getData('text/tab-index');
+                                                            if (!raw) return;
+                                                            const fromIndex = Number(raw);
+                                                            const toIndex = idx;
+                                                            if (!Number.isNaN(fromIndex) && fromIndex !== toIndex) {
+                                                                dispatch(reorderOpenFiles({ fromIndex, toIndex }));
+                                                            }
+                                                        }}
+                                                        onClick={() => dispatch(selectFileThunk(file))}
+                                                        onContextMenu={(e) => {
+                                                            e.preventDefault();
+                                                            setTabContext({ visible: true, x: e.clientX, y: e.clientY, file, index: idx });
+                                                        }}
+                                                        className={`flex items-center gap-2 px-3 py-1 mr-1 rounded-t-md cursor-pointer select-none transition-colors duration-150 ${isActive ? 'bg-gradient-to-b from-[#1f6feb] to-[#165fb8] text-white shadow-[0_4px_12px_rgba(0,0,0,0.5)]' : 'bg-[#2b2b2b] text-gray-300 hover:bg-[#313131]'}`}
+                                                        title={file.path}
+                                                        style={{ minWidth: 80, maxWidth: 360 }}
+                                                    >
+                                                        <span className="flex-shrink-0 text-sm opacity-90" aria-hidden="true">
+                                                            {fileIcon}
+                                                        </span>
+                                                        <span className={`text-sm font-medium truncate max-w-[220px] ${isActive ? 'text-white' : 'text-gray-200'}`}>
+                                                            {file.name}
+                                                        </span>
+                                                        {/* Unsaved marker for any tab */}
+                                                        {file.isUnsaved && (
+                                                            <span className="w-2 h-2 bg-orange-400 rounded-full ml-1 flex-shrink-0" aria-hidden="true" />
+                                                        )}
+                                                        <button
+                                                            onClick={(e) => { e.stopPropagation(); dispatch(closeFile(file.path)); }}
+                                                            className={`ml-2 flex items-center justify-center w-6 h-6 rounded hover:bg-white/6 transition-colors ${isActive ? 'text-white/80 hover:text-white' : 'text-gray-300 hover:text-white'}`}
+                                                            aria-label={`Close ${file.name}`}
+                                                        >
+                                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="pointer-events-none">
+                                                                <path d="M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                                                <path d="M6 6L18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                                            </svg>
+                                                        </button>
+                                                    </div>
+                                            );
+                                            }) : (
+                                            <span className="text-gray-500 text-xs italic">No file open</span>
+                                        )}
+                                    </div>
+                                        {/* Context menu for tabs */}
+                                        {tabContext.visible && (
+                                            <div
+                                                style={{ position: 'fixed', left: tabContext.x, top: tabContext.y, zIndex: 9999 }}
+                                                onMouseLeave={() => setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 })}
+                                            >
+                                                <div className="bg-[#1c1c1c] border border-[#333] rounded shadow-lg text-sm text-gray-200">
+                                                    <div className="px-3 py-2 hover:bg-[#2b2b2b] cursor-pointer" onClick={() => { if (tabContext.file) dispatch(closeFile(tabContext.file.path)); setTabContext({ visible: false, x:0,y:0,file:null,index:-1 }); }}>Close</div>
+                                                    <div className="px-3 py-2 hover:bg-[#2b2b2b] cursor-pointer" onClick={() => {
+                                                        if (tabContext.file) {
+                                                            const keep = tabContext.file.path;
+                                                            const toClose = openFiles.filter(f => f.path !== keep).map(f => f.path);
+                                                            toClose.forEach(p => dispatch(closeFile(p)));
+                                                        }
+                                                        setTabContext({ visible: false, x:0,y:0,file:null,index:-1 });
+                                                    }}>Close Others</div>
+                                                    <div className="px-3 py-2 hover:bg-[#2b2b2b] cursor-pointer" onClick={() => {
+                                                        if (tabContext.index >= 0) {
+                                                            const toClose = openFiles.slice(tabContext.index + 1).map(f => f.path);
+                                                            toClose.forEach(p => dispatch(closeFile(p)));
+                                                        }
+                                                        setTabContext({ visible: false, x:0,y:0,file:null,index:-1 });
+                                                    }}>Close to Right</div>
+                                                </div>
                                             </div>
-                                        )
-                                    })
-                                ) : (
-                                    <span className="text-gray-500 text-xs italic">No file selected</span>
-                                )}
-                                {isUnsaved && <Circle className="w-2 h-2 ml-2 text-orange-400 fill-orange-400" />}
-                            </div>
+                                        )}
+                                    {isUnsaved && <Circle className="w-2 h-2 ml-2 text-orange-400 fill-orange-400" />}
+                                </div>
 
                             {/* Status & Controls */}
                             <div className="flex items-center gap-4">
