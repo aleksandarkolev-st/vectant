@@ -47,7 +47,7 @@ struct IceServerEnv {
     credential: Option<String>,
 }
 
-const REQUIRED_TOOLS: &[&str] = &["g++", "rustc", "tsc"];
+const REQUIRED_TOOLS: &[&str] = &["g++", "rustc", "tsc", "clangd"];
 
 #[derive(Debug, Serialize, Deserialize)]
 struct SignalMessage {
@@ -336,6 +336,8 @@ async fn main() -> Result<()> {
                             if let Ok(mut file) = std::fs::File::create(flags_path) {
                                 use std::io::Write;
                                 let _ = writeln!(file, "-std=c++17");
+                                // Force C++ mode to ensure headers are treated correctly
+                                let _ = writeln!(file, "-xc++");
                             }
 
                             let mut c = system_command("clangd");
@@ -344,7 +346,8 @@ async fn main() -> Result<()> {
                             c.arg("--header-insertion=iwyu");
                             c.arg("--clang-tidy");
                             c.arg("--all-scopes-completion");
-                            c.arg("--query-driver=/usr/bin/*");
+                            // Allow clangd to query g++ and other compilers for system include paths
+                            c.arg("--query-driver=/usr/bin/*,/usr/local/bin/*");
                             c
                         },
                         "rust" => system_command("rust-analyzer"),
