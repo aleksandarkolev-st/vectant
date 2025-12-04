@@ -65,6 +65,8 @@ const TerminalManagerDyn = dynamic(() => import('../../TerminalManager.jsx'), {
     ssr: false
 });
 
+let servicesInitialized = false;
+
 // Design tokens for tab styling (tunable) — tuned to a VSCode-like palette
 const TAB_TOKENS = {
     activeBg: '#0f1724',
@@ -162,13 +164,14 @@ const EditorPanel = ({
         const reader = new WebSocketMessageReader(socket);
         const writer = new WebSocketMessageWriter(socket);
 
-        import('monaco-languageclient').then(({ MonacoLanguageClient, MonacoServices }) => {
+        import('monaco-languageclient').then(async ({ MonacoLanguageClient, initServices }) => {
             if (languageClientsRef.current.has(backendLang)) return;
 
-            try {
-                MonacoServices.get();
-            } catch (_) {
-                MonacoServices.install();
+            if (!servicesInitialized) {
+                await initServices({
+                    debugLogging: false
+                });
+                servicesInitialized = true;
             }
 
             const languageClient = new MonacoLanguageClient({
