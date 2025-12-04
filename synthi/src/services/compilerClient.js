@@ -31,6 +31,7 @@ export class CompilerClient {
         this.compileChannel = null;
         this.buildLogChannel = null;
         this.terminalChannel = null;
+        this.lspChannel = null;
         this.readyPromise = null;
         this.currentStreams = [];
         this.logHandlers = new Set();
@@ -39,9 +40,14 @@ export class CompilerClient {
         this.terminalInputBuffer = [];
         this.guiInputBuffer = [];
         this.status = CompilerStatus.IDLE;
+        this.slug = null;
         
         this._handleTerminalInput = this._handleTerminalInput.bind(this);
         this._handleGuiInput = this._handleGuiInput.bind(this);
+    }
+
+    setSlug(slug) {
+        this.slug = slug;
     }
 
     getMediaStream() {
@@ -251,6 +257,7 @@ export class CompilerClient {
                 this.compileChannel = this.pc.createDataChannel('compile', { ordered: true });
                 // Terminal channel for stdin forwarding
                 this.terminalChannel = this.pc.createDataChannel('terminal', { ordered: true });
+                
                 this.compileChannel.onclose = () => {};
 
                 const offer = await this.pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
@@ -299,6 +306,26 @@ export class CompilerClient {
             };
         });
         return this.readyPromise;
+    }
+
+    createLspChannel(language) {
+        if (!this.pc || this.pc.connectionState !== 'connected') {
+            throw new Error('CompilerClient not connected');
+        }
+        const label = `lsp-${language}?slug=${this.slug || ''}`;
+        const channel = this.pc.createDataChannel(label, { ordered: true });
+        channel.binaryType = 'arraybuffer';
+
+        // Trigger renegotiation to establish the new data channel
+        this.pc.createOffer().then(offer => {
+            return this.pc.setLocalDescription(offer).then(() => offer);
+        }).then(offer => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp, sdp_type: offer.type }));
+            }
+        }).catch(e => console.error('Renegotiation failed', e));
+
+        return channel;
     }
 
     async compile({ filename, source, language, files = [], isGui = false, width, height, onLog } = {}) {
@@ -397,14 +424,19 @@ export class CompilerClient {
 // Singleton instance for backward compatibility
 let globalInstance = null;
 
+export const getCompilerClient = () => {
+    if (!globalInstance) {
+        globalInstance = new CompilerClient();
+    }
+    return globalInstance;
+};
+
 export const getMediaStream = () => {
     if (!globalInstance) return null;
     return globalInstance.getMediaStream();
 };
 
 export const compileWithWorker = async (params) => {
-    if (!globalInstance) {
-        globalInstance = new CompilerClient();
-    }
-    return globalInstance.compile(params);
+    const client = getCompilerClient();
+    return client.compile(params);
 };

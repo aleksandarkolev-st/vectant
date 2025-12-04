@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CompilerClient, CompilerStatus } from '@/services/compilerClient';
+import { CompilerClient, CompilerStatus, getCompilerClient } from '@/services/compilerClient';
 
 export function useCompiler() {
     const clientRef = useRef(null);
@@ -11,8 +11,15 @@ export function useCompiler() {
     useEffect(() => {
         if (typeof window === 'undefined') return;
 
-        const client = new CompilerClient();
+        const client = getCompilerClient();
         clientRef.current = client;
+        
+        setStatus(client.status);
+
+        // Auto-connect if idle so LSP can start
+        if (client.status === CompilerStatus.IDLE) {
+            client.connect().catch(e => console.error("Auto-connect failed", e));
+        }
 
         const unsubscribeStatus = client.onStatusChange(setStatus);
 
@@ -23,23 +30,29 @@ export function useCompiler() {
              }
         };
         window.addEventListener('synthi:media-track', handleTrack);
+        
+        const currentStream = client.getMediaStream();
+        if (currentStream) {
+            setMediaStream(currentStream);
+        }
 
         return () => {
             unsubscribeStatus();
             window.removeEventListener('synthi:media-track', handleTrack);
-            client.dispose();
+            // Do not dispose singleton
             clientRef.current = null;
         };
     }, []);
 
     const compile = useCallback(async (params) => {
-        if (!clientRef.current) {
-            throw new Error('Compiler client not initialized');
-        }
-        return clientRef.current.compile(params);
+        const client = clientRef.current || getCompilerClient();
+        return client.compile(params);
     }, []);
 
+    const client = typeof window !== 'undefined' ? getCompilerClient() : null;
+
     return {
+        client,
         compile,
         status,
         mediaStream

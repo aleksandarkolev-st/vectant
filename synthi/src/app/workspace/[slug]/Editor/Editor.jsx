@@ -1,7 +1,7 @@
 // src/app/Editor.jsx
 'use client';
 import { useCallback, useEffect, useState, useRef } from 'react';
-import Editor from '@monaco-editor/react';
+import Editor, { loader } from '@monaco-editor/react';
 import { getMonacoLanguage } from '@/utils/languageMapper';
 import dynamic from 'next/dynamic';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
@@ -46,10 +46,51 @@ import { useEditorProviders } from './providers';
 import { useEditorEvents } from './events';
 import { takeLastChars } from './utils';
 import { SYNTHI_THEME } from './theme';
+import * as monaco from 'monaco-editor';
+
+const CloseAction = {
+    DoNotRestart: 1,
+    Restart: 2,
+};
+
+const ErrorAction = {
+    Continue: 1,
+    Shutdown: 2,
+};
+import { toSocket, WebSocketMessageReader, WebSocketMessageWriter } from 'vscode-ws-jsonrpc';
+import { MonacoSocketAdapter } from '@/services/MonacoSocketAdapter';
+import { useCompiler } from '@/hooks/useCompiler';
+import { CompilerStatus } from '@/services/compilerClient';
+
+// Configure Monaco workers
+if (typeof window !== 'undefined') {
+    // Use bundled monaco-editor instead of CDN to ensure compatibility with monaco-languageclient
+    loader.config({ monaco });
+
+    window.MonacoEnvironment = {
+        getWorker: function (workerId, label) {
+            if (label === 'json') {
+                return new Worker(new URL('monaco-editor/esm/vs/language/json/json.worker.js', import.meta.url));
+            }
+            if (label === 'css' || label === 'scss' || label === 'less') {
+                return new Worker(new URL('monaco-editor/esm/vs/language/css/css.worker.js', import.meta.url));
+            }
+            if (label === 'html' || label === 'handlebars' || label === 'razor') {
+                return new Worker(new URL('monaco-editor/esm/vs/language/html/html.worker.js', import.meta.url));
+            }
+            if (label === 'typescript' || label === 'javascript') {
+                return new Worker(new URL('monaco-editor/esm/vs/language/typescript/ts.worker.js', import.meta.url));
+            }
+            return new Worker(new URL('monaco-editor/esm/vs/editor/editor.worker.js', import.meta.url));
+        }
+    };
+}
 
 const TerminalManagerDyn = dynamic(() => import('../../TerminalManager.jsx'), {
     ssr: false
 });
+
+let servicesInitialized = false;
 
 // Design tokens for tab styling (tunable) — tuned to a VSCode-like palette
 const TAB_TOKENS = {
@@ -93,6 +134,273 @@ const EditorPanel = ({
     const pendingContentFrameRef = useRef(null);
     const pendingPositionFrameRef = useRef(null);
     const [tabContext, setTabContext] = useState({ visible: false, x: 0, y: 0, file: null, index: -1 });
+    const [lspStatus, setLspStatus] = useState('Idle');
+    const [servicesReady, setServicesReady] = useState(false);
+
+    const { client: compilerClient, status: compilerStatus } = useCompiler();
+    const languageClientsRef = useRef(new Map());
+
+    // Initialize Monaco Services ONCE
+    useEffect(() => {
+        if (servicesInitialized) {
+            setServicesReady(true);
+            return;
+        }
+
+        import('monaco-languageclient/vscodeApiWrapper').then(async ({ MonacoVscodeApiWrapper }) => {
+            if (!servicesInitialized) {
+                const wrapper = new MonacoVscodeApiWrapper({
+                    $type: 'classic',
+                    viewsConfig: {
+                        $type: 'EditorService'
+                    }
+                });
+                try {
+                    await wrapper.start();
+                    servicesInitialized = true;
+                    setServicesReady(true);
+                    console.log('[LSP] Monaco Services Initialized');
+                } catch (e) {
+                    console.error('Failed to initialize monaco-vscode-api', e);
+                }
+            } else {
+                setServicesReady(true);
+            }
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!monacoInstance || !compilerClient || compilerStatus !== CompilerStatus.CONNECTED || !activeFile || !servicesReady) {
+             if (compilerStatus !== CompilerStatus.CONNECTED) setLspStatus('Compiler Disconnected');
+             return;
+        }
+
+        const lang = getMonacoLanguage(activeFile.name);
+        let backendLang = null;
+        let documentSelector = [];
+
+        if (['cpp', 'c'].includes(lang)) {
+            backendLang = 'cpp';
+            documentSelector = ['cpp', 'c'];
+        } else if (lang === 'rust') {
+            backendLang = 'rust';
+            documentSelector = ['rust'];
+        } else if (lang === 'python') {
+            backendLang = 'python';
+            documentSelector = ['python'];
+        } else if (['typescript', 'javascript'].includes(lang)) {
+            backendLang = 'typescript';
+            documentSelector = ['typescript', 'javascript'];
+        }
+
+        if (!backendLang) {
+            setLspStatus('No LSP for this file');
+            return;
+        }
+
+        if (languageClientsRef.current.has(backendLang)) {
+            setLspStatus(`Ready (${backendLang})`);
+            return;
+        }
+
+        console.log(`[LSP] Initializing for ${backendLang}...`);
+        setLspStatus(`Initializing ${backendLang}...`);
+
+        let lspChannel;
+        try {
+             lspChannel = compilerClient.createLspChannel(backendLang);
+             console.log(`[LSP] Created channel for ${backendLang}, readyState: ${lspChannel.readyState}`);
+             lspChannel.onopen = () => console.log(`[LSP] Channel opened for ${backendLang}`);
+        } catch (e) {
+             console.error("[LSP] Failed to create channel", e);
+             setLspStatus('Channel Error');
+             return;
+        }
+
+        const socket = toSocket(new MonacoSocketAdapter(lspChannel));
+        const reader = new WebSocketMessageReader(socket);
+        const writer = new WebSocketMessageWriter(socket);
+
+        Promise.all([
+            import('monaco-languageclient'),
+            import('monaco-languageclient/vscodeApiWrapper')
+        ]).then(async ([{ MonacoLanguageClient }, { MonacoVscodeApiWrapper }]) => {
+            if (languageClientsRef.current.has(backendLang)) return;
+
+            // Services should be initialized by the other useEffect, but double check
+            if (!servicesInitialized) {
+                 console.warn('[LSP] Services not initialized yet, waiting...');
+                 return;
+            }
+
+            class SynthiLanguageClient extends MonacoLanguageClient {
+                fillInitializeParams(params) {
+                    super.fillInitializeParams(params);
+                    params.rootUri = "file:///synthi/";
+                    params.workspaceFolders = [{
+                        uri: "file:///synthi/",
+                        name: "synthi"
+                    }];
+                }
+            }
+
+            const languageClient = new SynthiLanguageClient({
+                name: `Synthi Language Client (${backendLang})`,
+                clientOptions: {
+                    documentSelector: documentSelector,
+                    middleware: {
+                        didOpen: (data, next) => {
+                            console.log('[LSP] Sending didOpen:', data);
+                            return next(data);
+                        },
+                        didChange: (data, next) => {
+                            console.log('[LSP] Sending didChange');
+                            return next(data);
+                        },
+                        provideCompletionItem: (document, position, context, token, next) => {
+                            console.log('[LSP] provideCompletionItem triggered at:', position);
+                            return next(document, position, context, token);
+                        },
+                        resolveCompletionItem: (item, token, next) => {
+                            console.log('[LSP] resolveCompletionItem triggered for:', item.label);
+                            return next(item, token);
+                        }
+                    },
+                    errorHandler: {
+                        error: () => ({ action: ErrorAction.Continue }),
+                        closed: () => ({ action: CloseAction.DoNotRestart })
+                    },
+                    workspaceFolder: {
+                        uri: monacoInstance.Uri.parse('file:///synthi/'),
+                        name: 'synthi',
+                        index: 0
+                    }
+                },
+                messageTransports: { reader, writer }
+            });
+
+            console.log(`[LSP] Starting client for ${backendLang}`);
+            const model = editorInstance.getModel();
+            console.log(`[LSP] Model Details - URI: ${model.uri.toString()}, Scheme: ${model.uri.scheme}, Language: ${model.getLanguageId()}`);
+            
+            // Debug: Register a manual completion provider to verify Monaco is working
+            const debugDisposable = monacoInstance.languages.registerCompletionItemProvider(model.getLanguageId(), {
+                provideCompletionItems: (model, position) => {
+                    console.log('[LSP-DEBUG] Manual completion provider triggered');
+                    return { suggestions: [] };
+                }
+            });
+
+            // Manual LSP Bridge: Force completion requests to the server
+            // This bypasses monaco-languageclient's document selector issues
+            const bridgeDisposable = monacoInstance.languages.registerCompletionItemProvider(backendLang, {
+                triggerCharacters: ['.', '>', ':', '/', '"', '<'],
+                provideCompletionItems: async (model, position, context) => {
+                    console.log('[LSP-BRIDGE] Requesting completion via bridge...');
+                    // Wait for client to be ready
+                    if (!languageClient.isRunning()) {
+                         console.log('[LSP-BRIDGE] Client not running yet');
+                         return { suggestions: [] };
+                    }
+
+                    try {
+                        const params = {
+                            textDocument: { uri: model.uri.toString() },
+                            position: { line: position.lineNumber - 1, character: position.column - 1 },
+                            context: {
+                                triggerKind: context.triggerKind === monacoInstance.languages.CompletionTriggerKind.TriggerCharacter ? 2 : 1,
+                                triggerCharacter: context.triggerCharacter
+                            }
+                        };
+                        
+                        const result = await languageClient.sendRequest('textDocument/completion', params);
+                        console.log('[LSP-BRIDGE] Received items:', Array.isArray(result) ? result.length : result?.items?.length);
+                        
+                        if (!result) return { suggestions: [] };
+                        
+                        const items = Array.isArray(result) ? result : result.items;
+                        
+                        // Map LSP items to Monaco items
+                        const suggestions = items.map(item => {
+                            const kind = item.kind !== undefined ? item.kind - 1 : monacoInstance.languages.CompletionItemKind.Text;
+                            return {
+                                label: item.label,
+                                kind: kind,
+                                insertText: item.insertText || item.label,
+                                detail: item.detail,
+                                documentation: typeof item.documentation === 'object' ? item.documentation.value : item.documentation,
+                                sortText: item.sortText,
+                                filterText: item.filterText,
+                                insertTextRules: item.insertTextFormat === 2 ? monacoInstance.languages.CompletionItemInsertTextRule.InsertAsSnippet : 0
+                            };
+                        });
+
+                        return { suggestions };
+                    } catch (e) {
+                        console.error('[LSP-BRIDGE] Error:', e);
+                        return { suggestions: [] };
+                    }
+                }
+            });
+            
+            try {
+                await languageClient.start();
+                console.log(`[LSP] Client started for ${backendLang}`);
+            } catch (e) {
+                console.error(`[LSP] Client start failed for ${backendLang}`, e);
+            }
+
+            // Manually trigger didOpen to ensure the server knows about the file immediately
+            if (model) {
+                setTimeout(() => {
+                    const textDocument = {
+                        uri: model.uri.toString(),
+                        languageId: model.getLanguageId(),
+                        version: model.getVersionId(),
+                        text: model.getValue()
+                    };
+                    console.log('[LSP] Manually sending didOpen for', textDocument.uri);
+                    languageClient.sendNotification('textDocument/didOpen', { textDocument });
+                }, 500);
+            }
+
+            // Manual Sync: Ensure server gets updates
+            const changeDisposable = editorInstance.onDidChangeModelContent((e) => {
+                if (!languageClient.isRunning()) return;
+                
+                // Only send if we suspect the client isn't doing it (or just force it for now)
+                // We use full text sync to be safe
+                languageClient.sendNotification('textDocument/didChange', {
+                    textDocument: {
+                        uri: model.uri.toString(),
+                        version: model.getVersionId()
+                    },
+                    contentChanges: [{ text: model.getValue() }]
+                });
+            });
+
+            languageClientsRef.current.set(backendLang, languageClient);
+            setLspStatus(`Ready (${backendLang})`);
+            
+            lspChannel.onclose = () => {
+                console.log(`[LSP] Channel closed for ${backendLang}`);
+                debugDisposable.dispose();
+                bridgeDisposable.dispose();
+                changeDisposable.dispose();
+                languageClient.stop();
+                languageClientsRef.current.delete(backendLang);
+                setLspStatus('Disconnected');
+            };
+        });
+
+    }, [monacoInstance, compilerClient, compilerStatus, activeFile]);
+
+    useEffect(() => {
+        return () => {
+            languageClientsRef.current.forEach(client => client.stop());
+            languageClientsRef.current.clear();
+        };
+    }, []);
 
     // Swallow Monaco's cancel-notifications so they don't spam the console when
     // inline suggestions are abandoned mid-flight.
@@ -193,7 +501,8 @@ const EditorPanel = ({
         applyAiCompletionText,
         rawFiles,
         fileCacheEntries,
-        activeFile
+        activeFile,
+        lspReady: lspStatus.startsWith('Ready')
     });
 
     // --- Event Handlers ---
@@ -467,6 +776,12 @@ const EditorPanel = ({
                                     <span>Ln {position.lineNumber}, Col {position.column}</span>
                                 </div>
 
+                                {/* LSP Status */}
+                                <div className="flex items-center gap-2 text-[11px] text-gray-500">
+                                    <div className={`w-2 h-2 rounded-full ${lspStatus.startsWith('Ready') ? 'bg-green-500' : lspStatus.startsWith('Initializing') ? 'bg-yellow-500' : 'bg-gray-500'}`} />
+                                    <span>{lspStatus}</span>
+                                </div>
+
                                 {/* AI Status Indicator (Subtle) */}
                                 <div className="flex items-center gap-2 text-[11px]">
                                     <div className={`transition-opacity duration-300 ${(aiCompletionState === 'loading' || aiBusy) ? 'opacity-100' : 'opacity-0'}`}>
@@ -492,6 +807,7 @@ const EditorPanel = ({
                                         <Editor
                                             key={activeFileIdentity}
                                             height="100%"
+                                            path={activeFile ? `/synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}` : undefined}
                                             value={code ?? ''}
                                             language={activeLanguage}
                                             theme="synthi-theme"
