@@ -131,10 +131,18 @@ export const store = configureStore({
 // Subscribe to store updates and persist UI preferences when they change.
 // We keep this lightweight and defensive for SSR.
 if (typeof window !== 'undefined') {
-  let lastUi = null;
-  let lastOpenTabs = null;
-  let lastActiveTabPath = null;
-  let lastExpandedFolders = null;
+  // Initialize with default state values to prevent overwriting localStorage on startup
+  // before hydration has occurred.
+  const ui = initialUiState;
+  let lastUi = `${ui.autoCompletionEnabled}|${ui.autoSaveEnabled}|${ui.treeOnRight}|${ui.showTerminal}`;
+  
+  let lastExpandedFolders = (ui.expandedFolders || []).join('|');
+  
+  const ws = initialWorkspaceState;
+  let lastOpenTabs = (ws.openFiles || []).map(f => f.path).join('|');
+  
+  let lastActiveTabPath = ws.activeFile && ws.activeFile.path ? ws.activeFile.path : null;
+
   store.subscribe(() => {
     try {
       const state = store.getState();
