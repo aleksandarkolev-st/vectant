@@ -46,6 +46,7 @@ import { useEditorProviders } from './providers';
 import { useEditorEvents } from './events';
 import { takeLastChars } from './utils';
 import { SYNTHI_THEME } from './theme';
+import * as monaco from 'monaco-editor';
 
 const CloseAction = {
     DoNotRestart: 1,
@@ -63,28 +64,24 @@ import { CompilerStatus } from '@/services/compilerClient';
 
 // Configure Monaco workers
 if (typeof window !== 'undefined') {
-    const MONACO_VERSION = '0.54.0';
-    const BASE_URL = `https://cdn.jsdelivr.net/npm/monaco-editor@${MONACO_VERSION}/min/vs`;
-
-    loader.config({ paths: { vs: BASE_URL } });
+    // Use bundled monaco-editor instead of CDN to ensure compatibility with monaco-languageclient
+    loader.config({ monaco });
 
     window.MonacoEnvironment = {
         getWorker: function (workerId, label) {
-            const getWorkerUrl = () => {
-                if (label === 'json') return `${BASE_URL}/language/json/json.worker.js`;
-                if (label === 'css' || label === 'scss' || label === 'less') return `${BASE_URL}/language/css/css.worker.js`;
-                if (label === 'html' || label === 'handlebars' || label === 'razor') return `${BASE_URL}/language/html/html.worker.js`;
-                if (label === 'typescript' || label === 'javascript') return `${BASE_URL}/language/typescript/ts.worker.js`;
-                return `${BASE_URL}/base/worker/workerMain.js`;
-            };
-
-            const url = getWorkerUrl();
-            const proxyScript = `
-                self.MonacoEnvironment = { baseUrl: '${BASE_URL}' };
-                importScripts('${url}');
-            `;
-            const blob = new Blob([proxyScript], { type: 'text/javascript' });
-            return new Worker(URL.createObjectURL(blob));
+            if (label === 'json') {
+                return new Worker(new URL('monaco-editor/esm/vs/language/json/json.worker.js', import.meta.url));
+            }
+            if (label === 'css' || label === 'scss' || label === 'less') {
+                return new Worker(new URL('monaco-editor/esm/vs/language/css/css.worker.js', import.meta.url));
+            }
+            if (label === 'html' || label === 'handlebars' || label === 'razor') {
+                return new Worker(new URL('monaco-editor/esm/vs/language/html/html.worker.js', import.meta.url));
+            }
+            if (label === 'typescript' || label === 'javascript') {
+                return new Worker(new URL('monaco-editor/esm/vs/language/typescript/ts.worker.js', import.meta.url));
+            }
+            return new Worker(new URL('monaco-editor/esm/vs/editor/editor.worker.js', import.meta.url));
         }
     };
 }

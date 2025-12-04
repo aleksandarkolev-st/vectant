@@ -336,7 +336,7 @@ async fn main() -> Result<()> {
                                 path_str
                             };
 
-                            let server_root_uri = if cfg!(target_os = "windows") {
+                            let mut server_root_uri = if cfg!(target_os = "windows") {
                                 let mut wsl_path = path_str.clone();
                                 if let Some(colon_idx) = wsl_path.find(':') {
                                     let drive = &wsl_path[0..colon_idx].to_lowercase();
@@ -349,6 +349,10 @@ async fn main() -> Result<()> {
                             } else {
                                 format!("file:///{}", path_str)
                             };
+
+                            if !server_root_uri.ends_with('/') {
+                                server_root_uri.push('/');
+                            }
 
                             let state = Arc::new(Mutex::new(LspSessionState {
                                 client_root_uri: None,
@@ -386,12 +390,20 @@ async fn main() -> Result<()> {
                                         if json_val.get("method").and_then(|m| m.as_str()) == Some("initialize") {
                                             if let Some(params) = json_val.get("params") {
                                                 if let Some(root_uri) = params.get("rootUri").and_then(|s| s.as_str()) {
-                                                    guard.client_root_uri = Some(root_uri.to_string());
-                                                    println!("Captured client root URI: {}", root_uri);
+                                                    let mut uri = root_uri.to_string();
+                                                    if !uri.ends_with('/') {
+                                                        uri.push('/');
+                                                    }
+                                                    guard.client_root_uri = Some(uri.clone());
+                                                    println!("Captured client root URI: {}", uri);
                                                 } else if let Some(folders) = params.get("workspaceFolders").and_then(|f| f.as_array()) {
                                                     if let Some(first) = folders.first() {
-                                                        if let Some(uri) = first.get("uri").and_then(|s| s.as_str()) {
-                                                            guard.client_root_uri = Some(uri.to_string());
+                                                        if let Some(uri_str) = first.get("uri").and_then(|s| s.as_str()) {
+                                                            let mut uri = uri_str.to_string();
+                                                            if !uri.ends_with('/') {
+                                                                uri.push('/');
+                                                            }
+                                                            guard.client_root_uri = Some(uri.clone());
                                                             println!("Captured client root URI from folders: {}", uri);
                                                         }
                                                     }
