@@ -181,27 +181,16 @@ const EditorPanel = ({
 
         if (['cpp', 'c'].includes(lang)) {
             backendLang = 'cpp';
-            // Broad selector: match language OR extension, any scheme
-            documentSelector = [
-                { language: 'cpp' },
-                { language: 'c' },
-                { pattern: '**/*.cpp' },
-                { pattern: '**/*.c' }
-            ];
+            documentSelector = ['cpp', 'c'];
         } else if (lang === 'rust') {
             backendLang = 'rust';
-            documentSelector = [{ language: 'rust' }, { pattern: '**/*.rs' }];
+            documentSelector = ['rust'];
         } else if (lang === 'python') {
             backendLang = 'python';
-            documentSelector = [{ language: 'python' }, { pattern: '**/*.py' }];
+            documentSelector = ['python'];
         } else if (['typescript', 'javascript'].includes(lang)) {
             backendLang = 'typescript';
-            documentSelector = [
-                { language: 'typescript' },
-                { language: 'javascript' },
-                { pattern: '**/*.ts' },
-                { pattern: '**/*.js' }
-            ];
+            documentSelector = ['typescript', 'javascript'];
         }
 
         if (!backendLang) {
@@ -244,13 +233,28 @@ const EditorPanel = ({
                  return;
             }
 
-            const languageClient = new MonacoLanguageClient({
+            class SynthiLanguageClient extends MonacoLanguageClient {
+                fillInitializeParams(params) {
+                    super.fillInitializeParams(params);
+                    params.rootUri = "file:///synthi/";
+                    params.workspaceFolders = [{
+                        uri: "file:///synthi/",
+                        name: "synthi"
+                    }];
+                }
+            }
+
+            const languageClient = new SynthiLanguageClient({
                 name: `Synthi Language Client (${backendLang})`,
                 clientOptions: {
                     documentSelector: documentSelector,
                     middleware: {
                         didOpen: (data, next) => {
                             console.log('[LSP] Sending didOpen:', data);
+                            return next(data);
+                        },
+                        didChange: (data, next) => {
+                            console.log('[LSP] Sending didChange');
                             return next(data);
                         },
                         provideCompletionItem: (document, position, context, token, next) => {
@@ -266,12 +270,11 @@ const EditorPanel = ({
                         error: () => ({ action: ErrorAction.Continue }),
                         closed: () => ({ action: CloseAction.DoNotRestart })
                     },
-                    // Removed workspaceFolder to avoid scope restriction issues
-                    // workspaceFolder: {
-                    //     uri: monacoInstance.Uri.parse('file:///synthi/'),
-                    //     name: 'workspace',
-                    //     index: 0
-                    // }
+                    workspaceFolder: {
+                        uri: monacoInstance.Uri.parse('file:///synthi/'),
+                        name: 'synthi',
+                        index: 0
+                    }
                 },
                 messageTransports: { reader, writer }
             });
@@ -285,6 +288,58 @@ const EditorPanel = ({
                 provideCompletionItems: (model, position) => {
                     console.log('[LSP-DEBUG] Manual completion provider triggered');
                     return { suggestions: [] };
+                }
+            });
+
+            // Manual LSP Bridge: Force completion requests to the server
+            // This bypasses monaco-languageclient's document selector issues
+            const bridgeDisposable = monacoInstance.languages.registerCompletionItemProvider(backendLang, {
+                triggerCharacters: ['.', '>', ':', '/', '"', '<'],
+                provideCompletionItems: async (model, position, context) => {
+                    console.log('[LSP-BRIDGE] Requesting completion via bridge...');
+                    // Wait for client to be ready
+                    if (!languageClient.isRunning()) {
+                         console.log('[LSP-BRIDGE] Client not running yet');
+                         return { suggestions: [] };
+                    }
+
+                    try {
+                        const params = {
+                            textDocument: { uri: model.uri.toString() },
+                            position: { line: position.lineNumber - 1, character: position.column - 1 },
+                            context: {
+                                triggerKind: context.triggerKind === monacoInstance.languages.CompletionTriggerKind.TriggerCharacter ? 2 : 1,
+                                triggerCharacter: context.triggerCharacter
+                            }
+                        };
+                        
+                        const result = await languageClient.sendRequest('textDocument/completion', params);
+                        console.log('[LSP-BRIDGE] Received items:', Array.isArray(result) ? result.length : result?.items?.length);
+                        
+                        if (!result) return { suggestions: [] };
+                        
+                        const items = Array.isArray(result) ? result : result.items;
+                        
+                        // Map LSP items to Monaco items
+                        const suggestions = items.map(item => {
+                            const kind = item.kind !== undefined ? item.kind - 1 : monacoInstance.languages.CompletionItemKind.Text;
+                            return {
+                                label: item.label,
+                                kind: kind,
+                                insertText: item.insertText || item.label,
+                                detail: item.detail,
+                                documentation: typeof item.documentation === 'object' ? item.documentation.value : item.documentation,
+                                sortText: item.sortText,
+                                filterText: item.filterText,
+                                insertTextRules: item.insertTextFormat === 2 ? monacoInstance.languages.CompletionItemInsertTextRule.InsertAsSnippet : 0
+                            };
+                        });
+
+                        return { suggestions };
+                    } catch (e) {
+                        console.error('[LSP-BRIDGE] Error:', e);
+                        return { suggestions: [] };
+                    }
                 }
             });
             
@@ -309,12 +364,29 @@ const EditorPanel = ({
                 }, 500);
             }
 
+            // Manual Sync: Ensure server gets updates
+            const changeDisposable = editorInstance.onDidChangeModelContent((e) => {
+                if (!languageClient.isRunning()) return;
+                
+                // Only send if we suspect the client isn't doing it (or just force it for now)
+                // We use full text sync to be safe
+                languageClient.sendNotification('textDocument/didChange', {
+                    textDocument: {
+                        uri: model.uri.toString(),
+                        version: model.getVersionId()
+                    },
+                    contentChanges: [{ text: model.getValue() }]
+                });
+            });
+
             languageClientsRef.current.set(backendLang, languageClient);
             setLspStatus(`Ready (${backendLang})`);
             
             lspChannel.onclose = () => {
                 console.log(`[LSP] Channel closed for ${backendLang}`);
                 debugDisposable.dispose();
+                bridgeDisposable.dispose();
+                changeDisposable.dispose();
                 languageClient.stop();
                 languageClientsRef.current.delete(backendLang);
                 setLspStatus('Disconnected');
