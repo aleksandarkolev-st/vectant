@@ -263,7 +263,28 @@ const EditorPanel = ({
             const model = editorInstance.getModel();
             console.log(`[LSP] Model URI: ${model.uri.toString()}, Language: ${model.getLanguageId()}`);
             
-            languageClient.start();
+            try {
+                await languageClient.start();
+                console.log(`[LSP] Client started for ${backendLang}`);
+            } catch (e) {
+                console.error(`[LSP] Client start failed for ${backendLang}`, e);
+            }
+
+            // Manually trigger didOpen to ensure the server knows about the file immediately
+            // This helps if the automatic tracking misses the already-open file
+            if (model) {
+                setTimeout(() => {
+                    const textDocument = {
+                        uri: model.uri.toString(),
+                        languageId: model.getLanguageId(),
+                        version: model.getVersionId(),
+                        text: model.getValue()
+                    };
+                    console.log('[LSP] Manually sending didOpen for', textDocument.uri);
+                    languageClient.sendNotification('textDocument/didOpen', { textDocument });
+                }, 500);
+            }
+
             languageClientsRef.current.set(backendLang, languageClient);
             setLspStatus(`Ready (${backendLang})`);
             

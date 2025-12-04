@@ -378,6 +378,10 @@ async fn main() -> Result<()> {
                                     
                                     // Try to parse and process
                                     let mut processed = false;
+                                    
+                                    // Debug: Print raw data length
+                                    println!("Received LSP data from WebRTC: {} bytes", data.len());
+
                                     if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(json_bytes) {
                                         let mut guard = state.lock().await;
                                         

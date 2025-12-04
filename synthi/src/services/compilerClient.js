@@ -284,6 +284,16 @@ export class CompilerClient {
         const label = `lsp-${language}?slug=${this.slug || ''}`;
         const channel = this.pc.createDataChannel(label, { ordered: true });
         channel.binaryType = 'arraybuffer';
+
+        // Trigger renegotiation to establish the new data channel
+        this.pc.createOffer().then(offer => {
+            return this.pc.setLocalDescription(offer).then(() => offer);
+        }).then(offer => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp, sdp_type: offer.type }));
+            }
+        }).catch(e => console.error('Renegotiation failed', e));
+
         return channel;
     }
 
