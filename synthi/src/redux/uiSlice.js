@@ -13,6 +13,7 @@ export const initialUiState = {
     autoSaveEnabled: false,
     autoCompletionEnabled: true,
     uiActionState: initialUiActionState,
+    expandedFolders: [],
 };
 
 const uiSlice = createSlice({
@@ -31,6 +32,21 @@ const uiSlice = createSlice({
         },
         toggleAutoCompletion: (state) => {
             state.autoCompletionEnabled = !state.autoCompletionEnabled;
+        },
+        toggleFolderExpansion: (state, action) => {
+            const path = action.payload;
+            if (!state.expandedFolders) state.expandedFolders = [];
+            if (state.expandedFolders.includes(path)) {
+                state.expandedFolders = state.expandedFolders.filter(p => p !== path);
+            } else {
+                state.expandedFolders.push(path);
+            }
+        },
+        setExpandedFolders: (state, action) => {
+            state.expandedFolders = action.payload;
+        },
+        hydrateUi: (state, action) => {
+            return { ...state, ...action.payload };
         },
         
         // UI Action State Machine Reducers
@@ -68,6 +84,9 @@ export const {
     startRename,
     setUiActionName,
     cancelUiAction,
+    hydrateUi,
+    toggleFolderExpansion,
+    setExpandedFolders,
 } = uiSlice.actions;
 
 // Selectors
@@ -76,5 +95,6 @@ export const selectTreeOnRight = (state) => state.ui.treeOnRight;
 export const selectAutoSaveEnabled = (state) => state.ui.autoSaveEnabled;
 export const selectAutoCompletionEnabled = (state) => state.ui.autoCompletionEnabled;
 export const selectUiActionState = (state) => state.ui.uiActionState;
+export const selectExpandedFolders = (state) => state.ui.expandedFolders || [];
 
 export default uiSlice.reducer;

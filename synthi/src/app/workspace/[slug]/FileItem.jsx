@@ -1,6 +1,8 @@
 // src/app/FileItem.jsx
 "use client";
 import { useState, useRef, useEffect } from "react";
+import { useAppSelector } from "@/redux/hooks";
+import { selectExpandedFolders, toggleFolderExpansion } from "@/redux/uiSlice";
 import { ChevronIcon } from "./Icons";
 import { getFileIcon, FolderIcon } from "@/utils/fileIcons";
 import { setUiActionName } from "@/redux/uiSlice";
@@ -33,7 +35,8 @@ const FileItem = ({
     item.isFolder && activeFile && containsActiveFile(item, activeFile.path);
 
   // Retain local state for folder expansion
-  const [isOpen, setIsOpen] = useState(shouldAutoExpand);
+  const expandedFolders = useAppSelector(selectExpandedFolders);
+  const isOpen = expandedFolders.includes(item.path);
   const isRoot = level === 0; // Check if this is a root-level item
 
   // Destructure UI state and derive contextual flags
@@ -82,9 +85,11 @@ const FileItem = ({
   // Auto-expand folders containing the active file
   useEffect(() => {
     if (item.isFolder && activeFile && containsActiveFile(item, activeFile.path)) {
-      setIsOpen(true);
+      if (!isOpen) {
+        dispatch(toggleFolderExpansion(item.path));
+      }
     }
-  }, [activeFile?.path, item, item.isFolder]);
+  }, [activeFile?.path, item, item.isFolder, isOpen, dispatch]);
 
   // Use a ref to track if we're in the middle of creation
   const isCreatingRef = useRef(false);
@@ -93,7 +98,9 @@ const FileItem = ({
   useEffect(() => {
   if (isParentForCreation) {
     isCreatingRef.current = true;
-    setIsOpen(true);
+    if (!isOpen) {
+        dispatch(toggleFolderExpansion(item.path));
+    }
     
     return () => {
       setTimeout(() => {
@@ -106,9 +113,9 @@ const FileItem = ({
 useEffect(() => {
   // Auto-expand when this folder becomes the target for creation
   if (isParentForCreation && !isOpen) {
-    setIsOpen(true);
+    dispatch(toggleFolderExpansion(item.path));
   }
-}, [isParentForCreation, isOpen]);
+}, [isParentForCreation, isOpen, dispatch, item.path]);
 
 // Unified auto-focus and selection for rename/create
 useEffect(() => {
@@ -175,7 +182,7 @@ useEffect(() => {
   const handleFileClick = (e) => {
     if (item.isFolder) {
       if (isExpandable) {
-        setIsOpen(!isOpen);
+        dispatch(toggleFolderExpansion(item.path));
       }
     } else {
       // Show immediate feedback
@@ -236,7 +243,7 @@ useEffect(() => {
           <div
             onClick={(e) => {
               e.stopPropagation();
-              setIsOpen(!isOpen);
+              dispatch(toggleFolderExpansion(item.path));
             }}
           >
             <ChevronIcon isOpen={isOpen} isSelected={isSelected} />
