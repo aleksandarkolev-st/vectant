@@ -63,7 +63,8 @@ export const useEditorProviders = ({
     applyAiCompletionText,
     rawFiles = [],
     fileCacheEntries = new Map(),
-    activeFile
+    activeFile,
+    lspReady = false
 }) => {
     const hoverProviderRef = useRef(null);
     const inlineCompletionProviderRef = useRef(null);
@@ -86,6 +87,9 @@ export const useEditorProviders = ({
 
         // Dispose previous provider if any
         completionProviderRef.current?.dispose();
+
+        // If LSP is ready, disable client-side regex completions to avoid duplicates/conflicts
+        if (lspReady) return;
 
         if (activeLanguage === 'cpp' || activeLanguage === 'c') {
             completionProviderRef.current = monacoInstance.languages.registerCompletionItemProvider(activeLanguage, {
@@ -177,7 +181,7 @@ export const useEditorProviders = ({
         return () => {
             completionProviderRef.current?.dispose();
         };
-    }, [editorInstance, monacoInstance, activeLanguage]); // Removed complex dependencies
+    }, [editorInstance, monacoInstance, activeLanguage, lspReady]); // Removed complex dependencies
 
     // 1. Inline Completion Provider (The "Ghost Text")
     useEffect(() => {

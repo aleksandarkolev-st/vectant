@@ -135,12 +135,42 @@ const EditorPanel = ({
     const pendingPositionFrameRef = useRef(null);
     const [tabContext, setTabContext] = useState({ visible: false, x: 0, y: 0, file: null, index: -1 });
     const [lspStatus, setLspStatus] = useState('Idle');
+    const [servicesReady, setServicesReady] = useState(false);
 
     const { client: compilerClient, status: compilerStatus } = useCompiler();
     const languageClientsRef = useRef(new Map());
 
+    // Initialize Monaco Services ONCE
     useEffect(() => {
-        if (!monacoInstance || !compilerClient || compilerStatus !== CompilerStatus.CONNECTED || !activeFile) {
+        if (servicesInitialized) {
+            setServicesReady(true);
+            return;
+        }
+
+        import('monaco-languageclient/vscodeApiWrapper').then(async ({ MonacoVscodeApiWrapper }) => {
+            if (!servicesInitialized) {
+                const wrapper = new MonacoVscodeApiWrapper({
+                    $type: 'classic',
+                    viewsConfig: {
+                        $type: 'EditorService'
+                    }
+                });
+                try {
+                    await wrapper.start();
+                    servicesInitialized = true;
+                    setServicesReady(true);
+                    console.log('[LSP] Monaco Services Initialized');
+                } catch (e) {
+                    console.error('Failed to initialize monaco-vscode-api', e);
+                }
+            } else {
+                setServicesReady(true);
+            }
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!monacoInstance || !compilerClient || compilerStatus !== CompilerStatus.CONNECTED || !activeFile || !servicesReady) {
              if (compilerStatus !== CompilerStatus.CONNECTED) setLspStatus('Compiler Disconnected');
              return;
         }
@@ -197,31 +227,31 @@ const EditorPanel = ({
         ]).then(async ([{ MonacoLanguageClient }, { MonacoVscodeApiWrapper }]) => {
             if (languageClientsRef.current.has(backendLang)) return;
 
+            // Services should be initialized by the other useEffect, but double check
             if (!servicesInitialized) {
-                const wrapper = new MonacoVscodeApiWrapper({
-                    $type: 'classic',
-                    viewsConfig: {
-                        $type: 'EditorService'
-                    }
-                });
-                try {
-                    await wrapper.start();
-                    servicesInitialized = true;
-                } catch (e) {
-                    console.error('Failed to initialize monaco-vscode-api', e);
-                }
+                 console.warn('[LSP] Services not initialized yet, waiting...');
+                 return;
             }
 
             const languageClient = new MonacoLanguageClient({
                 name: `Synthi Language Client (${backendLang})`,
                 clientOptions: {
-                    documentSelector: documentSelector,
+                    documentSelector: [
+                        // Use simple string selectors to be safe
+                        'cpp', 'c'
+                    ],
+                    middleware: {
+                        didOpen: (data, next) => {
+                            console.log('[LSP] Sending didOpen:', data);
+                            return next(data);
+                        }
+                    },
                     errorHandler: {
                         error: () => ({ action: ErrorAction.Continue }),
                         closed: () => ({ action: CloseAction.DoNotRestart })
                     },
                     workspaceFolder: {
-                        uri: 'file:///synthi/',
+                        uri: monacoInstance.Uri.parse('file:///synthi/'),
                         name: 'workspace',
                         index: 0
                     }
@@ -230,6 +260,9 @@ const EditorPanel = ({
             });
 
             console.log(`[LSP] Starting client for ${backendLang}`);
+            const model = editorInstance.getModel();
+            console.log(`[LSP] Model URI: ${model.uri.toString()}, Language: ${model.getLanguageId()}`);
+            
             languageClient.start();
             languageClientsRef.current.set(backendLang, languageClient);
             setLspStatus(`Ready (${backendLang})`);
@@ -350,7 +383,8 @@ const EditorPanel = ({
         applyAiCompletionText,
         rawFiles,
         fileCacheEntries,
-        activeFile
+        activeFile,
+        lspReady: lspStatus.startsWith('Ready')
     });
 
     // --- Event Handlers ---
@@ -655,7 +689,7 @@ const EditorPanel = ({
                                         <Editor
                                             key={activeFileIdentity}
                                             height="100%"
-                                            path={activeFile ? `/synthi/${activeFile.path}` : undefined}
+                                            path={activeFile ? `file:///synthi/${activeFile.path}` : undefined}
                                             value={code ?? ''}
                                             language={activeLanguage}
                                             theme="synthi-theme"
