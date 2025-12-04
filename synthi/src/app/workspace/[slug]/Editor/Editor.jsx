@@ -164,14 +164,25 @@ const EditorPanel = ({
         const reader = new WebSocketMessageReader(socket);
         const writer = new WebSocketMessageWriter(socket);
 
-        import('monaco-languageclient').then(async ({ MonacoLanguageClient, initServices }) => {
+        Promise.all([
+            import('monaco-languageclient'),
+            import('monaco-languageclient/vscodeApiWrapper')
+        ]).then(async ([{ MonacoLanguageClient }, { MonacoVscodeApiWrapper }]) => {
             if (languageClientsRef.current.has(backendLang)) return;
 
             if (!servicesInitialized) {
-                await initServices({
-                    debugLogging: false
+                const wrapper = new MonacoVscodeApiWrapper({
+                    $type: 'classic',
+                    viewsConfig: {
+                        $type: 'EditorService'
+                    }
                 });
-                servicesInitialized = true;
+                try {
+                    await wrapper.start();
+                    servicesInitialized = true;
+                } catch (e) {
+                    console.error('Failed to initialize monaco-vscode-api', e);
+                }
             }
 
             const languageClient = new MonacoLanguageClient({
