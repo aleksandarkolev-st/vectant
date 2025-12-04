@@ -134,6 +134,24 @@ fn rewrite_uris(val: &mut serde_json::Value, state: &LspSessionState, to_server:
     }
 }
 
+fn make_chunks(data: &[u8], msg_id: u32) -> Vec<Vec<u8>> {
+    let chunk_size = 60000; 
+    let total_len = data.len();
+    let total_chunks = (total_len + chunk_size - 1) / chunk_size;
+    let mut chunks = Vec::new();
+
+    for (i, chunk_slice) in data.chunks(chunk_size).enumerate() {
+        let mut packet = Vec::with_capacity(16 + chunk_slice.len());
+        packet.extend_from_slice(b"CHNK");
+        packet.extend_from_slice(&msg_id.to_be_bytes());
+        packet.extend_from_slice(&(i as u32).to_be_bytes());
+        packet.extend_from_slice(&(total_chunks as u32).to_be_bytes());
+        packet.extend_from_slice(chunk_slice);
+        chunks.push(packet);
+    }
+    chunks
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     gst::init()?;
@@ -603,11 +621,25 @@ async fn main() -> Result<()> {
                                                     
                                                     if let Ok(new_content) = serde_json::to_vec(&json_val) {
                                                         // Send ONLY content (no headers) to WebRTC
-                                                        let data = Bytes::copy_from_slice(&new_content);
-                                                        println!("Sending {} bytes to WebRTC (LSP stdout)", data.len());
-                                                        if let Err(e) = dc_out.send(&data).await {
-                                                            eprintln!("Failed to send to WebRTC: {}", e);
-                                                            break;
+                                                        let data_len = new_content.len();
+                                                        if data_len > 60000 {
+                                                            let msg_id = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() % 0xFFFFFFFF) as u32;
+                                                            let chunks = make_chunks(&new_content, msg_id);
+                                                            println!("Sending {} bytes in {} chunks (ID: {})", data_len, chunks.len(), msg_id);
+                                                            for chunk in chunks {
+                                                                let data = Bytes::from(chunk);
+                                                                if let Err(e) = dc_out.send(&data).await {
+                                                                    eprintln!("Failed to send chunk: {}", e);
+                                                                    break;
+                                                                }
+                                                            }
+                                                        } else {
+                                                            let data = Bytes::copy_from_slice(&new_content);
+                                                            println!("Sending {} bytes to WebRTC (LSP stdout)", data.len());
+                                                            if let Err(e) = dc_out.send(&data).await {
+                                                                eprintln!("Failed to send to WebRTC: {}", e);
+                                                                break;
+                                                            }
                                                         }
                                                     }
                                                 } else {
