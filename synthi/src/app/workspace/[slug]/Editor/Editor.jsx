@@ -270,16 +270,18 @@ const EditorPanel = ({
                     documentSelector: documentSelector,
                     middleware: {
                         didOpen: (data, next) => {
-                            console.log('[LSP] Sending didOpen:', data);
-                            return next(data);
+                            console.log('[LSP] Suppressing default didOpen (using manual)');
+                            // return next(data); 
                         },
                         didChange: (data, next) => {
-                            console.log('[LSP] Sending didChange');
-                            return next(data);
+                            console.log('[LSP] Suppressing default didChange (using manual)');
+                            // return next(data);
                         },
                         provideCompletionItem: (document, position, context, token, next) => {
-                            console.log('[LSP] provideCompletionItem triggered at:', position);
-                            return next(document, position, context, token);
+                            console.log('[LSP] provideCompletionItem triggered (middleware) - suppressing default');
+                            // Suppress default LSP completion to avoid duplicate requests/race conditions
+                            // since we are using the manual bridge.
+                            return []; 
                         },
                         resolveCompletionItem: (item, token, next) => {
                             console.log('[LSP] resolveCompletionItem triggered for:', item.label);
@@ -288,7 +290,10 @@ const EditorPanel = ({
                     },
                     errorHandler: {
                         error: () => ({ action: ErrorAction.Continue }),
-                        closed: () => ({ action: CloseAction.DoNotRestart })
+                        closed: () => {
+                            console.warn('[LSP] Connection closed unexpectedly');
+                            return { action: CloseAction.DoNotRestart };
+                        }
                     },
                     workspaceFolder: {
                         uri: monacoInstance.Uri.parse('file:///synthi/'),
@@ -315,7 +320,7 @@ const EditorPanel = ({
             // This bypasses monaco-languageclient's document selector issues
             const bridgeDisposable = monacoInstance.languages.registerCompletionItemProvider(backendLang, {
                 triggerCharacters: ['.', '>', ':', '/', '"', '<'],
-                provideCompletionItems: async (model, position, context) => {
+                provideCompletionItems: async (model, position, context, token) => {
                     console.log('[LSP-BRIDGE] Requesting completion via bridge...');
                     // Wait for client to be ready
                     if (!languageClient.isRunning()) {
@@ -324,17 +329,13 @@ const EditorPanel = ({
                     }
 
                     try {
+                        console.log('[LSP-BRIDGE] Sending request...');
                         const params = {
                             textDocument: { uri: model.uri.toString() },
-                            position: { line: position.lineNumber - 1, character: position.column - 1 },
-                            context: {
-                                triggerKind: context.triggerKind === monacoInstance.languages.CompletionTriggerKind.TriggerCharacter ? 2 : 1,
-                                triggerCharacter: context.triggerCharacter
-                            }
+                            position: { line: position.lineNumber - 1, character: position.column - 1 }
                         };
-                        
-                        const result = await languageClient.sendRequest('textDocument/completion', params);
-                        console.log('[LSP-BRIDGE] Received items:', Array.isArray(result) ? result.length : result?.items?.length);
+                        const result = await languageClient.sendRequest('textDocument/completion', params, token);
+                        console.log('[LSP-BRIDGE] Request finished, items:', Array.isArray(result) ? result.length : result?.items?.length);
                         
                         if (!result) return { suggestions: [] };
                         

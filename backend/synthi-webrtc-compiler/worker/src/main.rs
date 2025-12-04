@@ -479,6 +479,35 @@ async fn main() -> Result<()> {
                                             }
                                         }
 
+                                        // 4. Handle didChange file writing (only if full sync)
+                                        if json_val.get("method").and_then(|m| m.as_str()) == Some("textDocument/didChange") {
+                                            if let Some(params) = json_val.get("params") {
+                                                if let Some(changes) = params.get("contentChanges").and_then(|c| c.as_array()) {
+                                                    if changes.len() == 1 {
+                                                        if let Some(change) = changes.first() {
+                                                            if change.get("range").is_none() {
+                                                                if let Some(text) = change.get("text").and_then(|s| s.as_str()) {
+                                                                    if let Some(doc) = params.get("textDocument") {
+                                                                        if let Some(uri) = doc.get("uri").and_then(|s| s.as_str()) {
+                                                                            if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
+                                                                                let rel = rel.trim_start_matches('/');
+                                                                                let file_path = workspace_path.join(rel);
+                                                                                if let Err(e) = tokio::fs::write(&file_path, text).await {
+                                                                                    eprintln!("Failed to update file {}: {}", file_path.display(), e);
+                                                                                } else {
+                                                                                    println!("Updated file on disk: {}", file_path.display());
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
                                         // Re-serialize and add headers (required for Stdin)
                                         if let Ok(new_content) = serde_json::to_vec(&json_val) {
                                             let new_len = new_content.len();
@@ -547,11 +576,24 @@ async fn main() -> Result<()> {
                                             Ok(_) => {
                                                 println!("Received {} bytes from LSP stdout", content_length);
                                                 if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(&buf) {
-                                                    // Log initialize response
-                                                    if let Some(id) = json_val.get("id") {
-                                                        if let Some(result) = json_val.get("result") {
-                                                            if let Some(caps) = result.get("capabilities") {
-                                                                println!("LSP Initialize Response Capabilities: {:?}", caps);
+                                                    // Log initialize response and force Full text sync
+                                                    if let Some(result) = json_val.get_mut("result") {
+                                                        if let Some(caps) = result.get_mut("capabilities") {
+                                                            println!("LSP Initialize Response Capabilities: {:?}", caps);
+                                                            
+                                                            // Force textDocumentSync to Full (1) to ensure we always get full content
+                                                            // so we can keep the file on disk in sync for clangd.
+                                                            if let Some(caps_obj) = caps.as_object_mut() {
+                                                                if let Some(sync) = caps_obj.get_mut("textDocumentSync") {
+                                                                    if sync.is_number() {
+                                                                        *sync = serde_json::json!(1);
+                                                                    } else if let Some(sync_obj) = sync.as_object_mut() {
+                                                                        sync_obj.insert("change".to_string(), serde_json::json!(1));
+                                                                    }
+                                                                } else {
+                                                                    // If not present, default to Full (1)
+                                                                    caps_obj.insert("textDocumentSync".to_string(), serde_json::json!(1));
+                                                                }
                                                             }
                                                         }
                                                     }
