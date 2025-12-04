@@ -3,6 +3,8 @@ use std::process::Stdio;
 use std::collections::HashMap;
 use std::env;
 
+mod storage;
+
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
@@ -244,12 +246,35 @@ async fn main() -> Result<()> {
                         .boxed()
                     }));
             } else if label.starts_with("lsp") {
-                let lang = label.strip_prefix("lsp-").unwrap_or("cpp").to_string();
+                let rest = label.strip_prefix("lsp-").unwrap_or("cpp");
+                let (lang_str, slug_opt) = if let Some((l, s)) = rest.split_once("?slug=") {
+                    (l, Some(s.to_string()))
+                } else {
+                    (rest, None)
+                };
+                let lang = lang_str.to_string();
+                
                 let log_store = store.clone();
                 let dc_clone = dc.clone();
                 let workspace_path_for_lsp = workspace_path_for_dc.clone();
 
                 tokio::spawn(async move {
+                    // Try to download the workspace files
+                    let slug_to_use = slug_opt.as_deref().unwrap_or("test-workspace");
+                    println!("LSP Request: lang={}, slug={}", lang, slug_to_use);
+                    
+                    let workspace_path = match storage::download(slug_to_use, None).await {
+                        Ok(path) => {
+                            println!("Successfully downloaded workspace to: {}", path.display());
+                            path
+                        },
+                        Err(e) => {
+                            eprintln!("Failed to download workspace: {}", e);
+                            println!("Falling back to temp workspace: {}", workspace_path_for_lsp.display());
+                            workspace_path_for_lsp.as_ref().clone()
+                        }
+                    };
+
                     println!("Starting LSP for language: {}", lang);
                     let mut cmd = match lang.as_str() {
                         "cpp" | "c" => system_command("clangd"),
@@ -266,7 +291,7 @@ async fn main() -> Result<()> {
                         }
                     };
                     
-                    cmd.current_dir(&*workspace_path_for_lsp);
+                    cmd.current_dir(&workspace_path);
                     cmd.stdin(Stdio::piped());
                     cmd.stdout(Stdio::piped());
                     cmd.stderr(Stdio::piped());
@@ -280,7 +305,7 @@ async fn main() -> Result<()> {
                             let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<Vec<u8>>();
                             
                             // Calculate server root URI once
-                            let path_str = workspace_path_for_lsp.to_string_lossy().replace("\\", "/");
+                            let path_str = workspace_path.to_string_lossy().replace("\\", "/");
                             let server_root_uri = if cfg!(target_os = "windows") {
                                 let mut wsl_path = path_str.clone();
                                 if let Some(colon_idx) = wsl_path.find(':') {

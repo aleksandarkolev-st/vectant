@@ -39,8 +39,13 @@ export class CompilerClient {
         this.textDecoder = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
         this.terminalInputBuffer = [];
         this.status = CompilerStatus.IDLE;
+        this.slug = null;
         
         this._handleTerminalInput = this._handleTerminalInput.bind(this);
+    }
+
+    setSlug(slug) {
+        this.slug = slug;
     }
 
     getMediaStream() {
@@ -276,7 +281,7 @@ export class CompilerClient {
         if (!this.pc || this.pc.connectionState !== 'connected') {
             throw new Error('CompilerClient not connected');
         }
-        const label = `lsp-${language}`;
+        const label = `lsp-${language}?slug=${this.slug || ''}`;
         const channel = this.pc.createDataChannel(label, { ordered: true });
         channel.binaryType = 'arraybuffer';
         return channel;
