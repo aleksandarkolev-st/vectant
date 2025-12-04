@@ -435,6 +435,7 @@ async fn main() -> Result<()> {
                                         let mut buf = vec![0u8; content_length];
                                         match reader.read_exact(&mut buf).await {
                                             Ok(_) => {
+                                                println!("Received {} bytes from LSP stdout", content_length);
                                                 if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(&buf) {
                                                     let guard = state_for_outgoing.lock().await;
                                                     rewrite_uris(&mut json_val, &guard, false);

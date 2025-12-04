@@ -192,6 +192,11 @@ const EditorPanel = ({
                     errorHandler: {
                         error: () => ({ action: ErrorAction.Continue }),
                         closed: () => ({ action: CloseAction.DoNotRestart })
+                    },
+                    workspaceFolder: {
+                        uri: 'file:///',
+                        name: 'workspace',
+                        index: 0
                     }
                 },
                 messageTransports: { reader, writer }
