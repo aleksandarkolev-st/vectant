@@ -1,7 +1,7 @@
 // src/app/Editor.jsx
 'use client';
 import { useCallback, useEffect, useState, useRef } from 'react';
-import Editor from '@monaco-editor/react';
+import Editor, { loader } from '@monaco-editor/react';
 import { getMonacoLanguage } from '@/utils/languageMapper';
 import dynamic from 'next/dynamic';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
@@ -60,6 +60,34 @@ import { toSocket, WebSocketMessageReader, WebSocketMessageWriter } from 'vscode
 import { MonacoSocketAdapter } from '@/services/MonacoSocketAdapter';
 import { useCompiler } from '@/hooks/useCompiler';
 import { CompilerStatus } from '@/services/compilerClient';
+
+// Configure Monaco workers
+if (typeof window !== 'undefined') {
+    const MONACO_VERSION = '0.54.0';
+    const BASE_URL = `https://cdn.jsdelivr.net/npm/monaco-editor@${MONACO_VERSION}/min/vs`;
+
+    loader.config({ paths: { vs: BASE_URL } });
+
+    window.MonacoEnvironment = {
+        getWorker: function (workerId, label) {
+            const getWorkerUrl = () => {
+                if (label === 'json') return `${BASE_URL}/language/json/json.worker.js`;
+                if (label === 'css' || label === 'scss' || label === 'less') return `${BASE_URL}/language/css/css.worker.js`;
+                if (label === 'html' || label === 'handlebars' || label === 'razor') return `${BASE_URL}/language/html/html.worker.js`;
+                if (label === 'typescript' || label === 'javascript') return `${BASE_URL}/language/typescript/ts.worker.js`;
+                return `${BASE_URL}/base/worker/workerMain.js`;
+            };
+
+            const url = getWorkerUrl();
+            const proxyScript = `
+                self.MonacoEnvironment = { baseUrl: '${BASE_URL}' };
+                importScripts('${url}');
+            `;
+            const blob = new Blob([proxyScript], { type: 'text/javascript' });
+            return new Worker(URL.createObjectURL(blob));
+        }
+    };
+}
 
 const TerminalManagerDyn = dynamic(() => import('../../TerminalManager.jsx'), {
     ssr: false
