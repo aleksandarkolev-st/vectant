@@ -6,6 +6,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
+import { selectFileThunk } from '@/redux/workspaceSlice';
 import { selectFileCacheEntries } from '@/redux/workspaceSlice';
 import { useChatSessions } from './hooks/useChatSessions';
 import { useChatInput } from './hooks/useChatInput';
@@ -326,7 +327,69 @@ const AIChatWindow = ({
                                                         <div key={`${suggestion.path}-${suggestion.status}-${idx}`} className="px-3 py-3 bg-[#171717] border border-[#3a3a3a] rounded">
                                                             <div className="flex items-center justify-between gap-2 mb-3">
                                                                 <div>
-                                                                    <div className="text-sm font-medium text-gray-100 break-all">{suggestion.path}</div>
+                                                                    <div className="text-sm font-medium text-gray-100 break-all">
+                                                                        <button
+                                                                            onClick={async () => {
+                                                                                const parts = suggestion.path.split('/');
+                                                                                const name = parts[parts.length - 1] || suggestion.path;
+                                                                                try {
+                                                                                    // Dispatch selection and wait for content payload
+                                                                                    const action = await dispatch(selectFileThunk({ path: suggestion.path, name }));
+                                                                                    const payload = action?.payload || null;
+
+                                                                                    // Compute first changed line from suggestion chunks
+                                                                                    const findFirstChangedLine = (chunks) => {
+                                                                                        if (!Array.isArray(chunks)) return null;
+                                                                                        for (const chunk of chunks) {
+                                                                                            if (!chunk || !Array.isArray(chunk.rows)) continue;
+                                                                                            for (const row of chunk.rows) {
+                                                                                                if (!row) continue;
+                                                                                                if (row.type === 'add' || row.type === 'rem') {
+                                                                                                    // Prefer the new file line number when available
+                                                                                                    const candidate = (typeof row.lineNew === 'number' && row.lineNew > 0) ? row.lineNew : (typeof row.lineOld === 'number' && row.lineOld > 0 ? row.lineOld : null);
+                                                                                                    if (candidate) return candidate;
+                                                                                                }
+                                                                                            }
+                                                                                        }
+                                                                                        return null;
+                                                                                    };
+
+                                                                                    const targetLine = findFirstChangedLine(suggestion.chunks) || 1;
+
+                                                                                    // Wait for the editor instance to mount with the selected content
+                                                                                    if (editor && payload && typeof payload.content === 'string') {
+                                                                                        const desiredContent = payload.content;
+                                                                                        let attempts = 0;
+                                                                                        const maxAttempts = 20; // ~1s total (20 * 50ms)
+                                                                                        while (attempts < maxAttempts) {
+                                                                                            try {
+                                                                                                const model = editor.getModel && editor.getModel();
+                                                                                                const current = model && typeof editor.getValue === 'function' ? editor.getValue() : null;
+                                                                                                if (current !== null && current === desiredContent) {
+                                                                                                    // Move cursor and reveal
+                                                                                                    try {
+                                                                                                        editor.revealLineInCenter && editor.revealLineInCenter(targetLine);
+                                                                                                        editor.setPosition && editor.setPosition({ lineNumber: targetLine, column: 1 });
+                                                                                                        editor.focus && editor.focus();
+                                                                                                    } catch (e) { /* ignore */ }
+                                                                                                    break;
+                                                                                                }
+                                                                                            } catch (e) {
+                                                                                                // ignore transient errors
+                                                                                            }
+                                                                                            attempts += 1;
+                                                                                            await new Promise(r => setTimeout(r, 50));
+                                                                                        }
+                                                                                    }
+                                                                                } catch (e) {
+                                                                                    // ignore
+                                                                                }
+                                                                            }}
+                                                                            className="text-left w-full text-sm font-medium text-gray-100 hover:underline hover:text-emerald-200"
+                                                                        >
+                                                                            {suggestion.path}
+                                                                        </button>
+                                                                    </div>
                                                                     <div className={`inline-flex mt-1 px-2 py-0.5 rounded-full text-[11px] ${fileSuggestionStatusClasses(suggestion.status)}`}>
                                                                         {badgeText}
                                                                     </div>
