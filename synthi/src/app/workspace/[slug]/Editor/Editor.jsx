@@ -244,7 +244,7 @@ const EditorPanel = ({
             if (!activeDiffCheck()) {
                 requestAiCompletion(true, latestCodeRef.current, { reason: 'pause', pauseTrigger: true, recentEditSnippet: takeLastChars(latestCodeRef.current, 512) });
             }
-        }, 400);
+        }, 900);
     }, [aiAutoEnabled, activeDiffCheck, cancelActiveCompletion, dispatch, requestAiCompletion]);
 
     const handleSave = useCallback(() => {
@@ -261,6 +261,14 @@ const EditorPanel = ({
     // Key bindings (Ctrl+S, Alt+F)
     useEffect(() => {
         const handleKeyDown = (e) => {
+            if (e.key === 'Tab') {
+                const cached = aiCompletionCacheRef.current;
+                if (aiCompletionState === 'ready' && cached?.suggestion) {
+                    e.preventDefault();
+                    applyAiCompletionText(cached.suggestion);
+                    return;
+                }
+            }
             if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
                 e.preventDefault();
                 handleSave();
@@ -279,7 +287,7 @@ const EditorPanel = ({
         };
         window.addEventListener('keydown', handleKeyDown, { capture: true });
         return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
-    }, [handleSave, editorInstance, requestAiCompletion, cancelActiveCompletion, dispatch, activeFile]);
+    }, [handleSave, editorInstance, requestAiCompletion, cancelActiveCompletion, dispatch, activeFile, aiCompletionState, applyAiCompletionText]);
 
     // Ensure disabling auto AI clears any pending/computed suggestions
     useEffect(() => {
@@ -347,7 +355,7 @@ const EditorPanel = ({
                             {/* Breadcrumbs */}
                                 <div className="flex items-center gap-2 overflow-hidden min-w-0">
                                     {/* Tabs bar (sleek) */}
-                                    <div className="flex items-center gap-2 overflow-x-auto scrollbar-hide min-w-0">
+                                    <div className="flex items-center gap-0 overflow-x-auto scrollbar-hide min-w-0">
                                         {openFiles && openFiles.length > 0 ? openFiles.map((file, idx) => {
                                                 const isActive = activeFile && file.path === activeFile.path;
                                             const fileIcon = getFileIcon(file.name || file.path || '');
@@ -357,7 +365,7 @@ const EditorPanel = ({
                                                     {idx > 0 && (
                                                         <div
                                                             key={`sep-${file.path}`}
-                                                            style={{ width: 1, height: 22, backgroundColor: TAB_TOKENS.separator, marginRight: 6 }}
+                                                            style={{ width: 1, height: 22, backgroundColor: TAB_TOKENS.separator, marginRight: 1}}
                                                             aria-hidden="true"
                                                         />
                                                     )}
