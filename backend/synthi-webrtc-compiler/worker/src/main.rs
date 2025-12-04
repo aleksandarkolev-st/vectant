@@ -84,6 +84,40 @@ struct CompileRequest {
     height: Option<u32>,
 }
 
+struct LspSessionState {
+    client_root_uri: Option<String>,
+    server_root_uri: String,
+}
+
+fn rewrite_uris(val: &mut serde_json::Value, state: &LspSessionState, to_server: bool) {
+    if let Some(client_uri) = &state.client_root_uri {
+        let (from, to) = if to_server {
+            (client_uri.as_str(), state.server_root_uri.as_str())
+        } else {
+            (state.server_root_uri.as_str(), client_uri.as_str())
+        };
+        
+        match val {
+            serde_json::Value::String(s) => {
+                if s.starts_with(from) {
+                    *s = s.replace(from, to);
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                for v in arr {
+                    rewrite_uris(v, state, to_server);
+                }
+            }
+            serde_json::Value::Object(map) => {
+                for (_, v) in map {
+                    rewrite_uris(v, state, to_server);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     gst::init()?;
@@ -245,62 +279,117 @@ async fn main() -> Result<()> {
                             
                             let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<Vec<u8>>();
                             
+                            // Calculate server root URI once
+                            let path_str = workspace_path_for_lsp.to_string_lossy().replace("\\", "/");
+                            let server_root_uri = if cfg!(target_os = "windows") {
+                                let mut wsl_path = path_str.clone();
+                                if let Some(colon_idx) = wsl_path.find(':') {
+                                    let drive = &wsl_path[0..colon_idx].to_lowercase();
+                                    let rest = &wsl_path[colon_idx+1..];
+                                    wsl_path = format!("/mnt/{}{}", drive, rest);
+                                }
+                                format!("file://{}", wsl_path)
+                            } else if path_str.starts_with('/') {
+                                format!("file://{}", path_str)
+                            } else {
+                                format!("file:///{}", path_str)
+                            };
+
+                            let state = Arc::new(Mutex::new(LspSessionState {
+                                client_root_uri: None,
+                                server_root_uri: server_root_uri.clone(),
+                            }));
+
+                            let state_for_incoming = state.clone();
+                            let workspace_path_for_incoming = workspace_path_for_lsp.clone();
+
                             dc_clone.on_message(Box::new(move |msg| {
                                 let tx = stdin_tx.clone();
-                                let workspace_path = workspace_path_for_lsp.clone();
+                                let state = state_for_incoming.clone();
+                                let workspace_path = workspace_path_for_incoming.clone();
                                 async move {
                                     let mut data = msg.data.to_vec();
                                     
-                                    // Intercept initialize request to rewrite rootUri
-                                    if let Some(json_start) = data.windows(4).position(|w| w == b"\r\n\r\n") {
-                                        let content = &data[json_start+4..];
-                                        if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(content) {
-                                            if json_val.get("method").and_then(|m| m.as_str()) == Some("initialize") {
-                                                println!("Intercepted LSP initialize request");
-                                                let path_str = workspace_path.to_string_lossy().replace("\\", "/");
-                                                // Ensure proper file URI format
-                                                let new_uri = if cfg!(target_os = "windows") {
-                                                    let mut wsl_path = path_str.clone();
-                                                    if let Some(colon_idx) = wsl_path.find(':') {
-                                                        let drive = &wsl_path[0..colon_idx].to_lowercase();
-                                                        let rest = &wsl_path[colon_idx+1..];
-                                                        wsl_path = format!("/mnt/{}{}", drive, rest);
+                                    // Determine if the message has headers or is raw JSON
+                                    let (json_bytes, has_headers) = if let Some(json_start) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                                        (&data[json_start+4..], true)
+                                    } else {
+                                        (&data[..], false)
+                                    };
+                                    
+                                    // Try to parse and process
+                                    let mut processed = false;
+                                    if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(json_bytes) {
+                                        let mut guard = state.lock().await;
+                                        
+                                        // 1. Capture client root URI from initialize
+                                        if json_val.get("method").and_then(|m| m.as_str()) == Some("initialize") {
+                                            if let Some(params) = json_val.get("params") {
+                                                if let Some(root_uri) = params.get("rootUri").and_then(|s| s.as_str()) {
+                                                    guard.client_root_uri = Some(root_uri.to_string());
+                                                    println!("Captured client root URI: {}", root_uri);
+                                                } else if let Some(folders) = params.get("workspaceFolders").and_then(|f| f.as_array()) {
+                                                    if let Some(first) = folders.first() {
+                                                        if let Some(uri) = first.get("uri").and_then(|s| s.as_str()) {
+                                                            guard.client_root_uri = Some(uri.to_string());
+                                                            println!("Captured client root URI from folders: {}", uri);
+                                                        }
                                                     }
-                                                    format!("file://{}", wsl_path)
-                                                } else if path_str.starts_with('/') {
-                                                    format!("file://{}", path_str)
-                                                } else {
-                                                    format!("file:///{}", path_str)
-                                                };
+                                                }
+                                            }
+                                            
+                                            if guard.client_root_uri.is_none() {
+                                                println!("Client root URI not found in initialize, defaulting to file:///");
+                                                guard.client_root_uri = Some("file:///".to_string());
+                                            }
+                                        }
 
-                                                if let Some(params) = json_val.get_mut("params") {
-                                                    if let Some(root_uri) = params.get_mut("rootUri") {
-                                                        *root_uri = serde_json::Value::String(new_uri.clone());
-                                                    }
-                                                    if let Some(root_path) = params.get_mut("rootPath") {
-                                                        *root_path = serde_json::Value::String(path_str.clone().into());
-                                                    }
-                                                    if let Some(folders) = params.get_mut("workspaceFolders") {
-                                                        if let Some(arr) = folders.as_array_mut() {
-                                                            for folder in arr {
-                                                                if let Some(uri) = folder.get_mut("uri") {
-                                                                    *uri = serde_json::Value::String(new_uri.clone());
-                                                                }
+                                        // 2. Rewrite URIs (Client -> Server)
+                                        rewrite_uris(&mut json_val, &guard, true);
+
+                                        // 3. Handle didOpen file writing
+                                        if json_val.get("method").and_then(|m| m.as_str()) == Some("textDocument/didOpen") {
+                                            if let Some(params) = json_val.get("params") {
+                                                if let Some(doc) = params.get("textDocument") {
+                                                    if let (Some(uri), Some(text)) = (doc.get("uri").and_then(|s| s.as_str()), doc.get("text").and_then(|s| s.as_str())) {
+                                                        if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
+                                                            let rel = rel.trim_start_matches('/');
+                                                            let file_path = workspace_path.join(rel);
+                                                            if let Some(parent) = file_path.parent() {
+                                                                let _ = tokio::fs::create_dir_all(parent).await;
+                                                            }
+                                                            if let Err(e) = tokio::fs::write(&file_path, text).await {
+                                                                eprintln!("Failed to write file {}: {}", file_path.display(), e);
+                                                            } else {
+                                                                println!("Wrote file to disk: {}", file_path.display());
                                                             }
                                                         }
                                                     }
                                                 }
-                                                
-                                                if let Ok(new_content) = serde_json::to_vec(&json_val) {
-                                                    let new_len = new_content.len();
-                                                    let new_header = format!("Content-Length: {}\r\n\r\n", new_len);
-                                                    let mut new_msg = Vec::new();
-                                                    new_msg.extend_from_slice(new_header.as_bytes());
-                                                    new_msg.extend_from_slice(&new_content);
-                                                    data = new_msg;
-                                                }
                                             }
                                         }
+
+                                        // Re-serialize and add headers (required for Stdin)
+                                        if let Ok(new_content) = serde_json::to_vec(&json_val) {
+                                            let new_len = new_content.len();
+                                            let new_header = format!("Content-Length: {}\r\n\r\n", new_len);
+                                            let mut new_msg = Vec::new();
+                                            new_msg.extend_from_slice(new_header.as_bytes());
+                                            new_msg.extend_from_slice(&new_content);
+                                            data = new_msg;
+                                            processed = true;
+                                        }
+                                    }
+
+                                    if !processed && !has_headers {
+                                        // If we didn't process it (maybe parse failed) but it didn't have headers,
+                                        // we must add headers to forward to Stdin.
+                                        let new_len = data.len();
+                                        let new_header = format!("Content-Length: {}\r\n\r\n", new_len);
+                                        let mut new_msg = Vec::new();
+                                        new_msg.extend_from_slice(new_header.as_bytes());
+                                        new_msg.extend_from_slice(&data);
+                                        data = new_msg;
                                     }
 
                                     let _ = tx.send(data);
@@ -315,17 +404,55 @@ async fn main() -> Result<()> {
                             });
                             
                             let dc_out = dc_clone.clone();
+                            let state_for_outgoing = state.clone();
                             tokio::spawn(async move {
                                 let mut reader = BufReader::new(stdout);
-                                let mut buf = vec![0u8; 4096];
                                 loop {
-                                    match reader.read(&mut buf).await {
-                                        Ok(0) => break,
-                                        Ok(n) => {
-                                            let data = Bytes::copy_from_slice(&buf[..n]);
-                                            if let Err(_) = dc_out.send(&data).await { break; }
+                                    let mut content_length = 0;
+                                    let mut header_lines = Vec::new();
+                                    loop {
+                                        let mut line = String::new();
+                                        match reader.read_line(&mut line).await {
+                                            Ok(0) => return,
+                                            Ok(_) => {
+                                                header_lines.push(line.clone());
+                                                if line == "\r\n" {
+                                                    break;
+                                                }
+                                                if line.to_lowercase().starts_with("content-length:") {
+                                                    if let Some(idx) = line.find(':') {
+                                                        if let Ok(len) = line[idx+1..].trim().parse::<usize>() {
+                                                            content_length = len;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Err(_) => return,
                                         }
-                                        Err(_) => break,
+                                    }
+
+                                    if content_length > 0 {
+                                        let mut buf = vec![0u8; content_length];
+                                        match reader.read_exact(&mut buf).await {
+                                            Ok(_) => {
+                                                if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(&buf) {
+                                                    let guard = state_for_outgoing.lock().await;
+                                                    rewrite_uris(&mut json_val, &guard, false);
+                                                    
+                                                    if let Ok(new_content) = serde_json::to_vec(&json_val) {
+                                                        // Send ONLY content (no headers) to WebRTC
+                                                        let data = Bytes::copy_from_slice(&new_content);
+                                                        if let Err(_) = dc_out.send(&data).await { break; }
+                                                    }
+                                                } else {
+                                                    // Failed to parse JSON, but we read `content_length` bytes.
+                                                    // Send just the body?
+                                                    let data = Bytes::copy_from_slice(&buf);
+                                                    if let Err(_) = dc_out.send(&data).await { break; }
+                                                }
+                                            }
+                                            Err(_) => break,
+                                        }
                                     }
                                 }
                             });

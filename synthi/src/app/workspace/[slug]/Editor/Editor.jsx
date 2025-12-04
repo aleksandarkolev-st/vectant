@@ -623,6 +623,7 @@ const EditorPanel = ({
                                         <Editor
                                             key={activeFileIdentity}
                                             height="100%"
+                                            path={activeFile?.path}
                                             value={code ?? ''}
                                             language={activeLanguage}
                                             theme="synthi-theme"

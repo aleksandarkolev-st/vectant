@@ -22,7 +22,11 @@ export class MonacoSocketAdapter {
 
         this.dataChannel.onmessage = (event) => {
             if (this.onmessage) {
-                this.onmessage({ data: event.data });
+                let data = event.data;
+                if (data instanceof ArrayBuffer) {
+                    data = new TextDecoder().decode(data);
+                }
+                this.onmessage({ data: data });
             }
         };
 
