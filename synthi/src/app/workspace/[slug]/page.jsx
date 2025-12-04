@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { use } from 'react';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent } from '@/redux/workspaceSlice';
@@ -29,6 +29,7 @@ export default function EditorPage({ params }) {
     const [chatVisible, setChatVisible] = useState(false);
     const [guiConfig, setGuiConfig] = useState(null);
     const [isGuiRunning, setIsGuiRunning] = useState(false);
+    const guiVideoRef = useRef(null);
     const [editor, setEditor] = useState(null);
     const { analyzeCode, lastResult } = useAnalyzerGateway();
     const { compile, mediaStream } = useCompiler();
@@ -63,6 +64,85 @@ export default function EditorPage({ params }) {
             }
         };
     }, []);
+
+    // Helper to dispatch GUI events to the backend via CompilerClient middleware
+    const sendGuiEvent = (eventPayload) => {
+        try {
+            if (!guiConfig || !guiConfig.sessionId) return;
+            const payload = {
+                type: 'gui-event',
+                sessionId: guiConfig.sessionId,
+                event: eventPayload
+            };
+            if (typeof window !== 'undefined' && window.dispatchEvent) {
+                window.dispatchEvent(new CustomEvent('synthi:gui-input', { detail: payload }));
+            }
+        } catch (e) { /* ignore */ }
+    };
+
+    // Attach pointer/keyboard handlers to the video element for GUI interaction
+    useEffect(() => {
+        const el = guiVideoRef.current;
+        if (!el || !guiConfig) return;
+
+        const toDisplayCoords = (clientX, clientY) => {
+            const rect = el.getBoundingClientRect();
+            const dw = guiConfig.width || rect.width;
+            const dh = guiConfig.height || rect.height;
+            const x = Math.round((clientX - rect.left) * (dw / rect.width));
+            const y = Math.round((clientY - rect.top) * (dh / rect.height));
+            return { x, y };
+        };
+
+        const handleMouseMove = (ev) => {
+            const { x, y } = toDisplayCoords(ev.clientX, ev.clientY);
+            sendGuiEvent({ type: 'mouse', action: 'move', x, y });
+        };
+        const handleMouseDown = (ev) => {
+            const button = ev.button === 0 ? 1 : (ev.button === 1 ? 2 : 3);
+            const { x, y } = toDisplayCoords(ev.clientX, ev.clientY);
+            sendGuiEvent({ type: 'mouse', action: 'down', x, y, button });
+            // focus so keyboard events go to this element
+            try { el.focus(); } catch (e) {}
+            ev.preventDefault();
+        };
+        const handleMouseUp = (ev) => {
+            const button = ev.button === 0 ? 1 : (ev.button === 1 ? 2 : 3);
+            const { x, y } = toDisplayCoords(ev.clientX, ev.clientY);
+            sendGuiEvent({ type: 'mouse', action: 'up', x, y, button });
+            ev.preventDefault();
+        };
+        const handleWheel = (ev) => {
+            sendGuiEvent({ type: 'mouse', action: 'wheel', deltaY: ev.deltaY });
+            ev.preventDefault();
+        };
+
+        const handleKeyDown = (ev) => {
+            // Prevent global shortcuts interfering
+            ev.preventDefault();
+            sendGuiEvent({ type: 'key', action: 'down', key: ev.key });
+        };
+        const handleKeyUp = (ev) => {
+            ev.preventDefault();
+            sendGuiEvent({ type: 'key', action: 'up', key: ev.key });
+        };
+
+        el.addEventListener('mousemove', handleMouseMove);
+        el.addEventListener('mousedown', handleMouseDown);
+        window.addEventListener('mouseup', handleMouseUp);
+        el.addEventListener('wheel', handleWheel, { passive: false });
+        el.addEventListener('keydown', handleKeyDown);
+        el.addEventListener('keyup', handleKeyUp);
+
+        return () => {
+            el.removeEventListener('mousemove', handleMouseMove);
+            el.removeEventListener('mousedown', handleMouseDown);
+            window.removeEventListener('mouseup', handleMouseUp);
+            el.removeEventListener('wheel', handleWheel);
+            el.removeEventListener('keydown', handleKeyDown);
+            el.removeEventListener('keyup', handleKeyUp);
+        };
+    }, [guiConfig, guiVideoRef]);
 
     const handleClearLatestCompletion = useCallback(() => {
         setLatestCompletion(null);
@@ -305,16 +385,20 @@ export default function EditorPage({ params }) {
                     </div>
                     {mediaStream ? (
                         <video
+                            tabIndex={0}
                             width={guiConfig.width}
                             height={guiConfig.height}
                             autoPlay
                             playsInline
                             muted
                             className="block"
+                            onClick={() => { try { guiVideoRef.current && guiVideoRef.current.focus(); } catch (e) {} }}
                             ref={video => {
                                 if (video && mediaStream && video.srcObject !== mediaStream) {
                                     video.srcObject = mediaStream;
                                 }
+                                // keep ref current
+                                if (video) guiVideoRef.current = video;
                             }}
                         />
                     ) : (
