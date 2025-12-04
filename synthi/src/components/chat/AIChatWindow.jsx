@@ -6,6 +6,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
+import { selectFileThunk } from '@/redux/workspaceSlice';
 import { selectFileCacheEntries } from '@/redux/workspaceSlice';
 import { useChatSessions } from './hooks/useChatSessions';
 import { useChatInput } from './hooks/useChatInput';
@@ -326,7 +327,22 @@ const AIChatWindow = ({
                                                         <div key={`${suggestion.path}-${suggestion.status}-${idx}`} className="px-3 py-3 bg-[#171717] border border-[#3a3a3a] rounded">
                                                             <div className="flex items-center justify-between gap-2 mb-3">
                                                                 <div>
-                                                                    <div className="text-sm font-medium text-gray-100 break-all">{suggestion.path}</div>
+                                                                    <div className="text-sm font-medium text-gray-100 break-all">
+                                                                        <button
+                                                                            onClick={() => {
+                                                                                const parts = suggestion.path.split('/');
+                                                                                const name = parts[parts.length - 1] || suggestion.path;
+                                                                                try {
+                                                                                    dispatch(selectFileThunk({ path: suggestion.path, name }));
+                                                                                } catch (e) {
+                                                                                    // ignore
+                                                                                }
+                                                                            }}
+                                                                            className="text-left w-full text-sm font-medium text-gray-100 hover:underline hover:text-emerald-200"
+                                                                        >
+                                                                            {suggestion.path}
+                                                                        </button>
+                                                                    </div>
                                                                     <div className={`inline-flex mt-1 px-2 py-0.5 rounded-full text-[11px] ${fileSuggestionStatusClasses(suggestion.status)}`}>
                                                                         {badgeText}
                                                                     </div>
