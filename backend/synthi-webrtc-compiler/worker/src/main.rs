@@ -119,8 +119,8 @@ async fn main() -> Result<()> {
     // Store of sessionId -> stdin sender so datachannel 'terminal' messages can be
     // routed to the running process's stdin.
     let terminal_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> = Arc::new(Mutex::new(HashMap::new()));
-    // Store of sessionId -> DISPLAY string so GUI input events can be targeted
-    let gui_display_store: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    // Store of sessionId -> xdotool stdin sender for persistent X11 input
+    let x11_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> = Arc::new(Mutex::new(HashMap::new()));
 
     let build_log_dc = pc
         .create_data_channel("build-log", Some(RTCDataChannelInit::default()))
@@ -143,7 +143,7 @@ async fn main() -> Result<()> {
         let store = compile_store.clone();
         let term_store = term_store.clone();
         let pc_for_callback = pc_clone.clone();
-        let gui_store_outer = gui_display_store.clone();
+        let x11_store_outer = x11_input_store.clone();
         async move {
             let label = dc.label();
                 if label == "compile" {
@@ -154,7 +154,7 @@ async fn main() -> Result<()> {
                     let store = store.clone();
                     let term_store_for_msg = term_store.clone();
                     let pc_for_compile = pc_for_callback.clone();
-                    let gui_store = gui_store_outer.clone();
+                    let x11_store = x11_store_outer.clone();
                     async move {
                         if msg.is_string {
                             // Try to parse as a CompileRequest
@@ -162,8 +162,8 @@ async fn main() -> Result<()> {
                                     let log_dc = { store.lock().await.clone() };
                                     if let Some(log) = log_dc {
                                         let ts = term_store_for_msg.clone();
-                                        let gui_store = gui_store.clone();
-                                        tokio::spawn(handle_compile(req, log, ts, gui_store, pc_for_compile));
+                                        let x11_store = x11_store.clone();
+                                        tokio::spawn(handle_compile(req, log, ts, x11_store, pc_for_compile));
                                     }
                                     return;
                                 }
@@ -179,15 +179,15 @@ async fn main() -> Result<()> {
             } else if label == "terminal" {
                     // Terminal datachannel - used to receive stdin messages for running
                     // processes. Messages are expected as JSON: { type: 'stdin', sessionId, data }
-                    let gui_store_for_msg = gui_store_outer.clone();
+                    let x11_store_for_msg = x11_store_outer.clone();
                     dc.on_message(Box::new(move |msg| {
                         let term_store_for_msg = term_store.clone();
-                        let gui_store = gui_store_for_msg.clone();
+                        let x11_store = x11_store_for_msg.clone();
                         async move {
                             if msg.is_string {
                                 // diagnostic log
                                 if let Ok(s) = String::from_utf8(msg.data.to_vec()) {
-                                    println!("[worker] terminal msg: {}", s);
+                                    // println!("[worker] terminal msg: {}", s);
                                 }
                                 if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&msg.data) {
                                     if let Some(t) = v.get("type").and_then(|x| x.as_str()) {
@@ -203,125 +203,55 @@ async fn main() -> Result<()> {
                                                 }
                                             }
                                         } else if t == "gui-event" {
-                                            // Handle GUI event by mapping to X11 via xdotool
+                                            // Handle GUI event by sending to persistent xdotool process
                                             if let Some(sid) = v.get("sessionId").and_then(|x| x.as_str()) {
                                                 if let Some(evt) = v.get("event") {
-                                                    let guard = gui_store.lock().await;
-                                                    if let Some(display) = guard.get(sid) {
-                                                        // Spawn a task to execute xdotool commands
-                                                        let evt_clone = evt.clone();
-                                                        let display_clone = display.clone();
-                                                        tokio::spawn(async move {
-                                                            if let Some(typ) = evt_clone.get("type").and_then(|x| x.as_str()) {
-                                                                match typ {
-                                                                    "mouse" => {
-                                                                        // expect action: move/down/up/wheel, x,y, button, deltaY
-                                                                        if let Some(action) = evt_clone.get("action").and_then(|x| x.as_str()) {
-                                                                            if action == "move" {
-                                                                                if let (Some(x), Some(y)) = (evt_clone.get("x").and_then(|x| x.as_f64()), evt_clone.get("y").and_then(|y| y.as_f64())) {
-                                                                                    let x = x as i32;
-                                                                                    let y = y as i32;
-                                                                                    match tokio::process::Command::new("xdotool")
-                                                                                        .env("DISPLAY", display_clone.clone())
-                                                                                        .arg("mousemove")
-                                                                                        .arg(format!("{}", x))
-                                                                                        .arg(format!("{}", y))
-                                                                                        .output()
-                                                                                        .await {
-                                                                                        Ok(output) => {
-                                                                                            if !output.status.success() {
-                                                                                                eprintln!("xdotool mousemove failed: {}", String::from_utf8_lossy(&output.stderr));
-                                                                                            }
-                                                                                        }
-                                                                                        Err(e) => eprintln!("Failed to execute xdotool mousemove: {}", e),
-                                                                                    }
-                                                                                }
-                                                                            } else if action == "down" {
-                                                                                if let Some(btn) = evt_clone.get("button").and_then(|b| b.as_i64()) {
-                                                                                    match tokio::process::Command::new("xdotool")
-                                                                                        .env("DISPLAY", display_clone.clone())
-                                                                                        .arg("mousedown")
-                                                                                        .arg(format!("{}", btn))
-                                                                                        .output()
-                                                                                        .await {
-                                                                                        Ok(output) => {
-                                                                                            if !output.status.success() {
-                                                                                                eprintln!("xdotool mousedown failed: {}", String::from_utf8_lossy(&output.stderr));
-                                                                                            } else {
-                                                                                                println!("GUI event: mousedown button {}", btn);
-                                                                                            }
-                                                                                        }
-                                                                                        Err(e) => eprintln!("Failed to execute xdotool mousedown: {}", e),
-                                                                                    }
-                                                                                }
-                                                                            } else if action == "up" {
-                                                                                if let Some(btn) = evt_clone.get("button").and_then(|b| b.as_i64()) {
-                                                                                    match tokio::process::Command::new("xdotool")
-                                                                                        .env("DISPLAY", display_clone.clone())
-                                                                                        .arg("mouseup")
-                                                                                        .arg(format!("{}", btn))
-                                                                                        .output()
-                                                                                        .await {
-                                                                                        Ok(output) => {
-                                                                                            if !output.status.success() {
-                                                                                                eprintln!("xdotool mouseup failed: {}", String::from_utf8_lossy(&output.stderr));
-                                                                                            } else {
-                                                                                                println!("GUI event: mouseup button {}", btn);
-                                                                                            }
-                                                                                        }
-                                                                                        Err(e) => eprintln!("Failed to execute xdotool mouseup: {}", e),
-                                                                                    }
-                                                                                }
-                                                                            } else if action == "wheel" {
-                                                                                if let Some(delta) = evt_clone.get("deltaY").and_then(|d| d.as_f64()) {
-                                                                                    // map positive delta -> scroll down (button 5), negative -> scroll up (button 4)
-                                                                                    let btn = if delta > 0.0 { 5 } else { 4 };
-                                                                                    match tokio::process::Command::new("xdotool")
-                                                                                        .env("DISPLAY", display_clone.clone())
-                                                                                        .arg("click")
-                                                                                        .arg(format!("{}", btn))
-                                                                                        .output()
-                                                                                        .await {
-                                                                                        Ok(output) => {
-                                                                                            if !output.status.success() {
-                                                                                                eprintln!("xdotool scroll failed: {}", String::from_utf8_lossy(&output.stderr));
-                                                                                            }
-                                                                                        }
-                                                                                        Err(e) => eprintln!("Failed to execute xdotool scroll: {}", e),
-                                                                                    }
-                                                                                }
+                                                    let guard = x11_store.lock().await;
+                                                    if let Some(sender) = guard.get(sid) {
+                                                        let mut cmd = String::new();
+                                                        if let Some(typ) = evt.get("type").and_then(|x| x.as_str()) {
+                                                            match typ {
+                                                                "mouse" => {
+                                                                    if let Some(action) = evt.get("action").and_then(|x| x.as_str()) {
+                                                                        if action == "move" {
+                                                                            if let (Some(x), Some(y)) = (evt.get("x").and_then(|x| x.as_f64()), evt.get("y").and_then(|y| y.as_f64())) {
+                                                                                cmd = format!("mousemove {} {}", x as i32, y as i32);
+                                                                            }
+                                                                        } else if action == "down" {
+                                                                            if let Some(btn) = evt.get("button").and_then(|b| b.as_i64()) {
+                                                                                cmd = format!("mousedown {}", btn);
+                                                                                println!("[worker] click down {}", btn);
+                                                                            }
+                                                                        } else if action == "up" {
+                                                                            if let Some(btn) = evt.get("button").and_then(|b| b.as_i64()) {
+                                                                                cmd = format!("mouseup {}", btn);
+                                                                                println!("[worker] click up {}", btn);
+                                                                            }
+                                                                        } else if action == "wheel" {
+                                                                            if let Some(delta) = evt.get("deltaY").and_then(|d| d.as_f64()) {
+                                                                                let btn = if delta > 0.0 { 5 } else { 4 };
+                                                                                cmd = format!("click {}", btn);
                                                                             }
                                                                         }
                                                                     }
-                                                                    "key" => {
-                                                                        // expect action: down/up/press, key
-                                                                        if let Some(action) = evt_clone.get("action").and_then(|x| x.as_str()) {
-                                                                            if let Some(key) = evt_clone.get("key").and_then(|k| k.as_str()) {
-                                                                                let cmd_arg = if action == "press" { "key" } else if action == "down" { "keydown" } else { "keyup" };
-                                                                                match tokio::process::Command::new("xdotool")
-                                                                                    .env("DISPLAY", display_clone.clone())
-                                                                                    .arg(cmd_arg)
-                                                                                    .arg(key)
-                                                                                    .output()
-                                                                                    .await {
-                                                                                    Ok(output) => {
-                                                                                        if !output.status.success() {
-                                                                                            eprintln!("xdotool {} {} failed: {}", cmd_arg, key, String::from_utf8_lossy(&output.stderr));
-                                                                                        } else {
-                                                                                            println!("GUI event: {} {}", cmd_arg, key);
-                                                                                        }
-                                                                                    }
-                                                                                    Err(e) => eprintln!("Failed to execute xdotool {} {}: {}", cmd_arg, key, e),
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                    _ => {}
                                                                 }
+                                                                "key" => {
+                                                                    if let Some(action) = evt.get("action").and_then(|x| x.as_str()) {
+                                                                        if let Some(key) = evt.get("key").and_then(|k| k.as_str()) {
+                                                                            let cmd_arg = if action == "press" { "key" } else if action == "down" { "keydown" } else { "keyup" };
+                                                                            cmd = format!("{} {}", cmd_arg, key);
+                                                                            println!("[worker] key {} {}", cmd_arg, key);
+                                                                        }
+                                                                    }
+                                                                }
+                                                                _ => {}
                                                             }
-                                                        });
+                                                        }
+                                                        if !cmd.is_empty() {
+                                                            let _ = sender.send(cmd);
+                                                        }
                                                     } else {
-                                                        println!("[worker] no display mapping for session {}", sid);
+                                                        println!("[worker] no x11 sender for session {}", sid);
                                                     }
                                                 }
                                             }
@@ -483,7 +413,7 @@ async fn create_peer(signal_tx: mpsc::UnboundedSender<SignalMessage>) -> Result<
     Ok(pc)
 }
 
-async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, terminal_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>, gui_display_store: Arc<Mutex<HashMap<String, String>>>, pc: Arc<RTCPeerConnection>) -> Result<()> {
+async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, terminal_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>, x11_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>, pc: Arc<RTCPeerConnection>) -> Result<()> {
     let dir = tempdir().context("failed to create temp dir")?;
     
     // Write the main file
@@ -654,6 +584,7 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
                 .arg("-ac")
                 .arg("-listen")
                 .arg("tcp")
+                .arg("-s").arg("0")
                 .stdout(Stdio::piped())
                 .stderr(Stdio::inherit());
 
@@ -712,9 +643,7 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
                 ("mfh265enc low-latency=true", "rtph265pay", "video/H265"),
                 ("d3d11h265enc", "rtph265pay", "video/H265"),
                 ("amfh265enc", "rtph265pay", "video/H265"),
-                ("x265enc tune=zerolatency speed-preset=ultrafast ! video/x-h265,stream-format=byte-stream", "rtph265pay", "video/H265"),
-                ("openh265enc ! video/x-h265,stream-format=byte-stream", "rtph265pay", "video/H265"),
-                // H264 Fallbacks
+                // H264 HW Fallbacks
                 ("nvh264enc preset=low-latency-hp zerolatency=true", "rtph264pay", "video/H264"),
                 ("vaapih264enc", "rtph264pay", "video/H264"),
                 ("msdkh264enc", "rtph264pay", "video/H264"),
@@ -722,16 +651,20 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
                 ("mfh264enc low-latency=true", "rtph264pay", "video/H264"),
                 ("d3d11h264enc", "rtph264pay", "video/H264"),
                 ("amfh264enc", "rtph264pay", "video/H264"),
-                ("x264enc tune=zerolatency speed-preset=ultrafast ! video/x-h264,stream-format=byte-stream", "rtph264pay", "video/H264"),
+                // SW Fallbacks - Prefer H264 for performance in WSL
+                ("x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h264,stream-format=byte-stream", "rtph264pay", "video/H264"),
                 ("openh264enc ! video/x-h264,stream-format=byte-stream", "rtph264pay", "video/H264"),
+                // SW H265 (Last resort - heavy on CPU)
+                ("x265enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h265,stream-format=byte-stream", "rtph265pay", "video/H265"),
+                ("openh265enc ! video/x-h265,stream-format=byte-stream", "rtph265pay", "video/H265"),
             ];
 
             let mut selected_mime_type = "video/H265".to_owned();
 
             for (encoder, payloader, mime_type) in encoders {
                 let gst_pipeline_str = format!(
-                    "ximagesrc display-name={} use-damage=false show-pointer=false ! video/x-raw,framerate=30/1 ! queue ! videoconvert ! {} ! {} config-interval=1 ! queue ! appsink name=video_sink \
-                     pulsesrc ! audio/x-raw,rate=48000,channels=2 ! queue ! opusenc ! rtpopuspay ! queue ! appsink name=audio_sink",
+                    "ximagesrc display-name={} use-damage=false show-pointer=false ! video/x-raw,framerate=30/1 ! queue ! videoconvert ! {} ! {} config-interval=-1 ! queue ! appsink name=video_sink drop=true max-buffers=100 \
+                     pulsesrc ! audio/x-raw,rate=48000,channels=2 ! queue ! opusenc ! rtpopuspay ! queue ! appsink name=audio_sink drop=true max-buffers=100",
                     display_str, encoder, payloader
                 );
 
@@ -824,14 +757,65 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
                 }
             });
 
-            // Record display mapping so GUI input events can be targeted to this session.
-            // Insert mapping before sending the run-gui-start message so client events
-            // won't arrive before the mapping exists.
-            if let Some(sid) = session_id.clone() {
-                let mut g = gui_display_store.lock().await;
-                g.insert(sid.clone(), display_str.clone());
-                println!("Recorded display mapping for session {} -> {}", sid, display_str);
+            // Start persistent xdotool process for input handling
+            let mut xdotool = Command::new("xdotool")
+                .arg("-")
+                .env("DISPLAY", &display_str)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?;
+            
+            let mut xdotool_stdin = xdotool.stdin.take().ok_or(anyhow::anyhow!("Failed to open xdotool stdin"))?;
+            let xdotool_stderr = xdotool.stderr.take();
+
+            if let Some(stderr) = xdotool_stderr {
+                tokio::spawn(async move {
+                    let reader = BufReader::new(stderr);
+                    let mut lines = reader.lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        eprintln!("[xdotool error] {}", line);
+                    }
+                });
             }
+
+            let (x11_tx, mut x11_rx) = mpsc::unbounded_channel::<String>();
+            
+            if let Some(sid) = session_id.clone() {
+                let mut guard = x11_input_store.lock().await;
+                guard.insert(sid, x11_tx);
+            }
+
+            tokio::spawn(async move {
+                while let Some(mut cmd) = x11_rx.recv().await {
+                    // Coalesce mouse move events to prevent lag
+                    if cmd.starts_with("mousemove ") {
+                        while let Ok(next) = x11_rx.try_recv() {
+                            if next.starts_with("mousemove ") {
+                                cmd = next;
+                            } else {
+                                // Found a non-move event (e.g. click), flush the last move first
+                                if let Err(e) = xdotool_stdin.write_all(cmd.as_bytes()).await {
+                                    eprintln!("Failed to write to xdotool: {}", e);
+                                }
+                                let _ = xdotool_stdin.write_all(b"\n").await;
+                                cmd = next;
+                                break;
+                            }
+                        }
+                    }
+
+                    if let Err(e) = xdotool_stdin.write_all(cmd.as_bytes()).await {
+                        eprintln!("Failed to write to xdotool: {}", e);
+                        break;
+                    }
+                    let _ = xdotool_stdin.write_all(b"\n").await;
+                    let _ = xdotool_stdin.flush().await;
+                }
+                // Channel closed, close stdin, wait for process
+                drop(xdotool_stdin);
+                let _ = xdotool.wait().await;
+            });
 
             let payload = serde_json::json!({
                 "sessionId": session_id.clone(),
@@ -973,9 +957,9 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
             let mut guard = terminal_store.lock().await;
             guard.remove(&sid_opt);
         }
-        // Cleanup display mapping for this session
+        // Cleanup x11 sender for this session
         if let Some(sid_opt) = session_id.clone() {
-            let mut g = gui_display_store.lock().await;
+            let mut g = x11_input_store.lock().await;
             g.remove(&sid_opt);
         }
         return Ok(());
