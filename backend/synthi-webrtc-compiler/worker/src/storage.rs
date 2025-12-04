@@ -28,6 +28,13 @@ pub async fn download(
     slug: &str, 
     mut progress_tx: Option<mpsc::UnboundedSender<String>>
 ) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+    // Check if directory already exists
+    let local_dir = PathBuf::from("/synthi").join(slug);
+    if local_dir.exists() {
+        println!("Directory already exists: {}, skipping download", local_dir.display());
+        return Ok(local_dir);
+    }
+
     let credentials_json = json!({
         "type": "service_account",
         "project_id": "overview-synti",
