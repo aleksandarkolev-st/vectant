@@ -13,8 +13,9 @@ enableMapSet();
 const UI_STORAGE_KEY = 'synthi:ui';
 const OPEN_TABS_KEY = 'synthi:openTabs';
 const ACTIVE_TAB_KEY = 'synthi:activeTab';
+const EXPANDED_FOLDERS_KEY = 'synthi:expandedFolders';
 
-function loadUiPrefs() {
+export function loadUiPrefs() {
   if (typeof window === 'undefined' || !window.localStorage) return undefined;
   try {
     const raw = localStorage.getItem(UI_STORAGE_KEY);
@@ -26,7 +27,19 @@ function loadUiPrefs() {
   }
 }
 
-function loadOpenTabs() {
+export function loadExpandedFolders() {
+  if (typeof window === 'undefined' || !window.localStorage) return undefined;
+  try {
+    const raw = localStorage.getItem(EXPANDED_FOLDERS_KEY);
+    if (!raw) return undefined;
+    return JSON.parse(raw);
+  } catch (e) {
+    console.warn('Failed to load expanded folders from localStorage', e);
+    return undefined;
+  }
+}
+
+export function loadOpenTabs() {
   if (typeof window === 'undefined' || !window.localStorage) return undefined;
   try {
     const raw = localStorage.getItem(OPEN_TABS_KEY);
@@ -42,7 +55,7 @@ function loadOpenTabs() {
   }
 }
 
-function loadActiveTab() {
+export function loadActiveTab() {
   if (typeof window === 'undefined' || !window.localStorage) return undefined;
   try {
     const raw = localStorage.getItem(ACTIVE_TAB_KEY);
@@ -70,6 +83,15 @@ function saveUiPrefs(uiState) {
   }
 }
 
+function saveExpandedFolders(expandedFolders) {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    localStorage.setItem(EXPANDED_FOLDERS_KEY, JSON.stringify(expandedFolders));
+  } catch (e) {
+    console.warn('Failed to save expanded folders to localStorage', e);
+  }
+}
+
 function saveOpenTabs(openFiles) {
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
@@ -91,39 +113,11 @@ function saveActiveTab(activeFile) {
   }
 }
 
-const preloadedUi = loadUiPrefs();
-const preloadedOpenTabs = loadOpenTabs();
-const preloadedActive = loadActiveTab();
-
-// Merge persisted UI prefs into the slice's initial state so we don't
-// accidentally overwrite properties (like `uiActionState`) that the
-// slice expects to always exist. Also restore any previously open tabs.
-const preloadedState = (() => {
-  const state = {};
-  if (preloadedUi) state.ui = { ...initialUiState, ...preloadedUi };
-  if (preloadedOpenTabs) {
-    // Merge openTabs into the workspace initial state to ensure other keys remain.
-    // Ensure restored entries include isUnsaved boolean
-    const normalized = (preloadedOpenTabs || []).map(f => ({ path: f.path, name: f.name, language: f.language, isUnsaved: !!f.isUnsaved }));
-    state.workspace = { ...initialWorkspaceState, openFiles: normalized };
-    // If there was an active tab saved, try to set activeFile to the matching entry
-    if (preloadedActive && preloadedActive.path) {
-      const match = normalized.find(f => f.path === preloadedActive.path);
-      if (match) state.workspace.activeFile = match; else state.workspace.activeFile = { path: preloadedActive.path, name: preloadedActive.name, language: preloadedActive.language };
-    }
-  } else if (preloadedActive && preloadedActive.path) {
-    // No open tabs list, but active tab stored — set activeFile minimally so UI can trigger load
-    state.workspace = { ...initialWorkspaceState, activeFile: { path: preloadedActive.path, name: preloadedActive.name, language: preloadedActive.language } };
-  }
-  return Object.keys(state).length > 0 ? state : undefined;
-})();
-
 export const store = configureStore({
   reducer: {
     workspace: workspaceReducer,
     ui: uiReducer,
   },
-  preloadedState,
   // We need to disable the serializable check for the Map used in fileContentCache
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware({
@@ -137,9 +131,18 @@ export const store = configureStore({
 // Subscribe to store updates and persist UI preferences when they change.
 // We keep this lightweight and defensive for SSR.
 if (typeof window !== 'undefined') {
-  let lastUi = null;
-  let lastOpenTabs = null;
-  let lastActiveTabPath = null;
+  // Initialize with default state values to prevent overwriting localStorage on startup
+  // before hydration has occurred.
+  const ui = initialUiState;
+  let lastUi = `${ui.autoCompletionEnabled}|${ui.autoSaveEnabled}|${ui.treeOnRight}|${ui.showTerminal}`;
+  
+  let lastExpandedFolders = (ui.expandedFolders || []).join('|');
+  
+  const ws = initialWorkspaceState;
+  let lastOpenTabs = (ws.openFiles || []).map(f => f.path).join('|');
+  
+  let lastActiveTabPath = ws.activeFile && ws.activeFile.path ? ws.activeFile.path : null;
+
   store.subscribe(() => {
     try {
       const state = store.getState();
@@ -150,6 +153,15 @@ if (typeof window !== 'undefined') {
         lastUi = snapshot;
         saveUiPrefs(ui);
       }
+      // Persist expanded folders
+      try {
+        const expanded = ui.expandedFolders || [];
+        const expandedSnapshot = expanded.join('|');
+        if (expandedSnapshot !== lastExpandedFolders) {
+          lastExpandedFolders = expandedSnapshot;
+          saveExpandedFolders(expanded);
+        }
+      } catch (_) {}
       // Persist open tabs when changed (store minimal snapshot)
       try {
         const openFiles = state?.workspace?.openFiles || [];

@@ -297,6 +297,15 @@ const workspaceSlice = createSlice({
         setSlug: (state, action) => {
             state.slug = action.payload;
         },
+        hydrateWorkspace: (state, action) => {
+            const { openFiles, activeFile } = action.payload;
+            if (openFiles) {
+                state.openFiles = openFiles;
+            }
+            if (activeFile) {
+                state.activeFile = activeFile;
+            }
+        },
     },
     extraReducers: (builder) => {
         // Define mutation thunk prefixes for generic matcher logic
@@ -428,7 +437,7 @@ const workspaceSlice = createSlice({
     },
 });
 
-export const { updateContent, renameItemStateUpdate, setSlug, setExternalFileContent, openFile, closeFile, reorderOpenFiles } = workspaceSlice.actions;
+export const { updateContent, renameItemStateUpdate, setSlug, setExternalFileContent, openFile, closeFile, reorderOpenFiles, hydrateWorkspace } = workspaceSlice.actions;
 
 // --- MEMOIZED SELECTORS ---
 

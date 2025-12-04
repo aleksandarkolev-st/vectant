@@ -19,8 +19,8 @@ import FileTreeView from "./FileTree.jsx";
 import EditorPanel from "./Editor/Editor.jsx";
 import { getFileLanguage } from '@/utils/fileUtils';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
+import { useCompiler } from '@/hooks/useCompiler';
 import AIChatWindow from '@/components/chat/AIChatWindow';
-import { compileWithWorker, getMediaStream } from '@/services/compilerClient';
 import { api } from '@/services/api';
 import { resolveDependencies } from '@/utils/dependencyResolver';
 
@@ -31,38 +31,11 @@ export default function EditorPage({ params }) {
     const [isGuiRunning, setIsGuiRunning] = useState(false);
     const [editor, setEditor] = useState(null);
     const { analyzeCode, lastResult } = useAnalyzerGateway();
+    const { compile, mediaStream } = useCompiler();
     const [latestCompletion, setLatestCompletion] = useState(null);
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
-    const [mediaStream, setMediaStream] = useState(null);
     const [isGuiMode, setIsGuiMode] = useState(false);
-
-    useEffect(() => {
-        // Check if we already have a stream from a previous session
-        const existingStream = getMediaStream();
-        if (existingStream) {
-            setMediaStream(existingStream);
-        }
-
-        const handleTrack = (e) => {
-            const { track, streams } = e.detail;
-            console.log('Page received track:', track.kind);
-            if (streams && streams.length > 0) {
-                setMediaStream(streams[0]);
-            } else {
-                // Create a new stream if none provided
-                setMediaStream(prev => {
-                    if (prev) {
-                        prev.addTrack(track);
-                        return prev;
-                    }
-                    return new MediaStream([track]);
-                });
-            }
-        };
-        window.addEventListener('synthi:media-track', handleTrack);
-        return () => window.removeEventListener('synthi:media-track', handleTrack);
-    }, []);
 
     useEffect(() => {
         const handleGuiStart = (e) => {
@@ -212,7 +185,7 @@ export default function EditorPage({ params }) {
         const isGui = isGuiMode;
 
         try {
-            await compileWithWorker({
+            await compile({
                 filename,
                 source,
                 files: additionalFiles,
@@ -227,7 +200,7 @@ export default function EditorPage({ params }) {
             console.error('Compile failed', err);
             appendBuildLog(`error: ${err?.message || err}`);
         }
-    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, fileContentCache, slug, isGuiMode]);
+    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, fileContentCache, slug, isGuiMode, compile]);
 
     const handleEditorMount = (editorInstance) => {
         setEditor(editorInstance);
