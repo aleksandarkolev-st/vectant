@@ -340,6 +340,7 @@ const EditorPanel = ({
                         if (!result) return { suggestions: [] };
                         
                         const items = Array.isArray(result) ? result : result.items;
+                        const isIncomplete = !Array.isArray(result) && result.isIncomplete;
                         
                         // Map LSP items to Monaco items
                         const suggestions = items.map(item => {
@@ -356,7 +357,7 @@ const EditorPanel = ({
                             };
                         });
 
-                        return { suggestions };
+                        return { suggestions, incomplete: isIncomplete };
                     } catch (e) {
                         console.error('[LSP-BRIDGE] Error:', e);
                         return { suggestions: [] };
