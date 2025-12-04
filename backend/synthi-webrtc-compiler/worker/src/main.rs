@@ -547,6 +547,15 @@ async fn main() -> Result<()> {
                                             Ok(_) => {
                                                 println!("Received {} bytes from LSP stdout", content_length);
                                                 if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(&buf) {
+                                                    // Log initialize response
+                                                    if let Some(id) = json_val.get("id") {
+                                                        if let Some(result) = json_val.get("result") {
+                                                            if let Some(caps) = result.get("capabilities") {
+                                                                println!("LSP Initialize Response Capabilities: {:?}", caps);
+                                                            }
+                                                        }
+                                                    }
+
                                                     let guard = state_for_outgoing.lock().await;
                                                     rewrite_uris(&mut json_val, &guard, false);
                                                     

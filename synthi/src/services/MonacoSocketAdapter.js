@@ -34,8 +34,12 @@ export class MonacoSocketAdapter {
                     const json = JSON.parse(data);
                     if (json.method === 'textDocument/publishDiagnostics') {
                         console.log('[LSP-RX] Diagnostics for:', json.params.uri, 'Count:', json.params.diagnostics.length);
-                    } else if (json.id && json.result && Array.isArray(json.result.items)) {
-                         console.log('[LSP-RX] Completion Response:', json.result.items.length, 'items');
+                    } else if (json.id && json.result) {
+                        if (Array.isArray(json.result)) {
+                             console.log('[LSP-RX] Completion Response (Array):', json.result.length, 'items');
+                        } else if (json.result.items) {
+                             console.log('[LSP-RX] Completion Response (List):', json.result.items.length, 'items');
+                        }
                     } else if (json.method) {
                         console.log('[LSP-RX] Method:', json.method);
                     }

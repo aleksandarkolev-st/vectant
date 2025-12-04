@@ -181,16 +181,27 @@ const EditorPanel = ({
 
         if (['cpp', 'c'].includes(lang)) {
             backendLang = 'cpp';
-            documentSelector = ['cpp', 'c'];
+            // Broad selector: match language OR extension, any scheme
+            documentSelector = [
+                { language: 'cpp' },
+                { language: 'c' },
+                { pattern: '**/*.cpp' },
+                { pattern: '**/*.c' }
+            ];
         } else if (lang === 'rust') {
             backendLang = 'rust';
-            documentSelector = ['rust'];
+            documentSelector = [{ language: 'rust' }, { pattern: '**/*.rs' }];
         } else if (lang === 'python') {
             backendLang = 'python';
-            documentSelector = ['python'];
+            documentSelector = [{ language: 'python' }, { pattern: '**/*.py' }];
         } else if (['typescript', 'javascript'].includes(lang)) {
             backendLang = 'typescript';
-            documentSelector = ['typescript', 'javascript'];
+            documentSelector = [
+                { language: 'typescript' },
+                { language: 'javascript' },
+                { pattern: '**/*.ts' },
+                { pattern: '**/*.js' }
+            ];
         }
 
         if (!backendLang) {
@@ -243,9 +254,11 @@ const EditorPanel = ({
                             return next(data);
                         },
                         provideCompletionItem: (document, position, context, token, next) => {
+                            console.log('[LSP] provideCompletionItem triggered at:', position);
                             return next(document, position, context, token);
                         },
                         resolveCompletionItem: (item, token, next) => {
+                            console.log('[LSP] resolveCompletionItem triggered for:', item.label);
                             return next(item, token);
                         }
                     },
@@ -253,18 +266,27 @@ const EditorPanel = ({
                         error: () => ({ action: ErrorAction.Continue }),
                         closed: () => ({ action: CloseAction.DoNotRestart })
                     },
-                    workspaceFolder: {
-                        uri: monacoInstance.Uri.parse('file:///synthi/'),
-                        name: 'workspace',
-                        index: 0
-                    }
+                    // Removed workspaceFolder to avoid scope restriction issues
+                    // workspaceFolder: {
+                    //     uri: monacoInstance.Uri.parse('file:///synthi/'),
+                    //     name: 'workspace',
+                    //     index: 0
+                    // }
                 },
                 messageTransports: { reader, writer }
             });
 
             console.log(`[LSP] Starting client for ${backendLang}`);
             const model = editorInstance.getModel();
-            console.log(`[LSP] Model URI: ${model.uri.toString()}, Language: ${model.getLanguageId()}`);
+            console.log(`[LSP] Model Details - URI: ${model.uri.toString()}, Scheme: ${model.uri.scheme}, Language: ${model.getLanguageId()}`);
+            
+            // Debug: Register a manual completion provider to verify Monaco is working
+            const debugDisposable = monacoInstance.languages.registerCompletionItemProvider(model.getLanguageId(), {
+                provideCompletionItems: (model, position) => {
+                    console.log('[LSP-DEBUG] Manual completion provider triggered');
+                    return { suggestions: [] };
+                }
+            });
             
             try {
                 await languageClient.start();
@@ -274,7 +296,6 @@ const EditorPanel = ({
             }
 
             // Manually trigger didOpen to ensure the server knows about the file immediately
-            // This helps if the automatic tracking misses the already-open file
             if (model) {
                 setTimeout(() => {
                     const textDocument = {
@@ -293,6 +314,7 @@ const EditorPanel = ({
             
             lspChannel.onclose = () => {
                 console.log(`[LSP] Channel closed for ${backendLang}`);
+                debugDisposable.dispose();
                 languageClient.stop();
                 languageClientsRef.current.delete(backendLang);
                 setLspStatus('Disconnected');
