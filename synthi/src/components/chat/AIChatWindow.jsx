@@ -329,11 +329,58 @@ const AIChatWindow = ({
                                                                 <div>
                                                                     <div className="text-sm font-medium text-gray-100 break-all">
                                                                         <button
-                                                                            onClick={() => {
+                                                                            onClick={async () => {
                                                                                 const parts = suggestion.path.split('/');
                                                                                 const name = parts[parts.length - 1] || suggestion.path;
                                                                                 try {
-                                                                                    dispatch(selectFileThunk({ path: suggestion.path, name }));
+                                                                                    // Dispatch selection and wait for content payload
+                                                                                    const action = await dispatch(selectFileThunk({ path: suggestion.path, name }));
+                                                                                    const payload = action?.payload || null;
+
+                                                                                    // Compute first changed line from suggestion chunks
+                                                                                    const findFirstChangedLine = (chunks) => {
+                                                                                        if (!Array.isArray(chunks)) return null;
+                                                                                        for (const chunk of chunks) {
+                                                                                            if (!chunk || !Array.isArray(chunk.rows)) continue;
+                                                                                            for (const row of chunk.rows) {
+                                                                                                if (!row) continue;
+                                                                                                if (row.type === 'add' || row.type === 'rem') {
+                                                                                                    // Prefer the new file line number when available
+                                                                                                    const candidate = (typeof row.lineNew === 'number' && row.lineNew > 0) ? row.lineNew : (typeof row.lineOld === 'number' && row.lineOld > 0 ? row.lineOld : null);
+                                                                                                    if (candidate) return candidate;
+                                                                                                }
+                                                                                            }
+                                                                                        }
+                                                                                        return null;
+                                                                                    };
+
+                                                                                    const targetLine = findFirstChangedLine(suggestion.chunks) || 1;
+
+                                                                                    // Wait for the editor instance to mount with the selected content
+                                                                                    if (editor && payload && typeof payload.content === 'string') {
+                                                                                        const desiredContent = payload.content;
+                                                                                        let attempts = 0;
+                                                                                        const maxAttempts = 20; // ~1s total (20 * 50ms)
+                                                                                        while (attempts < maxAttempts) {
+                                                                                            try {
+                                                                                                const model = editor.getModel && editor.getModel();
+                                                                                                const current = model && typeof editor.getValue === 'function' ? editor.getValue() : null;
+                                                                                                if (current !== null && current === desiredContent) {
+                                                                                                    // Move cursor and reveal
+                                                                                                    try {
+                                                                                                        editor.revealLineInCenter && editor.revealLineInCenter(targetLine);
+                                                                                                        editor.setPosition && editor.setPosition({ lineNumber: targetLine, column: 1 });
+                                                                                                        editor.focus && editor.focus();
+                                                                                                    } catch (e) { /* ignore */ }
+                                                                                                    break;
+                                                                                                }
+                                                                                            } catch (e) {
+                                                                                                // ignore transient errors
+                                                                                            }
+                                                                                            attempts += 1;
+                                                                                            await new Promise(r => setTimeout(r, 50));
+                                                                                        }
+                                                                                    }
                                                                                 } catch (e) {
                                                                                     // ignore
                                                                                 }
