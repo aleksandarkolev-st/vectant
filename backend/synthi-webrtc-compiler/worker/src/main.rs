@@ -102,7 +102,21 @@ fn rewrite_uris(val: &mut serde_json::Value, state: &LspSessionState, to_server:
         match val {
             serde_json::Value::String(s) => {
                 if s.starts_with(from) {
-                    *s = s.replace(from, to);
+                    let suffix = &s[from.len()..];
+                    
+                    // Fix double slash issue: if 'to' ends with '/' and suffix starts with '/', strip one.
+                    let clean_suffix = if to.ends_with('/') && suffix.starts_with('/') {
+                        &suffix[1..]
+                    } else {
+                        suffix
+                    };
+
+                    let sep = if !to.ends_with('/') && !clean_suffix.starts_with('/') && !clean_suffix.is_empty() {
+                        "/"
+                    } else {
+                        ""
+                    };
+                    *s = format!("{}{}{}", to, sep, clean_suffix);
                 }
             }
             serde_json::Value::Array(arr) => {
@@ -265,8 +279,17 @@ async fn main() -> Result<()> {
                     
                     let workspace_path = match storage::download(slug_to_use, None).await {
                         Ok(path) => {
-                            println!("Successfully downloaded workspace to: {}", path.display());
-                            path
+                            let abs_path = if cfg!(target_os = "windows") {
+                                if let Ok(full) = tokio::fs::canonicalize(&path).await {
+                                    full
+                                } else {
+                                    path
+                                }
+                            } else {
+                                path
+                            };
+                            println!("Successfully downloaded workspace to: {}", abs_path.display());
+                            abs_path
                         },
                         Err(e) => {
                             eprintln!("Failed to download workspace: {}", e);
@@ -306,6 +329,13 @@ async fn main() -> Result<()> {
                             
                             // Calculate server root URI once
                             let path_str = workspace_path.to_string_lossy().replace("\\", "/");
+                            // Strip UNC prefix if present (e.g. //?/C:/...)
+                            let path_str = if path_str.starts_with("//?/") {
+                                path_str[4..].to_string()
+                            } else {
+                                path_str
+                            };
+
                             let server_root_uri = if cfg!(target_os = "windows") {
                                 let mut wsl_path = path_str.clone();
                                 if let Some(colon_idx) = wsl_path.find(':') {
@@ -347,6 +377,11 @@ async fn main() -> Result<()> {
                                     if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(json_bytes) {
                                         let mut guard = state.lock().await;
                                         
+                                        // Debug: Print method
+                                        if let Some(method) = json_val.get("method").and_then(|m| m.as_str()) {
+                                            println!("Received LSP method: {}", method);
+                                        }
+
                                         // 1. Capture client root URI from initialize
                                         if json_val.get("method").and_then(|m| m.as_str()) == Some("initialize") {
                                             if let Some(params) = json_val.get("params") {
@@ -468,13 +503,21 @@ async fn main() -> Result<()> {
                                                     if let Ok(new_content) = serde_json::to_vec(&json_val) {
                                                         // Send ONLY content (no headers) to WebRTC
                                                         let data = Bytes::copy_from_slice(&new_content);
-                                                        if let Err(_) = dc_out.send(&data).await { break; }
+                                                        println!("Sending {} bytes to WebRTC (LSP stdout)", data.len());
+                                                        if let Err(e) = dc_out.send(&data).await {
+                                                            eprintln!("Failed to send to WebRTC: {}", e);
+                                                            break;
+                                                        }
                                                     }
                                                 } else {
                                                     // Failed to parse JSON, but we read `content_length` bytes.
                                                     // Send just the body?
+                                                    println!("Failed to parse JSON from LSP stdout, sending raw bytes");
                                                     let data = Bytes::copy_from_slice(&buf);
-                                                    if let Err(_) = dc_out.send(&data).await { break; }
+                                                    if let Err(e) = dc_out.send(&data).await {
+                                                        eprintln!("Failed to send raw bytes to WebRTC: {}", e);
+                                                        break;
+                                                    }
                                                 }
                                             }
                                             Err(_) => break,

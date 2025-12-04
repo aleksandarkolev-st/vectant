@@ -182,6 +182,8 @@ const EditorPanel = ({
         let lspChannel;
         try {
              lspChannel = compilerClient.createLspChannel(backendLang);
+             console.log(`[LSP] Created channel for ${backendLang}, readyState: ${lspChannel.readyState}`);
+             lspChannel.onopen = () => console.log(`[LSP] Channel opened for ${backendLang}`);
         } catch (e) {
              console.error("[LSP] Failed to create channel", e);
              setLspStatus('Channel Error');
@@ -222,7 +224,7 @@ const EditorPanel = ({
                         closed: () => ({ action: CloseAction.DoNotRestart })
                     },
                     workspaceFolder: {
-                        uri: 'file:///',
+                        uri: 'file:///synthi/',
                         name: 'workspace',
                         index: 0
                     }
@@ -656,7 +658,7 @@ const EditorPanel = ({
                                         <Editor
                                             key={activeFileIdentity}
                                             height="100%"
-                                            path={activeFile?.path}
+                                            path={activeFile ? `/synthi/${activeFile.path}` : undefined}
                                             value={code ?? ''}
                                             language={activeLanguage}
                                             theme="synthi-theme"

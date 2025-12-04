@@ -26,8 +26,10 @@ export class MonacoSocketAdapter {
                 if (data instanceof ArrayBuffer) {
                     data = new TextDecoder().decode(data);
                 }
-                console.debug('[MonacoSocketAdapter] Received:', data.substring(0, 50));
+                console.log('[MonacoSocketAdapter] Received:', data.substring(0, 100));
                 this.onmessage({ data: data });
+            } else {
+                console.warn('[MonacoSocketAdapter] Received message but no onmessage handler attached');
             }
         };
 
