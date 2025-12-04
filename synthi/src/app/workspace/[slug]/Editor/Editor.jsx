@@ -170,8 +170,15 @@ const EditorPanel = ({
     }, []);
 
     useEffect(() => {
-        if (!monacoInstance || !compilerClient || compilerStatus !== CompilerStatus.CONNECTED || !activeFile || !servicesReady) {
-             if (compilerStatus !== CompilerStatus.CONNECTED) setLspStatus('Compiler Disconnected');
+        if (!monacoInstance || !compilerClient || compilerStatus !== CompilerStatus.CONNECTED || !activeFile || !servicesReady || !editorInstance) {
+             if (compilerStatus !== CompilerStatus.CONNECTED) {
+                 setLspStatus('Compiler Disconnected');
+                 // Cleanup existing clients if disconnected
+                 languageClientsRef.current.forEach(client => {
+                     try { client.stop(); } catch(e) {}
+                 });
+                 languageClientsRef.current.clear();
+             }
              return;
         }
 
@@ -200,6 +207,19 @@ const EditorPanel = ({
 
         if (languageClientsRef.current.has(backendLang)) {
             setLspStatus(`Ready (${backendLang})`);
+            // Ensure we send didOpen for the new file even if client exists
+            const client = languageClientsRef.current.get(backendLang);
+            const model = editorInstance.getModel();
+            if (client && client.isRunning() && model) {
+                 const textDocument = {
+                     uri: model.uri.toString(),
+                     languageId: model.getLanguageId(),
+                     version: model.getVersionId(),
+                     text: model.getValue()
+                 };
+                 console.log('[LSP] Manually sending didOpen (reuse) for', textDocument.uri);
+                 client.sendNotification('textDocument/didOpen', { textDocument });
+            }
             return;
         }
 
@@ -342,6 +362,7 @@ const EditorPanel = ({
                     }
                 }
             });
+
             
             try {
                 await languageClient.start();
@@ -368,14 +389,17 @@ const EditorPanel = ({
             const changeDisposable = editorInstance.onDidChangeModelContent((e) => {
                 if (!languageClient.isRunning()) return;
                 
+                const currentModel = editorInstance.getModel();
+                if (!currentModel) return;
+
                 // Only send if we suspect the client isn't doing it (or just force it for now)
                 // We use full text sync to be safe
                 languageClient.sendNotification('textDocument/didChange', {
                     textDocument: {
-                        uri: model.uri.toString(),
-                        version: model.getVersionId()
+                        uri: currentModel.uri.toString(),
+                        version: currentModel.getVersionId()
                     },
-                    contentChanges: [{ text: model.getValue() }]
+                    contentChanges: [{ text: currentModel.getValue() }]
                 });
             });
 
@@ -393,7 +417,7 @@ const EditorPanel = ({
             };
         });
 
-    }, [monacoInstance, compilerClient, compilerStatus, activeFile]);
+    }, [monacoInstance, compilerClient, compilerStatus, activeFile, editorInstance]);
 
     useEffect(() => {
         return () => {

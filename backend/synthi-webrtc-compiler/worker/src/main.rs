@@ -525,8 +525,7 @@ async fn main() -> Result<()> {
                                         match reader.read_line(&mut line).await {
                                             Ok(0) => return,
                                             Ok(_) => {
-                                                header_lines.push(line.clone());
-                                                if line == "\r\n" {
+                                                if line == "\r\n" || line == "\n" {
                                                     break;
                                                 }
                                                 if line.to_lowercase().starts_with("content-length:") {
@@ -536,6 +535,7 @@ async fn main() -> Result<()> {
                                                         }
                                                     }
                                                 }
+                                                header_lines.push(line);
                                             }
                                             Err(_) => return,
                                         }
