@@ -272,6 +272,18 @@ async fn main() -> Result<()> {
                 let dc_clone = dc.clone();
                 let workspace_path_for_lsp = workspace_path_for_dc.clone();
 
+                // Create a channel to buffer incoming messages immediately
+                let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<webrtc::data_channel::data_channel_message::DataChannelMessage>();
+                
+                let incoming_tx_clone = incoming_tx.clone();
+                dc.on_message(Box::new(move |msg| {
+                    let tx = incoming_tx_clone.clone();
+                    async move {
+                        let _ = tx.send(msg);
+                    }
+                    .boxed()
+                }));
+
                 tokio::spawn(async move {
                     // Try to download the workspace files
                     let slug_to_use = slug_opt.as_deref().unwrap_or("test-workspace");
@@ -359,14 +371,17 @@ async fn main() -> Result<()> {
                                 server_root_uri: server_root_uri.clone(),
                             }));
 
+                            // Process incoming messages (buffered + new)
                             let state_for_incoming = state.clone();
-                            let workspace_path_for_incoming = workspace_path_for_lsp.clone();
+                            let workspace_path_for_incoming = workspace_path.clone();
+                            let stdin_tx_clone = stdin_tx.clone();
 
-                            dc_clone.on_message(Box::new(move |msg| {
-                                let tx = stdin_tx.clone();
-                                let state = state_for_incoming.clone();
-                                let workspace_path = workspace_path_for_incoming.clone();
-                                async move {
+                            tokio::spawn(async move {
+                                while let Some(msg) = incoming_rx.recv().await {
+                                    let tx = stdin_tx_clone.clone();
+                                    let state = state_for_incoming.clone();
+                                    let workspace_path = workspace_path_for_incoming.clone();
+                                    
                                     let mut data = msg.data.to_vec();
                                     
                                     // Determine if the message has headers or is raw JSON
@@ -381,6 +396,9 @@ async fn main() -> Result<()> {
                                     
                                     // Debug: Print raw data length
                                     println!("Received LSP data from WebRTC: {} bytes", data.len());
+                                    if let Ok(s) = String::from_utf8(data.clone()) {
+                                        println!("Received LSP data content: {}", s.chars().take(200).collect::<String>());
+                                    }
 
                                     if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(json_bytes) {
                                         let mut guard = state.lock().await;
@@ -469,8 +487,8 @@ async fn main() -> Result<()> {
                                     }
 
                                     let _ = tx.send(data);
-                                }.boxed()
-                            }));
+                                }
+                            });
                             
                             tokio::spawn(async move {
                                 while let Some(data) = stdin_rx.recv().await {
