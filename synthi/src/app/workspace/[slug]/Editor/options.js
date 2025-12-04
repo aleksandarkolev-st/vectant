@@ -36,6 +36,18 @@ export const EDITOR_OPTIONS = {
         enabled: true,
         delay: 300,
     },
+    quickSuggestions: {
+        other: true,
+        comments: false,
+        strings: false
+    },
+    suggest: {
+        snippetsPreventQuickSuggestions: false,
+        showIcons: true,
+        showStatusBar: true,
+        preview: true,
+        previewMode: 'subwordSmart'
+    },
     glyphMargin: true,
     semanticHighlighting: { enabled: true },
 };

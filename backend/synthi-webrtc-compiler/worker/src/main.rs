@@ -312,7 +312,23 @@ async fn main() -> Result<()> {
 
                     println!("Starting LSP for language: {}", lang);
                     let mut cmd = match lang.as_str() {
-                        "cpp" | "c" => system_command("clangd"),
+                        "cpp" | "c" => {
+                            // Create compile_flags.txt to enforce C++17
+                            let flags_path = workspace_path.join("compile_flags.txt");
+                            if let Ok(mut file) = std::fs::File::create(flags_path) {
+                                use std::io::Write;
+                                let _ = writeln!(file, "-std=c++17");
+                            }
+
+                            let mut c = system_command("clangd");
+                            c.arg("--background-index");
+                            c.arg("--completion-style=detailed");
+                            c.arg("--header-insertion=iwyu");
+                            c.arg("--clang-tidy");
+                            c.arg("--all-scopes-completion");
+                            c.arg("--query-driver=/usr/bin/*");
+                            c
+                        },
                         "rust" => system_command("rust-analyzer"),
                         "python" | "py" => system_command("pylsp"),
                         "typescript" | "ts" | "javascript" | "js" => {

@@ -29,7 +29,20 @@ export class MonacoSocketAdapter {
                 if (data instanceof ArrayBuffer) {
                     data = new TextDecoder().decode(data);
                 }
-                // console.log('[MonacoSocketAdapter] Received:', data.substring(0, 100));
+                
+                try {
+                    const json = JSON.parse(data);
+                    if (json.method === 'textDocument/publishDiagnostics') {
+                        console.log('[LSP-RX] Diagnostics for:', json.params.uri, 'Count:', json.params.diagnostics.length);
+                    } else if (json.id && json.result && Array.isArray(json.result.items)) {
+                         console.log('[LSP-RX] Completion Response:', json.result.items.length, 'items');
+                    } else if (json.method) {
+                        console.log('[LSP-RX] Method:', json.method);
+                    }
+                } catch (e) {
+                    // ignore
+                }
+
                 this.onmessage({ data: data });
             } else {
                 console.warn('[MonacoSocketAdapter] Received message but no onmessage handler attached');

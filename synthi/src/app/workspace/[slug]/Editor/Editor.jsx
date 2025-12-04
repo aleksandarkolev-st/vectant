@@ -236,14 +236,17 @@ const EditorPanel = ({
             const languageClient = new MonacoLanguageClient({
                 name: `Synthi Language Client (${backendLang})`,
                 clientOptions: {
-                    documentSelector: [
-                        // Use simple string selectors to be safe
-                        'cpp', 'c'
-                    ],
+                    documentSelector: documentSelector,
                     middleware: {
                         didOpen: (data, next) => {
                             console.log('[LSP] Sending didOpen:', data);
                             return next(data);
+                        },
+                        provideCompletionItem: (document, position, context, token, next) => {
+                            return next(document, position, context, token);
+                        },
+                        resolveCompletionItem: (item, token, next) => {
+                            return next(item, token);
                         }
                     },
                     errorHandler: {
@@ -710,7 +713,7 @@ const EditorPanel = ({
                                         <Editor
                                             key={activeFileIdentity}
                                             height="100%"
-                                            path={activeFile ? `file:///synthi/${activeFile.path}` : undefined}
+                                            path={activeFile ? `/synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}` : undefined}
                                             value={code ?? ''}
                                             language={activeLanguage}
                                             theme="synthi-theme"
