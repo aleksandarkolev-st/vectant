@@ -34,6 +34,7 @@ use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirecti
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use webrtc::rtp::packet::Packet;
 use webrtc::util::marshal::Unmarshal;
+use bytes::Bytes;
 
 #[derive(Debug, Deserialize)]
 struct IceServerEnv {
@@ -118,6 +119,11 @@ async fn main() -> Result<()> {
     // routed to the running process's stdin.
     let terminal_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> = Arc::new(Mutex::new(HashMap::new()));
 
+    // Create a persistent workspace directory for the session
+    let workspace_dir = Arc::new(tempdir()?);
+    let workspace_path = workspace_dir.path().to_owned();
+    let workspace_path_arc = Arc::new(workspace_path);
+
     let build_log_dc = pc
         .create_data_channel("build-log", Some(RTCDataChannelInit::default()))
         .await?;
@@ -135,10 +141,12 @@ async fn main() -> Result<()> {
 
     let term_store = terminal_input_store.clone();
     let pc_clone = pc.clone();
+    let workspace_path_for_callback = workspace_path_arc.clone();
     pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
         let store = compile_store.clone();
         let term_store = term_store.clone();
         let pc_for_callback = pc_clone.clone();
+        let workspace_path_for_dc = workspace_path_for_callback.clone();
         async move {
             let label = dc.label();
             if label == "compile" {
@@ -149,6 +157,7 @@ async fn main() -> Result<()> {
                     let store = store.clone();
                     let term_store_for_msg = term_store.clone();
                     let pc_for_compile = pc_for_callback.clone();
+                    let workspace_path_for_compile = workspace_path_for_dc.clone();
                     async move {
                         if msg.is_string {
                             // Try to parse as a CompileRequest
@@ -156,7 +165,7 @@ async fn main() -> Result<()> {
                                 let log_dc = { store.lock().await.clone() };
                                 if let Some(log) = log_dc {
                                     let ts = term_store_for_msg.clone();
-                                    tokio::spawn(handle_compile(req, log, ts, pc_for_compile));
+                                    tokio::spawn(handle_compile(req, log, ts, pc_for_compile, workspace_path_for_compile.to_path_buf()));
                                 }
                                 return;
                             }
@@ -200,6 +209,160 @@ async fn main() -> Result<()> {
                         }
                         .boxed()
                     }));
+            } else if label.starts_with("lsp") {
+                let lang = label.strip_prefix("lsp-").unwrap_or("cpp").to_string();
+                let log_store = store.clone();
+                let dc_clone = dc.clone();
+                let workspace_path_for_lsp = workspace_path_for_dc.clone();
+
+                tokio::spawn(async move {
+                    println!("Starting LSP for language: {}", lang);
+                    let mut cmd = match lang.as_str() {
+                        "cpp" | "c" => system_command("clangd"),
+                        "rust" => system_command("rust-analyzer"),
+                        "python" | "py" => system_command("pylsp"),
+                        "typescript" | "ts" | "javascript" | "js" => {
+                             let mut c = system_command("typescript-language-server");
+                             c.arg("--stdio");
+                             c
+                        },
+                        _ => {
+                            println!("Unsupported language for LSP: {}", lang);
+                            return;
+                        }
+                    };
+                    
+                    cmd.current_dir(&*workspace_path_for_lsp);
+                    cmd.stdin(Stdio::piped());
+                    cmd.stdout(Stdio::piped());
+                    cmd.stderr(Stdio::piped());
+                    
+                    match cmd.spawn() {
+                        Ok(mut child) => {
+                            let mut stdin = child.stdin.take().expect("Failed to open stdin");
+                            let stdout = child.stdout.take().expect("Failed to open stdout");
+                            let stderr = child.stderr.take().expect("Failed to open stderr");
+                            
+                            let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+                            
+                            dc_clone.on_message(Box::new(move |msg| {
+                                let tx = stdin_tx.clone();
+                                let workspace_path = workspace_path_for_lsp.clone();
+                                async move {
+                                    let mut data = msg.data.to_vec();
+                                    
+                                    // Intercept initialize request to rewrite rootUri
+                                    if let Some(json_start) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                                        let content = &data[json_start+4..];
+                                        if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(content) {
+                                            if json_val.get("method").and_then(|m| m.as_str()) == Some("initialize") {
+                                                println!("Intercepted LSP initialize request");
+                                                let path_str = workspace_path.to_string_lossy().replace("\\", "/");
+                                                // Ensure proper file URI format
+                                                let new_uri = if cfg!(target_os = "windows") {
+                                                    let mut wsl_path = path_str.clone();
+                                                    if let Some(colon_idx) = wsl_path.find(':') {
+                                                        let drive = &wsl_path[0..colon_idx].to_lowercase();
+                                                        let rest = &wsl_path[colon_idx+1..];
+                                                        wsl_path = format!("/mnt/{}{}", drive, rest);
+                                                    }
+                                                    format!("file://{}", wsl_path)
+                                                } else if path_str.starts_with('/') {
+                                                    format!("file://{}", path_str)
+                                                } else {
+                                                    format!("file:///{}", path_str)
+                                                };
+
+                                                if let Some(params) = json_val.get_mut("params") {
+                                                    if let Some(root_uri) = params.get_mut("rootUri") {
+                                                        *root_uri = serde_json::Value::String(new_uri.clone());
+                                                    }
+                                                    if let Some(root_path) = params.get_mut("rootPath") {
+                                                        *root_path = serde_json::Value::String(path_str.clone().into());
+                                                    }
+                                                    if let Some(folders) = params.get_mut("workspaceFolders") {
+                                                        if let Some(arr) = folders.as_array_mut() {
+                                                            for folder in arr {
+                                                                if let Some(uri) = folder.get_mut("uri") {
+                                                                    *uri = serde_json::Value::String(new_uri.clone());
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                
+                                                if let Ok(new_content) = serde_json::to_vec(&json_val) {
+                                                    let new_len = new_content.len();
+                                                    let new_header = format!("Content-Length: {}\r\n\r\n", new_len);
+                                                    let mut new_msg = Vec::new();
+                                                    new_msg.extend_from_slice(new_header.as_bytes());
+                                                    new_msg.extend_from_slice(&new_content);
+                                                    data = new_msg;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    let _ = tx.send(data);
+                                }.boxed()
+                            }));
+                            
+                            tokio::spawn(async move {
+                                while let Some(data) = stdin_rx.recv().await {
+                                    if let Err(_) = stdin.write_all(&data).await { break; }
+                                    if let Err(_) = stdin.flush().await { break; }
+                                }
+                            });
+                            
+                            let dc_out = dc_clone.clone();
+                            tokio::spawn(async move {
+                                let mut reader = BufReader::new(stdout);
+                                let mut buf = vec![0u8; 4096];
+                                loop {
+                                    match reader.read(&mut buf).await {
+                                        Ok(0) => break,
+                                        Ok(n) => {
+                                            let data = Bytes::copy_from_slice(&buf[..n]);
+                                            if let Err(_) = dc_out.send(&data).await { break; }
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                            });
+                            
+                            let log_store_clone = log_store.clone();
+                            tokio::spawn(async move {
+                                let mut reader = BufReader::new(stderr);
+                                let mut line = String::new();
+                                loop {
+                                    line.clear();
+                                    match reader.read_line(&mut line).await {
+                                        Ok(0) => break,
+                                        Ok(_) => {
+                                            let log_dc = { log_store_clone.lock().await.clone() };
+                                            if let Some(ldc) = log_dc {
+                                                let payload = serde_json::json!({
+                                                    "type": "lsp-stderr",
+                                                    "language": lang,
+                                                    "line": line
+                                                });
+                                                let _ = ldc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                            } else {
+                                                print!("[LSP-ERR] {}", line);
+                                            }
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                            });
+                            
+                            let _ = child.wait().await;
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to spawn LSP: {}", e);
+                        }
+                    }
+                });
             }
         }
         .boxed()
@@ -351,11 +514,12 @@ async fn create_peer(signal_tx: mpsc::UnboundedSender<SignalMessage>) -> Result<
     Ok(pc)
 }
 
-async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, terminal_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>, pc: Arc<RTCPeerConnection>) -> Result<()> {
-    let dir = tempdir().context("failed to create temp dir")?;
+async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, terminal_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>, pc: Arc<RTCPeerConnection>, workspace_path: std::path::PathBuf) -> Result<()> {
+    // Use the shared workspace path instead of creating a new temp dir
+    let dir_path = workspace_path;
     
     // Write the main file
-    let file_path = dir.path().join(&req.filename);
+    let file_path = dir_path.join(&req.filename);
     // Clone session id locally so we can move it into spawned tasks without
     // invalidating the `req` value for later use.
     let session_id = req.session_id.clone();
@@ -368,7 +532,7 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
     // Write additional files
     for file in req.files {
         println!("Writing additional file: {}", file.name);
-        let p = dir.path().join(&file.name);
+        let p = dir_path.join(&file.name);
         // Ensure parent directories exist if the file is in a subdirectory
         if let Some(parent) = p.parent() {
             tokio::fs::create_dir_all(parent).await?;
@@ -378,23 +542,23 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
 
     let mut cmd = match req.language.as_str() {
         "cpp" => {
-            let mut c = Command::new("g++");
+            let mut c = system_command("g++");
             c.arg(&req.filename).arg("-I.").arg("-lX11").arg("-o").arg("main.out");
             c
         }
         "rust" => {
-            let mut c = Command::new("rustc");
+            let mut c = system_command("rustc");
             c.arg(&req.filename).arg("-o").arg("main.out");
             c
         }
         "ts" => {
-            let mut c = Command::new("tsc");
+            let mut c = system_command("tsc");
             c.arg(&req.filename);
             c
         }
         _ => return Ok(()),
     };
-    cmd.current_dir(dir.path());
+    cmd.current_dir(&dir_path);
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -474,9 +638,15 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
 
     // Run the produced binary for C++ only (for now)
     if req.language == "cpp" {
-        let bin_path = dir.path().join("main.out");
-        let mut run_cmd = Command::new(bin_path);
-        run_cmd.current_dir(dir.path());
+        let bin_path = dir_path.join("main.out");
+        let mut run_cmd = if cfg!(target_os = "windows") {
+            let mut c = Command::new("wsl");
+            c.arg("./main.out");
+            c
+        } else {
+            Command::new(bin_path)
+        };
+        run_cmd.current_dir(&dir_path);
         // Ensure the runtime process has a piped stdin so we can forward
         // terminal input into it.
         run_cmd.stdin(Stdio::piped());
@@ -492,7 +662,7 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
             let resolution = format!("{}x{}x24", width, height);
 
             let mut display_str = String::new();
-            let mut xvfb = Command::new("Xvfb");
+            let mut xvfb = system_command("Xvfb");
             xvfb.arg("-displayfd").arg("1")
                 .arg("-screen")
                 .arg("0")
@@ -629,7 +799,7 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
 
             let v_track_clone = video_track.clone();
             tokio::spawn(async move {
-                while let Some(mut buf) = v_rx.recv().await {
+                while let Some(buf) = v_rx.recv().await {
                     if let Ok(packet) = Packet::unmarshal(&mut &buf[..]) {
                         let _ = v_track_clone.write_rtp(&packet).await;
                     }
@@ -638,7 +808,7 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
 
             let a_track_clone = audio_track.clone();
             tokio::spawn(async move {
-                while let Some(mut buf) = a_rx.recv().await {
+                while let Some(buf) = a_rx.recv().await {
                     if let Ok(packet) = Packet::unmarshal(&mut &buf[..]) {
                         let _ = a_track_clone.write_rtp(&packet).await;
                     }
@@ -807,7 +977,7 @@ async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, termin
 
 async fn verify_tooling() -> Result<()> {
     for tool in REQUIRED_TOOLS {
-        let status = Command::new(tool)
+        let status = system_command(tool)
             .arg("--version")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -818,4 +988,14 @@ async fn verify_tooling() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn system_command(program: &str) -> Command {
+    if cfg!(target_os = "windows") {
+        let mut cmd = Command::new("wsl");
+        cmd.arg(program);
+        cmd
+    } else {
+        Command::new(program)
+    }
 }

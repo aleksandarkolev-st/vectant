@@ -39,6 +39,11 @@ export default function TerminalPane() {
 
       fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
+      
+      if (!containerRef.current) {
+        console.warn('TerminalPane: containerRef is null, aborting open');
+        return;
+      }
       term.open(containerRef.current);
       fitAddon.fit();
 

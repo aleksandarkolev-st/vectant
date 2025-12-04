@@ -31,6 +31,7 @@ export class CompilerClient {
         this.compileChannel = null;
         this.buildLogChannel = null;
         this.terminalChannel = null;
+        this.lspChannel = null;
         this.readyPromise = null;
         this.currentStreams = [];
         this.logHandlers = new Set();
@@ -232,6 +233,7 @@ export class CompilerClient {
                 this.compileChannel = this.pc.createDataChannel('compile', { ordered: true });
                 // Terminal channel for stdin forwarding
                 this.terminalChannel = this.pc.createDataChannel('terminal', { ordered: true });
+                
                 this.compileChannel.onclose = () => {};
 
                 const offer = await this.pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
@@ -268,6 +270,16 @@ export class CompilerClient {
             };
         });
         return this.readyPromise;
+    }
+
+    createLspChannel(language) {
+        if (!this.pc || this.pc.connectionState !== 'connected') {
+            throw new Error('CompilerClient not connected');
+        }
+        const label = `lsp-${language}`;
+        const channel = this.pc.createDataChannel(label, { ordered: true });
+        channel.binaryType = 'arraybuffer';
+        return channel;
     }
 
     async compile({ filename, source, language, files = [], isGui = false, width, height, onLog } = {}) {
@@ -365,14 +377,19 @@ export class CompilerClient {
 // Singleton instance for backward compatibility
 let globalInstance = null;
 
+export const getCompilerClient = () => {
+    if (!globalInstance) {
+        globalInstance = new CompilerClient();
+    }
+    return globalInstance;
+};
+
 export const getMediaStream = () => {
     if (!globalInstance) return null;
     return globalInstance.getMediaStream();
 };
 
 export const compileWithWorker = async (params) => {
-    if (!globalInstance) {
-        globalInstance = new CompilerClient();
-    }
-    return globalInstance.compile(params);
+    const client = getCompilerClient();
+    return client.compile(params);
 };

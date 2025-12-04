@@ -47,6 +47,20 @@ import { useEditorEvents } from './events';
 import { takeLastChars } from './utils';
 import { SYNTHI_THEME } from './theme';
 
+const CloseAction = {
+    DoNotRestart: 1,
+    Restart: 2,
+};
+
+const ErrorAction = {
+    Continue: 1,
+    Shutdown: 2,
+};
+import { toSocket, WebSocketMessageReader, WebSocketMessageWriter } from 'vscode-ws-jsonrpc';
+import { MonacoSocketAdapter } from '@/services/MonacoSocketAdapter';
+import { useCompiler } from '@/hooks/useCompiler';
+import { CompilerStatus } from '@/services/compilerClient';
+
 const TerminalManagerDyn = dynamic(() => import('../../TerminalManager.jsx'), {
     ssr: false
 });
@@ -93,6 +107,103 @@ const EditorPanel = ({
     const pendingContentFrameRef = useRef(null);
     const pendingPositionFrameRef = useRef(null);
     const [tabContext, setTabContext] = useState({ visible: false, x: 0, y: 0, file: null, index: -1 });
+    const [lspStatus, setLspStatus] = useState('Idle');
+
+    const { client: compilerClient, status: compilerStatus } = useCompiler();
+    const languageClientsRef = useRef(new Map());
+
+    useEffect(() => {
+        if (!monacoInstance || !compilerClient || compilerStatus !== CompilerStatus.CONNECTED || !activeFile) {
+             if (compilerStatus !== CompilerStatus.CONNECTED) setLspStatus('Compiler Disconnected');
+             return;
+        }
+
+        const lang = getMonacoLanguage(activeFile.name);
+        let backendLang = null;
+        let documentSelector = [];
+
+        if (['cpp', 'c'].includes(lang)) {
+            backendLang = 'cpp';
+            documentSelector = ['cpp', 'c'];
+        } else if (lang === 'rust') {
+            backendLang = 'rust';
+            documentSelector = ['rust'];
+        } else if (lang === 'python') {
+            backendLang = 'python';
+            documentSelector = ['python'];
+        } else if (['typescript', 'javascript'].includes(lang)) {
+            backendLang = 'typescript';
+            documentSelector = ['typescript', 'javascript'];
+        }
+
+        if (!backendLang) {
+            setLspStatus('No LSP for this file');
+            return;
+        }
+
+        if (languageClientsRef.current.has(backendLang)) {
+            setLspStatus(`Ready (${backendLang})`);
+            return;
+        }
+
+        console.log(`[LSP] Initializing for ${backendLang}...`);
+        setLspStatus(`Initializing ${backendLang}...`);
+
+        let lspChannel;
+        try {
+             lspChannel = compilerClient.createLspChannel(backendLang);
+        } catch (e) {
+             console.error("[LSP] Failed to create channel", e);
+             setLspStatus('Channel Error');
+             return;
+        }
+
+        const socket = toSocket(new MonacoSocketAdapter(lspChannel));
+        const reader = new WebSocketMessageReader(socket);
+        const writer = new WebSocketMessageWriter(socket);
+
+        import('monaco-languageclient').then(({ MonacoLanguageClient, MonacoServices }) => {
+            if (languageClientsRef.current.has(backendLang)) return;
+
+            try {
+                MonacoServices.get();
+            } catch (_) {
+                MonacoServices.install();
+            }
+
+            const languageClient = new MonacoLanguageClient({
+                name: `Synthi Language Client (${backendLang})`,
+                clientOptions: {
+                    documentSelector: documentSelector,
+                    errorHandler: {
+                        error: () => ({ action: ErrorAction.Continue }),
+                        closed: () => ({ action: CloseAction.DoNotRestart })
+                    }
+                },
+                messageTransports: { reader, writer }
+            });
+
+            console.log(`[LSP] Starting client for ${backendLang}`);
+            languageClient.start();
+            languageClientsRef.current.set(backendLang, languageClient);
+            setLspStatus(`Ready (${backendLang})`);
+            
+            lspChannel.onclose = () => {
+                console.log(`[LSP] Channel closed for ${backendLang}`);
+                languageClient.stop();
+                languageClientsRef.current.delete(backendLang);
+                setLspStatus('Disconnected');
+            };
+        });
+
+    }, [monacoInstance, compilerClient, compilerStatus, activeFile]);
+
+    useEffect(() => {
+        return () => {
+            languageClientsRef.current.forEach(client => client.stop());
+            languageClientsRef.current.clear();
+        };
+    }, []);
 
     // Swallow Monaco's cancel-notifications so they don't spam the console when
     // inline suggestions are abandoned mid-flight.
@@ -465,6 +576,12 @@ const EditorPanel = ({
                                 {/* Line/Col Info */}
                                 <div className="hidden md:flex gap-3 text-[11px] text-gray-500 font-mono">
                                     <span>Ln {position.lineNumber}, Col {position.column}</span>
+                                </div>
+
+                                {/* LSP Status */}
+                                <div className="flex items-center gap-2 text-[11px] text-gray-500">
+                                    <div className={`w-2 h-2 rounded-full ${lspStatus.startsWith('Ready') ? 'bg-green-500' : lspStatus.startsWith('Initializing') ? 'bg-yellow-500' : 'bg-gray-500'}`} />
+                                    <span>{lspStatus}</span>
                                 </div>
 
                                 {/* AI Status Indicator (Subtle) */}
