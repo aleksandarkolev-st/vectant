@@ -53,6 +53,8 @@ class MonacoTextBinding {
 
     // Track remote decorations per clientId
     this._remoteDecorations = new Map(); // clientId -> { ids: [decorationIds], meta }
+    // Content widgets fallback (per-client) for very-visible caret rendering
+    this._contentWidgets = new Map(); // clientId -> { widgetObj, dom }
 
     // awareness integration - show remote cursors/selections and publish local cursor
     this._awareness = awareness;
@@ -127,27 +129,31 @@ class MonacoTextBinding {
         try { this.editor.deltaDecorations(rec.ids || [], []); } catch (_) {}
       }
       this._remoteDecorations.clear();
+      // remove content widgets too
+      for (const [cid, rec] of this._contentWidgets.entries()) {
+        try { this.editor.removeContentWidget(rec.widgetObj); } catch (_) {}
+        try { rec.dom?.remove?.(); } catch (_) {}
+      }
+      this._contentWidgets.clear();
     } catch (_) {}
   }
 
   // Apply awareness states into Monaco decorations
   _applyAwarenessDecorations(states) {
     try {
-      // Build a map of current decorations that should exist
       const wanted = new Map();
       const localClientId = this._awareness?.clientID;
-
-      // Deduplicate by logical user id (state.user.id) so multiple clientIDs
-      // from the same user don't show multiple badges.
       const seenUsers = new Map();
+
       for (const s of states) {
         const cid = s.clientId;
         const st = s.state || {};
         if (!st || cid === localClientId) continue;
         const user = st.user || {};
         if (!st.cursor) continue;
+        
+        // Dedup users
         const userKey = user.id ? String(user.id) : String(cid);
-        // If we've already seen this logical user, skip additional clientIDs
         if (seenUsers.has(userKey)) continue;
 
         const range = this._toMonacoRange(st.cursor.range || st.cursor);
@@ -161,56 +167,109 @@ class MonacoTextBinding {
         const user = val.user || {};
         const range = val.range;
         const color = user.color || '#888';
-        const lastActive = val.state?.lastActive || 0;
-        wanted.set(cid, { range, color, name: user.name || 'User', lastActive });
+        wanted.set(cid, { range, color, name: user.name || 'Anonymous' });
       }
 
-      // Remove any decorations that are no longer wanted
+      // 1. CLEANUP: Remove decorations/widgets for users who left
       for (const [cid, rec] of this._remoteDecorations.entries()) {
         if (!wanted.has(cid)) {
-          try {
-            this.editor.deltaDecorations(rec.ids || [], []);
-          } catch (_) {}
+          this.editor.deltaDecorations(rec.ids || [], []);
           this._remoteDecorations.delete(cid);
         }
       }
-
-      // Add/Update decorations for wanted clients
-      for (const [cid, info] of wanted.entries()) {
-        const existing = this._remoteDecorations.get(cid);
-        const cursorClass = `collab-remote-cursor-${cid}`;
-        const selectionClass = `collab-remote-selection-${cid}`;
-
-        // Ensure styles exist (provide display name for initials in badge)
-        this._ensureStyleForClient(cid, info.color, info.name);
-
-        // Compose decorations: selection (if range non-empty), caret, and line badge (glyph margin)
-        const decs = [];
-        // selection
-        const isRecent = (info.lastActive && (Date.now() - info.lastActive) < 5000);
-        if (!info.range.isEmpty()) {
-          decs.push({ range: info.range, options: { inlineClassName: selectionClass + (isRecent ? ` collab-recent-${cid}` : '') } });
+      for (const [cid, rec] of this._contentWidgets.entries()) {
+        if (!wanted.has(cid)) {
+          this.editor.removeContentWidget(rec.widgetObj);
+          this._contentWidgets.delete(cid);
         }
-        // caret (use head position collapsed range)
-        const M = (typeof window !== 'undefined' && window.monaco) ? window.monaco : null;
-        const headRange = info.range.getEndPosition().equals(info.range.getStartPosition()) ? info.range : (M ? new M.Range(info.range.endLineNumber, info.range.endColumn, info.range.endLineNumber, info.range.endColumn) : info.range);
-        // Use inlineClassName for zero-length caret ranges so Monaco will render
-        // the caret reliably inside the text flow (className on a collapsed
-        // range can be ignored by Monaco's renderer). inlineClassName applies
-        // styling directly on the text node and works for collapsed ranges.
-        decs.push({ range: headRange, options: { inlineClassName: cursorClass + (isRecent ? ` collab-recent-${cid}` : '') } });
-        // line badge in glyph margin (show initials)
-        try {
-          const badgeClass = `collab-line-badge-${cid}`;
-          decs.push({ range: headRange, options: { glyphMarginClassName: badgeClass, glyphMarginHoverMessage: { value: info.name } } });
-        } catch (_) { }
-
-        const oldIds = existing?.ids || [];
-        const ids = this.editor.deltaDecorations(oldIds, decs);
-        this._remoteDecorations.set(cid, { ids, meta: info });
       }
+
+      // 2. RENDER: Add/Update decorations for active users
+      for (const [cid, info] of wanted.entries()) {
+        // --- A. Handle Selection (Background Highlight) via Decorations ---
+        const selectionClass = `collab-selection-${cid}`;
+        this._ensureStyleForClient(cid, info.color);
+
+        const decs = [];
+        if (!info.range.isEmpty()) {
+          decs.push({
+            range: info.range,
+            options: {
+              className: selectionClass, // Selection background
+              stickiness: 1
+            }
+          });
+        }
+
+        const existingDec = this._remoteDecorations.get(cid);
+        const oldIds = existingDec?.ids || [];
+        const newIds = this.editor.deltaDecorations(oldIds, decs);
+        this._remoteDecorations.set(cid, { ids: newIds, meta: info });
+
+        // --- B. Handle Cursor & Name Tag via ContentWidget (Figma Style) ---
+        // We calculate the position at the END of the selection (the head)
+        const headPos = info.range.getEndPosition();
+        
+        let widgetRec = this._contentWidgets.get(cid);
+        
+        // If widget doesn't exist, create the DOM structure
+        if (!widgetRec) {
+          const dom = document.createElement('div');
+          // Base container
+          dom.className = 'synthi-cursor-widget';
+          dom.style.backgroundColor = info.color; // The vertical bar color
+
+          // The Label (Name Tag)
+          const label = document.createElement('div');
+          label.className = 'synthi-cursor-label';
+          label.style.backgroundColor = info.color;
+          label.textContent = info.name;
+          
+          dom.appendChild(label);
+
+          const widgetObj = {
+            getId: () => `synthi.cursor.${cid}`,
+            getDomNode: () => dom,
+            getPosition: () => ({
+              position: { lineNumber: headPos.lineNumber, column: headPos.column },
+              preference: [0] // 0 = EXACT position
+            })
+          };
+
+          this.editor.addContentWidget(widgetObj);
+          widgetRec = { widgetObj, dom, currentLine: headPos.lineNumber, currentCol: headPos.column };
+          this._contentWidgets.set(cid, widgetRec);
+        } else {
+            // Update existing widget position
+            // We have to remove and re-add to force Monaco to update the position cleanly
+            // or we can just update the internal reference if we implemented a dynamic getPosition.
+            // Re-adding is safer for sync.
+            if(widgetRec.currentLine !== headPos.lineNumber || widgetRec.currentCol !== headPos.column) {
+                this.editor.removeContentWidget(widgetRec.widgetObj);
+                
+                // Update internal position data for the closure
+                widgetRec.widgetObj.getPosition = () => ({
+                    position: { lineNumber: headPos.lineNumber, column: headPos.column },
+                    preference: [0]
+                });
+                
+                this.editor.addContentWidget(widgetRec.widgetObj);
+                widgetRec.currentLine = headPos.lineNumber;
+                widgetRec.currentCol = headPos.column;
+            }
+            
+            // Update text/color just in case
+            widgetRec.dom.style.backgroundColor = info.color;
+            const label = widgetRec.dom.querySelector('.synthi-cursor-label');
+            if(label) {
+                label.style.backgroundColor = info.color;
+                label.textContent = info.name;
+            }
+        }
+      }
+
     } catch (err) {
-      console.warn('[Collab] failed applying awareness decorations', err?.message || err);
+      console.warn('[Collab] Decorations error', err);
     }
   }
 
@@ -229,48 +288,31 @@ class MonacoTextBinding {
     } catch (_) { return null; }
   }
 
-  _ensureStyleForClient(clientId, color, displayName = '') {
-    try {
-      const nameCursor = `collab-remote-cursor-${clientId}`;
-      const nameSelection = `collab-remote-selection-${clientId}`;
-      // Avoid re-creating styles
-      const existing = document.getElementById(`collab-style-${clientId}`);
-      if (existing) return;
-      const style = document.createElement('style');
-      style.id = `collab-style-${clientId}`;
-      // Create caret and selection styles using subtle rgba
-      const rgba = (c) => {
-        // convert named/hex color to rgba fallback (use hsl/css variable as-is)
-        // If color is like hsl(...) leave it; else we use hex -> rgba(, , , 0.35)
-        if (typeof c === 'string' && c.startsWith('hsl')) return c.replace(')', ', 0.35)');
-        if (typeof c === 'string' && c.startsWith('#')) {
-          // convert #rrggbb
-          const r = parseInt(c.slice(1,3),16); const g = parseInt(c.slice(3,5),16); const b = parseInt(c.slice(5,7),16);
-          return `rgba(${r}, ${g}, ${b}, 0.18)`;
-        }
-        return 'rgba(128,128,128,0.15)';
-      };
-      const caretColor = color || '#888';
-      const selectionColor = rgba(color || '#888');
-      // prepare initials string (1-2 letters)
-      const initials = (displayName || '').split(' ').filter(Boolean).map(p => p[0] || '').join('').slice(0,2).toUpperCase() || '';
-      // Compose CSS: selection, caret and glyph margin badge using ::after content
-      style.innerHTML = `
-        .${nameSelection} { background: ${selectionColor} !important; }
-        /* caret: a solid thin bar that's guaranteed visible */
-        .${nameCursor} { display:inline-block; width:2px; background: ${caretColor}; box-shadow: 0 0 6px ${caretColor}; margin-left: -1px; }
-        /* small floating initials label attached near the caret */
-        .${nameCursor}::before { content: '${initials}'; display: inline-block; font-size: 11px; line-height: 14px; padding: 2px 8px; border-radius: 10px; color: white; margin-left: 6px; transform: translateY(-140%); background: ${caretColor}; box-shadow: 0 6px 18px rgba(0,0,0,0.4); font-weight:700; }
+  _ensureStyleForClient(clientId, color) {
+    const styleId = `synthi-collab-style-${clientId}`;
+    if (document.getElementById(styleId)) return;
 
-        .${'collab-line-badge-' + clientId} { display: inline-block; height: 14px; width: 14px; border-radius: 14px; margin-left: 2px; box-sizing: border-box; background: ${caretColor}; border: 2px solid rgba(0,0,0,0.6); position: relative; }
-        .${'collab-line-badge-' + clientId}::after { content: '${initials}'; display: block; font-size: 9px; line-height: 14px; text-align: center; color: white; font-weight: 600; }
+    const style = document.createElement('style');
+    style.id = styleId;
+    
+    // Convert color to transparent version for selection
+    let selectionColor = color;
+    if(color.startsWith('#')) {
+        // Simple Hex to RGBA conversion
+        const r = parseInt(color.substring(1,3), 16);
+        const g = parseInt(color.substring(3,5), 16);
+        const b = parseInt(color.substring(5,7), 16);
+        selectionColor = `rgba(${r}, ${g}, ${b}, 0.2)`;
+    } else if (color.startsWith('hsl')) {
+        selectionColor = color.replace('hsl', 'hsla').replace(')', ', 0.2)');
+    }
 
-        /* subtle recently-active pulse */
-        @keyframes collabPulse_${clientId} { 0% { transform: scale(0.9); opacity: 0.8; } 50% { transform: scale(1.06); opacity: 1; } 100% { transform: scale(0.96); opacity: 0.9; } }
-        .collab-recent-${clientId} { animation: collabPulse_${clientId} 1.2s ease-in-out both; }
-      `;
-      document.head.appendChild(style);
-    } catch (_) {}
+    style.innerHTML = `
+      .collab-selection-${clientId} {
+        background-color: ${selectionColor};
+      }
+    `;
+    document.head.appendChild(style);
   }
 }
 
