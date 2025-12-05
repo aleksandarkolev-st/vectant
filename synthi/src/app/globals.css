@@ -127,8 +127,8 @@
   width: 2px !important;
   height: 20px !important; /* Standard line height approx */
   pointer-events: none;
-  z-index: 100;
-  /* transition: all 0.1s ease-out; Optional: Smooth movement */
+  z-index: 2000;
+  transition: top 0.1s ease-out, left 0.1s ease-out;
 }
 
 /* The name tag */
@@ -144,5 +144,5 @@
   white-space: nowrap;
   pointer-events: none;
   box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-  z-index: 101;
+  z-index: 2001;
 }

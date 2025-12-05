@@ -8,11 +8,12 @@ import { WebsocketProvider } from 'y-websocket';
 // stack.
 
 class MonacoTextBinding {
-  constructor(ytext, model, editor, awareness = null) {
+  constructor(ytext, model, editor, awareness = null, monaco = null) {
     this.ytext = ytext;
     this.model = model;
     this.editor = editor;
     this.awareness = awareness;
+    this.monaco = monaco;
 
     // Guard flag — when we apply remote changes to Monaco we don't want
     // local change handlers to re-propagate back into Yjs producing loops.
@@ -245,15 +246,13 @@ class MonacoTextBinding {
             // or we can just update the internal reference if we implemented a dynamic getPosition.
             // Re-adding is safer for sync.
             if(widgetRec.currentLine !== headPos.lineNumber || widgetRec.currentCol !== headPos.column) {
-                this.editor.removeContentWidget(widgetRec.widgetObj);
-                
                 // Update internal position data for the closure
                 widgetRec.widgetObj.getPosition = () => ({
                     position: { lineNumber: headPos.lineNumber, column: headPos.column },
                     preference: [0]
                 });
                 
-                this.editor.addContentWidget(widgetRec.widgetObj);
+                this.editor.layoutContentWidget(widgetRec.widgetObj);
                 widgetRec.currentLine = headPos.lineNumber;
                 widgetRec.currentCol = headPos.column;
             }
@@ -282,7 +281,7 @@ class MonacoTextBinding {
       const eLine = end.line || end.selectionEndLineNumber || raw.endLineNumber || raw.positionLineNumber;
       const eCol = end.column || end.selectionEndColumn || raw.endColumn || raw.positionColumn;
       if (!sLine || !sCol || !eLine || !eCol) return null;
-      const M = (typeof window !== 'undefined' && window.monaco) ? window.monaco : null;
+      const M = this.monaco || ((typeof window !== 'undefined' && window.monaco) ? window.monaco : null);
       if (!M) return null;
       return new M.Range(sLine, sCol, eLine, eCol);
     } catch (_) { return null; }
@@ -464,7 +463,7 @@ class CollabClient {
       });
     }
 
-    const binding = new MonacoTextBinding(entry.ytext, model, editor, entry.provider.awareness);
+    const binding = new MonacoTextBinding(entry.ytext, model, editor, entry.provider.awareness, monaco);
 
     // Set local awareness if user provided
     if (user && entry.provider && entry.provider.awareness) {
