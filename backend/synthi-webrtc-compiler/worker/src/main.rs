@@ -223,41 +223,35 @@ async fn main() -> Result<()> {
         async move {
             let label = dc.label();
                 if label == "compile" {
-                // Clone terminal store out of the FnMut closure into a local
-                // that can be moved into the async block below without
-                // consuming the captured `term_store`.
-                dc.on_message(Box::new(move |msg| {
-                    let store = store.clone();
-                    let term_store_for_msg = term_store.clone();
-                    let pc_for_compile = pc_for_callback.clone();
-                    let workspace_path_for_compile = workspace_path_for_dc.clone();
-                    async move {
-                        if msg.is_string {
-                            // Try to parse as a CompileRequest
-                            if let Ok(req) = serde_json::from_slice::<CompileRequest>(&msg.data) {
-                                let log_dc = { store.lock().await.clone() };
-                                if let Some(log) = log_dc {
-                                    let ts = term_store_for_msg.clone();
-                                    tokio::spawn(handle_compile(req, log, ts, pc_for_compile, workspace_path_for_compile.to_path_buf()));
-                    let x11_store = x11_store_outer.clone();
-                    async move {
-                        if msg.is_string {
-                            // Try to parse as a CompileRequest
+                    // Clone terminal store out of the FnMut closure into a local
+                    // that can be moved into the async block below without
+                    // consuming the captured `term_store`.
+                    dc.on_message(Box::new(move |msg| {
+                        let store = store.clone();
+                        let term_store_for_msg = term_store.clone();
+                        let pc_for_compile = pc_for_callback.clone();
+                        let workspace_path_for_compile = workspace_path_for_dc.clone();
+                        let x11_store = x11_store_outer.clone();
+                        async move {
+                            if msg.is_string {
+                                // Try to parse as a CompileRequest
                                 if let Ok(req) = serde_json::from_slice::<CompileRequest>(&msg.data) {
                                     let log_dc = { store.lock().await.clone() };
                                     if let Some(log) = log_dc {
                                         let ts = term_store_for_msg.clone();
-                                        let x11_store = x11_store.clone();
-                                        tokio::spawn(handle_compile(req, log, ts, x11_store, pc_for_compile));
+                                        let x11s = x11_store.clone();
+                                        let pc_clone = pc_for_compile.clone();
+                                        let wp = workspace_path_for_compile.clone();
+                                        tokio::spawn(handle_compile(req, log, ts, x11s, pc_clone, wp.to_path_buf()));
                                     }
                                     return;
                                 }
-                            // Not a compile request - ignore here. Terminal messages arrive on
-                            // the separate 'terminal' datachannel.
+                                // Not a compile request - ignore here. Terminal messages arrive on
+                                // the separate 'terminal' datachannel.
+                            }
                         }
-                    }
-                    .boxed()
-                }));
+                        .boxed()
+                    }));
             } else if label == "build-log" {
                 let mut guard = store.lock().await;
                 *guard = Some(dc.clone());
@@ -916,11 +910,16 @@ async fn create_peer(signal_tx: mpsc::UnboundedSender<SignalMessage>) -> Result<
     Ok(pc)
 }
 
-async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, terminal_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>, pc: Arc<RTCPeerConnection>, workspace_path: std::path::PathBuf) -> Result<()> {
+async fn handle_compile(
+    req: CompileRequest,
+    log_dc: Arc<RTCDataChannel>,
+    terminal_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
+    x11_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
+    pc: Arc<RTCPeerConnection>,
+    workspace_path: std::path::PathBuf,
+) -> Result<()> {
     // Use the shared workspace path instead of creating a new temp dir
     let dir_path = workspace_path;
-async fn handle_compile(req: CompileRequest, log_dc: Arc<RTCDataChannel>, terminal_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>, x11_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>, pc: Arc<RTCPeerConnection>) -> Result<()> {
-    let dir = tempdir().context("failed to create temp dir")?;
     
     // Write the main file
     let file_path = dir_path.join(&req.filename);
