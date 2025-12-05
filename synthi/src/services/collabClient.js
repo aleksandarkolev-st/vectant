@@ -8,11 +8,12 @@ import { WebsocketProvider } from 'y-websocket';
 // stack.
 
 class MonacoTextBinding {
-  constructor(ytext, model, editor, awareness = null) {
+  constructor(ytext, model, editor, awareness = null, monaco = null) {
     this.ytext = ytext;
     this.model = model;
     this.editor = editor;
     this.awareness = awareness;
+    this.monaco = monaco;
 
     // Guard flag — when we apply remote changes to Monaco we don't want
     // local change handlers to re-propagate back into Yjs producing loops.
@@ -191,12 +192,13 @@ class MonacoTextBinding {
         this._ensureStyleForClient(cid, info.color);
 
         const decs = [];
-        if (!info.range.isEmpty()) {
+        if (info.range && !info.range.isEmpty()) {
           decs.push({
             range: info.range,
             options: {
               className: selectionClass, // Selection background
-              stickiness: 1
+              stickiness: 1,
+              zIndex: 10 // Ensure it's visible
             }
           });
         }
@@ -245,15 +247,13 @@ class MonacoTextBinding {
             // or we can just update the internal reference if we implemented a dynamic getPosition.
             // Re-adding is safer for sync.
             if(widgetRec.currentLine !== headPos.lineNumber || widgetRec.currentCol !== headPos.column) {
-                this.editor.removeContentWidget(widgetRec.widgetObj);
-                
                 // Update internal position data for the closure
                 widgetRec.widgetObj.getPosition = () => ({
                     position: { lineNumber: headPos.lineNumber, column: headPos.column },
                     preference: [0]
                 });
                 
-                this.editor.addContentWidget(widgetRec.widgetObj);
+                this.editor.layoutContentWidget(widgetRec.widgetObj);
                 widgetRec.currentLine = headPos.lineNumber;
                 widgetRec.currentCol = headPos.column;
             }
@@ -282,7 +282,7 @@ class MonacoTextBinding {
       const eLine = end.line || end.selectionEndLineNumber || raw.endLineNumber || raw.positionLineNumber;
       const eCol = end.column || end.selectionEndColumn || raw.endColumn || raw.positionColumn;
       if (!sLine || !sCol || !eLine || !eCol) return null;
-      const M = (typeof window !== 'undefined' && window.monaco) ? window.monaco : null;
+      const M = this.monaco || ((typeof window !== 'undefined' && window.monaco) ? window.monaco : null);
       if (!M) return null;
       return new M.Range(sLine, sCol, eLine, eCol);
     } catch (_) { return null; }
@@ -302,14 +302,16 @@ class MonacoTextBinding {
         const r = parseInt(color.substring(1,3), 16);
         const g = parseInt(color.substring(3,5), 16);
         const b = parseInt(color.substring(5,7), 16);
-        selectionColor = `rgba(${r}, ${g}, ${b}, 0.2)`;
+        selectionColor = `rgba(${r}, ${g}, ${b}, 0.3)`;
     } else if (color.startsWith('hsl')) {
-        selectionColor = color.replace('hsl', 'hsla').replace(')', ', 0.2)');
+        selectionColor = color.replace('hsl', 'hsla').replace(')', ', 0.3)');
     }
 
     style.innerHTML = `
       .collab-selection-${clientId} {
         background-color: ${selectionColor};
+        border-bottom: 2px solid ${color};
+        opacity: 0.5;
       }
     `;
     document.head.appendChild(style);
@@ -464,7 +466,7 @@ class CollabClient {
       });
     }
 
-    const binding = new MonacoTextBinding(entry.ytext, model, editor, entry.provider.awareness);
+    const binding = new MonacoTextBinding(entry.ytext, model, editor, entry.provider.awareness, monaco);
 
     // Set local awareness if user provided
     if (user && entry.provider && entry.provider.awareness) {
@@ -491,7 +493,7 @@ class CollabClient {
       const name = user.name || user.email || 'Anonymous';
       const color = user.color || this._colorForUser(String(id));
 
-      const localState = { user: { id, name, color } };
+      const localState = { user: { id, name, color }, isUnsaved: false };
       entry.provider.awareness.setLocalState(localState);
     }
 
@@ -504,7 +506,20 @@ class CollabClient {
     // Return an object that allows cleanup
     return {
       key: entry.key,
+      updateLocalUnsaved: (isUnsaved) => {
+        if (entry.provider && entry.provider.awareness) {
+            const current = entry.provider.awareness.getLocalState();
+            if (current && current.isUnsaved !== isUnsaved) {
+                entry.provider.awareness.setLocalStateField('isUnsaved', isUnsaved);
+            }
+        }
+      },
       dispose: () => {
+        // Explicitly clear local awareness state so we disappear immediately
+        if (entry.provider && entry.provider.awareness) {
+            try { entry.provider.awareness.setLocalState(null); } catch (_) {}
+        }
+
         try {
           binding.destroy();
         } catch (e) { /* ignore */ }

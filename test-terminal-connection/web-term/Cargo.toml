@@ -1,0 +1,32 @@
+[package]
+name = "web-term"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.21"
+futures-util = "0.3"
+portable-pty = "0.8"
+
+serde_json = "1.0.145"
+object_store = { version = "0.12.4", features = ["gcp"] }
+dirs = "5.0"
+
+# ------------------------
+# ADD THESE ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓
+# ------------------------
+
+# Hyper HTTP server + client for proxying
+hyper = { version = "0.14", features = ["full"] }
+
+# Global static variables (for port list)
+lazy_static = "1.4"
+percent-encoding = "2.3"
+
+
+# Needed for shared state (Arc/RwLock)
+tokio-util = "0.7"
+
+# URL parsing for proxy target URI
+http = "0.2"
