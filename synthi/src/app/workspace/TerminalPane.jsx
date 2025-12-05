@@ -39,6 +39,11 @@ export default function TerminalPane() {
 
       fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
+      
+      if (!containerRef.current) {
+        console.warn('TerminalPane: containerRef is null, aborting open');
+        return;
+      }
       term.open(containerRef.current);
       fitAddon.fit();
 
@@ -197,7 +202,7 @@ export default function TerminalPane() {
             const t = obj.type || '';
             if (t === 'stderr' || t === 'run-stderr') {
               term.write('\x1b[31m' + chunk + '\x1b[0m');
-            } else {
+            } else if (t !== 'lsp-err' && t !== 'lsp-out' && t.includes('lsp') === false) {
               term.write(chunk);
             }
             return;

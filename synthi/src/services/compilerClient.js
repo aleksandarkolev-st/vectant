@@ -31,15 +31,23 @@ export class CompilerClient {
         this.compileChannel = null;
         this.buildLogChannel = null;
         this.terminalChannel = null;
+        this.lspChannel = null;
         this.readyPromise = null;
         this.currentStreams = [];
         this.logHandlers = new Set();
         this.statusListeners = new Set();
         this.textDecoder = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
         this.terminalInputBuffer = [];
+        this.guiInputBuffer = [];
         this.status = CompilerStatus.IDLE;
+        this.slug = null;
         
         this._handleTerminalInput = this._handleTerminalInput.bind(this);
+        this._handleGuiInput = this._handleGuiInput.bind(this);
+    }
+
+    setSlug(slug) {
+        this.slug = slug;
     }
 
     getMediaStream() {
@@ -132,6 +140,23 @@ export class CompilerClient {
                 try { console.debug('[CompilerClient] buffered terminal input (channel not open)'); } catch (_) {}
             }
         } catch (e) { console.error('[CompilerClient] terminalListener error', e); }
+    }
+
+    _handleGuiInput(ev) {
+        try {
+            const d = ev?.detail || {};
+            // Expect the detail to already be a serializable object for GUI events.
+            const payload = JSON.stringify(d);
+            try { console.debug('[CompilerClient] guiListener received', { payload, terminalReady: !!(this.terminalChannel && this.terminalChannel.readyState === 'open') }); } catch (_) {}
+            if (this.terminalChannel && this.terminalChannel.readyState === 'open') {
+                this.terminalChannel.send(payload);
+                try { console.debug('[CompilerClient] sent gui payload over terminalChannel'); } catch (_) {}
+            } else {
+                // Buffer until channel opens
+                this.guiInputBuffer.push(payload);
+                try { console.debug('[CompilerClient] buffered gui input (channel not open)'); } catch (_) {}
+            }
+        } catch (e) { console.error('[CompilerClient] guiListener error', e); }
     }
 
     connect() {
@@ -232,6 +257,7 @@ export class CompilerClient {
                 this.compileChannel = this.pc.createDataChannel('compile', { ordered: true });
                 // Terminal channel for stdin forwarding
                 this.terminalChannel = this.pc.createDataChannel('terminal', { ordered: true });
+                
                 this.compileChannel.onclose = () => {};
 
                 const offer = await this.pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
@@ -244,10 +270,16 @@ export class CompilerClient {
                     this.terminalChannel.onopen = () => {
                         if (typeof window !== 'undefined' && window.addEventListener) {
                             window.addEventListener('synthi:terminal-input', this._handleTerminalInput);
+                            window.addEventListener('synthi:gui-input', this._handleGuiInput);
                         }
                         // flush buffer
                         while (this.terminalInputBuffer.length > 0) {
                             const p = this.terminalInputBuffer.shift();
+                            try { this.terminalChannel.send(p); } catch (_) { /* ignore */ }
+                        }
+                        // flush gui buffer
+                        while (this.guiInputBuffer.length > 0) {
+                            const p = this.guiInputBuffer.shift();
                             try { this.terminalChannel.send(p); } catch (_) { /* ignore */ }
                         }
                     };
@@ -258,16 +290,42 @@ export class CompilerClient {
                         }
                     }
                     this.terminalChannel.onclose = () => {
-                        try { window.removeEventListener('synthi:terminal-input', this._handleTerminalInput); } catch (_) {}
+                        try { 
+                            window.removeEventListener('synthi:terminal-input', this._handleTerminalInput); 
+                            window.removeEventListener('synthi:gui-input', this._handleGuiInput);
+                        } catch (_) {}
                     };
                 }
                 // Remove listener when the WebSocket closes as a backup
                 this.ws.addEventListener('close', () => {
-                    try { window.removeEventListener('synthi:terminal-input', this._handleTerminalInput); } catch (_) {}
+                    try { 
+                        window.removeEventListener('synthi:terminal-input', this._handleTerminalInput); 
+                        window.removeEventListener('synthi:gui-input', this._handleGuiInput);
+                    } catch (_) {}
                 });
             };
         });
         return this.readyPromise;
+    }
+
+    createLspChannel(language) {
+        if (!this.pc || this.pc.connectionState !== 'connected') {
+            throw new Error('CompilerClient not connected');
+        }
+        const label = `lsp-${language}?slug=${this.slug || ''}`;
+        const channel = this.pc.createDataChannel(label, { ordered: true });
+        channel.binaryType = 'arraybuffer';
+
+        // Trigger renegotiation to establish the new data channel
+        this.pc.createOffer().then(offer => {
+            return this.pc.setLocalDescription(offer).then(() => offer);
+        }).then(offer => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp, sdp_type: offer.type }));
+            }
+        }).catch(e => console.error('Renegotiation failed', e));
+
+        return channel;
     }
 
     async compile({ filename, source, language, files = [], isGui = false, width, height, onLog } = {}) {
@@ -349,6 +407,7 @@ export class CompilerClient {
         }
         if (typeof window !== 'undefined') {
             window.removeEventListener('synthi:terminal-input', this._handleTerminalInput);
+            window.removeEventListener('synthi:gui-input', this._handleGuiInput);
         }
         this.ws = null;
         this.pc = null;
@@ -365,14 +424,19 @@ export class CompilerClient {
 // Singleton instance for backward compatibility
 let globalInstance = null;
 
+export const getCompilerClient = () => {
+    if (!globalInstance) {
+        globalInstance = new CompilerClient();
+    }
+    return globalInstance;
+};
+
 export const getMediaStream = () => {
     if (!globalInstance) return null;
     return globalInstance.getMediaStream();
 };
 
 export const compileWithWorker = async (params) => {
-    if (!globalInstance) {
-        globalInstance = new CompilerClient();
-    }
-    return globalInstance.compile(params);
+    const client = getCompilerClient();
+    return client.compile(params);
 };

@@ -1,6 +1,7 @@
 // src/redux/workspaceSlice.js
 import { createSlice, createAsyncThunk, createSelector } from '@reduxjs/toolkit';
 import { api } from '@/services/api'; 
+import { getCompilerClient } from '@/services/compilerClient';
 import { cancelUiAction } from './uiSlice'; // Cross-slice dependency
 import {
     findFirstFile,
@@ -34,6 +35,13 @@ export const initialWorkspaceState = {
 export const fetchFilesThunk = createAsyncThunk(
     'workspace/fetchFiles',
     async (slug, { dispatch, getState }) => {
+        // Notify compiler client about the active slug
+        try {
+            getCompilerClient().setSlug(slug);
+        } catch (e) {
+            console.warn("Failed to set slug on compiler client", e);
+        }
+
         const files = await api.fetchFiles(slug);
         const state = getState().workspace;
 

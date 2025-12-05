@@ -6,12 +6,15 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0"
 futures = "0.3"
+futures-util = "0.3"
+object_store = { version = "0.11.0", features = ["gcp"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tempfile = "3.8"
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.21"
 webrtc = "0.9"
+bytes = "1"
 gstreamer = "0.21"
 gstreamer-app = "0.21"
 chrono = { version = "0.4", features = ["serde", "alloc"] }
