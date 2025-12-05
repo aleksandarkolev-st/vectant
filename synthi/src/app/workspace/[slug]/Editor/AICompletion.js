@@ -33,7 +33,7 @@ export const useAiCompletion = ({
     const aiDebounceTimerRef = useRef(null);
     const inlineAcceptCommandIdRef = useRef(null);
 
-    const cancelActiveCompletion = useCallback(({ resetSuggestion = false, reason = 'user-cancelled' } = {}) => {
+    const cancelActiveCompletion = useCallback(({ resetSuggestion = true, reason = 'user-cancelled' } = {}) => {
         let changed = false;
 
         if (aiCompletionAbortControllerRef.current) {

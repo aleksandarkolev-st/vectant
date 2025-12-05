@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Send, X, Plus } from 'lucide-react';
+import { Send, X, Plus, ChevronDown, ChevronRight } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -15,11 +15,26 @@ import { useChatAttachments } from './hooks/useChatAttachments';
 import { renderDiffChunkList, diffStats } from './utils/diffUtils';
 import { fileSuggestionStatusClasses, fileSuggestionStatusLabel } from './utils/fileSuggestionsUtils';
 import { formatMessageContent } from './utils/formatMessage';
+import { ThinkingDots } from './ThinkingDots';
 
 const formatTimestamp = (timestamp) => {
     if (!timestamp) return '';
     const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
+
+const summarizeLog = (logs = []) => {
+    if (!Array.isArray(logs) || logs.length === 0) return '';
+    const pick = () => {
+        const nonMeta = logs.filter((l) => l && !/^working/i.test(l));
+        if (nonMeta.length) return nonMeta[nonMeta.length - 1];
+        return logs[logs.length - 1];
+    };
+    const base = pick() || '';
+    const sentence = base.split(/[\.\n]/).find((s) => s.trim()) || base;
+    const trimmed = sentence.trim();
+    if (trimmed.length <= 140) return trimmed;
+    return `${trimmed.slice(0, 137)}...`;
 };
 
 const AIChatWindow = ({
@@ -57,6 +72,16 @@ const AIChatWindow = ({
     const [customApiKey, setCustomApiKey] = useState('');
     const modelButtonRef = useRef(null);
     const [modelMenuPos, setModelMenuPos] = useState({ top: 0, left: 0 });
+    const [isThinking, setIsThinking] = useState(false);
+    const [streamingMessage, setStreamingMessage] = useState('');
+    const [controller, setController] = useState(null);
+    const [showThinking, setShowThinking] = useState(false);
+    const thinkingStartRef = useRef(0);
+    const [progressLog, setProgressLog] = useState([]);
+    const [progressExpanded, setProgressExpanded] = useState(true);
+    const [progressStatus, setProgressStatus] = useState('');
+    const [suggestionExpanded, setSuggestionExpanded] = useState(true);
+    const [collapsedFiles, setCollapsedFiles] = useState({});
 
     useEffect(() => {
         try {
@@ -146,10 +171,66 @@ const AIChatWindow = ({
     } = useChatAttachments();
 
     const { inputValue, setInputValue, handleKeyPress, handleSubmit } = useChatInput((value) => {
-        handleSendMessage(value, attachments);
+        const aborter = new AbortController();
+        thinkingStartRef.current = Date.now();
+        setController(aborter);
+        setStreamingMessage('');
+        setIsThinking(true);
+        setProgressLog([{ id: Date.now(), text: 'Working…' }]);
+        setProgressStatus('Working…');
+        setProgressExpanded(true);
+        setSuggestionExpanded(true);
+        handleSendMessage(value, attachments, {
+            controller: aborter,
+            onStreamStart: () => setIsThinking(true),
+            onFirstToken: () => {
+                const elapsed = Date.now() - thinkingStartRef.current;
+                const delay = Math.max(0, 150 - elapsed);
+                setTimeout(() => setIsThinking(false), delay);
+            },
+            onChunk: (text) => setStreamingMessage(text),
+            onDone: () => {
+                setController(null);
+                setStreamingMessage('');
+                setIsThinking(false);
+                setProgressStatus('Finished working');
+                setProgressExpanded(false);
+                setProgressLog((prev) => [...prev, { id: Date.now() + Math.random(), text: 'Finished working' }]);
+            },
+            onCanceled: (partial) => {
+                setController(null);
+                setIsThinking(false);
+                setStreamingMessage('');
+            },
+            onError: () => {
+                setController(null);
+                setIsThinking(false);
+                setStreamingMessage('');
+                setProgressStatus('Failed');
+                setProgressExpanded(true);
+                setProgressLog((prev) => [...prev, { id: Date.now() + Math.random(), text: 'Request failed' }]);
+            },
+            onLog: (line) => {
+                setProgressLog((prev) => {
+                    const last = prev[prev.length - 1];
+                    if (last && last.text === line) return prev;
+                    return [...prev, { id: Date.now() + Math.random(), text: line }];
+                });
+            },
+        });
         clearAttachments();
         setInputValue('');
     });
+
+    useEffect(() => {
+        if (isThinking) {
+            setShowThinking(true);
+            return () => {};
+        }
+        if (!showThinking) return () => {};
+        const timer = setTimeout(() => setShowThinking(false), 200);
+        return () => clearTimeout(timer);
+    }, [isThinking, showThinking]);
 
     const messages = activeSession?.messages ?? [];
     const suggestionTimestamp = activeSession?.suggestionTimestamp
@@ -168,7 +249,30 @@ const AIChatWindow = ({
                 scrollArea.scrollTo({ top: scrollArea.scrollHeight, behavior: 'smooth' });
             }
         }
-    }, [messages, suggestedCode, fileSuggestions]);
+    }, [messages, suggestedCode, fileSuggestions, streamingMessage, showThinking, progressLog, progressExpanded]);
+
+    const toggleProgressMessage = (id) => {
+        if (!activeSession) return;
+        mutateSession(activeSession.id, (session) => ({
+            ...session,
+            messages: session.messages.map((m) => m.id === id ? { ...m, expanded: !m.expanded } : m),
+        }));
+    };
+
+    const toggleFilePreview = (path) => {
+        setCollapsedFiles((prev) => ({
+            ...prev,
+            [path]: !prev[path],
+        }));
+    };
+
+    const handleCancel = () => {
+        if (controller) {
+            try { controller.abort(); } catch (e) {}
+        }
+        setIsThinking(false);
+        setProgressStatus('Cancelled');
+    };
 
     if (!isVisible) return null;
 
@@ -310,6 +414,40 @@ const AIChatWindow = ({
                         </div>
                     ) : (
                         timeline.map((msg) => {
+                            if (msg.role === 'progress') {
+                                const expanded = msg.expanded !== false;
+                                const statusLabel = msg.status === 'finished' ? 'Finished working' : msg.status === 'failed' ? 'Failed' : 'Working…';
+                                return (
+                                    <div key={msg.id} className="text-xs text-gray-300">
+                                        <button
+                                            className="w-full flex items-center gap-2 text-left hover:text-gray-100 transition-colors"
+                                            onClick={() => toggleProgressMessage(msg.id)}
+                                        >
+                                            {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                                            <div className="flex flex-col">
+                                                <div className="font-semibold text-sm text-gray-100">{statusLabel}</div>
+                                                <div className="text-[11px] text-gray-400 leading-tight">
+                                                    {summarizeLog(msg.logs)}
+                                                </div>
+                                            </div>
+                                        </button>
+                                        {expanded && (
+                                            <div className="mt-2 space-y-2 text-[11px]">
+                                                {(msg.logs || []).map((entry, idx) => {
+                                                    return (
+                                                        <div key={`${msg.id}-log-${idx}`} className="text-gray-300">
+                                                            <span className="truncate max-w-[440px] block">
+                                                                {entry}
+                                                            </span>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            }
+
                             if (msg.role === 'suggestion-live' || msg.role === 'suggestion-history') {
                                 const snapshot = msg.snapshot || {};
                                 const hasFiles = (snapshot.fileSuggestions || []).length > 0;
@@ -323,6 +461,7 @@ const AIChatWindow = ({
                                                         const badgeText = `${fileSuggestionStatusLabel(suggestion.status)}`;
                                                         const statsAddText = `+${stats.adds}`;
                                                         const statsRemText = `-${stats.removals}`;
+                                                        const collapsed = collapsedFiles[suggestion.path] === true;
                                                         return (
                                                         <div key={`${suggestion.path}-${suggestion.status}-${idx}`} className="px-3 py-3 bg-[#171717] border border-[#3a3a3a] rounded">
                                                             <div className="flex items-center justify-between gap-2 mb-3">
@@ -400,6 +539,13 @@ const AIChatWindow = ({
                                                                         {statsRemText}
                                                                     </div>
                                                                 </div>
+                                                                <button
+                                                                    className="text-gray-400 hover:text-gray-200 text-xs flex items-center gap-1"
+                                                                    onClick={() => toggleFilePreview(suggestion.path)}
+                                                                >
+                                                                    {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                                                                    {collapsed ? 'Show diff' : 'Hide diff'}
+                                                                </button>
                                                                 {suggestion.status === 'pending' && msg.role === 'suggestion-live' && (
                                                                     <div className="flex items-center gap-2 flex-wrap justify-end">
                                                                         {!suggestion.isNewFile && !suggestion.deleteFile && !suggestion.deleteFolder && !suggestion.isFolder && (
@@ -435,11 +581,11 @@ const AIChatWindow = ({
                                                                 <div className="text-sm text-rose-300 bg-rose-500/5 border border-rose-500/40 px-3 py-2 rounded">
                                                                     {suggestion.error}
                                                                 </div>
-                                                            ) : (
+                                                            ) : !collapsed ? (
                                                                 <div className="max-h-[70vh] min-h-[140px] overflow-auto overflow-x-auto text-xs font-mono bg-[#0f0f10] rounded p-2">
                                                                     {renderDiffChunkList(suggestion.chunks)}
                                                                 </div>
-                                                            )}
+                                                            ) : null}
                                                         </div>
                                                     );
                                                     })}
@@ -456,15 +602,26 @@ const AIChatWindow = ({
                                                                         <span>Thinking...</span>
                                                                     </div>
                                                                 ) : null}
-                                                                <Button variant="secondary" size="sm" onClick={rejectSuggestion}>Reject</Button>
-                                                                <Button variant="default" size="sm" onClick={applySuggestion}>Accept</Button>
+                                                                <Button variant="secondary" size="sm" onClick={() => { setSuggestionExpanded(false); rejectSuggestion(); }}>Reject</Button>
+                                                                <Button variant="default" size="sm" onClick={() => { setSuggestionExpanded(false); applySuggestion(); }}>Accept</Button>
                                                             </div>
                                                         )}
                                                     </div>
-
-                                                    <div className="max-h-[70vh] min-h-[140px] overflow-auto text-xs font-mono">
-                                                        {renderDiffChunkList(snapshot.diffChunks || [])}
+                                                    <div className="flex items-center justify-between text-xs text-gray-300 mb-2">
+                                                        <div>Preview</div>
+                                                        <button
+                                                            className="text-gray-400 hover:text-gray-200 flex items-center gap-1"
+                                                            onClick={() => setSuggestionExpanded((v) => !v)}
+                                                        >
+                                                            {suggestionExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                                                            {suggestionExpanded ? 'Hide' : 'Show'}
+                                                        </button>
                                                     </div>
+                                                    {suggestionExpanded && (
+                                                        <div className="max-h-[70vh] min-h-[140px] overflow-auto text-xs font-mono">
+                                                            {renderDiffChunkList(snapshot.diffChunks || [])}
+                                                        </div>
+                                                    )}
                                                 </div>
                                             ) : null}
                                         </div>
@@ -472,18 +629,9 @@ const AIChatWindow = ({
                                 );
                             }
 
-                            return (
-                                <div
-                                    key={msg.id}
-                                    className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                                >
-                                    <div
-                                        className={`max-w-[80%] px-3 py-2 rounded-lg text-sm ai-chat-message ${
-                                            msg.role === 'user'
-                                                ? 'bg-emerald-600 text-white'
-                                                : 'bg-[#2d2d30] text-gray-200 border border-[#454545]'
-                                        }`}
-                                    >
+                            const isInlineSummary = msg.inlineSummary === true;
+                            const baseContent = (
+                                <>
                                     {Array.isArray(msg.attachments) && msg.attachments.length > 0 && (
                                         <div className="mb-2 space-y-2">
                                             {msg.attachments.map((att) => (
@@ -513,22 +661,47 @@ const AIChatWindow = ({
                                         className="break-normal whitespace-normal text-xs leading-relaxed ai-chat-content"
                                         dangerouslySetInnerHTML={{ __html: formatMessageContent(msg.content) }}
                                     />
-                                        <span className="text-xs opacity-70 mt-1 block">
-                                            {formatTimestamp(msg.timestamp)}
-                                        </span>
+                                    <span className="text-xs opacity-70 mt-1 block">
+                                        {formatTimestamp(msg.timestamp)}
+                                    </span>
+                                </>
+                            );
+
+                            if (isInlineSummary) {
+                                return (
+                                    <div key={msg.id} className="text-xs text-gray-200">
+                                        {baseContent}
+                                    </div>
+                                );
+                            }
+
+                            return (
+                                <div
+                                    key={msg.id}
+                                    className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                                >
+                                    <div
+                                        className={`max-w-[80%] px-3 py-2 rounded-lg text-sm ai-chat-message ${
+                                            msg.role === 'user'
+                                                ? 'bg-emerald-600 text-white'
+                                                : 'bg-[#2d2d30] text-gray-200 border border-[#454545]'
+                                        }`}
+                                    >
+                                        {baseContent}
                                     </div>
                                 </div>
                             );
                         })
                     )}
-                    {isLoading && (
+                    {streamingMessage ? (
+                        <div className="text-xs text-gray-200 whitespace-pre-wrap leading-relaxed">
+                            {streamingMessage}
+                        </div>
+                    ) : null}
+                    {showThinking && (
                         <div className="flex justify-start">
-                            <div className="bg-[#2d2d30] border border-[#454545] px-3 py-2 rounded-lg">
-                                <div className="flex space-x-2">
-                                    <div className="w-2 h-2 bg-gray-500 rounded-full animate-pulse"></div>
-                                    <div className="w-2 h-2 bg-gray-500 rounded-full animate-pulse delay-100"></div>
-                                    <div className="w-2 h-2 bg-gray-500 rounded-full animate-pulse delay-200"></div>
-                                </div>
+                            <div className={`bg-[#2d2d30] border border-[#454545] px-3 py-2 rounded-lg transition-opacity duration-200 ${isThinking ? 'opacity-100' : 'opacity-0'}`}>
+                                <ThinkingDots />
                             </div>
                         </div>
                     )}
@@ -565,6 +738,17 @@ const AIChatWindow = ({
                         rows={1}
                         style={{ minHeight: '42px', maxHeight: '140px' }}
                     />
+                    {controller ? (
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={handleCancel}
+                            className="text-xs"
+                            title="Cancel generation"
+                        >
+                            Cancel
+                        </Button>
+                    ) : null}
                     <Button
                         onClick={handleSubmit}
                         disabled={!inputValue.trim() || isLoading || !clientReady}
