@@ -46,7 +46,7 @@ struct IceServerEnv {
     credential: Option<String>,
 }
 
-const REQUIRED_TOOLS: &[&str] = &["g++", "rustc", "tsc"];
+const REQUIRED_TOOLS: &[&str] = &["g++", "rustc", "tsc", "clangd"];
 const GUI_TOOLS: &[&str] = &["xdotool", "Xvfb", "matchbox-window-manager"];
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -132,6 +132,24 @@ fn rewrite_uris(val: &mut serde_json::Value, state: &LspSessionState, to_server:
             _ => {}
         }
     }
+}
+
+fn make_chunks(data: &[u8], msg_id: u32) -> Vec<Vec<u8>> {
+    let chunk_size = 60000; 
+    let total_len = data.len();
+    let total_chunks = (total_len + chunk_size - 1) / chunk_size;
+    let mut chunks = Vec::new();
+
+    for (i, chunk_slice) in data.chunks(chunk_size).enumerate() {
+        let mut packet = Vec::with_capacity(16 + chunk_slice.len());
+        packet.extend_from_slice(b"CHNK");
+        packet.extend_from_slice(&msg_id.to_be_bytes());
+        packet.extend_from_slice(&(i as u32).to_be_bytes());
+        packet.extend_from_slice(&(total_chunks as u32).to_be_bytes());
+        packet.extend_from_slice(chunk_slice);
+        chunks.push(packet);
+    }
+    chunks
 }
 
 #[tokio::main]
@@ -388,6 +406,8 @@ async fn main() -> Result<()> {
                             if let Ok(mut file) = std::fs::File::create(flags_path) {
                                 use std::io::Write;
                                 let _ = writeln!(file, "-std=c++17");
+                                // Force C++ mode to ensure headers are treated correctly
+                                let _ = writeln!(file, "-xc++");
                             }
 
                             let mut c = system_command("clangd");
@@ -395,8 +415,9 @@ async fn main() -> Result<()> {
                             c.arg("--completion-style=detailed");
                             c.arg("--header-insertion=iwyu");
                             c.arg("--clang-tidy");
-                            c.arg("--all-scopes-completion");
-                            c.arg("--query-driver=/usr/bin/*");
+                            // c.arg("--all-scopes-completion");
+                            // Allow clangd to query g++ and other compilers for system include paths
+                            c.arg("--query-driver=*");
                             c
                         },
                         "rust" => system_command("rust-analyzer"),
@@ -549,6 +570,35 @@ async fn main() -> Result<()> {
                                             }
                                         }
 
+                                        // 4. Handle didChange file writing (only if full sync)
+                                        if json_val.get("method").and_then(|m| m.as_str()) == Some("textDocument/didChange") {
+                                            if let Some(params) = json_val.get("params") {
+                                                if let Some(changes) = params.get("contentChanges").and_then(|c| c.as_array()) {
+                                                    if changes.len() == 1 {
+                                                        if let Some(change) = changes.first() {
+                                                            if change.get("range").is_none() {
+                                                                if let Some(text) = change.get("text").and_then(|s| s.as_str()) {
+                                                                    if let Some(doc) = params.get("textDocument") {
+                                                                        if let Some(uri) = doc.get("uri").and_then(|s| s.as_str()) {
+                                                                            if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
+                                                                                let rel = rel.trim_start_matches('/');
+                                                                                let file_path = workspace_path.join(rel);
+                                                                                if let Err(e) = tokio::fs::write(&file_path, text).await {
+                                                                                    eprintln!("Failed to update file {}: {}", file_path.display(), e);
+                                                                                } else {
+                                                                                    println!("Updated file on disk: {}", file_path.display());
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
                                         // Re-serialize and add headers (required for Stdin)
                                         if let Ok(new_content) = serde_json::to_vec(&json_val) {
                                             let new_len = new_content.len();
@@ -595,8 +645,7 @@ async fn main() -> Result<()> {
                                         match reader.read_line(&mut line).await {
                                             Ok(0) => return,
                                             Ok(_) => {
-                                                header_lines.push(line.clone());
-                                                if line == "\r\n" {
+                                                if line == "\r\n" || line == "\n" {
                                                     break;
                                                 }
                                                 if line.to_lowercase().starts_with("content-length:") {
@@ -606,6 +655,7 @@ async fn main() -> Result<()> {
                                                         }
                                                     }
                                                 }
+                                                header_lines.push(line);
                                             }
                                             Err(_) => return,
                                         }
@@ -617,11 +667,24 @@ async fn main() -> Result<()> {
                                             Ok(_) => {
                                                 println!("Received {} bytes from LSP stdout", content_length);
                                                 if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(&buf) {
-                                                    // Log initialize response
-                                                    if let Some(id) = json_val.get("id") {
-                                                        if let Some(result) = json_val.get("result") {
-                                                            if let Some(caps) = result.get("capabilities") {
-                                                                println!("LSP Initialize Response Capabilities: {:?}", caps);
+                                                    // Log initialize response and force Full text sync
+                                                    if let Some(result) = json_val.get_mut("result") {
+                                                        if let Some(caps) = result.get_mut("capabilities") {
+                                                            println!("LSP Initialize Response Capabilities: {:?}", caps);
+                                                            
+                                                            // Force textDocumentSync to Full (1) to ensure we always get full content
+                                                            // so we can keep the file on disk in sync for clangd.
+                                                            if let Some(caps_obj) = caps.as_object_mut() {
+                                                                if let Some(sync) = caps_obj.get_mut("textDocumentSync") {
+                                                                    if sync.is_number() {
+                                                                        *sync = serde_json::json!(1);
+                                                                    } else if let Some(sync_obj) = sync.as_object_mut() {
+                                                                        sync_obj.insert("change".to_string(), serde_json::json!(1));
+                                                                    }
+                                                                } else {
+                                                                    // If not present, default to Full (1)
+                                                                    caps_obj.insert("textDocumentSync".to_string(), serde_json::json!(1));
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -631,11 +694,25 @@ async fn main() -> Result<()> {
                                                     
                                                     if let Ok(new_content) = serde_json::to_vec(&json_val) {
                                                         // Send ONLY content (no headers) to WebRTC
-                                                        let data = Bytes::copy_from_slice(&new_content);
-                                                        println!("Sending {} bytes to WebRTC (LSP stdout)", data.len());
-                                                        if let Err(e) = dc_out.send(&data).await {
-                                                            eprintln!("Failed to send to WebRTC: {}", e);
-                                                            break;
+                                                        let data_len = new_content.len();
+                                                        if data_len > 60000 {
+                                                            let msg_id = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() % 0xFFFFFFFF) as u32;
+                                                            let chunks = make_chunks(&new_content, msg_id);
+                                                            println!("Sending {} bytes in {} chunks (ID: {})", data_len, chunks.len(), msg_id);
+                                                            for chunk in chunks {
+                                                                let data = Bytes::from(chunk);
+                                                                if let Err(e) = dc_out.send(&data).await {
+                                                                    eprintln!("Failed to send chunk: {}", e);
+                                                                    break;
+                                                                }
+                                                            }
+                                                        } else {
+                                                            let data = Bytes::copy_from_slice(&new_content);
+                                                            println!("Sending {} bytes to WebRTC (LSP stdout)", data.len());
+                                                            if let Err(e) = dc_out.send(&data).await {
+                                                                eprintln!("Failed to send to WebRTC: {}", e);
+                                                                break;
+                                                            }
                                                         }
                                                     }
                                                 } else {
