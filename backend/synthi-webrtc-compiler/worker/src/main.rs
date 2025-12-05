@@ -345,9 +345,9 @@ async fn main() -> Result<()> {
                             c.arg("--completion-style=detailed");
                             c.arg("--header-insertion=iwyu");
                             c.arg("--clang-tidy");
-                            c.arg("--all-scopes-completion");
+                            // c.arg("--all-scopes-completion");
                             // Allow clangd to query g++ and other compilers for system include paths
-                            c.arg("--query-driver=/usr/bin/*,/usr/local/bin/*");
+                            c.arg("--query-driver=*");
                             c
                         },
                         "rust" => system_command("rust-analyzer"),

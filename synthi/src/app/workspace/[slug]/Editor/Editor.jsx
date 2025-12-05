@@ -171,15 +171,15 @@ const EditorPanel = ({
 
     useEffect(() => {
         if (!monacoInstance || !compilerClient || compilerStatus !== CompilerStatus.CONNECTED || !activeFile || !servicesReady || !editorInstance) {
-             if (compilerStatus !== CompilerStatus.CONNECTED) {
-                 setLspStatus('Compiler Disconnected');
-                 // Cleanup existing clients if disconnected
-                 languageClientsRef.current.forEach(client => {
-                     try { client.stop(); } catch(e) {}
-                 });
-                 languageClientsRef.current.clear();
-             }
-             return;
+            if (compilerStatus !== CompilerStatus.CONNECTED) {
+                setLspStatus('Compiler Disconnected');
+                // Cleanup existing clients if disconnected
+                languageClientsRef.current.forEach(client => {
+                    try { client.stop(); } catch (e) { }
+                });
+                languageClientsRef.current.clear();
+            }
+            return;
         }
 
         const lang = getMonacoLanguage(activeFile.name);
@@ -211,14 +211,14 @@ const EditorPanel = ({
             const client = languageClientsRef.current.get(backendLang);
             const model = editorInstance.getModel();
             if (client && client.isRunning() && model) {
-                 const textDocument = {
-                     uri: model.uri.toString(),
-                     languageId: model.getLanguageId(),
-                     version: model.getVersionId(),
-                     text: model.getValue()
-                 };
-                 console.log('[LSP] Manually sending didOpen (reuse) for', textDocument.uri);
-                 client.sendNotification('textDocument/didOpen', { textDocument });
+                const textDocument = {
+                    uri: model.uri.toString(),
+                    languageId: model.getLanguageId(),
+                    version: model.getVersionId(),
+                    text: model.getValue()
+                };
+                console.log('[LSP] Manually sending didOpen (reuse) for', textDocument.uri);
+                client.sendNotification('textDocument/didOpen', { textDocument });
             }
             return;
         }
@@ -228,13 +228,13 @@ const EditorPanel = ({
 
         let lspChannel;
         try {
-             lspChannel = compilerClient.createLspChannel(backendLang);
-             console.log(`[LSP] Created channel for ${backendLang}, readyState: ${lspChannel.readyState}`);
-             lspChannel.onopen = () => console.log(`[LSP] Channel opened for ${backendLang}`);
+            lspChannel = compilerClient.createLspChannel(backendLang);
+            console.log(`[LSP] Created channel for ${backendLang}, readyState: ${lspChannel.readyState}`);
+            lspChannel.onopen = () => console.log(`[LSP] Channel opened for ${backendLang}`);
         } catch (e) {
-             console.error("[LSP] Failed to create channel", e);
-             setLspStatus('Channel Error');
-             return;
+            console.error("[LSP] Failed to create channel", e);
+            setLspStatus('Channel Error');
+            return;
         }
 
         const socket = toSocket(new MonacoSocketAdapter(lspChannel));
@@ -249,8 +249,8 @@ const EditorPanel = ({
 
             // Services should be initialized by the other useEffect, but double check
             if (!servicesInitialized) {
-                 console.warn('[LSP] Services not initialized yet, waiting...');
-                 return;
+                console.warn('[LSP] Services not initialized yet, waiting...');
+                return;
             }
 
             class SynthiLanguageClient extends MonacoLanguageClient {
@@ -281,7 +281,7 @@ const EditorPanel = ({
                             console.log('[LSP] provideCompletionItem triggered (middleware) - suppressing default');
                             // Suppress default LSP completion to avoid duplicate requests/race conditions
                             // since we are using the manual bridge.
-                            return []; 
+                            return [];
                         },
                         resolveCompletionItem: (item, token, next) => {
                             console.log('[LSP] resolveCompletionItem triggered for:', item.label);
@@ -307,7 +307,7 @@ const EditorPanel = ({
             console.log(`[LSP] Starting client for ${backendLang}`);
             const model = editorInstance.getModel();
             console.log(`[LSP] Model Details - URI: ${model.uri.toString()}, Scheme: ${model.uri.scheme}, Language: ${model.getLanguageId()}`);
-            
+
             // Debug: Register a manual completion provider to verify Monaco is working
             const debugDisposable = monacoInstance.languages.registerCompletionItemProvider(model.getLanguageId(), {
                 provideCompletionItems: (model, position) => {
@@ -324,8 +324,8 @@ const EditorPanel = ({
                     console.log('[LSP-BRIDGE] Requesting completion via bridge...');
                     // Wait for client to be ready
                     if (!languageClient.isRunning()) {
-                         console.log('[LSP-BRIDGE] Client not running yet');
-                         return { suggestions: [] };
+                        console.log('[LSP-BRIDGE] Client not running yet');
+                        return { suggestions: [] };
                     }
 
                     try {
@@ -336,19 +336,51 @@ const EditorPanel = ({
                         };
                         const result = await languageClient.sendRequest('textDocument/completion', params, token);
                         console.log('[LSP-BRIDGE] Request finished, items:', Array.isArray(result) ? result.length : result?.items?.length);
-                        
+
                         if (!result) return { suggestions: [] };
-                        
+
                         const items = Array.isArray(result) ? result : result.items;
                         const isIncomplete = !Array.isArray(result) && result.isIncomplete;
-                        
+
                         // Map LSP items to Monaco items
                         const suggestions = items.map(item => {
                             const kind = item.kind !== undefined ? item.kind - 1 : monacoInstance.languages.CompletionItemKind.Text;
+
+                            let insertText = item.insertText || item.label;
+                            let range = undefined;
+
+                            if (item.textEdit) {
+                                if (item.textEdit.range) {
+                                    insertText = item.textEdit.newText;
+                                    range = {
+                                        startLineNumber: item.textEdit.range.start.line + 1,
+                                        startColumn: item.textEdit.range.start.character + 1,
+                                        endLineNumber: item.textEdit.range.end.line + 1,
+                                        endColumn: item.textEdit.range.end.character + 1
+                                    };
+                                } else if (item.textEdit.insert && item.textEdit.replace) {
+                                    insertText = item.textEdit.newText;
+                                    range = {
+                                        insert: {
+                                            startLineNumber: item.textEdit.insert.start.line + 1,
+                                            startColumn: item.textEdit.insert.start.character + 1,
+                                            endLineNumber: item.textEdit.insert.end.line + 1,
+                                            endColumn: item.textEdit.insert.end.character + 1
+                                        },
+                                        replace: {
+                                            startLineNumber: item.textEdit.replace.start.line + 1,
+                                            startColumn: item.textEdit.replace.start.character + 1,
+                                            endLineNumber: item.textEdit.replace.end.line + 1,
+                                            endColumn: item.textEdit.replace.end.character + 1
+                                        }
+                                    };
+                                }
+                            }
                             return {
                                 label: item.label,
                                 kind: kind,
-                                insertText: item.insertText || item.label,
+                                insertText: insertText,
+                                range: range,
                                 detail: item.detail,
                                 documentation: typeof item.documentation === 'object' ? item.documentation.value : item.documentation,
                                 sortText: item.sortText,
@@ -365,7 +397,7 @@ const EditorPanel = ({
                 }
             });
 
-            
+
             try {
                 await languageClient.start();
                 console.log(`[LSP] Client started for ${backendLang}`);
@@ -390,7 +422,7 @@ const EditorPanel = ({
             // Manual Sync: Ensure server gets updates
             const changeDisposable = editorInstance.onDidChangeModelContent((e) => {
                 if (!languageClient.isRunning()) return;
-                
+
                 const currentModel = editorInstance.getModel();
                 if (!currentModel) return;
 
@@ -407,7 +439,7 @@ const EditorPanel = ({
 
             languageClientsRef.current.set(backendLang, languageClient);
             setLspStatus(`Ready (${backendLang})`);
-            
+
             lspChannel.onclose = () => {
                 console.log(`[LSP] Channel closed for ${backendLang}`);
                 debugDisposable.dispose();
@@ -680,120 +712,120 @@ const EditorPanel = ({
                         <div className="h-9 px-3 border-b border-[#2b2b2b] bg-[#1e1e1e] flex justify-between items-center select-none">
 
                             {/* Breadcrumbs */}
-                                <div className="flex items-center gap-2 overflow-hidden min-w-0">
-                                    {/* Tabs bar (sleek) */}
-                                    <div className="flex items-center gap-2 overflow-x-auto scrollbar-hide min-w-0">
-                                        {openFiles && openFiles.length > 0 ? openFiles.map((file, idx) => {
-                                                const isActive = activeFile && file.path === activeFile.path;
-                                            const fileIcon = getFileIcon(file.name || file.path || '');
-                                            return (
-                                                <div key={`tab-wrap-${file.path}`} className="flex items-center">
-                                                    {/* Separator between tabs (subtle) */}
-                                                    {idx > 0 && (
-                                                        <div
-                                                            key={`sep-${file.path}`}
-                                                            style={{ width: 1, height: 22, backgroundColor: TAB_TOKENS.separator, marginRight: 6 }}
-                                                            aria-hidden="true"
-                                                        />
-                                                    )}
-
+                            <div className="flex items-center gap-2 overflow-hidden min-w-0">
+                                {/* Tabs bar (sleek) */}
+                                <div className="flex items-center gap-2 overflow-x-auto scrollbar-hide min-w-0">
+                                    {openFiles && openFiles.length > 0 ? openFiles.map((file, idx) => {
+                                        const isActive = activeFile && file.path === activeFile.path;
+                                        const fileIcon = getFileIcon(file.name || file.path || '');
+                                        return (
+                                            <div key={`tab-wrap-${file.path}`} className="flex items-center">
+                                                {/* Separator between tabs (subtle) */}
+                                                {idx > 0 && (
                                                     <div
-                                                        key={file.path}
-                                                        draggable
-                                                        onDragStart={(e) => {
-                                                            e.dataTransfer?.setData('text/tab-index', String(idx));
-                                                            e.dataTransfer?.setData('text/tab-path', file.path);
-                                                        }}
-                                                        onDragOver={(e) => { e.preventDefault(); }}
-                                                        onDrop={(e) => {
-                                                            e.preventDefault();
-                                                            const raw = e.dataTransfer?.getData('text/tab-index');
-                                                            if (!raw) return;
-                                                            const fromIndex = Number(raw);
-                                                            const toIndex = idx;
-                                                            if (!Number.isNaN(fromIndex) && fromIndex !== toIndex) {
-                                                                dispatch(reorderOpenFiles({ fromIndex, toIndex }));
-                                                            }
-                                                        }}
-                                                        onClick={() => dispatch(selectFileThunk(file))}
-                                                        onContextMenu={(e) => {
-                                                            e.preventDefault();
-                                                            setTabContext({ visible: true, x: e.clientX, y: e.clientY, file, index: idx });
-                                                        }}
-                                                        className={`group flex items-center gap-2 px-3 py-1 mr-0 rounded-t-md cursor-pointer select-none transition-all duration-180 ease-out ${isActive ? 'text-white' : 'text-gray-200'}`}
-                                                        title={file.path}
-                                                        style={{
-                                                            minWidth: 84,
-                                                            maxWidth: 420,
-                                                            backgroundColor: isActive ? TAB_TOKENS.activeBg : TAB_TOKENS.inactiveBg,
-                                                            borderBottom: isActive ? `2px solid ${TAB_TOKENS.primary}` : '2px solid transparent',
-                                                            boxShadow: isActive ? '0 6px 20px rgba(8,15,30,0.6)' : 'none',
-                                                            transitionProperty: 'background-color, border-bottom-color, box-shadow',
-                                                            transitionDuration: '180ms',
-                                                            transitionTimingFunction: 'ease-out'
-                                                        }}
+                                                        key={`sep-${file.path}`}
+                                                        style={{ width: 1, height: 22, backgroundColor: TAB_TOKENS.separator, marginRight: 6 }}
+                                                        aria-hidden="true"
+                                                    />
+                                                )}
+
+                                                <div
+                                                    key={file.path}
+                                                    draggable
+                                                    onDragStart={(e) => {
+                                                        e.dataTransfer?.setData('text/tab-index', String(idx));
+                                                        e.dataTransfer?.setData('text/tab-path', file.path);
+                                                    }}
+                                                    onDragOver={(e) => { e.preventDefault(); }}
+                                                    onDrop={(e) => {
+                                                        e.preventDefault();
+                                                        const raw = e.dataTransfer?.getData('text/tab-index');
+                                                        if (!raw) return;
+                                                        const fromIndex = Number(raw);
+                                                        const toIndex = idx;
+                                                        if (!Number.isNaN(fromIndex) && fromIndex !== toIndex) {
+                                                            dispatch(reorderOpenFiles({ fromIndex, toIndex }));
+                                                        }
+                                                    }}
+                                                    onClick={() => dispatch(selectFileThunk(file))}
+                                                    onContextMenu={(e) => {
+                                                        e.preventDefault();
+                                                        setTabContext({ visible: true, x: e.clientX, y: e.clientY, file, index: idx });
+                                                    }}
+                                                    className={`group flex items-center gap-2 px-3 py-1 mr-0 rounded-t-md cursor-pointer select-none transition-all duration-180 ease-out ${isActive ? 'text-white' : 'text-gray-200'}`}
+                                                    title={file.path}
+                                                    style={{
+                                                        minWidth: 84,
+                                                        maxWidth: 420,
+                                                        backgroundColor: isActive ? TAB_TOKENS.activeBg : TAB_TOKENS.inactiveBg,
+                                                        borderBottom: isActive ? `2px solid ${TAB_TOKENS.primary}` : '2px solid transparent',
+                                                        boxShadow: isActive ? '0 6px 20px rgba(8,15,30,0.6)' : 'none',
+                                                        transitionProperty: 'background-color, border-bottom-color, box-shadow',
+                                                        transitionDuration: '180ms',
+                                                        transitionTimingFunction: 'ease-out'
+                                                    }}
+                                                >
+                                                    <span className="flex-shrink-0 text-sm opacity-90" aria-hidden="true">
+                                                        {fileIcon}
+                                                    </span>
+                                                    <span className={`text-sm font-medium truncate max-w-[220px] ${isActive ? 'text-white' : 'text-gray-200'}`}>
+                                                        {file.name}
+                                                    </span>
+
+                                                    {/* Unsaved marker (VSCode-style) - small dot near filename, visible when unsaved */}
+                                                    <span aria-hidden="true" className={`ml-2 w-2 h-2 rounded-full flex-shrink-0 transition-opacity ${file.isUnsaved ? '' : 'opacity-0'}`} style={{ backgroundColor: TAB_TOKENS.unsaved }} />
+
+                                                    {/* Close button appears on hover (VSCode behavior) */}
+                                                    <button
+                                                        onClick={(e) => { e.stopPropagation(); dispatch(closeFile(file.path)); }}
+                                                        className={`ml-3 flex items-center justify-center w-6 h-6 rounded transition-opacity duration-150 ${isActive ? 'text-white/80' : 'text-gray-300'}`}
+                                                        aria-label={`Close ${file.name}`}
+                                                        style={{ opacity: 0 }}
                                                     >
-                                                        <span className="flex-shrink-0 text-sm opacity-90" aria-hidden="true">
-                                                            {fileIcon}
-                                                        </span>
-                                                        <span className={`text-sm font-medium truncate max-w-[220px] ${isActive ? 'text-white' : 'text-gray-200'}`}>
-                                                            {file.name}
-                                                        </span>
+                                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="pointer-events-none">
+                                                            <path d="M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                                            <path d="M6 6L18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                                        </svg>
+                                                    </button>
 
-                                                        {/* Unsaved marker (VSCode-style) - small dot near filename, visible when unsaved */}
-                                                        <span aria-hidden="true" className={`ml-2 w-2 h-2 rounded-full flex-shrink-0 transition-opacity ${file.isUnsaved ? '' : 'opacity-0'}`} style={{ backgroundColor: TAB_TOKENS.unsaved }} />
-
-                                                        {/* Close button appears on hover (VSCode behavior) */}
-                                                        <button
-                                                            onClick={(e) => { e.stopPropagation(); dispatch(closeFile(file.path)); }}
-                                                            className={`ml-3 flex items-center justify-center w-6 h-6 rounded transition-opacity duration-150 ${isActive ? 'text-white/80' : 'text-gray-300'}`}
-                                                            aria-label={`Close ${file.name}`}
-                                                            style={{ opacity: 0 }}
-                                                        >
-                                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="pointer-events-none">
-                                                                <path d="M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                                                                <path d="M6 6L18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                                                            </svg>
-                                                        </button>
-
-                                                        <style jsx>{`
+                                                    <style jsx>{`
                                                             .group:hover button { opacity: 1 !important; }
                                                         `}</style>
-                                                    </div>
-                                                </div>
-                                            );
-                                            }) : (
-                                            <span className="text-gray-500 text-xs italic">No file open</span>
-                                        )}
-                                    </div>
-                                        {/* Context menu for tabs */}
-                                        {tabContext.visible && (
-                                            <div
-                                                style={{ position: 'fixed', left: tabContext.x, top: tabContext.y, zIndex: 9999 }}
-                                                onMouseLeave={() => setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 })}
-                                            >
-                                                <div className="bg-[#1c1c1c] border border-[#333] rounded shadow-lg text-sm text-gray-200">
-                                                    <div className="px-3 py-2 hover:bg-[#2b2b2b] cursor-pointer" onClick={() => { if (tabContext.file) dispatch(closeFile(tabContext.file.path)); setTabContext({ visible: false, x:0,y:0,file:null,index:-1 }); }}>Close</div>
-                                                    <div className="px-3 py-2 hover:bg-[#2b2b2b] cursor-pointer" onClick={() => {
-                                                        if (tabContext.file) {
-                                                            const keep = tabContext.file.path;
-                                                            const toClose = openFiles.filter(f => f.path !== keep).map(f => f.path);
-                                                            toClose.forEach(p => dispatch(closeFile(p)));
-                                                        }
-                                                        setTabContext({ visible: false, x:0,y:0,file:null,index:-1 });
-                                                    }}>Close Others</div>
-                                                    <div className="px-3 py-2 hover:bg-[#2b2b2b] cursor-pointer" onClick={() => {
-                                                        if (tabContext.index >= 0) {
-                                                            const toClose = openFiles.slice(tabContext.index + 1).map(f => f.path);
-                                                            toClose.forEach(p => dispatch(closeFile(p)));
-                                                        }
-                                                        setTabContext({ visible: false, x:0,y:0,file:null,index:-1 });
-                                                    }}>Close to Right</div>
                                                 </div>
                                             </div>
-                                        )}
-                                    {/* Removed global right-side unsaved dot; per-tab markers are used now */}
+                                        );
+                                    }) : (
+                                        <span className="text-gray-500 text-xs italic">No file open</span>
+                                    )}
                                 </div>
+                                {/* Context menu for tabs */}
+                                {tabContext.visible && (
+                                    <div
+                                        style={{ position: 'fixed', left: tabContext.x, top: tabContext.y, zIndex: 9999 }}
+                                        onMouseLeave={() => setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 })}
+                                    >
+                                        <div className="bg-[#1c1c1c] border border-[#333] rounded shadow-lg text-sm text-gray-200">
+                                            <div className="px-3 py-2 hover:bg-[#2b2b2b] cursor-pointer" onClick={() => { if (tabContext.file) dispatch(closeFile(tabContext.file.path)); setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 }); }}>Close</div>
+                                            <div className="px-3 py-2 hover:bg-[#2b2b2b] cursor-pointer" onClick={() => {
+                                                if (tabContext.file) {
+                                                    const keep = tabContext.file.path;
+                                                    const toClose = openFiles.filter(f => f.path !== keep).map(f => f.path);
+                                                    toClose.forEach(p => dispatch(closeFile(p)));
+                                                }
+                                                setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 });
+                                            }}>Close Others</div>
+                                            <div className="px-3 py-2 hover:bg-[#2b2b2b] cursor-pointer" onClick={() => {
+                                                if (tabContext.index >= 0) {
+                                                    const toClose = openFiles.slice(tabContext.index + 1).map(f => f.path);
+                                                    toClose.forEach(p => dispatch(closeFile(p)));
+                                                }
+                                                setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 });
+                                            }}>Close to Right</div>
+                                        </div>
+                                    </div>
+                                )}
+                                {/* Removed global right-side unsaved dot; per-tab markers are used now */}
+                            </div>
 
                             {/* Status & Controls */}
                             <div className="flex items-center gap-4">
