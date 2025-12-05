@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { applyPatch } from 'diff';
-import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
 import { getFileLanguage, findFirstFile } from '@/utils/fileUtils';
 import { buildFilesPayload } from '@/utils/multiFileContext';
 import { api } from '@/services/api';
@@ -31,9 +30,9 @@ const extractCodeFromMarkdown = (text) => {
 export const useAISuggestions = ({
     activeSession,
     chatSessions,
-    mutateSession,
-    appendMessagesToSession,
-    resetSuggestionsForSession,
+        mutateSession,
+        appendMessagesToSession,
+        resetSuggestionsForSession,
     activeFile,
     currentCode,
     editor,
@@ -47,7 +46,7 @@ export const useAISuggestions = ({
     aiModel = null,
     aiApiKey = null,
 }) => {
-    const { askAi, clientReady } = useAnalyzerGateway();
+    const clientReady = true;
     const [isLoading, setIsLoading] = useState(false);
     const lastClearSignalRef = useRef(clearSignal);
     const cachedFileMap = useMemo(() => new Map(fileCacheEntries), [fileCacheEntries]);
@@ -669,9 +668,19 @@ export const useAISuggestions = ({
     };
 
     // Send a user prompt to the AI, stream partial responses, and update suggestion state.
-    const handleSendMessage = useCallback(async (inputValue, attachments = []) => {
+    const handleSendMessage = useCallback(async (inputValue, attachments = [], streamHandlers = {}) => {
         if (!inputValue?.trim()) return;
         if (!activeSession) return;
+        const {
+            controller,
+            onStreamStart,
+            onFirstToken,
+            onChunk,
+            onDone,
+            onCanceled,
+            onError,
+            onLog,
+        } = streamHandlers || {};
 
         archiveCurrentSuggestion();
 
@@ -680,11 +689,58 @@ export const useAISuggestions = ({
             role: 'user',
             content: inputValue,
             timestamp: new Date(),
-            attachments,
-        };
+        attachments,
+    };
 
         appendMessagesToSession(activeSession.id, [userMessage]);
         setIsLoading(true);
+
+        const progressId = `progress-${Date.now()}`;
+        const pushProgress = (updater) => {
+            mutateSession(activeSession.id, (session) => ({
+                ...session,
+                messages: session.messages.map((m) => {
+                    if (m.id !== progressId) return m;
+                    return updater(m);
+                }),
+            }));
+        };
+        const appendProgressLog = (line) => {
+            pushProgress((m) => ({
+                ...m,
+                logs: m.logs.some((l) => l === line) ? m.logs : [...m.logs, line],
+            }));
+        };
+
+        const progressTimestamp = new Date(Date.now() + 1); // ensure it renders right after the user message
+        const promptSnippet = (inputValue || '').slice(0, 120).replace(/\s+/g, ' ').trim();
+        const attachmentNote = Array.isArray(attachments) && attachments.length ? `Attachments: ${attachments.length}` : null;
+
+        mutateSession(activeSession.id, (session) => ({
+            ...session,
+            messages: [
+                ...session.messages,
+                {
+                    id: progressId,
+                    role: 'progress',
+                    status: 'working',
+                    expanded: true,
+                    logs: [
+                        'Working...',
+                        promptSnippet ? `Understanding request: "${promptSnippet}"` : 'Understanding request',
+                        attachmentNote || null,
+                    ].filter(Boolean),
+                    timestamp: progressTimestamp,
+                },
+            ],
+        }));
+
+        let streamBuffer = '';
+        let finalSuggestion = '';
+        let buffered = '';
+        let firstToken = true;
+        const abortController = controller || new AbortController();
+        let timeoutId = null;
 
         try {
             const langSource =
@@ -698,7 +754,7 @@ export const useAISuggestions = ({
 
 If the user asks for a new file, you may create it in the requested folder/path within the workspace. If the user asks to delete a file, you may delete it when they provide a path; return an empty content block or the literal text DELETE to mark deletion. Otherwise, prefer modifying the active file or files explicitly mentioned. Always respect the workspace tree when creating or deleting files.
 
-Start with a brief (6-7 sentences) summary of the change. After the summary, return one or more sections in this exact format:
+Start with a brief (6-7 sentences) summary of the change. Stream at least three short progress updates wrapped in <progress>...</progress> as you reason (no code inside progress). Emit the summary before any FILE sections. After the summary, return one or more sections in this exact format:
 FILE: <path>
 \`\`\`
 <full updated file content only; no diff markers, no +/-, no @@, no ---/+++>
@@ -725,26 +781,145 @@ If image attachments are present, read/ocr the images and extract any text or co
             if (attachmentText) {
                 patchRequest = `${patchRequest}\n\nUser attachments:\n${attachmentText}`;
             }
+            patchRequest = `${patchRequest}\n\nStream at least three progress updates inside <progress>...</progress> as you reason (no code inside progress).`;
+            appendProgressLog(filesPayload.length ? `Context files: ${filesPayload.length}` : 'Context files: 0');
 
             try { if (typeof onBusy === 'function') onBusy(true); } catch (e) {}
 
-            let streamBuffer = '';
-            let finalSuggestion = '';
+            onStreamStart?.();
+            onLog?.('Preparing request');
 
-            const response = await askAi({
-                lang: normalizedLang,
-                code,
-                prompt: patchRequest,
-                mode: 'patch',
-                files: filesPayload,
-                focusPath: activeFile?.path || activeFile?.name || null,
-                model: aiModel,
-                apiKey: aiApiKey,
-                onProgress: (data) => {
-                    const chunk = typeof data === 'string' ? data : (data?.partial ?? '');
-                    const isFinal = typeof data === 'object' ? Boolean(data.final) : false;
-                    if (chunk) {
-                        streamBuffer += chunk;
+            // Safety timeout so UI doesn't hang forever if the backend never responds
+            timeoutId = setTimeout(() => {
+                try { abortController.abort('timeout'); } catch (e) {}
+            }, 60_000);
+
+            onLog?.('Analyzing prompt and files');
+            appendProgressLog('Analyzing prompt and files');
+            const resp = await fetch('/api/chat', {
+                method: 'POST',
+                signal: abortController.signal,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    lang: normalizedLang,
+                    code,
+                    prompt: patchRequest,
+                    mode: 'patch',
+                    files: filesPayload,
+                    focusPath: activeFile?.path || activeFile?.name || null,
+                    model: aiModel,
+                    apiKey: aiApiKey,
+                }),
+            });
+
+            if (!resp.ok) {
+                throw new Error(`AI request failed (status ${resp.status})`);
+            }
+            onLog?.('Connected to model');
+            appendProgressLog('Drafting answer');
+
+            const reader = resp.body?.pipeThrough(new TextDecoderStream()).getReader();
+            if (!reader) {
+                throw new Error('No response stream received from AI');
+            }
+
+            let summaryBuffer = '';
+            let progressBuffer = '';
+            const progressTokens = {
+                start: '<progress>',
+                end: '</progress>',
+            };
+            const collectProgress = (text = '') => {
+                const logs = [];
+                const pattern = /<progress>([\s\S]*?)<\/progress>/gi;
+                let cleaned = text;
+                let m;
+                while ((m = pattern.exec(cleaned))) {
+                    const t = (m[1] || '').trim();
+                    if (t) {
+                        // Strip any user prompt echoing
+                        logs.push(t.replace(/Understanding request:[\s\S]*$/i, '').trim() || t);
+                    }
+                }
+                cleaned = cleaned.replace(pattern, '');
+                return { cleaned, logs };
+            };
+            const drainProgressBuffer = (finalFlush = false) => {
+                let stableText = '';
+                while (true) {
+                    const start = progressBuffer.indexOf(progressTokens.start);
+                    if (start === -1) {
+                        if (finalFlush) {
+                            stableText += progressBuffer;
+                            progressBuffer = '';
+                            break;
+                        }
+                        let preserve = 0;
+                        for (let i = progressTokens.start.length - 1; i > 0; i--) {
+                            if (progressBuffer.endsWith(progressTokens.start.slice(0, i))) {
+                                preserve = i;
+                                break;
+                            }
+                        }
+                        const flushUntil = Math.max(0, progressBuffer.length - preserve);
+                        if (flushUntil > 0) {
+                            stableText += progressBuffer.slice(0, flushUntil);
+                            progressBuffer = progressBuffer.slice(flushUntil);
+                        }
+                        break;
+                    }
+                    const beforeProgress = progressBuffer.slice(0, start);
+                    stableText += beforeProgress;
+                    const end = progressBuffer.indexOf(progressTokens.end, start + progressTokens.start.length);
+                    if (end === -1) {
+                        progressBuffer = progressBuffer.slice(start);
+                        break;
+                    }
+                    let progressText = progressBuffer.slice(start + progressTokens.start.length, end).trim();
+                    if (progressText) {
+                        progressText = progressText.replace(/Understanding request:[\s\S]*$/i, '').trim() || progressText;
+                        appendProgressLog(progressText);
+                    }
+                    progressBuffer = progressBuffer.slice(end + progressTokens.end.length);
+                }
+                return stableText;
+            };
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                if (!value) continue;
+                await new Promise((resolve) => setTimeout(resolve, 60)); // slow streaming slightly
+                buffered += value;
+                const lines = buffered.split('\n');
+                buffered = lines.pop() || '';
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    let parsed = null;
+                    try {
+                        parsed = JSON.parse(line);
+                    } catch (e) {
+                        continue;
+                    }
+                    const delta = parsed?.delta || parsed?.text || '';
+                    const doneFlag = Boolean(parsed?.done);
+                    if (delta) {
+                        progressBuffer += delta;
+
+                        const stableText = drainProgressBuffer();
+
+                        if (!stableText) continue;
+                        streamBuffer += stableText;
+
+                        if (firstToken) {
+                            firstToken = false;
+                            onFirstToken?.();
+                            onLog?.('Model started responding');
+                            appendProgressLog('Thinking through solution');
+                        }
+                        onLog?.('Refining response');
+                        appendProgressLog('Refining response');
+                        summaryBuffer += stableText;
 
                         let partialCode = extractCodeFromMarkdown(streamBuffer);
                         if (!partialCode) {
@@ -772,14 +947,56 @@ If image attachments are present, read/ocr the images and extract any text or co
                             } catch (e) {}
                         }
                     }
-
-                    if (isFinal) {
+                    if (doneFlag) {
                         finalSuggestion = streamBuffer;
                     }
                 }
-            });
+            }
 
-            const suggestion = response?.ai_suggestion || response?.suggestion || finalSuggestion || '';
+            const trailingStableText = drainProgressBuffer(true);
+            if (trailingStableText) {
+                streamBuffer += trailingStableText;
+                summaryBuffer += trailingStableText;
+            }
+
+            finalSuggestion = streamBuffer;
+            // Final pass: extract any remaining progress markers from accumulated text
+            const finalProgress = collectProgress(finalSuggestion);
+            finalProgress.logs.forEach((p) => appendProgressLog(p));
+            finalSuggestion = finalProgress.cleaned;
+            const summaryProgress = collectProgress(summaryBuffer);
+            summaryProgress.logs.forEach((p) => appendProgressLog(p));
+            summaryBuffer = summaryProgress.cleaned;
+            onLog?.('Finalizing response');
+            appendProgressLog('Drafting code changes');
+            appendProgressLog('Summarizing changes');
+            // Mark progress finished before streaming the summary to the bubble
+            pushProgress((m) => ({ ...m, status: 'finished' }));
+
+            // After progress is done, stream the summary text only (before FILE sections / code)
+            try {
+                const markerIdx = (() => {
+                    const fileIdx = summaryBuffer.indexOf('FILE:');
+                    const codeIdx = summaryBuffer.indexOf('```');
+                    if (fileIdx === -1 && codeIdx === -1) return -1;
+                    if (fileIdx === -1) return codeIdx;
+                    if (codeIdx === -1) return fileIdx;
+                    return Math.min(fileIdx, codeIdx);
+                })();
+                        const summaryOnly = markerIdx === -1 ? summaryBuffer : summaryBuffer.slice(0, markerIdx);
+                if (summaryOnly && typeof onChunk === 'function') {
+                    const pieces = summaryOnly.split(/(\n{2,})/).filter(Boolean);
+                    for (const piece of pieces) {
+                        onChunk(piece);
+                        await new Promise((resolve) => setTimeout(resolve, 80));
+                    }
+                }
+            } catch (streamErr) {
+                appendProgressLog(`Summary stream error: ${streamErr?.message || 'unknown error'}`);
+            }
+            onDone?.();
+
+            const suggestion = finalSuggestion || summaryBuffer || '';
             const summaryText = (() => {
                 const parts = suggestion.split(/FILE:/i);
                 const prefix = (parts[0] || '').trim();
@@ -890,6 +1107,7 @@ If image attachments are present, read/ocr the images and extract any text or co
                 id: now + 1,
                 role: 'assistant',
                 content: displayedContent,
+                inlineSummary: true,
                 timestamp: new Date(),
             }];
 
@@ -921,18 +1139,38 @@ If image attachments are present, read/ocr the images and extract any text or co
 
             appendMessagesToSession(activeSession.id, messagesToAppend);
         } catch (error) {
-            const errorMessage = {
-                id: Date.now() + 1,
-                role: 'assistant',
-                content: `Error: ${error.message || 'Failed to get AI response. Make sure the backend is running.'}`,
-                timestamp: new Date(),
-            };
-            if (activeSession) appendMessagesToSession(activeSession.id, [errorMessage]);
+            const aborted = abortController.signal?.aborted;
+            if (aborted) {
+                onCanceled?.(streamBuffer || '');
+                onLog?.('Generation cancelled');
+                appendProgressLog('Generation cancelled');
+                if (activeSession && streamBuffer) {
+                    appendMessagesToSession(activeSession.id, [{
+                        id: Date.now() + 1,
+                        role: 'assistant',
+                        content: streamBuffer,
+                        timestamp: new Date(),
+                    }]);
+                }
+            } else {
+                onError?.();
+                onLog?.(`Generation failed: ${error?.message || 'unknown error'}`);
+                appendProgressLog(`Generation failed: ${error?.message || 'unknown error'}`);
+                const errorMessage = {
+                    id: Date.now() + 1,
+                    role: 'assistant',
+                    content: 'Generation failed. Try again.',
+                    timestamp: new Date(),
+                };
+                if (activeSession) appendMessagesToSession(activeSession.id, [errorMessage]);
+                pushProgress((m) => ({ ...m, status: 'failed' }));
+            }
         } finally {
+            if (timeoutId) clearTimeout(timeoutId);
             setIsLoading(false);
             try { if (typeof onBusy === 'function') onBusy(false); } catch(e){}
         }
-    }, [activeSession, activeFile, appendMessagesToSession, archiveCurrentSuggestion, askAi, buildMultiFileSuggestions, currentCode, fileCacheEntries, mutateSession, onBusy, onSuggest, aiApiKey, aiModel]);
+    }, [activeSession, activeFile, appendMessagesToSession, archiveCurrentSuggestion, buildMultiFileSuggestions, currentCode, fileCacheEntries, mutateSession, onBusy, onSuggest, aiApiKey, aiModel]);
 
     const suggestedCode = activeSession?.suggestedCode ?? null;
     const fileSuggestions = activeSession?.fileSuggestions ?? [];
