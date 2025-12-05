@@ -23,13 +23,13 @@ import { useCompiler } from '@/hooks/useCompiler';
 import AIChatWindow from '@/components/chat/AIChatWindow';
 import { api } from '@/services/api';
 import { resolveDependencies } from '@/utils/dependencyResolver';
+import { DraggableVideoWidget } from '@/components/DraggableVideoWidget';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
     const [chatVisible, setChatVisible] = useState(false);
     const [guiConfig, setGuiConfig] = useState(null);
     const [isGuiRunning, setIsGuiRunning] = useState(false);
-    const guiVideoRef = useRef(null);
     const [editor, setEditor] = useState(null);
     const { analyzeCode, lastResult } = useAnalyzerGateway();
     const { compile, mediaStream } = useCompiler();
@@ -82,69 +82,7 @@ export default function EditorPage({ params }) {
         } catch (e) { /* ignore */ }
     };
 
-    // Attach pointer/keyboard handlers to the video element for GUI interaction
-    useEffect(() => {
-        const el = guiVideoRef.current;
-        if (!el || !guiConfig) return;
 
-        const toDisplayCoords = (clientX, clientY) => {
-            const rect = el.getBoundingClientRect();
-            const dw = guiConfig.width || rect.width;
-            const dh = guiConfig.height || rect.height;
-            const x = Math.round((clientX - rect.left) * (dw / rect.width));
-            const y = Math.round((clientY - rect.top) * (dh / rect.height));
-            return { x, y };
-        };
-
-        const handleMouseMove = (ev) => {
-            const { x, y } = toDisplayCoords(ev.clientX, ev.clientY);
-            sendGuiEvent({ type: 'mouse', action: 'move', x, y });
-        };
-        const handleMouseDown = (ev) => {
-            const button = ev.button === 0 ? 1 : (ev.button === 1 ? 2 : 3);
-            const { x, y } = toDisplayCoords(ev.clientX, ev.clientY);
-            sendGuiEvent({ type: 'mouse', action: 'down', x, y, button });
-            // focus so keyboard events go to this element
-            try { el.focus(); } catch (e) {}
-            ev.preventDefault();
-        };
-        const handleMouseUp = (ev) => {
-            const button = ev.button === 0 ? 1 : (ev.button === 1 ? 2 : 3);
-            const { x, y } = toDisplayCoords(ev.clientX, ev.clientY);
-            sendGuiEvent({ type: 'mouse', action: 'up', x, y, button });
-            ev.preventDefault();
-        };
-        const handleWheel = (ev) => {
-            sendGuiEvent({ type: 'mouse', action: 'wheel', deltaY: ev.deltaY });
-            ev.preventDefault();
-        };
-
-        const handleKeyDown = (ev) => {
-            // Prevent global shortcuts interfering
-            ev.preventDefault();
-            sendGuiEvent({ type: 'key', action: 'down', key: ev.key });
-        };
-        const handleKeyUp = (ev) => {
-            ev.preventDefault();
-            sendGuiEvent({ type: 'key', action: 'up', key: ev.key });
-        };
-
-        el.addEventListener('mousemove', handleMouseMove);
-        el.addEventListener('mousedown', handleMouseDown);
-        window.addEventListener('mouseup', handleMouseUp);
-        el.addEventListener('wheel', handleWheel, { passive: false });
-        el.addEventListener('keydown', handleKeyDown);
-        el.addEventListener('keyup', handleKeyUp);
-
-        return () => {
-            el.removeEventListener('mousemove', handleMouseMove);
-            el.removeEventListener('mousedown', handleMouseDown);
-            window.removeEventListener('mouseup', handleMouseUp);
-            el.removeEventListener('wheel', handleWheel);
-            el.removeEventListener('keydown', handleKeyDown);
-            el.removeEventListener('keyup', handleKeyUp);
-        };
-    }, [guiConfig, guiVideoRef]);
 
     const handleClearLatestCompletion = useCallback(() => {
         setLatestCompletion(null);
@@ -391,46 +329,14 @@ export default function EditorPage({ params }) {
                     ))}
                 </div>
             )}
-            {(guiConfig) && (
-                <div 
-                    className="fixed bottom-4 right-4 bg-black border border-gray-600 shadow-lg z-50 resize overflow-auto"
-                    style={{ 
-                        width: guiConfig.width, 
-                        height: guiConfig.height,
-                        maxWidth: '90vw',
-                        maxHeight: '90vh'
-                    }}
-                >
-                    <div className="absolute top-0 left-0 bg-gray-800 text-white text-xs px-2 py-1 z-10 flex items-center gap-2">
-                        <span>GUI Output ({guiConfig.width}x{guiConfig.height})</span>
-                        {!isGuiRunning && <span className="text-red-400 font-bold">[STOPPED]</span>}
-                        <button onClick={() => { setGuiConfig(null); setIsGuiRunning(false); }} className="ml-2 text-red-400 hover:text-red-300">x</button>
-                    </div>
-                    {mediaStream ? (
-                        <video
-                            tabIndex={0}
-                            width={guiConfig.width}
-                            height={guiConfig.height}
-                            autoPlay
-                            playsInline
-                            muted
-                            className="block"
-                            onClick={() => { try { guiVideoRef.current && guiVideoRef.current.focus(); } catch (e) {} }}
-                            ref={video => {
-                                if (video && mediaStream && video.srcObject !== mediaStream) {
-                                    video.srcObject = mediaStream;
-                                }
-                                // keep ref current
-                                if (video) guiVideoRef.current = video;
-                            }}
-                        />
-                    ) : (
-                        <div className="w-full h-full flex items-center justify-center text-gray-500">
-                            {isGuiRunning ? 'Waiting for video stream...' : 'Application exited'}
-                        </div>
-                    )}
-                </div>
-            )}
+            <DraggableVideoWidget
+                guiConfig={guiConfig}
+                setGuiConfig={setGuiConfig}
+                isGuiRunning={isGuiRunning}
+                setIsGuiRunning={setIsGuiRunning}
+                mediaStream={mediaStream}
+                sendGuiEvent={sendGuiEvent}
+            />
             <ResizablePanelGroup
                 direction="horizontal"
                 className="flex-1 min-h-0"
