@@ -738,11 +738,10 @@ const EditorPanel = ({
                                                     )}
 
                                                     <div
-                                                        key={`sep-${file.path}`}
+                                                        key={`sep2-${file.path}`}
                                                         style={{ width: 1, height: 22, backgroundColor: TAB_TOKENS.separator, marginRight: 6 }}
                                                         aria-hidden="true"
                                                     />
-                                                )}
 
                                                 <div
                                                     key={file.path}
