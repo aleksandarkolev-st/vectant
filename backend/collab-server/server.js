@@ -5,22 +5,47 @@ const WebSocket = require('ws');
 // common locations and fall back with a clear error message.
 let setupWSConnection = null;
 try {
-  setupWSConnection = require('y-websocket/bin/utils.js').setupWSConnection;
-  console.log('[Collab] loaded setupWSConnection from y-websocket/bin/utils.js');
+  // Try the package export path without extension first (preferred)
+  setupWSConnection = require('y-websocket/bin/utils').setupWSConnection;
+  if (typeof setupWSConnection === 'function') {
+    console.log('[Collab] loaded setupWSConnection from y-websocket/bin/utils');
+  } else {
+    throw new Error('setupWSConnection not exported at y-websocket/bin/utils');
+  }
 } catch (errA) {
   try {
-    setupWSConnection = require('y-websocket/dist/bin/utils.cjs').setupWSConnection;
-    console.log('[Collab] loaded setupWSConnection from y-websocket/dist/bin/utils.cjs');
+    // Some installs put utils under bin/utils.js (legacy)
+    setupWSConnection = require('y-websocket/bin/utils.js').setupWSConnection;
+    if (typeof setupWSConnection === 'function') {
+      console.log('[Collab] loaded setupWSConnection from y-websocket/bin/utils.js');
+    } else {
+      throw new Error('setupWSConnection not found at y-websocket/bin/utils.js');
+    }
   } catch (errB) {
     try {
-      // Some versions export helpers from the package root
-      setupWSConnection = require('y-websocket').setupWSConnection;
-      console.log('[Collab] loaded setupWSConnection from y-websocket (root export)');
+      // Common fallback for older builds
+      setupWSConnection = require('y-websocket/dist/bin/utils.cjs').setupWSConnection;
+      if (typeof setupWSConnection === 'function') {
+        console.log('[Collab] loaded setupWSConnection from y-websocket/dist/bin/utils.cjs');
+      } else {
+        throw new Error('setupWSConnection not found at y-websocket/dist/bin/utils.cjs');
+      }
     } catch (errC) {
-      console.error('[Collab] Unable to load setupWSConnection from y-websocket.');
-      console.error('Tried a few locations and failed. Please ensure you have a compatible y-websocket package installed.');
-      console.error('Errors (most recent first):', errC?.message || errC, errB?.message || errB, errA?.message || errA);
-      process.exit(1);
+      try {
+        // As a last resort try the root package export (may not include server utils)
+        const root = require('y-websocket');
+        if (root && typeof root.setupWSConnection === 'function') {
+          setupWSConnection = root.setupWSConnection;
+          console.log('[Collab] loaded setupWSConnection from y-websocket (root export)');
+        } else {
+          throw new Error('setupWSConnection unavailable on y-websocket root export');
+        }
+      } catch (errD) {
+        console.error('[Collab] Unable to load setupWSConnection from y-websocket.');
+        console.error('Tried multiple locations and failed - ensure you have y-websocket installed and that it provides server utils.');
+        console.error('Errors (most recent first):', errD?.message || errD, errC?.message || errC, errB?.message || errB, errA?.message || errA);
+        process.exit(1);
+      }
     }
   }
 }
