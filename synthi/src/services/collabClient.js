@@ -192,12 +192,13 @@ class MonacoTextBinding {
         this._ensureStyleForClient(cid, info.color);
 
         const decs = [];
-        if (!info.range.isEmpty()) {
+        if (info.range && !info.range.isEmpty()) {
           decs.push({
             range: info.range,
             options: {
               className: selectionClass, // Selection background
-              stickiness: 1
+              stickiness: 1,
+              zIndex: 10 // Ensure it's visible
             }
           });
         }
@@ -301,14 +302,16 @@ class MonacoTextBinding {
         const r = parseInt(color.substring(1,3), 16);
         const g = parseInt(color.substring(3,5), 16);
         const b = parseInt(color.substring(5,7), 16);
-        selectionColor = `rgba(${r}, ${g}, ${b}, 0.2)`;
+        selectionColor = `rgba(${r}, ${g}, ${b}, 0.3)`;
     } else if (color.startsWith('hsl')) {
-        selectionColor = color.replace('hsl', 'hsla').replace(')', ', 0.2)');
+        selectionColor = color.replace('hsl', 'hsla').replace(')', ', 0.3)');
     }
 
     style.innerHTML = `
       .collab-selection-${clientId} {
         background-color: ${selectionColor};
+        border-bottom: 2px solid ${color};
+        opacity: 0.5;
       }
     `;
     document.head.appendChild(style);
@@ -490,7 +493,7 @@ class CollabClient {
       const name = user.name || user.email || 'Anonymous';
       const color = user.color || this._colorForUser(String(id));
 
-      const localState = { user: { id, name, color } };
+      const localState = { user: { id, name, color }, isUnsaved: false };
       entry.provider.awareness.setLocalState(localState);
     }
 
@@ -503,6 +506,14 @@ class CollabClient {
     // Return an object that allows cleanup
     return {
       key: entry.key,
+      updateLocalUnsaved: (isUnsaved) => {
+        if (entry.provider && entry.provider.awareness) {
+            const current = entry.provider.awareness.getLocalState();
+            if (current && current.isUnsaved !== isUnsaved) {
+                entry.provider.awareness.setLocalStateField('isUnsaved', isUnsaved);
+            }
+        }
+      },
       dispose: () => {
         try {
           binding.destroy();

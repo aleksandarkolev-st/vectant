@@ -19,7 +19,7 @@ import {
     reorderOpenFiles
 } from '@/redux/workspaceSlice';
 import { selectAutoSaveEnabled, selectAutoCompletionEnabled, toggleAutoCompletion, selectShowAnonymousPresence, selectPresenceGranularity, toggleShowAnonymousPresence, setPresenceGranularity } from '@/redux/uiSlice';
-import { Circle, Save, Sparkles } from 'lucide-react'; // Added Sparkles
+import { Circle, Save, Sparkles, EyeOff } from 'lucide-react'; // Added Sparkles, EyeOff
 import { getFileIcon } from '@/utils/fileIcons';
 import {
     ResizableHandle,
@@ -146,6 +146,8 @@ const EditorPanel = ({
     const [hoverPresence, setHoverPresence] = useState(null); // { user, clientId, rect }
     // small timeout ref used to keep the hover card alive while moving the pointer
     const hoverHideTimeoutRef = useRef(null);
+    const [isPrivateMode, setIsPrivateMode] = useState(false);
+    const [remoteUnsaved, setRemoteUnsaved] = useState(false);
 
     // Precompute hover-card style so JSX stays clean and well-formed
     const hoverCardStyle = (hoverPresence && hoverPresence.rect && typeof window !== 'undefined') ? (() => {
@@ -481,7 +483,7 @@ const EditorPanel = ({
 
     // Hook up Yjs-based collaboration when an editor and activeFile are present.
     useEffect(() => {
-        if (!editorInstance || !monacoInstance || !activeFile || !slug) return;
+        if (!editorInstance || !monacoInstance || !activeFile || !slug || isPrivateMode) return;
 
         // Seed the document on the server if it is empty, using the current editor content.
         try {
@@ -495,15 +497,37 @@ const EditorPanel = ({
             const showLineDecorations = (presenceGranularity === 'line');
             const bindingHandle = collabClient.attachEditor({ editor: editorInstance, monaco: monacoInstance, slug, path: activeFile.path, user, options: { showLineDecorations } });
             collabBindingRef.current = bindingHandle;
+            
+            // Sync initial unsaved state
+            bindingHandle.updateLocalUnsaved(isUnsaved);
+
+            // Listen for remote unsaved changes
+            const awarenessUnsub = collabClient.addAwarenessListener(slug, activeFile.path, (states) => {
+                const anyRemoteUnsaved = states.some(s => s.state && s.state.isUnsaved && s.clientId !== collabClient.docs.get(bindingHandle.key)?.provider?.awareness?.clientID);
+                setRemoteUnsaved(anyRemoteUnsaved);
+            });
+            
+            // Store unsub in the binding handle for cleanup convenience (hacky but works)
+            bindingHandle._awarenessUnsub = awarenessUnsub;
+
         } catch (e) {
             console.warn('[Collab] Failed to attach editor to collaborative session', e);
         }
 
         return () => {
+            try { collabBindingRef.current?._awarenessUnsub?.(); } catch (e) { /* ignore */ }
             try { collabBindingRef.current?.dispose(); } catch (e) { /* ignore */ }
             collabBindingRef.current = null;
+            setRemoteUnsaved(false);
         };
-    }, [editorInstance, monacoInstance, activeFile, slug, session, presenceGranularity]);
+    }, [editorInstance, monacoInstance, activeFile, slug, session, presenceGranularity, isPrivateMode]);
+
+    // Sync local unsaved state to awareness
+    useEffect(() => {
+        if (collabBindingRef.current) {
+            collabBindingRef.current.updateLocalUnsaved(isUnsaved);
+        }
+    }, [isUnsaved]);
 
     useEffect(() => {
         return () => {
@@ -839,7 +863,7 @@ const EditorPanel = ({
                                                     </span>
 
                                                     {/* Unsaved marker (VSCode-style) - small dot near filename, visible when unsaved */}
-                                                    <span aria-hidden="true" className={`ml-2 w-2 h-2 rounded-full flex-shrink-0 transition-opacity ${file.isUnsaved ? '' : 'opacity-0'}`} style={{ backgroundColor: TAB_TOKENS.unsaved }} />
+                                                    <span aria-hidden="true" className={`ml-2 w-2 h-2 rounded-full flex-shrink-0 transition-opacity ${file.isUnsaved || (isActive && remoteUnsaved) ? '' : 'opacity-0'}`} style={{ backgroundColor: TAB_TOKENS.unsaved }} />
 
                                                     {/* Close button appears on hover (VSCode behavior) */}
                                                     <button
@@ -908,7 +932,16 @@ const EditorPanel = ({
 
                                 {/* Collaboration presence */}
                                 <div className="flex items-center gap-2 text-[11px] text-gray-400 ml-3">
-                                    <div className="text-xs text-gray-300 mr-1">👥</div>
+                                    <button 
+                                        onClick={() => setIsPrivateMode(!isPrivateMode)}
+                                        className={`flex items-center gap-1 px-2 py-0.5 rounded transition-colors ${isPrivateMode ? 'bg-red-900/30 text-red-400' : 'hover:bg-[#2b2b2b]'}`}
+                                        title={isPrivateMode ? "Enable Collaboration" : "Disable Collaboration (Private Mode)"}
+                                    >
+                                        {isPrivateMode ? <EyeOff className="w-3 h-3" /> : <div className="text-xs text-gray-300">👥</div>}
+                                        {isPrivateMode && <span className="text-[10px] font-bold">PRIVATE</span>}
+                                    </button>
+                                    
+                                    {!isPrivateMode && (
                                     <div className="flex items-center gap-2">
                                         {/* small presence list */}
                                         {(() => {
@@ -923,17 +956,17 @@ const EditorPanel = ({
                                                     <div key={`${u.clientId}-${user.id || 'u'}`} className="relative">
                                                         <div
                                                             onMouseEnter={(e) => {
-                                                                                // cancel any pending hide
-                                                                                if (hoverHideTimeoutRef.current) { clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = null; }
-                                                                                const rect = e.currentTarget.getBoundingClientRect();
-                                                                                // find cursor info
-                                                                                const found = allUsers.find(x => x.clientId === u.clientId) || u;
-                                                                                setHoverPresence({ user, clientId: u.clientId, rect, cursor: found.state?.cursor });
-                                                                            }}
-                                                                        onMouseLeave={() => {
-                                                                                if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current);
-                                                                                hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140);
-                                                                            }}
+                                                                // cancel any pending hide
+                                                                if (hoverHideTimeoutRef.current) { clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = null; }
+                                                                const rect = e.currentTarget.getBoundingClientRect();
+                                                                // find cursor info
+                                                                const found = allUsers.find(x => x.clientId === u.clientId) || u;
+                                                                setHoverPresence({ user, clientId: u.clientId, rect, cursor: found.state?.cursor });
+                                                            }}
+                                                            onMouseLeave={() => {
+                                                                if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current);
+                                                                hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140);
+                                                            }}
                                                             className="w-6 h-6 rounded-full flex items-center justify-center text-xs text-white cursor-default"
                                                             style={{ border: `2px solid ${user.color || '#888'}`, background: user.color ? 'rgba(255,255,255,0.03)' : '#111' }}
                                                         >
@@ -944,6 +977,7 @@ const EditorPanel = ({
                                             });
                                         })()}
                                     </div>
+                                    )}
                                 </div>
 
                                 {/* AI Status Indicator (Subtle) */}
