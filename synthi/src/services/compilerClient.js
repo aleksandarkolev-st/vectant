@@ -38,10 +38,12 @@ export class CompilerClient {
         this.statusListeners = new Set();
         this.textDecoder = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
         this.terminalInputBuffer = [];
+        this.guiInputBuffer = [];
         this.status = CompilerStatus.IDLE;
         this.slug = null;
         
         this._handleTerminalInput = this._handleTerminalInput.bind(this);
+        this._handleGuiInput = this._handleGuiInput.bind(this);
     }
 
     setSlug(slug) {
@@ -138,6 +140,23 @@ export class CompilerClient {
                 try { console.debug('[CompilerClient] buffered terminal input (channel not open)'); } catch (_) {}
             }
         } catch (e) { console.error('[CompilerClient] terminalListener error', e); }
+    }
+
+    _handleGuiInput(ev) {
+        try {
+            const d = ev?.detail || {};
+            // Expect the detail to already be a serializable object for GUI events.
+            const payload = JSON.stringify(d);
+            try { console.debug('[CompilerClient] guiListener received', { payload, terminalReady: !!(this.terminalChannel && this.terminalChannel.readyState === 'open') }); } catch (_) {}
+            if (this.terminalChannel && this.terminalChannel.readyState === 'open') {
+                this.terminalChannel.send(payload);
+                try { console.debug('[CompilerClient] sent gui payload over terminalChannel'); } catch (_) {}
+            } else {
+                // Buffer until channel opens
+                this.guiInputBuffer.push(payload);
+                try { console.debug('[CompilerClient] buffered gui input (channel not open)'); } catch (_) {}
+            }
+        } catch (e) { console.error('[CompilerClient] guiListener error', e); }
     }
 
     connect() {
@@ -251,10 +270,16 @@ export class CompilerClient {
                     this.terminalChannel.onopen = () => {
                         if (typeof window !== 'undefined' && window.addEventListener) {
                             window.addEventListener('synthi:terminal-input', this._handleTerminalInput);
+                            window.addEventListener('synthi:gui-input', this._handleGuiInput);
                         }
                         // flush buffer
                         while (this.terminalInputBuffer.length > 0) {
                             const p = this.terminalInputBuffer.shift();
+                            try { this.terminalChannel.send(p); } catch (_) { /* ignore */ }
+                        }
+                        // flush gui buffer
+                        while (this.guiInputBuffer.length > 0) {
+                            const p = this.guiInputBuffer.shift();
                             try { this.terminalChannel.send(p); } catch (_) { /* ignore */ }
                         }
                     };
@@ -265,12 +290,18 @@ export class CompilerClient {
                         }
                     }
                     this.terminalChannel.onclose = () => {
-                        try { window.removeEventListener('synthi:terminal-input', this._handleTerminalInput); } catch (_) {}
+                        try { 
+                            window.removeEventListener('synthi:terminal-input', this._handleTerminalInput); 
+                            window.removeEventListener('synthi:gui-input', this._handleGuiInput);
+                        } catch (_) {}
                     };
                 }
                 // Remove listener when the WebSocket closes as a backup
                 this.ws.addEventListener('close', () => {
-                    try { window.removeEventListener('synthi:terminal-input', this._handleTerminalInput); } catch (_) {}
+                    try { 
+                        window.removeEventListener('synthi:terminal-input', this._handleTerminalInput); 
+                        window.removeEventListener('synthi:gui-input', this._handleGuiInput);
+                    } catch (_) {}
                 });
             };
         });
@@ -376,6 +407,7 @@ export class CompilerClient {
         }
         if (typeof window !== 'undefined') {
             window.removeEventListener('synthi:terminal-input', this._handleTerminalInput);
+            window.removeEventListener('synthi:gui-input', this._handleGuiInput);
         }
         this.ws = null;
         this.pc = null;

@@ -3531,6 +3531,8 @@ dependencies = [
  "gstreamer",
  "gstreamer-app",
  "object_store",
+ "gstreamer",
+ "gstreamer-app",
  "serde",
  "serde_json",
  "tempfile",
