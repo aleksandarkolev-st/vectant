@@ -41,6 +41,7 @@ export class CompilerClient {
         this.guiInputBuffer = [];
         this.status = CompilerStatus.IDLE;
         this.slug = null;
+        this.supportsH265 = false;
         
         this._handleTerminalInput = this._handleTerminalInput.bind(this);
         this._handleGuiInput = this._handleGuiInput.bind(this);
@@ -175,6 +176,7 @@ export class CompilerClient {
                         console.log('Browser supported video codecs:', capabilities.codecs.map(c => c.mimeType));
                         const hasH265 = capabilities.codecs.some(c => c.mimeType.toLowerCase() === 'video/h265');
                         console.log('H.265 supported by browser:', hasH265);
+                        this.supportsH265 = hasH265;
                     }
                 }
             } catch (e) {
@@ -388,7 +390,8 @@ export class CompilerClient {
                     session_id: sessionId,
                     is_gui: isGui,
                     width: width,
-                    height: height
+                    height: height,
+                    supports_h265: this.supportsH265
                 }));
             } catch (e) {
                 this.logHandlers.delete(handleLog);

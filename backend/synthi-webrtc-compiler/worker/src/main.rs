@@ -84,6 +84,8 @@ struct CompileRequest {
     width: Option<u32>,
     #[serde(default)]
     height: Option<u32>,
+    #[serde(default)]
+    supports_h265: Option<bool>,
 }
 
 struct LspSessionState {
@@ -1171,12 +1173,22 @@ async fn handle_compile(
             ];
 
             let mut selected_mime_type = "video/H265".to_owned();
+            let mut audio_source = "pulsesrc".to_string();
+            let mut encoder_idx = 0;
 
-            for (encoder, payloader, mime_type) in encoders {
+            while encoder_idx < encoders.len() {
+                let (encoder, payloader, mime_type) = encoders[encoder_idx];
+
+                // Skip H265 if browser explicitly says it's not supported
+                if mime_type == "video/H265" && req.supports_h265 == Some(false) {
+                    encoder_idx += 1;
+                    continue;
+                }
+
                 let gst_pipeline_str = format!(
                     "ximagesrc display-name={} use-damage=false show-pointer=false ! video/x-raw,framerate=30/1 ! queue ! videoconvert ! {} ! {} config-interval=-1 ! queue ! appsink name=video_sink drop=true max-buffers=100 \
-                     pulsesrc ! audio/x-raw,rate=48000,channels=2 ! queue ! opusenc ! rtpopuspay ! queue ! appsink name=audio_sink drop=true max-buffers=100",
-                    display_str, encoder, payloader
+                     {} ! audio/x-raw,rate=48000,channels=2 ! queue ! opusenc ! rtpopuspay ! queue ! appsink name=audio_sink drop=true max-buffers=100",
+                    display_str, encoder, payloader, audio_source
                 );
 
                 match gst::parse_launch(&gst_pipeline_str) {
@@ -1215,14 +1227,85 @@ async fn handle_compile(
 
                         if let Err(e) = pipeline.set_state(gst::State::Playing) {
                             eprintln!("Failed to set pipeline to playing with encoder {}: {}", encoder, e);
+                            
+                            // Check for PulseAudio errors on the bus
+                            let mut pulse_error = false;
+                            if let Some(bus) = pipeline.bus() {
+                                while let Some(msg) = bus.timed_pop(gst::ClockTime::from_mseconds(100)) {
+                                    match msg.view() {
+                                        gst::MessageView::Error(err) => {
+                                            let (src, msg, dbg) = (err.src().map(|s| s.path_string()).unwrap_or_default(), err.error(), err.debug());
+                                            eprintln!("GStreamer Error from {}: {} ({:?})", src, msg, dbg);
+                                            
+                                            if src.contains("pulsesrc") || (dbg.as_ref().map(|d| d.contains("Connection refused")).unwrap_or(false)) {
+                                                pulse_error = true;
+                                            }
+
+                                            let payload = serde_json::json!({
+                                                "sessionId": session_id.clone(),
+                                                "type": "stderr",
+                                                "line": format!("GStreamer Error from {}: {} ({:?})", src, msg, dbg)
+                                            });
+                                            let _ = log_dc.clone().send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                        }
+                                        gst::MessageView::Warning(warn) => {
+                                            let (s, m, d) = (warn.src().map(|s| s.path_string()).unwrap_or_default(), warn.error(), warn.debug());
+                                            eprintln!("GStreamer Warning from {}: {} ({:?})", s, m, d);
+                                            let payload = serde_json::json!({
+                                                "sessionId": session_id.clone(),
+                                                "type": "stderr",
+                                                "line": format!("GStreamer Warning from {}: {} ({:?})", s, m, d)
+                                            });
+                                            let _ = log_dc.clone().send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+
+                            // If it was a pulse error and we are using pulsesrc, switch to fallback and retry
+                            if pulse_error && audio_source == "pulsesrc" {
+                                println!("PulseAudio failed, switching to audiotestsrc fallback");
+                                audio_source = "audiotestsrc is-live=true wave=silence".to_string();
+                                // Don't increment encoder_idx, so we retry this encoder
+                                continue;
+                            }
+
+                            // Send failure into the build-log channel so UI can show it
+                            let payload = serde_json::json!({
+                                "sessionId": session_id.clone(),
+                                "type": "stderr",
+                                "line": format!("Failed to set pipeline to playing with encoder {}: {}", encoder, e)
+                            });
+                            let _ = log_dc.clone().send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                            
+                            encoder_idx += 1;
                             continue;
                         }
                         println!("Successfully started pipeline with encoder: {}", encoder);
+                        // Also surface success to the build-log channel for UI
+                        {
+                            let payload = serde_json::json!({
+                                "sessionId": session_id.clone(),
+                                "type": "stdout",
+                                "line": format!("Successfully started pipeline with encoder: {}", encoder)
+                            });
+                            let _ = log_dc.clone().send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                        }
                         gst_pipeline = Some(pipeline);
                         selected_mime_type = mime_type.to_owned();
                         break;
                     }
-                    Err(e) => eprintln!("Failed to create GStreamer pipeline with encoder {}: {}", encoder, e),
+                    Err(e) => {
+                        eprintln!("Failed to create GStreamer pipeline with encoder {}: {}", encoder, e);
+                        let payload = serde_json::json!({
+                            "sessionId": session_id.clone(),
+                            "type": "stderr",
+                            "line": format!("Failed to create GStreamer pipeline with encoder {}: {}", encoder, e)
+                        });
+                        let _ = log_dc.clone().send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                        encoder_idx += 1;
+                    }
                 }
             }
 
