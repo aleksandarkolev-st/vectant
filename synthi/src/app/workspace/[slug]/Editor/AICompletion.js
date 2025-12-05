@@ -24,10 +24,12 @@ export const useAiCompletion = ({
 }) => {
     const [aiCompletionState, setAiCompletionState] = useState('idle');
 
+    const MIN_AUTO_INTERVAL_MS = 1200;
     const aiCompletionCacheRef = useRef({ context: '', language: '', suggestion: '' });
     const aiCompletionCursorRef = useRef(null);
     const aiCompletionAbortControllerRef = useRef(null);
     const aiLastRequestRef = useRef({ context: '', time: 0 });
+    const aiLastAutoRef = useRef(0);
     const aiDebounceTimerRef = useRef(null);
     const inlineAcceptCommandIdRef = useRef(null);
 
@@ -129,7 +131,7 @@ export const useAiCompletion = ({
         setAiCompletionState('applied');
     }, [editorInstance, monacoInstance, hasActiveDiff]); // Added dependency
 
-    const requestAiCompletion = useCallback((isAutoTrigger = false, manualContext = null, _meta = {}) => {
+    const requestAiCompletion = useCallback((isAutoTrigger = false, manualContext = null, meta = {}) => {
         if (!activeFile || !editorInstance) return;
         
         // Check 1: Prevent starting a new request if diff is active
@@ -152,7 +154,8 @@ export const useAiCompletion = ({
 
         if (isAutoTrigger) {
             const lastChar = rawContext.slice(-1);
-            if (!/[\s\(\{\[\.;,:]/.test(lastChar)) {
+            const isPauseTrigger = Boolean(meta?.pauseTrigger);
+            if (!isPauseTrigger && !/[\s\(\{\[\.;,:]/.test(lastChar)) {
                 return;
             }
         }
@@ -161,7 +164,14 @@ export const useAiCompletion = ({
         if (cached?.suggestion && cached.context === context && cached.language === activeLanguage) return;
 
         const now = Date.now();
-        if (aiLastRequestRef.current.context === context && (now - aiLastRequestRef.current.time) < 1200) {
+        if (isAutoTrigger) {
+            if (now - aiLastAutoRef.current < MIN_AUTO_INTERVAL_MS) {
+                return;
+            }
+            aiLastAutoRef.current = now;
+        }
+
+        if (aiLastRequestRef.current.context === context && (now - aiLastRequestRef.current.time) < 1600) {
             return;
         }
         aiLastRequestRef.current = { context, time: now };
@@ -315,6 +325,7 @@ export const useAiCompletion = ({
         aiCompletionCursorRef,
         aiCompletionAbortControllerRef,
         aiLastRequestRef,
+        aiLastAutoRef,
         aiDebounceTimerRef,
         inlineAcceptCommandIdRef
     };

@@ -791,6 +791,7 @@ dependencies = [
  "futures-util",
  "glib",
  "gstreamer-sys",
+ "itertools",
  "itertools 0.12.1",
  "libc",
  "muldiv",
@@ -801,6 +802,7 @@ dependencies = [
  "pin-project-lite",
  "pretty-hex",
  "smallvec",
+ "thiserror",
  "thiserror 1.0.69",
 ]
 

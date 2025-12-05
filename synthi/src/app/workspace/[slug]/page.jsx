@@ -37,6 +37,8 @@ export default function EditorPage({ params }) {
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
     const [isGuiMode, setIsGuiMode] = useState(false);
+    const analysisTimeoutRef = useRef(null);
+    const lastAnalyzedSignatureRef = useRef('');
 
     useEffect(() => {
         const handleGuiStart = (e) => {
@@ -195,19 +197,40 @@ export default function EditorPage({ params }) {
     useEffect(() => {
         if (!activeFile || !currentContent || !hasLoadedInitialFile) return;
 
-        const langSource =
-            activeFile.language ||
-            (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
-            'plaintext';
-        const normalizedLang = langSource.toLowerCase();
+        if (analysisTimeoutRef.current) {
+            clearTimeout(analysisTimeoutRef.current);
+        }
 
-        analyzeCode({
-            lang: normalizedLang,
-            code: typeof currentContent === 'string' ? currentContent : '',
-        })
-        /*.catch((err) => {
-            console.error('Static analysis failed', err);
-        });*/
+        // Debounce analyzer calls so we don't send a request for every keystroke.
+        analysisTimeoutRef.current = setTimeout(() => {
+            const langSource =
+                activeFile.language ||
+                (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
+                'plaintext';
+            const normalizedLang = langSource.toLowerCase();
+            const signature = `${activeFile?.path || activeFile?.name || ''}::${currentContent}`;
+
+            if (lastAnalyzedSignatureRef.current === signature) {
+                return;
+            }
+
+            analyzeCode({
+                lang: normalizedLang,
+                code: typeof currentContent === 'string' ? currentContent : '',
+            })
+            .catch((err) => {
+                console.error('Static analysis failed', err);
+            })
+            .finally(() => {
+                lastAnalyzedSignatureRef.current = signature;
+            });
+        }, 500);
+
+        return () => {
+            if (analysisTimeoutRef.current) {
+                clearTimeout(analysisTimeoutRef.current);
+            }
+        };
     }, [currentContent, activeFile, hasLoadedInitialFile, analyzeCode]);
 
     // NOTE: Completion requests are handled centrally by the Editor component

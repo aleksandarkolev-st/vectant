@@ -88,6 +88,9 @@ const buildPrompt = (context, language, cursor) =>
   [
     'You are a code assistant.Return a JSON object that has the following fields:\n  - "text": string — the replacement text to insert at the requested location.\n  - "start": { "line": number, "column": number } or null — 1-based inclusive start position of the replacement.\n  - "end": { "line": number, "column": number } or null — 1-based inclusive end position of the replacement.\nIf no replacement is needed, return {"text": "", "start": null, "end": null}. Do not output any comments, unless user has specified so.\n',
     `Language: ${language}`,
+    'Do NOT repeat or restate code already present in the context. Provide only the next code the user likely wants to add.',
+    'Other files may be provided as reference; use them for facts (types, function names), but do NOT copy their code verbatim. Generate code only for the active file around the cursor.',
+    'If the best answer is already present in the provided context, respond with {"text":"","start":null,"end":null}.',
     'Use the context below and continue from the cursor position. The cursor position is indicated by the special marker `<<CURSOR>>` inside the context when available. If the marker is not present, use the provided cursor coordinates to continue from the appropriate place.',
     cursor && typeof cursor === 'object' ? `Cursor: line ${cursor.line || '?'} column ${cursor.column || '?'}` : null,
     'Context:',
@@ -127,6 +130,40 @@ const sanitize = raw => {
     return raw.trimEnd();
   }
   return beforeMarker.replace(/\r/g, '').trimEnd();
+};
+
+const suppressEcho = (suggestion = '', context = '') => {
+  if (!suggestion?.trim()) return '';
+  if (typeof context !== 'string' || !context.trim()) return suggestion;
+
+  // If the suggestion already appears verbatim in the provided context, skip it.
+  if (context.includes(suggestion.trim())) return '';
+
+  const suggTokens = suggestion.split(/\s+/).filter(Boolean);
+  const ctxTokens = context.split(/\s+/).filter(Boolean);
+  if (suggTokens.length && ctxTokens.length) {
+    const ctxSet = new Set(ctxTokens);
+    const overlap = suggTokens.filter((t) => ctxSet.has(t)).length / suggTokens.length;
+    if (overlap >= 0.8) return '';
+  }
+  return suggestion;
+};
+
+const extractText = (resp) => {
+  if (!resp) return '';
+  // Newer @google/genai returns the candidate wrapper under `response`.
+  const direct = resp.text || resp.output_text || resp.outputText;
+  if (direct) return direct;
+  const nested = resp.response;
+  const nestedText = nested?.text || nested?.output_text || nested?.outputText;
+  if (nestedText) return nestedText;
+  const parts =
+    nested?.candidates?.[0]?.content?.parts ||
+    resp.candidates?.[0]?.content?.parts;
+  if (Array.isArray(parts) && parts.length) {
+    return parts.map((p) => p?.text || '').join('');
+  }
+  return '';
 };
 
 export async function POST(request) {
@@ -176,8 +213,9 @@ export async function POST(request) {
       }),
       COMPLETION_TIMEOUT_MS
     );
-    const completionText = response.text || '';
+    const completionText = extractText(response);
     const cleaned = sanitize(completionText);
+    const dedupedCleaned = suppressEcho(cleaned, typeof bodyForContext?.code === 'string' ? bodyForContext.code : '');
 
     // Extract JSON between <JSON>...</JSON> markers
     let parsed = null;
@@ -191,12 +229,14 @@ export async function POST(request) {
       parsed = null;
     }
 
-    // Strict fallback: if parse failed, return empty completion (avoid bad edits)
+    // Strict fallback: if parse failed, return cleaned+deduped text so the UI still shows something.
     if (!parsed || typeof parsed !== 'object' || !('text' in parsed)) {
-      return NextResponse.json({ completion: '' }, { status: 200 });
+      console.warn('[completion] parse failed; returning cleaned text fallback', dedupedCleaned?.slice(0, 240));
+      return NextResponse.json({ completion: dedupedCleaned || '' }, { status: 200 });
     }
 
-    const result = { completion: String(parsed.text || '') };
+    const dedupedParsed = suppressEcho(String(parsed.text || ''), typeof bodyForContext?.code === 'string' ? bodyForContext.code : '');
+    const result = { completion: dedupedParsed };
     if (parsed.start && parsed.end) {
       try {
         const sLine = Number(parsed.start.line) || null;
