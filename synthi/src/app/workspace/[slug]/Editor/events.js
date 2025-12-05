@@ -2,7 +2,14 @@ import { useEffect } from 'react';
 import { resolvePath } from '@/utils/dependencyResolver';
 import { selectFileThunk } from '@/redux/workspaceSlice';
 import { getFileLanguage } from '@/utils/fileUtils';
-import { COMMON_KEYWORDS } from '@/utils/cppStandardLibrary';
+
+const COMMON_KEYWORDS = [
+    'int', 'float', 'double', 'char', 'void', 'bool', 'auto',
+    'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'default',
+    'return', 'break', 'continue', 'struct', 'class', 'public', 'private', 'protected',
+    'namespace', 'using', 'template', 'typename', 'const', 'static', 'virtual', 'override',
+    'new', 'delete', 'true', 'false', 'nullptr', 'this', 'friend', 'inline'
+];
 
 const flattenFiles = (nodes, map = new Map()) => {
     for (const node of nodes) {

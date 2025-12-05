@@ -62,10 +62,16 @@ const buildFilesPayload = ({
         .forEach(([path, content]) => {
             const trimmed = collapseContent(content, secondaryFileMaxChars);
             if (!trimmed) return;
+            // Mark referenced files explicitly so the model treats them as read-only context.
+            const annotated = [
+                `Reference file (read-only): ${path}`,
+                'Use only to understand dependencies; do NOT copy these lines verbatim.',
+                trimmed,
+            ].join('\n\n');
             files.push({
                 path,
                 name: deriveNameFromPath(path),
-                content: trimmed,
+                content: annotated,
             });
         });
 

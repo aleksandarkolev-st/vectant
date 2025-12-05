@@ -4,3 +4,12 @@
     cursor: pointer !important;
     color: #4ec9b0 !important;
 }
+
+/* Collab presence and remote cursor/selection defaults */
+/* Note: runtime creates per-client classes like .collab-remote-cursor-<id> and .collab-remote-selection-<id>. */
+.collab-remote-cursor { display:inline-block; width:2px; height:1em; vertical-align:bottom; }
+.collab-remote-selection { /* color injected per-client at runtime */ }
+
+/* Base glyph margin style used by per-line presence badges. Specific content and
+    color are injected per-client at runtime by the collab client. */
+.monaco-editor .glyph-margin .collab-line-badge { display: inline-block; height: 14px; width: 14px; border-radius: 14px; margin-left: 2px; box-sizing: border-box; }

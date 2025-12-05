@@ -73,3 +73,36 @@ If you still see ICE failures after setting TURN, use browser internals to debug
 - Chrome: open `chrome://webrtc-internals`
 
 Also ensure the TURN server is reachable from both the browser network (internet or local network) and the backend worker's network, credentials are correct, and ports (3478/5349) are open.
+
+## Real-time collaboration (beta)
+
+This project includes an opt-in collaboration server that enables multiple users to edit the same workspace concurrently using Yjs CRDTs. The lightweight collaboration server runs in `backend/collab-server/` and uses y-websocket (with an optional LevelDB persistence store).
+
+Quick start (dev):
+
+```powershell
+cd backend/collab-server
+npm install
+npm start
+
+cd synthi
+npm run dev
+
+# Visit the same workspace in two different browser windows to test collaboration
+```
+
+Notes:
+
+Client-side binding note:
+
+The project includes a robust Monaco <-> Yjs binding implemented inside `src/services/collabClient.js`. This avoids re-entrancy issues and Monaco "invalid edit/command" exceptions when remote updates are applied while Monaco is emitting view events. If you have `y-monaco` available, the code is compatible with it — but the inline binding ensures consistent behavior across environments.
+
+Frontend dependency note:
+
+If `npm install` in `synthi/` fails with peer dependency resolution errors (npm v7+), you can run:
+
+```powershell
+npm install --legacy-peer-deps
+```
+
+This will make the client install compatible peer dependencies automatically. Alternatively, use a Node/npm version that matches your team's policy or add the exact peer-compatible versions into `package.json`.

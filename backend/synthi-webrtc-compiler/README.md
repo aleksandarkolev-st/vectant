@@ -1,7 +1,14 @@
 # Synthi WebRTC Compiler
 
 ## Steps
-1. Build deps: install Rust toolchain and ensure `g++`, `rustc`, and `tsc` are available on PATH (verify with `g++ --version`, `rustc --version`, `tsc --version`).
+1. **Prerequisites (Linux/WSL required)**:
+   - Install Rust toolchain.
+   - Install required packages:
+     ```bash
+     sudo apt-get update
+     sudo apt-get install -y build-essential g++ rustc nodejs npm xdotool xvfb matchbox-window-manager gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
+     ```
+   - Ensure `g++`, `rustc`, `tsc`, `xdotool`, `Xvfb`, and `matchbox-window-manager` are available on PATH.
 2. Start signaling server:
    - `cd signaling-server`
    - `cargo run`

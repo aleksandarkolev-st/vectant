@@ -1,0 +1,18 @@
+# Node modules
+node_modules/
+
+# LevelDB / runtime persistence
+data/
+data/*
+
+# Logs
+logs/
+*.log
+
+# Environment
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db

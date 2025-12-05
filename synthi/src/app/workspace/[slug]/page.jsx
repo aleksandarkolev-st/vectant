@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { use } from 'react';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent } from '@/redux/workspaceSlice';
@@ -23,6 +23,7 @@ import { useCompiler } from '@/hooks/useCompiler';
 import AIChatWindow from '@/components/chat/AIChatWindow';
 import { api } from '@/services/api';
 import { resolveDependencies } from '@/utils/dependencyResolver';
+import { DraggableVideoWidget } from '@/components/DraggableVideoWidget';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -36,6 +37,8 @@ export default function EditorPage({ params }) {
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
     const [isGuiMode, setIsGuiMode] = useState(false);
+    const analysisTimeoutRef = useRef(null);
+    const lastAnalyzedSignatureRef = useRef('');
 
     useEffect(() => {
         const handleGuiStart = (e) => {
@@ -63,6 +66,23 @@ export default function EditorPage({ params }) {
             }
         };
     }, []);
+
+    // Helper to dispatch GUI events to the backend via CompilerClient middleware
+    const sendGuiEvent = (eventPayload) => {
+        try {
+            if (!guiConfig || !guiConfig.sessionId) return;
+            const payload = {
+                type: 'gui-event',
+                sessionId: guiConfig.sessionId,
+                event: eventPayload
+            };
+            if (typeof window !== 'undefined' && window.dispatchEvent) {
+                window.dispatchEvent(new CustomEvent('synthi:gui-input', { detail: payload }));
+            }
+        } catch (e) { /* ignore */ }
+    };
+
+
 
     const handleClearLatestCompletion = useCallback(() => {
         setLatestCompletion(null);
@@ -115,19 +135,40 @@ export default function EditorPage({ params }) {
     useEffect(() => {
         if (!activeFile || !currentContent || !hasLoadedInitialFile) return;
 
-        const langSource =
-            activeFile.language ||
-            (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
-            'plaintext';
-        const normalizedLang = langSource.toLowerCase();
+        if (analysisTimeoutRef.current) {
+            clearTimeout(analysisTimeoutRef.current);
+        }
 
-        analyzeCode({
-            lang: normalizedLang,
-            code: typeof currentContent === 'string' ? currentContent : '',
-        })
-        /*.catch((err) => {
-            console.error('Static analysis failed', err);
-        });*/
+        // Debounce analyzer calls so we don't send a request for every keystroke.
+        analysisTimeoutRef.current = setTimeout(() => {
+            const langSource =
+                activeFile.language ||
+                (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
+                'plaintext';
+            const normalizedLang = langSource.toLowerCase();
+            const signature = `${activeFile?.path || activeFile?.name || ''}::${currentContent}`;
+
+            if (lastAnalyzedSignatureRef.current === signature) {
+                return;
+            }
+
+            analyzeCode({
+                lang: normalizedLang,
+                code: typeof currentContent === 'string' ? currentContent : '',
+            })
+            .catch((err) => {
+                console.error('Static analysis failed', err);
+            })
+            .finally(() => {
+                lastAnalyzedSignatureRef.current = signature;
+            });
+        }, 500);
+
+        return () => {
+            if (analysisTimeoutRef.current) {
+                clearTimeout(analysisTimeoutRef.current);
+            }
+        };
     }, [currentContent, activeFile, hasLoadedInitialFile, analyzeCode]);
 
     // NOTE: Completion requests are handled centrally by the Editor component
@@ -288,42 +329,14 @@ export default function EditorPage({ params }) {
                     ))}
                 </div>
             )}
-            {(guiConfig) && (
-                <div 
-                    className="fixed bottom-4 right-4 bg-black border border-gray-600 shadow-lg z-50 resize overflow-auto"
-                    style={{ 
-                        width: guiConfig.width, 
-                        height: guiConfig.height,
-                        maxWidth: '90vw',
-                        maxHeight: '90vh'
-                    }}
-                >
-                    <div className="absolute top-0 left-0 bg-gray-800 text-white text-xs px-2 py-1 z-10 flex items-center gap-2">
-                        <span>GUI Output ({guiConfig.width}x{guiConfig.height})</span>
-                        {!isGuiRunning && <span className="text-red-400 font-bold">[STOPPED]</span>}
-                        <button onClick={() => { setGuiConfig(null); setIsGuiRunning(false); }} className="ml-2 text-red-400 hover:text-red-300">x</button>
-                    </div>
-                    {mediaStream ? (
-                        <video
-                            width={guiConfig.width}
-                            height={guiConfig.height}
-                            autoPlay
-                            playsInline
-                            muted
-                            className="block"
-                            ref={video => {
-                                if (video && mediaStream && video.srcObject !== mediaStream) {
-                                    video.srcObject = mediaStream;
-                                }
-                            }}
-                        />
-                    ) : (
-                        <div className="w-full h-full flex items-center justify-center text-gray-500">
-                            {isGuiRunning ? 'Waiting for video stream...' : 'Application exited'}
-                        </div>
-                    )}
-                </div>
-            )}
+            <DraggableVideoWidget
+                guiConfig={guiConfig}
+                setGuiConfig={setGuiConfig}
+                isGuiRunning={isGuiRunning}
+                setIsGuiRunning={setIsGuiRunning}
+                mediaStream={mediaStream}
+                sendGuiEvent={sendGuiEvent}
+            />
             <ResizablePanelGroup
                 direction="horizontal"
                 className="flex-1 min-h-0"
