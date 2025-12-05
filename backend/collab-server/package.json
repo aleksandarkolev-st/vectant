@@ -1,0 +1,14 @@
+{
+  "name": "synthi-collab-server",
+  "version": "0.1.0",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.13.0",
+    "y-websocket": "^1.5.4",
+    "yjs": "^13.5.6"
+  }
+}

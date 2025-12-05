@@ -59,6 +59,8 @@ const ErrorAction = {
 };
 import { toSocket, WebSocketMessageReader, WebSocketMessageWriter } from 'vscode-ws-jsonrpc';
 import { MonacoSocketAdapter } from '@/services/MonacoSocketAdapter';
+import collabClient from '@/services/collabClient';
+import { useSession } from 'next-auth/react';
 import { useCompiler } from '@/hooks/useCompiler';
 import { CompilerStatus } from '@/services/compilerClient';
 
@@ -136,6 +138,9 @@ const EditorPanel = ({
     const [tabContext, setTabContext] = useState({ visible: false, x: 0, y: 0, file: null, index: -1 });
     const [lspStatus, setLspStatus] = useState('Idle');
     const [servicesReady, setServicesReady] = useState(false);
+    const slug = useAppSelector(state => state.workspace.slug);
+    const session = useSession();
+    const collabBindingRef = useRef(null);
 
     const { client: compilerClient, status: compilerStatus } = useCompiler();
     const languageClientsRef = useRef(new Map());
@@ -394,6 +399,31 @@ const EditorPanel = ({
         });
 
     }, [monacoInstance, compilerClient, compilerStatus, activeFile]);
+
+    // Hook up Yjs-based collaboration when an editor and activeFile are present.
+    useEffect(() => {
+        if (!editorInstance || !monacoInstance || !activeFile || !slug) return;
+
+        // Seed the document on the server if it is empty, using the current editor content.
+        try {
+            collabClient.seedContentIfEmpty(slug, activeFile.path, latestCodeRef.current).catch(() => {});
+        } catch (e) { /* ignore */ }
+
+        const user = (session?.data?.user) ? { id: session.data.user.id || session.data.user.email || session.data.user.name, name: session.data.user.name || session.data.user.email } : { id: null, name: 'Anonymous' };
+
+        // Attach the editor to the collaboration binding
+        try {
+            const bindingHandle = collabClient.attachEditor({ editor: editorInstance, monaco: monacoInstance, slug, path: activeFile.path, user });
+            collabBindingRef.current = bindingHandle;
+        } catch (e) {
+            console.warn('[Collab] Failed to attach editor to collaborative session', e);
+        }
+
+        return () => {
+            try { collabBindingRef.current?.dispose(); } catch (e) { /* ignore */ }
+            collabBindingRef.current = null;
+        };
+    }, [editorInstance, monacoInstance, activeFile, slug, session]);
 
     useEffect(() => {
         return () => {
@@ -780,6 +810,24 @@ const EditorPanel = ({
                                 <div className="flex items-center gap-2 text-[11px] text-gray-500">
                                     <div className={`w-2 h-2 rounded-full ${lspStatus.startsWith('Ready') ? 'bg-green-500' : lspStatus.startsWith('Initializing') ? 'bg-yellow-500' : 'bg-gray-500'}`} />
                                     <span>{lspStatus}</span>
+                                </div>
+
+                                {/* Collaboration presence */}
+                                <div className="flex items-center gap-2 text-[11px] text-gray-400 ml-3">
+                                    <div className="text-xs text-gray-300 mr-1">👥</div>
+                                    <div className="flex items-center gap-2">
+                                        {/* small presence list */}
+                                        {(() => {
+                                            const users = collabClient.getAwarenessStates(slug, activeFile?.path);
+                                            if (!users || users.length === 0) return <span className="text-xs text-gray-400">Solo</span>;
+                                            return users.slice(0,6).map(u => (
+                                                <div key={`${u.clientId}-${u.state?.user?.id || 'u'}`} className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] bg-[#0e1114] border border-[#2b2b2b]">
+                                                    <div style={{ width: 12, height: 12, borderRadius: 6, background: u.state?.user?.color || '#888' }} />
+                                                    <span className="text-xs text-gray-300 truncate max-w-[120px]">{u.state?.user?.name || 'User'}</span>
+                                                </div>
+                                            ));
+                                        })()}
+                                    </div>
                                 </div>
 
                                 {/* AI Status Indicator (Subtle) */}
