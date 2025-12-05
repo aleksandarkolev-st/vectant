@@ -18,7 +18,7 @@ import {
     closeFile,
     reorderOpenFiles
 } from '@/redux/workspaceSlice';
-import { selectAutoSaveEnabled, selectAutoCompletionEnabled, toggleAutoCompletion } from '@/redux/uiSlice';
+import { selectAutoSaveEnabled, selectAutoCompletionEnabled, toggleAutoCompletion, selectShowAnonymousPresence, selectPresenceGranularity, toggleShowAnonymousPresence, setPresenceGranularity } from '@/redux/uiSlice';
 import { Circle, Save, Sparkles } from 'lucide-react'; // Added Sparkles
 import { getFileIcon } from '@/utils/fileIcons';
 import {
@@ -59,6 +59,8 @@ const ErrorAction = {
 };
 import { toSocket, WebSocketMessageReader, WebSocketMessageWriter } from 'vscode-ws-jsonrpc';
 import { MonacoSocketAdapter } from '@/services/MonacoSocketAdapter';
+import collabClient from '@/services/collabClient';
+import { useSession } from 'next-auth/react';
 import { useCompiler } from '@/hooks/useCompiler';
 import { CompilerStatus } from '@/services/compilerClient';
 
@@ -125,6 +127,8 @@ const EditorPanel = ({
     const showTerminal = useAppSelector(state => state.ui.showTerminal);
     const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
     const aiAutoEnabled = useAppSelector(selectAutoCompletionEnabled);
+    const showAnonymousPresence = useAppSelector(selectShowAnonymousPresence);
+    const presenceGranularity = useAppSelector(selectPresenceGranularity);
 
     // Local state
     const [position, setPosition] = useState({ lineNumber: 1, column: 1 });
@@ -136,6 +140,28 @@ const EditorPanel = ({
     const [tabContext, setTabContext] = useState({ visible: false, x: 0, y: 0, file: null, index: -1 });
     const [lspStatus, setLspStatus] = useState('Idle');
     const [servicesReady, setServicesReady] = useState(false);
+    const slug = useAppSelector(state => state.workspace.slug);
+    const session = useSession();
+    const collabBindingRef = useRef(null);
+    const [hoverPresence, setHoverPresence] = useState(null); // { user, clientId, rect }
+    // small timeout ref used to keep the hover card alive while moving the pointer
+    const hoverHideTimeoutRef = useRef(null);
+
+    // Precompute hover-card style so JSX stays clean and well-formed
+    const hoverCardStyle = (hoverPresence && hoverPresence.rect && typeof window !== 'undefined') ? (() => {
+        const cardW = 224; const cardH = 76;
+        // tighten the horizontal gap a bit to avoid an unreachable gap between
+        // avatar and popover (which previously made it hard to move the mouse)
+        let left = hoverPresence.rect.left + hoverPresence.rect.width + 6;
+        let top = hoverPresence.rect.top - 6;
+        // Keep popover on screen
+        if (left + cardW > window.innerWidth) {
+            left = Math.max(8, hoverPresence.rect.left - cardW - 6);
+        }
+        if (top + cardH > window.innerHeight) top = Math.max(8, window.innerHeight - cardH - 8);
+        if (top < 8) top = 8;
+        return { position: 'fixed', left, top, zIndex: 2000 };
+    })() : null;
 
     const { client: compilerClient, status: compilerStatus } = useCompiler();
     const languageClientsRef = useRef(new Map());
@@ -452,6 +478,32 @@ const EditorPanel = ({
         });
 
     }, [monacoInstance, compilerClient, compilerStatus, activeFile, editorInstance]);
+
+    // Hook up Yjs-based collaboration when an editor and activeFile are present.
+    useEffect(() => {
+        if (!editorInstance || !monacoInstance || !activeFile || !slug) return;
+
+        // Seed the document on the server if it is empty, using the current editor content.
+        try {
+            collabClient.seedContentIfEmpty(slug, activeFile.path, latestCodeRef.current).catch(() => {});
+        } catch (e) { /* ignore */ }
+
+        const user = (session?.data?.user) ? { id: session.data.user.id || session.data.user.email || session.data.user.name, name: session.data.user.name || session.data.user.email, email: session.data.user.email || null, isAnonymous: false } : { id: null, name: 'Anonymous', email: null, isAnonymous: true };
+
+        // Attach the editor to the collaboration binding
+        try {
+            const showLineDecorations = (presenceGranularity === 'line');
+            const bindingHandle = collabClient.attachEditor({ editor: editorInstance, monaco: monacoInstance, slug, path: activeFile.path, user, options: { showLineDecorations } });
+            collabBindingRef.current = bindingHandle;
+        } catch (e) {
+            console.warn('[Collab] Failed to attach editor to collaborative session', e);
+        }
+
+        return () => {
+            try { collabBindingRef.current?.dispose(); } catch (e) { /* ignore */ }
+            collabBindingRef.current = null;
+        };
+    }, [editorInstance, monacoInstance, activeFile, slug, session, presenceGranularity]);
 
     useEffect(() => {
         return () => {
@@ -854,6 +906,46 @@ const EditorPanel = ({
                                     <span>{lspStatus}</span>
                                 </div>
 
+                                {/* Collaboration presence */}
+                                <div className="flex items-center gap-2 text-[11px] text-gray-400 ml-3">
+                                    <div className="text-xs text-gray-300 mr-1">👥</div>
+                                    <div className="flex items-center gap-2">
+                                        {/* small presence list */}
+                                        {(() => {
+                                            // only show active editors (users with cursor) to avoid many idle/default slots
+                                            const allUsers = (presenceGranularity === 'workspace') ? collabClient.getWorkspaceActiveEditors(slug) : collabClient.getActiveEditors(slug, activeFile?.path);
+                                            const users = allUsers.filter(u => (showAnonymousPresence ? true : !(u.state?.user?.isAnonymous)));
+                                            if (!users || users.length === 0) return <span className="text-xs text-gray-400">Solo</span>;
+                                            return users.slice(0,6).map(u => {
+                                                const user = u.state?.user || {};
+                                                const initials = (user.name || 'U').split(' ').filter(Boolean).map(p => p[0]).slice(0,2).join('').toUpperCase();
+                                                return (
+                                                    <div key={`${u.clientId}-${user.id || 'u'}`} className="relative">
+                                                        <div
+                                                            onMouseEnter={(e) => {
+                                                                                // cancel any pending hide
+                                                                                if (hoverHideTimeoutRef.current) { clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = null; }
+                                                                                const rect = e.currentTarget.getBoundingClientRect();
+                                                                                // find cursor info
+                                                                                const found = allUsers.find(x => x.clientId === u.clientId) || u;
+                                                                                setHoverPresence({ user, clientId: u.clientId, rect, cursor: found.state?.cursor });
+                                                                            }}
+                                                                        onMouseLeave={() => {
+                                                                                if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current);
+                                                                                hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140);
+                                                                            }}
+                                                            className="w-6 h-6 rounded-full flex items-center justify-center text-xs text-white cursor-default"
+                                                            style={{ border: `2px solid ${user.color || '#888'}`, background: user.color ? 'rgba(255,255,255,0.03)' : '#111' }}
+                                                        >
+                                                            <span style={{ fontSize: 10 }}>{initials}</span>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            });
+                                        })()}
+                                    </div>
+                                </div>
+
                                 {/* AI Status Indicator (Subtle) */}
                                 <div className="flex items-center gap-2 text-[11px]">
                                     <div className={`transition-opacity duration-300 ${(aiCompletionState === 'loading' || aiBusy) ? 'opacity-100' : 'opacity-0'}`}>
@@ -870,6 +962,33 @@ const EditorPanel = ({
                                 </button>
                             </div>
                         </div>
+
+                        {/* Hover card for presence */}
+                        {hoverCardStyle && hoverPresence && hoverPresence.user && (
+                            <div style={hoverCardStyle} onMouseEnter={() => { if (hoverHideTimeoutRef.current) { clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = null; } }} onMouseLeave={() => { if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140); }}>
+                                <div className="bg-[#151515] border border-[#333] rounded-md p-2 text-sm text-gray-200 shadow-lg w-56">
+                                    <div className="flex items-center gap-2">
+                                        <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm text-white" style={{ background: hoverPresence.user.color || '#555' }}>{(hoverPresence.user.name || 'Anonymous').split(' ').map(p => p[0]).slice(0,2).join('').toUpperCase()}</div>
+                                        <div className="flex flex-col">
+                                            <div className="font-semibold text-sm">{hoverPresence.user.name || 'Anonymous'}</div>
+                                            <div className="text-xs text-gray-400">{hoverPresence.user.email || (hoverPresence.user.id ? `id: ${hoverPresence.user.id}` : 'Anonymous user')}</div>
+                                        </div>
+                                        <div className="ml-auto flex items-center gap-2">
+                                            <button onClick={() => {
+                                                // jump to user's cursor line if available
+                                                if (!hoverPresence || !hoverPresence.cursor || !editorInstance) return;
+                                                const pos = hoverPresence.cursor.head || hoverPresence.cursor.anchor || null;
+                                                if (!pos) return;
+                                                try {
+                                                    editorInstance.revealPositionInCenter({ lineNumber: pos.line, column: pos.column });
+                                                    editorInstance.setSelection(new monaco.Selection(pos.line, pos.column, pos.line, pos.column));
+                                                } catch (_) {}
+                                            }} className="px-2 py-1 rounded bg-[#2b2b2b] text-xs border border-[#3a3a3a]">Jump</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
 
                         {/* Editor Container */}
                         <div className="flex-1 overflow-hidden relative group">

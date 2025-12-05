@@ -1,6 +1,7 @@
 // src/redux/workspaceSlice.js
 import { createSlice, createAsyncThunk, createSelector } from '@reduxjs/toolkit';
 import { api } from '@/services/api'; 
+import collabClient from '@/services/collabClient';
 import { getCompilerClient } from '@/services/compilerClient';
 import { cancelUiAction } from './uiSlice'; // Cross-slice dependency
 import {
@@ -67,7 +68,30 @@ export const saveFileContentThunk = createAsyncThunk(
             return;
         }
 
-        await api.saveFileContent(slug, activeFile.path, currentContent, activeFile.name);
+        // If collaborative editing is active for this file, prefer the authoritative CRDT text
+        try {
+            const states = collabClient.getActiveEditors(slug, activeFile.path);
+            // If there are collaborators, extract the Yjs text value
+            if (states && states.length > 0) {
+                const entryKey = `${slug}:${activeFile.path}`; // not used for lookup directly but we'll fetch via collabClient internals
+                // Retrieve the Yjs document content directly if available
+                // collabClient keeps docs in the form workspace:slug:path as key
+                const key = `workspace:${slug}:${activeFile.path.replace(/[^a-zA-Z0-9_.\-\/]/g, '_')}`;
+                const entry = collabClient.docs.get(key);
+                if (entry && entry.ytext) {
+                    const crdtText = entry.ytext.toString();
+                    // Use CRDT-derived content for save
+                    await api.saveFileContent(slug, activeFile.path, crdtText, activeFile.name);
+                } else {
+                    await api.saveFileContent(slug, activeFile.path, currentContent, activeFile.name);
+                }
+            } else {
+                await api.saveFileContent(slug, activeFile.path, currentContent, activeFile.name);
+            }
+        } catch (e) {
+            // Fallback: if anything goes wrong with collab client, save the current content
+            await api.saveFileContent(slug, activeFile.path, currentContent, activeFile.name);
+        }
         
         // Ensure tree is revalidated silently after save
         dispatch(fetchFilesThunk(slug)); 
