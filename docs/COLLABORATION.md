@@ -7,6 +7,12 @@ This project now includes first-class collaborative editing support using Yjs (C
 - Multiple users can open the same workspace and edit files at the same time.
 - Edits are merged automatically using CRDT semantics (no locking required for most workflows).
 - Presence and cursors are shared via the awareness API.
+ - Presence and cursors are shared via the awareness API. The UI now shows who is currently editing a file (file-tree badges), per-file inline presence avatars in the editor header, and remote cursor/selection highlights inside the Monaco editor.
+ - Presence and cursors are shared via the awareness API. The UI now shows who is currently editing a file (file-tree badges), per-file inline presence avatars in the editor header, remote cursor/selection highlights inside the Monaco editor, and per-line small badges next to the editor's glyph margin for lines that users are actively editing.
+
+Notes:
+- Colors are deterministically generated from the user's id (or a persisted anonymous id) so the same user keeps the same color across multiple windows/tabs.
+- Avatars in the header are compact circles; hover an avatar to see a small presence card with user info.
 - Server-side persistence is handled by LevelDB at backend/collab-server/data/collab-leveldb for durability.
 
 Components
@@ -56,6 +62,8 @@ Further improvements (recommendations)
 
 - Add authentication checks on the server for WebSocket upgrade requests and include the user's identity in awareness.
 - Add richer presence UI: cursor colors, selections, user initials, and an active editors list.
+ - Add richer presence UI: cursor colors and selections (implemented), user initials, file badges (implemented), and an active editors list.
+ - Add richer presence UI: cursor colors and selections (implemented), user initials, file badges (implemented), per-line presence badges (implemented), and an active editors list.
 - Add server-side moderation/ACLs to control who can edit vs view workspaces.
 - Add end-to-end encryption for very sensitive code bases.
 - Add an optional OT fallback for environments that require OT semantics for specific features.

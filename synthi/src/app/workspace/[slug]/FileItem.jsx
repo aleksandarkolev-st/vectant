@@ -1,6 +1,7 @@
 // src/app/FileItem.jsx
 "use client";
 import { useState, useRef, useEffect } from "react";
+import collabClient from '@/services/collabClient';
 import { useAppSelector } from "@/redux/hooks";
 import { selectExpandedFolders, toggleFolderExpansion } from "@/redux/uiSlice";
 import { ChevronIcon } from "./Icons";
@@ -52,6 +53,33 @@ const FileItem = ({
   const localInputRef = useRef(null);
   const spinnerRef = useRef(null);
   const fileContentRef = useRef(null);
+
+  // Collaboration presence state (awareness states for this file)
+  const slug = useAppSelector(state => state.workspace.slug);
+  const [presenceStates, setPresenceStates] = useState([]);
+  const [hoverPresence, setHoverPresence] = useState(null);
+  const hoverHideTimeoutRef = useRef(null);
+
+  useEffect(() => {
+    // Only keep presence for real files (not folders)
+    if (!slug || item.isFolder) return;
+    // subscribe to awareness updates
+    try {
+      const listenerUnsub = collabClient.addAwarenessListener(slug, item.path, () => {
+        // recompute active editors (deduped)
+        const act = collabClient.getActiveEditors(slug, item.path);
+        setPresenceStates(act || []);
+      });
+      // seed initial with active editors only
+      const initial = collabClient.getActiveEditors(slug, item.path);
+      setPresenceStates(initial || []);
+      return () => {
+        try { listenerUnsub(); } catch (_) {}
+      };
+    } catch (_) {
+      // ignore if collab client isn't available (e.g., server-only render)
+    }
+  }, [slug, item.path, item.isFolder]);
 
   // Clean up spinner when file is loaded or component unmounts
   useEffect(() => {
@@ -265,12 +293,56 @@ useEffect(() => {
             className="w-full bg-transparent border-none outline-none text-sm text-white placeholder-gray-500"
           />
         ) : (
-          <div className="file-content flex items-center">
+          <div className="file-content flex items-center gap-2">
             <span
               className={`text-sm truncate ${isSelected ? "text-white" : "text-gray-200"}`}
             >
               {item.name}
             </span>
+            {/* Presence badges */}
+                {(!item.isFolder && presenceStates && presenceStates.length > 0) && (
+                  <div className="flex items-center gap-1 ml-2">
+                    {presenceStates.slice(0,3).map((p) => {
+                      const name = p.state?.user?.name || 'U';
+                      const initials = name.split(' ').filter(Boolean).map(p => p[0]).slice(0,2).join('').toUpperCase();
+                      return (
+                        <div key={`pres-${p.clientId}`} className="relative">
+                          <div
+                            onMouseEnter={(e) => {
+                              if (hoverHideTimeoutRef.current) { clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = null; }
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              setHoverPresence({ user: p.state?.user || {}, rect });
+                            }}
+                            onMouseLeave={() => { if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140); }}
+                            title={p.state?.user?.name || 'User'}
+                            className="w-6 h-6 rounded-full flex items-center justify-center text-xs text-white cursor-default"
+                            style={{ border: `2px solid ${p.state?.user?.color || '#0b0b0b'}`, background: p.state?.user?.color ? 'rgba(255,255,255,0.03)' : '#111' }}
+                          >
+                            {initials}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {presenceStates.length > 3 && (
+                      <div className="text-[10px] text-gray-300 ml-1">+{presenceStates.length - 3}</div>
+                    )}
+                  </div>
+                )}
+
+            {/* Hover card for file presence */}
+            {hoverPresence && hoverPresence.rect && (
+              <div style={{ position: 'fixed', left: hoverPresence.rect.left + hoverPresence.rect.width + 6, top: hoverPresence.rect.top - 6, zIndex: 2000 }} onMouseEnter={() => { if (hoverHideTimeoutRef.current) { clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = null; } }} onMouseLeave={() => { if (hoverHideTimeoutRef.current) clearTimeout(hoverHideTimeoutRef.current); hoverHideTimeoutRef.current = setTimeout(() => setHoverPresence(null), 140); }}>
+                <div className="bg-[#151515] border border-[#333] rounded-md p-2 text-sm text-gray-200 shadow-lg w-44">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-full flex items-center justify-center text-sm text-white" style={{ background: hoverPresence.user.color || '#555' }}>{(hoverPresence.user.name || 'Anonymous').split(' ').map(p => p[0]).slice(0,2).join('').toUpperCase()}</div>
+                    <div className="flex flex-col">
+                      <div className="font-semibold text-sm">{hoverPresence.user.name || 'Anonymous'}</div>
+                      <div className="text-xs text-gray-400">{hoverPresence.user.id ? `id: ${hoverPresence.user.id}` : 'Anonymous user'}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

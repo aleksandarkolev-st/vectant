@@ -70,7 +70,7 @@ export const saveFileContentThunk = createAsyncThunk(
 
         // If collaborative editing is active for this file, prefer the authoritative CRDT text
         try {
-            const states = collabClient.getAwarenessStates(slug, activeFile.path);
+            const states = collabClient.getActiveEditors(slug, activeFile.path);
             // If there are collaborators, extract the Yjs text value
             if (states && states.length > 0) {
                 const entryKey = `${slug}:${activeFile.path}`; // not used for lookup directly but we'll fetch via collabClient internals

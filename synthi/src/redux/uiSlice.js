@@ -14,6 +14,9 @@ export const initialUiState = {
     autoCompletionEnabled: true,
     uiActionState: initialUiActionState,
     expandedFolders: [],
+    // Collaboration presence settings
+    showAnonymousPresence: true,
+    presenceGranularity: 'line', // options: 'line' | 'file' | 'workspace'
 };
 
 const uiSlice = createSlice({
@@ -47,6 +50,12 @@ const uiSlice = createSlice({
         },
         hydrateUi: (state, action) => {
             return { ...state, ...action.payload };
+        },
+        toggleShowAnonymousPresence: (state) => {
+            state.showAnonymousPresence = !state.showAnonymousPresence;
+        },
+        setPresenceGranularity: (state, action) => {
+            state.presenceGranularity = action.payload;
         },
         
         // UI Action State Machine Reducers
@@ -84,6 +93,8 @@ export const {
     startRename,
     setUiActionName,
     cancelUiAction,
+    toggleShowAnonymousPresence,
+    setPresenceGranularity,
     hydrateUi,
     toggleFolderExpansion,
     setExpandedFolders,
@@ -96,5 +107,7 @@ export const selectAutoSaveEnabled = (state) => state.ui.autoSaveEnabled;
 export const selectAutoCompletionEnabled = (state) => state.ui.autoCompletionEnabled;
 export const selectUiActionState = (state) => state.ui.uiActionState;
 export const selectExpandedFolders = (state) => state.ui.expandedFolders || [];
+export const selectShowAnonymousPresence = (state) => state.ui.showAnonymousPresence;
+export const selectPresenceGranularity = (state) => state.ui.presenceGranularity;
 
 export default uiSlice.reducer;
