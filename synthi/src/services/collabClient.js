@@ -515,6 +515,11 @@ class CollabClient {
         }
       },
       dispose: () => {
+        // Explicitly clear local awareness state so we disappear immediately
+        if (entry.provider && entry.provider.awareness) {
+            try { entry.provider.awareness.setLocalState(null); } catch (_) {}
+        }
+
         try {
           binding.destroy();
         } catch (e) { /* ignore */ }
