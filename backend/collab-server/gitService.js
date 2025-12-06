@@ -115,7 +115,12 @@ class GitService {
 
     async unstageFile(slug, filePath) {
         const git = this.getGit(slug);
-        await git.reset(['HEAD', filePath]);
+        try {
+            await git.reset(['HEAD', filePath]);
+        } catch (e) {
+            // Fallback for initial commit or if HEAD is invalid
+            await git.rm(['--cached', filePath]);
+        }
         return this.getStatus(slug);
     }
 
@@ -133,7 +138,20 @@ class GitService {
 
     async discardChange(slug, filePath) {
         const git = this.getGit(slug);
-        await git.checkout(filePath);
+        // Check if file is untracked
+        const status = await git.status();
+        const fileStatus = status.files.find(f => f.path === filePath);
+        
+        if (fileStatus && fileStatus.index === '?') {
+            // Untracked file, delete it
+            const repoPath = this.getRepoPath(slug);
+            const fullPath = path.join(repoPath, filePath);
+            if (fs.existsSync(fullPath)) {
+                fs.unlinkSync(fullPath);
+            }
+        } else {
+            await git.checkout(filePath);
+        }
         return this.getStatus(slug);
     }
 

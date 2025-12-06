@@ -72,16 +72,6 @@ export function GitStatus({ slug }) {
 
     if (!status) return null;
 
-    const stagedFiles = status.staged || [];
-    const unstagedFiles = status.files || []; // simple-git puts modified/untracked in 'files' usually, but we might need to filter if 'staged' is separate.
-    // Actually simple-git status.files contains all files with their status code.
-    // We need to filter based on index status.
-    // 'index': 'A' | 'M' | 'D' | 'R' | 'C' | 'U' | '?' | ' '
-    // 'working_dir': 'M' | 'D' | '?' | ' '
-    
-    // Let's refine this based on simple-git output structure.
-    // status.files is an array of { path, index, working_dir }
-    
     const staged = status.files ? status.files.filter(f => f.index !== ' ' && f.index !== '?') : [];
     const changes = status.files ? status.files.filter(f => f.working_dir !== ' ' || f.index === '?') : [];
 
