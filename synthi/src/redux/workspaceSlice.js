@@ -342,6 +342,9 @@ const workspaceSlice = createSlice({
         setSlug: (state, action) => {
             state.slug = action.payload;
         },
+        clearFileCache: (state) => {
+            state.fileContentCache = new Map();
+        },
         hydrateWorkspace: (state, action) => {
             const { openFiles, activeFile } = action.payload;
             if (openFiles) {
@@ -482,7 +485,19 @@ const workspaceSlice = createSlice({
     },
 });
 
-export const { updateContent, renameItemStateUpdate, setSlug, setExternalFileContent, openFile, closeFile, reorderOpenFiles, hydrateWorkspace } = workspaceSlice.actions;
+export const { updateContent, renameItemStateUpdate, setSlug, setExternalFileContent, openFile, closeFile, reorderOpenFiles, hydrateWorkspace, clearFileCache } = workspaceSlice.actions;
+
+export const refreshWorkspaceThunk = createAsyncThunk(
+    'workspace/refresh',
+    async (_, { dispatch, getState }) => {
+        const state = getState().workspace;
+        dispatch(clearFileCache());
+        await dispatch(fetchFilesThunk(state.slug));
+        if (state.activeFile) {
+            await dispatch(selectFileThunk(state.activeFile));
+        }
+    }
+);
 
 // --- MEMOIZED SELECTORS ---
 

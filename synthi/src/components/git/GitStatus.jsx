@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { fetchGitStatus, fetchRemote, commitChanges, pushChanges, stageFile, unstageFile } from '@/redux/gitSlice';
-import { RefreshCw, Check, UploadCloud, Plus, Minus } from 'lucide-react';
+import { fetchGitStatus, fetchRemote, commitChanges, pushChanges, pullChanges, stageFile, unstageFile, discardChange } from '@/redux/gitSlice';
+import { refreshWorkspaceThunk } from '@/redux/workspaceSlice';
+import { RefreshCw, Check, UploadCloud, Plus, Minus, DownloadCloud, Undo2 } from 'lucide-react';
 
 export function GitStatus({ slug }) {
     const dispatch = useDispatch();
@@ -24,6 +25,15 @@ export function GitStatus({ slug }) {
     const handleSync = () => {
         if (slug) {
             dispatch(fetchRemote(slug));
+        }
+    };
+
+    const handlePull = async () => {
+        if (slug) {
+            const result = await dispatch(pullChanges(slug));
+            if (pullChanges.fulfilled.match(result)) {
+                dispatch(refreshWorkspaceThunk());
+            }
         }
     };
 
@@ -51,6 +61,15 @@ export function GitStatus({ slug }) {
         dispatch(unstageFile({ slug, filePath }));
     };
 
+    const handleDiscard = async (filePath) => {
+        if (confirm(`Are you sure you want to discard changes in ${filePath}?`)) {
+            const result = await dispatch(discardChange({ slug, filePath }));
+            if (discardChange.fulfilled.match(result)) {
+                dispatch(refreshWorkspaceThunk());
+            }
+        }
+    };
+
     if (!status) return null;
 
     const stagedFiles = status.staged || [];
@@ -75,11 +94,14 @@ export function GitStatus({ slug }) {
             <div className="p-2 font-semibold text-xs uppercase tracking-wider text-gray-500 border-b border-gray-800 flex justify-between items-center">
                 <span>Source Control</span>
                 <div className="flex gap-1">
-                    <button onClick={handleSync} className="hover:bg-gray-700 p-1 rounded text-gray-400 hover:text-white transition-colors" title="Fetch Remote">
-                        <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+                    <button onClick={handlePull} className="hover:bg-gray-700 p-1 rounded text-gray-400 hover:text-white transition-colors" title="Pull from Remote">
+                        <DownloadCloud className="w-3 h-3" />
                     </button>
                     <button onClick={handlePush} className="hover:bg-gray-700 p-1 rounded text-gray-400 hover:text-white transition-colors" title="Push to Remote">
                         <UploadCloud className="w-3 h-3" />
+                    </button>
+                    <button onClick={handleSync} className="hover:bg-gray-700 p-1 rounded text-gray-400 hover:text-white transition-colors" title="Fetch Remote">
+                        <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
                     </button>
                 </div>
             </div>
@@ -132,13 +154,22 @@ export function GitStatus({ slug }) {
                                                 </span>
                                                 <span className="truncate text-gray-300" title={file.path}>{file.path}</span>
                                             </div>
-                                            <button 
-                                                onClick={() => handleStage(file.path)}
-                                                className="opacity-0 group-hover:opacity-100 hover:bg-gray-700 p-1 rounded text-gray-400 hover:text-white transition-all"
-                                                title="Stage Changes"
-                                            >
-                                                <Plus className="w-3 h-3" />
-                                            </button>
+                                            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                                                <button 
+                                                    onClick={() => handleDiscard(file.path)}
+                                                    className="hover:bg-gray-700 p-1 rounded text-gray-400 hover:text-white"
+                                                    title="Discard Changes"
+                                                >
+                                                    <Undo2 className="w-3 h-3" />
+                                                </button>
+                                                <button 
+                                                    onClick={() => handleStage(file.path)}
+                                                    className="hover:bg-gray-700 p-1 rounded text-gray-400 hover:text-white"
+                                                    title="Stage Changes"
+                                                >
+                                                    <Plus className="w-3 h-3" />
+                                                </button>
+                                            </div>
                                         </li>
                                     ))}
                                 </ul>

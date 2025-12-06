@@ -125,6 +125,31 @@ class GitService {
         return this.getStatus(slug);
     }
 
+    async pull(slug) {
+        const git = this.getGit(slug);
+        await git.pull();
+        return this.getStatus(slug);
+    }
+
+    async discardChange(slug, filePath) {
+        const git = this.getGit(slug);
+        await git.checkout(filePath);
+        return this.getStatus(slug);
+    }
+
+    async getDiff(slug, filePath) {
+        const git = this.getGit(slug);
+        if (filePath) {
+            return await git.diff([filePath]);
+        }
+        return await git.diff();
+    }
+
+    async getLog(slug) {
+        const git = this.getGit(slug);
+        return await git.log();
+    }
+
     async syncFile(slug, filePath, content) {
         const repoPath = this.getRepoPath(slug);
         const fullPath = path.join(repoPath, filePath);

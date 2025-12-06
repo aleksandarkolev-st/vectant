@@ -189,6 +189,18 @@ const server = http.createServer(async (req, res) => {
                 case 'push':
                     result = await gitService.push(slug);
                     break;
+                case 'pull':
+                    result = await gitService.pull(slug);
+                    break;
+                case 'discard':
+                    result = await gitService.discardChange(slug, data.filePath);
+                    break;
+                case 'diff':
+                    result = await gitService.getDiff(slug, data.filePath);
+                    break;
+                case 'log':
+                    result = await gitService.getLog(slug);
+                    break;
                 case 'sync':
                     // Sync a single file
                     await gitService.syncFile(slug, data.filePath, data.content);

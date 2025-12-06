@@ -51,6 +51,22 @@ export const gitClient = {
         return this.request(slug, 'push');
     },
 
+    async pull(slug) {
+        return this.request(slug, 'pull');
+    },
+
+    async discardChange(slug, filePath) {
+        return this.request(slug, 'discard', { filePath });
+    },
+
+    async getDiff(slug, filePath) {
+        return this.request(slug, 'diff', { filePath });
+    },
+
+    async getLog(slug) {
+        return this.request(slug, 'log');
+    },
+
     async syncFile(slug, filePath, content) {
         return this.request(slug, 'sync', { filePath, content });
     }

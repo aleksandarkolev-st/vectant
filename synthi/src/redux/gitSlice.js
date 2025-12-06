@@ -65,6 +65,22 @@ export const pushChanges = createAsyncThunk(
     }
 );
 
+export const pullChanges = createAsyncThunk(
+    'git/pull',
+    async (slug, { dispatch }) => {
+        await gitClient.pull(slug);
+        dispatch(fetchGitStatus(slug));
+    }
+);
+
+export const discardChange = createAsyncThunk(
+    'git/discard',
+    async ({ slug, filePath }, { dispatch }) => {
+        await gitClient.discardChange(slug, filePath);
+        dispatch(fetchGitStatus(slug));
+    }
+);
+
 const gitSlice = createSlice({
     name: 'git',
     initialState: {
