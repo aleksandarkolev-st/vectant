@@ -24,6 +24,7 @@ import AIChatWindow from '@/components/chat/AIChatWindow';
 import { api } from '@/services/api';
 import { resolveDependencies } from '@/utils/dependencyResolver';
 import { DraggableVideoWidget } from '@/components/DraggableVideoWidget';
+import { GitStatus } from '@/components/git/GitStatus';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -287,9 +288,16 @@ export default function EditorPage({ params }) {
 
     const FileTreePanel = (
         <ResizablePanel defaultSize={15} minSize={10} maxSize={35} className={`${treeOnRight? 'border-l' : 'border-r'} border-[#545454] bg-[#252526]`}>
-            <FileTreeView
-                onToggleOrientation={toggleTreeOrientation}
-            />
+            <div className="flex flex-col h-full">
+                <div className="flex-1 overflow-hidden">
+                    <FileTreeView
+                        onToggleOrientation={toggleTreeOrientation}
+                    />
+                </div>
+                <div className="h-1/3 border-t border-[#545454]">
+                    <GitStatus slug={slug} />
+                </div>
+            </div>
         </ResizablePanel>
     );
 
