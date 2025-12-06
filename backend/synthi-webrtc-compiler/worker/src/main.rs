@@ -1748,14 +1748,25 @@ async fn handle_compile(
 
         let mut guard = runner_store.lock().await;
         
-        // Check if we need to restart due to GUI mode change
-        if guard.as_ref().map_or(false, |s| s.is_gui != req.is_gui) {
-             println!("Restarting runner due to GUI mode change");
+        // Check if we need to restart due to GUI mode change or blocking app
+        let is_blocking_app = !req.source.contains("on_update");
+        if guard.as_ref().map_or(false, |s| s.is_gui != req.is_gui || is_blocking_app) {
+             println!("Restarting runner due to GUI mode change or blocking app detected");
              let mut state = guard.take().unwrap();
              if let Some(mut child) = state.process { let _ = child.kill().await; }
              if let Some(mut child) = state.xvfb_process { let _ = child.kill().await; }
              if let Some(pipeline) = state.gst_pipeline { let _ = pipeline.set_state(gst::State::Null); }
         }
+        
+        // If it's a blocking app, we must ensure we don't have a guard (force restart)
+        // But the above check already takes the guard if is_blocking_app is true AND guard exists.
+        // If guard is None, it will start a new runner below.
+        // Wait, if guard is None, we start a new runner.
+        // If is_blocking_app is true, we want to start a new runner, run the code, and then KILL it?
+        // No, we want to keep it running until the NEXT compile.
+        // So "persistent runner" concept works, but we just have to kill the OLD one before starting the NEW one.
+        // The logic above does exactly that: if guard exists, kill it. Then guard becomes None.
+        // Then the block below starts a new runner.
         
         if guard.is_none() {
             // Start runner

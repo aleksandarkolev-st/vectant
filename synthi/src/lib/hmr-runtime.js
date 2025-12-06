@@ -109,7 +109,8 @@ export class HMRRuntime {
                 this._handleOkMessage();
                 break;
             case 'update':
-                this._handleUpdateMessage(message.data);
+                // Handle both data-wrapped and flat payloads
+                this._handleUpdateMessage(message.data || message);
                 break;
             case 'reload':
                 this.onReload();
@@ -155,8 +156,9 @@ export class HMRRuntime {
         }
 
         // 2. Identify changed modules
-        const changedModuleIds = Object.keys(update.modules);
+        const changedModuleIds = update.modules ? Object.keys(update.modules) : [];
         if (changedModuleIds.length === 0) {
+            console.log('[HMRRuntime] No modules in update, treating as signal-only update.');
             this.currentHash = update.hash;
             this._setStatus('idle');
             return;
