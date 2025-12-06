@@ -270,7 +270,8 @@ export const openDiffThunk = createAsyncThunk(
         // 2. Fetch original content (HEAD)
         let originalContent = '';
         try {
-            const result = await gitClient.getFileContent(slug, file.path, 'HEAD');
+            const originalPath = file.originalPath || file.path;
+            const result = await gitClient.getFileContent(slug, originalPath, 'HEAD');
             originalContent = result.content;
         } catch (e) {
             console.warn('Failed to fetch HEAD content', e);

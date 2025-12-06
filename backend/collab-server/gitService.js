@@ -221,10 +221,23 @@ class GitService {
     async getFileContent(slug, filePath, ref = 'HEAD') {
         const git = this.getGit(slug);
         try {
-            return await git.show([`${ref}:${filePath}`]);
+            // Ensure forward slashes for git command and remove leading slash
+            let gitPath = filePath.replace(/\\/g, '/');
+            if (gitPath.startsWith('/')) gitPath = gitPath.substring(1);
+            
+            // Use raw show command to avoid simple-git parsing issues
+            return await git.raw(['show', `${ref}:${gitPath}`]);
         } catch (e) {
-            // If file is new (not in HEAD), return empty string
-            return '';
+            console.error(`Error fetching content for ${ref}:${filePath}`, e.message);
+            try {
+                // Fallback: try cat-file -p which is plumbing and might be more robust
+                let gitPath = filePath.replace(/\\/g, '/');
+                if (gitPath.startsWith('/')) gitPath = gitPath.substring(1);
+                return await git.raw(['cat-file', '-p', `${ref}:${gitPath}`]);
+            } catch (e2) {
+                console.error(`Fallback cat-file failed for ${ref}:${filePath}`, e2.message);
+                return '';
+            }
         }
     }
 }

@@ -74,11 +74,12 @@ export function GitStatus({ slug }) {
         }
     };
 
-    const handleFileClick = (filePath) => {
+    const handleFileClick = (fileStatus) => {
         const file = {
-            name: filePath.split('/').pop(),
-            path: filePath,
-            language: getFileLanguage(filePath)
+            name: fileStatus.path.split('/').pop(),
+            path: fileStatus.path,
+            originalPath: fileStatus.from || fileStatus.path, // Handle renames
+            language: getFileLanguage(fileStatus.path)
         };
         dispatch(openDiffThunk(file));
     };
@@ -127,7 +128,7 @@ export function GitStatus({ slug }) {
                                         <li 
                                             key={`staged-${file.path}`} 
                                             className="flex items-center justify-between hover:bg-gray-800 p-1 rounded group cursor-pointer"
-                                            onClick={() => handleFileClick(file.path)}
+                                            onClick={() => handleFileClick(file)}
                                         >
                                             <div className="flex items-center gap-2 overflow-hidden">
                                                 <span className="w-4 text-center font-mono text-xs text-green-500">
@@ -157,7 +158,7 @@ export function GitStatus({ slug }) {
                                         <li 
                                             key={`changes-${file.path}`} 
                                             className="flex items-center justify-between hover:bg-gray-800 p-1 rounded group cursor-pointer"
-                                            onClick={() => handleFileClick(file.path)}
+                                            onClick={() => handleFileClick(file)}
                                         >
                                             <div className="flex items-center gap-2 overflow-hidden">
                                                 <span className="w-4 text-center font-mono text-xs text-yellow-500">
