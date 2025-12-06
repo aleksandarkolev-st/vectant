@@ -126,7 +126,22 @@ class GitService {
 
     async push(slug) {
         const git = this.getGit(slug);
-        await git.push();
+        try {
+            await git.push();
+        } catch (e) {
+            // If push fails, try setting upstream
+            if (e.message.includes('no upstream branch') || e.message.includes('set-upstream')) {
+                const branchSummary = await git.branchLocal();
+                const currentBranch = branchSummary.current;
+                if (currentBranch) {
+                    await git.push('origin', currentBranch, ['--set-upstream']);
+                } else {
+                    throw e;
+                }
+            } else {
+                throw e;
+            }
+        }
         return this.getStatus(slug);
     }
 
