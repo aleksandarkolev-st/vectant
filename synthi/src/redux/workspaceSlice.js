@@ -4,6 +4,7 @@ import { api } from '@/services/api';
 import collabClient from '@/services/collabClient';
 import { getCompilerClient } from '@/services/compilerClient';
 import { cancelUiAction } from './uiSlice'; // Cross-slice dependency
+import { syncFileToGit, fetchGitStatus } from './gitSlice';
 import {
     findFirstFile,
     findFileInTree,
@@ -88,9 +89,21 @@ export const saveFileContentThunk = createAsyncThunk(
             } else {
                 await api.saveFileContent(slug, activeFile.path, currentContent, activeFile.name);
             }
+            
+            // Sync to Git
+            const contentToSync = (states && states.length > 0) ? 
+                (collabClient.docs.get(`workspace:${slug}:${activeFile.path.replace(/[^a-zA-Z0-9_.\-\/]/g, '_')}`)?.ytext?.toString() || currentContent) 
+                : currentContent;
+                
+            dispatch(syncFileToGit({ slug, filePath: activeFile.path, content: contentToSync }));
+            dispatch(fetchGitStatus(slug));
+
         } catch (e) {
             // Fallback: if anything goes wrong with collab client, save the current content
             await api.saveFileContent(slug, activeFile.path, currentContent, activeFile.name);
+            
+            dispatch(syncFileToGit({ slug, filePath: activeFile.path, content: currentContent }));
+            dispatch(fetchGitStatus(slug));
         }
         
         // Ensure tree is revalidated silently after save

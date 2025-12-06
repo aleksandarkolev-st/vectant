@@ -99,7 +99,105 @@ if (LeveldbPersistence) {
   persistence = new InMemoryPersistence();
 }
 
-const server = http.createServer((req, res) => {
+const gitService = require('./gitService');
+const workspaceManager = require('./workspaceManager');
+
+const server = http.createServer(async (req, res) => {
+  // CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  if (req.url.startsWith('/workspaces') && req.method === 'GET') {
+      try {
+          // Parse query params for owner
+          const url = new URL(req.url, `http://${req.headers.host}`);
+          const owner = url.searchParams.get('owner');
+          
+          const workspaces = workspaceManager.getWorkspaces(owner);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(workspaces));
+      } catch (e) {
+          res.writeHead(500);
+          res.end(JSON.stringify({ error: e.message }));
+      }
+      return;
+  }
+
+  if (req.url.startsWith('/git/')) {
+    // Parse URL: /git/:slug/:action
+    const parts = req.url.split('/');
+    // parts[0] = '', parts[1] = 'git', parts[2] = slug, parts[3] = action
+    const slug = parts[2];
+    const action = parts[3];
+
+    if (!slug || !action) {
+        res.writeHead(400);
+        res.end('Invalid request');
+        return;
+    }
+
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+        try {
+            const data = body ? JSON.parse(body) : {};
+            let result;
+
+            switch (action) {
+                case 'init':
+                    result = await gitService.initRepo(slug, data.remoteUrl);
+                    break;
+                case 'clone':
+                    result = await gitService.cloneRepo(slug, data.repoUrl, data.token);
+                    // Save metadata
+                    workspaceManager.addWorkspace(slug, data.repoUrl, data.owner, data.name);
+                    break;
+                case 'status':
+                    result = await gitService.getStatus(slug);
+                    break;
+                case 'branches':
+                    result = await gitService.getBranches(slug);
+                    break;
+                case 'checkout':
+                    result = await gitService.checkout(slug, data.branch, data.create);
+                    break;
+                case 'fetch':
+                    result = await gitService.fetch(slug);
+                    break;
+                case 'commit':
+                    result = await gitService.commit(slug, data.message);
+                    break;
+                case 'push':
+                    result = await gitService.push(slug);
+                    break;
+                case 'sync':
+                    // Sync a single file
+                    await gitService.syncFile(slug, data.filePath, data.content);
+                    result = { success: true };
+                    break;
+                default:
+                    res.writeHead(404);
+                    res.end('Unknown action');
+                    return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(result));
+        } catch (e) {
+            console.error(e);
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: e.message }));
+        }
+    });
+    return;
+  }
+
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('Synthi collaboration server is running');
 });
