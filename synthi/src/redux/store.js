@@ -2,6 +2,7 @@
 import { configureStore } from '@reduxjs/toolkit';
 import workspaceReducer, { initialWorkspaceState } from './workspaceSlice';
 import uiReducer, { initialUiState } from './uiSlice';
+import gitReducer from './gitSlice';
 
 import { enableMapSet } from 'immer';
 
@@ -117,6 +118,7 @@ export const store = configureStore({
   reducer: {
     workspace: workspaceReducer,
     ui: uiReducer,
+    git: gitReducer,
   },
   // We need to disable the serializable check for the Map used in fileContentCache
   middleware: (getDefaultMiddleware) =>
