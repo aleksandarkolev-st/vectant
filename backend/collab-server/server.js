@@ -198,6 +198,10 @@ const server = http.createServer(async (req, res) => {
                 case 'diff':
                     result = await gitService.getDiff(slug, data.filePath);
                     break;
+                case 'file-content':
+                    const fileContent = await gitService.getFileContent(slug, data.filePath, data.ref);
+                    result = { content: fileContent };
+                    break;
                 case 'log':
                     result = await gitService.getLog(slug);
                     break;

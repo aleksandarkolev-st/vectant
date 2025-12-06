@@ -217,6 +217,16 @@ class GitService {
         }
         throw new Error('File not found');
     }
+
+    async getFileContent(slug, filePath, ref = 'HEAD') {
+        const git = this.getGit(slug);
+        try {
+            return await git.show([`${ref}:${filePath}`]);
+        } catch (e) {
+            // If file is new (not in HEAD), return empty string
+            return '';
+        }
+    }
 }
 
 module.exports = new GitService(path.join(__dirname, 'repos'));

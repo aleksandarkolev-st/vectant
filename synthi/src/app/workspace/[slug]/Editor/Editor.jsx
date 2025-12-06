@@ -1,7 +1,7 @@
 // src/app/Editor.jsx
 'use client';
 import { useCallback, useEffect, useState, useRef } from 'react';
-import Editor, { loader } from '@monaco-editor/react';
+import Editor, { DiffEditor, loader } from '@monaco-editor/react';
 import { getMonacoLanguage } from '@/utils/languageMapper';
 import dynamic from 'next/dynamic';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
@@ -784,6 +784,9 @@ const EditorPanel = ({
 
 
 
+    const diffMode = useAppSelector(state => state.workspace.diffMode);
+    const originalContent = useAppSelector(state => state.workspace.originalContent);
+
     // --- Render ---
 
 
@@ -1029,38 +1032,56 @@ const EditorPanel = ({
                             <ContextMenu>
                                 <ContextMenuTrigger asChild>
                                     <div className="h-full w-full">
-                                        <Editor
-                                            key={activeFileIdentity}
-                                            height="100%"
-                                            path={activeFile ? `/synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}` : undefined}
-                                            value={code ?? ''}
-                                            language={activeLanguage}
-                                            theme="synthi-theme"
-                                            options={{
-                                                ...EDITOR_OPTIONS,
-                                                semanticHighlighting: { enabled: true }
-                                            }}
-                                            beforeMount={(monaco) => {
-                                                monaco.editor.defineTheme('synthi-theme', SYNTHI_THEME);
-                                            }}
-                                            onChange={handleCodeChange}
-                                            onMount={(editor, monaco) => {
-                                                setEditorInstance(editor);
-                                                setMonacoInstance(monaco);
-                                                if (onEditorMount) onEditorMount(editor);
-                                                editor.onDidChangeCursorPosition(e => {
-                                                    const nextPos = e.position;
-                                                    if (pendingPositionFrameRef.current) return;
-                                                    pendingPositionFrameRef.current = requestAnimationFrame(() => {
-                                                        setPosition(nextPos);
-                                                        pendingPositionFrameRef.current = null;
+                                        {diffMode ? (
+                                            <DiffEditor
+                                                height="100%"
+                                                original={originalContent}
+                                                modified={code ?? ''}
+                                                language={activeLanguage}
+                                                theme="synthi-theme"
+                                                options={{
+                                                    ...EDITOR_OPTIONS,
+                                                    readOnly: true, // Diff view is usually read-only for now
+                                                    renderSideBySide: true
+                                                }}
+                                                beforeMount={(monaco) => {
+                                                    monaco.editor.defineTheme('synthi-theme', SYNTHI_THEME);
+                                                }}
+                                            />
+                                        ) : (
+                                            <Editor
+                                                key={activeFileIdentity}
+                                                height="100%"
+                                                path={activeFile ? `/synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}` : undefined}
+                                                value={code ?? ''}
+                                                language={activeLanguage}
+                                                theme="synthi-theme"
+                                                options={{
+                                                    ...EDITOR_OPTIONS,
+                                                    semanticHighlighting: { enabled: true }
+                                                }}
+                                                beforeMount={(monaco) => {
+                                                    monaco.editor.defineTheme('synthi-theme', SYNTHI_THEME);
+                                                }}
+                                                onChange={handleCodeChange}
+                                                onMount={(editor, monaco) => {
+                                                    setEditorInstance(editor);
+                                                    setMonacoInstance(monaco);
+                                                    if (onEditorMount) onEditorMount(editor);
+                                                    editor.onDidChangeCursorPosition(e => {
+                                                        const nextPos = e.position;
+                                                        if (pendingPositionFrameRef.current) return;
+                                                        pendingPositionFrameRef.current = requestAnimationFrame(() => {
+                                                            setPosition(nextPos);
+                                                            pendingPositionFrameRef.current = null;
+                                                        });
                                                     });
-                                                });
 
-                                                // Ensure layout refreshes on mount
-                                                setTimeout(() => editor.layout(), 100);
-                                            }}
-                                        />
+                                                    // Ensure layout refreshes on mount
+                                                    setTimeout(() => editor.layout(), 100);
+                                                }}
+                                            />
+                                        )}
                                     </div>
                                 </ContextMenuTrigger>
                                 <ContextMenuContent className="w-56 bg-[#252526] border-[#454545] text-gray-200">

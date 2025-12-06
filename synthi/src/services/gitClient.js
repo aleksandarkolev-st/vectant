@@ -69,5 +69,9 @@ export const gitClient = {
 
     async syncFile(slug, filePath, content) {
         return this.request(slug, 'sync', { filePath, content });
+    },
+
+    async getFileContent(slug, filePath, ref = 'HEAD') {
+        return this.request(slug, 'file-content', { filePath, ref });
     }
 };

@@ -25,6 +25,8 @@ export const initialWorkspaceState = {
     activeFile: null,
     currentContent: '',
     savedContent: '',
+    originalContent: '', // For diff view
+    diffMode: false,     // Toggle diff view
     fileContentCache: new Map(), // Non-serializable object handled by middleware config
     isLoading: false,
     status: 'idle',
@@ -245,6 +247,39 @@ export const deleteItemThunk = createAsyncThunk(
 );
 
 
+import { gitClient } from '@/services/gitClient';
+
+// 7. Open Diff (Read)
+export const openDiffThunk = createAsyncThunk(
+    'workspace/openDiff',
+    async (file, { dispatch, getState }) => {
+        const state = getState().workspace;
+        const slug = state.slug;
+
+        // 1. Fetch current content (working copy)
+        let currentContent = '';
+        const cacheKey = file.path;
+        const cachedContent = state.fileContentCache.get(cacheKey);
+        
+        if (cachedContent !== undefined) {
+            currentContent = cachedContent;
+        } else {
+            currentContent = await api.fetchFileContent(slug, file.path);
+        }
+
+        // 2. Fetch original content (HEAD)
+        let originalContent = '';
+        try {
+            const result = await gitClient.getFileContent(slug, file.path, 'HEAD');
+            originalContent = result.content;
+        } catch (e) {
+            console.warn('Failed to fetch HEAD content', e);
+        }
+
+        return { file, currentContent, originalContent };
+    }
+);
+
 // --- SLICE DEFINITION ---
 
 const workspaceSlice = createSlice({
@@ -266,6 +301,9 @@ const workspaceSlice = createSlice({
                     }
                 }
             } catch (e) { /* ignore */ }
+        },
+        setDiffMode: (state, action) => {
+            state.diffMode = action.payload;
         },
             // Open a file in the tab bar (keeps order and uniqueness)
             openFile: (state, action) => {
@@ -390,7 +428,26 @@ const workspaceSlice = createSlice({
 
         // --- SELECT FILE ---
         builder
-          .addCase(selectFileThunk.fulfilled, (state, action) => {
+            .addCase(openDiffThunk.fulfilled, (state, action) => {
+                const { file, currentContent, originalContent } = action.payload;
+                state.activeFile = file;
+                state.currentContent = currentContent;
+                state.savedContent = currentContent; // Assuming saved on disk matches current for now
+                state.originalContent = originalContent;
+                state.diffMode = true;
+                
+                // Add to open files if not present
+                const exists = state.openFiles.find(f => f.path === file.path);
+                if (!exists) {
+                    state.openFiles.push({ ...file, isUnsaved: false });
+                }
+                
+                // Update cache
+                const newMap = new Map(state.fileContentCache);
+                newMap.set(file.path, currentContent);
+                state.fileContentCache = newMap;
+            })
+            .addCase(selectFileThunk.fulfilled, (state, action) => {
                 const { file, content, fromCache } = action.payload;
                 
                 // Cache unsaved content of OLD active file before switching
@@ -404,6 +461,7 @@ const workspaceSlice = createSlice({
                 state.activeFile = file;
                 state.currentContent = content;
                 state.savedContent = content;
+                state.diffMode = false; // Disable diff mode
                 
                 // Update cache if content was newly fetched (and not from cache)
                 if (!fromCache) {

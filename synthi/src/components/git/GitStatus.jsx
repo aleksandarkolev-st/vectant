@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { fetchGitStatus, fetchRemote, commitChanges, pushChanges, pullChanges, stageFile, unstageFile, discardChange } from '@/redux/gitSlice';
-import { refreshWorkspaceThunk } from '@/redux/workspaceSlice';
+import { refreshWorkspaceThunk, openDiffThunk } from '@/redux/workspaceSlice';
 import { RefreshCw, Check, UploadCloud, Plus, Minus, DownloadCloud, Undo2 } from 'lucide-react';
+import { getFileLanguage } from '@/utils/fileUtils';
 
 export function GitStatus({ slug }) {
     const dispatch = useDispatch();
@@ -53,21 +54,33 @@ export function GitStatus({ slug }) {
         }
     };
 
-    const handleStage = (filePath) => {
+    const handleStage = (e, filePath) => {
+        e.stopPropagation();
         dispatch(stageFile({ slug, filePath }));
     };
 
-    const handleUnstage = (filePath) => {
+    const handleUnstage = (e, filePath) => {
+        e.stopPropagation();
         dispatch(unstageFile({ slug, filePath }));
     };
 
-    const handleDiscard = async (filePath) => {
+    const handleDiscard = async (e, filePath) => {
+        e.stopPropagation();
         if (confirm(`Are you sure you want to discard changes in ${filePath}?`)) {
             const result = await dispatch(discardChange({ slug, filePath }));
             if (discardChange.fulfilled.match(result)) {
                 dispatch(refreshWorkspaceThunk());
             }
         }
+    };
+
+    const handleFileClick = (filePath) => {
+        const file = {
+            name: filePath.split('/').pop(),
+            path: filePath,
+            language: getFileLanguage(filePath)
+        };
+        dispatch(openDiffThunk(file));
     };
 
     if (!status) return null;
@@ -111,7 +124,11 @@ export function GitStatus({ slug }) {
                                 <div className="text-xs font-semibold text-gray-400 mb-1 px-1">STAGED CHANGES</div>
                                 <ul className="text-sm space-y-1">
                                     {staged.map(file => (
-                                        <li key={`staged-${file.path}`} className="flex items-center justify-between hover:bg-gray-800 p-1 rounded group">
+                                        <li 
+                                            key={`staged-${file.path}`} 
+                                            className="flex items-center justify-between hover:bg-gray-800 p-1 rounded group cursor-pointer"
+                                            onClick={() => handleFileClick(file.path)}
+                                        >
                                             <div className="flex items-center gap-2 overflow-hidden">
                                                 <span className="w-4 text-center font-mono text-xs text-green-500">
                                                     {file.index}
@@ -119,7 +136,7 @@ export function GitStatus({ slug }) {
                                                 <span className="truncate text-gray-300" title={file.path}>{file.path}</span>
                                             </div>
                                             <button 
-                                                onClick={() => handleUnstage(file.path)}
+                                                onClick={(e) => handleUnstage(e, file.path)}
                                                 className="opacity-0 group-hover:opacity-100 hover:bg-gray-700 p-1 rounded text-gray-400 hover:text-white transition-all"
                                                 title="Unstage Changes"
                                             >
@@ -137,7 +154,11 @@ export function GitStatus({ slug }) {
                                 <div className="text-xs font-semibold text-gray-400 mb-1 px-1">CHANGES</div>
                                 <ul className="text-sm space-y-1">
                                     {changes.map(file => (
-                                        <li key={`changes-${file.path}`} className="flex items-center justify-between hover:bg-gray-800 p-1 rounded group">
+                                        <li 
+                                            key={`changes-${file.path}`} 
+                                            className="flex items-center justify-between hover:bg-gray-800 p-1 rounded group cursor-pointer"
+                                            onClick={() => handleFileClick(file.path)}
+                                        >
                                             <div className="flex items-center gap-2 overflow-hidden">
                                                 <span className="w-4 text-center font-mono text-xs text-yellow-500">
                                                     {file.working_dir === '?' ? 'U' : 'M'}
@@ -146,14 +167,14 @@ export function GitStatus({ slug }) {
                                             </div>
                                             <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
                                                 <button 
-                                                    onClick={() => handleDiscard(file.path)}
+                                                    onClick={(e) => handleDiscard(e, file.path)}
                                                     className="hover:bg-gray-700 p-1 rounded text-gray-400 hover:text-white"
                                                     title="Discard Changes"
                                                 >
                                                     <Undo2 className="w-3 h-3" />
                                                 </button>
                                                 <button 
-                                                    onClick={() => handleStage(file.path)}
+                                                    onClick={(e) => handleStage(e, file.path)}
                                                     className="hover:bg-gray-700 p-1 rounded text-gray-400 hover:text-white"
                                                     title="Stage Changes"
                                                 >
