@@ -91,6 +91,16 @@ struct CompileRequest {
     supports_h265: Option<bool>,
 }
 
+struct RunnerState {
+    process: Option<tokio::process::Child>, // Option to allow taking it if needed, or just drop
+    stdin: tokio::process::ChildStdin,
+    output_tx: tokio::sync::broadcast::Sender<String>,
+    is_gui: bool,
+    xvfb_process: Option<tokio::process::Child>,
+    gst_pipeline: Option<gst::Pipeline>,
+    x11_tx: Option<mpsc::UnboundedSender<String>>,
+}
+
 struct LspSessionState {
     client_root_uri: Option<String>,
     server_root_uri: String,
@@ -195,6 +205,8 @@ async fn main() -> Result<()> {
     let terminal_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> = Arc::new(Mutex::new(HashMap::new()));
     // Store of sessionId -> xdotool stdin sender for persistent X11 input
     let x11_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> = Arc::new(Mutex::new(HashMap::new()));
+    // Store for persistent runner process
+    let runner_store: Arc<Mutex<Option<RunnerState>>> = Arc::new(Mutex::new(None));
 
     // Create a persistent workspace directory for the session
     let workspace_dir = Arc::new(tempdir()?);
@@ -283,12 +295,14 @@ async fn main() -> Result<()> {
     let term_store = terminal_input_store.clone();
     let pc_clone = pc.clone();
     let workspace_path_for_callback = workspace_path_arc.clone();
+    let runner_store_for_callback = runner_store.clone();
     pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
         let store = compile_store.clone();
         let term_store = term_store.clone();
         let pc_for_callback = pc_clone.clone();
         let workspace_path_for_dc = workspace_path_for_callback.clone();
         let x11_store_outer = x11_input_store.clone();
+        let runner_store_outer = runner_store_for_callback.clone();
         async move {
             let label = dc.label();
                 if label == "compile" {
@@ -301,6 +315,7 @@ async fn main() -> Result<()> {
                         let pc_for_compile = pc_for_callback.clone();
                         let workspace_path_for_compile = workspace_path_for_dc.clone();
                         let x11_store = x11_store_outer.clone();
+                        let runner_store = runner_store_outer.clone();
                         async move {
                             if msg.is_string {
                                 // Try to parse as a CompileRequest
@@ -309,9 +324,10 @@ async fn main() -> Result<()> {
                                     if let Some(log) = log_dc {
                                         let ts = term_store_for_msg.clone();
                                         let x11s = x11_store.clone();
+                                        let rs = runner_store.clone();
                                         let pc_clone = pc_for_compile.clone();
                                         let wp = workspace_path_for_compile.clone();
-                                        tokio::spawn(handle_compile(req, log, ts, x11s, pc_clone, wp.to_path_buf()));
+                                        tokio::spawn(handle_compile(req, log, ts, x11s, rs, pc_clone, wp.to_path_buf()));
                                     }
                                     return;
                                 }
@@ -984,11 +1000,29 @@ async fn handle_compile(
     log_dc: Arc<RTCDataChannel>,
     terminal_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
     x11_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
+    runner_store: Arc<Mutex<Option<RunnerState>>>,
     pc: Arc<RTCPeerConnection>,
     workspace_path: std::path::PathBuf,
 ) -> Result<()> {
     // Use the shared workspace path instead of creating a new temp dir
     let dir_path = workspace_path;
+
+    // Generate a unique filename for the shared library to support HMR
+    let timestamp = Utc::now().timestamp_millis();
+    let ext = if cfg!(target_os = "windows") { "dll" } else { "so" };
+    let lib_filename = format!("libuser_code_{}.{}", timestamp, ext);
+
+    // Clean up old shared libraries
+    if let Ok(mut entries) = tokio::fs::read_dir(&dir_path).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.starts_with("libuser_code_") && (name.ends_with(".so") || name.ends_with(".dll")) {
+                    let _ = tokio::fs::remove_file(path).await;
+                }
+            }
+        }
+    }
     
     // Write the main file
     let file_path = dir_path.join(&req.filename);
@@ -998,7 +1032,19 @@ async fn handle_compile(
     if let Some(parent) = file_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    tokio::fs::write(&file_path, &req.source).await?;
+
+    let mut source_code = req.source.clone();
+    if req.language == "rust" {
+        // Check if user already defined entrypoint to avoid conflict
+        if !source_code.contains("extern \"C\" fn entrypoint") {
+             source_code.push_str("\n\n#[no_mangle]\npub extern \"C\" fn entrypoint(_state: *mut std::ffi::c_void) -> *mut std::ffi::c_void {\n    main();\n    std::ptr::null_mut()\n}\n");
+        }
+    } else if req.language == "cpp" {
+        if !source_code.contains("extern \"C\" void* entrypoint") {
+             source_code.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
+        }
+    }
+    tokio::fs::write(&file_path, &source_code).await?;
     println!("Main file written to {:?}", file_path);
 
     // Write additional files
@@ -1015,12 +1061,22 @@ async fn handle_compile(
     let mut cmd = match req.language.as_str() {
         "cpp" => {
             let mut c = system_command("g++");
-            c.arg(&req.filename).arg("-I.").arg("-lX11").arg("-o").arg("main.out");
+            c.arg("-shared").arg("-fPIC");
+            // let ext = if cfg!(target_os = "windows") { "dll" } else { "so" };
+            c.arg(&req.filename).arg("-I.").arg("-o").arg(&lib_filename);
+            if req.is_gui {
+                c.arg("-lX11");
+            }
             c
         }
         "rust" => {
             let mut c = system_command("rustc");
-            c.arg(&req.filename).arg("-o").arg("main.out");
+            c.arg("--crate-type").arg("cdylib");
+            // let ext = if cfg!(target_os = "windows") { "dll" } else { "so" };
+            c.arg(&req.filename).arg("-o").arg(&lib_filename);
+            if req.is_gui {
+                c.arg("-l").arg("X11");
+            }
             c
         }
         "ts" => {
@@ -1109,7 +1165,7 @@ async fn handle_compile(
     }
 
     // Run the produced binary for C++ only (for now)
-    if req.language == "cpp" {
+    if req.language == "cpp_legacy" {
         let bin_path = dir_path.join("main.out");
         let mut run_cmd = if cfg!(target_os = "windows") {
             let mut c = Command::new("wsl");
@@ -1654,6 +1710,420 @@ async fn handle_compile(
             let mut g = x11_input_store.lock().await;
             g.remove(&sid_opt);
         }
+        return Ok(());
+    } else if req.language == "rust" || req.language == "cpp" {
+        // let ext = if cfg!(target_os = "windows") { "dll" } else { "so" };
+        let lib_path = dir_path.join(&lib_filename);
+        let lib_path_str = lib_path.to_string_lossy().to_string();
+
+        let mut guard = runner_store.lock().await;
+        
+        // Check if we need to restart due to GUI mode change
+        if guard.as_ref().map_or(false, |s| s.is_gui != req.is_gui) {
+             println!("Restarting runner due to GUI mode change");
+             let mut state = guard.take().unwrap();
+             if let Some(mut child) = state.process { let _ = child.kill().await; }
+             if let Some(mut child) = state.xvfb_process { let _ = child.kill().await; }
+             if let Some(pipeline) = state.gst_pipeline { let _ = pipeline.set_state(gst::State::Null); }
+        }
+        
+        if guard.is_none() {
+            // Start runner
+            println!("Starting persistent runner...");
+            
+            let mut wsl_display_str = String::new();
+            let mut xvfb_process: Option<tokio::process::Child> = None;
+            let mut gst_pipeline: Option<gst::Pipeline> = None;
+            let mut x11_tx_opt: Option<mpsc::UnboundedSender<String>> = None;
+
+            if req.is_gui {
+                for tool in GUI_TOOLS {
+                    if Command::new(tool).arg("--version").output().await.is_err() {
+                         let msg = format!("Error: GUI tool '{}' is missing. GUI apps require Linux/WSL with xdotool, Xvfb, and matchbox-window-manager installed.\n", tool);
+                         let payload = serde_json::json!({
+                            "sessionId": session_id.clone(),
+                            "type": "stderr",
+                            "line": msg
+                         });
+                         let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                         return Ok(());
+                    }
+                }
+
+                let width = req.width.unwrap_or(1280);
+                let height = req.height.unwrap_or(720);
+                let resolution = format!("{}x{}x24", width, height);
+
+                let mut gst_display_str = String::new();
+                let mut xvfb = system_command("Xvfb");
+                xvfb.arg("-displayfd").arg("1")
+                    .arg("-screen")
+                    .arg("0")
+                    .arg(&resolution)
+                    .arg("-ac")
+                    .arg("-listen")
+                    .arg("tcp")
+                    .arg("-s").arg("0")
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::inherit());
+
+                match xvfb.spawn() {
+                    Ok(mut child) => {
+                        if let Some(stdout) = child.stdout.take() {
+                            let mut reader = BufReader::new(stdout);
+                            let mut line = String::new();
+                            match reader.read_line(&mut line).await {
+                                Ok(n) if n > 0 => {
+                                    let display_num = line.trim();
+                                    wsl_display_str = format!(":{}", display_num);
+                                    if cfg!(target_os = "windows") {
+                                        gst_display_str = format!("127.0.0.1:{}", display_num);
+                                    } else {
+                                        gst_display_str = wsl_display_str.clone();
+                                    }
+                                    println!("Xvfb started on display {}", wsl_display_str);
+                                }
+                                _ => eprintln!("Xvfb failed to output a display number"),
+                            }
+                        }
+                        xvfb_process = Some(child);
+                    }
+                    Err(e) => eprintln!("Failed to spawn Xvfb: {}", e),
+                }
+
+                if wsl_display_str.is_empty() {
+                    wsl_display_str = ":99".to_string();
+                    if cfg!(target_os = "windows") {
+                        gst_display_str = "127.0.0.1:99".to_string();
+                    } else {
+                        gst_display_str = wsl_display_str.clone();
+                    }
+                    println!("Falling back to DISPLAY {}", wsl_display_str);
+                }
+
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+                let mut wm_cmd = if cfg!(target_os = "windows") {
+                    let mut c = system_command("env");
+                    c.arg(format!("DISPLAY={}", wsl_display_str)).arg("matchbox-window-manager");
+                    c
+                } else {
+                    let mut c = Command::new("matchbox-window-manager");
+                    c.env("DISPLAY", &wsl_display_str);
+                    c
+                };
+
+                wm_cmd.stdout(Stdio::null()).stderr(Stdio::null());
+                let _ = wm_cmd.spawn(); // Let it run
+
+                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+                let (v_tx, mut v_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+                let (a_tx, mut a_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+
+                let encoders = [
+                    ("nvh265enc preset=low-latency-hp zerolatency=true", "rtph265pay", "video/H265"),
+                    ("vaapih265enc", "rtph265pay", "video/H265"),
+                    ("msdkh265enc", "rtph265pay", "video/H265"),
+                    ("v4l2h265enc", "rtph265pay", "video/H265"),
+                    ("mfh265enc low-latency=true", "rtph265pay", "video/H265"),
+                    ("d3d11h265enc", "rtph265pay", "video/H265"),
+                    ("amfh265enc", "rtph265pay", "video/H265"),
+                    ("nvh264enc preset=low-latency-hp zerolatency=true", "rtph264pay", "video/H264"),
+                    ("vaapih264enc", "rtph264pay", "video/H264"),
+                    ("msdkh264enc", "rtph264pay", "video/H264"),
+                    ("v4l2h264enc", "rtph264pay", "video/H264"),
+                    ("mfh264enc low-latency=true", "rtph264pay", "video/H264"),
+                    ("d3d11h264enc", "rtph264pay", "video/H264"),
+                    ("amfh264enc", "rtph264pay", "video/H264"),
+                    ("x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h264,stream-format=byte-stream", "rtph264pay", "video/H264"),
+                    ("openh264enc ! video/x-h264,stream-format=byte-stream", "rtph264pay", "video/H264"),
+                    ("x265enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h265,stream-format=byte-stream", "rtph265pay", "video/H265"),
+                    ("openh265enc ! video/x-h265,stream-format=byte-stream", "rtph265pay", "video/H265"),
+                ];
+
+                let mut selected_mime_type = "video/H265".to_owned();
+                let mut audio_source = "pulsesrc".to_string();
+                let mut encoder_idx = 0;
+
+                while encoder_idx < encoders.len() {
+                    let (encoder, payloader, mime_type) = encoders[encoder_idx];
+                    if mime_type == "video/H265" && req.supports_h265 == Some(false) {
+                        encoder_idx += 1;
+                        continue;
+                    }
+
+                    let gst_pipeline_str = format!(
+                        "ximagesrc display-name={} use-damage=false show-pointer=false ! video/x-raw,framerate=30/1 ! queue ! videoconvert ! {} ! {} config-interval=-1 ! queue ! appsink name=video_sink drop=true max-buffers=100 \
+                         {} ! audio/x-raw,rate=48000,channels=2 ! queue ! opusenc ! rtpopuspay ! queue ! appsink name=audio_sink drop=true max-buffers=100",
+                        gst_display_str, encoder, payloader, audio_source
+                    );
+
+                    match gst::parse_launch(&gst_pipeline_str) {
+                        Ok(pipeline) => {
+                            let pipeline = pipeline.downcast::<gst::Pipeline>().expect("Expected pipeline");
+                            let v_tx_clone = v_tx.clone();
+                            if let Ok(video_sink) = pipeline.by_name("video_sink").context("Sink not found").and_then(|s| s.downcast::<gst_app::AppSink>().map_err(|_| anyhow::anyhow!("Expected AppSink"))) {
+                                video_sink.set_callbacks(
+                                    gst_app::AppSinkCallbacks::builder()
+                                        .new_sample(move |sink| {
+                                            let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                                            let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
+                                            let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                                            let _ = v_tx_clone.send(map.to_vec());
+                                            Ok(gst::FlowSuccess::Ok)
+                                        })
+                                        .build()
+                                );
+                            }
+                            let a_tx_clone = a_tx.clone();
+                            if let Ok(audio_sink) = pipeline.by_name("audio_sink").context("Sink not found").and_then(|s| s.downcast::<gst_app::AppSink>().map_err(|_| anyhow::anyhow!("Expected AppSink"))) {
+                                audio_sink.set_callbacks(
+                                    gst_app::AppSinkCallbacks::builder()
+                                        .new_sample(move |sink| {
+                                            let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                                            let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
+                                            let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                                            let _ = a_tx_clone.send(map.to_vec());
+                                            Ok(gst::FlowSuccess::Ok)
+                                        })
+                                        .build()
+                                );
+                            }
+
+                            if let Err(e) = pipeline.set_state(gst::State::Playing) {
+                                eprintln!("Failed to set pipeline to playing with encoder {}: {}", encoder, e);
+                                let mut pulse_error = false;
+                                if let Some(bus) = pipeline.bus() {
+                                    while let Some(msg) = bus.timed_pop(gst::ClockTime::from_mseconds(100)) {
+                                        match msg.view() {
+                                            gst::MessageView::Error(err) => {
+                                                let (src, msg, dbg) = (err.src().map(|s| s.path_string()).unwrap_or_default(), err.error(), err.debug());
+                                                if src.contains("pulsesrc") || (dbg.as_ref().map(|d| d.contains("Connection refused")).unwrap_or(false)) {
+                                                    pulse_error = true;
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                if pulse_error && audio_source == "pulsesrc" {
+                                    audio_source = "audiotestsrc is-live=true wave=silence".to_string();
+                                    continue;
+                                }
+                                encoder_idx += 1;
+                                continue;
+                            }
+                            println!("Successfully started pipeline with encoder: {}", encoder);
+                            gst_pipeline = Some(pipeline);
+                            selected_mime_type = mime_type.to_owned();
+                            break;
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to create GStreamer pipeline with encoder {}: {}", encoder, e);
+                            encoder_idx += 1;
+                        }
+                    }
+                }
+
+                let video_track = Arc::new(TrackLocalStaticRTP::new(
+                    RTCRtpCodecCapability { mime_type: selected_mime_type, ..Default::default() },
+                    "video".to_owned(),
+                    "webrtc-rs".to_owned(),
+                ));
+                let audio_track = Arc::new(TrackLocalStaticRTP::new(
+                    RTCRtpCodecCapability { mime_type: "audio/opus".to_owned(), ..Default::default() },
+                    "audio".to_owned(),
+                    "webrtc-rs".to_owned(),
+                ));
+
+                let transceivers = pc.get_transceivers().await;
+                for t in transceivers {
+                    let kind = t.kind();
+                    if kind == RTPCodecType::Video {
+                        let sender = t.sender().await;
+                        let _ = sender.replace_track(Some(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>)).await;
+                    } else if kind == RTPCodecType::Audio {
+                        let sender = t.sender().await;
+                        let _ = sender.replace_track(Some(Arc::clone(&audio_track) as Arc<dyn TrackLocal + Send + Sync>)).await;
+                    }
+                }
+
+                let v_track_clone = video_track.clone();
+                tokio::spawn(async move {
+                    while let Some(buf) = v_rx.recv().await {
+                        if let Ok(packet) = Packet::unmarshal(&mut &buf[..]) {
+                            let _ = v_track_clone.write_rtp(&packet).await;
+                        }
+                    }
+                });
+
+                let a_track_clone = audio_track.clone();
+                tokio::spawn(async move {
+                    while let Some(buf) = a_rx.recv().await {
+                        if let Ok(packet) = Packet::unmarshal(&mut &buf[..]) {
+                            let _ = a_track_clone.write_rtp(&packet).await;
+                        }
+                    }
+                });
+
+                let mut xdotool = if cfg!(target_os = "windows") {
+                    let mut c = system_command("env");
+                    c.arg(format!("DISPLAY={}", wsl_display_str)).arg("xdotool").arg("-");
+                    c
+                } else {
+                    let mut c = Command::new("xdotool");
+                    c.arg("-").env("DISPLAY", &wsl_display_str);
+                    c
+                };
+
+                xdotool.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+                if let Ok(mut xdotool_child) = xdotool.spawn() {
+                    if let Some(mut xdotool_stdin) = xdotool_child.stdin.take() {
+                        let (x11_tx, mut x11_rx) = mpsc::unbounded_channel::<String>();
+                        x11_tx_opt = Some(x11_tx);
+                        
+                        tokio::spawn(async move {
+                            while let Some(mut cmd) = x11_rx.recv().await {
+                                if cmd.starts_with("mousemove ") {
+                                    while let Ok(next) = x11_rx.try_recv() {
+                                        if next.starts_with("mousemove ") {
+                                            cmd = next;
+                                        } else {
+                                            if let Err(_) = xdotool_stdin.write_all(cmd.as_bytes()).await {}
+                                            let _ = xdotool_stdin.write_all(b"\n").await;
+                                            cmd = next;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if let Err(_) = xdotool_stdin.write_all(cmd.as_bytes()).await { break; }
+                                let _ = xdotool_stdin.write_all(b"\n").await;
+                                let _ = xdotool_stdin.flush().await;
+                            }
+                            drop(xdotool_stdin);
+                            let _ = xdotool_child.wait().await;
+                        });
+                    }
+                }
+
+                let payload = serde_json::json!({
+                    "sessionId": session_id.clone(),
+                    "type": "run-gui-start",
+                    "width": width,
+                    "height": height,
+                    "display": wsl_display_str
+                });
+                let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+            }
+
+            let exe_path = std::env::current_exe()?;
+            let runner_path = exe_path.parent().unwrap().join(if cfg!(target_os = "windows") { "runner.exe" } else { "runner" });
+            
+            let mut cmd = Command::new(runner_path);
+            cmd.stdin(Stdio::piped());
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
+            if req.is_gui {
+                cmd.env("DISPLAY", &wsl_display_str);
+                if cfg!(target_os = "windows") {
+                    cmd.env("WSLENV", "DISPLAY");
+                }
+            }
+            
+            let mut child = cmd.spawn()?;
+            let stdin = child.stdin.take().unwrap();
+            let stdout = child.stdout.take().unwrap();
+            let stderr = child.stderr.take().unwrap();
+            
+            let (tx, _) = tokio::sync::broadcast::channel(100);
+            let tx_clone = tx.clone();
+            
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(stdout);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line).await {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            let _ = tx_clone.send(format!("STDOUT:{}", line));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            
+            let tx_clone2 = tx.clone();
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(stderr);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line).await {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            let _ = tx_clone2.send(format!("STDERR:{}", line));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+
+            *guard = Some(RunnerState {
+                process: Some(child),
+                stdin,
+                output_tx: tx,
+                is_gui: req.is_gui,
+                xvfb_process,
+                gst_pipeline,
+                x11_tx: x11_tx_opt,
+            });
+        }
+
+        if let Some(state) = guard.as_mut() {
+            // Subscribe to output
+            let mut rx = state.output_tx.subscribe();
+            let log_dc_clone = log_dc.clone();
+            let sid = session_id.clone();
+            
+            tokio::spawn(async move {
+                while let Ok(msg) = rx.recv().await {
+                    if let Some((type_str, content)) = msg.split_once(':') {
+                         let msg_type = if type_str == "STDOUT" { "run-stdout" } else { "run-stderr" };
+                         let payload = serde_json::json!({
+                            "sessionId": sid.clone(),
+                            "type": msg_type,
+                            "line": content
+                        });
+                        let _ = log_dc_clone.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                    }
+                }
+            });
+
+            // Register x11 input for this session
+            if let Some(tx) = &state.x11_tx {
+                if let Some(sid) = session_id.clone() {
+                    let mut g = x11_input_store.lock().await;
+                    g.insert(sid, tx.clone());
+                }
+            }
+
+            // Send load command
+            let cmd = format!("load {}\n", lib_path_str);
+            state.stdin.write_all(cmd.as_bytes()).await?;
+            state.stdin.flush().await?;
+        }
+        
+        // Send success
+        let payload = serde_json::json!({
+            "sessionId": session_id.clone(),
+            "status": "done",
+            "success": true,
+            "stage": "run"
+        });
+        let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+        
         return Ok(());
     }
 
