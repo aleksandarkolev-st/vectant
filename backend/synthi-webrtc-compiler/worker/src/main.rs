@@ -3,6 +3,9 @@ use std::process::Stdio;
 use std::collections::HashMap;
 use std::env;
 
+mod builder;
+mod watcher;
+mod server;
 mod storage;
 
 use gstreamer as gst;
@@ -196,7 +199,71 @@ async fn main() -> Result<()> {
     // Create a persistent workspace directory for the session
     let workspace_dir = Arc::new(tempdir()?);
     let workspace_path = workspace_dir.path().to_owned();
+    let workspace_path_for_watcher = workspace_path.clone();
+    let workspace_path_for_builder = workspace_path.clone();
     let workspace_path_arc = Arc::new(workspace_path);
+
+    // --- Build System Initialization ---
+    let (update_tx, _) = tokio::sync::broadcast::channel(16);
+    let (watcher_tx, watcher_rx) = std::sync::mpsc::channel();
+    
+    // Start Watcher
+    let _watcher = watcher::setup_watcher(&workspace_path_for_watcher, watcher_tx).context("Failed to setup watcher")?;
+    
+    // Start Build Loop
+    let build_update_tx = update_tx.clone();
+    
+    let mut build_session = builder::BuildSession::new(workspace_path_for_builder);
+    let session_hash = build_session.session_hash.clone();
+    
+    // Start WebSocket Server
+    let server_update_rx = update_tx.subscribe();
+    let server_hash = session_hash.clone();
+    tokio::spawn(async move {
+        server::start_server("0.0.0.0:8001".to_string(), server_update_rx, server_hash).await;
+    });
+
+    // Forward updates to DataChannel
+    let mut dc_rx = update_tx.subscribe();
+    let dc_store = log_channel_store.clone();
+    tokio::spawn(async move {
+        while let Ok(msg) = dc_rx.recv().await {
+            let guard = dc_store.lock().await;
+            if let Some(dc) = &*guard {
+                let _ = dc.send_text(msg).await;
+            }
+        }
+    });
+
+    // Build Loop Task
+    tokio::task::spawn_blocking(move || {
+        loop {
+            if let Ok(path_str) = watcher_rx.recv() {
+                let path = std::path::Path::new(&path_str);
+                let relative_path = if let Ok(rel) = path.strip_prefix(&build_session.workspace_root) {
+                    rel.to_string_lossy().to_string()
+                } else {
+                    path_str
+                };
+
+                if let Some(payload) = build_session.incremental_compile(vec![relative_path]) {
+                    // Wrap with type="update" and include hash
+                    let msg = serde_json::json!({
+                        "type": "update",
+                        "data": {
+                            "hash": build_session.session_hash,
+                            "manifest": payload.manifest,
+                            "modules": payload.modules
+                        }
+                    });
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = build_update_tx.send(json);
+                    }
+                }
+            }
+        }
+    });
+    // -----------------------------------
 
     let build_log_dc = pc
         .create_data_channel("build-log", Some(RTCDataChannelInit::default()))

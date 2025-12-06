@@ -107,6 +107,7 @@ const TAB_TOKENS = {
 
 const EditorPanel = ({
     onRun,
+    onSave,
     onToggleTerminal,
     onEditorMount,
     analysisResult,
@@ -692,7 +693,9 @@ const EditorPanel = ({
 
     const handleSave = useCallback(() => {
         if (activeFile && isUnsaved) dispatch(saveFileContentThunk());
-    }, [activeFile, isUnsaved, dispatch]);
+        // Trigger HMR/Compilation on save
+        if (onSave) onSave();
+    }, [activeFile, isUnsaved, dispatch, onSave]);
 
     // Auto-save
     useEffect(() => {

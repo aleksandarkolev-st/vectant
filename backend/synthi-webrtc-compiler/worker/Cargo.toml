@@ -18,3 +18,5 @@ bytes = "1"
 gstreamer = "0.21"
 gstreamer-app = "0.21"
 chrono = { version = "0.4", features = ["serde", "alloc"] }
+notify = "8.2.0"
+uuid = "1.19.0"
