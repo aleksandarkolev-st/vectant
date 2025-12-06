@@ -99,6 +99,10 @@ struct RunnerState {
     xvfb_process: Option<tokio::process::Child>,
     gst_pipeline: Option<gst::Pipeline>,
     x11_tx: Option<mpsc::UnboundedSender<String>>,
+    width: u32,
+    height: u32,
+    wsl_display_str: String,
+    gst_display_str: String,
 }
 
 struct LspSessionState {
@@ -1007,6 +1011,10 @@ async fn handle_compile(
     // Use the shared workspace path instead of creating a new temp dir
     let dir_path = workspace_path;
 
+    // Check if we need to restart due to GUI mode change or blocking app
+    // We do this early because we consume req.files later
+    let has_on_update = req.source.contains("on_update") || req.files.iter().any(|f| f.content.contains("on_update"));
+
     // Generate a unique filename for the shared library to support HMR
     let timestamp = Utc::now().timestamp_millis();
     let ext = if cfg!(target_os = "windows") { "dll" } else { "so" };
@@ -1749,66 +1757,88 @@ async fn handle_compile(
         let mut guard = runner_store.lock().await;
         
         // Check if we need to restart due to GUI mode change or blocking app
-        let is_blocking_app = !req.source.contains("on_update");
-        if guard.as_ref().map_or(false, |s| s.is_gui != req.is_gui || is_blocking_app) {
-             println!("Restarting runner due to GUI mode change or blocking app detected");
-             let mut state = guard.take().unwrap();
-             if let Some(mut child) = state.process { let _ = child.kill().await; }
-             if let Some(mut child) = state.xvfb_process { let _ = child.kill().await; }
-             if let Some(pipeline) = state.gst_pipeline { let _ = pipeline.set_state(gst::State::Null); }
-        }
+        let is_blocking_app = !has_on_update;
+        let req_width = req.width.unwrap_or(1280);
+        let req_height = req.height.unwrap_or(720);
         
-        // If it's a blocking app, we must ensure we don't have a guard (force restart)
-        // But the above check already takes the guard if is_blocking_app is true AND guard exists.
-        // If guard is None, it will start a new runner below.
-        // Wait, if guard is None, we start a new runner.
-        // If is_blocking_app is true, we want to start a new runner, run the code, and then KILL it?
-        // No, we want to keep it running until the NEXT compile.
-        // So "persistent runner" concept works, but we just have to kill the OLD one before starting the NEW one.
-        // The logic above does exactly that: if guard exists, kill it. Then guard becomes None.
-        // Then the block below starts a new runner.
+        // Reuse Xvfb/GStreamer if possible
+        let mut reused_xvfb: Option<tokio::process::Child> = None;
+        let mut reused_pipeline: Option<gst::Pipeline> = None;
+        let mut reused_wsl_display = String::new();
+        let mut reused_gst_display = String::new();
+        let mut reused_x11_tx: Option<mpsc::UnboundedSender<String>> = None;
+
+        if let Some(state) = guard.as_mut() {
+            let needs_restart = state.is_gui != req.is_gui || is_blocking_app;
+            if needs_restart {
+                println!("Restarting runner due to GUI mode change or blocking app detected");
+                // If resolution matches and is_gui matches, we can reuse Xvfb/GStreamer
+                let can_reuse = state.is_gui == req.is_gui && state.width == req_width && state.height == req_height;
+                
+                let mut state = guard.take().unwrap();
+                if let Some(mut child) = state.process { 
+                    println!("Killing old runner process...");
+                    let _ = child.kill().await; 
+                }
+                
+                if can_reuse {
+                    println!("Reusing Xvfb and GStreamer pipeline...");
+                    reused_xvfb = state.xvfb_process;
+                    reused_pipeline = state.gst_pipeline;
+                    reused_wsl_display = state.wsl_display_str;
+                    reused_gst_display = state.gst_display_str;
+                    reused_x11_tx = state.x11_tx;
+                } else {
+                    println!("Full restart (resolution/GUI mode changed)...");
+                    if let Some(mut child) = state.xvfb_process { let _ = child.kill().await; }
+                    if let Some(pipeline) = state.gst_pipeline { let _ = pipeline.set_state(gst::State::Null); }
+                }
+            }
+        }
         
         if guard.is_none() {
             // Start runner
             println!("Starting persistent runner...");
             
-            let mut wsl_display_str = String::new();
-            let mut xvfb_process: Option<tokio::process::Child> = None;
-            let mut gst_pipeline: Option<gst::Pipeline> = None;
-            let mut x11_tx_opt: Option<mpsc::UnboundedSender<String>> = None;
+            let mut wsl_display_str = reused_wsl_display;
+            let mut gst_display_str = reused_gst_display;
+            let mut xvfb_process: Option<tokio::process::Child> = reused_xvfb;
+            let mut gst_pipeline: Option<gst::Pipeline> = reused_pipeline;
+            let mut x11_tx_opt: Option<mpsc::UnboundedSender<String>> = reused_x11_tx;
 
             if req.is_gui {
-                for tool in GUI_TOOLS {
-                    if Command::new(tool).arg("--version").output().await.is_err() {
-                         let msg = format!("Error: GUI tool '{}' is missing. GUI apps require Linux/WSL with xdotool, Xvfb, and matchbox-window-manager installed.\n", tool);
-                         let payload = serde_json::json!({
-                            "sessionId": session_id.clone(),
-                            "type": "stderr",
-                            "line": msg
-                         });
-                         let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
-                         return Ok(());
+                let width = req_width;
+                let height = req_height;
+                
+                if xvfb_process.is_none() {
+                    for tool in GUI_TOOLS {
+                        if Command::new(tool).arg("--version").output().await.is_err() {
+                             let msg = format!("Error: GUI tool '{}' is missing. GUI apps require Linux/WSL with xdotool, Xvfb, and matchbox-window-manager installed.\n", tool);
+                             let payload = serde_json::json!({
+                                "sessionId": session_id.clone(),
+                                "type": "stderr",
+                                "line": msg
+                             });
+                             let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                             return Ok(());
+                        }
                     }
-                }
 
-                let width = req.width.unwrap_or(1280);
-                let height = req.height.unwrap_or(720);
-                let resolution = format!("{}x{}x24", width, height);
+                    let resolution = format!("{}x{}x24", width, height);
 
-                let mut gst_display_str = String::new();
-                let mut xvfb = system_command("Xvfb");
-                xvfb.arg("-displayfd").arg("1")
-                    .arg("-screen")
-                    .arg("0")
-                    .arg(&resolution)
-                    .arg("-ac")
-                    .arg("-listen")
-                    .arg("tcp")
-                    .arg("-s").arg("0")
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::inherit());
+                    let mut xvfb = system_command("Xvfb");
+                    xvfb.arg("-displayfd").arg("1")
+                        .arg("-screen")
+                        .arg("0")
+                        .arg(&resolution)
+                        .arg("-ac")
+                        .arg("-listen")
+                        .arg("tcp")
+                        .arg("-s").arg("0")
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::inherit());
 
-                match xvfb.spawn() {
+                    match xvfb.spawn() {
                     Ok(mut child) => {
                         if let Some(stdout) = child.stdout.take() {
                             let mut reader = BufReader::new(stdout);
@@ -1830,7 +1860,7 @@ async fn handle_compile(
                         xvfb_process = Some(child);
                     }
                     Err(e) => eprintln!("Failed to spawn Xvfb: {}", e),
-                }
+                    }
 
                 if wsl_display_str.is_empty() {
                     wsl_display_str = ":99".to_string();
@@ -2057,6 +2087,7 @@ async fn handle_compile(
                 });
                 let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
             }
+            }
 
             let exe_path = std::env::current_exe()?;
             let runner_path = exe_path.parent().unwrap().join(if cfg!(target_os = "windows") { "runner.exe" } else { "runner" });
@@ -2119,6 +2150,10 @@ async fn handle_compile(
                 xvfb_process,
                 gst_pipeline,
                 x11_tx: x11_tx_opt,
+                width: req_width,
+                height: req_height,
+                wsl_display_str,
+                gst_display_str,
             });
         }
 
