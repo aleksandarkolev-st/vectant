@@ -1010,14 +1010,29 @@ async fn handle_compile(
     // Generate a unique filename for the shared library to support HMR
     let timestamp = Utc::now().timestamp_millis();
     let ext = if cfg!(target_os = "windows") { "dll" } else { "so" };
-    let lib_filename = format!("libuser_code_{}.{}", timestamp, ext);
+    
+    // Phase 3: RAM-Based Compilation Pipeline
+    // Use /dev/shm on Linux to avoid disk I/O
+    let (output_dir, _is_shm) = if cfg!(target_os = "linux") {
+        (std::path::PathBuf::from("/dev/shm"), true)
+    } else {
+        (dir_path.clone(), false)
+    };
 
-    // Clean up old shared libraries
-    if let Ok(mut entries) = tokio::fs::read_dir(&dir_path).await {
+    let lib_filename = format!("libuser_code_{}.{}", timestamp, ext);
+    let final_output_path = output_dir.join(&lib_filename);
+    
+    // Atomic swap: compile to temp file first
+    let temp_filename = format!("temp_{}.{}", timestamp, ext);
+    let temp_output_path = output_dir.join(&temp_filename);
+    let temp_output_path_str = temp_output_path.to_string_lossy().to_string();
+
+    // Clean up old shared libraries in output_dir
+    if let Ok(mut entries) = tokio::fs::read_dir(&output_dir).await {
         while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with("libuser_code_") && (name.ends_with(".so") || name.ends_with(".dll")) {
+                if (name.starts_with("libuser_code_") || name.starts_with("temp_")) && (name.ends_with(".so") || name.ends_with(".dll")) {
                     let _ = tokio::fs::remove_file(path).await;
                 }
             }
@@ -1062,8 +1077,8 @@ async fn handle_compile(
         "cpp" => {
             let mut c = system_command("g++");
             c.arg("-shared").arg("-fPIC");
-            // let ext = if cfg!(target_os = "windows") { "dll" } else { "so" };
-            c.arg(&req.filename).arg("-I.").arg("-o").arg(&lib_filename);
+            // Output to temp path for atomic swap
+            c.arg(&req.filename).arg("-I.").arg("-o").arg(&temp_output_path_str);
             if req.is_gui {
                 c.arg("-lX11");
             }
@@ -1072,8 +1087,8 @@ async fn handle_compile(
         "rust" => {
             let mut c = system_command("rustc");
             c.arg("--crate-type").arg("cdylib");
-            // let ext = if cfg!(target_os = "windows") { "dll" } else { "so" };
-            c.arg(&req.filename).arg("-o").arg(&lib_filename);
+            // Output to temp path for atomic swap
+            c.arg(&req.filename).arg("-o").arg(&temp_output_path_str);
             if req.is_gui {
                 c.arg("-l").arg("X11");
             }
@@ -1159,6 +1174,21 @@ async fn handle_compile(
             "success": false,
             "stage": "compile",
             "code": compile_status.code()
+        });
+        let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""))).await;
+        return Ok(());
+    }
+
+    // Phase 3: Atomic Swap
+    // Rename temp file to final filename
+    if let Err(e) = tokio::fs::rename(&temp_output_path, &final_output_path).await {
+        let payload = serde_json::json!({
+            "sessionId": session_id.clone(),
+            "status": "done",
+            "success": false,
+            "stage": "compile",
+            "code": 1,
+            "error": format!("Failed to rename temp file: {}", e)
         });
         let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""))).await;
         return Ok(());
@@ -1713,7 +1743,7 @@ async fn handle_compile(
         return Ok(());
     } else if req.language == "rust" || req.language == "cpp" {
         // let ext = if cfg!(target_os = "windows") { "dll" } else { "so" };
-        let lib_path = dir_path.join(&lib_filename);
+        let lib_path = final_output_path;
         let lib_path_str = lib_path.to_string_lossy().to_string();
 
         let mut guard = runner_store.lock().await;
