@@ -2141,10 +2141,19 @@ async fn handle_compile(
 
             // Send load command
             let cmd = format!("load {}\n", lib_path_str);
+            println!("Sending command to runner: {}", cmd.trim());
             state.stdin.write_all(cmd.as_bytes()).await?;
             state.stdin.flush().await?;
         }
         
+        // Send HMR update notification to frontend
+        let hmr_payload = serde_json::json!({
+            "sessionId": session_id.clone(),
+            "type": "update",
+            "hash": timestamp.to_string()
+        });
+        let _ = log_dc.send_text(serde_json::to_string(&hmr_payload).unwrap_or_default()).await;
+
         // Send success
         let payload = serde_json::json!({
             "sessionId": session_id.clone(),

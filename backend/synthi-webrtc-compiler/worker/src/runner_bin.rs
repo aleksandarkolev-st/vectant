@@ -83,18 +83,34 @@ fn main() {
     
     // Spawn stdin reader thread
     thread::spawn(move || {
+        println!("Stdin reader thread started");
         let stdin = io::stdin();
         let mut handle = stdin.lock();
         let mut line = String::new();
-        while handle.read_line(&mut line).unwrap() > 0 {
-            let trimmed = line.trim().to_string();
-            if !trimmed.is_empty() {
-                if let Err(_) = tx.send(trimmed) {
+        loop {
+            match handle.read_line(&mut line) {
+                Ok(0) => {
+                    println!("Stdin closed (EOF)");
+                    break;
+                }
+                Ok(_) => {
+                    let trimmed = line.trim().to_string();
+                    if !trimmed.is_empty() {
+                        println!("Stdin received: {}", trimmed);
+                        if let Err(e) = tx.send(trimmed) {
+                            println!("Failed to send command to main thread: {}", e);
+                            break;
+                        }
+                    }
+                    line.clear();
+                }
+                Err(e) => {
+                    println!("Error reading stdin: {}", e);
                     break;
                 }
             }
-            line.clear();
         }
+        println!("Stdin reader thread exited");
     });
 
     let mut current_lib: Option<Library> = None;
