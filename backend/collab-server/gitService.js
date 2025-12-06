@@ -103,8 +103,19 @@ class GitService {
 
     async commit(slug, message) {
         const git = this.getGit(slug);
-        await git.add('.');
         await git.commit(message);
+        return this.getStatus(slug);
+    }
+
+    async stageFile(slug, filePath) {
+        const git = this.getGit(slug);
+        await git.add(filePath);
+        return this.getStatus(slug);
+    }
+
+    async unstageFile(slug, filePath) {
+        const git = this.getGit(slug);
+        await git.reset(['HEAD', filePath]);
         return this.getStatus(slug);
     }
 
@@ -130,6 +141,38 @@ class GitService {
         if (fs.existsSync(fullPath)) {
             fs.unlinkSync(fullPath);
         }
+    }
+
+    async listFiles(slug) {
+        const repoPath = this.getRepoPath(slug);
+        if (!fs.existsSync(repoPath)) return [];
+        
+        const getFiles = (dir, baseDir) => {
+            let results = [];
+            const list = fs.readdirSync(dir);
+            list.forEach(file => {
+                if (file === '.git') return;
+                const filePath = path.join(dir, file);
+                const stat = fs.statSync(filePath);
+                if (stat && stat.isDirectory()) {
+                    results = results.concat(getFiles(filePath, baseDir));
+                } else {
+                    results.push(path.relative(baseDir, filePath).replace(/\\/g, '/'));
+                }
+            });
+            return results;
+        };
+        
+        return getFiles(repoPath, repoPath);
+    }
+
+    async readFile(slug, filePath) {
+        const repoPath = this.getRepoPath(slug);
+        const fullPath = path.join(repoPath, filePath);
+        if (fs.existsSync(fullPath)) {
+            return fs.readFileSync(fullPath, 'utf-8');
+        }
+        throw new Error('File not found');
     }
 }
 

@@ -39,6 +39,14 @@ export const gitClient = {
         return this.request(slug, 'commit', { message });
     },
 
+    async stageFile(slug, filePath) {
+        return this.request(slug, 'stage', { filePath });
+    },
+
+    async unstageFile(slug, filePath) {
+        return this.request(slug, 'unstage', { filePath });
+    },
+
     async push(slug) {
         return this.request(slug, 'push');
     },

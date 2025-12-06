@@ -41,6 +41,22 @@ export const commitChanges = createAsyncThunk(
     }
 );
 
+export const stageFile = createAsyncThunk(
+    'git/stage',
+    async ({ slug, filePath }, { dispatch }) => {
+        await gitClient.stageFile(slug, filePath);
+        dispatch(fetchGitStatus(slug));
+    }
+);
+
+export const unstageFile = createAsyncThunk(
+    'git/unstage',
+    async ({ slug, filePath }, { dispatch }) => {
+        await gitClient.unstageFile(slug, filePath);
+        dispatch(fetchGitStatus(slug));
+    }
+);
+
 export const pushChanges = createAsyncThunk(
     'git/push',
     async (slug, { dispatch }) => {

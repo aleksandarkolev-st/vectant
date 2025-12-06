@@ -132,7 +132,8 @@ const server = http.createServer(async (req, res) => {
 
   if (req.url.startsWith('/git/')) {
     // Parse URL: /git/:slug/:action
-    const parts = req.url.split('/');
+    const urlObj = new URL(req.url, `http://${req.headers.host}`);
+    const parts = urlObj.pathname.split('/');
     // parts[0] = '', parts[1] = 'git', parts[2] = slug, parts[3] = action
     const slug = parts[2];
     const action = parts[3];
@@ -148,6 +149,11 @@ const server = http.createServer(async (req, res) => {
     req.on('end', async () => {
         try {
             const data = body ? JSON.parse(body) : {};
+            // Merge query params into data
+            for (const [key, value] of urlObj.searchParams) {
+                data[key] = value;
+            }
+
             let result;
 
             switch (action) {
@@ -174,6 +180,12 @@ const server = http.createServer(async (req, res) => {
                 case 'commit':
                     result = await gitService.commit(slug, data.message);
                     break;
+                case 'stage':
+                    result = await gitService.stageFile(slug, data.filePath);
+                    break;
+                case 'unstage':
+                    result = await gitService.unstageFile(slug, data.filePath);
+                    break;
                 case 'push':
                     result = await gitService.push(slug);
                     break;
@@ -181,6 +193,13 @@ const server = http.createServer(async (req, res) => {
                     // Sync a single file
                     await gitService.syncFile(slug, data.filePath, data.content);
                     result = { success: true };
+                    break;
+                case 'files':
+                    result = await gitService.listFiles(slug);
+                    break;
+                case 'file':
+                    const content = await gitService.readFile(slug, data.path);
+                    result = { content };
                     break;
                 default:
                     res.writeHead(404);
