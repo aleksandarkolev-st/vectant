@@ -1088,7 +1088,8 @@ async fn handle_compile(
             let height = req.height.unwrap_or(720);
             let resolution = format!("{}x{}x24", width, height);
 
-            let mut display_str = String::new();
+            let mut wsl_display_str = String::new();
+            let mut gst_display_str = String::new();
             let mut xvfb = system_command("Xvfb");
             xvfb.arg("-displayfd").arg("1")
                 .arg("-screen")
@@ -1110,8 +1111,14 @@ async fn handle_compile(
                             Ok(n) if n > 0 => {
                                 let display_num = line.trim();
                                 // Use standard X DISPLAY format ":N"
-                                display_str = format!(":{}", display_num);
-                                println!("Xvfb started on display {}", display_str);
+                                wsl_display_str = format!(":{}", display_num);
+                                if cfg!(target_os = "windows") {
+                                    // On Windows, we need to connect to WSL's Xvfb via TCP
+                                    gst_display_str = format!("127.0.0.1:{}", display_num);
+                                } else {
+                                    gst_display_str = wsl_display_str.clone();
+                                }
+                                println!("Xvfb started on display {}", wsl_display_str);
                             }
                             _ => eprintln!("Xvfb failed to output a display number"),
                         }
@@ -1123,9 +1130,14 @@ async fn handle_compile(
 
             // If for any reason we didn't obtain a display number from Xvfb,
             // fall back to a default display so GUI input mapping still works.
-            if display_str.is_empty() {
-                display_str = ":99".to_string();
-                println!("Falling back to DISPLAY {}", display_str);
+            if wsl_display_str.is_empty() {
+                wsl_display_str = ":99".to_string();
+                if cfg!(target_os = "windows") {
+                    gst_display_str = "127.0.0.1:99".to_string();
+                } else {
+                    gst_display_str = wsl_display_str.clone();
+                }
+                println!("Falling back to DISPLAY {}", wsl_display_str);
             }
 
             // Give Xvfb time to fully initialize
@@ -1133,12 +1145,20 @@ async fn handle_compile(
 
             // Start a window manager for proper focus/window management
             // Using matchbox-window-manager as it's lightweight and designed for embedded systems
-            let mut wm_cmd = Command::new("matchbox-window-manager");
-            wm_cmd.env("DISPLAY", &display_str)
-                  .stdout(Stdio::null())
+            let mut wm_cmd = if cfg!(target_os = "windows") {
+                let mut c = system_command("env");
+                c.arg(format!("DISPLAY={}", wsl_display_str)).arg("matchbox-window-manager");
+                c
+            } else {
+                let mut c = Command::new("matchbox-window-manager");
+                c.env("DISPLAY", &wsl_display_str);
+                c
+            };
+
+            wm_cmd.stdout(Stdio::null())
                   .stderr(Stdio::null());
             match wm_cmd.spawn() {
-                Ok(_) => println!("Started window manager on display {}", display_str),
+                Ok(_) => println!("Started window manager on display {}", wsl_display_str),
                 Err(e) => eprintln!("Warning: Failed to start window manager: {}. GUI apps may not receive input properly.", e),
             }
 
@@ -1188,7 +1208,7 @@ async fn handle_compile(
                 let gst_pipeline_str = format!(
                     "ximagesrc display-name={} use-damage=false show-pointer=false ! video/x-raw,framerate=30/1 ! queue ! videoconvert ! {} ! {} config-interval=-1 ! queue ! appsink name=video_sink drop=true max-buffers=100 \
                      {} ! audio/x-raw,rate=48000,channels=2 ! queue ! opusenc ! rtpopuspay ! queue ! appsink name=audio_sink drop=true max-buffers=100",
-                    display_str, encoder, payloader, audio_source
+                    gst_display_str, encoder, payloader, audio_source
                 );
 
                 match gst::parse_launch(&gst_pipeline_str) {
@@ -1352,16 +1372,24 @@ async fn handle_compile(
             });
 
             // Start persistent xdotool process for input handling
-            let mut xdotool = Command::new("xdotool")
-                .arg("-")
-                .env("DISPLAY", &display_str)
-                .stdin(Stdio::piped())
+            let mut xdotool = if cfg!(target_os = "windows") {
+                let mut c = system_command("env");
+                c.arg(format!("DISPLAY={}", wsl_display_str)).arg("xdotool").arg("-");
+                c
+            } else {
+                let mut c = Command::new("xdotool");
+                c.arg("-").env("DISPLAY", &wsl_display_str);
+                c
+            };
+
+            xdotool.stdin(Stdio::piped())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()?;
+                .stderr(Stdio::piped());
             
-            let mut xdotool_stdin = xdotool.stdin.take().ok_or(anyhow::anyhow!("Failed to open xdotool stdin"))?;
-            let xdotool_stderr = xdotool.stderr.take();
+            let mut xdotool_child = xdotool.spawn()?;
+            
+            let mut xdotool_stdin = xdotool_child.stdin.take().ok_or(anyhow::anyhow!("Failed to open xdotool stdin"))?;
+            let xdotool_stderr = xdotool_child.stderr.take();
 
             if let Some(stderr) = xdotool_stderr {
                 tokio::spawn(async move {
@@ -1408,7 +1436,7 @@ async fn handle_compile(
                 }
                 // Channel closed, close stdin, wait for process
                 drop(xdotool_stdin);
-                let _ = xdotool.wait().await;
+                let _ = xdotool_child.wait().await;
             });
 
             let payload = serde_json::json!({
@@ -1416,13 +1444,16 @@ async fn handle_compile(
                 "type": "run-gui-start",
                 "width": width,
                 "height": height,
-                "display": display_str
+                "display": wsl_display_str
             });
             let json_str = serde_json::to_string(&payload).unwrap_or_default();
             println!("Sending GUI start message: {}", json_str);
             let _ = log_dc.send_text(json_str).await;
 
-            run_cmd.env("DISPLAY", display_str);
+            run_cmd.env("DISPLAY", &wsl_display_str);
+            if cfg!(target_os = "windows") {
+                run_cmd.env("WSLENV", "DISPLAY");
+            }
         }
 
         // Record start time (seconds precision), spawn the run child, and notify listeners
