@@ -188,12 +188,13 @@ fn main() {
                             Ok(lib) => {
                                 println!("Library loaded successfully. Checking for symbols...");
                                 
-                                // Check for on_load or entrypoint BEFORE unloading the old one
+                                // Check for on_load or entrypoint or on_update BEFORE unloading the old one
                                 let load_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = lib.get(b"on_load");
                                 let entry_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = lib.get(b"entrypoint");
+                                let update_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = lib.get(b"on_update");
                                 
-                                if load_func.is_err() && entry_func.is_err() && name != "main" {
-                                     println!("New library missing required symbols (on_load/entrypoint). Aborting reload to preserve state.");
+                                if load_func.is_err() && entry_func.is_err() && update_func.is_err() && name != "main" {
+                                     println!("New library missing all required symbols (on_load, entrypoint, on_update). Aborting reload to preserve state.");
                                      continue;
                                 }
 
@@ -262,15 +263,23 @@ fn main() {
         last_frame = now;
 
         // Run update loop for all loaded modules
-        // We iterate over keys to avoid borrowing issues if we needed to mutate map (we don't here)
-        // But we need to iterate values.
-        for (name, lib) in &modules {
-            unsafe {
-                let update_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = lib.get(b"on_update");
-                if let Ok(f) = update_func {
-                    // Uncomment to debug update loop (spammy)
-                    // println!("Calling on_update for {}", name);
-                    f(app_state.raw, dt);
+        // Deterministic order: "core" first, then others sorted alphabetically
+        let mut keys: Vec<String> = modules.keys().cloned().collect();
+        keys.sort_by(|a, b| {
+            if a == "core" { std::cmp::Ordering::Less }
+            else if b == "core" { std::cmp::Ordering::Greater }
+            else { a.cmp(b) }
+        });
+
+        for name in keys {
+            if let Some(lib) = modules.get(&name) {
+                unsafe {
+                    let update_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = lib.get(b"on_update");
+                    if let Ok(f) = update_func {
+                        // Uncomment to debug update loop (spammy)
+                        // println!("Calling on_update for {}", name);
+                        f(app_state.raw, dt);
+                    }
                 }
             }
         }

@@ -1130,7 +1130,7 @@ async fn handle_compile(
         while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if (name.starts_with("libuser_code_") || name.starts_with("temp_")) && (name.ends_with(".so") || name.ends_with(".dll")) {
+                if (name.starts_with("libuser_code_") || name.starts_with("temp_") || name.starts_with("libcore_") || name.starts_with("libgui_")) && (name.ends_with(".so") || name.ends_with(".dll")) {
                     let _ = tokio::fs::remove_file(path).await;
                 }
             }
@@ -1265,6 +1265,13 @@ async fn handle_compile(
                         println!("Failed to create core.so symlink: {}", e);
                     }
                 }
+                #[cfg(windows)]
+                {
+                    let _ = tokio::fs::remove_file("./core.dll").await;
+                    if let Err(e) = tokio::fs::copy(&core_lib_path, "./core.dll").await {
+                        println!("Failed to copy core.dll: {}", e);
+                    }
+                }
                 modules_to_load.push(("core".to_string(), core_lib_path.clone()));
             }
         }
@@ -1337,6 +1344,13 @@ async fn handle_compile(
                     let _ = tokio::fs::remove_file("./gui.so").await;
                     if let Err(e) = tokio::fs::symlink(&gui_lib_path, "./gui.so").await {
                         println!("Failed to create gui.so symlink: {}", e);
+                    }
+                }
+                #[cfg(windows)]
+                {
+                    let _ = tokio::fs::remove_file("./gui.dll").await;
+                    if let Err(e) = tokio::fs::copy(&gui_lib_path, "./gui.dll").await {
+                        println!("Failed to copy gui.dll: {}", e);
                     }
                 }
                 modules_to_load.push(("main".to_string(), gui_lib_path.clone()));
