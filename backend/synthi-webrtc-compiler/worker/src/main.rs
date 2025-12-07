@@ -1237,6 +1237,7 @@ async fn handle_compile(
                     cmd.arg("-shared").arg("-fPIC")
                        .arg("-D_POSIX_C_SOURCE=199309L")
                        .arg(fname).arg("-I.").arg("-o").arg(&core_out);
+                    apply_build_directives(&content, &mut cmd);
                     cmd.current_dir(&dir_path);
                     
                     let output = cmd.output().await?;
@@ -1302,20 +1303,12 @@ async fn handle_compile(
                     
                     if req.is_gui {
                         // Default to X11 if no specific flags are found, for backward compatibility
-                        if !content.contains("// LINK:") {
+                        if !content.contains("// LINK:") && !content.contains("// PKG:") {
                             cmd.arg("-lX11");
                         }
                     }
 
-                    // Parse custom linker flags from source
-                    // Format: // LINK: -lSDL2 -lGL
-                    for line in content.lines() {
-                        if let Some(flags) = line.trim().strip_prefix("// LINK:") {
-                            for flag in flags.split_whitespace() {
-                                cmd.arg(flag);
-                            }
-                        }
-                    }
+                    apply_build_directives(&content, &mut cmd);
 
                     cmd.current_dir(&dir_path);
                     
@@ -1396,8 +1389,11 @@ async fn handle_compile(
                 // Output to temp path for atomic swap
                 c.arg(&req.filename).arg("-I.").arg("-o").arg(&temp_output_path_str);
                 if req.is_gui {
-                    c.arg("-lX11");
+                    if !req.source.contains("// LINK:") && !req.source.contains("// PKG:") {
+                        c.arg("-lX11");
+                    }
                 }
+                apply_build_directives(&req.source, &mut c);
                 c
             }
             "rust" => {
@@ -2016,5 +2012,53 @@ fn system_command(program: &str) -> Command {
         cmd
     } else {
         Command::new(program)
+    }
+}
+
+fn apply_build_directives(content: &str, cmd: &mut Command) {
+    for line in content.lines() {
+        // Parse custom linker flags
+        // Format: // LINK: -lSDL2 -lGL
+        if let Some(flags) = line.trim().strip_prefix("// LINK:") {
+            for flag in flags.split_whitespace() {
+                cmd.arg(flag);
+            }
+        }
+        
+        // Parse pkg-config dependencies
+        // Format: // PKG: gtk+-3.0 opencv4
+        if let Some(pkgs) = line.trim().strip_prefix("// PKG:") {
+            let pkgs_str = pkgs.trim();
+            if !pkgs_str.is_empty() {
+                let mut pkg_cmd = if cfg!(target_os = "windows") {
+                    let mut c = std::process::Command::new("wsl");
+                    c.arg("pkg-config");
+                    c
+                } else {
+                    std::process::Command::new("pkg-config")
+                };
+                
+                let output = pkg_cmd
+                    .arg("--cflags")
+                    .arg("--libs")
+                    .args(pkgs_str.split_whitespace())
+                    .output();
+                
+                match output {
+                    Ok(out) if out.status.success() => {
+                        let flags = String::from_utf8_lossy(&out.stdout);
+                        for flag in flags.split_whitespace() {
+                            cmd.arg(flag);
+                        }
+                    },
+                    Ok(out) => {
+                        println!("pkg-config failed for {}: {}", pkgs_str, String::from_utf8_lossy(&out.stderr));
+                    }
+                    Err(e) => {
+                        println!("Failed to run pkg-config: {}", e);
+                    }
+                }
+            }
+        }
     }
 }
