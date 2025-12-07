@@ -1086,6 +1086,47 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
     Ok(split_data)
 }
 
+async fn perform_ai_fix(code: &str, error: &str) -> Result<String> {
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "code": code,
+        "error": error,
+        "mode": "fix"
+    });
+
+    let backend_url = std::env::var("AI_BACKEND_URL")
+        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
+    let url = format!("{}/refactor/fix", backend_url);
+
+    let res = client.post(&url)
+        .json(&payload)
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    let result_str = res["result"].as_str().ok_or(anyhow::anyhow!("No result from AI"))?;
+    
+    // Clean markdown
+    let clean_code = if let Some(start) = result_str.find("```") {
+        let s = &result_str[start+3..];
+        if let Some(newline) = s.find('\n') {
+             let s = &s[newline+1..];
+             if let Some(end) = s.rfind("```") {
+                 &s[..end]
+             } else {
+                 s
+             }
+        } else {
+            s
+        }
+    } else {
+        result_str
+    }.trim();
+
+    Ok(clean_code.to_string())
+}
+
 async fn handle_compile(
     req: CompileRequest,
     log_dc: Arc<RTCDataChannel>,
@@ -1242,7 +1283,34 @@ async fn handle_compile(
                     
                     let output = cmd.output().await?;
                     if !output.status.success() {
-                         let stderr = String::from_utf8_lossy(&output.stderr);
+                         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                         
+                         // Attempt AI Fix
+                         println!("Core compilation failed. Attempting AI fix...");
+                         if let Ok(fixed_code) = perform_ai_fix(&content, &stderr).await {
+                             println!("AI Fix received. Retrying compilation...");
+                             tokio::fs::write(dir_path.join(fname), &fixed_code).await?;
+                             
+                             // Retry compilation once
+                             let mut retry_cmd = system_command("g++");
+                             retry_cmd.arg("-shared").arg("-fPIC")
+                                .arg("-D_POSIX_C_SOURCE=199309L")
+                                .arg(fname).arg("-I.").arg("-o").arg(&core_out);
+                             apply_build_directives(&fixed_code, &mut retry_cmd);
+                             retry_cmd.current_dir(&dir_path);
+                             
+                             let retry_output = retry_cmd.output().await?;
+                             if retry_output.status.success() {
+                                 println!("AI Fix successful!");
+                                 let p = core_out.to_string_lossy().to_string();
+                                 let mut cache = compile_cache.lock().await;
+                                 // Update cache with fixed content hash so we don't re-fix next time
+                                 let fixed_hash = calculate_hash(&fixed_code);
+                                 cache.insert("core".to_string(), (fixed_hash, p.clone()));
+                                 return Ok(Some(p));
+                             }
+                         }
+
                          let payload = serde_json::json!({
                             "sessionId": session_id.clone(),
                             "status": "done",
@@ -1314,7 +1382,39 @@ async fn handle_compile(
                     
                     let output = cmd.output().await?;
                     if !output.status.success() {
-                         let stderr = String::from_utf8_lossy(&output.stderr);
+                         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+                         // Attempt AI Fix
+                         println!("GUI compilation failed. Attempting AI fix...");
+                         if let Ok(fixed_code) = perform_ai_fix(&content, &stderr).await {
+                             println!("AI Fix received. Retrying compilation...");
+                             tokio::fs::write(dir_path.join(fname), &fixed_code).await?;
+                             
+                             // Retry compilation once
+                             let mut retry_cmd = system_command("g++");
+                             retry_cmd.arg("-shared").arg("-fPIC")
+                                .arg("-D_POSIX_C_SOURCE=199309L")
+                                .arg(fname).arg("-I.").arg("-o").arg(&gui_out);
+                             
+                             if req.is_gui {
+                                if !fixed_code.contains("// LINK:") && !fixed_code.contains("// PKG:") {
+                                    retry_cmd.arg("-lX11");
+                                }
+                             }
+                             apply_build_directives(&fixed_code, &mut retry_cmd);
+                             retry_cmd.current_dir(&dir_path);
+                             
+                             let retry_output = retry_cmd.output().await?;
+                             if retry_output.status.success() {
+                                 println!("AI Fix successful!");
+                                 let p = gui_out.to_string_lossy().to_string();
+                                 let mut cache = compile_cache.lock().await;
+                                 let fixed_hash = calculate_hash(&fixed_code);
+                                 cache.insert("gui".to_string(), (fixed_hash, p.clone()));
+                                 return Ok(Some(p));
+                             }
+                         }
+
                          let payload = serde_json::json!({
                             "sessionId": session_id.clone(),
                             "status": "done",
