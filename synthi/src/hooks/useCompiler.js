@@ -45,8 +45,16 @@ export function useCompiler() {
     }, []);
 
     const compile = useCallback(async (params) => {
+        console.log('[useCompiler] Compile requested:', params);
         const client = clientRef.current || getCompilerClient();
-        return client.compile(params);
+        try {
+            const result = await client.compile(params);
+            console.log('[useCompiler] Compile result:', result);
+            return result;
+        } catch (e) {
+            console.error('[useCompiler] Compile error:', e);
+            throw e;
+        }
     }, []);
 
     const client = typeof window !== 'undefined' ? getCompilerClient() : null;

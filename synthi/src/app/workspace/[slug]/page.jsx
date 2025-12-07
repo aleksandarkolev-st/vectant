@@ -24,6 +24,7 @@ import AIChatWindow from '@/components/chat/AIChatWindow';
 import { api } from '@/services/api';
 import { resolveDependencies } from '@/utils/dependencyResolver';
 import { DraggableVideoWidget } from '@/components/DraggableVideoWidget';
+import { useHMR } from '@/hooks/useHMR';
 import { GitStatus } from '@/components/git/GitStatus';
 
 export default function EditorPage({ params }) {
@@ -34,10 +35,12 @@ export default function EditorPage({ params }) {
     const [editor, setEditor] = useState(null);
     const { analyzeCode, lastResult } = useAnalyzerGateway();
     const { compile, mediaStream } = useCompiler();
+    useHMR();
     const [latestCompletion, setLatestCompletion] = useState(null);
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
     const [isGuiMode, setIsGuiMode] = useState(false);
+    const [useAiSplit, setUseAiSplit] = useState(true);
     const analysisTimeoutRef = useRef(null);
     const lastAnalyzedSignatureRef = useRef('');
 
@@ -232,6 +235,7 @@ export default function EditorPage({ params }) {
                 source,
                 files: additionalFiles,
                 isGui,
+                useAiSplit,
                 onLog: (line) => {
                     appendBuildLog(line);
                     console.log('[build]', line);
@@ -243,6 +247,41 @@ export default function EditorPage({ params }) {
             appendBuildLog(`error: ${err?.message || err}`);
         }
     }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, fileContentCache, slug, isGuiMode, compile]);
+
+    const handleSave = useCallback(async () => {
+        if (!activeFile) return;
+        
+        // Similar to handleRun but silent and doesn't force terminal open
+        const source = typeof currentContent === 'string' ? currentContent : '';
+        const filename = activeFile?.path || activeFile?.name || 'main';
+
+        const getContentForDependency = async (path) => {
+            if (path === activeFile.path) return typeof currentContent === 'string' ? currentContent : '';
+            if (fileContentCache.has(path)) return fileContentCache.get(path);
+            return await api.fetchFileContent(slug, path);
+        };
+
+        let additionalFiles = [];
+        try {
+             additionalFiles = await resolveDependencies(activeFile, rawFiles, getContentForDependency);
+        } catch (e) {
+             console.error("Dependency resolution failed during save", e);
+        }
+
+        try {
+            console.log('[HMR] Triggering silent compile for save...');
+            await compile({
+                filename,
+                source,
+                files: additionalFiles,
+                isGui: isGuiMode,
+                // We don't attach onLog here to avoid spamming the build log on every save
+                // unless we want to see HMR logs.
+            });
+        } catch (err) {
+            console.error('[HMR] Silent compile failed', err);
+        }
+    }, [activeFile, currentContent, rawFiles, fileContentCache, slug, isGuiMode, compile]);
 
     const handleEditorMount = (editorInstance) => {
         setEditor(editorInstance);
@@ -277,6 +316,7 @@ export default function EditorPage({ params }) {
     const EditorPanelComponent = (
         <EditorPanel
             onRun={handleRun}
+            onSave={handleSave}
             onToggleTerminal={() => dispatch(toggleTerminal())}
             onEditorMount={handleEditorMount}
             analysisResult={lastResult}

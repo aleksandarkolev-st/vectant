@@ -5,3 +5,4 @@ google-generativeai
 #tree_sitter_languages
 python-dotenv
 openai
+requests

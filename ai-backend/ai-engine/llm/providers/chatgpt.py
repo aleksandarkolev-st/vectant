@@ -1,14 +1,14 @@
 import os
 from typing import Any, Mapping, Optional, Sequence, Dict
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from llm.prompts import build_prompt, build_fullfile_prompt, build_patch_prompt
 from .base import AiProvider
 
 
 class ChatGPTProvider(AiProvider):
-    _clients: Dict[str, OpenAI] = {}
+    _clients: Dict[str, AsyncOpenAI] = {}
 
     def __init__(self) -> None:
         super().__init__(name="chatgpt")
@@ -16,15 +16,15 @@ class ChatGPTProvider(AiProvider):
         self.max_output_tokens = int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "4096"))
         self.temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
 
-    def _get_client(self, api_key: Optional[str]) -> OpenAI:
+    def _get_client(self, api_key: Optional[str]) -> AsyncOpenAI:
         key = api_key or os.getenv("OPENAI_API_KEY")
         if not key:
             raise ValueError("OPENAI_API_KEY is not set in environment variables and no custom key provided.")
         if key not in self._clients:
-            self._clients[key] = OpenAI(api_key=key)
+            self._clients[key] = AsyncOpenAI(api_key=key)
         return self._clients[key]
 
-    def ask_llm(
+    async def ask_llm(
         self,
         code: str,
         lang: str,
@@ -52,7 +52,7 @@ class ChatGPTProvider(AiProvider):
         try:
             client = self._get_client(api_key)
             model_name = model or self.model_name
-            stream = client.chat.completions.create(
+            stream = await client.chat.completions.create(
                 model=model_name,
                 messages=[{"role": "user", "content": full_prompt}],
                 temperature=self.temperature,
@@ -61,7 +61,7 @@ class ChatGPTProvider(AiProvider):
             )
 
             chunks = []
-            for chunk in stream:
+            async for chunk in stream:
                 try:
                     delta = chunk.choices[0].delta.content or ''
                 except Exception:
