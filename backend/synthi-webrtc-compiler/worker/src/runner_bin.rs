@@ -5,6 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use std::ffi::{c_void, c_int, c_uint, c_ulong, c_long};
 use std::ptr;
+use std::collections::HashMap;
 
 mod plugin_contract;
 
@@ -113,7 +114,7 @@ fn main() {
         println!("Stdin reader thread exited");
     });
 
-    let mut current_lib: Option<Library> = None;
+    let mut modules: HashMap<String, Library> = HashMap::new();
     let mut app_state = AppState { raw: std::ptr::null_mut() };
     let mut last_frame = Instant::now();
 
@@ -132,66 +133,97 @@ fn main() {
 
         // Process all pending commands
         while let Ok(cmd) = rx.try_recv() {
-            if cmd.starts_with("load ") {
-                let path = &cmd[5..];
-                println!("Loading library: {}", path);
+            let parts: Vec<&str> = cmd.split_whitespace().collect();
+            if parts.is_empty() { continue; }
 
-                unsafe {
-                    // Phase 4: Smooth Transition
-                    // We do NOT clear the window here. By doing nothing, the last frame
-                    // remains on screen (persisted by X server or compositor) until
-                    // the new library loads and draws the next frame.
-
-                    // Unload previous library if exists
-                    if let Some(lib) = &current_lib {
-                         let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"on_unload");
-                         if let Ok(f) = func {
-                             println!("Calling on_unload...");
-                             f(app_state.raw);
-                         }
-                    }
-                    // Drop old lib to unload it
-                    current_lib = None;
-
-                    // Load new library
-                    #[cfg(unix)]
-                    let lib_result = {
-                        use libloading::os::unix::{Library, RTLD_NOW, RTLD_GLOBAL};
-                        Library::open(Some(path), RTLD_NOW | RTLD_GLOBAL).map(|l| libloading::Library::from(l))
+            match parts[0] {
+                "load" => {
+                    // usage: load <name> <path>
+                    // fallback: load <path> -> name="main"
+                    let (name, path) = if parts.len() >= 3 {
+                        (parts[1], parts[2])
+                    } else if parts.len() == 2 {
+                        ("main", parts[1])
+                    } else {
+                        println!("Invalid load command");
+                        continue;
                     };
-                    #[cfg(not(unix))]
-                    let lib_result = Library::new(path);
 
-                    match lib_result {
-                        Ok(lib) => {
-                            // Try on_load first
-                            let load_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = lib.get(b"on_load");
-                            if let Ok(f) = load_func {
-                                println!("Calling on_load...");
-                                app_state.raw = f(app_state.raw);
-                            } else {
-                                // Fallback to entrypoint for backward compatibility
-                                let entry_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = lib.get(b"entrypoint");
-                                if let Ok(f) = entry_func {
-                                     println!("Calling entrypoint...");
-                                     app_state.raw = f(app_state.raw);
-                                }
-                            }
-                            current_lib = Some(lib);
-                            println!("Library loaded successfully.");
+                    println!("Loading module '{}' from {}", name, path);
+
+                    unsafe {
+                        // Phase 4: Smooth Transition
+                        // We do NOT clear the window here. By doing nothing, the last frame
+                        // remains on screen (persisted by X server or compositor) until
+                        // the new library loads and draws the next frame.
+
+                        // Unload previous library if exists
+                        if let Some(lib) = modules.remove(name) {
+                             let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"on_unload");
+                             if let Ok(f) = func {
+                                 println!("Calling on_unload for {}...", name);
+                                 f(app_state.raw);
+                             }
                         }
-                        Err(e) => {
-                            println!("Error loading library: {}", e);
+
+                        // Load new library
+                        #[cfg(unix)]
+                        let lib_result = {
+                            use libloading::os::unix::{Library, RTLD_NOW, RTLD_GLOBAL};
+                            Library::open(Some(path), RTLD_NOW | RTLD_GLOBAL).map(|l| libloading::Library::from(l))
+                        };
+                        #[cfg(not(unix))]
+                        let lib_result = Library::new(path);
+
+                        match lib_result {
+                            Ok(lib) => {
+                                // Try on_load first
+                                let load_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = lib.get(b"on_load");
+                                if let Ok(f) = load_func {
+                                    println!("Calling on_load...");
+                                    app_state.raw = f(app_state.raw);
+                                } else {
+                                    // Fallback to entrypoint for backward compatibility (only for main module maybe?)
+                                    if name == "main" {
+                                        let entry_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = lib.get(b"entrypoint");
+                                        if let Ok(f) = entry_func {
+                                             println!("Calling entrypoint...");
+                                             app_state.raw = f(app_state.raw);
+                                        }
+                                    }
+                                }
+                                modules.insert(name.to_string(), lib);
+                                println!("Module '{}' loaded successfully.", name);
+                            }
+                            Err(e) => {
+                                println!("Error loading library: {}", e);
+                            }
                         }
                     }
-                }
-            } else if cmd == "quit" {
-                println!("Quitting runner.");
-                #[cfg(target_os = "linux")]
-                if !display.is_null() {
-                    unsafe { XCloseDisplay(display); }
-                }
-                return;
+                },
+                "unload" => {
+                    if parts.len() == 2 {
+                        let name = parts[1];
+                        if let Some(lib) = modules.remove(name) {
+                             unsafe {
+                                 let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"on_unload");
+                                 if let Ok(f) = func {
+                                     f(app_state.raw);
+                                 }
+                             }
+                             println!("Unloaded module {}", name);
+                        }
+                    }
+                },
+                "quit" => {
+                    println!("Quitting runner.");
+                    #[cfg(target_os = "linux")]
+                    if !display.is_null() {
+                        unsafe { XCloseDisplay(display); }
+                    }
+                    return;
+                },
+                _ => {}
             }
         }
 
@@ -200,8 +232,10 @@ fn main() {
         let dt = now.duration_since(last_frame).as_secs_f64();
         last_frame = now;
 
-        // Run update loop if library is loaded
-        if let Some(lib) = &current_lib {
+        // Run update loop for all loaded modules
+        // We iterate over keys to avoid borrowing issues if we needed to mutate map (we don't here)
+        // But we need to iterate values.
+        for lib in modules.values() {
             unsafe {
                 let update_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = lib.get(b"on_update");
                 if let Ok(f) = update_func {

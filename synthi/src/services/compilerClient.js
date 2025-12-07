@@ -352,7 +352,7 @@ export class CompilerClient {
         return channel;
     }
 
-    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog } = {}) {
+    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false } = {}) {
         const lang = language || this._mapLanguage(filename);
         if (!lang) throw new SynthiException('Unsupported language for compilation', 'The file extension is not supported by the compiler.');
         await this.connect();
@@ -413,7 +413,8 @@ export class CompilerClient {
                     is_gui: isGui,
                     width: width,
                     height: height,
-                    supports_h265: this.supportsH265
+                    supports_h265: this.supportsH265,
+                    use_ai_split: useAiSplit
                 }));
             } catch (e) {
                 this.logHandlers.delete(handleLog);

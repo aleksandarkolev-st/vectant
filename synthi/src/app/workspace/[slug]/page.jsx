@@ -39,6 +39,7 @@ export default function EditorPage({ params }) {
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
     const [isGuiMode, setIsGuiMode] = useState(false);
+    const [useAiSplit, setUseAiSplit] = useState(true);
     const analysisTimeoutRef = useRef(null);
     const lastAnalyzedSignatureRef = useRef('');
 
@@ -233,6 +234,7 @@ export default function EditorPage({ params }) {
                 source,
                 files: additionalFiles,
                 isGui,
+                useAiSplit,
                 onLog: (line) => {
                     appendBuildLog(line);
                     console.log('[build]', line);
