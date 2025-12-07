@@ -114,6 +114,7 @@ fn main() {
     });
 
     let mut modules: HashMap<String, Library> = HashMap::new();
+    let mut loaded_paths: HashMap<String, String> = HashMap::new();
     let mut app_state = AppState { raw: std::ptr::null_mut() };
     let mut last_frame = Instant::now();
     let mut last_log = Instant::now();
@@ -156,26 +157,29 @@ fn main() {
 
                     println!("Loading module '{}' from {}", name, path);
 
+                    if let Some(current_path) = loaded_paths.get(name) {
+                        if current_path == path {
+                            println!("Module '{}' already loaded from {}. Skipping reload.", name, path);
+                            continue;
+                        }
+                    }
+
                     unsafe {
                         // Phase 4: Smooth Transition
                         // We do NOT clear the window here. By doing nothing, the last frame
                         // remains on screen (persisted by X server or compositor) until
                         // the new library loads and draws the next frame.
 
-                        // Unload previous library if exists
-                        if let Some(lib) = modules.remove(name) {
-                             let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"on_unload");
-                             if let Ok(f) = func {
-                                 println!("Calling on_unload for {}...", name);
-                                 f(app_state.raw);
-                             }
-                        }
+                        // NOTE: We moved unload logic inside the success block of loading the new library
+                        // to ensure we don't unload if the new one fails.
+
 
                         // Load new library
+                        // We use RTLD_LOCAL to avoid symbol pollution and allow side-by-side loading during transition
                         #[cfg(unix)]
                         let lib_result = {
-                            use libloading::os::unix::{Library, RTLD_NOW, RTLD_GLOBAL};
-                            Library::open(Some(path), RTLD_NOW | RTLD_GLOBAL).map(|l| libloading::Library::from(l))
+                            use libloading::os::unix::{Library, RTLD_NOW, RTLD_LOCAL};
+                            Library::open(Some(path), RTLD_NOW | RTLD_LOCAL).map(|l| libloading::Library::from(l))
                         };
                         #[cfg(not(unix))]
                         let lib_result = Library::new(path);
@@ -183,28 +187,41 @@ fn main() {
                         match lib_result {
                             Ok(lib) => {
                                 println!("Library loaded successfully. Checking for symbols...");
-                                // Try on_load first
+                                
+                                // Check for on_load or entrypoint or on_update BEFORE unloading the old one
                                 let load_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = lib.get(b"on_load");
+                                let entry_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = lib.get(b"entrypoint");
+                                let update_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = lib.get(b"on_update");
+                                
+                                if load_func.is_err() && entry_func.is_err() && update_func.is_err() && name != "main" {
+                                     println!("New library missing all required symbols (on_load, entrypoint, on_update). Aborting reload to preserve state.");
+                                     continue;
+                                }
+
+                                // Now it is safe to unload the old one
+                                if let Some(old_lib) = modules.remove(name) {
+                                     loaded_paths.remove(name);
+                                     let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = old_lib.get(b"on_unload");
+                                     if let Ok(f) = func {
+                                         println!("Calling on_unload for {}...", name);
+                                         f(app_state.raw);
+                                     }
+                                }
+
+                                // Initialize the new one
                                 if let Ok(f) = load_func {
                                     println!("Found 'on_load' symbol. Calling it...");
                                     app_state.raw = f(app_state.raw);
                                     println!("'on_load' returned. AppState raw: {:p}", app_state.raw);
-                                } else {
-                                    println!("'on_load' symbol not found.");
-                                    // Fallback to entrypoint for backward compatibility (only for main module maybe?)
-                                    if name == "main" || name == "core" {
-                                        println!("Attempting fallback to 'entrypoint' for module '{}'...", name);
-                                        let entry_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = lib.get(b"entrypoint");
-                                        if let Ok(f) = entry_func {
-                                             println!("Found 'entrypoint' symbol. Calling it...");
-                                             app_state.raw = f(app_state.raw);
-                                             println!("'entrypoint' returned. AppState raw: {:p}", app_state.raw);
-                                        } else {
-                                            println!("'entrypoint' symbol not found either.");
-                                        }
-                                    }
+                                } else if let Ok(f) = entry_func {
+                                     // Fallback
+                                     println!("Found 'entrypoint' symbol. Calling it...");
+                                     app_state.raw = f(app_state.raw);
+                                     println!("'entrypoint' returned. AppState raw: {:p}", app_state.raw);
                                 }
+                                
                                 modules.insert(name.to_string(), lib);
+                                loaded_paths.insert(name.to_string(), path.to_string());
                                 println!("Module '{}' registered.", name);
                             }
                             Err(e) => {
@@ -212,11 +229,12 @@ fn main() {
                             }
                         }
                     }
-                },
                 "unload" => {
                     if parts.len() == 2 {
                         let name = parts[1];
                         if let Some(lib) = modules.remove(name) {
+                             loaded_paths.remove(name);
+                             unsafe {ib) = modules.remove(name) {
                              unsafe {
                                  let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"on_unload");
                                  if let Ok(f) = func {
@@ -245,15 +263,23 @@ fn main() {
         last_frame = now;
 
         // Run update loop for all loaded modules
-        // We iterate over keys to avoid borrowing issues if we needed to mutate map (we don't here)
-        // But we need to iterate values.
-        for (name, lib) in &modules {
-            unsafe {
-                let update_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = lib.get(b"on_update");
-                if let Ok(f) = update_func {
-                    // Uncomment to debug update loop (spammy)
-                    // println!("Calling on_update for {}", name);
-                    f(app_state.raw, dt);
+        // Deterministic order: "core" first, then others sorted alphabetically
+        let mut keys: Vec<String> = modules.keys().cloned().collect();
+        keys.sort_by(|a, b| {
+            if a == "core" { std::cmp::Ordering::Less }
+            else if b == "core" { std::cmp::Ordering::Greater }
+            else { a.cmp(b) }
+        });
+
+        for name in keys {
+            if let Some(lib) = modules.get(&name) {
+                unsafe {
+                    let update_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = lib.get(b"on_update");
+                    if let Ok(f) = update_func {
+                        // Uncomment to debug update loop (spammy)
+                        // println!("Calling on_update for {}", name);
+                        f(app_state.raw, dt);
+                    }
                 }
             }
         }

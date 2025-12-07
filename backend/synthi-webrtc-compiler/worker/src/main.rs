@@ -1101,7 +1101,8 @@ async fn handle_compile(
 
     // Check if we need to restart due to GUI mode change or blocking app
     // We do this early because we consume req.files later
-    let has_on_update = req.source.contains("on_update") || req.source.contains("on_load") || req.source.contains("entrypoint") || 
+    // If use_ai_split is true, we assume the AI will generate the necessary hooks (on_update, etc.)
+    let has_on_update = req.use_ai_split || req.source.contains("on_update") || req.source.contains("on_load") || req.source.contains("entrypoint") || 
         req.files.iter().any(|f| f.content.contains("on_update") || f.content.contains("on_load") || f.content.contains("entrypoint"));
 
     // Generate a unique filename for the shared library to support HMR
@@ -1129,7 +1130,7 @@ async fn handle_compile(
         while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if (name.starts_with("libuser_code_") || name.starts_with("temp_")) && (name.ends_with(".so") || name.ends_with(".dll")) {
+                if (name.starts_with("libuser_code_") || name.starts_with("temp_") || name.starts_with("libcore_") || name.starts_with("libgui_")) && (name.ends_with(".so") || name.ends_with(".dll")) {
                     let _ = tokio::fs::remove_file(path).await;
                 }
             }
@@ -1256,6 +1257,21 @@ async fn handle_compile(
                 cache.insert("core".to_string(), (content_hash, core_lib_path.clone()));
             }
             if !core_lib_path.is_empty() {
+                // Create symlink ./core.so -> core_lib_path so gui can dlopen("./core.so")
+                #[cfg(unix)]
+                {
+                    let _ = tokio::fs::remove_file("./core.so").await;
+                    if let Err(e) = tokio::fs::symlink(&core_lib_path, "./core.so").await {
+                        println!("Failed to create core.so symlink: {}", e);
+                    }
+                }
+                #[cfg(windows)]
+                {
+                    let _ = tokio::fs::remove_file("./core.dll").await;
+                    if let Err(e) = tokio::fs::copy(&core_lib_path, "./core.dll").await {
+                        println!("Failed to copy core.dll: {}", e);
+                    }
+                }
                 modules_to_load.push(("core".to_string(), core_lib_path.clone()));
             }
         }
@@ -1296,9 +1312,10 @@ async fn handle_compile(
                 if req.is_gui {
                     cmd.arg("-lX11");
                 }
-                if !core_lib_path.is_empty() {
-                    cmd.arg(&core_lib_path);
-                }
+                // User requested dynamic loading via dlopen/dlsym, so we do NOT link core directly.
+                // if !core_lib_path.is_empty() {
+                //    cmd.arg(&core_lib_path);
+                // }
 
                 cmd.current_dir(&dir_path);
                 
@@ -1327,6 +1344,13 @@ async fn handle_compile(
                     let _ = tokio::fs::remove_file("./gui.so").await;
                     if let Err(e) = tokio::fs::symlink(&gui_lib_path, "./gui.so").await {
                         println!("Failed to create gui.so symlink: {}", e);
+                    }
+                }
+                #[cfg(windows)]
+                {
+                    let _ = tokio::fs::remove_file("./gui.dll").await;
+                    if let Err(e) = tokio::fs::copy(&gui_lib_path, "./gui.dll").await {
+                        println!("Failed to copy gui.dll: {}", e);
                     }
                 }
                 modules_to_load.push(("main".to_string(), gui_lib_path.clone()));
