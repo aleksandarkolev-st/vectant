@@ -114,6 +114,7 @@ fn main() {
     });
 
     let mut modules: HashMap<String, Library> = HashMap::new();
+    let mut loaded_paths: HashMap<String, String> = HashMap::new();
     let mut app_state = AppState { raw: std::ptr::null_mut() };
     let mut last_frame = Instant::now();
     let mut last_log = Instant::now();
@@ -156,6 +157,13 @@ fn main() {
 
                     println!("Loading module '{}' from {}", name, path);
 
+                    if let Some(current_path) = loaded_paths.get(name) {
+                        if current_path == path {
+                            println!("Module '{}' already loaded from {}. Skipping reload.", name, path);
+                            continue;
+                        }
+                    }
+
                     unsafe {
                         // Phase 4: Smooth Transition
                         // We do NOT clear the window here. By doing nothing, the last frame
@@ -164,6 +172,7 @@ fn main() {
 
                         // Unload previous library if exists
                         if let Some(lib) = modules.remove(name) {
+                             loaded_paths.remove(name);
                              let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"on_unload");
                              if let Ok(f) = func {
                                  println!("Calling on_unload for {}...", name);
@@ -202,21 +211,23 @@ fn main() {
                                         } else {
                                             println!("'entrypoint' symbol not found either.");
                                         }
-                                    }
                                 }
                                 modules.insert(name.to_string(), lib);
+                                loaded_paths.insert(name.to_string(), path.to_string());
                                 println!("Module '{}' registered.", name);
+                            }   println!("Module '{}' registered.", name);
                             }
                             Err(e) => {
                                 println!("Error loading library: {}", e);
                             }
                         }
                     }
-                },
                 "unload" => {
                     if parts.len() == 2 {
                         let name = parts[1];
                         if let Some(lib) = modules.remove(name) {
+                             loaded_paths.remove(name);
+                             unsafe {ib) = modules.remove(name) {
                              unsafe {
                                  let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"on_unload");
                                  if let Ok(f) = func {

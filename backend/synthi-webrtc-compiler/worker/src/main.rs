@@ -1101,7 +1101,8 @@ async fn handle_compile(
 
     // Check if we need to restart due to GUI mode change or blocking app
     // We do this early because we consume req.files later
-    let has_on_update = req.source.contains("on_update") || req.source.contains("on_load") || req.source.contains("entrypoint") || 
+    // If use_ai_split is true, we assume the AI will generate the necessary hooks (on_update, etc.)
+    let has_on_update = req.use_ai_split || req.source.contains("on_update") || req.source.contains("on_load") || req.source.contains("entrypoint") || 
         req.files.iter().any(|f| f.content.contains("on_update") || f.content.contains("on_load") || f.content.contains("entrypoint"));
 
     // Generate a unique filename for the shared library to support HMR
@@ -1296,9 +1297,10 @@ async fn handle_compile(
                 if req.is_gui {
                     cmd.arg("-lX11");
                 }
-                if !core_lib_path.is_empty() {
-                    cmd.arg(&core_lib_path);
-                }
+                // User requested dynamic loading via dlopen/dlsym, so we do NOT link core directly.
+                // if !core_lib_path.is_empty() {
+                //    cmd.arg(&core_lib_path);
+                // }
 
                 cmd.current_dir(&dir_path);
                 

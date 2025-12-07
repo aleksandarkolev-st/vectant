@@ -356,7 +356,10 @@ For EACH file, go through line by line:
 ## 6. GUI MODULE REQUIREMENTS (C/C++)
 
 ### 6.1 Entry Point Implementation
-The GUI module MUST implement these functions with `extern "C"` linkage:
+The GUI module MUST implement these functions with `extern "C"` linkage.
+
+CRITICAL: Implement "Lazy Initialization" for the window. Check if it exists in state before creating it.
+CRITICAL: Implement "Persistent Cleanup". Do NOT destroy the window on cleanup.
 
 ```cpp
 #include "shared.h"
@@ -364,8 +367,16 @@ The GUI module MUST implement these functions with `extern "C"` linkage:
 extern "C" {
 
 void gui_initialize(AppState* state) {
-    // Initialize GUI-specific resources
-    // Access state members: state->width, state->height, etc.
+    // 1. Lazy Window Creation
+    // Only create the window if it doesn't exist in the state yet.
+    // This prevents flickering during hot-reload.
+    if (state->window == 0) {
+        // Example for X11
+        // state->window = XCreateSimpleWindow(...);
+        // XMapWindow(state->dpy, state->window);
+    }
+    
+    // 2. Initialize other resources (fonts, textures)
 }
 
 void gui_on_update(AppState* state, float dt) {
@@ -379,7 +390,11 @@ void gui_render(AppState* state) {
 }
 
 void gui_cleanup(AppState* state) {
-    // Clean up GUI resources
+    // Clean up textures, fonts, buffers
+    
+    // CRITICAL: DO NOT DESTROY THE WINDOW
+    // The window must persist for the next module version.
+    // XDestroyWindow(state->dpy, state->window); // <--- DO NOT DO THIS
 }
 
 void gui_on_event(AppState* state, void* event) {
@@ -400,6 +415,11 @@ void gui_render(AppState* state) {
     // int x = 10;  // If GUI uses this, it should be state->x
 }
 ```
+
+### 6.3 Window Persistence (CRITICAL)
+To prevent flickering during hot-reloading, the window handle MUST persist in `AppState`.
+1. In `gui_initialize`: Check `if (!state->window)` before creating a new window.
+2. In `gui_cleanup`: Do NOT call `XDestroyWindow` or `CloseWindow`. Leave the window open for the next version of the library.
 
 ## 7. CORE MODULE REQUIREMENTS
 
