@@ -29,6 +29,20 @@ export class ApiClient {
     }
 
     async fetchFileContent(slug, filePath) {
+        // Try fetching from Collab Server first (Source of Truth for Git)
+        try {
+             const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
+             const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/file?path=${encodeURIComponent(filePath)}`);
+             if (res.ok) {
+                 const data = await res.json();
+                 if (typeof data.content === 'string') {
+                     return data.content;
+                 }
+             }
+        } catch (e) {
+            console.warn("Failed to fetch from collab server, falling back to storage", e);
+        }
+
         const response = await fetch(`${this.baseUrl}/${slug}/item?filePath=${encodeURIComponent(filePath)}`);
         return this._handleResponse(response).then(r => r.text());
     }

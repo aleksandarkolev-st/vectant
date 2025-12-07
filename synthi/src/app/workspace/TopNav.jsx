@@ -7,9 +7,11 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { toggleAutoSave, selectAutoSaveEnabled, toggleAutoCompletion, selectAutoCompletionEnabled, startCreate } from '@/redux/uiSlice';
 import { selectActiveFile, selectFilesTree, saveFileContentThunk } from '@/redux/workspaceSlice';
+import { BranchSelector } from '@/components/git/BranchSelector';
 
 export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo, onToggleChat, chatVisible, isGuiMode, onToggleGuiMode }) {
   const dispatch = useAppDispatch();
+  const slug = useAppSelector(state => state.workspace.slug);
   const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
   const autoCompletionEnabled = useAppSelector(selectAutoCompletionEnabled);
   const activeFile = useAppSelector(selectActiveFile);
@@ -242,6 +244,9 @@ export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo,
       </div>
 
       <div className="flex items-center gap-2">
+        <BranchSelector slug={slug} />
+        <div className="w-px h-4 bg-[#3a3a3a] mx-1"></div>
+
         <Button 
           variant="outline" 
           size="sm" 

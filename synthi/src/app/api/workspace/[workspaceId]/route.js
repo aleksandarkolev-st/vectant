@@ -83,6 +83,46 @@ export async function GET(request, { params }) {
             autoPaginate: true, 
         });
 
+        // Check if empty and try to sync from collab server
+        if (files.length === 0) {
+             const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
+             try {
+                 const res = await fetch(`${COLLAB_SERVER_URL}/git/${workspaceId}/files`);
+                 if (res.ok) {
+                     const fileList = await res.json();
+                     if (Array.isArray(fileList) && fileList.length > 0) {
+                         console.log(`Syncing ${fileList.length} files from collab server for ${workspaceId}`);
+                         
+                         // Upload files in parallel
+                         await Promise.all(fileList.map(async (filePath) => {
+                             try {
+                                 const contentRes = await fetch(`${COLLAB_SERVER_URL}/git/${workspaceId}/file?path=${encodeURIComponent(filePath)}`);
+                                 if (contentRes.ok) {
+                                     const contentData = await contentRes.json();
+                                     const content = contentData.content;
+                                     
+                                     const gcsFilePath = `workspaces/${workspaceId}/${filePath}`;
+                                     await storage.bucket(BUCKET_NAME).file(gcsFilePath).save(content);
+                                 }
+                             } catch (err) {
+                                 console.error(`Failed to sync file ${filePath}:`, err);
+                             }
+                         }));
+                         
+                         // Re-fetch files
+                         const [refreshedFiles] = await storage.bucket(BUCKET_NAME).getFiles({
+                            prefix: storagePathPrefix,
+                            autoPaginate: true, 
+                        });
+                        const fileTree = buildFileTree(refreshedFiles, storagePathPrefix.length);
+                        return NextResponse.json({ files: fileTree }, { status: 200 });
+                     }
+                 }
+             } catch (e) {
+                 console.warn("Failed to sync from collab server:", e);
+             }
+        }
+
         const prefixLength = storagePathPrefix.length;
         const fileTree = buildFileTree(files, prefixLength);
 
