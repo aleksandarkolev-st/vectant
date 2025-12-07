@@ -1257,6 +1257,14 @@ async fn handle_compile(
                 cache.insert("core".to_string(), (content_hash, core_lib_path.clone()));
             }
             if !core_lib_path.is_empty() {
+                // Create symlink ./core.so -> core_lib_path so gui can dlopen("./core.so")
+                #[cfg(unix)]
+                {
+                    let _ = tokio::fs::remove_file("./core.so").await;
+                    if let Err(e) = tokio::fs::symlink(&core_lib_path, "./core.so").await {
+                        println!("Failed to create core.so symlink: {}", e);
+                    }
+                }
                 modules_to_load.push(("core".to_string(), core_lib_path.clone()));
             }
         }

@@ -170,21 +170,16 @@ fn main() {
                         // remains on screen (persisted by X server or compositor) until
                         // the new library loads and draws the next frame.
 
-                        // Unload previous library if exists
-                        if let Some(lib) = modules.remove(name) {
-                             loaded_paths.remove(name);
-                             let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"on_unload");
-                             if let Ok(f) = func {
-                                 println!("Calling on_unload for {}...", name);
-                                 f(app_state.raw);
-                             }
-                        }
+                        // NOTE: We moved unload logic inside the success block of loading the new library
+                        // to ensure we don't unload if the new one fails.
+
 
                         // Load new library
+                        // We use RTLD_LOCAL to avoid symbol pollution and allow side-by-side loading during transition
                         #[cfg(unix)]
                         let lib_result = {
-                            use libloading::os::unix::{Library, RTLD_NOW, RTLD_GLOBAL};
-                            Library::open(Some(path), RTLD_NOW | RTLD_GLOBAL).map(|l| libloading::Library::from(l))
+                            use libloading::os::unix::{Library, RTLD_NOW, RTLD_LOCAL};
+                            Library::open(Some(path), RTLD_NOW | RTLD_LOCAL).map(|l| libloading::Library::from(l))
                         };
                         #[cfg(not(unix))]
                         let lib_result = Library::new(path);
@@ -192,30 +187,41 @@ fn main() {
                         match lib_result {
                             Ok(lib) => {
                                 println!("Library loaded successfully. Checking for symbols...");
-                                // Try on_load first
+                                
+                                // Check for on_load or entrypoint BEFORE unloading the old one
                                 let load_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = lib.get(b"on_load");
+                                let entry_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = lib.get(b"entrypoint");
+                                
+                                if load_func.is_err() && entry_func.is_err() && name != "main" {
+                                     println!("New library missing required symbols (on_load/entrypoint). Aborting reload to preserve state.");
+                                     continue;
+                                }
+
+                                // Now it is safe to unload the old one
+                                if let Some(old_lib) = modules.remove(name) {
+                                     loaded_paths.remove(name);
+                                     let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = old_lib.get(b"on_unload");
+                                     if let Ok(f) = func {
+                                         println!("Calling on_unload for {}...", name);
+                                         f(app_state.raw);
+                                     }
+                                }
+
+                                // Initialize the new one
                                 if let Ok(f) = load_func {
                                     println!("Found 'on_load' symbol. Calling it...");
                                     app_state.raw = f(app_state.raw);
                                     println!("'on_load' returned. AppState raw: {:p}", app_state.raw);
-                                } else {
-                                    println!("'on_load' symbol not found.");
-                                    // Fallback to entrypoint for backward compatibility (only for main module maybe?)
-                                    if name == "main" || name == "core" {
-                                        println!("Attempting fallback to 'entrypoint' for module '{}'...", name);
-                                        let entry_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = lib.get(b"entrypoint");
-                                        if let Ok(f) = entry_func {
-                                             println!("Found 'entrypoint' symbol. Calling it...");
-                                             app_state.raw = f(app_state.raw);
-                                             println!("'entrypoint' returned. AppState raw: {:p}", app_state.raw);
-                                        } else {
-                                            println!("'entrypoint' symbol not found either.");
-                                        }
+                                } else if let Ok(f) = entry_func {
+                                     // Fallback
+                                     println!("Found 'entrypoint' symbol. Calling it...");
+                                     app_state.raw = f(app_state.raw);
+                                     println!("'entrypoint' returned. AppState raw: {:p}", app_state.raw);
                                 }
+                                
                                 modules.insert(name.to_string(), lib);
                                 loaded_paths.insert(name.to_string(), path.to_string());
                                 println!("Module '{}' registered.", name);
-                            }   println!("Module '{}' registered.", name);
                             }
                             Err(e) => {
                                 println!("Error loading library: {}", e);
