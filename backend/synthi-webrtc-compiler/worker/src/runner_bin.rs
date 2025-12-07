@@ -1,5 +1,5 @@
 use libloading::{Library, Symbol};
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, Write};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -57,24 +57,23 @@ fn main() {
     } else {
         println!("GStreamer initialized.");
     }
+    let _ = io::stdout().flush();
 
     // Initialize X11
+    // We do NOT create a window here anymore. The runner should be invisible
+    // and let the loaded library create its own window if needed.
     #[cfg(target_os = "linux")]
     let (display, _window) = unsafe {
+        println!("Attempting to open X11 display...");
         let d = XOpenDisplay(ptr::null());
         if d.is_null() {
-            eprintln!("Cannot open display");
+            eprintln!("Cannot open display: XOpenDisplay returned NULL");
             (ptr::null_mut(), 0)
         } else {
-            let s = XDefaultScreen(d);
-            let root = XDefaultRootWindow(d);
-            let black = XBlackPixel(d, s);
-            let white = XWhitePixel(d, s);
-            let w = XCreateSimpleWindow(d, root, 0, 0, 1280, 720, 0, white, black);
-            XMapWindow(d, w);
-            XFlush(d);
-            println!("X11 Window created.");
-            (d, w)
+            println!("XOpenDisplay successful. Display ptr: {:p}", d);
+            // We don't create a window, just return the display connection
+            // so we can poll events if needed (though without a window we won't get many)
+            (d, 0)
         }
     };
 
@@ -117,6 +116,7 @@ fn main() {
     let mut modules: HashMap<String, Library> = HashMap::new();
     let mut app_state = AppState { raw: std::ptr::null_mut() };
     let mut last_frame = Instant::now();
+    let mut last_log = Instant::now();
 
     loop {
         // Poll X11 events
@@ -129,6 +129,11 @@ fn main() {
                     // Drain events to keep window responsive
                 }
             }
+        }
+
+        if last_log.elapsed() > Duration::from_secs(5) {
+            println!("Runner loop alive. Modules loaded: {}", modules.len());
+            last_log = Instant::now();
         }
 
         // Process all pending commands
@@ -177,23 +182,29 @@ fn main() {
 
                         match lib_result {
                             Ok(lib) => {
+                                println!("Library loaded successfully. Checking for symbols...");
                                 // Try on_load first
                                 let load_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = lib.get(b"on_load");
                                 if let Ok(f) = load_func {
-                                    println!("Calling on_load...");
+                                    println!("Found 'on_load' symbol. Calling it...");
                                     app_state.raw = f(app_state.raw);
+                                    println!("'on_load' returned. AppState raw: {:p}", app_state.raw);
                                 } else {
+                                    println!("'on_load' symbol not found.");
                                     // Fallback to entrypoint for backward compatibility (only for main module maybe?)
                                     if name == "main" {
                                         let entry_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = lib.get(b"entrypoint");
                                         if let Ok(f) = entry_func {
-                                             println!("Calling entrypoint...");
+                                             println!("Found 'entrypoint' symbol. Calling it...");
                                              app_state.raw = f(app_state.raw);
+                                             println!("'entrypoint' returned. AppState raw: {:p}", app_state.raw);
+                                        } else {
+                                            println!("'entrypoint' symbol not found either.");
                                         }
                                     }
                                 }
                                 modules.insert(name.to_string(), lib);
-                                println!("Module '{}' loaded successfully.", name);
+                                println!("Module '{}' registered.", name);
                             }
                             Err(e) => {
                                 println!("Error loading library: {}", e);
@@ -235,10 +246,12 @@ fn main() {
         // Run update loop for all loaded modules
         // We iterate over keys to avoid borrowing issues if we needed to mutate map (we don't here)
         // But we need to iterate values.
-        for lib in modules.values() {
+        for (name, lib) in &modules {
             unsafe {
                 let update_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = lib.get(b"on_update");
                 if let Ok(f) = update_func {
+                    // Uncomment to debug update loop (spammy)
+                    // println!("Calling on_update for {}", name);
                     f(app_state.raw, dt);
                 }
             }
