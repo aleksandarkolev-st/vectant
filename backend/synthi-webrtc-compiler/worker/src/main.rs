@@ -1751,26 +1751,24 @@ async fn handle_compile(
             let (v_tx, mut v_rx) = mpsc::unbounded_channel::<Vec<u8>>();
             let (a_tx, mut a_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-            let encoders = [
+           let encoders = [
+                // H265
                 ("nvh265enc preset=low-latency-hp zerolatency=true", "rtph265pay", "video/H265"),
                 ("vaapih265enc", "rtph265pay", "video/H265"),
                 ("msdkh265enc", "rtph265pay", "video/H265"),
-                ("v4l2h265enc", "rtph265pay", "video/H265"),
-                ("mfh265enc low-latency=true", "rtph265pay", "video/H265"),
-                ("d3d11h265enc", "rtph265pay", "video/H265"),
                 ("amfh265enc", "rtph265pay", "video/H265"),
+                ("d3d11h265enc", "rtph265pay", "video/H265"),
+                ("x265enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h265,stream-format=byte-stream", "rtph265pay", "video/H265"),
+            
+                // H264
                 ("nvh264enc preset=low-latency-hp zerolatency=true", "rtph264pay", "video/H264"),
                 ("vaapih264enc", "rtph264pay", "video/H264"),
                 ("msdkh264enc", "rtph264pay", "video/H264"),
-                ("v4l2h264enc", "rtph264pay", "video/H264"),
-                ("mfh264enc low-latency=true", "rtph264pay", "video/H264"),
-                ("d3d11h264enc", "rtph264pay", "video/H264"),
                 ("amfh264enc", "rtph264pay", "video/H264"),
-                ("x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h264,stream-format=byte-stream", "rtph264pay", "video/H264"),
-                ("openh264enc ! video/x-h264,stream-format=byte-stream", "rtph264pay", "video/H264"),
-                ("x265enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h265,stream-format=byte-stream", "rtph265pay", "video/H265"),
-                ("openh265enc ! video/x-h265,stream-format=byte-stream", "rtph265pay", "video/H265"),
+                ("d3d11h264enc", "rtph264pay", "video/H264"),
+                ("x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h264,stream-format=byte-stream", "rtph264pay", "video/H264")
             ];
+
 
             let mut selected_mime_type = "video/H265".to_owned();
             let mut audio_source = "pulsesrc".to_string();
