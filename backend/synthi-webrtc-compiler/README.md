@@ -32,10 +32,14 @@ NEXT_PUBLIC_ICE_SERVERS='[{"urls":["stun:stun.l.google.com:19302"]},{"urls":["tu
 ```
 
 - Worker (the compiler worker running in the backend):
-   - `COMPILER_ICE_SERVERS` — same format as above (JSON array). Example in your shell:
+   - `COMPILER_ICE_SERVERS` — same format as above (JSON array).
+   - `AI_BACKEND_URL` — URL of the AI engine (default: `http://localhost:8001`). If running in WSL and AI engine is in Windows, use your host IP (e.g. `http://192.168.1.5:8001`).
+
+Example in your shell:
 
 ```bash
 export COMPILER_ICE_SERVERS='[{"urls":["stun:stun.l.google.com:19302"]},{"urls":["turn:turn.example.com:3478"],"username":"turnuser","credential":"turnpass"}]'
+export AI_BACKEND_URL='http://192.168.1.5:8001'
 ```
 
 We recommend deploying a secure TURN server (coturn) for production. A quick local setup example using Docker Compose:

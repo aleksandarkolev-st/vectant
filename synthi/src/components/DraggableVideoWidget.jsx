@@ -127,6 +127,30 @@ export function DraggableVideoWidget({
         };
     }, [guiConfig, sendGuiEvent]);
 
+    // Force video refresh on HMR update to ensure new frames are rendered
+    useEffect(() => {
+        const handleHmrUpdate = () => {
+            if (videoRef.current && mediaStream) {
+                console.log('Refreshing video stream display for HMR...');
+                // Force a re-sync of the video element to ensure it picks up the new stream content
+                // This helps if the browser's media engine gets stuck on the last frame
+                const video = videoRef.current;
+                const currentSrc = video.srcObject;
+                
+                // Quick toggle to force re-render without significant visual interruption
+                // We don't set it to null to avoid a black flash if possible, 
+                // but sometimes it's necessary. Let's try just play() first.
+                video.play().catch(() => {});
+                
+                // If that's not enough, we might need to re-assign srcObject
+                // video.srcObject = currentSrc; 
+            }
+        };
+
+        window.addEventListener('synthi:hmr-update', handleHmrUpdate);
+        return () => window.removeEventListener('synthi:hmr-update', handleHmrUpdate);
+    }, [mediaStream]);
+
     if (!guiConfig) return null;
 
     // If position is not yet calculated, render hidden or default

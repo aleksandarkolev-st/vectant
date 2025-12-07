@@ -94,6 +94,8 @@ export class CompilerClient {
             text = String(msg);
         }
 
+        console.log('[CompilerClient] Received log:', text);
+
         // Check for GUI control messages
         try {
             const parsed = JSON.parse(text);
@@ -107,6 +109,26 @@ export class CompilerClient {
                 if (typeof window !== 'undefined' && window.dispatchEvent) {
                     window.dispatchEvent(new CustomEvent('synthi:gui-end', { detail: parsed }));
                 }
+            } else if (parsed && (parsed.type === 'update' || parsed.type === 'hash' || parsed.type === 'ok' || parsed.type === 'reload')) {
+                console.log('[CompilerClient] Dispatching synthi:hmr-update', parsed);
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    window.dispatchEvent(new CustomEvent('synthi:hmr-update', { detail: parsed }));
+                }
+                // Do not log HMR messages to the build log
+                return;
+            } else if (parsed && parsed.manifest && parsed.modules) {
+                console.log('[CompilerClient] Dispatching synthi:hmr-update (Rust payload)', parsed);
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    const hmrMsg = {
+                        type: 'update',
+                        data: {
+                            hash: parsed.manifest.session_id,
+                            modules: parsed.modules
+                        }
+                    };
+                    window.dispatchEvent(new CustomEvent('synthi:hmr-update', { detail: hmrMsg }));
+                }
+                return;
             }
         } catch (e) {
             // ignore
@@ -330,7 +352,7 @@ export class CompilerClient {
         return channel;
     }
 
-    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog } = {}) {
+    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false } = {}) {
         const lang = language || this._mapLanguage(filename);
         if (!lang) throw new SynthiException('Unsupported language for compilation', 'The file extension is not supported by the compiler.');
         await this.connect();
@@ -391,7 +413,8 @@ export class CompilerClient {
                     is_gui: isGui,
                     width: width,
                     height: height,
-                    supports_h265: this.supportsH265
+                    supports_h265: this.supportsH265,
+                    use_ai_split: useAiSplit
                 }));
             } catch (e) {
                 this.logHandlers.delete(handleLog);
