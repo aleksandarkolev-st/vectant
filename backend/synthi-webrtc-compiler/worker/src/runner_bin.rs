@@ -9,38 +9,8 @@ use std::collections::HashMap;
 
 mod plugin_contract;
 
-// X11 Definitions
-#[cfg(target_os = "linux")]
-type Display = c_void;
-#[cfg(target_os = "linux")]
-type Window = c_ulong;
-
-#[cfg(target_os = "linux")]
-#[repr(C)]
-struct XEvent {
-    pad: [c_long; 24],
-}
-
-#[cfg(target_os = "linux")]
-#[link(name = "X11")]
-extern "C" {
-    fn XOpenDisplay(display_name: *const i8) -> *mut Display;
-    fn XCloseDisplay(display: *mut Display) -> c_int;
-    fn XCreateSimpleWindow(display: *mut Display, parent: Window, x: c_int, y: c_int, width: c_uint, height: c_uint, border_width: c_uint, border: c_ulong, background: c_ulong) -> Window;
-    fn XMapWindow(display: *mut Display, w: Window) -> c_int;
-    fn XNextEvent(display: *mut Display, event: *mut XEvent) -> c_int;
-    fn XPending(display: *mut Display) -> c_int;
-    fn XDefaultRootWindow(display: *mut Display) -> Window;
-    fn XDefaultScreen(display: *mut Display) -> c_int;
-    fn XBlackPixel(display: *mut Display, screen_number: c_int) -> c_ulong;
-    fn XWhitePixel(display: *mut Display, screen_number: c_int) -> c_ulong;
-    fn XFlush(display: *mut Display) -> c_int;
-    fn XCreateGC(display: *mut Display, d: Window, valuemask: c_ulong, values: *mut c_void) -> *mut c_void;
-    fn XSetForeground(display: *mut Display, gc: *mut c_void, foreground: c_ulong) -> c_int;
-    fn XDrawString(display: *mut Display, d: Window, gc: *mut c_void, x: c_int, y: c_int, string: *const i8, length: c_int) -> c_int;
-    fn XFreeGC(display: *mut Display, gc: *mut c_void) -> c_int;
-    fn XClearWindow(display: *mut Display, w: Window) -> c_int;
-}
+// X11 Definitions removed as Runner is now headless host
+// The loaded modules are responsible for any GUI/Windowing
 
 // Simple state container wrapper
 struct AppState {
@@ -58,24 +28,6 @@ fn main() {
         println!("GStreamer initialized.");
     }
     let _ = io::stdout().flush();
-
-    // Initialize X11
-    // We do NOT create a window here anymore. The runner should be invisible
-    // and let the loaded library create its own window if needed.
-    #[cfg(target_os = "linux")]
-    let (display, _window) = unsafe {
-        println!("Attempting to open X11 display...");
-        let d = XOpenDisplay(ptr::null());
-        if d.is_null() {
-            eprintln!("Cannot open display: XOpenDisplay returned NULL");
-            (ptr::null_mut(), 0)
-        } else {
-            println!("XOpenDisplay successful. Display ptr: {:p}", d);
-            // We don't create a window, just return the display connection
-            // so we can poll events if needed (though without a window we won't get many)
-            (d, 0)
-        }
-    };
 
     println!("Runner started. Waiting for commands...");
 
@@ -120,18 +72,6 @@ fn main() {
     let mut last_log = Instant::now();
 
     loop {
-        // Poll X11 events
-        #[cfg(target_os = "linux")]
-        if !display.is_null() {
-            unsafe {
-                while XPending(display) > 0 {
-                    let mut event: XEvent = std::mem::zeroed();
-                    XNextEvent(display, &mut event);
-                    // Drain events to keep window responsive
-                }
-            }
-        }
-
         if last_log.elapsed() > Duration::from_secs(5) {
             println!("Runner loop alive. Modules loaded: {}", modules.len());
             last_log = Instant::now();
@@ -247,10 +187,6 @@ fn main() {
                 },
                 "quit" => {
                     println!("Quitting runner.");
-                    #[cfg(target_os = "linux")]
-                    if !display.is_null() {
-                        unsafe { XCloseDisplay(display); }
-                    }
                     return;
                 },
                 _ => {}
