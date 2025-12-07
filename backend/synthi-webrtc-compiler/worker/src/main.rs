@@ -1086,6 +1086,47 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
     Ok(split_data)
 }
 
+async fn perform_ai_fix(code: &str, error: &str) -> Result<String> {
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "code": code,
+        "error": error,
+        "mode": "fix"
+    });
+
+    let backend_url = std::env::var("AI_BACKEND_URL")
+        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
+    let url = format!("{}/refactor/fix", backend_url);
+
+    let res = client.post(&url)
+        .json(&payload)
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    let result_str = res["result"].as_str().ok_or(anyhow::anyhow!("No result from AI"))?;
+    
+    // Clean markdown
+    let clean_code = if let Some(start) = result_str.find("```") {
+        let s = &result_str[start+3..];
+        if let Some(newline) = s.find('\n') {
+             let s = &s[newline+1..];
+             if let Some(end) = s.rfind("```") {
+                 &s[..end]
+             } else {
+                 s
+             }
+        } else {
+            s
+        }
+    } else {
+        result_str
+    }.trim();
+
+    Ok(clean_code.to_string())
+}
+
 async fn handle_compile(
     req: CompileRequest,
     log_dc: Arc<RTCDataChannel>,
@@ -1205,58 +1246,201 @@ async fn handle_compile(
             tokio::fs::write(dir_path.join(fname), content).await?;
         }
 
-        if let Some(core) = split_data.get("core") {
-            let fname = core["filename"].as_str().unwrap_or("core.cpp");
-            let mut content = core["content"].as_str().unwrap_or("").to_string();
+        let core_future = async {
+            if let Some(core) = split_data.get("core") {
+                let fname = core["filename"].as_str().unwrap_or("core.cpp");
+                let mut content = core["content"].as_str().unwrap_or("").to_string();
 
-            if content.contains("main(") && !content.contains("extern \"C\" void* entrypoint") {
-                 content.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
-            }
+                if content.contains("main(") && !content.contains("extern \"C\" void* entrypoint") {
+                     content.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
+                }
 
-            let content_hash = calculate_hash(&content);
-            
-            let mut cached_path = None;
-            {
-                let cache = compile_cache.lock().await;
-                if let Some((h, p)) = cache.get("core") {
-                    if *h == content_hash {
-                        cached_path = Some(p.clone());
+                let content_hash = calculate_hash(&content);
+                
+                let mut cached_path = None;
+                {
+                    let cache = compile_cache.lock().await;
+                    if let Some((h, p)) = cache.get("core") {
+                        if *h == content_hash {
+                            cached_path = Some(p.clone());
+                        }
                     }
                 }
-            }
 
-            if let Some(p) = cached_path {
-                core_lib_path = p;
-                println!("Using cached core library: {}", core_lib_path);
-            } else {
-                tokio::fs::write(dir_path.join(fname), &content).await?;
-                
-                let core_out = output_dir.join(format!("libcore_{}.{}", timestamp, ext));
-                let mut cmd = system_command("g++");
-                cmd.arg("-shared").arg("-fPIC")
-                   .arg("-D_POSIX_C_SOURCE=199309L")
-                   .arg(fname).arg("-I.").arg("-o").arg(&core_out);
-                cmd.current_dir(&dir_path);
-                
-                let output = cmd.output().await?;
-                if !output.status.success() {
-                     let stderr = String::from_utf8_lossy(&output.stderr);
-                     let payload = serde_json::json!({
-                        "sessionId": session_id.clone(),
-                        "status": "done",
-                        "success": false,
-                        "stage": "compile_core",
-                        "error": stderr
-                    });
-                    let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
-                    return Ok(());
+                if let Some(p) = cached_path {
+                    println!("Using cached core library: {}", p);
+                    return Ok(Some(p));
+                } else {
+                    tokio::fs::write(dir_path.join(fname), &content).await?;
+                    
+                    let core_out = output_dir.join(format!("libcore_{}.{}", timestamp, ext));
+                    let mut cmd = system_command("g++");
+                    cmd.arg("-shared").arg("-fPIC")
+                       .arg("-D_POSIX_C_SOURCE=199309L")
+                       .arg(fname).arg("-I.").arg("-o").arg(&core_out);
+                    apply_build_directives(&content, &mut cmd);
+                    cmd.current_dir(&dir_path);
+                    
+                    let output = cmd.output().await?;
+                    if !output.status.success() {
+                         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                         
+                         // Attempt AI Fix
+                         println!("Core compilation failed. Attempting AI fix...");
+                         if let Ok(fixed_code) = perform_ai_fix(&content, &stderr).await {
+                             println!("AI Fix received. Retrying compilation...");
+                             tokio::fs::write(dir_path.join(fname), &fixed_code).await?;
+                             
+                             // Retry compilation once
+                             let mut retry_cmd = system_command("g++");
+                             retry_cmd.arg("-shared").arg("-fPIC")
+                                .arg("-D_POSIX_C_SOURCE=199309L")
+                                .arg(fname).arg("-I.").arg("-o").arg(&core_out);
+                             apply_build_directives(&fixed_code, &mut retry_cmd);
+                             retry_cmd.current_dir(&dir_path);
+                             
+                             let retry_output = retry_cmd.output().await?;
+                             if retry_output.status.success() {
+                                 println!("AI Fix successful!");
+                                 let p = core_out.to_string_lossy().to_string();
+                                 let mut cache = compile_cache.lock().await;
+                                 // Update cache with fixed content hash so we don't re-fix next time
+                                 let fixed_hash = calculate_hash(&fixed_code);
+                                 cache.insert("core".to_string(), (fixed_hash, p.clone()));
+                                 return Ok(Some(p));
+                             }
+                         }
+
+                         let payload = serde_json::json!({
+                            "sessionId": session_id.clone(),
+                            "status": "done",
+                            "success": false,
+                            "stage": "compile_core",
+                            "error": stderr
+                        });
+                        let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                        return Err(anyhow::anyhow!("Core compilation failed"));
+                    }
+                    let p = core_out.to_string_lossy().to_string();
+                    
+                    let mut cache = compile_cache.lock().await;
+                    cache.insert("core".to_string(), (content_hash, p.clone()));
+                    return Ok(Some(p));
                 }
-                core_lib_path = core_out.to_string_lossy().to_string();
-                
-                let mut cache = compile_cache.lock().await;
-                cache.insert("core".to_string(), (content_hash, core_lib_path.clone()));
             }
-            if !core_lib_path.is_empty() {
+            Ok(None)
+        };
+
+        let gui_future = async {
+            if let Some(gui) = split_data.get("gui") {
+                let fname = gui["filename"].as_str().unwrap_or("gui.cpp");
+                let mut content = gui["content"].as_str().unwrap_or("").to_string();
+
+                if content.contains("main(") && !content.contains("extern \"C\" void* entrypoint") {
+                     content.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
+                }
+                
+                // Hash content + core_lib_path dependency
+                // Note: We use a placeholder for core_lib_path in hash if we want parallel, 
+                // but actually gui depends on core's interface (headers), not the .so path for compilation (since we don't link).
+                // So hashing content is enough if headers are stable.
+                // But if we want to be safe, we can include a "version" or just content.
+                let combined_hash = calculate_hash(&content);
+                
+                let mut cached_path = None;
+                {
+                    let cache = compile_cache.lock().await;
+                    if let Some((h, p)) = cache.get("gui") {
+                        if *h == combined_hash {
+                            cached_path = Some(p.clone());
+                        }
+                    }
+                }
+
+                if let Some(p) = cached_path {
+                    println!("Using cached gui library: {}", p);
+                    return Ok(Some(p));
+                } else {
+                    tokio::fs::write(dir_path.join(fname), &content).await?;
+                    
+                    let gui_out = output_dir.join(format!("libgui_{}.{}", timestamp, ext));
+                    let mut cmd = system_command("g++");
+                    cmd.arg("-shared").arg("-fPIC")
+                       .arg("-D_POSIX_C_SOURCE=199309L")
+                       .arg(fname).arg("-I.").arg("-o").arg(&gui_out);
+                    
+                    if req.is_gui {
+                        // Default to X11 if no specific flags are found, for backward compatibility
+                        if !content.contains("// LINK:") && !content.contains("// PKG:") {
+                            cmd.arg("-lX11");
+                        }
+                    }
+
+                    apply_build_directives(&content, &mut cmd);
+
+                    cmd.current_dir(&dir_path);
+                    
+                    let output = cmd.output().await?;
+                    if !output.status.success() {
+                         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+                         // Attempt AI Fix
+                         println!("GUI compilation failed. Attempting AI fix...");
+                         if let Ok(fixed_code) = perform_ai_fix(&content, &stderr).await {
+                             println!("AI Fix received. Retrying compilation...");
+                             tokio::fs::write(dir_path.join(fname), &fixed_code).await?;
+                             
+                             // Retry compilation once
+                             let mut retry_cmd = system_command("g++");
+                             retry_cmd.arg("-shared").arg("-fPIC")
+                                .arg("-D_POSIX_C_SOURCE=199309L")
+                                .arg(fname).arg("-I.").arg("-o").arg(&gui_out);
+                             
+                             if req.is_gui {
+                                if !fixed_code.contains("// LINK:") && !fixed_code.contains("// PKG:") {
+                                    retry_cmd.arg("-lX11");
+                                }
+                             }
+                             apply_build_directives(&fixed_code, &mut retry_cmd);
+                             retry_cmd.current_dir(&dir_path);
+                             
+                             let retry_output = retry_cmd.output().await?;
+                             if retry_output.status.success() {
+                                 println!("AI Fix successful!");
+                                 let p = gui_out.to_string_lossy().to_string();
+                                 let mut cache = compile_cache.lock().await;
+                                 let fixed_hash = calculate_hash(&fixed_code);
+                                 cache.insert("gui".to_string(), (fixed_hash, p.clone()));
+                                 return Ok(Some(p));
+                             }
+                         }
+
+                         let payload = serde_json::json!({
+                            "sessionId": session_id.clone(),
+                            "status": "done",
+                            "success": false,
+                            "stage": "compile_gui",
+                            "error": stderr
+                        });
+                        let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                        return Err(anyhow::anyhow!("Gui compilation failed"));
+                    }
+                    let p = gui_out.to_string_lossy().to_string();
+                    
+                    let mut cache = compile_cache.lock().await;
+                    cache.insert("gui".to_string(), (combined_hash, p.clone()));
+                    return Ok(Some(p));
+                }
+            }
+            Ok(None)
+        };
+
+        // Run compilations in parallel
+        let (core_res, gui_res) = tokio::join!(core_future, gui_future);
+
+        if let Ok(Some(p)) = core_res {
+            core_lib_path = p;
+             if !core_lib_path.is_empty() {
                 // Create symlink ./core.so -> core_lib_path so gui can dlopen("./core.so")
                 #[cfg(unix)]
                 {
@@ -1276,67 +1460,8 @@ async fn handle_compile(
             }
         }
 
-        if let Some(gui) = split_data.get("gui") {
-            let fname = gui["filename"].as_str().unwrap_or("gui.cpp");
-            let mut content = gui["content"].as_str().unwrap_or("").to_string();
-
-            if content.contains("main(") && !content.contains("extern \"C\" void* entrypoint") {
-                 content.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
-            }
-            
-            // Hash content + core_lib_path dependency
-            let combined_hash = calculate_hash(&(content.clone(), &core_lib_path));
-            
-            let mut cached_path = None;
-            {
-                let cache = compile_cache.lock().await;
-                if let Some((h, p)) = cache.get("gui") {
-                    if *h == combined_hash {
-                        cached_path = Some(p.clone());
-                    }
-                }
-            }
-
-            if let Some(p) = cached_path {
-                gui_lib_path = p;
-                println!("Using cached gui library: {}", gui_lib_path);
-            } else {
-                tokio::fs::write(dir_path.join(fname), &content).await?;
-                
-                let gui_out = output_dir.join(format!("libgui_{}.{}", timestamp, ext));
-                let mut cmd = system_command("g++");
-                cmd.arg("-shared").arg("-fPIC")
-                   .arg("-D_POSIX_C_SOURCE=199309L")
-                   .arg(fname).arg("-I.").arg("-o").arg(&gui_out);
-                
-                if req.is_gui {
-                    cmd.arg("-lX11");
-                }
-                // User requested dynamic loading via dlopen/dlsym, so we do NOT link core directly.
-                // if !core_lib_path.is_empty() {
-                //    cmd.arg(&core_lib_path);
-                // }
-
-                cmd.current_dir(&dir_path);
-                
-                let output = cmd.output().await?;
-                if !output.status.success() {
-                     let stderr = String::from_utf8_lossy(&output.stderr);
-                     let payload = serde_json::json!({
-                        "sessionId": session_id.clone(),
-                        "status": "done",
-                        "success": false,
-                        "stage": "compile_gui",
-                        "error": stderr
-                    });
-                    let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
-                    return Ok(());
-                }
-                gui_lib_path = gui_out.to_string_lossy().to_string();
-                
-                let mut cache = compile_cache.lock().await;
-                cache.insert("gui".to_string(), (combined_hash, gui_lib_path.clone()));
-            }
+        if let Ok(Some(p)) = gui_res {
+            gui_lib_path = p;
             if !gui_lib_path.is_empty() {
                 // Create symlink ./gui.so -> gui_lib_path so the app can load it via ./gui.so
                 #[cfg(unix)]
@@ -1364,8 +1489,11 @@ async fn handle_compile(
                 // Output to temp path for atomic swap
                 c.arg(&req.filename).arg("-I.").arg("-o").arg(&temp_output_path_str);
                 if req.is_gui {
-                    c.arg("-lX11");
+                    if !req.source.contains("// LINK:") && !req.source.contains("// PKG:") {
+                        c.arg("-lX11");
+                    }
                 }
+                apply_build_directives(&req.source, &mut c);
                 c
             }
             "rust" => {
@@ -1984,5 +2112,53 @@ fn system_command(program: &str) -> Command {
         cmd
     } else {
         Command::new(program)
+    }
+}
+
+fn apply_build_directives(content: &str, cmd: &mut Command) {
+    for line in content.lines() {
+        // Parse custom linker flags
+        // Format: // LINK: -lSDL2 -lGL
+        if let Some(flags) = line.trim().strip_prefix("// LINK:") {
+            for flag in flags.split_whitespace() {
+                cmd.arg(flag);
+            }
+        }
+        
+        // Parse pkg-config dependencies
+        // Format: // PKG: gtk+-3.0 opencv4
+        if let Some(pkgs) = line.trim().strip_prefix("// PKG:") {
+            let pkgs_str = pkgs.trim();
+            if !pkgs_str.is_empty() {
+                let mut pkg_cmd = if cfg!(target_os = "windows") {
+                    let mut c = std::process::Command::new("wsl");
+                    c.arg("pkg-config");
+                    c
+                } else {
+                    std::process::Command::new("pkg-config")
+                };
+                
+                let output = pkg_cmd
+                    .arg("--cflags")
+                    .arg("--libs")
+                    .args(pkgs_str.split_whitespace())
+                    .output();
+                
+                match output {
+                    Ok(out) if out.status.success() => {
+                        let flags = String::from_utf8_lossy(&out.stdout);
+                        for flag in flags.split_whitespace() {
+                            cmd.arg(flag);
+                        }
+                    },
+                    Ok(out) => {
+                        println!("pkg-config failed for {}: {}", pkgs_str, String::from_utf8_lossy(&out.stderr));
+                    }
+                    Err(e) => {
+                        println!("Failed to run pkg-config: {}", e);
+                    }
+                }
+            }
+        }
     }
 }
