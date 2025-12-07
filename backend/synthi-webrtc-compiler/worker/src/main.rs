@@ -1101,7 +1101,8 @@ async fn handle_compile(
 
     // Check if we need to restart due to GUI mode change or blocking app
     // We do this early because we consume req.files later
-    let has_on_update = req.source.contains("on_update") || req.files.iter().any(|f| f.content.contains("on_update"));
+    let has_on_update = req.source.contains("on_update") || req.source.contains("on_load") || req.source.contains("entrypoint") || 
+        req.files.iter().any(|f| f.content.contains("on_update") || f.content.contains("on_load") || f.content.contains("entrypoint"));
 
     // Generate a unique filename for the shared library to support HMR
     let timestamp = Utc::now().timestamp_millis();
@@ -1205,7 +1206,12 @@ async fn handle_compile(
 
         if let Some(core) = split_data.get("core") {
             let fname = core["filename"].as_str().unwrap_or("core.cpp");
-            let content = core["content"].as_str().unwrap_or("");
+            let mut content = core["content"].as_str().unwrap_or("").to_string();
+
+            if content.contains("main(") && !content.contains("extern \"C\" void* entrypoint") {
+                 content.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
+            }
+
             let content_hash = calculate_hash(&content);
             
             let mut cached_path = None;
@@ -1222,7 +1228,7 @@ async fn handle_compile(
                 core_lib_path = p;
                 println!("Using cached core library: {}", core_lib_path);
             } else {
-                tokio::fs::write(dir_path.join(fname), content).await?;
+                tokio::fs::write(dir_path.join(fname), &content).await?;
                 
                 let core_out = output_dir.join(format!("libcore_{}.{}", timestamp, ext));
                 let mut cmd = system_command("g++");
@@ -1256,10 +1262,14 @@ async fn handle_compile(
 
         if let Some(gui) = split_data.get("gui") {
             let fname = gui["filename"].as_str().unwrap_or("gui.cpp");
-            let content = gui["content"].as_str().unwrap_or("");
+            let mut content = gui["content"].as_str().unwrap_or("").to_string();
+
+            if content.contains("main(") && !content.contains("extern \"C\" void* entrypoint") {
+                 content.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
+            }
             
             // Hash content + core_lib_path dependency
-            let combined_hash = calculate_hash(&(content, &core_lib_path));
+            let combined_hash = calculate_hash(&(content.clone(), &core_lib_path));
             
             let mut cached_path = None;
             {
@@ -1275,7 +1285,7 @@ async fn handle_compile(
                 gui_lib_path = p;
                 println!("Using cached gui library: {}", gui_lib_path);
             } else {
-                tokio::fs::write(dir_path.join(fname), content).await?;
+                tokio::fs::write(dir_path.join(fname), &content).await?;
                 
                 let gui_out = output_dir.join(format!("libgui_{}.{}", timestamp, ext));
                 let mut cmd = system_command("g++");
@@ -1311,7 +1321,15 @@ async fn handle_compile(
                 cache.insert("gui".to_string(), (combined_hash, gui_lib_path.clone()));
             }
             if !gui_lib_path.is_empty() {
-                modules_to_load.push(("gui".to_string(), gui_lib_path.clone()));
+                // Create symlink ./gui.so -> gui_lib_path so the app can load it via ./gui.so
+                #[cfg(unix)]
+                {
+                    let _ = tokio::fs::remove_file("./gui.so").await;
+                    if let Err(e) = tokio::fs::symlink(&gui_lib_path, "./gui.so").await {
+                        println!("Failed to create gui.so symlink: {}", e);
+                    }
+                }
+                modules_to_load.push(("main".to_string(), gui_lib_path.clone()));
             }
         }
     } else {

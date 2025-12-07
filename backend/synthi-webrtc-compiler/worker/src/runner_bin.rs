@@ -192,7 +192,8 @@ fn main() {
                                 } else {
                                     println!("'on_load' symbol not found.");
                                     // Fallback to entrypoint for backward compatibility (only for main module maybe?)
-                                    if name == "main" {
+                                    if name == "main" || name == "core" {
+                                        println!("Attempting fallback to 'entrypoint' for module '{}'...", name);
                                         let entry_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = lib.get(b"entrypoint");
                                         if let Ok(f) = entry_func {
                                              println!("Found 'entrypoint' symbol. Calling it...");
