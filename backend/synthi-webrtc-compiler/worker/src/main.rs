@@ -1334,7 +1334,7 @@ async fn handle_compile(
 
             // FIX: Remove XFlush to prevent deadlock with runner's event loop
             if content.contains("XFlush(") {
-                content = content.replace("XFlush(", "// XFlush(");
+                content = content.replace("XFlush(", "0 && XFlush(");
             }
 
             // Inject Event Draining in on_update: REMOVED (Steals events from runner)
@@ -1433,7 +1433,7 @@ async fn handle_compile(
 
             // FIX: Remove XFlush to prevent deadlock
             if content.contains("XFlush(") {
-                content = content.replace("XFlush(", "// XFlush(");
+                content = content.replace("XFlush(", "0 && XFlush(");
             }
 
 
