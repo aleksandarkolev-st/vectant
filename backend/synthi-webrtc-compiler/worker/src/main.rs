@@ -1195,6 +1195,38 @@ async fn handle_compile(
             }
         };
 
+        // DEBUG: Save generated code to a debug folder
+        let debug_dir = dir_path.join("debug_ai_generated").join(format!("{}", timestamp));
+        println!("Saving AI generated code to debug dir: {:?}", debug_dir);
+        if let Err(e) = tokio::fs::create_dir_all(&debug_dir).await {
+            println!("Failed to create debug dir: {}", e);
+        } else {
+            if let Some(shared) = split_data.get("shared") {
+                let fname = shared["filename"].as_str().unwrap_or("shared.h");
+                let content = shared["content"].as_str().unwrap_or("");
+                let _ = tokio::fs::write(debug_dir.join(fname), content).await;
+            }
+            if let Some(core) = split_data.get("core") {
+                let fname = core["filename"].as_str().unwrap_or("core.cpp");
+                let content = core["content"].as_str().unwrap_or("");
+                let _ = tokio::fs::write(debug_dir.join(fname), content).await;
+            }
+            if let Some(gui) = split_data.get("gui") {
+                let fname = gui["filename"].as_str().unwrap_or("gui.cpp");
+                let content = gui["content"].as_str().unwrap_or("");
+                let _ = tokio::fs::write(debug_dir.join(fname), content).await;
+            }
+            println!("Saved AI generated code to {:?}", debug_dir);
+            
+            // Notify frontend
+            let payload = serde_json::json!({
+                "sessionId": session_id.clone(),
+                "type": "stderr",
+                "line": format!("AI Generated code saved to: {:?}\n", debug_dir)
+            });
+            let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+        }
+
         let mut core_lib_path = String::new();
         let mut gui_lib_path = String::new();
 
@@ -1353,7 +1385,15 @@ async fn handle_compile(
                         println!("Failed to copy gui.dll: {}", e);
                     }
                 }
-                modules_to_load.push(("main".to_string(), gui_lib_path.clone()));
+                // NOTE: We load "core" first, then "gui" (as "main").
+                // The runner executes modules in alphabetical order, but "core" is special-cased to run first.
+                // However, if "gui" depends on "core" symbols being globally available, we might need RTLD_GLOBAL.
+                // But here we use dlopen inside core to load gui, so core is the entry point.
+                // Wait, if we push "main" -> gui_lib_path, the runner will load it.
+                // But core.cpp ALSO dlopens gui.so. This is a double load!
+                // FIX: We should ONLY load "core" in the runner, and let core load gui.so dynamically.
+                // So we do NOT push gui to modules_to_load if we are in split mode.
+                // modules_to_load.push(("main".to_string(), gui_lib_path.clone())); 
             }
         }
     } else {

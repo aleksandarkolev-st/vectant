@@ -202,6 +202,17 @@ If you need to store them, either:
 1. Include <X11/Xlib.h> in shared.h (PREFERRED)
 2. Use void* or unsigned long directly in the struct members
 
+CRITICAL: DO NOT forward declare X11 types if you include <X11/Xlib.h>.
+- BAD: `typedef struct XEvent XEvent;` (Conflicts with Xlib.h)
+- GOOD: Just include `<X11/Xlib.h>` and use `XEvent`.
+
+### 3.4 VARIABLE NAMING (CRITICAL)
+- You MUST use the EXACT same name for the variable in `AppState` as it was in the global scope.
+  * Original: `int player_x;` -> AppState: `int player_x;`
+  * BAD: `int player_x;` -> AppState: `int x;` or `int playerX;`
+- Do NOT prefix variables with `m_` or `_`.
+- Do NOT rename `wbuffer` to `input_buffer`. Keep it `wbuffer`.
+
 Example of CORRECT state structure:
 ```cpp
 #include <X11/Xlib.h> // Include this if using X11 types!
@@ -247,6 +258,24 @@ struct AppState {
     // Missing variables that GUI uses - NO
 };
 ```
+
+## 3.5 CODE PRESERVATION (ZERO TOLERANCE)
+- DO NOT RENAME VARIABLES. You must use the EXACT same names as the original code.
+- DO NOT CHANGE VALUES. Constants, initializers, and logic must remain identical.
+- DO NOT REFACTOR LOGIC unless strictly necessary for the split.
+- PRESERVE COMMENTS where possible.
+- STABILITY: If you are re-running on similar code, try to keep the output structure identical to minimize changes.
+- PRESERVE STRING LITERALS: Do not correct typos, change text, or "improve" messages. If the user code says `printf("dsdas")`, you MUST output `printf("dsdas")`.
+- PRESERVE MAGIC NUMBERS: Do not replace hardcoded numbers with variables unless absolutely necessary. If the code says `if (x > 590)`, keep `590`. Do NOT change it to `width - 50`.
+- NO NEW COMMENTS: Do NOT add any new comments or explanations to the generated code. Only preserve existing comments from the source code.
+- NO MODERNIZATION: Do not change C style code to C++ style (e.g. keep `malloc`/`free`, do not change to `new`/`delete`). Keep `printf` instead of changing to `std::cout`.
+- COPY-PASTE PREFERENCE: When moving function bodies, copy them exactly as is.
+
+## 3.6 STATE PERSISTENCE & MIGRATION
+- You MUST implement `extern "C" void* on_load(void* prev_state)` in the GUI or CORE module (whichever holds the state).
+- If `prev_state` is not null, you MUST cast it to `AppState*` and use it.
+- If `prev_state` is null, allocate new state and initialize it.
+- Ensure `AppState` struct definition in `shared.h` matches the original variables exactly to allow safe casting.
 
 ## 4. SHARED MODULE REQUIREMENTS (C/C++)
 
@@ -313,6 +342,7 @@ Include common system headers in shared.h:
 
 ### 5.1 Explicit Inclusion Rule
 EVERY file must explicitly include ALL headers it uses. DO NOT rely on transitive includes.
+- MINIMAL MOVEMENT: Only move `#include` directives to `shared.h` if they are required for types defined in `AppState`. Keep other includes in `core.cpp` or `gui.cpp` where they are used.
 
 ### 5.2 Common Header Requirements by Function
 
@@ -415,6 +445,12 @@ void gui_render(AppState* state) {
     // int x = 10;  // If GUI uses this, it should be state->x
 }
 ```
+
+CRITICAL: When accessing arrays in AppState, you MUST use `state->array_name`.
+Example:
+- Original: `wbuffer[0] = '\0';`
+- Correct: `state->wbuffer[0] = '\0';`
+- Incorrect: `wbuffer[0] = '\0';` (This will cause a compilation error!)
 
 ### 6.3 Window Persistence (CRITICAL)
 To prevent flickering during hot-reloading, the window handle MUST persist in `AppState`.
