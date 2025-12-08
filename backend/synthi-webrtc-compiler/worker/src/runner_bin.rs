@@ -229,12 +229,12 @@ fn main() {
                             }
                         }
                     }
+                },
                 "unload" => {
                     if parts.len() == 2 {
                         let name = parts[1];
                         if let Some(lib) = modules.remove(name) {
                              loaded_paths.remove(name);
-                             unsafe {ib) = modules.remove(name) {
                              unsafe {
                                  let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"on_unload");
                                  if let Ok(f) = func {
@@ -244,7 +244,7 @@ fn main() {
                              println!("Unloaded module {}", name);
                         }
                     }
-                },
+                }
                 "quit" => {
                     println!("Quitting runner.");
                     #[cfg(target_os = "linux")]
@@ -289,5 +289,5 @@ fn main() {
         if elapsed < Duration::from_millis(16) {
             thread::sleep(Duration::from_millis(16) - elapsed);
         }
-    }
-}
+    } // end of loop
+} // end of main

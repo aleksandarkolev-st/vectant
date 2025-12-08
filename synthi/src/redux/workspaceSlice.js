@@ -298,9 +298,7 @@ const workspaceSlice = createSlice({
         setExternalFileContent: (state, action) => {
             const { path, content } = action.payload || {};
             if (!path || typeof content !== 'string') return;
-            const newMap = new Map(state.fileContentCache);
-            newMap.set(path, content);
-            state.fileContentCache = newMap;
+            state.fileContentCache.set(path, content);
             if (state.activeFile?.path === path) {
                 state.currentContent = content;
                 state.savedContent = content;
@@ -320,10 +318,8 @@ const workspaceSlice = createSlice({
             const cachedContent = state.fileContentCache.get(item.path);
             if (cachedContent!== undefined) {
                 // Ensure state mutation safety by creating a new Map instance for Redux state
-                const newMap = new Map(state.fileContentCache);
-                newMap.delete(item.path);
-                newMap.set(newPath, cachedContent);
-                state.fileContentCache = newMap;
+                state.fileContentCache.delete(item.path);
+                state.fileContentCache.set(newPath, cachedContent);
             }
         },
         setSlug: (state, action) => {
@@ -379,9 +375,7 @@ const workspaceSlice = createSlice({
                 
                 // Cache unsaved content of OLD active file before switching
                 if (state.activeFile && state.activeFile.path && state.currentContent!== state.savedContent) {
-                    const updatedCache = new Map(state.fileContentCache);
-                    updatedCache.set(state.activeFile.path, state.currentContent);
-                    state.fileContentCache = updatedCache;
+                    state.fileContentCache.set(state.activeFile.path, state.currentContent);
                 }
 
                 // Switch to new file
@@ -391,9 +385,7 @@ const workspaceSlice = createSlice({
                 
                 // Update cache if content was newly fetched (and not from cache)
                 if (!fromCache) {
-                    const updatedCache = new Map(state.fileContentCache);
-                    updatedCache.set(file.path, content);
-                    state.fileContentCache = updatedCache;
+                    state.fileContentCache.set(file.path, content);
                 }
 
                 // Ensure the file appears in the open tabs list
@@ -409,11 +401,9 @@ const workspaceSlice = createSlice({
           .addCase(saveFileContentThunk.fulfilled, (state, action) => {
                 if (action.payload) {
                     state.savedContent = action.payload;
-                    const updatedCache = new Map(state.fileContentCache);
                     if (state.activeFile && state.activeFile.path) {
-                        updatedCache.set(state.activeFile.path, action.payload);
+                        state.fileContentCache.set(state.activeFile.path, action.payload);
                     }
-                    state.fileContentCache = updatedCache;
                     // Mark active tab as saved
                     try {
                         if (state.activeFile && state.activeFile.path) {
@@ -431,9 +421,7 @@ const workspaceSlice = createSlice({
                     const deletedPath = action.payload.path;
                     
                     // Clear cache
-                    const newMap = new Map(state.fileContentCache);
-                    newMap.delete(deletedPath);
-                    state.fileContentCache = newMap;
+                    state.fileContentCache.delete(deletedPath);
                     
                     // Clear editor if active file was deleted
                     if (state.activeFile && state.activeFile.path === deletedPath) {
