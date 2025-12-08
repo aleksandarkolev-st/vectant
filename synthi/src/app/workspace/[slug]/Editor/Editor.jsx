@@ -335,6 +335,10 @@ const EditorPanel = ({
 
             console.log(`[LSP] Starting client for ${backendLang}`);
             const model = editorInstance.getModel();
+            if (!model) {
+                console.warn('[LSP] Editor model not found (editor likely disposed or changing), skipping LSP init');
+                return;
+            }
             console.log(`[LSP] Model Details - URI: ${model.uri.toString()}, Scheme: ${model.uri.scheme}, Language: ${model.getLanguageId()}`);
 
             // Debug: Register a manual completion provider to verify Monaco is working
