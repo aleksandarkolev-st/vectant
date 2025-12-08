@@ -258,14 +258,15 @@ struct AppState {
 - DO NOT implement your own event loop.
 
 ## 5. STABILITY & COMPATIBILITY (CRITICAL)
-- **THREAD SAFETY**: You MUST call `XInitThreads()` before `XOpenDisplay`.
-  * This is required because the runner uses GStreamer (multi-threaded) alongside X11.
+- **THREAD SAFETY**: DO NOT call `XInitThreads()`.
+  * The runner process has already initialized X11 threading.
+  * Calling it again in the shared library is unsafe.
+- **DISPLAY HANDLING**: DO NOT call `XOpenDisplay(NULL)`.
+  * You MUST use the `display_ptr` passed to `on_load`.
   * Example:
     ```cpp
-    if (!state->dpy) {
-        XInitThreads(); // <--- CRITICAL
-        state->dpy = XOpenDisplay(NULL);
-    }
+    // In on_load
+    state->dpy = (Display*)display_ptr;
     ```
 - **DISABLE XIM/XIC**: Do NOT use XInputMethod (XIM) or XInputContext (XIC). They cause freezes in headless/container environments.
   * Initialize `xim` and `xic` to `NULL` if they exist in the struct.

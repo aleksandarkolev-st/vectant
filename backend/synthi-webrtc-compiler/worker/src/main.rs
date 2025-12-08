@@ -1297,47 +1297,23 @@ async fn handle_compile(
             }
 
             // INJECT DEBUG PRINT: Print state every 60 frames
-            // Use a more generic search string to match AI output
-            if content.contains("update_core_logic(") {
-                // We need to be careful about where we inject.
-                // The error shows we are injecting inside a function call or definition in a way that breaks syntax.
-                // Instead of wrapping the call, let's try to inject BEFORE the call if it's a statement.
-                // But regex is hard.
-                // Let's try to inject inside the update_core_logic function DEFINITION instead.
-                if content.contains("void update_core_logic(AppState* state, float dt) {") {
-                     content = content.replace(
-                        "void update_core_logic(AppState* state, float dt) {",
-                        "void update_core_logic(AppState* state, float dt) {\n    static int frame_count = 0;\n    if (++frame_count % 60 == 0) { fprintf(stderr, \"Core Update: x=%d, paused=%d\\n\", state->x, state->paused); fflush(stderr); }"
-                     );
-                }
-            }
 
-            // INJECT PROBE: Verify on_update entry
-            if content.contains("extern \"C\" void on_update(") {
-                 // The previous injection was replacing "{" globally which broke struct initializers!
-                 // We must be more specific.
-                 content = content.replace(
-                    "extern \"C\" void on_update(void* state_ptr, double dt) {",
-                    "extern \"C\" void on_update(void* state_ptr, double dt) {\n    static int entry_count = 0;\n    if (++entry_count % 60 == 0) { fprintf(stderr, \"on_update entered\\n\"); fflush(stderr); }"
-                 );
-            }
 
-            // INJECT XInitThreads: Essential for multi-threaded apps (GStreamer + X11)
-            // Search for just XOpenDisplay to be safe
+
+
+            // INJECT XInitThreads: REMOVED (Dangerous to call after X11 init)
+            /* 
             if content.contains("XOpenDisplay(") {
-                // The error shows XInitThreads returns Status (int), but XOpenDisplay returns Display*.
-                // We cannot chain them with comma operator in assignment.
-                // We must separate them.
                 content = content.replace(
                     "current_state->dpy = XOpenDisplay(NULL);",
                     "XInitThreads(); current_state->dpy = XOpenDisplay(NULL);"
                 );
-                // Fallback for other variable names
                 content = content.replace(
                     "app_state.dpy = XOpenDisplay(NULL);",
                     "XInitThreads(); app_state.dpy = XOpenDisplay(NULL);"
                 );
             }
+            */
 
             // FIX: Replace direct calls to gui functions with pointers to avoid undefined symbols
             for func in &["gui_initialize", "gui_on_update", "gui_render", "gui_cleanup", "gui_on_event"] {
@@ -1354,30 +1330,24 @@ async fn handle_compile(
                 content = content.replace(&format!("void {}(", ptr_name), &format!("void {}(", func));
             }
 
-            // FIX: Inject XFlush and Event Draining to prevent freezing
-            // We inject this into core.cpp because it drives the loop.
-            if content.contains("ptr_gui_render(") {
-                // Inject XFlush after render
-                content = content.replace(
-                    "ptr_gui_render(&app_state);",
-                    "ptr_gui_render(&app_state); if (app_state.dpy) XFlush(app_state.dpy);"
-                );
-                // Fallback for pointer access
-                content = content.replace(
-                    "ptr_gui_render(state);",
-                    "ptr_gui_render(state); if (state->dpy) XFlush(state->dpy);"
-                );
+
+
+            // FIX: Remove XFlush to prevent deadlock with runner's event loop
+            if content.contains("XFlush(") {
+                content = content.replace("XFlush(", "// XFlush(");
             }
 
-            // Inject Event Draining in on_update
+            // Inject Event Draining in on_update: REMOVED (Steals events from runner)
+            /*
             if content.contains("extern \"C\" void on_update(") {
                 // We inject at the start of the function
                 let event_loop = r#"
     // Auto-injected event loop
-    if (app_state.dpy) {
+    AppState* casted_state = (AppState*)state_ptr;
+    if (casted_state && casted_state->dpy) {
         XEvent ev;
-        while (XPending(app_state.dpy) > 0) {
-            XNextEvent(app_state.dpy, &ev);
+        while (XPending(casted_state->dpy) > 0) {
+            XNextEvent(casted_state->dpy, &ev);
         }
     }
 "#;
@@ -1386,6 +1356,7 @@ async fn handle_compile(
                     &format!("extern \"C\" void on_update(void* state_ptr, double dt) {{{}", event_loop)
                 );
             }
+            */
 
             if content.contains("main(") && !content.contains("extern \"C\" void* entrypoint") {
                  content.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
@@ -1460,13 +1431,12 @@ async fn handle_compile(
             let fname = gui["filename"].as_str().unwrap_or("gui.cpp");
             let mut content = gui["content"].as_str().unwrap_or("").to_string();
 
-            // INJECT PROBE: gui_render
-            if content.contains("void gui_render(AppState* state) {") {
-                    content = content.replace(
-                    "void gui_render(AppState* state) {",
-                    "void gui_render(AppState* state) {\n    static int render_cnt = 0;\n    if (++render_cnt % 60 == 0) { fprintf(stderr, \"gui_render entered. dpy=%p, win=%lu, pix=%lu\\n\", (void*)state->dpy, state->win, state->back_pixmap); fflush(stderr); }"
-                    );
+            // FIX: Remove XFlush to prevent deadlock
+            if content.contains("XFlush(") {
+                content = content.replace("XFlush(", "// XFlush(");
             }
+
+
 
             if content.contains("main(") && !content.contains("extern \"C\" void* entrypoint") {
                  content.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
