@@ -1102,8 +1102,8 @@ async fn handle_compile(
     // Check if we need to restart due to GUI mode change or blocking app
     // We do this early because we consume req.files later
     // If use_ai_split is true, we assume the AI will generate the necessary hooks (on_update, etc.)
-    let has_on_update = req.use_ai_split || req.source.contains("on_update") || req.source.contains("on_load") || req.source.contains("entrypoint") || 
-        req.files.iter().any(|f| f.content.contains("on_update") || f.content.contains("on_load") || f.content.contains("entrypoint"));
+    let has_on_update = req.use_ai_split || req.source.contains("on_update") || req.source.contains("on_load") || req.source.contains("entrypoint") || req.source.contains("gui_on_update") ||
+        req.files.iter().any(|f| f.content.contains("on_update") || f.content.contains("on_load") || f.content.contains("entrypoint") || f.content.contains("gui_on_update"));
 
     // Generate a unique filename for the shared library to support HMR
     let timestamp = Utc::now().timestamp_millis();
@@ -1241,6 +1241,152 @@ async fn handle_compile(
             let fname = core["filename"].as_str().unwrap_or("core.cpp");
             let mut content = core["content"].as_str().unwrap_or("").to_string();
 
+            // INJECT MISSING HEADERS
+            if content.contains("setlocale") && !content.contains("#include <locale.h>") {
+                content = format!("#include <locale.h>\n{}", content);
+            }
+            if (content.contains("XLookupString") || content.contains("XK_Escape")) && !content.contains("#include <X11/Xutil.h>") {
+                content = format!("#include <X11/Xutil.h>\n#include <X11/keysym.h>\n{}", content);
+            }
+
+            // FIX: cleanup_display not declared
+            if content.contains("cleanup_display(app_state.dpy)") && !content.contains("void cleanup_display") {
+                // Inject a simple implementation before it's used (e.g. at the top, after headers)
+                // We'll just inject it after the last include
+                if let Some(idx) = content.rfind("#include") {
+                    if let Some(end_idx) = content[idx..].find('\n') {
+                        let insert_pos = idx + end_idx + 1;
+                        let cleanup_impl = "\nvoid cleanup_display(Display* dpy) { if (dpy) XCloseDisplay(dpy); }\n";
+                        content.insert_str(insert_pos, cleanup_impl);
+                    }
+                } else {
+                     // Fallback: prepend
+                     content = format!("void cleanup_display(Display* dpy) {{ if (dpy) XCloseDisplay(dpy); }}\n{}", content);
+                }
+            }
+
+            // INJECT SAFETY PATCH: Safer dlopen (don't unload old lib if new one fails)
+            // Use minimal search string
+            if content.contains("dlopen(") && content.contains("dlclose(") {
+                 // We assume the structure is: if(gui_lib) dlclose; gui_lib = dlopen;
+                 // We can't easily replace the whole block without regex.
+                 // Instead, we inject a helper function at the top and use it? No, too complex.
+                 // Let's try to replace the dlopen call itself.
+                 content = content.replace(
+                    "gui_lib = dlopen(path, RTLD_NOW);",
+                    "fprintf(stderr, \"Loading GUI from %s\\n\", path); void* new_lib = dlopen(path, RTLD_NOW); if(new_lib) { if(gui_lib) dlclose(gui_lib); gui_lib = new_lib; fprintf(stderr, \"GUI loaded OK\\n\"); } else { fprintf(stderr, \"dlopen failed: %s\\n\", dlerror()); }"
+                 );
+                 // And remove the previous dlclose if it exists immediately before
+                 content = content.replace(
+                    "if (gui_lib) {\n        dlclose(gui_lib);\n    }",
+                    "// dlclose moved to safe block"
+                 );
+                 // Also handle one-line version
+                 content = content.replace(
+                    "if (gui_lib) dlclose(gui_lib);",
+                    "// dlclose moved to safe block"
+                 );
+            }
+
+            // INJECT PROBE: Check if GUI is loaded
+            if content.contains("if (ptr_gui_render)") {
+                 content = content.replace(
+                    "if (ptr_gui_render)",
+                    "if (!ptr_gui_render) { static int null_cnt=0; if(++null_cnt%60==0) fprintf(stderr, \"WARNING: ptr_gui_render is NULL. GUI module not loaded!\\n\"); } if (ptr_gui_render)"
+                 );
+            }
+
+            // INJECT DEBUG PRINT: Print state every 60 frames
+            // Use a more generic search string to match AI output
+            if content.contains("update_core_logic(") {
+                // We need to be careful about where we inject.
+                // The error shows we are injecting inside a function call or definition in a way that breaks syntax.
+                // Instead of wrapping the call, let's try to inject BEFORE the call if it's a statement.
+                // But regex is hard.
+                // Let's try to inject inside the update_core_logic function DEFINITION instead.
+                if content.contains("void update_core_logic(AppState* state, float dt) {") {
+                     content = content.replace(
+                        "void update_core_logic(AppState* state, float dt) {",
+                        "void update_core_logic(AppState* state, float dt) {\n    static int frame_count = 0;\n    if (++frame_count % 60 == 0) { fprintf(stderr, \"Core Update: x=%d, paused=%d\\n\", state->x, state->paused); fflush(stderr); }"
+                     );
+                }
+            }
+
+            // INJECT PROBE: Verify on_update entry
+            if content.contains("extern \"C\" void on_update(") {
+                 // The previous injection was replacing "{" globally which broke struct initializers!
+                 // We must be more specific.
+                 content = content.replace(
+                    "extern \"C\" void on_update(void* state_ptr, double dt) {",
+                    "extern \"C\" void on_update(void* state_ptr, double dt) {\n    static int entry_count = 0;\n    if (++entry_count % 60 == 0) { fprintf(stderr, \"on_update entered\\n\"); fflush(stderr); }"
+                 );
+            }
+
+            // INJECT XInitThreads: Essential for multi-threaded apps (GStreamer + X11)
+            // Search for just XOpenDisplay to be safe
+            if content.contains("XOpenDisplay(") {
+                // The error shows XInitThreads returns Status (int), but XOpenDisplay returns Display*.
+                // We cannot chain them with comma operator in assignment.
+                // We must separate them.
+                content = content.replace(
+                    "current_state->dpy = XOpenDisplay(NULL);",
+                    "XInitThreads(); current_state->dpy = XOpenDisplay(NULL);"
+                );
+                // Fallback for other variable names
+                content = content.replace(
+                    "app_state.dpy = XOpenDisplay(NULL);",
+                    "XInitThreads(); app_state.dpy = XOpenDisplay(NULL);"
+                );
+            }
+
+            // FIX: Replace direct calls to gui functions with pointers to avoid undefined symbols
+            for func in &["gui_initialize", "gui_on_update", "gui_render", "gui_cleanup", "gui_on_event"] {
+                let ptr_name = format!("ptr_{}", func);
+                // Replace calls: func( -> ptr_name(
+                content = content.replace(&format!("{}(", func), &format!("{}(", ptr_name));
+                
+                // FIX: Prevent double prefixing if the code already used pointers
+                // ptr_gui_initialize( -> ptr_ptr_gui_initialize( -> ptr_gui_initialize(
+                let double_ptr = format!("ptr_{}", ptr_name);
+                content = content.replace(&double_ptr, &ptr_name);
+
+                // Restore declarations: void ptr_name( -> void func(
+                content = content.replace(&format!("void {}(", ptr_name), &format!("void {}(", func));
+            }
+
+            // FIX: Inject XFlush and Event Draining to prevent freezing
+            // We inject this into core.cpp because it drives the loop.
+            if content.contains("ptr_gui_render(") {
+                // Inject XFlush after render
+                content = content.replace(
+                    "ptr_gui_render(&app_state);",
+                    "ptr_gui_render(&app_state); if (app_state.dpy) XFlush(app_state.dpy);"
+                );
+                // Fallback for pointer access
+                content = content.replace(
+                    "ptr_gui_render(state);",
+                    "ptr_gui_render(state); if (state->dpy) XFlush(state->dpy);"
+                );
+            }
+
+            // Inject Event Draining in on_update
+            if content.contains("extern \"C\" void on_update(") {
+                // We inject at the start of the function
+                let event_loop = r#"
+    // Auto-injected event loop
+    if (app_state.dpy) {
+        XEvent ev;
+        while (XPending(app_state.dpy) > 0) {
+            XNextEvent(app_state.dpy, &ev);
+        }
+    }
+"#;
+                content = content.replace(
+                    "extern \"C\" void on_update(void* state_ptr, double dt) {",
+                    &format!("extern \"C\" void on_update(void* state_ptr, double dt) {{{}", event_loop)
+                );
+            }
+
             if content.contains("main(") && !content.contains("extern \"C\" void* entrypoint") {
                  content.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
             }
@@ -1292,15 +1438,17 @@ async fn handle_compile(
                 // Create symlink ./core.so -> core_lib_path so gui can dlopen("./core.so")
                 #[cfg(unix)]
                 {
-                    let _ = tokio::fs::remove_file("./core.so").await;
-                    if let Err(e) = tokio::fs::symlink(&core_lib_path, "./core.so").await {
+                    let link_path = dir_path.join("core.so");
+                    let _ = tokio::fs::remove_file(&link_path).await;
+                    if let Err(e) = tokio::fs::symlink(&core_lib_path, &link_path).await {
                         println!("Failed to create core.so symlink: {}", e);
                     }
                 }
                 #[cfg(windows)]
                 {
-                    let _ = tokio::fs::remove_file("./core.dll").await;
-                    if let Err(e) = tokio::fs::copy(&core_lib_path, "./core.dll").await {
+                    let link_path = dir_path.join("core.dll");
+                    let _ = tokio::fs::remove_file(&link_path).await;
+                    if let Err(e) = tokio::fs::copy(&core_lib_path, &link_path).await {
                         println!("Failed to copy core.dll: {}", e);
                     }
                 }
@@ -1311,6 +1459,14 @@ async fn handle_compile(
         if let Some(gui) = split_data.get("gui") {
             let fname = gui["filename"].as_str().unwrap_or("gui.cpp");
             let mut content = gui["content"].as_str().unwrap_or("").to_string();
+
+            // INJECT PROBE: gui_render
+            if content.contains("void gui_render(AppState* state) {") {
+                    content = content.replace(
+                    "void gui_render(AppState* state) {",
+                    "void gui_render(AppState* state) {\n    static int render_cnt = 0;\n    if (++render_cnt % 60 == 0) { fprintf(stderr, \"gui_render entered. dpy=%p, win=%lu, pix=%lu\\n\", (void*)state->dpy, state->win, state->back_pixmap); fflush(stderr); }"
+                    );
+            }
 
             if content.contains("main(") && !content.contains("extern \"C\" void* entrypoint") {
                  content.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
@@ -1373,27 +1529,30 @@ async fn handle_compile(
                 // Create symlink ./gui.so -> gui_lib_path so the app can load it via ./gui.so
                 #[cfg(unix)]
                 {
-                    let _ = tokio::fs::remove_file("./gui.so").await;
-                    if let Err(e) = tokio::fs::symlink(&gui_lib_path, "./gui.so").await {
+                    let link_path = dir_path.join("gui.so");
+                    let _ = tokio::fs::remove_file(&link_path).await;
+                    if let Err(e) = tokio::fs::symlink(&gui_lib_path, &link_path).await {
                         println!("Failed to create gui.so symlink: {}", e);
                     }
                 }
                 #[cfg(windows)]
                 {
-                    let _ = tokio::fs::remove_file("./gui.dll").await;
-                    if let Err(e) = tokio::fs::copy(&gui_lib_path, "./gui.dll").await {
+                    let link_path = dir_path.join("gui.dll");
+                    let _ = tokio::fs::remove_file(&link_path).await;
+                    if let Err(e) = tokio::fs::copy(&gui_lib_path, &link_path).await {
                         println!("Failed to copy gui.dll: {}", e);
                     }
                 }
-                // NOTE: We load "core" first, then "gui" (as "main").
-                // The runner executes modules in alphabetical order, but "core" is special-cased to run first.
-                // However, if "gui" depends on "core" symbols being globally available, we might need RTLD_GLOBAL.
-                // But here we use dlopen inside core to load gui, so core is the entry point.
-                // Wait, if we push "main" -> gui_lib_path, the runner will load it.
-                // But core.cpp ALSO dlopens gui.so. This is a double load!
-                // FIX: We should ONLY load "core" in the runner, and let core load gui.so dynamically.
-                // So we do NOT push gui to modules_to_load if we are in split mode.
-                // modules_to_load.push(("main".to_string(), gui_lib_path.clone())); 
+                // Critical Fix for HMR:
+                // If GUI changes, we MUST reload 'core' because 'core' holds the handle to 'gui'.
+                // Core only loads gui in on_load. So we force core to reload.
+                if !modules_to_load.iter().any(|(n, _)| n == "core") {
+                    let cache = compile_cache.lock().await;
+                    if let Some((_, p)) = cache.get("core") {
+                        println!("GUI updated. Forcing reload of cached core: {}", p);
+                        modules_to_load.push(("core".to_string(), p.clone()));
+                    }
+                } 
             }
         }
     } else {
@@ -1858,6 +2017,7 @@ async fn handle_compile(
         let runner_path = exe_path.parent().unwrap().join(if cfg!(target_os = "windows") { "runner.exe" } else { "runner" });
         
         let mut cmd = Command::new(runner_path);
+        cmd.current_dir(&dir_path);
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());

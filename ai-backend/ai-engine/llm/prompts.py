@@ -250,6 +250,44 @@ struct AppState {
 };
 ```
 
+## 4. EVENT LOOP HANDLING (CRITICAL)
+- The RUNNER handles the main X11 event loop.
+- The CORE module MUST implement `extern "C" void on_event(void* state, void* event)` to receive events from the runner.
+- The CORE module MUST forward these events to the GUI module via `ptr_gui_on_event`.
+- DO NOT call `XNextEvent` or `XPending` in `on_update`. This will steal events from the runner and cause freezing.
+- DO NOT implement your own event loop.
+
+## 5. STABILITY & COMPATIBILITY (CRITICAL)
+- **THREAD SAFETY**: You MUST call `XInitThreads()` before `XOpenDisplay`.
+  * This is required because the runner uses GStreamer (multi-threaded) alongside X11.
+  * Example:
+    ```cpp
+    if (!state->dpy) {
+        XInitThreads(); // <--- CRITICAL
+        state->dpy = XOpenDisplay(NULL);
+    }
+    ```
+- **DISABLE XIM/XIC**: Do NOT use XInputMethod (XIM) or XInputContext (XIC). They cause freezes in headless/container environments.
+  * Initialize `xim` and `xic` to `NULL` if they exist in the struct.
+  * Do NOT call `XOpenIM` or `XCreateIC`.
+  * Do NOT call `XFilterEvent`.
+  * Use `XLookupString` (not `XwcLookupString`) for key events.
+- **EVENT MASKS**: In `XSelectInput`, ALWAYS include `PointerMotionMask` to ensure mouse movements are received.
+  * Example: `XSelectInput(dpy, win, ExposureMask | KeyPressMask | ButtonPressMask | StructureNotifyMask | PointerMotionMask);`
+
+## 6. MEMORY MANAGEMENT (CRITICAL)
+- **DO NOT FREE STATE ON UNLOAD**: The `on_unload` function MUST NOT free the `AppState` memory.
+  * The state pointer is passed to the next version of the library during hot-reloading.
+  * If you free it, the next version will crash or freeze when accessing invalid memory.
+  * Let the operating system reclaim the memory when the process terminates.
+  * Example:
+    ```cpp
+    extern "C" void on_unload(void* state_ptr) {
+        // Cleanup resources (textures, windows, etc.) if necessary
+        // BUT DO NOT CALL free(state_ptr);
+    }
+    ```
+
 Example of INCORRECT state structure (DO NOT DO THIS):
 ```cpp
 struct AppState {
@@ -272,9 +310,11 @@ struct AppState {
 - COPY-PASTE PREFERENCE: When moving function bodies, copy them exactly as is.
 
 ## 3.6 STATE PERSISTENCE & MIGRATION
-- You MUST implement `extern "C" void* on_load(void* prev_state)` in the GUI or CORE module (whichever holds the state).
+- You MUST implement `extern "C" void* on_load(void* prev_state, void* display_ptr)` in the GUI or CORE module (whichever holds the state).
 - If `prev_state` is not null, you MUST cast it to `AppState*` and use it.
 - If `prev_state` is null, allocate new state and initialize it.
+- **CRITICAL**: You MUST use the provided `display_ptr` (cast to `Display*`) for X11 operations.
+- **CRITICAL**: DO NOT call `XOpenDisplay(NULL)` yourself. Use the provided display pointer.
 - Ensure `AppState` struct definition in `shared.h` matches the original variables exactly to allow safe casting.
 
 ## 4. SHARED MODULE REQUIREMENTS (C/C++)
@@ -401,12 +441,18 @@ void gui_initialize(AppState* state) {
     // Only create the window if it doesn't exist in the state yet.
     // This prevents flickering during hot-reload.
     if (state->window == 0) {
-        // Example for X11
-        // state->window = XCreateSimpleWindow(...);
+        // CRITICAL: Use state->dpy which was set in on_load. DO NOT open a new display.
+        // state->window = XCreateSimpleWindow(state->dpy, ...);
         // XMapWindow(state->dpy, state->window);
+        
+        // Initialize Input Method (XIM) if needed
+        // state->xim = XOpenIM(state->dpy, NULL, NULL, NULL);
+        // state->xic = XCreateIC(state->xim, ...);
     }
     
-    // 2. Initialize other resources (fonts, textures)
+    // 2. Initialize other resources (fonts, textures, GCs)
+    // CRITICAL: Create GCs and Pixmaps HERE, not in gui_render.
+    // if (!state->gc) state->gc = XCreateGC(state->dpy, state->window, 0, NULL);
 }
 
 void gui_on_update(AppState* state, float dt) {
@@ -417,6 +463,9 @@ void gui_on_update(AppState* state, float dt) {
 void gui_render(AppState* state) {
     // Perform actual rendering using state data
     // Draw based on state->x, state->y, state->color, etc.
+    
+    // CRITICAL: DO NOT CREATE RESOURCES HERE (GC, Pixmap, Font).
+    // Use resources created in gui_initialize and stored in AppState.
 }
 
 void gui_cleanup(AppState* state) {
@@ -429,6 +478,8 @@ void gui_cleanup(AppState* state) {
 
 void gui_on_event(AppState* state, void* event) {
     // Handle input events
+    // XEvent* ev = (XEvent*)event;
+    // if (state->xim && state->xic && XFilterEvent(ev, state->window)) return;
 }
 
 } // extern "C"
@@ -463,8 +514,9 @@ To prevent flickering during hot-reloading, the window handle MUST persist in `A
 - Initialize and manage the AppState structure
 - Implement business logic (game logic, calculations, state machines)
 - Handle dynamic library loading (dlopen/LoadLibrary)
-- Call GUI entry points through function pointers (NOT directly)
-- Implement main loop with delta time calculation
+- Call GUI entry points through function pointers
+- **CRITICAL: DO NOT IMPLEMENT `main()`**. You must implement `on_load`, `on_update`, and `on_unload` to be driven by the host runner.
+- **CRITICAL: NEVER call `gui_initialize`, `gui_on_update`, etc. directly. ALWAYS use the function pointers `ptr_gui_initialize`, `ptr_gui_on_update`, etc.**
 
 ### 7.2 Dynamic Loading Pattern (C/C++ Linux)
 CRITICAL: Do NOT name the function pointers the same as the functions declared in shared.h.
@@ -482,7 +534,7 @@ typedef void (*gui_render_fn)(AppState*);
 typedef void (*gui_cleanup_fn)(AppState*);
 typedef void (*gui_on_event_fn)(AppState*, void*);
 
-// Define function pointers with DIFFERENT names than the shared.h declarations
+// Define function pointers
 void* gui_lib = NULL;
 gui_initialize_fn ptr_gui_initialize = NULL;
 gui_on_update_fn ptr_gui_on_update = NULL;
@@ -491,18 +543,16 @@ gui_cleanup_fn ptr_gui_cleanup = NULL;
 gui_on_event_fn ptr_gui_on_event = NULL;
 
 bool load_gui_module(const char* path) {
-    if (gui_lib) {
-        // Optional: cleanup old module
-        dlclose(gui_lib);
-    }
-
-    gui_lib = dlopen(path, RTLD_NOW);
-    if (!gui_lib) {
-        fprintf(stderr, "Failed to load GUI: %s\n", dlerror());
+    // Safer reload: Load new lib first, then close old one
+    void* new_lib = dlopen(path, RTLD_NOW);
+    if (!new_lib) {
+        fprintf(stderr, "dlopen failed: %s\n", dlerror());
         return false;
     }
     
-    // Load symbols into pointers
+    if (gui_lib) dlclose(gui_lib);
+    gui_lib = new_lib;
+    
     ptr_gui_initialize = (gui_initialize_fn)dlsym(gui_lib, "gui_initialize");
     ptr_gui_on_update = (gui_on_update_fn)dlsym(gui_lib, "gui_on_update");
     ptr_gui_render = (gui_render_fn)dlsym(gui_lib, "gui_render");
@@ -513,39 +563,57 @@ bool load_gui_module(const char* path) {
 }
 ```
 
-### 7.3 Main Loop Pattern
+### 7.3 Core Entry Points (NO MAIN FUNCTION)
+The Core module MUST implement these `extern "C"` functions to be driven by the runner:
+
 ```cpp
-int main() {
-    AppState state = {0};  // Zero-initialize
-    
-    // Initialize state
-    state.width = 800;
-    state.height = 600;
-    state.is_running = true; // Ensure this matches AppState member name!
-    
-    // Load GUI
-    if (!load_gui_module("./gui.so")) {
-        return 1;
+// Global state instance
+AppState app_state = {0};
+
+extern "C" void* on_load(void* prev_state, void* display_ptr) {
+    if (prev_state) {
+        // Migrate state
+        AppState* old = (AppState*)prev_state;
+        app_state = *old; // Copy POD state
+        // Ensure display pointer is updated (in case it changed, though unlikely)
+        app_state.dpy = (Display*)display_ptr;
+    } else {
+        // Initialize new state
+        app_state.is_running = true;
+        app_state.width = 800;
+        app_state.height = 600;
+        // CRITICAL: Use the provided display pointer
+        app_state.dpy = (Display*)display_ptr;
     }
     
-    // Call via function pointers
-    if (ptr_gui_initialize) ptr_gui_initialize(&state);
-    
-    // Main loop
-    while (state.is_running) {
-        float dt = calculate_delta_time();
-        
-        // Core logic updates
-        update_core_logic(&state, dt);
-        
-        // GUI updates and rendering via pointers
-        if (ptr_gui_on_update) ptr_gui_on_update(&state, dt);
-        if (ptr_gui_render) ptr_gui_render(&state);
+    // Load GUI module
+    if (load_gui_module("./gui.so")) {
+        if (ptr_gui_initialize) ptr_gui_initialize(&app_state);
     }
     
-    if (ptr_gui_cleanup) ptr_gui_cleanup(&state);
+    return &app_state;
+}
+
+extern "C" void on_update(void* state_ptr, double dt) {
+    // Core logic updates
+    update_core_logic(&app_state, (float)dt);
     
-    return 0;
+    // GUI updates and rendering
+    if (ptr_gui_on_update) ptr_gui_on_update(&app_state, (float)dt);
+    if (ptr_gui_render) {
+        ptr_gui_render(&app_state);
+        // CRITICAL: Flush X11 buffer to ensure rendering is visible
+        if (app_state.dpy) XFlush(app_state.dpy);
+    }
+}
+
+extern "C" void on_event(void* state_ptr, void* event_ptr) {
+    if (ptr_gui_on_event) ptr_gui_on_event(&app_state, event_ptr);
+}
+
+extern "C" void on_unload(void* state_ptr) {
+    if (ptr_gui_cleanup) ptr_gui_cleanup(&app_state);
+    if (gui_lib) dlclose(gui_lib);
 }
 ```
 
@@ -557,6 +625,8 @@ CRITICAL: X11 functions require correct argument types and order.
 Common mistakes to AVOID:
 - `XMapWindow(state->win, state->dpy)` ❌ WRONG - swapped arguments
 - `XMapWindow(state->dpy, state->win)` ✅ CORRECT
+- Assigning `Screen*` to `int`. `XWindowAttributes.screen` is `Screen*`. `DefaultScreen(dpy)` is `int`.
+  - Use `XScreenNumberOfScreen(wa.screen)` if you need the int index from attributes.
 
 Correct patterns:
 ```cpp
@@ -648,7 +718,7 @@ Before outputting, verify:
 
 3. **Split functionality:**
    - GUI: rendering, drawing, UI updates → gui.cpp
-   - Core: main loop, initialization, logic → core.cpp
+   - Core: initialization, logic, update loop body (NO blocking main loop) → core.cpp
    - Shared: AppState, function declarations → shared.h
 
 4. **Add headers:**

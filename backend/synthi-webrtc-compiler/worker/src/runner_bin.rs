@@ -40,6 +40,7 @@ extern "C" {
     fn XDrawString(display: *mut Display, d: Window, gc: *mut c_void, x: c_int, y: c_int, string: *const i8, length: c_int) -> c_int;
     fn XFreeGC(display: *mut Display, gc: *mut c_void) -> c_int;
     fn XClearWindow(display: *mut Display, w: Window) -> c_int;
+    fn XInitThreads() -> c_int;
 }
 
 // Simple state container wrapper
@@ -51,6 +52,16 @@ unsafe impl Send for AppState {}
 unsafe impl Sync for AppState {}
 
 fn main() {
+    // Initialize X11 Threads support immediately
+    #[cfg(target_os = "linux")]
+    unsafe {
+        if XInitThreads() == 0 {
+            eprintln!("XInitThreads failed!");
+        } else {
+            println!("XInitThreads initialized.");
+        }
+    }
+
     // Initialize GStreamer
     if let Err(e) = gstreamer::init() {
         eprintln!("Failed to initialize GStreamer: {}", e);
@@ -127,7 +138,14 @@ fn main() {
                 while XPending(display) > 0 {
                     let mut event: XEvent = std::mem::zeroed();
                     XNextEvent(display, &mut event);
-                    // Drain events to keep window responsive
+                    
+                    // Pass event to all loaded modules that export on_event
+                    for lib in modules.values() {
+                        let event_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut XEvent)>, _> = lib.get(b"on_event");
+                        if let Ok(f) = event_func {
+                            f(app_state.raw, &mut event);
+                        }
+                    }
                 }
             }
         }
@@ -211,7 +229,10 @@ fn main() {
                                 // Initialize the new one
                                 if let Ok(f) = load_func {
                                     println!("Found 'on_load' symbol. Calling it...");
-                                    app_state.raw = f(app_state.raw);
+                                    // Pass the display pointer to the loaded library
+                                    // The signature is now: void* on_load(void* prev_state, void* display_ptr)
+                                    let load_func_with_display: Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void> = std::mem::transmute(f);
+                                    app_state.raw = load_func_with_display(app_state.raw, display);
                                     println!("'on_load' returned. AppState raw: {:p}", app_state.raw);
                                 } else if let Ok(f) = entry_func {
                                      // Fallback
