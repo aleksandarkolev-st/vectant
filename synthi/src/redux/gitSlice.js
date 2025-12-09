@@ -33,11 +33,69 @@ export const fetchRemote = createAsyncThunk(
     }
 );
 
+export const fetchCommitHistory = createAsyncThunk(
+    'git/fetchLog',
+    async (slug) => {
+        return await gitClient.getLog(slug);
+    }
+);
+
+export const fetchUnpushedCommits = createAsyncThunk(
+    'git/fetchUnpushed',
+    async ({ slug, max = 50 }) => {
+        return await gitClient.getUnpushed(slug, max);
+    }
+);
+
+export const initRepo = createAsyncThunk(
+    'git/init',
+    async ({ slug, remoteUrl }, { dispatch }) => {
+        await gitClient.init(slug, remoteUrl);
+        dispatch(fetchGitStatus(slug));
+    }
+);
+
+export const addRemote = createAsyncThunk(
+    'git/addRemote',
+    async ({ slug, name, url }, { dispatch }) => {
+        await gitClient.addRemote(slug, name, url);
+        dispatch(fetchGitStatus(slug));
+        dispatch(fetchRemotes(slug));
+        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+    }
+);
+
+export const removeRemote = createAsyncThunk(
+    'git/removeRemote',
+    async ({ slug, name }, { dispatch }) => {
+        await gitClient.removeRemote(slug, name);
+        dispatch(fetchGitStatus(slug));
+        dispatch(fetchRemotes(slug));
+    }
+);
+
+export const fetchRemotes = createAsyncThunk(
+    'git/fetchRemotes',
+    async (slug) => {
+        return await gitClient.getRemotes(slug);
+    }
+);
+
+export const cloneRepo = createAsyncThunk(
+    'git/clone',
+    async ({ slug, repoUrl, token }, { dispatch }) => {
+        await gitClient.clone(slug, repoUrl, token);
+        dispatch(fetchGitStatus(slug));
+    }
+);
+
 export const commitChanges = createAsyncThunk(
     'git/commit',
     async ({ slug, message }, { dispatch }) => {
         await gitClient.commit(slug, message);
         dispatch(fetchGitStatus(slug));
+        dispatch(fetchCommitHistory(slug));
+        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
     }
 );
 
@@ -62,6 +120,9 @@ export const pushChanges = createAsyncThunk(
     async (slug, { dispatch }) => {
         await gitClient.push(slug);
         dispatch(fetchGitStatus(slug));
+        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+        dispatch(fetchCommitHistory(slug));
+        dispatch(fetchRemotes(slug));
     }
 );
 
@@ -70,6 +131,8 @@ export const pullChanges = createAsyncThunk(
     async (slug, { dispatch }) => {
         await gitClient.pull(slug);
         dispatch(fetchGitStatus(slug));
+        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+        dispatch(fetchCommitHistory(slug));
     }
 );
 
@@ -86,6 +149,9 @@ const gitSlice = createSlice({
     initialState: {
         status: null,
         branches: { local: [], all: [] },
+        remotes: [],
+        commitHistory: { all: [] },
+        unpushedCommits: [],
         currentBranch: 'main',
         loading: false,
         error: null,
@@ -107,6 +173,33 @@ const gitSlice = createSlice({
             .addCase(fetchGitStatus.rejected, (state, action) => {
                 state.loading = false;
                 state.error = action.error.message;
+            });
+
+        builder
+            .addCase(fetchCommitHistory.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(fetchCommitHistory.fulfilled, (state, action) => { state.loading = false; state.commitHistory = action.payload || { all: [] }; })
+            .addCase(fetchCommitHistory.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
+            .addCase(fetchUnpushedCommits.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(fetchUnpushedCommits.fulfilled, (state, action) => { state.loading = false; state.unpushedCommits = action.payload || []; })
+            .addCase(fetchUnpushedCommits.rejected, (state, action) => { state.loading = false; state.error = action.error.message; });
+        builder
+            .addCase(initRepo.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(initRepo.fulfilled, (state) => { state.loading = false; })
+            .addCase(initRepo.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
+            .addCase(cloneRepo.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(cloneRepo.fulfilled, (state) => { state.loading = false; })
+            .addCase(cloneRepo.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
+            .addCase(addRemote.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(addRemote.fulfilled, (state) => { state.loading = false; })
+            .addCase(addRemote.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
+            .addCase(pushChanges.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(pushChanges.fulfilled, (state) => { state.loading = false; })
+            .addCase(pushChanges.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
+            .addCase(pullChanges.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(pullChanges.fulfilled, (state) => { state.loading = false; })
+            .addCase(pullChanges.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
+            .addCase(fetchRemotes.fulfilled, (state, action) => {
+                state.remotes = action.payload;
             });
     },
 });

@@ -325,16 +325,17 @@ export default function EditorPage({ params }) {
 
     const FileTreePanel = (
         <ResizablePanel defaultSize={15} minSize={10} maxSize={35} className={`${treeOnRight? 'border-l' : 'border-r'} border-[#545454] bg-[#252526]`}>
-            <div className="flex flex-col h-full">
-                <div className="flex-1 overflow-hidden">
+            <ResizablePanelGroup direction="vertical">
+                <ResizablePanel defaultSize={65} minSize={20}>
                     <FileTreeView
                         onToggleOrientation={toggleTreeOrientation}
                     />
-                </div>
-                <div className="h-1/3 border-t border-[#545454]">
+                </ResizablePanel>
+                <ResizableHandle withHandle />
+                <ResizablePanel defaultSize={35} minSize={10}>
                     <GitStatus slug={slug} />
-                </div>
-            </div>
+                </ResizablePanel>
+            </ResizablePanelGroup>
         </ResizablePanel>
     );
 

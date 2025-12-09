@@ -160,6 +160,15 @@ const server = http.createServer(async (req, res) => {
                 case 'init':
                     result = await gitService.initRepo(slug, data.remoteUrl);
                     break;
+                case 'add-remote':
+                    result = await gitService.addRemote(slug, data.name, data.url);
+                    break;
+                case 'remove-remote':
+                    result = await gitService.removeRemote(slug, data.name);
+                    break;
+                case 'remotes':
+                    result = await gitService.getRemotes(slug);
+                    break;
                 case 'clone':
                     result = await gitService.cloneRepo(slug, data.repoUrl, data.token);
                     // Save metadata
@@ -205,6 +214,10 @@ const server = http.createServer(async (req, res) => {
                 case 'log':
                     result = await gitService.getLog(slug);
                     break;
+                case 'unpushed':
+                  const max = data && data.max ? parseInt(data.max, 10) : 50;
+                  result = await gitService.getUnpushedCommits(slug, max);
+                  break;
                 case 'sync':
                     // Sync a single file
                     await gitService.syncFile(slug, data.filePath, data.content);
@@ -225,9 +238,17 @@ const server = http.createServer(async (req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(result));
         } catch (e) {
+          // For expected repository state errors (not initialized / not found / no remote) treat as client errors and avoid stack traces
+          const msg = e?.message || '';
+          if (msg.includes('not initialized') || msg.includes('not found') || msg.includes('no remote configured') || msg.includes('no configured push destination') || msg.includes('authentication failed') || msg.includes('user cancelled') || msg.includes('user cancelled dialog') || msg.includes('repository not found') || msg.includes('remote: repository not found')) {
+            console.debug('[Collab] Client error in /git/:', msg);
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: msg }));
+          } else {
             console.error(e);
             res.writeHead(500);
-            res.end(JSON.stringify({ error: e.message }));
+            res.end(JSON.stringify({ error: msg }));
+          }
         }
     });
     return;
