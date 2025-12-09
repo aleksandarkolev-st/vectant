@@ -52,7 +52,7 @@ struct IceServerEnv {
 }
 
 const REQUIRED_TOOLS: &[&str] = &["g++", "rustc", "tsc", "clangd"];
-const GUI_TOOLS: &[&str] = &["xdotool", "Xvfb", "matchbox-window-manager"];
+const GUI_TOOLS: &[&str] = &["xdotool", "Xvfb", "matchbox-window-manager"]; // Keeping these for now as SDL2 might use Xvfb on Linux
 
 #[derive(Debug, Serialize, Deserialize)]
 struct SignalMessage {
@@ -102,7 +102,7 @@ struct RunnerState {
     is_gui: bool,
     xvfb_process: Option<tokio::process::Child>,
     gst_pipeline: Option<gst::Pipeline>,
-    x11_tx: Option<mpsc::UnboundedSender<String>>,
+    sdl_tx: Option<mpsc::UnboundedSender<String>>,
     video_track: Option<Arc<TrackLocalStaticRTP>>,
     audio_track: Option<Arc<TrackLocalStaticRTP>>,
     width: u32,
@@ -213,8 +213,8 @@ async fn main() -> Result<()> {
     // Store of sessionId -> stdin sender so datachannel 'terminal' messages can be
     // routed to the running process's stdin.
     let terminal_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> = Arc::new(Mutex::new(HashMap::new()));
-    // Store of sessionId -> xdotool stdin sender for persistent X11 input
-    let x11_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> = Arc::new(Mutex::new(HashMap::new()));
+    // Store of sessionId -> sdl input sender for persistent SDL input
+    let sdl_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> = Arc::new(Mutex::new(HashMap::new()));
     // Store for persistent runner process
     let runner_store: Arc<Mutex<Option<RunnerState>>> = Arc::new(Mutex::new(None));
     // Cache for incremental compilation: hash -> (hash_val, lib_path)
@@ -314,7 +314,7 @@ async fn main() -> Result<()> {
         let term_store = term_store.clone();
         let pc_for_callback = pc_clone.clone();
         let workspace_path_for_dc = workspace_path_for_callback.clone();
-        let x11_store_outer = x11_input_store.clone();
+        let sdl_store_outer = sdl_input_store.clone();
         let runner_store_outer = runner_store_for_callback.clone();
         let compile_cache_outer = compile_cache_for_callback.clone();
         async move {
@@ -328,7 +328,7 @@ async fn main() -> Result<()> {
                         let term_store_for_msg = term_store.clone();
                         let pc_for_compile = pc_for_callback.clone();
                         let workspace_path_for_compile = workspace_path_for_dc.clone();
-                        let x11_store = x11_store_outer.clone();
+                        let sdl_store = sdl_store_outer.clone();
                         let runner_store = runner_store_outer.clone();
                         let compile_cache = compile_cache_outer.clone();
                         async move {
@@ -338,12 +338,12 @@ async fn main() -> Result<()> {
                                     let log_dc = { store.lock().await.clone() };
                                     if let Some(log) = log_dc {
                                         let ts = term_store_for_msg.clone();
-                                        let x11s = x11_store.clone();
+                                        let sdls = sdl_store.clone();
                                         let rs = runner_store.clone();
                                         let pc_clone = pc_for_compile.clone();
                                         let wp = workspace_path_for_compile.clone();
                                         let cc = compile_cache.clone();
-                                        tokio::spawn(handle_compile(req, log, ts, x11s, rs, pc_clone, wp.to_path_buf(), cc));
+                                        tokio::spawn(handle_compile(req, log, ts, sdls, rs, pc_clone, wp.to_path_buf(), cc));
                                     }
                                     return;
                                 }
@@ -359,10 +359,10 @@ async fn main() -> Result<()> {
             } else if label == "terminal" {
                     // Terminal datachannel - used to receive stdin messages for running
                     // processes. Messages are expected as JSON: { type: 'stdin', sessionId, data }
-                    let x11_store_for_msg = x11_store_outer.clone();
+                    let sdl_store_for_msg = sdl_store_outer.clone();
                     dc.on_message(Box::new(move |msg| {
                         let term_store_for_msg = term_store.clone();
-                        let x11_store = x11_store_for_msg.clone();
+                        let sdl_store = sdl_store_for_msg.clone();
                         async move {
                             if msg.is_string {
                                 // diagnostic log
@@ -383,10 +383,10 @@ async fn main() -> Result<()> {
                                                 }
                                             }
                                         } else if t == "gui-event" {
-                                            // Handle GUI event by sending to persistent xdotool process
+                                            // Handle GUI event by sending to persistent SDL process
                                             if let Some(sid) = v.get("sessionId").and_then(|x| x.as_str()) {
                                                 if let Some(evt) = v.get("event") {
-                                                    let guard = x11_store.lock().await;
+                                                    let guard = sdl_store.lock().await;
                                                     if let Some(sender) = guard.get(sid) {
                                                         let mut cmd = String::new();
                                                         if let Some(typ) = evt.get("type").and_then(|x| x.as_str()) {
@@ -1090,7 +1090,7 @@ async fn handle_compile(
     req: CompileRequest,
     log_dc: Arc<RTCDataChannel>,
     terminal_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
-    x11_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
+    sdl_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
     runner_store: Arc<Mutex<Option<RunnerState>>>,
     pc: Arc<RTCPeerConnection>,
     workspace_path: std::path::PathBuf,
@@ -1245,23 +1245,29 @@ async fn handle_compile(
             if content.contains("setlocale") && !content.contains("#include <locale.h>") {
                 content = format!("#include <locale.h>\n{}", content);
             }
+            if (content.contains("SDL_") && !content.contains("#include <SDL2/SDL.h>")) {
+                content = format!("#include <SDL2/SDL.h>\n{}", content);
+            }
             if (content.contains("XLookupString") || content.contains("XK_Escape")) && !content.contains("#include <X11/Xutil.h>") {
                 content = format!("#include <X11/Xutil.h>\n#include <X11/keysym.h>\n{}", content);
             }
+            if (content.contains("dlopen") || content.contains("dlsym")) && !content.contains("#include <dlfcn.h>") {
+                content = format!("#include <dlfcn.h>\n{}", content);
+            }
 
-            // FIX: cleanup_display not declared
-            if content.contains("cleanup_display(app_state.dpy)") && !content.contains("void cleanup_display") {
+            // FIX: cleanup_window not declared
+            if content.contains("cleanup_window(app_state.window)") && !content.contains("void cleanup_window") {
                 // Inject a simple implementation before it's used (e.g. at the top, after headers)
                 // We'll just inject it after the last include
                 if let Some(idx) = content.rfind("#include") {
                     if let Some(end_idx) = content[idx..].find('\n') {
                         let insert_pos = idx + end_idx + 1;
-                        let cleanup_impl = "\nvoid cleanup_display(Display* dpy) { if (dpy) XCloseDisplay(dpy); }\n";
+                        let cleanup_impl = "\nvoid cleanup_window(SDL_Window* win) { if (win) SDL_DestroyWindow(win); }\n";
                         content.insert_str(insert_pos, cleanup_impl);
                     }
                 } else {
                      // Fallback: prepend
-                     content = format!("void cleanup_display(Display* dpy) {{ if (dpy) XCloseDisplay(dpy); }}\n{}", content);
+                     content = format!("void cleanup_window(SDL_Window* win) {{ if (win) SDL_DestroyWindow(win); }}\n{}", content);
                 }
             }
 
@@ -1332,9 +1338,30 @@ async fn handle_compile(
 
 
 
-            // FIX: Remove XFlush to prevent deadlock with runner's event loop
-            if content.contains("XFlush(") {
-                content = content.replace("XFlush(", "0 && XFlush(");
+            // FIX: Hook SDL_CreateRenderer to return the passed renderer (which is passed as window)
+            if content.contains("SDL_CreateRenderer") {
+                 // Inject hook function
+                 let hook = r#"
+static SDL_Renderer* SDL_CreateRenderer_Hook(SDL_Window* win, int idx, Uint32 flags) {
+    // We passed the renderer as the window pointer in runner_bin.rs
+    return (SDL_Renderer*)win;
+}
+#define SDL_CreateRenderer SDL_CreateRenderer_Hook
+#define SDL_DestroyRenderer(x) ((void)0)
+#define SDL_DestroyWindow(x) ((void)0)
+"#;
+                 // Insert after headers
+                if let Some(idx) = content.rfind("#include") {
+                    if let Some(end_idx) = content[idx..].find('\n') {
+                        let insert_pos = idx + end_idx + 1;
+                        content.insert_str(insert_pos, hook);
+                    }
+                }
+            }
+
+            // FIX: Remove SDL_RenderPresent to prevent deadlock with runner's event loop
+            if content.contains("SDL_RenderPresent(") {
+                content = content.replace("SDL_RenderPresent(", "0 && SDL_RenderPresent(");
             }
 
             // Inject Event Draining in on_update: REMOVED (Steals events from runner)
@@ -1384,7 +1411,8 @@ async fn handle_compile(
                 let mut cmd = system_command("g++");
                 cmd.arg("-shared").arg("-fPIC")
                    .arg("-D_POSIX_C_SOURCE=199309L")
-                   .arg(fname).arg("-I.").arg("-o").arg(&core_out);
+                   .arg(fname).arg("-I.").arg("-o").arg(&core_out)
+                   .arg("-ldl");
                 cmd.current_dir(&dir_path);
                 
                 let output = cmd.output().await?;
@@ -1431,9 +1459,9 @@ async fn handle_compile(
             let fname = gui["filename"].as_str().unwrap_or("gui.cpp");
             let mut content = gui["content"].as_str().unwrap_or("").to_string();
 
-            // FIX: Remove XFlush to prevent deadlock
-            if content.contains("XFlush(") {
-                content = content.replace("XFlush(", "0 && XFlush(");
+            // FIX: Remove SDL_RenderPresent to prevent deadlock
+            if content.contains("SDL_RenderPresent(") {
+                content = content.replace("SDL_RenderPresent(", "0 && SDL_RenderPresent(");
             }
 
 
@@ -1465,10 +1493,11 @@ async fn handle_compile(
                 let mut cmd = system_command("g++");
                 cmd.arg("-shared").arg("-fPIC")
                    .arg("-D_POSIX_C_SOURCE=199309L")
-                   .arg(fname).arg("-I.").arg("-o").arg(&gui_out);
+                   .arg(fname).arg("-I.").arg("-o").arg(&gui_out)
+                   .arg("-ldl");
                 
                 if req.is_gui {
-                    cmd.arg("-lX11");
+                    cmd.arg("-lSDL2");
                 }
                 // User requested dynamic loading via dlopen/dlsym, so we do NOT link core directly.
                 // if !core_lib_path.is_empty() {
@@ -1543,7 +1572,7 @@ async fn handle_compile(
                 // Output to temp path for atomic swap
                 c.arg(&req.filename).arg("-o").arg(&temp_output_path_str);
                 if req.is_gui {
-                    c.arg("-l").arg("X11");
+                    c.arg("-l").arg("SDL2");
                 }
                 c
             }
@@ -1664,7 +1693,7 @@ async fn handle_compile(
     let mut reused_pipeline: Option<gst::Pipeline> = None;
     let mut reused_wsl_display = String::new();
     let mut reused_gst_display = String::new();
-    let mut reused_x11_tx: Option<mpsc::UnboundedSender<String>> = None;
+    let mut reused_sdl_tx: Option<mpsc::UnboundedSender<String>> = None;
     let mut video_track_opt: Option<Arc<TrackLocalStaticRTP>> = None;
     let mut audio_track_opt: Option<Arc<TrackLocalStaticRTP>> = None;
 
@@ -1687,7 +1716,7 @@ async fn handle_compile(
                 reused_pipeline = state.gst_pipeline;
                 reused_wsl_display = state.wsl_display_str;
                 reused_gst_display = state.gst_display_str;
-                reused_x11_tx = state.x11_tx;
+                reused_sdl_tx = state.sdl_tx;
             } else {
                 println!("Full restart (resolution/GUI mode changed)...");
                 if let Some(mut child) = state.xvfb_process { let _ = child.kill().await; }
@@ -1704,7 +1733,8 @@ async fn handle_compile(
         let mut gst_display_str = reused_gst_display;
         let mut xvfb_process: Option<tokio::process::Child> = reused_xvfb;
         let mut gst_pipeline: Option<gst::Pipeline> = reused_pipeline;
-        let mut x11_tx_opt: Option<mpsc::UnboundedSender<String>> = reused_x11_tx;
+        let mut sdl_tx_opt: Option<mpsc::UnboundedSender<String>> = reused_sdl_tx;
+        let mut video_src_opt: Option<gst_app::AppSrc> = None;
 
         if req.is_gui {
             let width = req_width;
@@ -1726,66 +1756,17 @@ async fn handle_compile(
 
                 let resolution = format!("{}x{}x24", width, height);
 
-                let mut xvfb = system_command("Xvfb");
-                xvfb.arg("-displayfd").arg("1")
-                    .arg("-screen")
-                    .arg("0")
-                    .arg(&resolution)
-                    .arg("-ac")
-                    .arg("-listen")
-                    .arg("tcp")
-                    .arg("-s").arg("0")
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::inherit());
-
-                match xvfb.spawn() {
-                Ok(mut child) => {
-                    if let Some(stdout) = child.stdout.take() {
-                        let mut reader = BufReader::new(stdout);
-                        let mut line = String::new();
-                        match reader.read_line(&mut line).await {
-                            Ok(n) if n > 0 => {
-                                let display_num = line.trim();
-                                wsl_display_str = format!(":{}", display_num);
-                                if cfg!(target_os = "windows") {
-                                    gst_display_str = format!("127.0.0.1:{}", display_num);
-                                } else {
-                                    gst_display_str = wsl_display_str.clone();
-                                }
-                                println!("Xvfb started on display {}", wsl_display_str);
-                            }
-                            _ => eprintln!("Xvfb failed to output a display number"),
-                        }
-                    }
-                    xvfb_process = Some(child);
-                }
-                Err(e) => eprintln!("Failed to spawn Xvfb: {}", e),
-                }
-
-            if wsl_display_str.is_empty() {
-                wsl_display_str = ":99".to_string();
-                if cfg!(target_os = "windows") {
-                    gst_display_str = "127.0.0.1:99".to_string();
-                } else {
-                    gst_display_str = wsl_display_str.clone();
-                }
+                // Xvfb removed - using SDL2 offscreen rendering
+                wsl_display_str = "".to_string();
+                gst_display_str = "".to_string();
                 println!("Falling back to DISPLAY {}", wsl_display_str);
             }
 
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-            let mut wm_cmd = if cfg!(target_os = "windows") {
-                let mut c = system_command("env");
-                c.arg(format!("DISPLAY={}", wsl_display_str)).arg("matchbox-window-manager");
-                c
-            } else {
-                let mut c = Command::new("matchbox-window-manager");
-                c.env("DISPLAY", &wsl_display_str);
-                c
-            };
-
-            wm_cmd.stdout(Stdio::null()).stderr(Stdio::null());
-            let _ = wm_cmd.spawn(); // Let it run
+            // For SDL2 headless, we might not need a window manager if we use a dummy video driver or Xvfb
+            // But keeping matchbox for now as SDL2 on Linux often runs on top of X11/Xvfb
+            // Matchbox removed
 
             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
@@ -1823,14 +1804,16 @@ async fn handle_compile(
                 }
 
                 let gst_pipeline_str = format!(
-                    "ximagesrc display-name={} use-damage=false show-pointer=false ! video/x-raw,framerate=30/1 ! queue ! videoconvert ! {} ! {} config-interval=-1 ! queue ! appsink name=video_sink drop=true max-buffers=100 \
+                    "appsrc name=video_src format=time is-live=true do-timestamp=true ! video/x-raw,format=RGBA,width=800,height=600,framerate=30/1 ! queue ! videoconvert ! {} ! {} config-interval=-1 ! queue ! appsink name=video_sink drop=true max-buffers=100 \
                         {} ! audio/x-raw,rate=48000,channels=2 ! queue ! opusenc ! rtpopuspay ! queue ! appsink name=audio_sink drop=true max-buffers=100",
-                    gst_display_str, encoder, payloader, audio_source
+                    encoder, payloader, audio_source
                 );
 
                 match gst::parse_launch(&gst_pipeline_str) {
                     Ok(pipeline) => {
                         let pipeline = pipeline.downcast::<gst::Pipeline>().expect("Expected pipeline");
+                        let video_src = pipeline.by_name("video_src").expect("Source not found").downcast::<gst_app::AppSrc>().expect("Expected AppSrc");
+                        
                         let v_tx_clone = v_tx.clone();
                         if let Ok(video_sink) = pipeline.by_name("video_sink").context("Sink not found").and_then(|s| s.downcast::<gst_app::AppSink>().map_err(|_| anyhow::anyhow!("Expected AppSink"))) {
                             video_sink.set_callbacks(
@@ -1889,6 +1872,7 @@ async fn handle_compile(
                         }
                         println!("Successfully started pipeline with encoder: {}", encoder);
                         gst_pipeline = Some(pipeline);
+                        video_src_opt = Some(video_src);
                         selected_mime_type = mime_type.to_owned();
                         break;
                     }
@@ -1931,7 +1915,12 @@ async fn handle_compile(
                 }
             });
 
-            let mut xdotool = if cfg!(target_os = "windows") {
+            // We don't need xdotool for SDL2 input injection if we are communicating directly with the runner
+            // But if we want to simulate system-wide input on the Xvfb display, we might still use it.
+            // However, the runner now handles SDL events directly via the "gui-event" message.
+            // So we can probably skip xdotool or keep it as a fallback.
+            // For now, let's keep the structure but maybe rename the variable to be generic.
+            let mut input_injector = if cfg!(target_os = "windows") {
                 let mut c = system_command("env");
                 c.arg(format!("DISPLAY={}", wsl_display_str)).arg("xdotool").arg("-");
                 c
@@ -1941,33 +1930,33 @@ async fn handle_compile(
                 c
             };
 
-            xdotool.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-            if let Ok(mut xdotool_child) = xdotool.spawn() {
-                if let Some(mut xdotool_stdin) = xdotool_child.stdin.take() {
-                    let (x11_tx, mut x11_rx) = mpsc::unbounded_channel::<String>();
-                    if let Some(sid) = session_id.clone() { let mut guard = x11_input_store.lock().await; guard.insert(sid, x11_tx.clone()); }
-                    x11_tx_opt = Some(x11_tx);
+            input_injector.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            if let Ok(mut injector_child) = input_injector.spawn() {
+                if let Some(mut injector_stdin) = injector_child.stdin.take() {
+                    let (sdl_tx, mut sdl_rx) = mpsc::unbounded_channel::<String>();
+                    if let Some(sid) = session_id.clone() { let mut guard = sdl_input_store.lock().await; guard.insert(sid, sdl_tx.clone()); }
+                    sdl_tx_opt = Some(sdl_tx);
                     
                     tokio::spawn(async move {
-                        while let Some(mut cmd) = x11_rx.recv().await {
+                        while let Some(mut cmd) = sdl_rx.recv().await {
                             if cmd.starts_with("mousemove ") {
-                                while let Ok(next) = x11_rx.try_recv() {
+                                while let Ok(next) = sdl_rx.try_recv() {
                                     if next.starts_with("mousemove ") {
                                         cmd = next;
                                     } else {
-                                        if let Err(_) = xdotool_stdin.write_all(cmd.as_bytes()).await {}
-                                        let _ = xdotool_stdin.write_all(b"\n").await;
+                                        if let Err(_) = injector_stdin.write_all(cmd.as_bytes()).await {}
+                                        let _ = injector_stdin.write_all(b"\n").await;
                                         cmd = next;
                                         break;
                                     }
                                 }
                             }
-                            if let Err(_) = xdotool_stdin.write_all(cmd.as_bytes()).await { break; }
-                            let _ = xdotool_stdin.write_all(b"\n").await;
-                            let _ = xdotool_stdin.flush().await;
+                            if let Err(_) = injector_stdin.write_all(cmd.as_bytes()).await { break; }
+                            let _ = injector_stdin.write_all(b"\n").await;
+                            let _ = injector_stdin.flush().await;
                         }
-                        drop(xdotool_stdin);
-                        let _ = xdotool_child.wait().await;
+                        drop(injector_stdin);
+                        let _ = injector_child.wait().await;
                     });
                 }
             }
@@ -1980,7 +1969,6 @@ async fn handle_compile(
                 "display": wsl_display_str
             });
             let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
-        }
         }
 
         let exe_path = std::env::current_exe()?;
@@ -2005,18 +1993,34 @@ async fn handle_compile(
         
         let (tx, _) = tokio::sync::broadcast::channel(100);
         let tx_clone = tx.clone();
+        let video_src = video_src_opt.clone();
         
         tokio::spawn(async move {
-            let mut reader = BufReader::new(stdout);
-            let mut line = String::new();
-            loop {
-                line.clear();
-                match reader.read_line(&mut line).await {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        let _ = tx_clone.send(format!("STDOUT:{}", line));
+            if let Some(src) = video_src {
+                let mut reader = BufReader::new(stdout);
+                let frame_size = 800 * 600 * 4;
+                let mut buffer = vec![0u8; frame_size];
+                loop {
+                    match reader.read_exact(&mut buffer).await {
+                        Ok(_) => {
+                            let gst_buffer = gst::Buffer::from_slice(buffer.clone());
+                            let _ = src.push_buffer(gst_buffer);
+                        }
+                        Err(_) => break,
                     }
-                    Err(_) => break,
+                }
+            } else {
+                let mut reader = BufReader::new(stdout);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line).await {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            let _ = tx_clone.send(format!("STDOUT:{}", line));
+                        }
+                        Err(_) => break,
+                    }
                 }
             }
         });
@@ -2044,7 +2048,7 @@ async fn handle_compile(
             is_gui: req.is_gui,
             xvfb_process,
             gst_pipeline,
-            x11_tx: x11_tx_opt,
+            sdl_tx: sdl_tx_opt,
             video_track: video_track_opt,
             audio_track: audio_track_opt,
             width: req_width,
@@ -2089,10 +2093,10 @@ async fn handle_compile(
             }
         });
 
-        // Register x11 input for this session
-        if let Some(tx) = &state.x11_tx {
+        // Register sdl input for this session
+        if let Some(tx) = &state.sdl_tx {
             if let Some(sid) = session_id.clone() {
-                let mut g = x11_input_store.lock().await;
+                let mut g = sdl_input_store.lock().await;
                 g.insert(sid, tx.clone());
             }
         }

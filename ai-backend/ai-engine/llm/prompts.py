@@ -199,14 +199,14 @@ For C/C++, the state structure MUST be:
 - Use pointers for complex objects if necessary, but manage lifetime carefully
 - Use C-style arrays: `int values[100];` not `std::vector<int>`
 
-CRITICAL: DO NOT typedef system types like Display, GC, Pixmap, Window.
+CRITICAL: DO NOT typedef system types like SDL_Window, SDL_Renderer, SDL_Texture.
 If you need to store them, either:
-1. Include <X11/Xlib.h> in shared.h (PREFERRED)
-2. Use void* or unsigned long directly in the struct members
+1. Include <SDL2/SDL.h> in shared.h (PREFERRED)
+2. Use void* directly in the struct members
 
-CRITICAL: DO NOT forward declare X11 types if you include <X11/Xlib.h>.
-- BAD: `typedef struct XEvent XEvent;` (Conflicts with Xlib.h)
-- GOOD: Just include `<X11/Xlib.h>` and use `XEvent`.
+CRITICAL: DO NOT forward declare SDL2 types if you include <SDL2/SDL.h>.
+- BAD: `typedef struct SDL_Event SDL_Event;` (Conflicts with SDL.h)
+- GOOD: Just include `<SDL2/SDL.h>` and use `SDL_Event`.
 
 ### 3.4 VARIABLE NAMING (CRITICAL)
 - You MUST use the EXACT same name for the variable in `AppState` as it was in the global scope.
@@ -227,17 +227,17 @@ CRITICAL: DO NOT forward declare X11 types if you include <X11/Xlib.h>.
 
 Example of CORRECT state structure:
 ```cpp
-#include <X11/Xlib.h> // Include this if using X11 types!
+#include <SDL2/SDL.h> // Include this if using SDL2 types!
 
 struct AppState {
     // ABI Safety Checks (CRITICAL)
     uint32_t magic;       // Must be 0xDEADBEEF
     uint32_t struct_size; // Must be sizeof(AppState)
 
-    // Window/Display handles
-    Display* dpy;       // Use real type if header included
-    Window win;         // Use real type
-    GC gc;              // Use real type
+    // Window/Renderer handles
+    SDL_Window* window;     // Use real type if header included
+    SDL_Renderer* renderer; // Use real type
+    SDL_Texture* texture;   // Use real type
     
     // Position and size
     int x;
@@ -267,30 +267,26 @@ struct AppState {
 ```
 
 ## 4. EVENT LOOP HANDLING (CRITICAL)
-- The RUNNER handles the main X11 event loop.
+- The RUNNER handles the main SDL2 event loop.
 - The CORE module MUST implement `extern "C" void on_event(void* state, void* event)` to receive events from the runner.
 - The CORE module MUST forward these events to the GUI module via `ptr_gui_on_event`.
-- DO NOT call `XNextEvent` or `XPending` in `on_update`. This will steal events from the runner and cause freezing.
+- DO NOT call `SDL_PollEvent` or `SDL_WaitEvent` in `on_update`. This will steal events from the runner and cause freezing.
 - DO NOT implement your own event loop.
 
 ## 5. STABILITY & COMPATIBILITY (CRITICAL)
-- **THREAD SAFETY**: DO NOT call `XInitThreads()`.
-  * The runner process has already initialized X11 threading.
-  * Calling it again in the shared library is unsafe.
-- **DISPLAY HANDLING**: DO NOT call `XOpenDisplay(NULL)`.
-  * You MUST use the `display_ptr` passed to `on_load`.
+- **THREAD SAFETY**: SDL2 video operations must happen on the main thread.
+  * The runner ensures `gui_render` is called on the main thread.
+- **WINDOW HANDLING**: DO NOT call `SDL_Init(SDL_INIT_VIDEO)` if already initialized.
+  * You MUST use the `window_ptr` passed to `on_load`.
   * Example:
     ```cpp
     // In on_load
-    state->dpy = (Display*)display_ptr;
+    state->window = (SDL_Window*)window_ptr;
     ```
-- **DISABLE XIM/XIC**: Do NOT use XInputMethod (XIM) or XInputContext (XIC). They cause freezes in headless/container environments.
-  * Initialize `xim` and `xic` to `NULL` if they exist in the struct.
-  * Do NOT call `XOpenIM` or `XCreateIC`.
-  * Do NOT call `XFilterEvent`.
-  * Use `XLookupString` (not `XwcLookupString`) for key events.
-- **EVENT MASKS**: In `XSelectInput`, DO NOT include `PointerMotionMask` unless strictly necessary. It floods the event queue and can cause freezing.
-  * Example: `XSelectInput(dpy, win, ExposureMask | KeyPressMask | ButtonPressMask | StructureNotifyMask);`
+- **RENDERER LIFECYCLE**: Manage the renderer lifecycle carefully.
+  * Create the renderer in `gui_initialize` if it doesn't exist.
+  * Destroy it in `gui_cleanup`.
+  * Use `SDL_GetRenderer(state->window)` if the runner manages the renderer.
 
 ## 6. MEMORY MANAGEMENT (CRITICAL)
 - **DO NOT FREE STATE ON UNLOAD**: The `on_unload` function MUST NOT free the `AppState` memory.
@@ -327,11 +323,11 @@ struct AppState {
 - **COPY-PASTE PREFERENCE**: When moving function bodies, copy them exactly as is.
 
 ## 3.6 STATE PERSISTENCE & MIGRATION
-- You MUST implement `extern "C" void* on_load(void* prev_state, void* display_ptr)` in the GUI or CORE module (whichever holds the state).
+- You MUST implement `extern "C" void* on_load(void* prev_state, void* window_ptr)` in the GUI or CORE module (whichever holds the state).
 - If `prev_state` is not null, you MUST cast it to `AppState*` and use it.
 - If `prev_state` is null, allocate new state and initialize it.
-- **CRITICAL**: You MUST use the provided `display_ptr` (cast to `Display*`) for X11 operations.
-- **CRITICAL**: DO NOT call `XOpenDisplay(NULL)` yourself. Use the provided display pointer.
+- **CRITICAL**: You MUST use the provided `window_ptr` (cast to `SDL_Window*`) for SDL2 operations.
+- **CRITICAL**: DO NOT call `SDL_CreateWindow` yourself if a pointer is provided. Use the provided window pointer.
 - Ensure `AppState` struct definition in `shared.h` matches the original variables exactly to allow safe casting.
 
 ## 4. SHARED MODULE REQUIREMENTS (C/C++)
@@ -399,8 +395,8 @@ Include common system headers in shared.h:
 #include <stdbool.h>   // For bool in C
 #include <stddef.h>    // For size_t, NULL
 
-// If using X11, include it here to avoid type conflicts
-// #include <X11/Xlib.h> 
+// If using SDL2, include it here to avoid type conflicts
+// #include <SDL2/SDL.h> 
 ```
 
 ### 4.6 EXPORTED FUNCTIONS (CRITICAL)
@@ -412,7 +408,7 @@ extern "C" void on_render(void* state) {
 ```
 The CORE module MUST export `on_update` but SHOULD NOT call `gui_render`.
 
-CRITICAL: `gui_render` MUST call `XFlush(state->dpy)` or `XSync(state->dpy, 0)` at the end to ensure the window is updated.
+CRITICAL: `gui_render` MUST call `SDL_RenderPresent(state->renderer)` at the end to ensure the window is updated.
 
 ## 5. HEADER INCLUSION REQUIREMENTS
 
@@ -442,10 +438,10 @@ Check your code for these functions and include the corresponding headers:
 - `std::chrono` → `#include <chrono>`
 - `std::thread` → `#include <thread>`
 
-**Platform-Specific (Linux/X11):**
-- `XOpenDisplay`, `XCreateWindow`, `XMapWindow`, `XNextEvent`, `XFillRectangle`, `XDrawString` → `#include <X11/Xlib.h>`
-- `XSync`, `XFlush` → `#include <X11/Xlib.h>`
-- Graphics Context functions → `#include <X11/Xlib.h>`
+**Platform-Specific (SDL2):**
+- `SDL_Init`, `SDL_CreateWindow`, `SDL_CreateRenderer`, `SDL_PollEvent`, `SDL_RenderFillRect` → `#include <SDL2/SDL.h>`
+- `SDL_RenderPresent`, `SDL_RenderClear` → `#include <SDL2/SDL.h>`
+- Texture functions → `#include <SDL2/SDL.h>`
 - `dlopen`, `dlsym`, `dlclose` → `#include <dlfcn.h>`
 
 **Platform-Specific (Windows):**
@@ -483,19 +479,17 @@ void gui_initialize(AppState* state) {
     // 1. Lazy Window Creation
     // Only create the window if it doesn't exist in the state yet.
     // This prevents flickering during hot-reload.
-    if (state->win == 0) {
-        // CRITICAL: Use state->dpy which was set in on_load. DO NOT open a new display.
-        // state->win = XCreateSimpleWindow(state->dpy, ...);
-        // XMapWindow(state->dpy, state->win);
+    if (state->window == NULL) {
+        // CRITICAL: Use state->window which was set in on_load. DO NOT create a new window if provided.
+        // if (!state->window) state->window = SDL_CreateWindow(...);
         
-        // Initialize Input Method (XIM) if needed
-        // state->xim = XOpenIM(state->dpy, NULL, NULL, NULL);
-        // state->xic = XCreateIC(state->xim, ...);
+        // Create Renderer
+        // state->renderer = SDL_CreateRenderer(state->window, -1, SDL_RENDERER_ACCELERATED);
     }
     
-    // 2. Initialize other resources (fonts, textures, GCs)
-    // CRITICAL: Create GCs and Pixmaps HERE, not in gui_render.
-    // if (!state->gc) state->gc = XCreateGC(state->dpy, state->win, 0, NULL);
+    // 2. Initialize other resources (fonts, textures)
+    // CRITICAL: Create Textures HERE, not in gui_render.
+    // if (!state->texture) state->texture = SDL_CreateTexture(...);
 }
 
 void gui_on_update(AppState* state, float dt) {
@@ -510,11 +504,11 @@ void gui_render(AppState* state) {
     // Perform actual rendering using state data
     // Draw based on state->x, state->y, state->color, etc.
     
-    // CRITICAL: Use XSetForeground with pixel values, NOT RGB packing (unless TrueColor is guaranteed)
-    // unsigned long white = WhitePixel(state->dpy, DefaultScreen(state->dpy));
-    // XSetForeground(state->dpy, state->gc, white);
+    // CRITICAL: Use SDL_SetRenderDrawColor and SDL_RenderFillRect/SDL_RenderDrawLine
+    // SDL_SetRenderDrawColor(state->renderer, 255, 255, 255, 255);
+    // SDL_RenderClear(state->renderer);
     
-    // CRITICAL: DO NOT CREATE RESOURCES HERE (GC, Pixmap, Font).
+    // CRITICAL: DO NOT CREATE RESOURCES HERE (Textures, Fonts).
     // Use resources created in gui_initialize and stored in AppState.
 }
 
@@ -523,13 +517,13 @@ void gui_cleanup(AppState* state) {
     
     // CRITICAL: DO NOT DESTROY THE WINDOW
     // The window must persist for the next module version.
-    // XDestroyWindow(state->dpy, state->win); // <--- DO NOT DO THIS
+    // SDL_DestroyWindow(state->window); // <--- DO NOT DO THIS
 }
 
 void gui_on_event(AppState* state, void* event) {
     // Handle input events
-    // XEvent* ev = (XEvent*)event;
-    // if (state->xim && state->xic && XFilterEvent(ev, state->win)) return;
+    // SDL_Event* ev = (SDL_Event*)event;
+    // if (ev->type == SDL_MOUSEBUTTONDOWN) { ... }
 }
 
 } // extern "C"
@@ -555,8 +549,8 @@ Example:
 
 ### 6.3 Window Persistence (CRITICAL)
 To prevent flickering during hot-reloading, the window handle MUST persist in `AppState`.
-1. In `gui_initialize`: Check `if (!state->win)` before creating a new window.
-2. In `gui_cleanup`: Do NOT call `XDestroyWindow` or `CloseWindow`. Leave the window open for the next version of the library.
+1. In `gui_initialize`: Check `if (!state->window)` before creating a new window.
+2. In `gui_cleanup`: Do NOT call `SDL_DestroyWindow`. Leave the window open for the next version of the library.
 
 ## 7. CORE MODULE REQUIREMENTS
 
@@ -620,13 +614,13 @@ The Core module MUST implement these `extern "C"` functions to be driven by the 
 // Global state instance
 AppState app_state = {0};
 
-extern "C" void* on_load(void* prev_state, void* display_ptr) {
+extern "C" void* on_load(void* prev_state, void* window_ptr) {
     if (prev_state) {
         // Migrate state
         AppState* old = (AppState*)prev_state;
         app_state = *old; // Copy POD state
-        // Ensure display pointer is updated (in case it changed, though unlikely)
-        app_state.dpy = (Display*)display_ptr;
+        // Ensure window pointer is updated (in case it changed, though unlikely)
+        app_state.window = (SDL_Window*)window_ptr;
     } else {
         // Initialize new state
         app_state.magic = 0xDEADBEEF;
@@ -634,8 +628,8 @@ extern "C" void* on_load(void* prev_state, void* display_ptr) {
         app_state.is_running = true;
         app_state.width = 800;
         app_state.height = 600;
-        // CRITICAL: Use the provided display pointer
-        app_state.dpy = (Display*)display_ptr;
+        // CRITICAL: Use the provided window pointer
+        app_state.window = (SDL_Window*)window_ptr;
     }
     
     // Load GUI module
@@ -654,8 +648,8 @@ extern "C" void on_update(void* state_ptr, double dt) {
     if (ptr_gui_on_update) ptr_gui_on_update(&app_state, (float)dt);
     if (ptr_gui_render) {
         ptr_gui_render(&app_state);
-        // CRITICAL: Flush X11 buffer to ensure rendering is visible
-        if (app_state.dpy) XFlush(app_state.dpy);
+        // CRITICAL: Present SDL renderer to ensure rendering is visible
+        if (app_state.renderer) SDL_RenderPresent(app_state.renderer);
     }
 }
 
@@ -671,33 +665,30 @@ extern "C" void on_unload(void* state_ptr) {
 
 ## 8. PLATFORM-SPECIFIC CONSIDERATIONS
 
-### 8.1 X11 API Usage (Linux)
-CRITICAL: X11 functions require correct argument types and order.
+### 8.1 SDL2 API Usage
+CRITICAL: SDL2 functions require correct argument types and order.
 
 Common mistakes to AVOID:
-- `XMapWindow(state->win, state->dpy)` ❌ WRONG - swapped arguments
-- `XMapWindow(state->dpy, state->win)` ✅ CORRECT
-- Assigning `Screen*` to `int`. `XWindowAttributes.screen` is `Screen*`. `DefaultScreen(dpy)` is `int`.
-  - Use `XScreenNumberOfScreen(wa.screen)` if you need the int index from attributes.
+- `SDL_RenderFillRect(state->renderer, &rect)` ❌ WRONG - missing error check
+- `SDL_RenderFillRect(state->renderer, &rect)` ✅ CORRECT (but check return value)
+- Forgetting `SDL_RenderPresent` at the end of the frame.
 
 Correct patterns:
 ```cpp
-Display* dpy = state->dpy;  // Display pointer
-Window win = state->win;    // Window handle
-GC gc = state->gc;          // Graphics context
+SDL_Window* window = state->window;      // Window handle
+SDL_Renderer* renderer = state->renderer;// Renderer handle
 
-XMapWindow(dpy, win);                          // Show window
-XFillRectangle(dpy, win, gc, x, y, w, h);     // Draw filled rectangle
-XDrawString(dpy, win, gc, x, y, text, len);   // Draw text
-XFlush(dpy);                                   // Flush output
+SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255); // Set color
+SDL_RenderFillRect(renderer, &rect);              // Draw filled rectangle
+SDL_RenderPresent(renderer);                      // Show frame
 ```
 
 Store in AppState:
 ```cpp
 struct AppState {
-    Display* dpy;  // NOT void*, but you can cast
-    Window win;    // unsigned long
-    GC gc;         // Pointer to graphics context
+    SDL_Window* window;      // Window handle
+    SDL_Renderer* renderer;  // Renderer handle
+    SDL_Texture* texture;    // Texture handle
 };
 ```
 
@@ -716,7 +707,7 @@ struct AppState {
 - `-shared`: Create shared library
 - `-fPIC`: Position-independent code (required for shared libs)
 - `-ldl`: Link dynamic loading library (dlopen, dlsym)
-- `-lX11`: Link X11 library
+- `-lSDL2`: Link SDL2 library
 
 ## 10. VERIFICATION CHECKLIST
 
@@ -746,8 +737,8 @@ Before outputting, verify:
 - [ ] Shared depends on nothing (standalone)
 
 ### 10.5 Platform APIs
-- [ ] X11 functions have correct argument order
-- [ ] Display* and Window types not confused
+- [ ] SDL2 functions have correct argument order
+- [ ] SDL_Window* and SDL_Renderer* types not confused
 - [ ] All platform types stored correctly in AppState
 
 ### 10.6 Completeness
@@ -766,7 +757,7 @@ Before outputting, verify:
 2. **Create AppState structure:**
    - Add EVERY variable used by GUI
    - Use POD types only
-   - Add platform handles (Display*, Window, etc.)
+   - Add platform handles (SDL_Window*, SDL_Renderer*, etc.)
 
 3. **Split functionality:**
    - GUI: rendering, drawing, UI updates → gui.cpp
@@ -794,7 +785,7 @@ Before outputting, verify:
 - Forward declare AppState in GUI (define in shared.h instead)
 - Use non-POD types in AppState (std::string, std::vector)
 - Miss variables that GUI uses (check EVERY variable)
-- Confuse Display* and Window in X11 calls
+- Confuse SDL_Window* and SDL_Renderer* in SDL2 calls
 - Forget to include headers for functions used
 - Make Core depend on GUI
 - Duplicate AppState definition
@@ -804,7 +795,7 @@ Before outputting, verify:
 - Define AppState once in shared.h with ALL fields
 - Use POD types (int, float, char[], bool)
 - Include every required header explicitly
-- Verify X11 API call arguments
+- Verify SDL2 API call arguments
 - Make GUI depend on Shared only
 - Wrap GUI functions in extern "C"
 - Zero-initialize AppState in Core

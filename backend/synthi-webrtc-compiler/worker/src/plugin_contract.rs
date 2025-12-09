@@ -16,9 +16,9 @@ pub mod ffi {
     pub const GET_VERSION_SYMBOL: &[u8] = b"get_version\0";
 
     /// Initialize or migrate state.
-    /// Takes the old state pointer (or null if first load).
+    /// Takes the old state pointer (or null if first load) and the window pointer.
     /// Returns the new state pointer.
-    pub type OnLoadFn = unsafe extern "C" fn(StatePtr) -> StatePtr;
+    pub type OnLoadFn = unsafe extern "C" fn(StatePtr, StatePtr) -> StatePtr;
 
     /// Run logic for one frame.
     pub type OnUpdateFn = unsafe extern "C" fn(StatePtr, c_double);
@@ -35,8 +35,9 @@ pub mod ffi {
 pub trait HostGuestContract {
     /// Initialize or migrate state.
     /// `prev_state` is the pointer from the previous version of the library, or null.
+    /// `window_ptr` is the pointer to the SDL_Window (or platform window).
     /// Returns the pointer to the new (or preserved) state.
-    unsafe fn on_load(prev_state: StatePtr) -> StatePtr;
+    unsafe fn on_load(prev_state: StatePtr, window_ptr: StatePtr) -> StatePtr;
 
     /// Run logic for one frame.
     unsafe fn on_update(state: StatePtr, delta_time: f64);
