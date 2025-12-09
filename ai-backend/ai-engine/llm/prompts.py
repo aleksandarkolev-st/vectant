@@ -429,6 +429,7 @@ To prevent flickering during hot-reloading, the window handle MUST persist in `A
 - Handle dynamic library loading (dlopen/LoadLibrary)
 - Call GUI entry points through function pointers (NOT directly)
 - Implement main loop with delta time calculation
+- CRITICAL: Do NOT assume global state variables exist. Always pass the `state` variable declared in `main()` to functions that need it. Ensure variable names match (e.g. `state` vs `app_state`).
 
 ### 7.2 Dynamic Loading Pattern (C/C++ Linux)
 CRITICAL: Do NOT name the function pointers the same as the functions declared in shared.h.
@@ -521,12 +522,18 @@ CRITICAL: X11 functions require correct argument types and order.
 Common mistakes to AVOID:
 - `XMapWindow(state->win, state->dpy)` ❌ WRONG - swapped arguments
 - `XMapWindow(state->dpy, state->win)` ✅ CORRECT
+- `state->pixmap = NULL` ❌ WRONG - Pixmap is `unsigned long`, not a pointer. Use `0` or `None`.
+- Calling `XGetWindowAttributes` without declaring the attributes struct first.
 
 Correct patterns:
 ```cpp
 Display* dpy = state->dpy;  // Display pointer
 Window win = state->win;    // Window handle
 GC gc = state->gc;          // Graphics context
+
+// Declare structs before use!
+XWindowAttributes wa;
+XGetWindowAttributes(dpy, win, &wa);
 
 XMapWindow(dpy, win);                          // Show window
 XFillRectangle(dpy, win, gc, x, y, w, h);     // Draw filled rectangle
@@ -597,6 +604,8 @@ Before outputting, verify:
 - [ ] No missing function implementations
 - [ ] No duplicate definitions
 - [ ] All original functionality preserved
+- [ ] All local variables (like XWindowAttributes) are declared before use
+- [ ] No usage of undeclared variables (e.g. app_state vs state)
 
 ## 11. EXAMPLE WORKFLOW
 

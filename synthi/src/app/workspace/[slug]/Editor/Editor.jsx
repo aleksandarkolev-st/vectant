@@ -662,6 +662,10 @@ const EditorPanel = ({
         latestCodeRef.current = code;
     }, [code]);
 
+    // Update ref on every render to ensure it's always fresh for callbacks/effects
+    // This prevents stale closures in effects that run before the useEffect above
+    latestCodeRef.current = code;
+
     useEffect(() => {
         return () => {
             if (pendingContentFrameRef.current) {

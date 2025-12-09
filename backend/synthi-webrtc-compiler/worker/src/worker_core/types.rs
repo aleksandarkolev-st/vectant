@@ -17,6 +17,14 @@ pub struct IceServerEnv {
 pub const REQUIRED_TOOLS: &[&str] = &["g++", "rustc", "tsc", "clangd"];
 pub const GUI_TOOLS: &[&str] = &["xdotool", "Xvfb", "matchbox-window-manager"];
 
+pub const GUI_LIBRARY_SIGNATURES: &[(&str, &[&str])] = &[
+    ("python", &["import tkinter", "import pygame", "import PyQt5", "import PySide2", "import kivy"]),
+    ("cpp", &["#include <gtk/gtk.h>", "#include <QApplication>", "#include <SDL2/SDL.h>", "#include <GL/glut.h>", "#include <X11/"]),
+    ("cpp_legacy", &["#include <gtk/gtk.h>", "#include <QApplication>", "#include <SDL2/SDL.h>", "#include <GL/glut.h>", "#include <X11/"]),
+    ("rust", &["use gtk", "use iced", "use druid", "use winit", "use macroquad"]),
+    ("java", &["import javax.swing", "import javafx"]),
+];
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SignalMessage {
     #[serde(rename = "type")]

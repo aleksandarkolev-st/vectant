@@ -19,8 +19,31 @@ use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 
-use crate::worker_core::types::{CompileRequest, RunnerState, GUI_TOOLS};
+use crate::worker_core::types::{CompileRequest, RunnerState, GUI_TOOLS, FileEntry, GUI_LIBRARY_SIGNATURES};
 use crate::worker_core::utils::{system_command, perform_ai_split};
+
+fn detect_gui(source: &str, files: &[FileEntry], language: &str) -> bool {
+    let signatures = GUI_LIBRARY_SIGNATURES.iter()
+        .find(|(lang, _)| *lang == language)
+        .map(|(_, sigs)| *sigs)
+        .unwrap_or(&[]);
+
+    let check_content = |content: &str| -> bool {
+        signatures.iter().any(|sig| content.contains(sig))
+    };
+
+    if check_content(source) {
+        return true;
+    }
+
+    for file in files {
+        if check_content(&file.content) {
+            return true;
+        }
+    }
+
+    false
+}
 
 pub async fn handle_compile(
     req: CompileRequest,
@@ -34,6 +57,13 @@ pub async fn handle_compile(
 ) -> Result<()> {
     // Use the shared workspace path instead of creating a new temp dir
     let dir_path = workspace_path;
+
+    // Auto-detect GUI if not explicitly set
+    let is_gui = if req.is_gui {
+        true
+    } else {
+        detect_gui(&req.source, &req.files, &req.language)
+    };
 
     // Check if we need to restart due to GUI mode change or blocking app
     // We do this early because we consume req.files later
@@ -299,7 +329,7 @@ pub async fn handle_compile(
                 c.arg("-shared").arg("-fPIC").arg("-D_POSIX_C_SOURCE=199309L");
                 // Output to temp path for atomic swap
                 c.arg(&req.filename).arg("-I.").arg("-o").arg(&temp_output_path_str);
-                if req.is_gui {
+                if is_gui {
                     c.arg("-lX11");
                 }
                 c
@@ -309,7 +339,7 @@ pub async fn handle_compile(
                 c.arg("--crate-type").arg("cdylib");
                 // Output to temp path for atomic swap
                 c.arg(&req.filename).arg("-o").arg(&temp_output_path_str);
-                if req.is_gui {
+                if is_gui {
                     c.arg("-l").arg("X11");
                 }
                 c
@@ -436,11 +466,11 @@ pub async fn handle_compile(
     let mut audio_track_opt: Option<Arc<TrackLocalStaticRTP>> = None;
 
     if let Some(state) = guard.as_mut() {
-        let needs_restart = state.is_gui != req.is_gui || is_blocking_app;
+        let needs_restart = state.is_gui != is_gui || is_blocking_app;
         if needs_restart {
             println!("Restarting runner due to GUI mode change or blocking app detected");
             // If resolution matches and is_gui matches, we can reuse Xvfb/GStreamer
-            let can_reuse = state.is_gui == req.is_gui && state.width == req_width && state.height == req_height;
+            let can_reuse = state.is_gui == is_gui && state.width == req_width && state.height == req_height;
             
             let mut state = guard.take().unwrap();
             if let Some(mut child) = state.process { 
@@ -473,7 +503,7 @@ pub async fn handle_compile(
         let mut gst_pipeline: Option<gst::Pipeline> = reused_pipeline;
         let mut x11_tx_opt: Option<mpsc::UnboundedSender<String>> = reused_x11_tx;
 
-        if req.is_gui {
+        if is_gui {
             let width = req_width;
             let height = req_height;
             
@@ -541,7 +571,14 @@ pub async fn handle_compile(
                 println!("Falling back to DISPLAY {}", wsl_display_str);
             }
 
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            let payload = serde_json::json!({
+                "sessionId": session_id.clone(),
+                "type": "stdout",
+                "line": "Initializing display server (Xvfb)..."
+            });
+            let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
             let mut wm_cmd = if cfg!(target_os = "windows") {
                 let mut c = system_command("env");
@@ -556,7 +593,14 @@ pub async fn handle_compile(
             wm_cmd.stdout(Stdio::null()).stderr(Stdio::null());
             let _ = wm_cmd.spawn(); // Let it run
 
-            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+            let payload = serde_json::json!({
+                "sessionId": session_id.clone(),
+                "type": "stdout",
+                "line": "Initializing Window Manager..."
+            });
+            let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
             let (v_tx, mut v_rx) = mpsc::unbounded_channel::<Vec<u8>>();
             let (a_tx, mut a_rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -757,7 +801,7 @@ pub async fn handle_compile(
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-        if req.is_gui {
+        if is_gui {
             cmd.env("DISPLAY", &wsl_display_str);
             if cfg!(target_os = "windows") {
                 cmd.env("WSLENV", "DISPLAY");
@@ -807,7 +851,7 @@ pub async fn handle_compile(
             process: Some(child),
             stdin,
             output_tx: tx,
-            is_gui: req.is_gui,
+            is_gui: is_gui,
             xvfb_process,
             gst_pipeline,
             x11_tx: x11_tx_opt,
@@ -869,6 +913,13 @@ pub async fn handle_compile(
             println!("Sending command to runner: {}", cmd.trim());
             state.stdin.write_all(cmd.as_bytes()).await?;
         }
+
+        if is_blocking_app {
+             let cmd = "quit\n";
+             println!("Sending quit command to runner (blocking app)");
+             state.stdin.write_all(cmd.as_bytes()).await?;
+        }
+
         state.stdin.flush().await?;
     }
     
