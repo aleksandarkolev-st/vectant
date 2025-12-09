@@ -214,6 +214,10 @@ const server = http.createServer(async (req, res) => {
                 case 'log':
                     result = await gitService.getLog(slug);
                     break;
+                case 'unpushed':
+                  const max = data && data.max ? parseInt(data.max, 10) : 50;
+                  result = await gitService.getUnpushedCommits(slug, max);
+                  break;
                 case 'sync':
                     // Sync a single file
                     await gitService.syncFile(slug, data.filePath, data.content);
@@ -236,7 +240,7 @@ const server = http.createServer(async (req, res) => {
         } catch (e) {
           // For expected repository state errors (not initialized / not found / no remote) treat as client errors and avoid stack traces
           const msg = e?.message || '';
-          if (msg.includes('not initialized') || msg.includes('not found') || msg.includes('no remote configured') || msg.includes('no configured push destination')) {
+          if (msg.includes('not initialized') || msg.includes('not found') || msg.includes('no remote configured') || msg.includes('no configured push destination') || msg.includes('authentication failed') || msg.includes('user cancelled') || msg.includes('user cancelled dialog') || msg.includes('repository not found') || msg.includes('remote: repository not found')) {
             console.debug('[Collab] Client error in /git/:', msg);
             res.writeHead(400);
             res.end(JSON.stringify({ error: msg }));

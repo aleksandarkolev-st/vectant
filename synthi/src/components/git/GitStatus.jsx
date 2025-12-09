@@ -1,23 +1,27 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { fetchGitStatus, fetchRemote, commitChanges, pushChanges, pullChanges, stageFile, unstageFile, discardChange, initRepo, cloneRepo, addRemote, removeRemote, fetchRemotes } from '@/redux/gitSlice';
+import { fetchGitStatus, fetchRemote, commitChanges, pushChanges, pullChanges, stageFile, unstageFile, discardChange, initRepo, cloneRepo, addRemote, removeRemote, fetchRemotes, fetchCommitHistory, fetchUnpushedCommits } from '@/redux/gitSlice';
 import { refreshWorkspaceThunk, openDiffThunk, fetchFilesThunk } from '@/redux/workspaceSlice';
-import { RefreshCw, Check, UploadCloud, Plus, Minus, DownloadCloud, Undo2, Globe, Trash2 } from 'lucide-react';
+import { RefreshCw, Check, UploadCloud, Plus, Minus, DownloadCloud, Undo2, Globe, Trash2, Copy } from 'lucide-react';
 import { getFileLanguage } from '@/utils/fileUtils';
 
 export function GitStatus({ slug }) {
     const dispatch = useDispatch();
     const { status, loading, error, remotes } = useSelector(state => state.git);
+    const { commitHistory, unpushedCommits } = useSelector(state => state.git);
     const [message, setMessage] = useState('');
     const [showAddRemote, setShowAddRemote] = useState(false);
     const [newRemoteName, setNewRemoteName] = useState('origin');
     const [newRemoteUrl, setNewRemoteUrl] = useState('');
+    const [showAllCommits, setShowAllCommits] = useState(false);
 
     useEffect(() => {
         if (slug) {
             // Initial fetch
             dispatch(fetchGitStatus(slug));
             dispatch(fetchRemotes(slug));
+            dispatch(fetchCommitHistory(slug));
+            dispatch(fetchUnpushedCommits({ slug, max: 50 }));
             
             // Poll every 5 seconds
             const interval = setInterval(() => {
@@ -31,11 +35,19 @@ export function GitStatus({ slug }) {
         if (slug) {
             dispatch(fetchRemote(slug));
             dispatch(fetchRemotes(slug));
+            dispatch(fetchCommitHistory(slug));
+            dispatch(fetchUnpushedCommits({ slug, max: 50 }));
         }
     };
 
     const handleAddRemote = async () => {
         if (slug && newRemoteName && newRemoteUrl) {
+            // Basic validation for URL like 'https://' or git@ as SSH
+            const valid = newRemoteUrl.startsWith('http://') || newRemoteUrl.startsWith('https://') || newRemoteUrl.includes('@');
+            if (!valid) {
+                alert('Please enter a valid remote URL (https://... or git@...)');
+                return;
+            }
             await dispatch(addRemote({ slug, name: newRemoteName, url: newRemoteUrl }));
             setShowAddRemote(false);
             setNewRemoteUrl('');
@@ -62,6 +74,20 @@ export function GitStatus({ slug }) {
     const handlePush = () => {
         if (slug) {
             dispatch(pushChanges(slug));
+        }
+    };
+
+    const handleFetchHistory = () => {
+        if (slug) dispatch(fetchCommitHistory(slug));
+    };
+
+    const handleFetchUnpushed = () => {
+        if (slug) dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+    };
+
+    const handleRemoveRemoteClick = async (name) => {
+        if (slug && name) {
+            await dispatch(removeRemote({ slug, name }));
         }
     };
 
@@ -187,27 +213,45 @@ export function GitStatus({ slug }) {
 
     const hasChanges = staged.length > 0 || changes.length > 0;
 
+
+
     return (
-        <div className="flex flex-col h-full">
+        <div className="flex flex-col h-full w-full overflow-hidden">
             <div className="p-2 font-semibold text-xs uppercase tracking-wider text-gray-500 border-b border-gray-800 flex justify-between items-center">
                 <span>Source Control</span>
                 <div className="flex gap-1">
-                    <button onClick={handlePull} className="hover:bg-gray-700 p-1 rounded text-gray-400 hover:text-white transition-colors" title="Pull from Remote">
+                    <button onClick={handlePull} disabled={loading} className="hover:bg-gray-700 p-1 rounded text-gray-400 hover:text-white transition-colors disabled:opacity-50" title="Pull from Remote">
                         <DownloadCloud className="w-3 h-3" />
                     </button>
-                    <button onClick={handlePush} className="hover:bg-gray-700 p-1 rounded text-gray-400 hover:text-white transition-colors" title="Push to Remote">
+                    <button onClick={handlePush} disabled={loading} className="hover:bg-gray-700 p-1 rounded text-gray-400 hover:text-white transition-colors disabled:opacity-50" title="Push to Remote">
                         <UploadCloud className="w-3 h-3" />
                     </button>
-                    <button onClick={handleSync} className="hover:bg-gray-700 p-1 rounded text-gray-400 hover:text-white transition-colors" title="Fetch Remote">
+                    <button onClick={handleSync} disabled={loading} className="hover:bg-gray-700 p-1 rounded text-gray-400 hover:text-white transition-colors disabled:opacity-50" title="Fetch Remote">
                         <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
                     </button>
                 </div>
+            </div>
+            {/* previous position removed */}
+            {/* Branch & status badges */}
+            <div className="p-2 flex items-center gap-2 text-xs text-gray-400 border-b border-gray-800">
+                <div className="text-gray-300 text-sm font-medium">{status && status.current ? status.current : 'unknown'}</div>
+                {status && (status.ahead || status.behind) && (
+                    <div className="flex items-center gap-1 text-xs text-gray-400">
+                        {status.ahead > 0 && <div className="px-2 py-0.5 bg-yellow-600/20 text-yellow-300 rounded">↑ {status.ahead}</div>}
+                        {status.behind > 0 && <div className="px-2 py-0.5 bg-blue-600/20 text-blue-300 rounded">↓ {status.behind}</div>}
+                    </div>
+                )}
+                {status && (!status.ahead && !status.behind) && (
+                    <div className="px-2 py-0.5 bg-green-600/10 text-green-300 rounded text-xs">Up to date</div>
+                )}
             </div>
             <div className="flex-1 overflow-y-auto p-2">
                 {error && (
                     <div className="mb-2 p-2 bg-red-900/50 border border-red-800 rounded text-xs text-red-200 break-words">
                         {error}
-                        {(error.includes('No configured push destination') || error.includes('No remote configured')) && (
+                            {(
+                                error.includes('No configured push destination') || error.includes('No remote configured') || error.toLowerCase().includes('authentication failed') || error.toLowerCase().includes('repository not found') || error.toLowerCase().includes('remote repository not found')
+                            ) && (
                             <div className="mt-2">
                                 <button 
                                     onClick={() => setShowAddRemote(true)}
@@ -217,6 +261,11 @@ export function GitStatus({ slug }) {
                                 </button>
                             </div>
                         )}
+                            {error.toLowerCase().includes('authentication failed') && (
+                                <div className="mt-2 text-xs text-gray-300">
+                                    Authentication failed — the server attempted to push but couldn't authenticate with the remote. You can either add a remote URL with an access token (https://&lt;token&gt;@github.com/owner/repo.git) or configure SSH/credentials for the collab server.
+                                </div>
+                            )}
                     </div>
                 )}
 
@@ -272,18 +321,97 @@ export function GitStatus({ slug }) {
                                     <Globe className="w-3 h-3" />
                                     <span className="text-xs">{remote.name}</span>
                                     <span className="text-xs text-gray-600 truncate flex-1 text-right" title={remote.refs.push}>{remote.refs.push}</span>
-                                    <button 
-                                        onClick={() => handleRemoveRemote(remote.name)}
+                                    <div className="flex items-center gap-1">
+                                        {remote.refs && remote.refs.push && remote.refs.push.startsWith('https') && (
+                                            <a
+                                                href={remote.refs.push.replace(/\.git$/, '')}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                className="opacity-0 group-hover:opacity-100 hover:bg-gray-700/30 p-1 rounded text-gray-400 hover:text-white transition-all text-xs"
+                                            >
+                                                Open
+                                            </a>
+                                        )}
+                                        <button 
+                                        onClick={() => handleRemoveRemoteClick(remote.name)}
                                         className="opacity-0 group-hover:opacity-100 hover:bg-red-900/50 p-1 rounded text-gray-500 hover:text-red-400 transition-all"
                                         title="Remove Remote"
                                     >
                                         <Trash2 className="w-3 h-3" />
                                     </button>
+                                    </div>
                                 </li>
                             ))}
                         </ul>
                     ) : (
                         <div className="text-xs text-gray-600 px-1 italic">No remotes configured</div>
+                    )}
+                </div>
+
+                {/* Unpushed commits section */}
+                <div className="mb-4">
+                    <div className="flex justify-between items-center mb-1 px-1">
+                        <div className="text-xs font-semibold text-gray-400">UNPUSHED COMMITS</div>
+                            {unpushedCommits && unpushedCommits.length > 0 && (
+                                <div className="flex items-center gap-2">
+                                <div className="text-xs text-gray-500">{unpushedCommits.length} commit{unpushedCommits.length > 1 ? 's' : ''}</div>
+                                <button onClick={handlePush} className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-0.5 rounded text-xs">Push</button>
+                                </div>
+                        )}
+                    </div>
+                    {unpushedCommits && unpushedCommits.length > 0 ? (
+                                <ul className="text-sm space-y-1">
+                            {unpushedCommits.map(c => (
+                                <li key={c.hash} className="p-1 rounded hover:bg-gray-800 flex items-center gap-2">
+                                    <div className="font-mono text-xs text-gray-400">{c.hash.substring(0,7)}</div>
+                                    <div className="truncate text-gray-200 text-xs">{c.message}</div>
+                                    <div className="text-xs text-gray-500 ml-auto">{c.author_name} • {c.date}</div>
+                                    <button onClick={() => navigator.clipboard.writeText(c.hash)} title="Copy hash" className="ml-2 opacity-80 hover:text-white text-gray-400 p-1 rounded">
+                                        <Copy className="w-3 h-3" />
+                                    </button>
+                                </li>
+                            ))}
+                        </ul>
+                    ) : (
+                        <div className="text-xs text-gray-600 px-1 italic">No unpushed commits</div>
+                    )}
+                </div>
+
+                {/* Commit history */}
+                <div className="mb-4">
+                    <div className="flex justify-between items-center mb-1 px-1">
+                        <div className="text-xs font-semibold text-gray-400">COMMIT HISTORY</div>
+                        <div className="flex gap-2">
+                            <button onClick={() => dispatch(fetchCommitHistory(slug))} className="hover:bg-gray-700 p-1 rounded text-gray-300 text-xs">Refresh</button>
+                        </div>
+                    </div>
+                    {commitHistory && commitHistory.all && commitHistory.all.length > 0 ? (
+                                <ul className="text-sm space-y-1">
+                            {(showAllCommits ? commitHistory.all : commitHistory.all.slice(0, 20)).map(c => (
+                                <li key={c.hash} className="p-1 rounded hover:bg-gray-800 flex items-start gap-2">
+                                    <div className="font-mono text-xs text-gray-400">{c.hash.substring(0,7)}</div>
+                                    <div className="flex-1">
+                                        <div className="text-xs text-gray-200 truncate">{c.message}</div>
+                                        <div className="text-xs text-gray-500">{c.author_name} • {c.date}</div>
+                                    </div>
+                                    <div className="flex flex-col items-end gap-1">
+                                        <button onClick={() => navigator.clipboard.writeText(c.hash)} title="Copy hash" className="ml-2 opacity-80 hover:text-white text-gray-400 p-1 rounded">
+                                            <Copy className="w-3 h-3" />
+                                        </button>
+                                        {remotes && remotes.length > 0 && remotes[0].refs && remotes[0].refs.push && (
+                                            <a className="text-xs text-gray-500 hover:text-blue-300" target="_blank" rel="noreferrer" href={`${remotes[0].refs.push.replace(/\.git$/, '')}/commit/${c.hash}`}>View</a>
+                                        )}
+                                    </div>
+                                </li>
+                            ))}
+                        </ul>
+                    ) : (
+                        <div className="text-xs text-gray-600 px-1 italic">No commits yet</div>
+                    )}
+                    {commitHistory && commitHistory.all && commitHistory.all.length > 20 && (
+                        <div className="mt-2 flex justify-center">
+                            <button onClick={() => setShowAllCommits(v => !v)} className="text-xs text-gray-300 hover:text-white underline">{showAllCommits ? 'Collapse' : `View all (${commitHistory.all.length})`}</button>
+                        </div>
                     )}
                 </div>
 

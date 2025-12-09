@@ -9,10 +9,17 @@ export const gitClient = {
             },
             body: JSON.stringify(data),
         });
-        if (!response.ok) {
-            throw new Error(`Git error: ${response.statusText}`);
+        let body = null;
+        try {
+            body = await response.json();
+        } catch (e) {
+            // ignore parse errors
         }
-        return response.json();
+        if (!response.ok) {
+            const msg = (body && (body.error || body.message)) || response.statusText || 'Unknown git error';
+            throw new Error(msg);
+        }
+        return body;
     },
 
     async init(slug, remoteUrl) {
@@ -81,6 +88,10 @@ export const gitClient = {
 
     async getLog(slug) {
         return this.request(slug, 'log');
+    },
+
+    async getUnpushed(slug, max = 50) {
+        return this.request(slug, 'unpushed', { max });
     },
 
     async syncFile(slug, filePath, content) {

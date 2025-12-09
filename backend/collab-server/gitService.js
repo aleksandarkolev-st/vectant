@@ -158,10 +158,35 @@ class GitService {
 
     async push(slug) {
         const git = this.getGit(slug);
+        // Make sure we don't trigger interactive credential prompts in the server process
+        const prev = process.env.GIT_TERMINAL_PROMPT;
+        process.env.GIT_TERMINAL_PROMPT = '0';
         try {
+            // If no remotes configured, attempt to auto-add from workspace metadata
+            try {
+                const remotes = await git.getRemotes(true);
+                if (!remotes || remotes.length === 0) {
+                    try {
+                        const workspaceManager = require('./workspaceManager');
+                        const ws = workspaceManager.getAllWorkspaces().find(w => w.slug === slug);
+                        if (ws && ws.repoUrl) {
+                            await git.addRemote('origin', ws.repoUrl);
+                        }
+                    } catch (inner) {
+                        // Ignore, we'll handle missing remote error below
+                        console.debug('workspaceManager not usable for push fallback', inner?.message || inner);
+                    }
+                }
+            } catch (innerErr) {
+                // If git.getRemotes fails, ignore and let push provide a clearer message
+                console.debug('getRemotes failed prior to push:', innerErr?.message || innerErr);
+            }
+
             await git.push();
         } catch (e) {
             const msg = (e.message || '').toLowerCase();
+
+            // Handle 'no upstream branch' by attempting to set upstream automatically
             if (msg.includes('no upstream branch') || msg.includes('set-upstream') || msg.includes('no configured push destination') || msg.includes('no configured remote')) {
                 const branchSummary = await git.branchLocal();
                 const currentBranch = branchSummary.current;
@@ -183,7 +208,19 @@ class GitService {
                             }
                         }
                         if (remoteToUse) {
-                            await git.push(remoteToUse, currentBranch, ['--set-upstream']);
+                            try {
+                                await git.push(remoteToUse, currentBranch, ['--set-upstream']);
+                            } catch (pushErr) {
+                                // Map push errors into helpful messages
+                                const pushMsg = (pushErr.message || '').toLowerCase();
+                                if (pushMsg.includes('repository not found')) {
+                                    throw new Error('Remote repository not found or inaccessible. Check the remote URL and access permissions (token/SSH).');
+                                }
+                                if (pushMsg.includes('authentication failed') || pushMsg.includes('user cancelled')) {
+                                    throw new Error('Authentication failed during push. Please configure remote credentials or use a token/SSH key.');
+                                }
+                                throw pushErr;
+                            }
                         } else {
                             throw new Error('No remote configured for this repository. Add a remote with `git remote add origin <url>` or use /git/:slug/init with a remoteUrl.');
                         }
@@ -193,8 +230,23 @@ class GitService {
                 } else {
                     throw e;
                 }
+            }
+
+            // Map common Git errors to clear, non-interactive messages
+            if (msg.includes('repository not found')) {
+                throw new Error('Remote repository not found or inaccessible. Check the remote URL and permissions (token/SSH).');
+            }
+            if (msg.includes('authentication failed') || msg.includes('user cancelled') || msg.includes('user cancelled dialog')) {
+                throw new Error('Authentication failed during push. Please configure remote credentials or use a token/SSH key, and make sure the server process can push non-interactively.');
+            }
+
+            throw e;
+        } finally {
+            // Restore previous env value
+            if (typeof prev === 'undefined') {
+                delete process.env.GIT_TERMINAL_PROMPT;
             } else {
-                throw e;
+                process.env.GIT_TERMINAL_PROMPT = prev;
             }
         }
         return this.getStatus(slug);
@@ -261,6 +313,49 @@ class GitService {
         } catch (e) {
             console.error('Get log error:', e?.message || e);
             return { all: [] };
+        }
+    }
+
+    async getUnpushedCommits(slug, max = 50) {
+        try {
+            if (!this.isRepoExists(slug)) return [];
+            if (!this.isRepoInitialized(slug)) return [];
+            const git = this.getGit(slug);
+            const branchSummary = await git.branchLocal();
+            const currentBranch = branchSummary.current;
+            if (!currentBranch) return [];
+
+            // Try to determine upstream/tracking branch (if exists)
+            let upstream = null;
+            try {
+                // rev-parse will throw if no upstream configured
+                const res = await git.raw(['rev-parse', '--abbrev-ref', '--symbolic-full-name', `${currentBranch}@{u}`]);
+                upstream = res.trim();
+            } catch (e) {
+                // No configured upstream; attempt to use origin/<branch> if origin exists
+                try {
+                    const remotes = await git.getRemotes(true);
+                    const hasOrigin = remotes && remotes.some(r => r.name === 'origin');
+                    if (hasOrigin) {
+                        upstream = `origin/${currentBranch}`;
+                    }
+                } catch (inner) {
+                    // ignore
+                }
+            }
+
+            if (!upstream) {
+                // No upstream; consider last N local commits as 'unpushed candidates'
+                const last = await git.log({ n: Math.min(max, 50) });
+                return last.all;
+            }
+
+            // Use git.log with range upstream..currentBranch to get commits that are in current but not in upstream
+            const unpushedLog = await git.log({ from: upstream, to: currentBranch, n: Math.min(max, 200) });
+            return unpushedLog.all;
+        } catch (e) {
+            console.error('Get unpushed commits error:', e?.message || e);
+            return [];
         }
     }
 

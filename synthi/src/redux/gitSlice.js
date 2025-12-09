@@ -33,6 +33,20 @@ export const fetchRemote = createAsyncThunk(
     }
 );
 
+export const fetchCommitHistory = createAsyncThunk(
+    'git/fetchLog',
+    async (slug) => {
+        return await gitClient.getLog(slug);
+    }
+);
+
+export const fetchUnpushedCommits = createAsyncThunk(
+    'git/fetchUnpushed',
+    async ({ slug, max = 50 }) => {
+        return await gitClient.getUnpushed(slug, max);
+    }
+);
+
 export const initRepo = createAsyncThunk(
     'git/init',
     async ({ slug, remoteUrl }, { dispatch }) => {
@@ -47,6 +61,7 @@ export const addRemote = createAsyncThunk(
         await gitClient.addRemote(slug, name, url);
         dispatch(fetchGitStatus(slug));
         dispatch(fetchRemotes(slug));
+        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
     }
 );
 
@@ -79,6 +94,8 @@ export const commitChanges = createAsyncThunk(
     async ({ slug, message }, { dispatch }) => {
         await gitClient.commit(slug, message);
         dispatch(fetchGitStatus(slug));
+        dispatch(fetchCommitHistory(slug));
+        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
     }
 );
 
@@ -103,6 +120,9 @@ export const pushChanges = createAsyncThunk(
     async (slug, { dispatch }) => {
         await gitClient.push(slug);
         dispatch(fetchGitStatus(slug));
+        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+        dispatch(fetchCommitHistory(slug));
+        dispatch(fetchRemotes(slug));
     }
 );
 
@@ -111,6 +131,8 @@ export const pullChanges = createAsyncThunk(
     async (slug, { dispatch }) => {
         await gitClient.pull(slug);
         dispatch(fetchGitStatus(slug));
+        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+        dispatch(fetchCommitHistory(slug));
     }
 );
 
@@ -128,6 +150,8 @@ const gitSlice = createSlice({
         status: null,
         branches: { local: [], all: [] },
         remotes: [],
+        commitHistory: { all: [] },
+        unpushedCommits: [],
         currentBranch: 'main',
         loading: false,
         error: null,
@@ -150,6 +174,14 @@ const gitSlice = createSlice({
                 state.loading = false;
                 state.error = action.error.message;
             });
+
+        builder
+            .addCase(fetchCommitHistory.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(fetchCommitHistory.fulfilled, (state, action) => { state.loading = false; state.commitHistory = action.payload || { all: [] }; })
+            .addCase(fetchCommitHistory.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
+            .addCase(fetchUnpushedCommits.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(fetchUnpushedCommits.fulfilled, (state, action) => { state.loading = false; state.unpushedCommits = action.payload || []; })
+            .addCase(fetchUnpushedCommits.rejected, (state, action) => { state.loading = false; state.error = action.error.message; });
         builder
             .addCase(initRepo.pending, (state) => { state.loading = true; state.error = null; })
             .addCase(initRepo.fulfilled, (state) => { state.loading = false; })
