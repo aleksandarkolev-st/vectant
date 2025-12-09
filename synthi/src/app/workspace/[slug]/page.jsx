@@ -42,8 +42,7 @@ export default function EditorPage({ params }) {
     const [latestCompletion, setLatestCompletion] = useState(null);
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
-    const [isGuiMode, setIsGuiMode] = useState(false);
-    const [useAiSplit, setUseAiSplit] = useState(true);
+    const [useAiSplit, setUseAiSplit] = useState(false);
     const analysisTimeoutRef = useRef(null);
     const lastAnalyzedSignatureRef = useRef('');
 
@@ -229,15 +228,11 @@ export default function EditorPage({ params }) {
              appendBuildLog(`Warning: Dependency resolution failed: ${e.message}`);
         }
 
-        // Use the manual toggle for GUI mode
-        const isGui = isGuiMode;
-
         try {
             await compile({
                 filename,
                 source,
                 files: additionalFiles,
-                isGui,
                 useAiSplit,
                 onLog: (line) => {
                     appendBuildLog(line);
@@ -249,7 +244,7 @@ export default function EditorPage({ params }) {
             console.error('Compile failed', err);
             appendBuildLog(`error: ${err?.message || err}`);
         }
-    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, fileContentCache, slug, isGuiMode, compile]);
+    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, fileContentCache, slug, compile]);
 
     const handleSave = useCallback(async () => {
         if (!activeFile) return;
@@ -277,14 +272,13 @@ export default function EditorPage({ params }) {
                 filename,
                 source,
                 files: additionalFiles,
-                isGui: isGuiMode,
                 // We don't attach onLog here to avoid spamming the build log on every save
                 // unless we want to see HMR logs.
             });
         } catch (err) {
             console.error('[HMR] Silent compile failed', err);
         }
-    }, [activeFile, currentContent, rawFiles, fileContentCache, slug, isGuiMode, compile]);
+    }, [activeFile, currentContent, rawFiles, fileContentCache, slug, compile]);
 
     const handleEditorMount = (editorInstance) => {
         setEditor(editorInstance);
@@ -370,8 +364,6 @@ export default function EditorPage({ params }) {
                 onRedo={handleRedo}
                 onToggleChat={handleToggleChat}
                 chatVisible={chatVisible}
-                isGuiMode={isGuiMode}
-                onToggleGuiMode={() => setIsGuiMode(v => !v)}
             />
             {buildLogs.length > 0 && (
                 <div className="border-b border-[#2b2b2b] bg-[#121212] px-3 py-2 text-xs font-mono text-gray-200 max-h-28 overflow-auto">

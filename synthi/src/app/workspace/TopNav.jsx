@@ -9,7 +9,7 @@ import { toggleAutoSave, selectAutoSaveEnabled, toggleAutoCompletion, selectAuto
 import { selectActiveFile, selectFilesTree, saveFileContentThunk } from '@/redux/workspaceSlice';
 import { BranchSelector } from '@/components/git/BranchSelector';
 
-export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo, onToggleChat, chatVisible, isGuiMode, onToggleGuiMode }) {
+export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo, onToggleChat, chatVisible }) {
   const dispatch = useAppDispatch();
   const slug = useAppSelector(state => state.workspace.slug);
   const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
@@ -256,16 +256,6 @@ export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo,
           <TerminalSquare className="w-4 h-4" /> Terminal
         </Button>
         
-        <Button 
-          variant="outline" 
-          size="sm" 
-          className={`h-7 border-[#4b4b4b] bg-[#262626] hover:bg-[#2e2e2e] hover:border-emerald-500 hover:text-emerald-400 text-gray-200 transition-colors ${isGuiMode ? 'text-emerald-400 border-emerald-500' : ''}`} 
-          onClick={onToggleGuiMode}
-          title="Toggle GUI Mode"
-        >
-          GUI
-        </Button>
-
         <Button 
           variant="outline" 
           size="sm" 

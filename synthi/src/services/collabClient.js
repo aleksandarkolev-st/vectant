@@ -14,6 +14,8 @@ class MonacoTextBinding {
     this.editor = editor;
     this.awareness = awareness;
     this.monaco = monaco;
+    this._destroyed = false;
+    this._observerTimeout = null;
 
     // Guard flag — when we apply remote changes to Monaco we don't want
     // local change handlers to re-propagate back into Yjs producing loops.
@@ -29,7 +31,12 @@ class MonacoTextBinding {
         // Use setTimeout to avoid reentrancy issues when Monaco fires view events
         // synchronously — scheduling to next event loop reduces chance of
         // 'invalid edit' exceptions while being reasonably responsive.
-        setTimeout(() => {
+        if (this._observerTimeout) clearTimeout(this._observerTimeout);
+        this._observerTimeout = setTimeout(() => {
+          if (this._destroyed) return;
+          // Ensure we are still editing the same model
+          if (this.editor.getModel() !== this.model) return;
+
           try {
             // Mark guard so local change handler skips this update
             this._applyingRemote = true;
@@ -118,6 +125,8 @@ class MonacoTextBinding {
   }
 
   destroy() {
+    this._destroyed = true;
+    if (this._observerTimeout) clearTimeout(this._observerTimeout);
     try { this.ytext.unobserve(this._yObserver); } catch (_) {}
     try { this._modelListener.dispose(); } catch (_) {}
     try { this._cursorListener?.dispose?.(); } catch (_) {}
@@ -464,6 +473,13 @@ class CollabClient {
         entry.ytext.delete(0, entry.ytext.length);
         entry.ytext.insert(0, model.getValue());
       });
+    } else if (entry.ytext.length > 0) {
+      // If ytext has content, it takes precedence over local model initialization
+      // (which might be empty or stale if Redux hasn't loaded yet)
+      const remoteContent = entry.ytext.toString();
+      if (model.getValue() !== remoteContent) {
+        model.setValue(remoteContent);
+      }
     }
 
     const binding = new MonacoTextBinding(entry.ytext, model, editor, entry.provider.awareness, monaco);
@@ -532,7 +548,7 @@ class CollabClient {
               try { entry.doc.destroy(); } catch (e) { /* ignore */ }
               this.docs.delete(entry.key);
             }
-          }, 1000 * 60); // cleanup after 60s of inactivity
+          }, 2000); // cleanup after 2s of inactivity
         }
       }
     };
