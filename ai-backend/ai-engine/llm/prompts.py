@@ -122,6 +122,8 @@ Analyze the provided source code and split it into THREE distinct modules:
 2. GUI module: Rendering, UI updates, event handling presentation
 3. SHARED module: Common definitions, state structures, interface declarations
 
+Your goal is to **CATEGORIZE** the existing code into these modules. You must **NOT** rewrite, refactor, or "improve" the code logic itself. The resulting code must be functionally identical to the original, just organized into separate files.
+
 # OUTPUT FORMAT (STRICT JSON)
 You MUST output ONLY a valid JSON object with this EXACT structure:
 
@@ -213,11 +215,25 @@ CRITICAL: DO NOT forward declare X11 types if you include <X11/Xlib.h>.
 - Do NOT prefix variables with `m_` or `_`.
 - Do NOT rename `wbuffer` to `input_buffer`. Keep it `wbuffer`.
 
+## 7. DEBUGGING & LOGGING (CRITICAL)
+- You MUST inject `fprintf(stderr, ...)` logs at the start of every major function to trace execution.
+- Format: `[<MODULE>] <Function>: <Message>`
+- Required logs:
+  * `gui_initialize`: Log "Initializing GUI..." and "Window created: %lu"
+  * `gui_render`: Log "Entered gui_render"
+  * `gui_on_event`: Log "Received event type: %d"
+  * `on_load` (Core): Log "Loading Core..."
+  * `on_update` (Core): Log "Core update..." (CRITICAL: Must be present)
+
 Example of CORRECT state structure:
 ```cpp
 #include <X11/Xlib.h> // Include this if using X11 types!
 
 struct AppState {
+    // ABI Safety Checks (CRITICAL)
+    uint32_t magic;       // Must be 0xDEADBEEF
+    uint32_t struct_size; // Must be sizeof(AppState)
+
     // Window/Display handles
     Display* dpy;       // Use real type if header included
     Window win;         // Use real type
@@ -273,8 +289,8 @@ struct AppState {
   * Do NOT call `XOpenIM` or `XCreateIC`.
   * Do NOT call `XFilterEvent`.
   * Use `XLookupString` (not `XwcLookupString`) for key events.
-- **EVENT MASKS**: In `XSelectInput`, ALWAYS include `PointerMotionMask` to ensure mouse movements are received.
-  * Example: `XSelectInput(dpy, win, ExposureMask | KeyPressMask | ButtonPressMask | StructureNotifyMask | PointerMotionMask);`
+- **EVENT MASKS**: In `XSelectInput`, DO NOT include `PointerMotionMask` unless strictly necessary. It floods the event queue and can cause freezing.
+  * Example: `XSelectInput(dpy, win, ExposureMask | KeyPressMask | ButtonPressMask | StructureNotifyMask);`
 
 ## 6. MEMORY MANAGEMENT (CRITICAL)
 - **DO NOT FREE STATE ON UNLOAD**: The `on_unload` function MUST NOT free the `AppState` memory.
@@ -299,16 +315,16 @@ struct AppState {
 ```
 
 ## 3.5 CODE PRESERVATION (ZERO TOLERANCE)
-- DO NOT RENAME VARIABLES. You must use the EXACT same names as the original code.
-- DO NOT CHANGE VALUES. Constants, initializers, and logic must remain identical.
-- DO NOT REFACTOR LOGIC unless strictly necessary for the split.
-- PRESERVE COMMENTS where possible.
-- STABILITY: If you are re-running on similar code, try to keep the output structure identical to minimize changes.
-- PRESERVE STRING LITERALS: Do not correct typos, change text, or "improve" messages. If the user code says `printf("dsdas")`, you MUST output `printf("dsdas")`.
-- PRESERVE MAGIC NUMBERS: Do not replace hardcoded numbers with variables unless absolutely necessary. If the code says `if (x > 590)`, keep `590`. Do NOT change it to `width - 50`.
-- NO NEW COMMENTS: Do NOT add any new comments or explanations to the generated code. Only preserve existing comments from the source code.
-- NO MODERNIZATION: Do not change C style code to C++ style (e.g. keep `malloc`/`free`, do not change to `new`/`delete`). Keep `printf` instead of changing to `std::cout`.
-- COPY-PASTE PREFERENCE: When moving function bodies, copy them exactly as is.
+- **CATEGORIZATION ONLY**: Your task is to SPLIT the code, NOT to refactor, improve, or modernize it.
+- **DO NOT RENAME VARIABLES**: You must use the EXACT same names as the original code. If the original code used `win`, you MUST use `win`. Do NOT change it to `window`.
+- **DO NOT CHANGE VALUES**: Constants, initializers, and logic must remain identical.
+- **DO NOT REFACTOR LOGIC**: Do not change `if/else` chains, loops, or function structures unless strictly necessary for the split.
+- **PRESERVE COMMENTS**: Keep original comments where possible.
+- **PRESERVE STRING LITERALS**: Do not correct typos, change text, or "improve" messages.
+- **PRESERVE MAGIC NUMBERS**: Do not replace hardcoded numbers with variables.
+- **NO NEW COMMENTS**: Do NOT add any new comments or explanations to the generated code.
+- **NO MODERNIZATION**: Do not change C style code to C++ style (e.g. keep `malloc`/`free`, do not change to `new`/`delete`). Keep `printf` instead of changing to `std::cout`.
+- **COPY-PASTE PREFERENCE**: When moving function bodies, copy them exactly as is.
 
 ## 3.6 STATE PERSISTENCE & MIGRATION
 - You MUST implement `extern "C" void* on_load(void* prev_state, void* display_ptr)` in the GUI or CORE module (whichever holds the state).
@@ -347,6 +363,14 @@ extern "C" {
 
 ### 4.3 Complete State Structure
 Define the COMPLETE AppState structure with ALL fields used by GUI.
+You MUST include the ABI safety fields at the top of the struct:
+```cpp
+typedef struct {
+    uint32_t magic;       // 0xDEADBEEF
+    uint32_t struct_size; // sizeof(AppState)
+    // ... other fields ...
+} AppState;
+```
 
 ### 4.4 GUI Entry Point Declarations
 The SHARED module MUST declare the GUI entry points wrapped in `extern "C"`:
@@ -378,6 +402,17 @@ Include common system headers in shared.h:
 // If using X11, include it here to avoid type conflicts
 // #include <X11/Xlib.h> 
 ```
+
+### 4.6 EXPORTED FUNCTIONS (CRITICAL)
+The GUI module MUST export the following function with `extern "C"` to allow the runner to drive rendering:
+```cpp
+extern "C" void on_render(void* state) {
+    gui_render((AppState*)state);
+}
+```
+The CORE module MUST export `on_update` but SHOULD NOT call `gui_render`.
+
+CRITICAL: `gui_render` MUST call `XFlush(state->dpy)` or `XSync(state->dpy, 0)` at the end to ensure the window is updated.
 
 ## 5. HEADER INCLUSION REQUIREMENTS
 
@@ -438,13 +473,20 @@ CRITICAL: Implement "Persistent Cleanup". Do NOT destroy the window on cleanup.
 extern "C" {
 
 void gui_initialize(AppState* state) {
+    // 0. ABI Safety Check
+    if (state->magic != 0xDEADBEEF || state->struct_size != sizeof(AppState)) {
+        fprintf(stderr, "CRITICAL ERROR: AppState ABI Mismatch! Core: %u, GUI: %lu\n", 
+                state->struct_size, sizeof(AppState));
+        return;
+    }
+
     // 1. Lazy Window Creation
     // Only create the window if it doesn't exist in the state yet.
     // This prevents flickering during hot-reload.
-    if (state->window == 0) {
+    if (state->win == 0) {
         // CRITICAL: Use state->dpy which was set in on_load. DO NOT open a new display.
-        // state->window = XCreateSimpleWindow(state->dpy, ...);
-        // XMapWindow(state->dpy, state->window);
+        // state->win = XCreateSimpleWindow(state->dpy, ...);
+        // XMapWindow(state->dpy, state->win);
         
         // Initialize Input Method (XIM) if needed
         // state->xim = XOpenIM(state->dpy, NULL, NULL, NULL);
@@ -453,17 +495,24 @@ void gui_initialize(AppState* state) {
     
     // 2. Initialize other resources (fonts, textures, GCs)
     // CRITICAL: Create GCs and Pixmaps HERE, not in gui_render.
-    // if (!state->gc) state->gc = XCreateGC(state->dpy, state->window, 0, NULL);
+    // if (!state->gc) state->gc = XCreateGC(state->dpy, state->win, 0, NULL);
 }
 
 void gui_on_update(AppState* state, float dt) {
     // Update animations, transitions
     // Modify state: state->x += velocity * dt;
+    
+    // DEBUG: Print state to verify updates
+    // fprintf(stdout, "DEBUG: x=%d, dx=%d\n", state->x, state->dx);
 }
 
 void gui_render(AppState* state) {
     // Perform actual rendering using state data
     // Draw based on state->x, state->y, state->color, etc.
+    
+    // CRITICAL: Use XSetForeground with pixel values, NOT RGB packing (unless TrueColor is guaranteed)
+    // unsigned long white = WhitePixel(state->dpy, DefaultScreen(state->dpy));
+    // XSetForeground(state->dpy, state->gc, white);
     
     // CRITICAL: DO NOT CREATE RESOURCES HERE (GC, Pixmap, Font).
     // Use resources created in gui_initialize and stored in AppState.
@@ -474,13 +523,13 @@ void gui_cleanup(AppState* state) {
     
     // CRITICAL: DO NOT DESTROY THE WINDOW
     // The window must persist for the next module version.
-    // XDestroyWindow(state->dpy, state->window); // <--- DO NOT DO THIS
+    // XDestroyWindow(state->dpy, state->win); // <--- DO NOT DO THIS
 }
 
 void gui_on_event(AppState* state, void* event) {
     // Handle input events
     // XEvent* ev = (XEvent*)event;
-    // if (state->xim && state->xic && XFilterEvent(ev, state->window)) return;
+    // if (state->xim && state->xic && XFilterEvent(ev, state->win)) return;
 }
 
 } // extern "C"
@@ -506,7 +555,7 @@ Example:
 
 ### 6.3 Window Persistence (CRITICAL)
 To prevent flickering during hot-reloading, the window handle MUST persist in `AppState`.
-1. In `gui_initialize`: Check `if (!state->window)` before creating a new window.
+1. In `gui_initialize`: Check `if (!state->win)` before creating a new window.
 2. In `gui_cleanup`: Do NOT call `XDestroyWindow` or `CloseWindow`. Leave the window open for the next version of the library.
 
 ## 7. CORE MODULE REQUIREMENTS
@@ -580,6 +629,8 @@ extern "C" void* on_load(void* prev_state, void* display_ptr) {
         app_state.dpy = (Display*)display_ptr;
     } else {
         // Initialize new state
+        app_state.magic = 0xDEADBEEF;
+        app_state.struct_size = sizeof(AppState);
         app_state.is_running = true;
         app_state.width = 800;
         app_state.height = 600;

@@ -135,6 +135,10 @@ fn main() {
         #[cfg(target_os = "linux")]
         if !display.is_null() {
             unsafe {
+                let pending = XPending(display);
+                if pending > 0 {
+                    // println!("[Runner] Pending X11 events: {}", pending);
+                }
                 while XPending(display) > 0 {
                     let mut event: XEvent = std::mem::zeroed();
                     XNextEvent(display, &mut event);
@@ -143,6 +147,7 @@ fn main() {
                     for lib in modules.values() {
                         let event_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut XEvent)>, _> = lib.get(b"on_event");
                         if let Ok(f) = event_func {
+                            // println!("[Runner] Dispatching event to module");
                             f(app_state.raw, &mut event);
                         }
                     }
@@ -151,12 +156,13 @@ fn main() {
         }
 
         if last_log.elapsed() > Duration::from_secs(5) {
-            println!("Runner loop alive. Modules loaded: {}", modules.len());
+            println!("[Runner] Heartbeat. Modules: {}, FPS: {:.2}", modules.len(), 1.0 / last_frame.elapsed().as_secs_f64().max(0.001));
             last_log = Instant::now();
         }
 
         // Process all pending commands
         while let Ok(cmd) = rx.try_recv() {
+            println!("[Runner] Processing command: {}", cmd);
             let parts: Vec<&str> = cmd.split_whitespace().collect();
             if parts.is_empty() { continue; }
 
@@ -169,31 +175,22 @@ fn main() {
                     } else if parts.len() == 2 {
                         ("main", parts[1])
                     } else {
-                        println!("Invalid load command");
+                        println!("[Runner] Invalid load command format");
                         continue;
                     };
 
-                    println!("Loading module '{}' from {}", name, path);
+                    println!("[Runner] Loading module '{}' from {}", name, path);
 
                     if let Some(current_path) = loaded_paths.get(name) {
                         if current_path == path {
-                            println!("Module '{}' already loaded from {}. Skipping reload.", name, path);
+                            println!("[Runner] Module '{}' already loaded from {}. Skipping.", name, path);
                             continue;
                         }
                     }
 
                     unsafe {
                         // Phase 4: Smooth Transition
-                        // We do NOT clear the window here. By doing nothing, the last frame
-                        // remains on screen (persisted by X server or compositor) until
-                        // the new library loads and draws the next frame.
-
-                        // NOTE: We moved unload logic inside the success block of loading the new library
-                        // to ensure we don't unload if the new one fails.
-
-
-                        // Load new library
-                        // We use RTLD_LOCAL to avoid symbol pollution and allow side-by-side loading during transition
+                        println!("[Runner] Opening library: {}", path);
                         #[cfg(unix)]
                         let lib_result = {
                             use libloading::os::unix::{Library, RTLD_NOW, RTLD_LOCAL};
@@ -204,7 +201,7 @@ fn main() {
 
                         match lib_result {
                             Ok(lib) => {
-                                println!("Library loaded successfully. Checking for symbols...");
+                                println!("[Runner] Library opened. Resolving symbols...");
                                 
                                 // Check for on_load or entrypoint or on_update BEFORE unloading the old one
                                 let load_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = lib.get(b"on_load");
@@ -212,41 +209,43 @@ fn main() {
                                 let update_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = lib.get(b"on_update");
                                 
                                 if load_func.is_err() && entry_func.is_err() && update_func.is_err() && name != "main" {
-                                     println!("New library missing all required symbols (on_load, entrypoint, on_update). Aborting reload to preserve state.");
+                                     println!("[Runner] ERROR: New library missing required symbols. Aborting.");
                                      continue;
                                 }
 
                                 // Now it is safe to unload the old one
                                 if let Some(old_lib) = modules.remove(name) {
+                                     println!("[Runner] Unloading old module '{}'...", name);
                                      loaded_paths.remove(name);
                                      let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = old_lib.get(b"on_unload");
                                      if let Ok(f) = func {
-                                         println!("Calling on_unload for {}...", name);
+                                         println!("[Runner] Calling on_unload...");
                                          f(app_state.raw);
+                                         println!("[Runner] on_unload finished.");
                                      }
                                 }
 
                                 // Initialize the new one
                                 if let Ok(f) = load_func {
-                                    println!("Found 'on_load' symbol. Calling it...");
+                                    println!("[Runner] Found 'on_load'. Calling...");
                                     // Pass the display pointer to the loaded library
                                     // The signature is now: void* on_load(void* prev_state, void* display_ptr)
                                     let load_func_with_display: Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void> = std::mem::transmute(f);
                                     app_state.raw = load_func_with_display(app_state.raw, display);
-                                    println!("'on_load' returned. AppState raw: {:p}", app_state.raw);
+                                    println!("[Runner] 'on_load' returned. AppState raw: {:p}", app_state.raw);
                                 } else if let Ok(f) = entry_func {
                                      // Fallback
-                                     println!("Found 'entrypoint' symbol. Calling it...");
+                                     println!("[Runner] Found 'entrypoint'. Calling...");
                                      app_state.raw = f(app_state.raw);
-                                     println!("'entrypoint' returned. AppState raw: {:p}", app_state.raw);
+                                     println!("[Runner] 'entrypoint' returned. AppState raw: {:p}", app_state.raw);
                                 }
                                 
                                 modules.insert(name.to_string(), lib);
                                 loaded_paths.insert(name.to_string(), path.to_string());
-                                println!("Module '{}' registered.", name);
+                                println!("[Runner] Module '{}' registered successfully.", name);
                             }
                             Err(e) => {
-                                println!("Error loading library: {}", e);
+                                println!("[Runner] Error loading library: {}", e);
                             }
                         }
                     }
@@ -254,6 +253,7 @@ fn main() {
                 "unload" => {
                     if parts.len() == 2 {
                         let name = parts[1];
+                        println!("[Runner] Unloading module '{}'", name);
                         if let Some(lib) = modules.remove(name) {
                              loaded_paths.remove(name);
                              unsafe {
@@ -262,12 +262,12 @@ fn main() {
                                      f(app_state.raw);
                                  }
                              }
-                             println!("Unloaded module {}", name);
+                             println!("[Runner] Unloaded module {}", name);
                         }
                     }
                 }
                 "quit" => {
-                    println!("Quitting runner.");
+                    println!("[Runner] Quitting.");
                     #[cfg(target_os = "linux")]
                     if !display.is_null() {
                         unsafe { XCloseDisplay(display); }
@@ -296,10 +296,35 @@ fn main() {
             if let Some(lib) = modules.get(&name) {
                 unsafe {
                     let update_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = lib.get(b"on_update");
-                    if let Ok(f) = update_func {
-                        // Uncomment to debug update loop (spammy)
-                        // println!("Calling on_update for {}", name);
-                        f(app_state.raw, dt);
+                    match update_func {
+                        Ok(f) => {
+                            // Log once per second per module to prove it's being called
+                            if last_log.elapsed() < Duration::from_millis(20) {
+                                // println!("[Runner] Calling on_update for {}", name);
+                            }
+                            f(app_state.raw, dt);
+                        },
+                        Err(e) => {
+                            // Only log this error once every 5 seconds to avoid spamming if it's missing
+                            if last_log.elapsed() > Duration::from_secs(4) {
+                                println!("[Runner] WARNING: Module '{}' does not export 'on_update': {}", name, e);
+                            }
+                        }
+                    }
+
+                    // Try to call on_render if it exists (Critical for GUI modules)
+                    // Fallback to gui_render if on_render is missing (for backward compatibility)
+                    let render_func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"on_render");
+                    let gui_render_func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"gui_render");
+                    
+                    if let Ok(f) = render_func {
+                        f(app_state.raw);
+                    } else if let Ok(f) = gui_render_func {
+                         // Only log this fallback once
+                         if last_log.elapsed() > Duration::from_secs(4) {
+                             println!("[Runner] Note: Module '{}' using 'gui_render' fallback.", name);
+                         }
+                         f(app_state.raw);
                     }
                 }
             }

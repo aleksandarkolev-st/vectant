@@ -2100,7 +2100,7 @@ async fn handle_compile(
         // Load Modules
         for (name, path) in modules_to_load {
             let cmd = format!("load {} {}\n", name, path);
-            println!("Sending command to runner: {}", cmd.trim());
+            println!("[Main] Sending command to runner: {}", cmd.trim());
             state.stdin.write_all(cmd.as_bytes()).await?;
         }
         state.stdin.flush().await?;
@@ -2123,6 +2123,7 @@ async fn handle_compile(
     });
     let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
     
+    println!("[Main] handle_compile completed successfully.");
     return Ok(());
 
     // Cleanup terminal sender for this session (if any)
