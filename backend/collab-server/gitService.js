@@ -14,18 +14,40 @@ class GitService {
         return path.join(this.baseDir, slug);
     }
 
+    isRepoExists(slug) {
+        const repoPath = this.getRepoPath(slug);
+        return fs.existsSync(repoPath);
+    }
+
+    isRepoInitialized(slug) {
+        const repoPath = this.getRepoPath(slug);
+        const gitDir = path.join(repoPath, '.git');
+        return fs.existsSync(gitDir) && fs.statSync(gitDir).isDirectory();
+    }
+
     getGit(slug) {
         const repoPath = this.getRepoPath(slug);
         if (!fs.existsSync(repoPath)) {
             throw new Error(`Repository for slug ${slug} not found`);
         }
+        
+        // Check for .git directory to prevent traversing up to parent repository
+        const gitDir = path.join(repoPath, '.git');
+        if (!fs.existsSync(gitDir) || !fs.statSync(gitDir).isDirectory()) {
+             throw new Error(`Repository for slug ${slug} is not initialized`);
+        }
+
         return simpleGit(repoPath);
     }
 
     async initRepo(slug, remoteUrl) {
         const repoPath = this.getRepoPath(slug);
+        
         if (!fs.existsSync(repoPath)) {
             fs.mkdirSync(repoPath, { recursive: true });
+        }
+
+        if (!fs.existsSync(path.join(repoPath, '.git'))) {
             const git = simpleGit(repoPath);
             await git.init();
             if (remoteUrl) {
@@ -61,16 +83,26 @@ class GitService {
 
     async getStatus(slug) {
         try {
+            if (!this.isRepoExists(slug)) return null;
+            if (!this.isRepoInitialized(slug)) {
+                console.warn(`Git status: repository ${slug} not initialized`);
+                return null;
+            }
             const git = this.getGit(slug);
             return await git.status();
         } catch (e) {
-            console.error("Git status error:", e);
+            console.error("Git status error:", e?.message || e);
             return null;
         }
     }
 
     async getBranches(slug) {
         try {
+            if (!this.isRepoExists(slug)) return { local: [], current: '', all: [] };
+            if (!this.isRepoInitialized(slug)) {
+                console.warn(`Get branches: repository ${slug} not initialized`);
+                return { local: [], current: '', all: [] };
+            }
             const git = this.getGit(slug);
             const localSummary = await git.branchLocal();
             const allSummary = await git.branch(['-a']);
@@ -80,7 +112,7 @@ class GitService {
                 all: allSummary.all 
             };
         } catch (e) {
-            console.error("Get branches error:", e);
+            console.error("Get branches error:", e?.message || e);
             return { local: [], current: '', all: [] };
         }
     }
@@ -171,6 +203,8 @@ class GitService {
     }
 
     async getDiff(slug, filePath) {
+        if (!this.isRepoExists(slug)) return '';
+        if (!this.isRepoInitialized(slug)) return '';
         const git = this.getGit(slug);
         if (filePath) {
             return await git.diff([filePath]);
@@ -179,8 +213,15 @@ class GitService {
     }
 
     async getLog(slug) {
-        const git = this.getGit(slug);
-        return await git.log();
+        try {
+            if (!this.isRepoExists(slug)) return { all: [] };
+            if (!this.isRepoInitialized(slug)) return { all: [] };
+            const git = this.getGit(slug);
+            return await git.log();
+        } catch (e) {
+            console.error('Get log error:', e?.message || e);
+            return { all: [] };
+        }
     }
 
     async syncFile(slug, filePath, content) {
@@ -234,6 +275,8 @@ class GitService {
     }
 
     async getFileContent(slug, filePath, ref = 'HEAD') {
+        if (!this.isRepoExists(slug)) return '';
+        if (!this.isRepoInitialized(slug)) return '';
         const git = this.getGit(slug);
         try {
             // Ensure forward slashes for git command and remove leading slash
