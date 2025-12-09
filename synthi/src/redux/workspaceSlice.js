@@ -50,9 +50,12 @@ export const fetchFilesThunk = createAsyncThunk(
         const state = getState().workspace;
 
         // Determine if auto-selection is needed
-        let fileToSelect = state.activeFile;
+        let fileToSelect = null;
         if (!state.activeFile && files.length > 0) {
-            fileToSelect = findFirstFile(files);
+            const found = findFirstFile(files);
+            if (found) {
+                dispatch(selectFileThunk(found));
+            }
         }
 
         // Return files and potential file to select for the reducer

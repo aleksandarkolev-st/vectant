@@ -16,7 +16,10 @@ import {
     ResizablePanelGroup,
 } from '@/components/ui/resizable';
 import FileTreeView from "./FileTree.jsx";
-import EditorPanel from "./Editor/Editor.jsx";
+import dynamic from 'next/dynamic';
+
+const EditorPanel = dynamic(() => import('./Editor/Editor.jsx'), { ssr: false });
+
 import { getFileLanguage } from '@/utils/fileUtils';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
 import { useCompiler } from '@/hooks/useCompiler';
