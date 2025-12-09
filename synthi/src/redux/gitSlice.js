@@ -33,6 +33,47 @@ export const fetchRemote = createAsyncThunk(
     }
 );
 
+export const initRepo = createAsyncThunk(
+    'git/init',
+    async ({ slug, remoteUrl }, { dispatch }) => {
+        await gitClient.init(slug, remoteUrl);
+        dispatch(fetchGitStatus(slug));
+    }
+);
+
+export const addRemote = createAsyncThunk(
+    'git/addRemote',
+    async ({ slug, name, url }, { dispatch }) => {
+        await gitClient.addRemote(slug, name, url);
+        dispatch(fetchGitStatus(slug));
+        dispatch(fetchRemotes(slug));
+    }
+);
+
+export const removeRemote = createAsyncThunk(
+    'git/removeRemote',
+    async ({ slug, name }, { dispatch }) => {
+        await gitClient.removeRemote(slug, name);
+        dispatch(fetchGitStatus(slug));
+        dispatch(fetchRemotes(slug));
+    }
+);
+
+export const fetchRemotes = createAsyncThunk(
+    'git/fetchRemotes',
+    async (slug) => {
+        return await gitClient.getRemotes(slug);
+    }
+);
+
+export const cloneRepo = createAsyncThunk(
+    'git/clone',
+    async ({ slug, repoUrl, token }, { dispatch }) => {
+        await gitClient.clone(slug, repoUrl, token);
+        dispatch(fetchGitStatus(slug));
+    }
+);
+
 export const commitChanges = createAsyncThunk(
     'git/commit',
     async ({ slug, message }, { dispatch }) => {
@@ -86,6 +127,7 @@ const gitSlice = createSlice({
     initialState: {
         status: null,
         branches: { local: [], all: [] },
+        remotes: [],
         currentBranch: 'main',
         loading: false,
         error: null,
@@ -107,6 +149,25 @@ const gitSlice = createSlice({
             .addCase(fetchGitStatus.rejected, (state, action) => {
                 state.loading = false;
                 state.error = action.error.message;
+            });
+        builder
+            .addCase(initRepo.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(initRepo.fulfilled, (state) => { state.loading = false; })
+            .addCase(initRepo.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
+            .addCase(cloneRepo.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(cloneRepo.fulfilled, (state) => { state.loading = false; })
+            .addCase(cloneRepo.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
+            .addCase(addRemote.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(addRemote.fulfilled, (state) => { state.loading = false; })
+            .addCase(addRemote.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
+            .addCase(pushChanges.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(pushChanges.fulfilled, (state) => { state.loading = false; })
+            .addCase(pushChanges.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
+            .addCase(pullChanges.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(pullChanges.fulfilled, (state) => { state.loading = false; })
+            .addCase(pullChanges.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
+            .addCase(fetchRemotes.fulfilled, (state, action) => {
+                state.remotes = action.payload;
             });
     },
 });

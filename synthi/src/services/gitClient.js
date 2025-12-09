@@ -19,6 +19,22 @@ export const gitClient = {
         return this.request(slug, 'init', { remoteUrl });
     },
 
+    async addRemote(slug, name, url) {
+        return this.request(slug, 'add-remote', { name, url });
+    },
+
+    async removeRemote(slug, name) {
+        return this.request(slug, 'remove-remote', { name });
+    },
+
+    async getRemotes(slug) {
+        return this.request(slug, 'remotes');
+    },
+
+    async clone(slug, repoUrl, token) {
+        return this.request(slug, 'clone', { repoUrl, token });
+    },
+
     async getStatus(slug) {
         return this.request(slug, 'status');
     },

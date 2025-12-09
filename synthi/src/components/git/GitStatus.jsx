@@ -1,19 +1,23 @@
 import React, { useEffect, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { fetchGitStatus, fetchRemote, commitChanges, pushChanges, pullChanges, stageFile, unstageFile, discardChange } from '@/redux/gitSlice';
-import { refreshWorkspaceThunk, openDiffThunk } from '@/redux/workspaceSlice';
-import { RefreshCw, Check, UploadCloud, Plus, Minus, DownloadCloud, Undo2 } from 'lucide-react';
+import { fetchGitStatus, fetchRemote, commitChanges, pushChanges, pullChanges, stageFile, unstageFile, discardChange, initRepo, cloneRepo, addRemote, removeRemote, fetchRemotes } from '@/redux/gitSlice';
+import { refreshWorkspaceThunk, openDiffThunk, fetchFilesThunk } from '@/redux/workspaceSlice';
+import { RefreshCw, Check, UploadCloud, Plus, Minus, DownloadCloud, Undo2, Globe, Trash2 } from 'lucide-react';
 import { getFileLanguage } from '@/utils/fileUtils';
 
 export function GitStatus({ slug }) {
     const dispatch = useDispatch();
-    const { status, loading, error } = useSelector(state => state.git);
+    const { status, loading, error, remotes } = useSelector(state => state.git);
     const [message, setMessage] = useState('');
+    const [showAddRemote, setShowAddRemote] = useState(false);
+    const [newRemoteName, setNewRemoteName] = useState('origin');
+    const [newRemoteUrl, setNewRemoteUrl] = useState('');
 
     useEffect(() => {
         if (slug) {
             // Initial fetch
             dispatch(fetchGitStatus(slug));
+            dispatch(fetchRemotes(slug));
             
             // Poll every 5 seconds
             const interval = setInterval(() => {
@@ -26,6 +30,23 @@ export function GitStatus({ slug }) {
     const handleSync = () => {
         if (slug) {
             dispatch(fetchRemote(slug));
+            dispatch(fetchRemotes(slug));
+        }
+    };
+
+    const handleAddRemote = async () => {
+        if (slug && newRemoteName && newRemoteUrl) {
+            await dispatch(addRemote({ slug, name: newRemoteName, url: newRemoteUrl }));
+            setShowAddRemote(false);
+            setNewRemoteUrl('');
+        }
+    };
+
+    const handleRemoveRemote = async (name) => {
+        if (slug && name) {
+            if (confirm(`Are you sure you want to remove remote '${name}'?`)) {
+                await dispatch(removeRemote({ slug, name }));
+            }
         }
     };
 
@@ -84,7 +105,80 @@ export function GitStatus({ slug }) {
         dispatch(openDiffThunk(file));
     };
 
-    if (!status) return null;
+    const [cloneUrl, setCloneUrl] = useState('');
+    const [showClone, setShowClone] = useState(false);
+
+    const handleInit = async () => {
+        if (slug) {
+            try {
+                await dispatch(initRepo({ slug, remoteUrl: null }));
+                dispatch(fetchFilesThunk(slug));
+                dispatch(fetchGitStatus(slug));
+            } catch (e) {
+                console.error('Init repo failed', e);
+            }
+        }
+    };
+
+    const handleCloneRepo = async () => {
+        if (slug && cloneUrl) {
+            try {
+                await dispatch(cloneRepo({ slug, repoUrl: cloneUrl, token: null }));
+                dispatch(fetchFilesThunk(slug));
+                dispatch(fetchGitStatus(slug));
+                setCloneUrl('');
+                setShowClone(false);
+            } catch (e) {
+                console.error('Clone repo failed', e);
+            }
+        }
+    };
+
+    if (status === null) {
+        return (
+            <div className="p-2 h-full flex flex-col justify-center items-center">
+                <div className="mb-2 text-sm text-gray-300">Git not initialized for this workspace.</div>
+                <div className="flex gap-2">
+                    <button
+                        onClick={handleInit}
+                        className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-sm"
+                    >
+                        Initialize Git
+                    </button>
+                    <button
+                        onClick={() => setShowClone(v => !v)}
+                        className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-sm"
+                    >
+                        Clone from Git
+                    </button>
+                </div>
+                {showClone && (
+                    <div className="mt-2 w-full">
+                        <input
+                            className="w-full bg-[#1e1e1e] border border-gray-700 rounded px-2 py-1 text-xs text-gray-300"
+                            placeholder="https://github.com/owner/repo.git"
+                            value={cloneUrl}
+                            onChange={(e) => setCloneUrl(e.target.value)}
+                        />
+                        <div className="flex gap-2 mt-2">
+                            <button
+                                onClick={handleCloneRepo}
+                                className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-sm"
+                            >
+                                Clone
+                            </button>
+                            <button
+                                onClick={() => setShowClone(false)}
+                                className="bg-gray-700 hover:bg-gray-800 text-white px-3 py-1 rounded text-sm"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                )}
+            </div>
+        );
+    }
 
     const staged = status.files ? status.files.filter(f => f.index !== ' ' && f.index !== '?') : [];
     const changes = status.files ? status.files.filter(f => f.working_dir !== ' ' || f.index === '?') : [];
@@ -111,10 +205,88 @@ export function GitStatus({ slug }) {
             </div>
             <div className="flex-1 overflow-y-auto p-2">
                 {error && (
-                    <div className="mb-2 p-2 bg-red-900/50 border border-red-800 rounded text-xs text-red-200">
+                    <div className="mb-2 p-2 bg-red-900/50 border border-red-800 rounded text-xs text-red-200 break-words">
                         {error}
+                        {(error.includes('No configured push destination') || error.includes('No remote configured')) && (
+                            <div className="mt-2">
+                                <button 
+                                    onClick={() => setShowAddRemote(true)}
+                                    className="bg-red-700 hover:bg-red-600 text-white px-2 py-1 rounded text-xs w-full"
+                                >
+                                    Configure Remote
+                                </button>
+                            </div>
+                        )}
                     </div>
                 )}
+
+                {/* Remotes Section */}
+                <div className="mb-4">
+                    <div className="flex justify-between items-center mb-1 px-1">
+                        <div className="text-xs font-semibold text-gray-400">REMOTES</div>
+                        <button 
+                            onClick={() => setShowAddRemote(!showAddRemote)}
+                            className="hover:bg-gray-700 p-1 rounded text-gray-400 hover:text-white"
+                            title="Add Remote"
+                        >
+                            <Plus className="w-3 h-3" />
+                        </button>
+                    </div>
+                    
+                    {showAddRemote && (
+                        <div className="mb-2 p-2 bg-[#1e1e1e] border border-gray-700 rounded">
+                            <input
+                                className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-gray-300 mb-2"
+                                placeholder="Remote Name (e.g. origin)"
+                                value={newRemoteName}
+                                onChange={(e) => setNewRemoteName(e.target.value)}
+                            />
+                            <input
+                                className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-gray-300 mb-2"
+                                placeholder="Remote URL"
+                                value={newRemoteUrl}
+                                onChange={(e) => setNewRemoteUrl(e.target.value)}
+                            />
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={handleAddRemote}
+                                    disabled={loading}
+                                    className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-2 py-1 rounded text-xs flex-1 flex justify-center items-center gap-1"
+                                >
+                                    {loading ? <RefreshCw className="w-3 h-3 animate-spin" /> : 'Add'}
+                                </button>
+                                <button
+                                    onClick={() => setShowAddRemote(false)}
+                                    className="bg-gray-700 hover:bg-gray-600 text-white px-2 py-1 rounded text-xs flex-1"
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {remotes && remotes.length > 0 ? (
+                        <ul className="text-sm space-y-1">
+                            {remotes.map(remote => (
+                                <li key={remote.name} className="flex items-center gap-2 px-1 py-0.5 text-gray-400 hover:text-gray-300 group">
+                                    <Globe className="w-3 h-3" />
+                                    <span className="text-xs">{remote.name}</span>
+                                    <span className="text-xs text-gray-600 truncate flex-1 text-right" title={remote.refs.push}>{remote.refs.push}</span>
+                                    <button 
+                                        onClick={() => handleRemoveRemote(remote.name)}
+                                        className="opacity-0 group-hover:opacity-100 hover:bg-red-900/50 p-1 rounded text-gray-500 hover:text-red-400 transition-all"
+                                        title="Remove Remote"
+                                    >
+                                        <Trash2 className="w-3 h-3" />
+                                    </button>
+                                </li>
+                            ))}
+                        </ul>
+                    ) : (
+                        <div className="text-xs text-gray-600 px-1 italic">No remotes configured</div>
+                    )}
+                </div>
+
                 {!hasChanges ? (
                     <p className="text-sm text-gray-500 italic text-center mt-4">No changes detected.</p>
                 ) : (

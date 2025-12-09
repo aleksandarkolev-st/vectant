@@ -85,7 +85,7 @@ class GitService {
         try {
             if (!this.isRepoExists(slug)) return null;
             if (!this.isRepoInitialized(slug)) {
-                console.warn(`Git status: repository ${slug} not initialized`);
+                console.debug(`Git status: repository ${slug} not initialized`);
                 return null;
             }
             const git = this.getGit(slug);
@@ -100,7 +100,7 @@ class GitService {
         try {
             if (!this.isRepoExists(slug)) return { local: [], current: '', all: [] };
             if (!this.isRepoInitialized(slug)) {
-                console.warn(`Get branches: repository ${slug} not initialized`);
+                console.debug(`Get branches: repository ${slug} not initialized`);
                 return { local: [], current: '', all: [] };
             }
             const git = this.getGit(slug);
@@ -161,12 +161,35 @@ class GitService {
         try {
             await git.push();
         } catch (e) {
-            // If push fails, try setting upstream
-            if (e.message.includes('no upstream branch') || e.message.includes('set-upstream')) {
+            const msg = (e.message || '').toLowerCase();
+            if (msg.includes('no upstream branch') || msg.includes('set-upstream') || msg.includes('no configured push destination') || msg.includes('no configured remote')) {
                 const branchSummary = await git.branchLocal();
                 const currentBranch = branchSummary.current;
                 if (currentBranch) {
-                    await git.push('origin', currentBranch, ['--set-upstream']);
+                    // Try to locate a configured remote to push to
+                    try {
+                        const remotes = await git.getRemotes(true);
+                        let remoteToUse = remotes && remotes.length > 0 ? remotes[0].name : null;
+                        if (!remoteToUse) {
+                            try {
+                                const workspaceManager = require('./workspaceManager');
+                                const ws = workspaceManager.getAllWorkspaces().find(w => w.slug === slug);
+                                if (ws && ws.repoUrl) {
+                                    await git.addRemote('origin', ws.repoUrl);
+                                    remoteToUse = 'origin';
+                                }
+                            } catch (inner) {
+                                console.debug('workspaceManager not usable for push fallback', inner?.message || inner);
+                            }
+                        }
+                        if (remoteToUse) {
+                            await git.push(remoteToUse, currentBranch, ['--set-upstream']);
+                        } else {
+                            throw new Error('No remote configured for this repository. Add a remote with `git remote add origin <url>` or use /git/:slug/init with a remoteUrl.');
+                        }
+                    } catch (innerE) {
+                        throw innerE;
+                    }
                 } else {
                     throw e;
                 }
@@ -175,6 +198,23 @@ class GitService {
             }
         }
         return this.getStatus(slug);
+    }
+
+    async addRemote(slug, name, url) {
+        const git = this.getGit(slug);
+        await git.addRemote(name, url);
+        return this.getStatus(slug);
+    }
+
+    async removeRemote(slug, name) {
+        const git = this.getGit(slug);
+        await git.removeRemote(name);
+        return this.getStatus(slug);
+    }
+
+    async getRemotes(slug) {
+        const git = this.getGit(slug);
+        return await git.getRemotes(true);
     }
 
     async pull(slug) {

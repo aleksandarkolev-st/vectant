@@ -160,6 +160,15 @@ const server = http.createServer(async (req, res) => {
                 case 'init':
                     result = await gitService.initRepo(slug, data.remoteUrl);
                     break;
+                case 'add-remote':
+                    result = await gitService.addRemote(slug, data.name, data.url);
+                    break;
+                case 'remove-remote':
+                    result = await gitService.removeRemote(slug, data.name);
+                    break;
+                case 'remotes':
+                    result = await gitService.getRemotes(slug);
+                    break;
                 case 'clone':
                     result = await gitService.cloneRepo(slug, data.repoUrl, data.token);
                     // Save metadata
@@ -225,9 +234,17 @@ const server = http.createServer(async (req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(result));
         } catch (e) {
+          // For expected repository state errors (not initialized / not found / no remote) treat as client errors and avoid stack traces
+          const msg = e?.message || '';
+          if (msg.includes('not initialized') || msg.includes('not found') || msg.includes('no remote configured') || msg.includes('no configured push destination')) {
+            console.debug('[Collab] Client error in /git/:', msg);
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: msg }));
+          } else {
             console.error(e);
             res.writeHead(500);
-            res.end(JSON.stringify({ error: e.message }));
+            res.end(JSON.stringify({ error: msg }));
+          }
         }
     });
     return;
