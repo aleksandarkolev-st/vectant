@@ -802,14 +802,14 @@ const EditorPanel = ({
                         <div className="h-9 px-3 border-b border-[#2b2b2b] bg-[#1e1e1e] flex justify-between items-center select-none">
 
                             {/* Breadcrumbs */}
-                                <div className="flex items-center gap-2 overflow-hidden min-w-0">
+                                <div className="h-full flex items-center gap-2 overflow-hidden min-w-0">
                                     {/* Tabs bar (sleek) */}
-                                    <div className="flex items-center gap-0 overflow-x-auto scrollbar-hide min-w-0">
+                                    <div className="h-full block whitespace-nowrap scrollbar-overlay min-w-0 overflow-y-hidden">
                                         {openFiles && openFiles.length > 0 ? openFiles.map((file, idx) => {
                                                 const isActive = activeFile && file.path === activeFile.path;
                                             const fileIcon = getFileIcon(file.name || file.path || '');
                                             return (
-                                                <div key={`tab-wrap-${file.path}`} className="flex items-center">
+                                                <div key={`tab-wrap-${file.path}`} className="inline-flex items-center h-full align-top">
                                                     {/* Separator between tabs (subtle) */}
                                                     {idx > 0 && (
                                                         <div
@@ -853,6 +853,7 @@ const EditorPanel = ({
                                                     style={{
                                                         minWidth: 84,
                                                         maxWidth: 420,
+                                                        height: '100%',
                                                         backgroundColor: isActive ? TAB_TOKENS.activeBg : TAB_TOKENS.inactiveBg,
                                                         borderBottom: isActive ? `2px solid ${TAB_TOKENS.primary}` : '2px solid transparent',
                                                         boxShadow: isActive ? '0 6px 20px rgba(8,15,30,0.6)' : 'none',
