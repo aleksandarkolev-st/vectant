@@ -342,7 +342,7 @@ export default function EditorPage({ params }) {
     );
 
     const ChatPanel = (
-        <ResizablePanel defaultSize={24} minSize={22} maxSize={45} className="border-l border-[#545454] bg-[#171717] min-w-0">
+        <ResizablePanel defaultSize={24} minSize={23} maxSize={45} className="border-l border-[#545454] bg-[#171717] min-w-0">
             <AIChatWindow
                 docked={true}
                 isVisible={chatVisible}
