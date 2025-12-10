@@ -84,7 +84,7 @@ export const useEditorProviders = ({
             }
         });
         inlineAcceptCommandIdRef.current = commandId;
-    }, [editorInstance, applyAiCompletionText, aiCompletionCacheRef]);
+    }, [editorInstance, applyAiCompletionText, aiCompletionCacheRef, inlineAcceptCommandIdRef]);
 
     // 3. Hover Provider (Diagnostics)
     useEffect(() => {

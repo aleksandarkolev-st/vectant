@@ -288,7 +288,7 @@ export const useAISuggestions = ({
             });
         }
         return hydrated;
-    }, [activeFile?.name, activeFile?.path, getBaseContentForPath, resolveWorkspacePath]);
+    }, [getBaseContentForPath, resolveWorkspacePath]);
 
     // Ensure the requested file is active in the editor, selecting or creating it as needed.
     const openFileByPath = useCallback(async (path) => {
@@ -508,7 +508,7 @@ export const useAISuggestions = ({
             ),
         }));
     }
-    }, [applyContentToPath, chatSessions, mutateSession, openFileByPath, resolveWorkspacePath, workspaceSlug]);
+    }, [applyContentToPath, chatSessions, mutateSession, openFileByPath, resolveWorkspacePath, workspaceSlug, dispatch, onBusy]);
 
     // Mark a file suggestion as rejected and notify listeners.
     const handleRejectFileSuggestion = useCallback((sessionId, path) => {

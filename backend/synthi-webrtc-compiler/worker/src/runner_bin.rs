@@ -229,6 +229,7 @@ fn main() {
                             }
                         }
                     }
+                },
                 "unload" => {
                     if parts.len() == 2 {
                         let name = parts[1];
