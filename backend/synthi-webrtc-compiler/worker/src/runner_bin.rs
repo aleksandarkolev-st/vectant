@@ -224,38 +224,45 @@ fn main() {
     let mut app_state = AppState { raw: std::ptr::null_mut(), renderer };
     let mut last_frame = Instant::now();
     let mut last_log = Instant::now();
+    let mut frame_count: u64 = 0;
+    let mut frames_sent: u64 = 0;
+    let mut last_frame_log = Instant::now();
+    
+    #[cfg(target_os = "linux")]
+    eprintln!("[Runner] Frame capture enabled (Linux build)");
+    #[cfg(not(target_os = "linux"))]
+    eprintln!("[Runner] Frame capture DISABLED (non-Linux build)");
 
     loop {
-        // Poll SDL2 events
+        // Poll SDL2 events and pass them to loaded modules
         #[cfg(target_os = "linux")]
         if !window.is_null() {
             unsafe {
                 let mut event: SDL_Event = std::mem::zeroed();
                 while SDL_PollEvent(&mut event) != 0 {
-                    // Pass event to all loaded modules that export on_event
+                    // Pass SDL_Event to all loaded modules that export on_event
+                    // The plugin's on_event expects SDL_Event* (not XEvent*)
+                    // Plugins MUST be compiled to expect SDL_Event, not XEvent
                     for lib in modules.values() {
-                        // FIX: Disable passing SDL_Event to on_event because core.cpp expects XEvent.
-                        // SDL_Event and XEvent are incompatible and have different sizes.
-                        // Passing SDL_Event causes core.cpp to read garbage or out-of-bounds memory, leading to crashes.
-                        /*
                         let event_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut SDL_Event)>, _> = lib.get(b"on_event");
                         if let Ok(f) = event_func {
                             f(app_state.raw, &mut event);
                         }
-                        */
                     }
                 }
             }
         }
 
         if last_log.elapsed() > Duration::from_secs(5) {
-            println!("[Runner] Heartbeat. Modules: {}, FPS: {:.2}", modules.len(), 1.0 / last_frame.elapsed().as_secs_f64().max(0.001));
+            // Keep stdout clean for raw frame bytes; log diagnostics to stderr instead.
+            eprintln!("[Runner] Heartbeat. Modules: {}, FPS: {:.2}", modules.len(), 1.0 / last_frame.elapsed().as_secs_f64().max(0.001));
             last_log = Instant::now();
         }
 
         // Process all pending commands
         while let Ok(cmd) = rx.try_recv() {
-            println!("[Runner] Processing command: {}", cmd);
+            // Route command logs to stderr so stdout stays dedicated to the video stream.
+            eprintln!("[Runner] Processing command: {}", cmd);
             let parts: Vec<&str> = cmd.split_whitespace().collect();
             if parts.is_empty() { continue; }
 
@@ -373,6 +380,22 @@ fn main() {
                                 // Now it is safe to unload the old one
                                 if let Some(old_lib) = modules.remove(name) {
                                      eprintln!("[Runner] Unloading old module '{}'...", name);
+                                     
+                                     // 1. Try to save state to JSON
+                                     let save_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut std::ffi::c_char>, _> = old_lib.get(b"on_save_state");
+                                     let mut json_state: Option<std::ffi::CString> = None;
+                                     
+                                     if let Ok(f) = save_func {
+                                         let ptr = f(app_state.raw);
+                                         if !ptr.is_null() {
+                                             let c_str = std::ffi::CStr::from_ptr(ptr);
+                                             json_state = Some(c_str.to_owned());
+                                             eprintln!("[Runner] Saved state: {:?}", c_str);
+                                             // Free the string if the plugin allocated it (assuming malloc)
+                                             libc::free(ptr as *mut c_void);
+                                         }
+                                     }
+
                                      loaded_paths.remove(name);
                                      let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = old_lib.get(b"on_unload");
                                      if let Ok(f) = func {
@@ -380,15 +403,29 @@ fn main() {
                                          f(app_state.raw);
                                          eprintln!("[Runner] on_unload finished.");
                                      }
+                                     
+                                     // 2. If we have JSON state, try to load it into the NEW library
+                                     if let Some(json) = json_state {
+                                         let load_json_func: Result<Symbol<unsafe extern "C" fn(*const std::ffi::c_char) -> *mut c_void>, _> = lib.get(b"on_load_from_json");
+                                         if let Ok(f) = load_json_func {
+                                             eprintln!("[Runner] Restoring state from JSON...");
+                                             app_state.raw = f(json.as_ptr());
+                                             // Skip the standard on_load since we just loaded from JSON
+                                             modules.insert(name.to_string(), lib);
+                                             loaded_paths.insert(name.to_string(), path.to_string());
+                                             eprintln!("[Runner] Module '{}' registered successfully (JSON restored).", name);
+                                             continue; 
+                                         }
+                                     }
                                 }
 
-                                // Initialize the new one
+                                // Initialize the new one (Standard Path)
                                 if let Ok(f) = load_func {
                                     eprintln!("[Runner] Found 'on_load'. Calling...");
-                                    // FIX: Pass NULL as window_ptr. The plugin should create its own window.
-                                    // The runner will capture it via Xvfb.
+                                    // Pass the SDL renderer to the plugin.
+                                    // The plugin should use this for all rendering operations.
                                     #[cfg(target_os = "linux")]
-                                    let win_ptr = std::ptr::null_mut();
+                                    let win_ptr = renderer;
                                     #[cfg(not(target_os = "linux"))]
                                     let win_ptr = std::ptr::null_mut();
                                     
@@ -498,24 +535,144 @@ fn main() {
             }
         }
 
+        // Present the SDL renderer BEFORE capturing from Xvfb
+        // This ensures the plugin's rendering is visible in the capture
+        #[cfg(target_os = "linux")]
+        if !renderer.is_null() {
+            unsafe {
+                SDL_RenderPresent(renderer);
+            }
+        }
+
         #[cfg(target_os = "linux")]
         {
             // Pixel Pump: Read from Xvfb via XShm
-            // We capture the root window of the Xvfb screen
-            if let Ok(cookie) = x11_conn.shm_get_image(x11_root, 0, 0, 800, 600, !0, u8::from(x11rb::protocol::xproto::ImageFormat::Z_PIXMAP), shm_seg, 0) {
+            // We need to capture from the plugin's window, not root.
+            // Root window captures don't include child windows unless a compositor is running.
+            // Query the window tree to find the plugin's window (child of root).
+            let target_window = if let Ok(tree_reply) = x11_conn.query_tree(x11_root) {
+                if let Ok(reply) = tree_reply.reply() {
+                    // Find a mapped child window that's not the SDL window
+                    // The plugin's window should be the most recently mapped non-SDL window
+                    let mut found_window = None;
+                    
+                    // Log window count periodically
+                    if last_frame_log.elapsed() > Duration::from_secs(4) {
+                        eprintln!("[Runner] query_tree found {} children of root", reply.children.len());
+                    }
+                    
+                    for &child in reply.children.iter().rev() {
+                        // Check if window is mapped (viewable)
+                        if let Ok(attrs) = x11_conn.get_window_attributes(child) {
+                            if let Ok(attr_reply) = attrs.reply() {
+                                if attr_reply.map_state == x11rb::protocol::xproto::MapState::VIEWABLE {
+                                    found_window = Some(child);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if last_frame_log.elapsed() > Duration::from_secs(4) {
+                        eprintln!("[Runner] Found viewable window: {:?}", found_window);
+                    }
+                    found_window.unwrap_or(x11_root)
+                } else {
+                    if last_frame_log.elapsed() > Duration::from_secs(4) {
+                        eprintln!("[Runner] query_tree reply failed");
+                    }
+                    x11_root
+                }
+            } else {
+                if last_frame_log.elapsed() > Duration::from_secs(4) {
+                    eprintln!("[Runner] query_tree failed");
+                }
+                x11_root
+            };
+
+            // The output must always be 800x600 to match the GStreamer pipeline caps
+            const OUTPUT_W: u16 = 800;
+            const OUTPUT_H: u16 = 600;
+            
+            // Get the actual window size to capture
+            let (win_w, win_h): (u16, u16) = if target_window != x11_root {
+                if let Ok(geom) = x11_conn.get_geometry(target_window) {
+                    if let Ok(g) = geom.reply() {
+                        if last_frame_log.elapsed() > Duration::from_secs(4) {
+                            eprintln!("[Runner] Target window geometry: {}x{}", g.width, g.height);
+                        }
+                        (g.width, g.height)
+                    } else {
+                        (OUTPUT_W, OUTPUT_H)
+                    }
+                } else {
+                    (OUTPUT_W, OUTPUT_H)
+                }
+            } else {
+                (OUTPUT_W, OUTPUT_H)
+            };
+
+            // Capture size is the minimum of window size and output size
+            let capture_w = win_w.min(OUTPUT_W);
+            let capture_h = win_h.min(OUTPUT_H);
+
+            // Capture from the target window (plugin's window, or root as fallback)
+            if let Ok(cookie) = x11_conn.shm_get_image(
+                target_window,
+                0, 0,
+                capture_w, capture_h,
+                !0,
+                u8::from(x11rb::protocol::xproto::ImageFormat::Z_PIXMAP),
+                shm_seg,
+                0
+            ) {
                 if let Ok(_reply) = cookie.reply() {
-                    // Write raw bytes to stdout
-                    let size = 800 * 600 * 4;
-                    let slice = unsafe { std::slice::from_raw_parts(shm_ptr, size) };
+                    // If captured size differs from output size, we need to reformat
+                    // the buffer to have 800-pixel row stride for the pipeline
+                    let output_size = (OUTPUT_W as usize) * (OUTPUT_H as usize) * 4;
+                    
+                    let frame_data = if capture_w == OUTPUT_W && capture_h == OUTPUT_H {
+                        // Perfect match, use directly
+                        unsafe { std::slice::from_raw_parts(shm_ptr, output_size).to_vec() }
+                    } else {
+                        // Need to convert: captured rows have capture_w*4 bytes,
+                        // but output rows need OUTPUT_W*4 bytes
+                        let mut output_buf = vec![0u8; output_size];
+                        let capture_stride = (capture_w as usize) * 4;
+                        let output_stride = (OUTPUT_W as usize) * 4;
+                        
+                        for y in 0..(capture_h as usize) {
+                            let src_offset = y * capture_stride;
+                            let dst_offset = y * output_stride;
+                            unsafe {
+                                ptr::copy_nonoverlapping(
+                                    shm_ptr.add(src_offset),
+                                    output_buf.as_mut_ptr().add(dst_offset),
+                                    capture_stride
+                                );
+                            }
+                        }
+                        output_buf
+                    };
+                    
+                    frame_count += 1;
+                    
                     // Drop frame if stdout is backed up; keep the app loop unblocked
-                    if let Err(_e) = frame_tx.try_send(slice.to_vec()) {
-                        // Channel full or closed; skip this frame
+                    match frame_tx.try_send(frame_data.clone()) {
+                        Ok(_) => { frames_sent += 1; }
+                        Err(_) => { /* Channel full or closed; skip this frame */ }
+                    }
+                    
+                    // Log frame stats periodically (using separate timer)
+                    if last_frame_log.elapsed() > Duration::from_secs(5) {
+                        eprintln!("[Runner] Frame stats: captured={}, sent={}, dropped={}", 
+                            frame_count, frames_sent, frame_count - frames_sent);
+                        last_frame_log = Instant::now();
                     }
 
                     // Update local SDL window
                     if !renderer.is_null() && !sdl_texture.is_null() {
                         unsafe {
-                            SDL_UpdateTexture(sdl_texture, ptr::null(), shm_ptr as *const c_void, 800 * 4);
+                            SDL_UpdateTexture(sdl_texture, ptr::null(), frame_data.as_ptr() as *const c_void, (OUTPUT_W as i32) * 4);
                             SDL_RenderCopy(renderer, sdl_texture, ptr::null(), ptr::null());
                             SDL_RenderPresent(renderer);
                         }

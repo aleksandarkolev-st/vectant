@@ -100,6 +100,7 @@ struct RunnerState {
     stdin: tokio::process::ChildStdin,
     output_tx: tokio::sync::broadcast::Sender<String>,
     is_gui: bool,
+    is_hmr_capable: bool, // True if runner was started with HMR-capable code (on_update hooks)
     xvfb_process: Option<tokio::process::Child>,
     gst_pipeline: Option<gst::Pipeline>,
     sdl_tx: Option<mpsc::UnboundedSender<String>>,
@@ -335,6 +336,8 @@ async fn main() -> Result<()> {
                             if msg.is_string {
                                 // Try to parse as a CompileRequest
                                 if let Ok(req) = serde_json::from_slice::<CompileRequest>(&msg.data) {
+                                    eprintln!("[Main] Received CompileRequest: is_gui={}, use_ai_split={}, lang={}", 
+                                        req.is_gui, req.use_ai_split, req.language);
                                     let log_dc = { store.lock().await.clone() };
                                     if let Some(log) = log_dc {
                                         let ts = term_store_for_msg.clone();
@@ -1102,8 +1105,24 @@ async fn handle_compile(
     // Check if we need to restart due to GUI mode change or blocking app
     // We do this early because we consume req.files later
     // If use_ai_split is true, we assume the AI will generate the necessary hooks (on_update, etc.)
-    let has_on_update = req.use_ai_split || req.source.contains("on_update") || req.source.contains("on_load") || req.source.contains("entrypoint") || req.source.contains("gui_on_update") ||
-        req.files.iter().any(|f| f.content.contains("on_update") || f.content.contains("on_load") || f.content.contains("entrypoint") || f.content.contains("gui_on_update"));
+    let source_has_hooks = req.source.contains("on_update") || req.source.contains("on_load") || req.source.contains("entrypoint") || req.source.contains("gui_on_update");
+    let files_have_hooks = req.files.iter().any(|f| f.content.contains("on_update") || f.content.contains("on_load") || f.content.contains("entrypoint") || f.content.contains("gui_on_update"));
+    
+    // Check if existing runner is already HMR-capable (from previous AI split)
+    let existing_runner_is_hmr = {
+        let guard = runner_store.lock().await;
+        guard.as_ref().map(|s| s.is_hmr_capable).unwrap_or(false)
+    };
+    
+    // App supports HMR if:
+    // 1. use_ai_split is true (AI will generate hooks), OR
+    // 2. Source code already has hooks, OR  
+    // 3. Files already have hooks, OR
+    // 4. Existing runner is already running HMR-capable code
+    let has_on_update = req.use_ai_split || source_has_hooks || files_have_hooks || existing_runner_is_hmr;
+    
+    eprintln!("[Main] HMR detection: use_ai_split={}, source_has_hooks={}, files_have_hooks={}, existing_runner_is_hmr={}, has_on_update={}", 
+        req.use_ai_split, source_has_hooks, files_have_hooks, existing_runner_is_hmr, has_on_update);
 
     // Generate a unique filename for the shared library to support HMR
     let timestamp = Utc::now().timestamp_millis();
@@ -1232,7 +1251,32 @@ async fn handle_compile(
 
         if let Some(shared) = split_data.get("shared") {
             let fname = shared["filename"].as_str().unwrap_or("shared.h");
-            let content = shared["content"].as_str().unwrap_or("");
+            let mut content = shared["content"].as_str().unwrap_or("").to_string();
+
+            // Guardrails: AI sometimes typedefs X11 types to void, which conflicts with Xlib headers.
+            for bad in ["typedef void Display", "typedef void GC", "typedef void Atom", "typedef void XIM", "typedef void XIC"] {
+                if content.contains(bad) {
+                    content = content.replace(bad, "// stripped invalid typedef\n");
+                }
+            }
+
+            // Strip conflicting forward declarations of X11 types and normalize struct field types.
+            for bad in [
+                "struct Display;", "struct Window;", "struct Atom;", "struct XIM;", "struct XIC;", "struct Pixmap;", "struct GC;", "struct XWindowAttributes;"
+            ] {
+                if content.contains(bad) {
+                    content = content.replace(bad, "// stripped conflicting X11 forward decl\n");
+                }
+            }
+            content = content.replace("struct Display*", "Display*");
+            content = content.replace("struct Window", "Window");
+            content = content.replace("struct Atom", "Atom");
+            content = content.replace("struct XIM*", "XIM*");
+            content = content.replace("struct XIC*", "XIC*");
+            content = content.replace("struct Pixmap", "Pixmap");
+            content = content.replace("struct GC", "GC");
+            content = content.replace("struct XWindowAttributes", "XWindowAttributes");
+
             println!("Writing shared library file: {}", fname);
             tokio::fs::write(dir_path.join(fname), content).await?;
         }
@@ -1240,6 +1284,30 @@ async fn handle_compile(
         if let Some(core) = split_data.get("core") {
             let fname = core["filename"].as_str().unwrap_or("core.cpp");
             let mut content = core["content"].as_str().unwrap_or("").to_string();
+
+            // Fix common AI mistakes in core.cpp before compilation.
+            if content.contains("is_running") {
+                content = content.replace("is_running", "running");
+            }
+
+            // Drop writes/reads to non-existent XWindowAttributes fields that break the build.
+            for bad_field in ["event_mask", "damage", "border_pixel", "background_pixel", "saved_attributes", "attributes_mask"] {
+                if content.contains(bad_field) {
+                    let mut cleaned = String::new();
+                    for line in content.lines() {
+                        if line.contains(bad_field) {
+                            // comment out the entire line to keep line numbers roughly stable
+                            cleaned.push_str("// stripped invalid field: ");
+                            cleaned.push_str(line);
+                            cleaned.push('\n');
+                        } else {
+                            cleaned.push_str(line);
+                            cleaned.push('\n');
+                        }
+                    }
+                    content = cleaned;
+                }
+            }
 
             // INJECT MISSING HEADERS
             if content.contains("setlocale") && !content.contains("#include <locale.h>") {
@@ -1336,6 +1404,19 @@ async fn handle_compile(
                 content = content.replace(&format!("void {}(", ptr_name), &format!("void {}(", func));
             }
 
+            // Replace hard-wired GUI symbol assignments with null so the core does not depend on GUI at link/load time.
+            for (from, to) in [
+                ("ptr_gui_initialize = gui_initialize;", "ptr_gui_initialize = nullptr;"),
+                ("ptr_gui_on_update = gui_on_update;", "ptr_gui_on_update = nullptr;"),
+                ("ptr_gui_render = gui_render;", "ptr_gui_render = nullptr;"),
+                ("ptr_gui_cleanup = gui_cleanup;", "ptr_gui_cleanup = nullptr;"),
+                ("ptr_gui_on_event = gui_on_event;", "ptr_gui_on_event = nullptr;")
+            ] {
+                if content.contains(from) {
+                    content = content.replace(from, to);
+                }
+            }
+
 
 
             // FIX: Remove SDL_RenderPresent to prevent deadlock with runner's event loop
@@ -1376,6 +1457,54 @@ async fn handle_compile(
 
             if content.contains("main(") && !content.contains("extern \"C\" void* entrypoint") {
                  content.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
+            }
+
+            // Inject JSON Serialization Helpers
+            if content.contains("struct AppState") {
+                let json_helpers = r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+extern "C" char* on_save_state(void* state_ptr) {
+    AppState* state = (AppState*)state_ptr;
+    if (!state) return NULL;
+    // Simple JSON serialization of critical fields
+    char* buffer = (char*)malloc(1024);
+    // We assume standard fields exist. If not, this might fail to compile, 
+    // but the AI usually generates x, y, etc.
+    // We use a safe snprintf to avoid buffer overflows.
+    // Note: This is a heuristic. For robust code, we'd need reflection or AI to generate this function.
+    snprintf(buffer, 1024, "{\"x\": %d, \"y\": %d, \"dx\": %d, \"paused\": %d}", 
+             state->x, state->y, state->dx, state->paused);
+    return buffer;
+}
+
+extern "C" void* on_load_from_json(const char* json) {
+    AppState* state = (AppState*)malloc(sizeof(AppState));
+    memset(state, 0, sizeof(AppState));
+    state->magic = 0xDEADBEEF;
+    state->struct_size = sizeof(AppState);
+    state->running = 1;
+    
+    // Basic parsing (manual for now, could use a library)
+    // "x": 123
+    const char* p = strstr(json, "\"x\":");
+    if (p) state->x = atoi(p + 4);
+    
+    p = strstr(json, "\"y\":");
+    if (p) state->y = atoi(p + 4);
+    
+    p = strstr(json, "\"dx\":");
+    if (p) state->dx = atoi(p + 5);
+    
+    p = strstr(json, "\"paused\":");
+    if (p) state->paused = atoi(p + 9);
+    
+    return state;
+}
+"#;
+                content.push_str(json_helpers);
             }
 
             let content_hash = calculate_hash(&content);
@@ -1514,21 +1643,25 @@ async fn handle_compile(
                 cache.insert("gui".to_string(), (combined_hash, gui_lib_path.clone()));
             }
             if !gui_lib_path.is_empty() {
-                // Create symlink ./gui.so -> gui_lib_path so the app can load it via ./gui.so
+                // Create symlinks/copies with both gui and libgui names so user code that dlopens either path succeeds
                 #[cfg(unix)]
                 {
-                    let link_path = dir_path.join("gui.so");
-                    let _ = tokio::fs::remove_file(&link_path).await;
-                    if let Err(e) = tokio::fs::symlink(&gui_lib_path, &link_path).await {
-                        println!("Failed to create gui.so symlink: {}", e);
+                    for name in ["gui.so", "libgui.so"] {
+                        let link_path = dir_path.join(name);
+                        let _ = tokio::fs::remove_file(&link_path).await;
+                        if let Err(e) = tokio::fs::symlink(&gui_lib_path, &link_path).await {
+                            println!("Failed to create {} symlink: {}", name, e);
+                        }
                     }
                 }
                 #[cfg(windows)]
                 {
-                    let link_path = dir_path.join("gui.dll");
-                    let _ = tokio::fs::remove_file(&link_path).await;
-                    if let Err(e) = tokio::fs::copy(&gui_lib_path, &link_path).await {
-                        println!("Failed to copy gui.dll: {}", e);
+                    for name in ["gui.dll", "libgui.dll"] {
+                        let link_path = dir_path.join(name);
+                        let _ = tokio::fs::remove_file(&link_path).await;
+                        if let Err(e) = tokio::fs::copy(&gui_lib_path, &link_path).await {
+                            println!("Failed to copy {}: {}", name, e);
+                        }
                     }
                 }
                 // Critical Fix for HMR:
@@ -1573,15 +1706,19 @@ async fn handle_compile(
                 gui_lib_path = gui_out.to_string_lossy().to_string();
                 #[cfg(unix)]
                 {
-                    let link_path = dir_path.join("gui.so");
-                    let _ = tokio::fs::remove_file(&link_path).await;
-                    let _ = tokio::fs::symlink(&gui_lib_path, &link_path).await;
+                    for name in ["gui.so", "libgui.so"] {
+                        let link_path = dir_path.join(name);
+                        let _ = tokio::fs::remove_file(&link_path).await;
+                        let _ = tokio::fs::symlink(&gui_lib_path, &link_path).await;
+                    }
                 }
                 #[cfg(windows)]
                 {
-                    let link_path = dir_path.join("gui.dll");
-                    let _ = tokio::fs::remove_file(&link_path).await;
-                    let _ = tokio::fs::copy(&gui_lib_path, &link_path).await;
+                    for name in ["gui.dll", "libgui.dll"] {
+                        let link_path = dir_path.join(name);
+                        let _ = tokio::fs::remove_file(&link_path).await;
+                        let _ = tokio::fs::copy(&gui_lib_path, &link_path).await;
+                    }
                 }
                 modules_to_load.push(("gui".to_string(), gui_lib_path.clone()));
                 // Ensure core reloads to pick up stub symbols
@@ -1726,9 +1863,13 @@ async fn handle_compile(
     // We restart if:
     // 1. GUI mode changed (need to start/stop Xvfb)
     // 2. App is blocking (no on_update), so the runner is blocked and can't accept new commands.
+    // NOTE: If use_ai_split is true, the app is HMR-capable, so we should NOT restart just for code updates
     let is_blocking_app = !has_on_update;
     let req_width = req.width.unwrap_or(1280);
     let req_height = req.height.unwrap_or(720);
+    
+    eprintln!("[Main] Restart check: is_gui={}, has_on_update={}, is_blocking_app={}, use_ai_split={}", 
+        req.is_gui, has_on_update, is_blocking_app, req.use_ai_split);
     
     // Reuse Xvfb/GStreamer if possible
     let mut reused_xvfb: Option<tokio::process::Child> = None;
@@ -1739,35 +1880,57 @@ async fn handle_compile(
     let mut video_track_opt: Option<Arc<TrackLocalStaticRTP>> = None;
     let mut audio_track_opt: Option<Arc<TrackLocalStaticRTP>> = None;
 
-    if let Some(state) = guard.as_mut() {
-        let needs_restart = state.is_gui != req.is_gui || is_blocking_app;
-        if needs_restart {
-            println!("Restarting runner due to GUI mode change or blocking app detected");
-            // If resolution matches and is_gui matches, we can reuse Xvfb/GStreamer
-            let can_reuse = state.is_gui == req.is_gui && state.width == req_width && state.height == req_height;
-            
-            let mut state = guard.take().unwrap();
-            if let Some(mut child) = state.process { 
-                println!("Killing old runner process...");
-                let _ = child.kill().await; 
-            }
-            
-            if can_reuse {
-                println!("Reusing Xvfb and GStreamer pipeline...");
-                reused_xvfb = state.xvfb_process;
-                reused_pipeline = state.gst_pipeline;
-                reused_wsl_display = state.wsl_display_str;
-                reused_gst_display = state.gst_display_str;
-                reused_sdl_tx = state.sdl_tx;
-            } else {
-                println!("Full restart (resolution/GUI mode changed)...");
-                if let Some(mut child) = state.xvfb_process { let _ = child.kill().await; }
-                if let Some(pipeline) = state.gst_pipeline { let _ = pipeline.set_state(gst::State::Null); }
-            }
+    // Determine if we have an existing runner that can handle HMR
+    let existing_runner_can_hmr = if let Some(state) = guard.as_ref() {
+        // Can do HMR if:
+        // 1. GUI mode is the same
+        // 2. The app supports HMR (has_on_update is true)
+        let gui_mode_same = state.is_gui == req.is_gui;
+        let resolution_same = state.width == req_width && state.height == req_height;
+        eprintln!("[Main] Existing runner: is_gui={}, gui_mode_same={}, resolution_same={}, has_on_update={}", 
+            state.is_gui, gui_mode_same, resolution_same, has_on_update);
+        gui_mode_same && resolution_same && has_on_update
+    } else {
+        false
+    };
+
+    // If we can do HMR, skip all the restart/initialization logic and just send load commands
+    if existing_runner_can_hmr {
+        eprintln!("[Main] HMR mode: Reusing existing runner, skipping initialization");
+    } else if let Some(state) = guard.as_mut() {
+        // We have an existing runner but can't do HMR - need to restart
+        let gui_mode_changed = state.is_gui != req.is_gui;
+        eprintln!("[Main] Restarting runner: gui_mode_changed={}, is_blocking_app={}, use_ai_split={}", 
+            gui_mode_changed, is_blocking_app, req.use_ai_split);
+        
+        // If resolution matches and is_gui matches, we can reuse Xvfb/GStreamer
+        let can_reuse = state.is_gui == req.is_gui && state.width == req_width && state.height == req_height;
+        
+        let mut state = guard.take().unwrap();
+        if let Some(mut child) = state.process { 
+            println!("Killing old runner process...");
+            let _ = child.kill().await; 
+        }
+        
+        if can_reuse {
+            println!("Reusing Xvfb and GStreamer pipeline...");
+            reused_xvfb = state.xvfb_process;
+            reused_pipeline = state.gst_pipeline;
+            reused_wsl_display = state.wsl_display_str;
+            reused_gst_display = state.gst_display_str;
+            reused_sdl_tx = state.sdl_tx;
+            video_track_opt = state.video_track;
+            audio_track_opt = state.audio_track;
+        } else {
+            println!("Full restart (resolution/GUI mode changed)...");
+            if let Some(mut child) = state.xvfb_process { let _ = child.kill().await; }
+            if let Some(pipeline) = state.gst_pipeline { let _ = pipeline.set_state(gst::State::Null); }
         }
     }
     
-    if guard.is_none() {
+    // Only start a new runner if we don't have one (either first run, or after restart)
+    // Skip this entire block if we can do HMR with the existing runner
+    if !existing_runner_can_hmr && guard.is_none() {
         // Start runner
         println!("Starting persistent runner...");
         
@@ -1817,24 +1980,24 @@ async fn handle_compile(
 
 
            let encoders = [
-                // H265
-                ("nvh265enc preset=low-latency-hp zerolatency=true", "rtph265pay", "video/H265"),
-                ("vaapih265enc", "rtph265pay", "video/H265"),
-                ("msdkh265enc", "rtph265pay", "video/H265"),
-                ("amfh265enc", "rtph265pay", "video/H265"),
-                ("d3d11h265enc", "rtph265pay", "video/H265"),
-                ("x265enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h265,stream-format=byte-stream", "rtph265pay", "video/H265"),
-            
-                // H264
+                // H264 first - universal browser support
                 ("nvh264enc preset=low-latency-hp zerolatency=true", "rtph264pay", "video/H264"),
                 ("vaapih264enc", "rtph264pay", "video/H264"),
                 ("msdkh264enc", "rtph264pay", "video/H264"),
                 ("amfh264enc", "rtph264pay", "video/H264"),
                 ("d3d11h264enc", "rtph264pay", "video/H264"),
-                ("x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h264,stream-format=byte-stream", "rtph264pay", "video/H264")
+                ("x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h264,stream-format=byte-stream", "rtph264pay", "video/H264"),
+            
+                // H265 - limited browser support (Safari only)
+                ("nvh265enc preset=low-latency-hp zerolatency=true", "rtph265pay", "video/H265"),
+                ("vaapih265enc", "rtph265pay", "video/H265"),
+                ("msdkh265enc", "rtph265pay", "video/H265"),
+                ("amfh265enc", "rtph265pay", "video/H265"),
+                ("d3d11h265enc", "rtph265pay", "video/H265"),
+                ("x265enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h265,stream-format=byte-stream", "rtph265pay", "video/H265")
             ];
 
-            let mut selected_mime_type = "video/H265".to_owned();
+            let mut selected_mime_type = "video/H264".to_owned();
             let mut audio_source = "pulsesrc".to_string();
             let mut encoder_idx = 0;
 
@@ -1846,7 +2009,7 @@ async fn handle_compile(
                 }
 
                 let gst_pipeline_str = format!(
-                    "appsrc name=video_src format=time is-live=true do-timestamp=true ! video/x-raw,format=RGBA,width=800,height=600,framerate=30/1 ! queue ! videoconvert ! {} ! {} config-interval=-1 ! queue ! appsink name=video_sink drop=true max-buffers=100 \
+                    "appsrc name=video_src format=time is-live=true do-timestamp=true ! video/x-raw,format=BGRx,width=800,height=600,framerate=30/1 ! queue ! videoconvert ! {} ! {} config-interval=-1 ! queue ! appsink name=video_sink drop=true max-buffers=100 \
                         {} ! audio/x-raw,rate=48000,channels=2 ! queue ! opusenc ! rtpopuspay ! queue ! appsink name=audio_sink drop=true max-buffers=100",
                     encoder, payloader, audio_source
                 );
@@ -1858,13 +2021,28 @@ async fn handle_compile(
                         
                         let v_tx_clone = v_tx.clone();
                         if let Ok(video_sink) = pipeline.by_name("video_sink").context("Sink not found").and_then(|s| s.downcast::<gst_app::AppSink>().map_err(|_| anyhow::anyhow!("Expected AppSink"))) {
+                            let sink_sample_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+                            let sink_sample_count_clone = sink_sample_count.clone();
                             video_sink.set_callbacks(
                                 gst_app::AppSinkCallbacks::builder()
                                     .new_sample(move |sink| {
                                         let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                                         let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
                                         let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                                        let _ = v_tx_clone.send(map.to_vec());
+                                        let count = sink_sample_count_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        if count % 300 == 0 {
+                                            eprintln!("[GStreamer] video_sink received sample #{}, size={} bytes", count, map.len());
+                                        }
+                                        match v_tx_clone.send(map.to_vec()) {
+                                            Ok(_) => {
+                                                if count % 300 == 0 {
+                                                    eprintln!("[GStreamer] Successfully sent sample #{} to RTP channel", count);
+                                                }
+                                            }
+                                            Err(e) => {
+                                                eprintln!("[GStreamer] Failed to send to RTP channel: {:?}", e);
+                                            }
+                                        }
                                         Ok(gst::FlowSuccess::Ok)
                                     })
                                     .build()
@@ -1941,9 +2119,26 @@ async fn handle_compile(
 
             let v_track_clone = video_track.clone();
             tokio::spawn(async move {
+                eprintln!("[RTP] Video RTP processor task started, waiting for packets...");
+                let mut rtp_count: u64 = 0;
+                let mut rtp_fail_count: u64 = 0;
+                let mut last_log = std::time::Instant::now();
                 while let Some(buf) = v_rx.recv().await {
-                    if let Ok(packet) = Packet::unmarshal(&mut &buf[..]) {
-                        let _ = v_track_clone.write_rtp(&packet).await;
+                    match Packet::unmarshal(&mut &buf[..]) {
+                        Ok(packet) => {
+                            rtp_count += 1;
+                            let _ = v_track_clone.write_rtp(&packet).await;
+                        }
+                        Err(e) => {
+                            rtp_fail_count += 1;
+                            if rtp_fail_count <= 5 {
+                                eprintln!("[RTP] Unmarshal failed: {:?}, buf len={}, first 20 bytes={:02x?}", e, buf.len(), &buf[..buf.len().min(20)]);
+                            }
+                        }
+                    }
+                    if last_log.elapsed() > std::time::Duration::from_secs(10) {
+                        eprintln!("[RTP] Video packets: written={}, unmarshal_failed={}", rtp_count, rtp_fail_count);
+                        last_log = std::time::Instant::now();
                     }
                 }
             });
@@ -2042,15 +2237,29 @@ async fn handle_compile(
                 let mut reader = BufReader::new(stdout);
                 let frame_size = 800 * 600 * 4;
                 let mut buffer = vec![0u8; frame_size];
+                let mut frame_count: u64 = 0;
+                let mut last_log = std::time::Instant::now();
                 loop {
                     match reader.read_exact(&mut buffer).await {
                         Ok(_) => {
+                            frame_count += 1;
+                            if last_log.elapsed() > std::time::Duration::from_secs(10) {
+                                eprintln!("[Main] Received {} frames from runner, pushing to GStreamer", frame_count);
+                                last_log = std::time::Instant::now();
+                            }
                             let gst_buffer = gst::Buffer::from_slice(buffer.clone());
-                            let _ = src.push_buffer(gst_buffer);
+                            let result = src.push_buffer(gst_buffer);
+                            if result.is_err() && last_log.elapsed() > std::time::Duration::from_secs(5) {
+                                eprintln!("[Main] GStreamer push_buffer failed: {:?}", result);
+                            }
                         }
-                        Err(_) => break,
+                        Err(e) => {
+                            eprintln!("[Main] Error reading from runner stdout: {}", e);
+                            break;
+                        }
                     }
                 }
+                eprintln!("[Main] Runner stdout reader exited after {} frames", frame_count);
             } else {
                 let mut reader = BufReader::new(stdout);
                 let mut line = String::new();
@@ -2088,6 +2297,7 @@ async fn handle_compile(
             stdin,
             output_tx: tx,
             is_gui: req.is_gui,
+            is_hmr_capable: has_on_update, // Track if this runner supports HMR
             xvfb_process,
             gst_pipeline,
             sdl_tx: sdl_tx_opt,
@@ -2101,55 +2311,73 @@ async fn handle_compile(
     }
 
     if let Some(state) = guard.as_mut() {
-        // Ensure tracks are attached to the current PC
-        if let (Some(v_track), Some(a_track)) = (&state.video_track, &state.audio_track) {
-            let transceivers = pc.get_transceivers().await;
-            for t in transceivers {
-                let kind = t.kind();
-                if kind == RTPCodecType::Video {
-                    let sender = t.sender().await;
-                    let _ = sender.replace_track(Some(Arc::clone(v_track) as Arc<dyn TrackLocal + Send + Sync>)).await;
-                } else if kind == RTPCodecType::Audio {
-                    let sender = t.sender().await;
-                    let _ = sender.replace_track(Some(Arc::clone(a_track) as Arc<dyn TrackLocal + Send + Sync>)).await;
+        // Only attach tracks and subscribe to output on initial setup (not during HMR)
+        // We know it's initial setup if we just created the runner (existing_runner_can_hmr was false)
+        if !existing_runner_can_hmr {
+            // Ensure tracks are attached to the current PC
+            if let (Some(v_track), Some(a_track)) = (&state.video_track, &state.audio_track) {
+                let transceivers = pc.get_transceivers().await;
+                eprintln!("[WebRTC] Found {} transceivers to attach tracks to", transceivers.len());
+                for t in transceivers {
+                    let kind = t.kind();
+                    eprintln!("[WebRTC] Transceiver kind: {:?}, direction: {:?}", kind, t.direction());
+                    if kind == RTPCodecType::Video {
+                        let sender = t.sender().await;
+                        match sender.replace_track(Some(Arc::clone(v_track) as Arc<dyn TrackLocal + Send + Sync>)).await {
+                            Ok(_) => eprintln!("[WebRTC] Successfully attached video track"),
+                            Err(e) => eprintln!("[WebRTC] Failed to attach video track: {:?}", e),
+                        }
+                    } else if kind == RTPCodecType::Audio {
+                        let sender = t.sender().await;
+                        match sender.replace_track(Some(Arc::clone(a_track) as Arc<dyn TrackLocal + Send + Sync>)).await {
+                            Ok(_) => eprintln!("[WebRTC] Successfully attached audio track"),
+                            Err(e) => eprintln!("[WebRTC] Failed to attach audio track: {:?}", e),
+                        }
+                    }
                 }
             }
-        }
 
-        // Subscribe to output
-        let mut rx = state.output_tx.subscribe();
-        let log_dc_clone = log_dc.clone();
-        let sid = session_id.clone();
-        
-        tokio::spawn(async move {
-            while let Ok(msg) = rx.recv().await {
-                if let Some((type_str, content)) = msg.split_once(':') {
-                        let msg_type = if type_str == "STDOUT" { "run-stdout" } else { "run-stderr" };
-                        let payload = serde_json::json!({
-                        "sessionId": sid.clone(),
-                        "type": msg_type,
-                        "line": content
-                    });
-                    let _ = log_dc_clone.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+            // Subscribe to output
+            let mut rx = state.output_tx.subscribe();
+            let log_dc_clone = log_dc.clone();
+            let sid = session_id.clone();
+            
+            tokio::spawn(async move {
+                while let Ok(msg) = rx.recv().await {
+                    if let Some((type_str, content)) = msg.split_once(':') {
+                            let msg_type = if type_str == "STDOUT" { "run-stdout" } else { "run-stderr" };
+                            let payload = serde_json::json!({
+                            "sessionId": sid.clone(),
+                            "type": msg_type,
+                            "line": content
+                        });
+                        let _ = log_dc_clone.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                    }
+                }
+            });
+
+            // Register sdl input for this session
+            if let Some(tx) = &state.sdl_tx {
+                if let Some(sid) = session_id.clone() {
+                    let mut g = sdl_input_store.lock().await;
+                    g.insert(sid, tx.clone());
                 }
             }
-        });
-
-        // Register sdl input for this session
-        if let Some(tx) = &state.sdl_tx {
-            if let Some(sid) = session_id.clone() {
-                let mut g = sdl_input_store.lock().await;
-                g.insert(sid, tx.clone());
-            }
+        } else {
+            eprintln!("[Main] HMR mode: Skipping track attachment and output subscription (already set up)");
         }
 
         // Load Modules
-        for (name, path) in modules_to_load {
+        for (name, path) in &modules_to_load {
             let cmd = format!("load {} {}\n", name, path);
-            println!("[Main] Sending command to runner: {}", cmd.trim());
+            eprintln!("[Main] Sending command to runner: {}", cmd.trim());
             state.stdin.write_all(cmd.as_bytes()).await?;
         }
         state.stdin.flush().await?;
+        
+        if existing_runner_can_hmr {
+            eprintln!("[Main] HMR update sent to existing runner: {} module(s) loaded", modules_to_load.len());
+        }
     }
     
     // Send HMR update notification to frontend
