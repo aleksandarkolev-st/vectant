@@ -6,6 +6,15 @@ use std::time::{Duration, Instant};
 use std::ffi::{c_void, c_int, c_uint, c_ulong, c_long};
 use std::ptr;
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
+use std::process::Command;
+
+#[cfg(target_os = "linux")]
+use x11rb::connection::Connection;
+#[cfg(target_os = "linux")]
+use x11rb::protocol::xproto::*;
+#[cfg(target_os = "linux")]
+use x11rb::protocol::shm::{self, ConnectionExt as ShmConnectionExt};
 
 mod plugin_contract;
 
@@ -29,6 +38,9 @@ extern "C" {
     fn SDL_RenderPresent(renderer: *mut c_void);
     fn SDL_SetRenderDrawColor(renderer: *mut c_void, r: u8, g: u8, b: u8, a: u8) -> c_int;
     fn SDL_RenderClear(renderer: *mut c_void) -> c_int;
+    fn SDL_CreateTexture(renderer: *mut c_void, format: u32, access: c_int, w: c_int, h: c_int) -> *mut c_void;
+    fn SDL_UpdateTexture(texture: *mut c_void, rect: *const c_void, pixels: *const c_void, pitch: c_int) -> c_int;
+    fn SDL_RenderCopy(renderer: *mut c_void, texture: *mut c_void, srcrect: *const c_void, dstrect: *const c_void) -> c_int;
     fn SDL_PollEvent(event: *mut SDL_Event) -> c_int;
     fn SDL_Quit();
     fn SDL_GetError() -> *const i8;
@@ -40,6 +52,7 @@ const SDL_WINDOWPOS_UNDEFINED: c_int = 0x1FFF0000; // SDL_WINDOWPOS_UNDEFINED_MA
 const SDL_RENDERER_ACCELERATED: u32 = 0x00000002;
 const SDL_RENDERER_SOFTWARE: u32 = 0x00000001;
 const SDL_PIXELFORMAT_RGBA8888: u32 = 373694468;
+const SDL_TEXTUREACCESS_STREAMING: c_int = 1;
 
 
 // Simple state container wrapper
@@ -57,7 +70,45 @@ struct HostContext {
 unsafe impl Send for AppState {}
 unsafe impl Sync for AppState {}
 
+#[cfg(target_os = "linux")]
+fn create_shm_segment(size: usize) -> Option<(i32, *mut u8)> {
+    unsafe {
+        let shmid = libc::shmget(libc::IPC_PRIVATE, size, libc::IPC_CREAT | 0o777);
+        if shmid == -1 { return None; }
+        let ptr = libc::shmat(shmid, ptr::null(), 0);
+        if ptr == ( -1 as isize as *mut c_void ) {
+            libc::shmctl(shmid, libc::IPC_RMID, ptr::null_mut());
+            return None;
+        }
+        // Mark for destruction
+        libc::shmctl(shmid, libc::IPC_RMID, ptr::null_mut());
+        Some((shmid, ptr as *mut u8))
+    }
+}
+
 fn main() {
+    // Spawn Xvfb and setup X11
+    #[cfg(target_os = "linux")]
+    let (_xvfb_proc, x11_conn, x11_screen_num, x11_root) = {
+        let mut cmd = Command::new("Xvfb");
+        cmd.args(&[":99", "-screen", "0", "800x600x24"]);
+        let child = cmd.spawn().ok();
+        thread::sleep(Duration::from_millis(100));
+        std::env::set_var("DISPLAY", ":99");
+        let (conn, screen_num) = x11rb::connect(Some(":99")).expect("Failed to connect to X11");
+        let root = conn.setup().roots[screen_num].root;
+        (child, conn, screen_num, root)
+    };
+
+    #[cfg(target_os = "linux")]
+    let (shm_seg, shm_ptr) = {
+        let size = 800 * 600 * 4;
+        let (id, ptr) = create_shm_segment(size).expect("Failed to create SHM");
+        let seg = x11_conn.generate_id().unwrap();
+        x11_conn.shm_attach(seg, id as u32, false).unwrap();
+        (seg, ptr)
+    };
+
     // Initialize SDL2
     #[cfg(target_os = "linux")]
     let (window, renderer) = unsafe {
@@ -90,6 +141,15 @@ fn main() {
                 }
                 (win, ren)
             }
+        }
+    };
+
+    #[cfg(target_os = "linux")]
+    let sdl_texture = unsafe {
+        if !renderer.is_null() {
+            SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, 800, 600)
+        } else {
+            ptr::null_mut()
         }
     };
 
@@ -154,10 +214,15 @@ fn main() {
                 while SDL_PollEvent(&mut event) != 0 {
                     // Pass event to all loaded modules that export on_event
                     for lib in modules.values() {
+                        // FIX: Disable passing SDL_Event to on_event because core.cpp expects XEvent.
+                        // SDL_Event and XEvent are incompatible and have different sizes.
+                        // Passing SDL_Event causes core.cpp to read garbage or out-of-bounds memory, leading to crashes.
+                        /*
                         let event_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut SDL_Event)>, _> = lib.get(b"on_event");
                         if let Ok(f) = event_func {
                             f(app_state.raw, &mut event);
                         }
+                        */
                     }
                 }
             }
@@ -175,6 +240,70 @@ fn main() {
             if parts.is_empty() { continue; }
 
             match parts[0] {
+                "input" => {
+                    #[cfg(target_os = "linux")]
+                    if parts.len() >= 2 {
+                        // Find the target window (plugin window)
+                        if let Ok(tree_reply) = x11_conn.query_tree(x11_root).unwrap().reply() {
+                             let target = tree_reply.children.last().copied().unwrap_or(x11_root);
+                             
+                             match parts[1] {
+                                "motion" => {
+                                    if parts.len() >= 4 {
+                                        if let (Ok(x), Ok(y)) = (parts[2].parse::<i16>(), parts[3].parse::<i16>()) {
+                                            let event = MotionNotifyEvent {
+                                                response_type: MOTION_NOTIFY_EVENT,
+                                                detail: 0.into(),
+                                                sequence: 0,
+                                                time: x11rb::CURRENT_TIME,
+                                                root: x11_root,
+                                                event: target,
+                                                child: 0,
+                                                root_x: x,
+                                                root_y: y,
+                                                event_x: x,
+                                                event_y: y,
+                                                state: 0u16.into(),
+                                                same_screen: true,
+                                            };
+                                            x11_conn.send_event(false, target, EventMask::NO_EVENT, event).ok();
+                                            x11_conn.flush().ok();
+                                        }
+                                    }
+                                },
+                                "button" => {
+                                    if parts.len() >= 6 {
+                                        let type_str = parts[2];
+                                        let btn = parts[3].parse::<u8>().unwrap_or(1);
+                                        let x = parts[4].parse::<i16>().unwrap_or(0);
+                                        let y = parts[5].parse::<i16>().unwrap_or(0);
+                                        
+                                        let event_type = if type_str == "down" { BUTTON_PRESS_EVENT } else { BUTTON_RELEASE_EVENT };
+                                        
+                                        let event = ButtonPressEvent {
+                                            response_type: event_type,
+                                            detail: btn.into(),
+                                            sequence: 0,
+                                            time: x11rb::CURRENT_TIME,
+                                            root: x11_root,
+                                            event: target,
+                                            child: 0,
+                                            root_x: x,
+                                            root_y: y,
+                                            event_x: x,
+                                            event_y: y,
+                                            state: 0u16.into(),
+                                            same_screen: true,
+                                        };
+                                        x11_conn.send_event(false, target, EventMask::NO_EVENT, event).ok();
+                                        x11_conn.flush().ok();
+                                    }
+                                },
+                                _ => {}
+                             }
+                        }
+                    }
+                },
                 "load" => {
                     // usage: load <name> <path>
                     // fallback: load <path> -> name="main"
@@ -236,10 +365,12 @@ fn main() {
                                 // Initialize the new one
                                 if let Ok(f) = load_func {
                                     eprintln!("[Runner] Found 'on_load'. Calling...");
+                                    // FIX: Pass SDL_Renderer as window_ptr so the plugin can use it.
+                                    // We rely on main.rs to patch the plugin code to cast this correctly.
                                     #[cfg(target_os = "linux")]
-                                    let win_ptr = renderer as *mut c_void;
+                                    let win_ptr = app_state.renderer;
                                     #[cfg(not(target_os = "linux"))]
-                                    let win_ptr = std::ptr::null_mut();
+                                    let win_ptr = app_state.renderer;
                                     
                                     app_state.raw = f(app_state.raw, win_ptr);
                                     eprintln!("[Runner] 'on_load' returned. AppState raw: {:p}", app_state.raw);
@@ -348,17 +479,26 @@ fn main() {
         }
 
         #[cfg(target_os = "linux")]
-        if !renderer.is_null() {
-            unsafe {
-                SDL_RenderPresent(renderer);
-                // Read pixels and write to stdout
-                let width = 800;
-                let height = 600;
-                let size = (width * height * 4) as usize;
-                let mut buffer = vec![0u8; size];
-                SDL_RenderReadPixels(renderer, ptr::null(), SDL_PIXELFORMAT_RGBA8888, buffer.as_mut_ptr() as *mut c_void, width * 4);
-                io::stdout().write_all(&buffer).ok();
-                io::stdout().flush().ok();
+        {
+            // Pixel Pump: Read from Xvfb via XShm
+            // We capture the root window of the Xvfb screen
+            if let Ok(cookie) = x11_conn.shm_get_image(x11_root, 0, 0, 800, 600, !0, u8::from(x11rb::protocol::xproto::ImageFormat::Z_PIXMAP), shm_seg, 0) {
+                if let Ok(_reply) = cookie.reply() {
+                    // Write raw bytes to stdout
+                    let size = 800 * 600 * 4;
+                    let slice = unsafe { std::slice::from_raw_parts(shm_ptr, size) };
+                    io::stdout().write_all(slice).ok();
+                    io::stdout().flush().ok();
+
+                    // Update local SDL window
+                    if !renderer.is_null() && !sdl_texture.is_null() {
+                        unsafe {
+                            SDL_UpdateTexture(sdl_texture, ptr::null(), shm_ptr as *const c_void, 800 * 4);
+                            SDL_RenderCopy(renderer, sdl_texture, ptr::null(), ptr::null());
+                            SDL_RenderPresent(renderer);
+                        }
+                    }
+                }
             }
         }
 

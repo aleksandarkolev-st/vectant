@@ -1364,6 +1364,39 @@ static SDL_Renderer* SDL_CreateRenderer_Hook(SDL_Window* win, int idx, Uint32 fl
                 content = content.replace("SDL_RenderPresent(", "0 && SDL_RenderPresent(");
             }
 
+            // FIX: Correct Display** cast in on_load (AI often generates invalid cast)
+            if content.contains("(Display**)window_ptr") {
+                content = content.replace("(Display**)window_ptr", "(void**)window_ptr");
+            }
+
+            // FIX: Remove XCreateIC calls if they are using the window pointer as a Display
+            // This happens when AI thinks it's X11 but we are passing SDL_Renderer
+            if content.contains("XCreateIC") {
+                 // Comment out the line containing XCreateIC
+                 let lines: Vec<&str> = content.lines().collect();
+                 let new_lines: Vec<String> = lines.into_iter().map(|line| {
+                     if line.contains("XCreateIC") {
+                         format!("// {}", line)
+                     } else {
+                         line.to_string()
+                     }
+                 }).collect();
+                 content = new_lines.join("\n");
+            }
+
+            // FIX: Remove XOpenDisplay calls if present, as we don't want to open new displays
+            if content.contains("XOpenDisplay") {
+                 let lines: Vec<&str> = content.lines().collect();
+                 let new_lines: Vec<String> = lines.into_iter().map(|line| {
+                     if line.contains("XOpenDisplay") {
+                         format!("// {}", line)
+                     } else {
+                         line.to_string()
+                     }
+                 }).collect();
+                 content = new_lines.join("\n");
+            }
+
             // Inject Event Draining in on_update: REMOVED (Steals events from runner)
             /*
             if content.contains("extern \"C\" void on_update(") {
