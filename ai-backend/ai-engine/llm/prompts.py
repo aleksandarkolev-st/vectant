@@ -278,15 +278,16 @@ struct AppState {
   * The runner ensures `gui_render` is called on the main thread.
 - **WINDOW HANDLING**: DO NOT call `SDL_Init(SDL_INIT_VIDEO)` if already initialized.
   * You MUST use the `window_ptr` passed to `on_load`.
+  * For SDL2, `window_ptr` is the `SDL_Renderer*`.
   * Example:
     ```cpp
     // In on_load
-    state->window = (SDL_Window*)window_ptr;
+    state->renderer = (SDL_Renderer*)window_ptr;
     ```
 - **RENDERER LIFECYCLE**: Manage the renderer lifecycle carefully.
-  * Create the renderer in `gui_initialize` if it doesn't exist.
-  * Destroy it in `gui_cleanup`.
-  * Use `SDL_GetRenderer(state->window)` if the runner manages the renderer.
+  * The runner provides the renderer via `window_ptr`.
+  * Do NOT create a new renderer if one is provided.
+  * Do NOT destroy the provided renderer in `gui_cleanup`.
 
 ## 6. MEMORY MANAGEMENT (CRITICAL)
 - **DO NOT FREE STATE ON UNLOAD**: The `on_unload` function MUST NOT free the `AppState` memory.
@@ -326,8 +327,8 @@ struct AppState {
 - You MUST implement `extern "C" void* on_load(void* prev_state, void* window_ptr)` in the GUI or CORE module (whichever holds the state).
 - If `prev_state` is not null, you MUST cast it to `AppState*` and use it.
 - If `prev_state` is null, allocate new state and initialize it.
-- **CRITICAL**: You MUST use the provided `window_ptr` (cast to `SDL_Window*`) for SDL2 operations.
-- **CRITICAL**: DO NOT call `SDL_CreateWindow` yourself if a pointer is provided. Use the provided window pointer.
+- **CRITICAL**: You MUST use the provided `window_ptr` (cast to `SDL_Renderer*`) for SDL2 operations.
+- **CRITICAL**: DO NOT call `SDL_CreateRenderer` yourself if a pointer is provided. Use the provided pointer.
 - Ensure `AppState` struct definition in `shared.h` matches the original variables exactly to allow safe casting.
 
 ## 4. SHARED MODULE REQUIREMENTS (C/C++)
@@ -476,20 +477,18 @@ void gui_initialize(AppState* state) {
         return;
     }
 
-    // 1. Lazy Window Creation
-    // Only create the window if it doesn't exist in the state yet.
-    // This prevents flickering during hot-reload.
-    if (state->window == NULL) {
-        // CRITICAL: Use state->window which was set in on_load. DO NOT create a new window if provided.
-        // if (!state->window) state->window = SDL_CreateWindow(...);
-        
-        // Create Renderer
+    // 1. Lazy Window/Renderer Usage
+    // The runner passes the renderer in on_load.
+    if (state->renderer == NULL) {
+        // Fallback if no renderer provided (standalone mode)
+        // SDL_Init(SDL_INIT_VIDEO);
+        // state->window = SDL_CreateWindow(...);
         // state->renderer = SDL_CreateRenderer(state->window, -1, SDL_RENDERER_ACCELERATED);
     }
     
     // 2. Initialize other resources (fonts, textures)
     // CRITICAL: Create Textures HERE, not in gui_render.
-    // if (!state->texture) state->texture = SDL_CreateTexture(...);
+    // if (!state->texture) state->texture = SDL_CreateTexture(state->renderer, ...);
 }
 
 void gui_on_update(AppState* state, float dt) {
@@ -514,13 +513,13 @@ void gui_render(AppState* state) {
 
 void gui_cleanup(AppState* state) {
     // Clean up textures, fonts, buffers
+void gui_cleanup(AppState* state) {
+    // Clean up textures, fonts, buffers
     
-    // CRITICAL: DO NOT DESTROY THE WINDOW
-    // The window must persist for the next module version.
-    // SDL_DestroyWindow(state->window); // <--- DO NOT DO THIS
-}
-
-void gui_on_event(AppState* state, void* event) {
+    // CRITICAL: DO NOT DESTROY THE PROVIDED RENDERER/WINDOW
+    // The renderer must persist for the next module version.
+    // SDL_DestroyRenderer(state->renderer); // <--- DO NOT DO THIS
+}oid gui_on_event(AppState* state, void* event) {
     // Handle input events
     // SDL_Event* ev = (SDL_Event*)event;
     // if (ev->type == SDL_MOUSEBUTTONDOWN) { ... }
@@ -547,10 +546,10 @@ Example:
 - Correct: `state->wbuffer[0] = '\0';`
 - Incorrect: `wbuffer[0] = '\0';` (This will cause a compilation error!)
 
-### 6.3 Window Persistence (CRITICAL)
-To prevent flickering during hot-reloading, the window handle MUST persist in `AppState`.
-1. In `gui_initialize`: Check `if (!state->window)` before creating a new window.
-2. In `gui_cleanup`: Do NOT call `SDL_DestroyWindow`. Leave the window open for the next version of the library.
+### 6.3 Resource Persistence (CRITICAL)
+To prevent flickering during hot-reloading, the renderer handle MUST persist in `AppState`.
+1. In `gui_initialize`: Check `if (!state->renderer)` before creating a new one.
+2. In `gui_cleanup`: Do NOT call `SDL_DestroyRenderer` if it was provided by the runner.
 
 ## 7. CORE MODULE REQUIREMENTS
 
@@ -628,8 +627,8 @@ extern "C" void* on_load(void* prev_state, void* window_ptr) {
         app_state.is_running = true;
         app_state.width = 800;
         app_state.height = 600;
-        // CRITICAL: Use the provided window pointer
-        app_state.window = (SDL_Window*)window_ptr;
+        // CRITICAL: Use the provided window pointer as renderer
+        app_state.renderer = (SDL_Renderer*)window_ptr;
     }
     
     // Load GUI module
@@ -700,6 +699,12 @@ struct AppState {
     HGLRC hglrc;    // OpenGL context (if using)
 };
 ```
+
+### 8.3 X11/Xlib Usage
+- **Display Connection**: You MUST call `XOpenDisplay(NULL)` to create your own connection.
+- **Window Pointer**: The `window_ptr` passed to `on_load` is NOT an X11 Display or Window. Ignore it for X11 apps.
+- **Event Loop**: You must handle `XPending` and `XNextEvent` in `on_update` (non-blocking) or `gui_on_update`.
+- **State**: Store `Display*`, `Window`, `GC`, etc. in `AppState`.
 
 ## 9. COMPILATION REQUIREMENTS (C/C++)
 

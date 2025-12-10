@@ -164,6 +164,26 @@ fn main() {
     eprintln!("Runner started. Waiting for commands...");
 
     let (tx, rx) = mpsc::channel::<String>();
+
+    // Frame pipe to stdout (non-blocking for the main loop)
+    // We keep the channel tiny and drop frames when the pipe is backed up so on_update keeps running.
+    #[cfg(target_os = "linux")]
+    let (frame_tx, frame_rx) = mpsc::sync_channel::<Vec<u8>>(2);
+
+    // Dedicated writer so rendering never blocks on stdout backpressure
+    #[cfg(target_os = "linux")]
+    {
+        std::thread::spawn(move || {
+            let mut stdout = io::stdout();
+            while let Ok(buf) = frame_rx.recv() {
+                if let Err(e) = stdout.write_all(&buf) {
+                    eprintln!("[Runner] stdout writer error: {}", e);
+                    break;
+                }
+                let _ = stdout.flush();
+            }
+        });
+    }
     
     // Spawn stdin reader thread
     thread::spawn(move || {
@@ -365,12 +385,12 @@ fn main() {
                                 // Initialize the new one
                                 if let Ok(f) = load_func {
                                     eprintln!("[Runner] Found 'on_load'. Calling...");
-                                    // FIX: Pass SDL_Renderer as window_ptr so the plugin can use it.
-                                    // We rely on main.rs to patch the plugin code to cast this correctly.
+                                    // FIX: Pass NULL as window_ptr. The plugin should create its own window.
+                                    // The runner will capture it via Xvfb.
                                     #[cfg(target_os = "linux")]
-                                    let win_ptr = app_state.renderer;
+                                    let win_ptr = std::ptr::null_mut();
                                     #[cfg(not(target_os = "linux"))]
-                                    let win_ptr = app_state.renderer;
+                                    let win_ptr = std::ptr::null_mut();
                                     
                                     app_state.raw = f(app_state.raw, win_ptr);
                                     eprintln!("[Runner] 'on_load' returned. AppState raw: {:p}", app_state.raw);
@@ -487,8 +507,10 @@ fn main() {
                     // Write raw bytes to stdout
                     let size = 800 * 600 * 4;
                     let slice = unsafe { std::slice::from_raw_parts(shm_ptr, size) };
-                    io::stdout().write_all(slice).ok();
-                    io::stdout().flush().ok();
+                    // Drop frame if stdout is backed up; keep the app loop unblocked
+                    if let Err(_e) = frame_tx.try_send(slice.to_vec()) {
+                        // Channel full or closed; skip this frame
+                    }
 
                     // Update local SDL window
                     if !renderer.is_null() && !sdl_texture.is_null() {

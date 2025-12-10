@@ -1338,27 +1338,6 @@ async fn handle_compile(
 
 
 
-            // FIX: Hook SDL_CreateRenderer to return the passed renderer (which is passed as window)
-            if content.contains("SDL_CreateRenderer") {
-                 // Inject hook function
-                 let hook = r#"
-static SDL_Renderer* SDL_CreateRenderer_Hook(SDL_Window* win, int idx, Uint32 flags) {
-    // We passed the renderer as the window pointer in runner_bin.rs
-    return (SDL_Renderer*)win;
-}
-#define SDL_CreateRenderer SDL_CreateRenderer_Hook
-#define SDL_DestroyRenderer(x) ((void)0)
-#define SDL_DestroyWindow(x) ((void)0)
-"#;
-                 // Insert after headers
-                if let Some(idx) = content.rfind("#include") {
-                    if let Some(end_idx) = content[idx..].find('\n') {
-                        let insert_pos = idx + end_idx + 1;
-                        content.insert_str(insert_pos, hook);
-                    }
-                }
-            }
-
             // FIX: Remove SDL_RenderPresent to prevent deadlock with runner's event loop
             if content.contains("SDL_RenderPresent(") {
                 content = content.replace("SDL_RenderPresent(", "0 && SDL_RenderPresent(");
@@ -1369,32 +1348,9 @@ static SDL_Renderer* SDL_CreateRenderer_Hook(SDL_Window* win, int idx, Uint32 fl
                 content = content.replace("(Display**)window_ptr", "(void**)window_ptr");
             }
 
-            // FIX: Remove XCreateIC calls if they are using the window pointer as a Display
-            // This happens when AI thinks it's X11 but we are passing SDL_Renderer
-            if content.contains("XCreateIC") {
-                 // Comment out the line containing XCreateIC
-                 let lines: Vec<&str> = content.lines().collect();
-                 let new_lines: Vec<String> = lines.into_iter().map(|line| {
-                     if line.contains("XCreateIC") {
-                         format!("// {}", line)
-                     } else {
-                         line.to_string()
-                     }
-                 }).collect();
-                 content = new_lines.join("\n");
-            }
-
-            // FIX: Remove XOpenDisplay calls if present, as we don't want to open new displays
-            if content.contains("XOpenDisplay") {
-                 let lines: Vec<&str> = content.lines().collect();
-                 let new_lines: Vec<String> = lines.into_iter().map(|line| {
-                     if line.contains("XOpenDisplay") {
-                         format!("// {}", line)
-                     } else {
-                         line.to_string()
-                     }
-                 }).collect();
-                 content = new_lines.join("\n");
+            // FIX: Correct XCreateIC call (remove first arg if it is Display*, AI hallucinates this arg)
+            if content.contains("XCreateIC(*(Display**)state->window,") {
+                content = content.replace("XCreateIC(*(Display**)state->window,", "XCreateIC(");
             }
 
             // Inject Event Draining in on_update: REMOVED (Steals events from runner)
@@ -1585,6 +1541,59 @@ static SDL_Renderer* SDL_CreateRenderer_Hook(SDL_Window* win, int idx, Uint32 fl
                         modules_to_load.push(("core".to_string(), p.clone()));
                     }
                 } 
+            }
+        }
+
+        // Fallback: if AI produced no GUI module, emit a minimal stub so ptr_gui_render is non-null.
+        if gui_lib_path.is_empty() && req.is_gui {
+            let stub_name = "gui_stub.cpp";
+            let stub_src = r#"#include <SDL2/SDL.h>
+            extern "C" void gui_initialize(void*) {}
+            extern "C" void gui_on_update(void*, float) {}
+            extern "C" void gui_render(void* state) {
+                SDL_Renderer* r = (SDL_Renderer*)state;
+                if (!r) return;
+                SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
+                SDL_RenderClear(r);
+            }
+            extern "C" void gui_cleanup(void*) {}
+            extern "C" void gui_on_event(void*, void*) {}
+            "#;
+            tokio::fs::write(dir_path.join(stub_name), stub_src).await?;
+
+            let gui_out = output_dir.join(format!("libgui_stub_{}.{}", timestamp, ext));
+            let mut cmd = system_command("g++");
+            cmd.arg("-shared").arg("-fPIC")
+               .arg("-D_POSIX_C_SOURCE=199309L")
+               .arg(stub_name).arg("-I.").arg("-o").arg(&gui_out)
+               .arg("-lSDL2");
+            cmd.current_dir(&dir_path);
+            let output = cmd.output().await?;
+            if output.status.success() {
+                gui_lib_path = gui_out.to_string_lossy().to_string();
+                #[cfg(unix)]
+                {
+                    let link_path = dir_path.join("gui.so");
+                    let _ = tokio::fs::remove_file(&link_path).await;
+                    let _ = tokio::fs::symlink(&gui_lib_path, &link_path).await;
+                }
+                #[cfg(windows)]
+                {
+                    let link_path = dir_path.join("gui.dll");
+                    let _ = tokio::fs::remove_file(&link_path).await;
+                    let _ = tokio::fs::copy(&gui_lib_path, &link_path).await;
+                }
+                modules_to_load.push(("gui".to_string(), gui_lib_path.clone()));
+                // Ensure core reloads to pick up stub symbols
+                if !modules_to_load.iter().any(|(n, _)| n == "core") {
+                    let cache = compile_cache.lock().await;
+                    if let Some((_, p)) = cache.get("core") {
+                        modules_to_load.push(("core".to_string(), p.clone()));
+                    }
+                }
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                println!("Failed to build GUI stub: {}", stderr);
             }
         }
     } else {
