@@ -378,6 +378,45 @@ fn main() {
                                 }
 
                                 // Now it is safe to unload the old one
+                                // CRITICAL FIX: Treat as reload if:
+                                // 1. This exact module name already exists, OR
+                                // 2. ANY module is already loaded (runner is already initialized)
+                                // This handles the case where first load uses AI split (core/gui modules)
+                                // but subsequent loads use non-split (main module).
+                                let is_reload = modules.contains_key(name) || !modules.is_empty();
+                                eprintln!("[Runner] is_reload={} for module '{}', modules.keys={:?}", is_reload, name, modules.keys().collect::<Vec<_>>());
+                                
+                                // CRITICAL: When loading 'main', unload ALL other modules (core, gui)
+                                // When loading 'core'/'gui', unload 'main' if present
+                                // This prevents multiple modules rendering simultaneously causing flickering
+                                if name == "main" {
+                                    // Switching to non-split mode: unload core and gui
+                                    let modules_to_remove: Vec<String> = modules.keys()
+                                        .filter(|k| *k != "main")
+                                        .cloned()
+                                        .collect();
+                                    for old_name in modules_to_remove {
+                                        if let Some(old_lib) = modules.remove(&old_name) {
+                                            eprintln!("[Runner] Unloading conflicting module '{}' (switching to main)...", old_name);
+                                            loaded_paths.remove(&old_name);
+                                            let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = old_lib.get(b"on_unload");
+                                            if let Ok(f) = func {
+                                                f(app_state.raw);
+                                            }
+                                        }
+                                    }
+                                } else if name == "core" || name == "gui" {
+                                    // Switching to split mode: unload main if present
+                                    if let Some(old_lib) = modules.remove("main") {
+                                        eprintln!("[Runner] Unloading 'main' module (switching to split mode)...");
+                                        loaded_paths.remove("main");
+                                        let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = old_lib.get(b"on_unload");
+                                        if let Ok(f) = func {
+                                            f(app_state.raw);
+                                        }
+                                    }
+                                }
+                                
                                 if let Some(old_lib) = modules.remove(name) {
                                      eprintln!("[Runner] Unloading old module '{}'...", name);
                                      
@@ -420,6 +459,18 @@ fn main() {
                                 }
 
                                 // Initialize the new one (Standard Path)
+                                // CRITICAL: Register module BEFORE calling entrypoint/on_load
+                                // because entrypoint may block (run main loop) and never return.
+                                // We need the module registered so subsequent reloads know it exists.
+                                modules.insert(name.to_string(), lib);
+                                loaded_paths.insert(name.to_string(), path.to_string());
+                                eprintln!("[Runner] Module '{}' registered.", name);
+                                
+                                // Re-get symbols from the inserted library
+                                let lib_ref = modules.get(name).unwrap();
+                                let load_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = lib_ref.get(b"on_load");
+                                let entry_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = lib_ref.get(b"entrypoint");
+                                
                                 if let Ok(f) = load_func {
                                     eprintln!("[Runner] Found 'on_load'. Calling...");
                                     // Pass the SDL renderer to the plugin.
@@ -432,15 +483,19 @@ fn main() {
                                     app_state.raw = f(app_state.raw, win_ptr);
                                     eprintln!("[Runner] 'on_load' returned. AppState raw: {:p}", app_state.raw);
                                 } else if let Ok(f) = entry_func {
-                                     // Fallback
-                                     eprintln!("[Runner] Found 'entrypoint'. Calling...");
-                                     app_state.raw = f(app_state.raw);
-                                     eprintln!("[Runner] 'entrypoint' returned. AppState raw: {:p}", app_state.raw);
+                                     // CRITICAL: Only call entrypoint on FIRST load, not on reloads!
+                                     // entrypoint typically runs main() which blocks.
+                                     // For HMR reloads, we should NOT call it again.
+                                     if is_reload {
+                                         eprintln!("[Runner] Found 'entrypoint' but skipping on reload (would block). Module will use existing state.");
+                                     } else {
+                                         eprintln!("[Runner] Found 'entrypoint'. Calling (first load only)...");
+                                         app_state.raw = f(app_state.raw);
+                                         eprintln!("[Runner] 'entrypoint' returned. AppState raw: {:p}", app_state.raw);
+                                     }
                                 }
                                 
-                                modules.insert(name.to_string(), lib);
-                                loaded_paths.insert(name.to_string(), path.to_string());
-                                eprintln!("[Runner] Module '{}' registered successfully.", name);
+                                eprintln!("[Runner] Module '{}' initialization complete.", name);
                             }
                             Err(e) => {
                                 eprintln!("[Runner] Error loading library: {}", e);

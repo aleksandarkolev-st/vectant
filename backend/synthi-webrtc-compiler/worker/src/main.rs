@@ -1419,10 +1419,11 @@ async fn handle_compile(
 
 
 
-            // FIX: Remove SDL_RenderPresent to prevent deadlock with runner's event loop
-            if content.contains("SDL_RenderPresent(") {
-                content = content.replace("SDL_RenderPresent(", "0 && SDL_RenderPresent(");
-            }
+            // FIX: Comment out SDL_RenderPresent to prevent deadlock with runner's event loop
+            // The runner handles SDL_RenderPresent after calling gui_render
+            use regex::Regex;
+            let re_present = Regex::new(r"SDL_RenderPresent\s*\([^)]*\)\s*;").unwrap();
+            content = re_present.replace_all(&content, "/* SDL_RenderPresent removed - runner handles this */").to_string();
 
             // FIX: Correct Display** cast in on_load (AI often generates invalid cast)
             if content.contains("(Display**)window_ptr") {
@@ -1577,10 +1578,10 @@ extern "C" void* on_load_from_json(const char* json) {
             let fname = gui["filename"].as_str().unwrap_or("gui.cpp");
             let mut content = gui["content"].as_str().unwrap_or("").to_string();
 
-            // FIX: Remove SDL_RenderPresent to prevent deadlock
-            if content.contains("SDL_RenderPresent(") {
-                content = content.replace("SDL_RenderPresent(", "0 && SDL_RenderPresent(");
-            }
+            // FIX: Comment out SDL_RenderPresent to prevent deadlock
+            // The runner handles SDL_RenderPresent after calling gui_render
+            let re_present = regex::Regex::new(r"SDL_RenderPresent\s*\([^)]*\)\s*;").unwrap();
+            content = re_present.replace_all(&content, "/* SDL_RenderPresent removed - runner handles this */").to_string();
 
 
 

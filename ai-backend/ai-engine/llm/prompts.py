@@ -144,6 +144,90 @@ You MUST output ONLY a valid JSON object with this EXACT structure:
 
 # CRITICAL RULES
 
+## 0. LINKAGE RULE (MOST CRITICAL - VIOLATION = LINKER ERROR)
+
+**THE CORE MODULE MUST NEVER DIRECTLY REFERENCE GUI FUNCTIONS.**
+
+Core.cpp is compiled as a standalone shared library (.so). If it contains ANY direct reference to `gui_render`, `gui_initialize`, `gui_on_update`, `gui_cleanup`, or `gui_on_event`, it will FAIL to load with "undefined symbol" error.
+
+### FORBIDDEN CODE IN CORE.CPP (WILL CAUSE LINKER ERROR):
+```cpp
+// ❌ WRONG - Direct function call causes "undefined symbol: gui_render"
+gui_render(state);
+gui_initialize(state);
+gui_on_update(state, dt);
+
+// ❌ WRONG - Extern declaration still causes linker to look for symbol
+extern void gui_render(AppState* state);
+
+// ❌ WRONG - Even with declaration, direct call fails
+void gui_render(AppState* state);  // forward declaration
+gui_render(state);                 // call - LINKER ERROR!
+```
+
+### REQUIRED CODE IN CORE.CPP (CORRECT):
+```cpp
+// ✅ CORRECT - Function pointer types
+typedef void (*gui_render_fn)(AppState*);
+typedef void (*gui_initialize_fn)(AppState*);
+typedef void (*gui_on_update_fn)(AppState*, float);
+typedef void (*gui_cleanup_fn)(AppState*);
+typedef void (*gui_on_event_fn)(AppState*, void*);
+
+// ✅ CORRECT - Function pointer variables (initialized to NULL)
+gui_render_fn ptr_gui_render = NULL;
+gui_initialize_fn ptr_gui_initialize = NULL;
+gui_on_update_fn ptr_gui_on_update = NULL;
+gui_cleanup_fn ptr_gui_cleanup = NULL;
+gui_on_event_fn ptr_gui_on_event = NULL;
+
+// ✅ CORRECT - Load pointers via dlsym at runtime
+void* gui_lib = dlopen("./gui.so", RTLD_NOW);
+ptr_gui_render = (gui_render_fn)dlsym(gui_lib, "gui_render");
+ptr_gui_initialize = (gui_initialize_fn)dlsym(gui_lib, "gui_initialize");
+// ... etc
+
+// ✅ CORRECT - Call through pointer with NULL check
+if (ptr_gui_render) ptr_gui_render(state);
+if (ptr_gui_initialize) ptr_gui_initialize(state);
+```
+
+### VERIFICATION: Before outputting core.cpp, search for these strings:
+- `gui_render(` without `ptr_` prefix → ERROR, must be `ptr_gui_render(`
+- `gui_initialize(` without `ptr_` prefix → ERROR, must be `ptr_gui_initialize(`
+- `gui_on_update(` without `ptr_` prefix → ERROR, must be `ptr_gui_on_update(`
+- `gui_cleanup(` without `ptr_` prefix → ERROR, must be `ptr_gui_cleanup(`
+- `gui_on_event(` without `ptr_` prefix → ERROR, must be `ptr_gui_on_event(`
+- `extern void gui_` → ERROR, remove this line
+- `void gui_render(` in core.cpp → ERROR, this belongs in gui.cpp only
+
+## 0.5 SDL_RENDERPRESENT RULE (CRITICAL - VIOLATION = COMPILATION ERROR)
+
+**YOU MUST NEVER CALL SDL_RenderPresent() IN YOUR GENERATED CODE.**
+
+The host Runner owns the rendering pipeline and calls `SDL_RenderPresent()` automatically after your `gui_render()` function returns.
+
+### FORBIDDEN CODE (WILL CAUSE ISSUES):
+```cpp
+// ❌ WRONG - Runner handles this, calling it yourself causes double-present or deadlock
+SDL_RenderPresent(state->renderer);
+SDL_RenderPresent(renderer);
+```
+
+### CORRECT CODE:
+```cpp
+void gui_render(AppState* state) {
+    SDL_SetRenderDrawColor(state->renderer, 0, 0, 0, 255);
+    SDL_RenderClear(state->renderer);
+    // ... draw your shapes ...
+    SDL_RenderFillRect(state->renderer, &rect);
+    // DO NOT call SDL_RenderPresent - the Runner will do it!
+}
+```
+
+### VERIFICATION: Before outputting any .cpp file, search for:
+- `SDL_RenderPresent(` → ERROR, remove this call entirely
+
 ## 1. FILE NAMING CONVENTIONS
 - C/C++: Use .cpp/.c for implementation, .h/.hpp for headers
   * Core: core.cpp, core.h
@@ -520,16 +604,22 @@ typedef struct {
     // ... other fields ...
 } AppState;
 
-4.4 GUI Entry Point Declarations
+4.4 GUI Entry Point Declarations (FOR GUI.CPP ONLY)
 
-The SHARED module MUST declare the GUI entry points wrapped in extern "C":
+**IMPORTANT**: These declarations are for gui.cpp to IMPLEMENT. Core.cpp must NOT call these directly!
+
+The SHARED module MAY declare the GUI entry points, but core.cpp MUST NOT use them directly.
+Core.cpp must use function pointers loaded via dlsym() instead.
+
+If you include these in shared.h, add a comment warning:
 C++
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-// GUI entry points for hot-reloading
+// GUI entry points - IMPLEMENTED in gui.cpp, LOADED via dlsym in core.cpp
+// WARNING: Do NOT call these directly from core.cpp! Use ptr_gui_* pointers instead.
 void gui_initialize(AppState* state);
 void gui_on_update(AppState* state, float dt);
 void gui_render(AppState* state);
@@ -539,6 +629,9 @@ void gui_on_event(AppState* state, void* event);
 #ifdef __cplusplus
 }
 #endif
+
+**ALTERNATIVE (PREFERRED)**: Do NOT declare gui_* functions in shared.h at all. 
+Only declare them in gui.cpp where they are implemented. This prevents accidental direct calls from core.cpp.
 
 4.5 Required System Headers
 
@@ -563,7 +656,8 @@ extern "C" void on_render(void* state) {
 
 The CORE module MUST export on_update but SHOULD NOT call gui_render.
 
-CRITICAL: gui_render MUST call SDL_RenderPresent(state->renderer) at the end to ensure the window is updated.
+CRITICAL: gui_render MUST NOT call SDL_RenderPresent(). The Runner handles SDL_RenderPresent after calling gui_render.
+DO NOT include SDL_RenderPresent in your generated code - it will be called automatically by the host runner after gui_render returns.
 5. HEADER INCLUSION REQUIREMENTS
 5.1 Explicit Inclusion Rule
 
@@ -743,15 +837,24 @@ To prevent flickering during hot-reloading, the renderer handle MUST persist in 
 
     Handle dynamic library loading (dlopen/LoadLibrary)
 
-    Call GUI entry points through function pointers
+    Call GUI entry points through function pointers ONLY (via dlsym)
 
     CRITICAL: DO NOT IMPLEMENT main(). You must implement on_load, on_update, and on_unload to be driven by the host runner.
 
-    CRITICAL: NEVER call gui_initialize, gui_on_update, etc. directly. ALWAYS use the function pointers ptr_gui_initialize, ptr_gui_on_update, etc.
+    ⚠️ ABSOLUTE RULE - VIOLATION CAUSES LINKER FAILURE ⚠️
+    NEVER write `gui_render(state)` in core.cpp - this causes "undefined symbol: gui_render"
+    NEVER write `gui_initialize(state)` in core.cpp - this causes "undefined symbol: gui_initialize"  
+    NEVER write `gui_on_update(state, dt)` in core.cpp - this causes "undefined symbol: gui_on_update"
+    
+    ALWAYS write `if (ptr_gui_render) ptr_gui_render(state);`
+    ALWAYS write `if (ptr_gui_initialize) ptr_gui_initialize(state);`
+    ALWAYS write `if (ptr_gui_on_update) ptr_gui_on_update(state, dt);`
+    
+    The ptr_gui_* variables are function pointers loaded via dlsym() at runtime.
 
 7.2 Dynamic Loading Pattern (C/C++ Linux)
 
-CRITICAL: Do NOT name the function pointers the same as the functions declared in shared.h. Use a suffix like _ptr or prefix fn_ to avoid redeclaration errors.
+CRITICAL: Do NOT name the function pointers the same as the functions declared in shared.h. Use a prefix ptr_ to avoid redeclaration errors.
 C++
 
 #include "shared.h"
@@ -839,8 +942,7 @@ extern "C" void on_update(void* state_ptr, double dt) {
     if (ptr_gui_on_update) ptr_gui_on_update(&app_state, (float)dt);
     if (ptr_gui_render) {
         ptr_gui_render(&app_state);
-        // CRITICAL: Present SDL renderer to ensure rendering is visible
-        if (app_state.renderer) SDL_RenderPresent(app_state.renderer);
+        // NOTE: Do NOT call SDL_RenderPresent here - the Runner handles it automatically!
     }
 }
 
@@ -948,7 +1050,7 @@ Common mistakes to AVOID:
 
     SDL_RenderFillRect(state->renderer, &rect) ✅ CORRECT (but check return value)
 
-    Forgetting SDL_RenderPresent at the end of the frame.
+    Calling SDL_RenderPresent yourself ❌ WRONG - the Runner handles this!
 
 Correct patterns:
 C++
@@ -958,7 +1060,7 @@ SDL_Renderer* renderer = state->renderer;// Renderer handle
 
 SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255); // Set color
 SDL_RenderFillRect(renderer, &rect);              // Draw filled rectangle
-SDL_RenderPresent(renderer);                      // Show frame
+// DO NOT call SDL_RenderPresent - the Runner calls it after gui_render returns!
 
 Store in AppState:
 C++
@@ -1144,7 +1246,15 @@ Before outputting, verify:
 
 ANTI-PATTERNS TO AVOID
 
-❌ DO NOT:
+❌ DO NOT (IN CORE.CPP):
+
+    Call `gui_render(state)` directly → causes "undefined symbol: gui_render"
+    Call `gui_initialize(state)` directly → causes "undefined symbol: gui_initialize"
+    Call `gui_on_update(state, dt)` directly → causes "undefined symbol: gui_on_update"
+    Write `extern void gui_render(...)` → linker still looks for symbol
+    Forward declare gui functions → linker still looks for symbol
+
+❌ DO NOT (GENERAL):
 
     Forward declare AppState in GUI (define in shared.h instead)
 
@@ -1156,13 +1266,20 @@ ANTI-PATTERNS TO AVOID
 
     Forget to include headers for functions used
 
-    Make Core depend on GUI
+    Make Core depend on GUI at link time
 
     Duplicate AppState definition
 
     Forget extern "C" wrappers in shared.h
 
-✅ DO:
+✅ DO (IN CORE.CPP):
+
+    Use `if (ptr_gui_render) ptr_gui_render(state);` with function pointers
+    Load gui functions via dlsym(): `ptr_gui_render = (gui_render_fn)dlsym(gui_lib, "gui_render");`
+    Declare function pointer types: `typedef void (*gui_render_fn)(AppState*);`
+    Initialize pointers to NULL: `gui_render_fn ptr_gui_render = NULL;`
+
+✅ DO (GENERAL):
 
     Define AppState once in shared.h with ALL fields
 
@@ -1174,9 +1291,21 @@ ANTI-PATTERNS TO AVOID
 
     Make GUI depend on Shared only
 
-    Wrap GUI functions in extern "C"
+    Wrap GUI functions in extern "C" (in gui.cpp)
 
-    Zero-initialize AppState in Core (AppState app_state = {0};) """
+    Zero-initialize AppState in Core (AppState app_state = {0};)
+    
+## FINAL VERIFICATION BEFORE OUTPUT
+
+Before outputting your JSON, scan core.cpp content for these patterns:
+1. `gui_render(` without `ptr_` → STOP and fix to `ptr_gui_render(`
+2. `gui_initialize(` without `ptr_` → STOP and fix to `ptr_gui_initialize(`
+3. `gui_on_update(` without `ptr_` → STOP and fix to `ptr_gui_on_update(`
+4. `gui_cleanup(` without `ptr_` → STOP and fix to `ptr_gui_cleanup(`
+5. `gui_on_event(` without `ptr_` → STOP and fix to `ptr_gui_on_event(`
+6. `extern void gui_` → STOP and remove this line
+
+If ANY of these patterns exist in core.cpp, your output is INVALID. """
 
 def build_prompt(
     code: str,
