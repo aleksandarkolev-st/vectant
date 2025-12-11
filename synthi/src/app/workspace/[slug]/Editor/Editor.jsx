@@ -495,6 +495,14 @@ const EditorPanel = ({
             return;
         }
 
+        // Verify the editor is still mounted and has a valid model before binding
+        const model = editorInstance.getModel?.();
+        if (!model) {
+            console.warn('[Collab] Editor model not available, skipping collab binding');
+            setCollabConnected(false);
+            return;
+        }
+
         const user = (session?.data?.user) ? { id: session.data.user.id || session.data.user.email || session.data.user.name, name: session.data.user.name || session.data.user.email, email: session.data.user.email || null, isAnonymous: false } : { id: null, name: 'Anonymous', email: null, isAnonymous: true };
 
         // Attach the editor to the collaboration binding
@@ -591,6 +599,16 @@ const EditorPanel = ({
     const activeLanguage = activeFile ? getMonacoLanguage(activeFile.name) : 'plaintext';
     const activeFileIdentity = activeFile ? `${activeFile.path ?? ''}-${activeFile.name ?? ''}` : 'no-file';
     const activeFileIcon = activeFile ? getFileIcon(activeFile.name || activeFile.path || '') : null;
+
+    // Clean up editor instance when activeFile changes to prevent stale references
+    useEffect(() => {
+        // When file identity changes, clear the editor instance to force re-bind
+        return () => {
+            // On cleanup (file switch), null out editor to prevent stale usage
+            setEditorInstance(null);
+            setCollabConnected(false);
+        };
+    }, [activeFileIdentity]);
 
     const {
         aiCompletionState,
@@ -765,6 +783,8 @@ const EditorPanel = ({
     // Handle updates from analysis (Markers)
     useEffect(() => {
         if (!editorInstance || !monacoInstance || !analysisResult) return;
+        const model = editorInstance.getModel?.();
+        if (!model) return; // Guard against disposed editor
         const issues = analysisResult?.static_analysis || analysisResult?.issues || [];
         const markers = issues.map(issue => ({
             startLineNumber: issue.line === 0 ? 1 : issue.line + 1,
@@ -774,7 +794,11 @@ const EditorPanel = ({
             message: issue.message,
             severity: issue.severity === 'error' ? monacoInstance.MarkerSeverity.Error : monacoInstance.MarkerSeverity.Warning
         }));
-        monacoInstance.editor.setModelMarkers(editorInstance.getModel(), 'analysis', markers);
+        try {
+            monacoInstance.editor.setModelMarkers(model, 'analysis', markers);
+        } catch (e) {
+            // Editor may have been disposed
+        }
     }, [editorInstance, monacoInstance, analysisResult]);
 
     // Handle external completion triggering (e.g. from Chat UI)
@@ -1077,10 +1101,9 @@ const EditorPanel = ({
                                                 key={activeFileIdentity}
                                                 height="100%"
                                                 path={activeFile ? `/synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}` : undefined}
-                                                // When collab is connected, don't pass value prop (uncontrolled mode)
-                                                // This prevents React from fighting with Yjs for model ownership
-                                                // The collabClient becomes the single source of truth
-                                                {...(collabConnected ? {} : { value: code ?? '' })}
+                                                // Always pass value on initial mount, then let collab take over
+                                                // This ensures Monaco has valid content before Yjs binds
+                                                value={code ?? ''}
                                                 language={activeLanguage}
                                                 theme="synthi-theme"
                                                 options={{
@@ -1092,6 +1115,12 @@ const EditorPanel = ({
                                                 }}
                                                 onChange={handleCodeChange}
                                                 onMount={(editor, monaco) => {
+                                                    // Verify editor has a valid model before storing reference
+                                                    const model = editor.getModel?.();
+                                                    if (!model) {
+                                                        console.warn('[Editor] onMount called but model is undefined, skipping');
+                                                        return;
+                                                    }
                                                     setEditorInstance(editor);
                                                     setMonacoInstance(monaco);
                                                     if (onEditorMount) onEditorMount(editor);
@@ -1105,7 +1134,13 @@ const EditorPanel = ({
                                                     });
 
                                                     // Ensure layout refreshes on mount
-                                                    setTimeout(() => editor.layout(), 100);
+                                                    setTimeout(() => {
+                                                        try {
+                                                            editor.layout();
+                                                        } catch (e) {
+                                                            // Editor may have been disposed
+                                                        }
+                                                    }, 100);
                                                 }}
                                             />
                                         )}
