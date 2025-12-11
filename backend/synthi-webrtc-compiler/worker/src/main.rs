@@ -9,8 +9,11 @@ mod builder;
 mod watcher;
 mod server;
 mod storage;
+mod capability;
+mod shim;
 
 use builder::{RebuildScope, ModuleHashes, hash_content};
+use capability::{detect_capabilities, HmrCapability, HmrStatus, CapabilityReport};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
@@ -101,7 +104,8 @@ struct RunnerState {
     stdin: tokio::process::ChildStdin,
     output_tx: tokio::sync::broadcast::Sender<String>,
     is_gui: bool,
-    is_hmr_capable: bool, // True if runner was started with HMR-capable code (on_update hooks)
+    is_hmr_capable: bool, // True if runner was started with HMR-capable code (detected from exports)
+    hmr_capability: Option<capability::HmrCapability>, // Detailed capability level
     xvfb_process: Option<tokio::process::Child>,
     gst_pipeline: Option<gst::Pipeline>,
     sdl_tx: Option<mpsc::UnboundedSender<String>>,
@@ -1235,6 +1239,11 @@ async fn handle_compile(
     }
 
     let mut modules_to_load: Vec<(String, String)> = Vec::new();
+    
+    // Define these at outer scope so they can be used after the if/else branches
+    let mut new_hashes = ModuleHashes::new();
+    let mut core_lib_path = String::new();
+    let mut gui_lib_path = String::new();
 
     fn calculate_hash<T: Hash>(t: &T) -> u64 {
         let mut s = DefaultHasher::new();
@@ -1293,7 +1302,7 @@ async fn handle_compile(
         // ============================================================
         // DIFFERENTIAL REBUILD: Compute new hashes and determine scope
         // ============================================================
-        let mut new_hashes = ModuleHashes::new();
+        // Use the outer-scope new_hashes variable
         if let Some(shared) = split_data.get("shared") {
             let content = shared["content"].as_str().unwrap_or("");
             new_hashes.shared_hash = hash_content(content);
@@ -1435,13 +1444,10 @@ async fn handle_compile(
             let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
         }
 
-        let mut core_lib_path = String::new();
-        let mut gui_lib_path = String::new();
-        
         // Reuse previous paths if not rebuilding that module
         if rebuild_scope == RebuildScope::GuiOnly {
-            if let Some(path) = prev_core_path {
-                core_lib_path = path;
+            if let Some(ref path) = prev_core_path {
+                core_lib_path = path.clone();
                 eprintln!("[Main] Reusing existing core library: {}", core_lib_path);
             }
         }
@@ -1760,6 +1766,18 @@ extern "C" void* on_load_from_json(const char* json) {
                 }
                 core_lib_path = core_out.to_string_lossy().to_string();
                 
+                // Detect Core module capabilities from exports
+                if let Ok(core_report) = detect_capabilities(std::path::Path::new(&core_lib_path)) {
+                    eprintln!("[Capability] Core module: {:?}, HMR: {:?}", core_report.module_type, core_report.hmr_capability);
+                    let status = HmrStatus::capability_detected("core", &core_report);
+                    let payload = serde_json::json!({
+                        "sessionId": session_id.clone(),
+                        "type": "hmr-status",
+                        "data": serde_json::from_str::<serde_json::Value>(&status.to_json()).unwrap_or_default()
+                    });
+                    let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                }
+                
                 let mut cache = compile_cache.lock().await;
                 cache.insert("core".to_string(), (content_hash, core_lib_path.clone()));
             }
@@ -1786,7 +1804,7 @@ extern "C" void* on_load_from_json(const char* json) {
         }
         } else {
             // GUI-only rebuild: reuse existing core library path
-            if let Some(ref existing_core) = state.loaded_core_path {
+            if let Some(ref existing_core) = prev_core_path {
                 core_lib_path = existing_core.clone();
                 println!("GUI-only rebuild: reusing existing core at {}", core_lib_path);
             }
@@ -1857,6 +1875,18 @@ extern "C" void* on_load_from_json(const char* json) {
                     return Ok(());
                 }
                 gui_lib_path = gui_out.to_string_lossy().to_string();
+                
+                // Detect GUI module capabilities from exports
+                if let Ok(gui_report) = detect_capabilities(std::path::Path::new(&gui_lib_path)) {
+                    eprintln!("[Capability] GUI module: {:?}, HMR: {:?}", gui_report.module_type, gui_report.hmr_capability);
+                    let status = HmrStatus::capability_detected("gui", &gui_report);
+                    let payload = serde_json::json!({
+                        "sessionId": session_id.clone(),
+                        "type": "hmr-status",
+                        "data": serde_json::from_str::<serde_json::Value>(&status.to_json()).unwrap_or_default()
+                    });
+                    let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                }
                 
                 let mut cache = compile_cache.lock().await;
                 cache.insert("gui".to_string(), (combined_hash, gui_lib_path.clone()));
@@ -2075,6 +2105,58 @@ extern "C" void* on_load_from_json(const char* json) {
             let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_else(|_| String::from(""))).await;
             return Ok(());
         }
+        
+        // ============================================================
+        // EXPORT-BASED CAPABILITY DETECTION (replaces string heuristics)
+        // ============================================================
+        // After compilation succeeds, inspect the compiled library's actual
+        // exports to determine HMR capability deterministically.
+        // This is the Next.js-like approach: detect from artifacts, not source.
+        // ============================================================
+        let capability_report = match detect_capabilities(&final_output_path) {
+            Ok(report) => {
+                eprintln!("[Capability] Module type: {:?}, HMR: {:?}", report.module_type, report.hmr_capability);
+                
+                // Send capability detection result to frontend
+                let status = HmrStatus::capability_detected("main", &report);
+                let payload = serde_json::json!({
+                    "sessionId": session_id.clone(),
+                    "type": "hmr-status",
+                    "data": serde_json::from_str::<serde_json::Value>(&status.to_json()).unwrap_or_default()
+                });
+                let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                
+                // Send warnings to frontend
+                for warning in &report.warnings {
+                    let payload = serde_json::json!({
+                        "sessionId": session_id.clone(),
+                        "type": "stderr",
+                        "line": format!("[HMR Warning] {}\n", warning)
+                    });
+                    let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                }
+                
+                Some(report)
+            }
+            Err(e) => {
+                eprintln!("[Capability] Detection failed: {}", e);
+                let payload = serde_json::json!({
+                    "sessionId": session_id.clone(),
+                    "type": "stderr",
+                    "line": format!("[Capability] Detection failed: {}\n", e)
+                });
+                let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                None
+            }
+        };
+        
+        // Update has_on_update based on ACTUAL exports (not source heuristics)
+        let has_on_update = capability_report
+            .as_ref()
+            .map(|r| r.hmr_capability.supports_hmr())
+            .unwrap_or(false);
+        
+        eprintln!("[Capability] Export-based HMR capable: {}", has_on_update);
         
         modules_to_load.push(("main".to_string(), final_output_path.to_string_lossy().to_string()));
     }
@@ -2524,7 +2606,8 @@ extern "C" void* on_load_from_json(const char* json) {
             stdin,
             output_tx: tx,
             is_gui: req.is_gui,
-            is_hmr_capable: has_on_update, // Track if this runner supports HMR
+            is_hmr_capable: has_on_update, // Detected from compiled library exports
+            hmr_capability: None, // Will be set per-module as they load
             xvfb_process,
             gst_pipeline,
             sdl_tx: sdl_tx_opt,
@@ -2637,8 +2720,7 @@ extern "C" void* on_load_from_json(const char* json) {
     let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
     
     println!("[Main] handle_compile completed successfully.");
-    return Ok(());
-
+    
     // Cleanup terminal sender for this session (if any)
     if let Some(sid_opt) = session_id.clone() {
         let mut guard = terminal_store.lock().await;

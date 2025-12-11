@@ -17,7 +17,10 @@ use x11rb::protocol::xproto::*;
 use x11rb::protocol::shm::{self, ConnectionExt as ShmConnectionExt};
 
 mod plugin_contract;
+mod capability;
+
 use plugin_contract::{ModuleSlot, ModuleInfo, RebuildScope, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
+use capability::{HmrCapability, detect_capabilities, HmrStatus};
 
 // SDL2 Definitions
 #[cfg(target_os = "linux")]
@@ -543,8 +546,25 @@ fn main() {
                                 if !has_required_symbols {
                                     eprintln!("[Runner] [HMR] ERROR: Module '{}' missing required symbols. Aborting HMR (old module continues).", name);
                                     eprintln!("[Runner] [HMR] Expected: {} = core_on_load+core_on_update | gui = gui_on_load+gui_on_render | main = on_load+on_update", name);
+                                    
+                                    // Send structured HMR rejection event
+                                    let status = HmrStatus::rejected(name, "Missing required symbols");
+                                    eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
                                     continue;
                                 }
+                                
+                                // ============================================================
+                                // EXPORT-BASED CAPABILITY DETECTION
+                                // ============================================================
+                                // Use the capability module to get detailed HMR capability info
+                                // ============================================================
+                                let capability_report = detect_capabilities(std::path::Path::new(path));
+                                let hmr_capability = capability_report.as_ref()
+                                    .map(|r| r.hmr_capability)
+                                    .unwrap_or(HmrCapability::Partial);
+                                
+                                let state_will_preserve = hmr_capability.preserves_state();
+                                eprintln!("[Runner] [HMR] Capability: {:?}, state_preserve={}", hmr_capability, state_will_preserve);
                                 
                                 // Check ABI version compatibility (if reported)
                                 if module_abi_version > 0 {
@@ -832,9 +852,27 @@ fn main() {
                                 }
                                 
                                 eprintln!("[Runner] [HMR] Hot reload complete for '{}'. Zero-flicker swap successful.", name);
+                                
+                                // ============================================================
+                                // STRUCTURED HMR STATUS FEEDBACK
+                                // ============================================================
+                                // Send detailed HMR status to stdout for the main process
+                                // ============================================================
+                                if let Ok(ref report) = capability_report {
+                                    let status = HmrStatus::Applied {
+                                        module: name.to_string(),
+                                        capability: hmr_capability.description().to_string(),
+                                        state_preserved: state_will_preserve && json_state.is_some(),
+                                    };
+                                    eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                                }
                             }
                             Err(e) => {
                                 eprintln!("[Runner] [HMR] Error loading new library (old module continues): {}", e);
+                                
+                                // Send rejection status
+                                let status = HmrStatus::rejected(name, &format!("Load error: {}", e));
+                                eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
                             }
                         }
                     }

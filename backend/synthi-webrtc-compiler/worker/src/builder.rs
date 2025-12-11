@@ -324,22 +324,32 @@ pub fn hash_content(content: &str) -> u64 {
 pub fn compute_module_hashes(workspace_root: &Path) -> ModuleHashes {
     let mut hashes = ModuleHashes::new();
     
-    // Look for standard files
-    let files_to_check = [
-        ("shared.h", &mut hashes.shared_hash),
-        ("shared.hpp", &mut hashes.shared_hash),
-        ("core.cpp", &mut hashes.core_hash),
-        ("core.c", &mut hashes.core_hash),
-        ("gui.cpp", &mut hashes.gui_hash),
-        ("gui.c", &mut hashes.gui_hash),
-        ("main.cpp", &mut hashes.main_hash),
-        ("main.c", &mut hashes.main_hash),
-    ];
-    
-    for (filename, hash_field) in files_to_check.iter() {
+    // Check each file type separately to avoid multiple mutable borrows
+    for filename in ["shared.h", "shared.hpp"] {
         let path = workspace_root.join(filename);
         if let Ok(content) = fs::read_to_string(&path) {
-            **hash_field = hash_content(&content);
+            hashes.shared_hash = hash_content(&content);
+        }
+    }
+    
+    for filename in ["core.cpp", "core.c"] {
+        let path = workspace_root.join(filename);
+        if let Ok(content) = fs::read_to_string(&path) {
+            hashes.core_hash = hash_content(&content);
+        }
+    }
+    
+    for filename in ["gui.cpp", "gui.c"] {
+        let path = workspace_root.join(filename);
+        if let Ok(content) = fs::read_to_string(&path) {
+            hashes.gui_hash = hash_content(&content);
+        }
+    }
+    
+    for filename in ["main.cpp", "main.c"] {
+        let path = workspace_root.join(filename);
+        if let Ok(content) = fs::read_to_string(&path) {
+            hashes.main_hash = hash_content(&content);
         }
     }
     
