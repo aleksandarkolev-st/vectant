@@ -1716,22 +1716,28 @@ extern "C" void* on_load_from_json(const char* json) {
                     }
                 }
                 
-                // NOTE: Do NOT add GUI to modules_to_load!
-                // Core.cpp handles loading gui.so internally via dlopen in on_load.
-                // If we also send "load gui" to the runner, gui.so gets loaded TWICE,
-                // which causes conflicts and crashes during HMR.
-                // The symlinks above ensure core can find gui.so at "./gui.so".
+                // ============================================================
+                // INDEPENDENT SWAP DOMAINS: GUI is a separate hot-reload unit
+                // ============================================================
+                // GUI and Core are TWO INDEPENDENT modules. Changing GUI should
+                // NOT force a core reload. The runner handles them separately.
+                //
+                // OLD BEHAVIOR (REMOVED): Force core reload when GUI changes
+                // NEW BEHAVIOR: Load GUI independently via runner's "load gui" command
+                //
+                // The runner maintains separate module slots for "core" and "gui".
+                // Each module has its own state (CoreState, GuiState) and its own
+                // on_load/on_unload lifecycle.
+                //
+                // Core's dlopen of gui.so happens in core's on_load. When we send
+                // "load gui" to runner, core will re-dlopen the updated gui.so
+                // on its next on_update cycle (via a reload signal mechanism).
+                // ============================================================
                 
-                // Critical Fix for HMR:
-                // If GUI changes, we MUST reload 'core' because 'core' holds the handle to 'gui'.
-                // Core only loads gui in on_load. So we force core to reload.
-                if !modules_to_load.iter().any(|(n, _)| n == "core") {
-                    let cache = compile_cache.lock().await;
-                    if let Some((_, p)) = cache.get("core") {
-                        println!("GUI updated. Forcing reload of cached core: {}", p);
-                        modules_to_load.push(("core".to_string(), p.clone()));
-                    }
-                } 
+                // Add GUI to modules_to_load as an INDEPENDENT module
+                // The runner will load it separately from core
+                modules_to_load.push(("gui".to_string(), gui_lib_path.clone()));
+                println!("[Independent Swap] GUI module queued for independent reload: {}", gui_lib_path);
             }
         }
 
@@ -1778,14 +1784,9 @@ extern "C" void* on_load_from_json(const char* json) {
                         let _ = tokio::fs::copy(&gui_lib_path, &link_path).await;
                     }
                 }
-                // NOTE: Do NOT add stub GUI to modules_to_load - core handles loading it
-                // Ensure core reloads to pick up stub symbols
-                if !modules_to_load.iter().any(|(n, _)| n == "core") {
-                    let cache = compile_cache.lock().await;
-                    if let Some((_, p)) = cache.get("core") {
-                        modules_to_load.push(("core".to_string(), p.clone()));
-                    }
-                }
+                // Independent swap: Add stub GUI as independent module
+                modules_to_load.push(("gui".to_string(), gui_lib_path.clone()));
+                println!("[Independent Swap] GUI stub module queued for independent reload");
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 println!("Failed to build GUI stub: {}", stderr);

@@ -114,10 +114,52 @@ def _response_format_instructions(mode: str, focus_path: Optional[str]) -> str:
 
 
 SPLIT_GUI_PROMPT = """
-You are a "Code Splitter" bot. Your ONLY job is to move code into separate files.
+You are a "Splitter+Adapter" bot.
+Your job is to (1) split code into separate files and (2) apply ONLY the minimal platform adaptation required
+to compile and run inside the Synthi SDL-only runner (see SPLIT CONTRACT).
 You are NOT a code improver. You are NOT a refactorer. You are NOT a linter.
 
-# STRICT PRESERVATION PROTOCOL (OVERRIDE ALL OTHER INSTRUCTIONS)
+# SPLIT CONTRACT (AUTHORITATIVE; OVERRIDES OTHER SECTIONS)
+
+If instructions conflict, follow this precedence order:
+1) SPLIT CONTRACT
+2) STRICT PRESERVATION PROTOCOL
+
+## Output must match Synthi's runtime
+
+### X11 is INPUT-ONLY (semantic reference)
+- The user's input may contain X11 code and headers.
+- Your OUTPUT MUST NOT contain X11 headers, X11 types, or X11 function calls.
+- Treat X11 only as a semantic description of what to draw / how to react to input.
+
+### Module compile/link contract (must satisfy all)
+- shared.h:
+    - Must be self-contained.
+    - Must not include or mention X11.
+    - Must not forward-declare SDL unions as structs (never `struct SDL_Event;`).
+    - Must avoid OS-specific handle types; prefer plain C types and `void*` for opaque handles.
+- core.cpp:
+    - Must compile/link WITHOUT `-lX11` and WITHOUT `-lSDL2`.
+    - May use `dlopen`/`dlsym` (`-ldl`) to load GUI symbols.
+    - Must not call any GUI symbols directly; only through `ptr_gui_*` function pointers.
+- gui.cpp:
+    - Must compile/link with `-lSDL2`.
+    - Must not include X11.
+    - Must not call `SDL_RenderPresent`.
+    - Must not call `SDL_Init` / `SDL_CreateWindow` / `SDL_CreateRenderer` (runner owns SDL lifecycle).
+
+### Input model (SDL only)
+- All input comes from `SDL_Event*` passed to `on_event`.
+- Do NOT use X11 key translation (`XLookupString`, `XwcLookupString`) or XIM/XIC.
+- Escape-to-quit must be implemented via `SDLK_ESCAPE`.
+- Only implement SDL text input if the original code already did text input.
+
+### State stability (important for HMR)
+- Do NOT invent new `AppState` fields.
+- Keep existing user-visible buffers/fields (e.g. `wbuffer`) exactly as-is (name + size).
+- Only add the mandatory ABI safety fields (`magic`, `struct_size`) and required runtime fields (`renderer`).
+
+# STRICT PRESERVATION PROTOCOL (SECOND PRIORITY)
 
 ## PRESERVE WHAT THE USER SEES (CRITICAL)
 User-visible output must be preserved.
@@ -136,7 +178,7 @@ User-visible output must be preserved.
 - Keep the exact numeric constants (positions, sizes, colors, velocities, etc.).
 - Do not invent new colors, shading, or styling.
 
-## X11 → SDL2 TRANSLATION RULES (NO NEW UI)
+## X11 SEMANTICS → SDL2 DRAW CALLS (NO NEW UI)
 Your output may change API calls (X11 to SDL2), but it must preserve *behavior*.
 
 - XFillRectangle / XDrawRectangle → SDL_RenderFillRect / SDL_RenderDrawRect using the same rectangle geometry.
@@ -328,6 +370,14 @@ if (ptr_gui_initialize) ptr_gui_initialize(state);
 - `extern void gui_` → ERROR, remove this line
 - `void gui_render(` in core.cpp → ERROR, this belongs in gui.cpp only
 
+Additional verification (STRONGLY ENFORCED):
+- In core.cpp, the substring `gui_` must appear ONLY in:
+    - function pointer typedef names (`gui_*_fn`),
+    - pointer variable names (`ptr_gui_*`),
+    - `dlsym(..., "gui_*" )` string literals,
+    - and comments.
+- If core.cpp contains `gui_` used as a call target, a declaration, or a definition → ERROR.
+
 ## 0.5 SDL_RENDERPRESENT RULE (CRITICAL - VIOLATION = COMPILATION ERROR)
 
 **YOU MUST NEVER CALL SDL_RenderPresent() IN YOUR GENERATED CODE.**
@@ -377,10 +427,167 @@ void gui_render(AppState* state) {
 
 ## 3. STATE STRUCTURE (MOST IMPORTANT)
 
+### 3.0 INDEPENDENT SWAP DOMAINS (CRITICAL FOR HMR)
+
+Core and GUI are TWO INDEPENDENT hot-reload domains. They MUST have SEPARATE state contracts.
+
+**THREE RULES FOR INDEPENDENT SWAPS:**
+
+1. **Separate State Contracts**:
+   - Core exposes a STABLE ABI for its state (`CoreState`).
+   - GUI only holds view-state (`GuiState`) - animation timers, UI-specific caches, hover states.
+   - GUI NEVER owns core state. GUI reads core state via a pointer but doesn't modify core fields.
+   - This allows GUI reload WITHOUT touching core.
+
+2. **Separate Module Handles**:
+   - `core.so` and `gui.so` are TWO UNRELATED modules.
+   - Each gets its own timestamped build and its own load command.
+   - Changing `gui.so` MUST NOT invalidate or unload `core.so`.
+   - Runner tracks TWO module slots independently.
+
+3. **Version Boundaries**:
+   - Core defines FIXED C ABI structs. GUI binds to them but CANNOT change layout.
+   - If core rebuilds → swap BOTH (core state ABI changed).
+   - If GUI rebuilds → swap GUI ONLY (core continues running).
+
+**STATE STRUCTURE PATTERN:**
+
+```cpp
+// shared.h - SEPARATE STATE CONTRACTS
+
+// ============================================
+// CORE STATE - Stable ABI, owned by core.so
+// ============================================
+typedef struct CoreState {
+    // ABI version for compatibility checking
+    uint32_t magic;           // 0xDEADBEEF
+    uint32_t struct_size;     // sizeof(CoreState)
+    uint32_t abi_version;     // Increment when layout changes
+    
+    // Business logic state (owned by core)
+    int x, y;                 // Position
+    int dx, dy;               // Velocity
+    int running;
+    int paused;
+    
+    // Application-specific fields...
+} CoreState;
+
+// ============================================
+// GUI STATE - View-only, owned by gui.so
+// ============================================
+typedef struct GuiState {
+    uint32_t magic;           // 0xGUI0BEEF
+    uint32_t struct_size;     // sizeof(GuiState)
+    
+    // Rendering handles (owned by runner, stored here)
+    SDL_Renderer* renderer;
+    
+    // View-only state (animations, UI caches)
+    float fade_alpha;
+    float hover_time;
+    int last_rendered_x;      // Cache for dirty-rect optimization
+    int last_rendered_y;
+    
+    // Pointer to core state (READ-ONLY from GUI's perspective)
+    CoreState* core;          // GUI reads this, never modifies
+} GuiState;
+
+// ============================================
+// FUNCTION POINTER TABLE - Core exports to GUI
+// ============================================
+// Instead of GUI calling core functions directly, core exports a table
+typedef struct CoreAPI {
+    uint32_t version;
+    CoreState* (*get_state)(void);
+    void (*pause)(void);
+    void (*resume)(void);
+    // Add more as needed
+} CoreAPI;
+```
+
+**CORE.CPP PATTERN:**
+
+```cpp
+// core.cpp
+static CoreState core_state = {0};
+static CoreAPI core_api = {0};
+
+// Export table for GUI to call core functions
+extern "C" CoreAPI* get_core_api(void) {
+    core_api.version = 1;
+    core_api.get_state = []() { return &core_state; };
+    core_api.pause = []() { core_state.paused = 1; };
+    core_api.resume = []() { core_state.paused = 0; };
+    return &core_api;
+}
+
+extern "C" void* on_load(void* prev_state, void* window_ptr) {
+    if (prev_state) {
+        CoreState* old = (CoreState*)prev_state;
+        if (old->magic == 0xDEADBEEF && old->struct_size == sizeof(CoreState)) {
+            core_state = *old;  // Safe migration
+        }
+    } else {
+        core_state.magic = 0xDEADBEEF;
+        core_state.struct_size = sizeof(CoreState);
+        core_state.abi_version = 1;
+        // ... init other fields
+    }
+    
+    // Load GUI module - GUI is independent, doesn't affect core state
+    load_gui_module("./gui.so");
+    if (ptr_gui_initialize) {
+        // Pass renderer to GUI, GUI creates its own GuiState
+        ptr_gui_initialize(&core_state, window_ptr);
+    }
+    
+    return &core_state;
+}
+```
+
+**GUI.CPP PATTERN:**
+
+```cpp
+// gui.cpp
+static GuiState gui_state = {0};
+
+// GUI initializes its OWN state, receives core pointer
+extern "C" void gui_initialize(CoreState* core, void* renderer_ptr) {
+    gui_state.magic = 0xGUI0BEEF;
+    gui_state.struct_size = sizeof(GuiState);
+    gui_state.renderer = (SDL_Renderer*)renderer_ptr;
+    gui_state.core = core;  // Store pointer to read core state
+}
+
+extern "C" void gui_render(CoreState* core) {
+    // READ from core state, never modify it
+    int x = core->x;
+    int y = core->y;
+    
+    // Use gui_state for view-specific data
+    SDL_SetRenderDrawColor(gui_state.renderer, 255, 255, 255, 255);
+    // ... render using x, y
+}
+
+// GUI's own on_load for independent hot-reload
+extern "C" void* gui_on_load(void* prev_gui_state, void* renderer_ptr) {
+    if (prev_gui_state) {
+        GuiState* old = (GuiState*)prev_gui_state;
+        if (old->magic == 0xGUI0BEEF) {
+            gui_state = *old;
+        }
+    }
+    gui_state.renderer = (SDL_Renderer*)renderer_ptr;
+    return &gui_state;
+}
+```
+
 ### 3.1 State Definition Location
-- The shared state structure (e.g., `AppState`, `GameState`, `ApplicationState`) MUST be defined in the SHARED module
-- DO NOT forward declare the state structure in GUI module
-- DO NOT duplicate the state structure definition across modules
+- CoreState is defined in shared.h and owned by core.so
+- GuiState is defined in shared.h (or gui.cpp) and owned by gui.so  
+- GUI receives a pointer to CoreState but NEVER modifies it
+- DO NOT duplicate state - each module owns its own state struct
 
 ### 3.2 State Structure Completeness
 CRITICALLY IMPORTANT: Analyze the original code line-by-line. ANY variable that appears in GUI/rendering code MUST be in the shared state structure.

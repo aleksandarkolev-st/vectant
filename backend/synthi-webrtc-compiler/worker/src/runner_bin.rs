@@ -68,10 +68,31 @@ const SDL_PIXELFORMAT_RGBA8888: u32 = 373694468;
 const SDL_TEXTUREACCESS_STREAMING: c_int = 1;
 
 
-// Simple state container wrapper
+// ============================================================
+// INDEPENDENT SWAP DOMAINS: Separate state for each module
+// ============================================================
+// Each module (core, gui) has its own state pointer.
+// This allows:
+// 1. GUI reload without touching core state
+// 2. Core reload triggers GUI reload (ABI change)
+// 3. State migration runs only for the affected module
+// ============================================================
+
+// Legacy state container - still used for backward compatibility with "main" module
 struct AppState {
     raw: *mut c_void,
     renderer: *mut c_void,
+}
+
+// Per-module state tracking for independent swaps
+struct ModuleState {
+    state_ptr: *mut c_void,  // Module's own state (CoreState or GuiState)
+}
+
+impl Default for ModuleState {
+    fn default() -> Self {
+        ModuleState { state_ptr: std::ptr::null_mut() }
+    }
 }
 
 #[repr(C)]
@@ -232,6 +253,8 @@ fn main() {
 
     let mut modules: HashMap<String, Library> = HashMap::new();
     let mut loaded_paths: HashMap<String, String> = HashMap::new();
+    // Independent swap: Track state per module
+    let mut module_states: HashMap<String, ModuleState> = HashMap::new();
     #[cfg(not(target_os = "linux"))]
     let (window, renderer) = (ptr::null_mut(), ptr::null_mut());
     let mut app_state = AppState { raw: std::ptr::null_mut(), renderer };
@@ -253,13 +276,20 @@ fn main() {
             unsafe {
                 let mut event: SDL_Event = std::mem::zeroed();
                 while SDL_PollEvent(&mut event) != 0 {
+                    // INDEPENDENT SWAP: Pass events with module-specific state
                     // Pass SDL_Event to all loaded modules that export on_event
                     // The plugin's on_event expects SDL_Event* (not XEvent*)
                     // Plugins MUST be compiled to expect SDL_Event, not XEvent
-                    for lib in modules.values() {
+                    for (name, lib) in modules.iter() {
                         let event_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut SDL_Event)>, _> = lib.get(b"on_event");
                         if let Ok(f) = event_func {
-                            f(app_state.raw, &mut event);
+                            // Use module-specific state for GUI
+                            let state_ptr = if name == "gui" {
+                                module_states.get(name).map(|s| s.state_ptr).unwrap_or(app_state.raw)
+                            } else {
+                                app_state.raw
+                            };
+                            f(state_ptr, &mut event);
                         }
                     }
                 }
@@ -459,20 +489,28 @@ fn main() {
                                 // ============================================================
                                 // Phase 2: Save state from OLD module (while it's still valid)
                                 // ============================================================
+                                // INDEPENDENT SWAP: Each module has its own state pointer.
+                                // We save/restore the state specific to this module only.
+                                // ============================================================
                                 let mut json_state: Option<std::ffi::CString> = None;
                                 let mut old_lib_for_cleanup: Option<Library> = None;
+                                
+                                // Get the module-specific state (not the shared app_state.raw)
+                                let module_prev_state = module_states.get(name).map(|s| s.state_ptr).unwrap_or(std::ptr::null_mut());
                                 
                                 if let Some(old_lib) = modules.remove(name) {
                                     eprintln!("[Runner] [HMR] Phase 2: Saving state from old module '{}'...", name);
                                     
-                                    // Save state BEFORE any cleanup
+                                    // Save state BEFORE any cleanup - use module-specific state
                                     let save_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut std::ffi::c_char>, _> = old_lib.get(b"on_save_state");
                                     if let Ok(f) = save_func {
-                                        let ptr = f(app_state.raw);
+                                        // Use module's own state for save, not the shared app_state.raw
+                                        let state_to_save = if !module_prev_state.is_null() { module_prev_state } else { app_state.raw };
+                                        let ptr = f(state_to_save);
                                         if !ptr.is_null() {
                                             let c_str = std::ffi::CStr::from_ptr(ptr);
                                             json_state = Some(c_str.to_owned());
-                                            eprintln!("[Runner] [HMR] State saved: {:?}", c_str);
+                                            eprintln!("[Runner] [HMR] State saved for module '{}': {:?}", name, c_str);
                                             libc::free(ptr as *mut c_void);
                                         }
                                     }
@@ -485,20 +523,25 @@ fn main() {
                                 // ============================================================
                                 // Phase 3: Pre-initialize NEW module (prepare new state)
                                 // ============================================================
-                                eprintln!("[Runner] [HMR] Phase 3: Pre-initializing new module...");
+                                // INDEPENDENT SWAP: GUI module gets its own state.
+                                // For "gui" module, we also pass the core state pointer
+                                // so GUI can read (but not modify) core state.
+                                // ============================================================
+                                eprintln!("[Runner] [HMR] Phase 3: Pre-initializing new module '{}'...", name);
                                 
                                 #[cfg(target_os = "linux")]
                                 let win_ptr = renderer;
                                 #[cfg(not(target_os = "linux"))]
                                 let win_ptr = std::ptr::null_mut();
                                 
-                                let mut new_state: *mut c_void = app_state.raw;
+                                // Start with module's previous state or null for fresh init
+                                let mut new_state: *mut c_void = module_prev_state;
                                 
                                 // If we have saved state, restore it to new module
                                 if let Some(ref json) = json_state {
                                     let load_json_func: Result<Symbol<unsafe extern "C" fn(*const std::ffi::c_char) -> *mut c_void>, _> = new_lib.get(b"on_load_from_json");
                                     if let Ok(f) = load_json_func {
-                                        eprintln!("[Runner] [HMR] Restoring state from JSON into new module...");
+                                        eprintln!("[Runner] [HMR] Restoring state from JSON into new module '{}'...", name);
                                         new_state = f(json.as_ptr());
                                     }
                                 }
@@ -523,40 +566,64 @@ fn main() {
                                 // ============================================================
                                 // Phase 4: ATOMIC SWAP - Single operation, no gap
                                 // ============================================================
-                                eprintln!("[Runner] [HMR] Phase 4: ATOMIC SWAP executing...");
+                                // INDEPENDENT SWAP: Store state in module-specific slot.
+                                // For "core" module, also update shared app_state.raw for
+                                // backward compatibility with on_update/on_event calls.
+                                // For "gui" module, only update the gui's module_states entry.
+                                // This allows GUI reload without affecting core state.
+                                // ============================================================
+                                eprintln!("[Runner] [HMR] Phase 4: ATOMIC SWAP executing for '{}'...", name);
                                 
                                 // This is the critical section - happens in one "instant"
                                 // The main loop won't see an empty modules map
                                 modules.insert(name.to_string(), new_lib);
                                 loaded_paths.insert(name.to_string(), path.to_string());
-                                app_state.raw = new_state;
+                                
+                                // Store module-specific state
+                                module_states.insert(name.to_string(), ModuleState { state_ptr: new_state });
+                                
+                                // For "core" or "main", also update the shared app_state.raw
+                                // GUI should NOT update app_state.raw - it has its own state
+                                if name == "core" || name == "main" {
+                                    app_state.raw = new_state;
+                                    eprintln!("[Runner] [HMR] Updated shared app_state.raw for '{}'", name);
+                                } else {
+                                    eprintln!("[Runner] [HMR] Module '{}' has independent state (not updating app_state.raw)", name);
+                                }
                                 
                                 eprintln!("[Runner] [HMR] ATOMIC SWAP complete. Module '{}' is now active.", name);
                                 
                                 // ============================================================
                                 // Phase 5: Deferred cleanup of OLD module(s)
                                 // ============================================================
+                                // INDEPENDENT SWAP: Each module cleans up its own resources.
+                                // GUI cleanup should NOT affect core's internal gui_lib handle.
+                                // Core cleanup should NOT call dlclose on gui.so (new core uses it).
+                                // ============================================================
                                 // Now that new module is active, we can safely cleanup old ones
                                 // The main loop is already using the new module
                                 
                                 if let Some(old_lib) = old_lib_for_cleanup {
                                     eprintln!("[Runner] [HMR] Phase 5: Cleaning up old module '{}'...", name);
-                                    // CRITICAL: Do NOT call on_unload here for core module!
-                                    // Core's on_unload calls dlclose(gui_lib), but the NEW core
-                                    // has already dlopened gui.so. Calling dlclose would unload
-                                    // the gui.so that the new core is using, causing a crash.
-                                    // 
-                                    // Instead, just let the old library drop. The old core's
-                                    // internal gui_lib pointer becomes invalid, but that's fine
-                                    // because we never call into it again.
-                                    //
-                                    // The NEW core will load its own fresh gui.so handle.
-                                    if name != "core" {
+                                    
+                                    // INDEPENDENT SWAP: GUI module cleanup is safe - it doesn't affect core
+                                    // Core module cleanup must NOT call on_unload (would dlclose gui.so)
+                                    if name == "gui" {
+                                        // GUI cleanup is always safe - it only touches GuiState
+                                        let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = old_lib.get(b"on_unload");
+                                        if let Ok(f) = func {
+                                            // Pass the old GUI state for cleanup
+                                            f(module_prev_state);
+                                            eprintln!("[Runner] [HMR] GUI on_unload called with its own state");
+                                        }
+                                    } else if name != "core" {
+                                        // For other modules (not core, not gui), call on_unload normally
                                         let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = old_lib.get(b"on_unload");
                                         if let Ok(f) = func {
                                             f(std::ptr::null_mut()); // Pass null to signal "don't touch state"
                                         }
                                     } else {
+                                        // Core: Skip on_unload to avoid dlclose(gui_lib) conflict
                                         eprintln!("[Runner] [HMR] Skipping on_unload for 'core' (would dlclose gui.so needed by new core)");
                                     }
                                     // old_lib drops here, unloading the shared library
@@ -586,10 +653,13 @@ fn main() {
                         eprintln!("[Runner] Unloading module '{}'", name);
                         if let Some(lib) = modules.remove(name) {
                              loaded_paths.remove(name);
+                             // Get module's own state for unload
+                             let module_state_ptr = module_states.get(name).map(|s| s.state_ptr).unwrap_or(std::ptr::null_mut());
+                             module_states.remove(name);
                              unsafe {
                                  let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"on_unload");
                                  if let Ok(f) = func {
-                                     f(app_state.raw);
+                                     f(module_state_ptr);
                                  }
                              }
                              eprintln!("[Runner] Unloaded module {}", name);
@@ -615,6 +685,9 @@ fn main() {
         // Clearing here and in gui_render can cause timing issues.
 
         // Run update loop for all loaded modules
+        // INDEPENDENT SWAP: Each module gets called with its own state pointer.
+        // - "core" and "main" use app_state.raw (backward compatible)
+        // - "gui" uses its own module_states["gui"].state_ptr
         // Deterministic order: "core" first, then others sorted alphabetically
         let mut keys: Vec<String> = modules.keys().cloned().collect();
         keys.sort_by(|a, b| {
@@ -629,7 +702,14 @@ fn main() {
                     let update_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = lib.get(b"on_update");
                     match update_func {
                         Ok(f) => {
-                            f(app_state.raw, dt);
+                            // INDEPENDENT SWAP: Use module-specific state for GUI
+                            let state_ptr = if name == "gui" {
+                                module_states.get(name).map(|s| s.state_ptr).unwrap_or(app_state.raw)
+                            } else {
+                                // For core/main, use shared app_state.raw
+                                app_state.raw
+                            };
+                            f(state_ptr, dt);
                         },
                         Err(_) => {
                             // Module doesn't have on_update - that's fine for GUI-only modules
@@ -640,10 +720,27 @@ fn main() {
         }
         
         // Render pass: 
+        // INDEPENDENT SWAP: For GUI-only updates, call gui's on_render with gui's state.
         // For split mode (core+gui): Core's on_update already calls gui internally via dlsym.
         //   We need to call on_render on core to trigger rendering.
         // For non-split mode (main): Call main's on_render/gui_render.
-        if let Some(lib) = modules.get("core") {
+        
+        // Check if GUI module has an independent on_render
+        if let Some(lib) = modules.get("gui") {
+            unsafe {
+                let render_func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"on_render");
+                let gui_render_func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"gui_render");
+                
+                // Get GUI's own state
+                let gui_state = module_states.get("gui").map(|s| s.state_ptr).unwrap_or(app_state.raw);
+                
+                if let Ok(f) = render_func {
+                    f(gui_state);
+                } else if let Ok(f) = gui_render_func {
+                    f(gui_state);
+                }
+            }
+        } else if let Some(lib) = modules.get("core") {
             unsafe {
                 // Core may export on_render that calls ptr_gui_render internally
                 let render_func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"on_render");
