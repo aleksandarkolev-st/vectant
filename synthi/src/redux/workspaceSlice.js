@@ -28,6 +28,7 @@ export const initialWorkspaceState = {
     originalContent: '', // For diff view
     diffMode: false,     // Toggle diff view
     fileContentCache: new Map(), // Non-serializable object handled by middleware config
+    loadingFiles: [],    // Tracks files currently being fetched
     isLoading: false,
     status: 'idle',
     error: null,
@@ -432,6 +433,18 @@ const workspaceSlice = createSlice({
 
         // --- SELECT FILE ---
         builder
+            .addCase(selectFileThunk.pending, (state, action) => {
+                const file = action.meta.arg;
+                if (file && file.path && !state.loadingFiles.includes(file.path)) {
+                    state.loadingFiles.push(file.path);
+                }
+            })
+            .addCase(selectFileThunk.rejected, (state, action) => {
+                const file = action.meta.arg;
+                if (file && file.path) {
+                    state.loadingFiles = state.loadingFiles.filter(p => p !== file.path);
+                }
+            })
             .addCase(openDiffThunk.fulfilled, (state, action) => {
                 const { file, currentContent, originalContent } = action.payload;
                 state.activeFile = file;
@@ -453,6 +466,11 @@ const workspaceSlice = createSlice({
             })
             .addCase(selectFileThunk.fulfilled, (state, action) => {
                 const { file, content, fromCache } = action.payload;
+                
+                // Remove from loading list
+                if (file && file.path) {
+                    state.loadingFiles = state.loadingFiles.filter(p => p !== file.path);
+                }
                 
                 // Cache unsaved content of OLD active file before switching
                 if (state.activeFile && state.activeFile.path && state.currentContent!== state.savedContent) {
@@ -569,6 +587,7 @@ export const selectFilesTree = (state) => state.workspace.rawFiles;
 
 export const selectActiveFile = (state) => state.workspace.activeFile;
 export const selectOpenFiles = (state) => state.workspace.openFiles || [];
+export const selectLoadingFiles = (state) => state.workspace.loadingFiles || [];
 export const selectCurrentContent = (state) => state.workspace.currentContent;
 export const selectIsUnsaved = createSelector(
     selectCurrentContent,

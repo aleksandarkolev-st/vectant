@@ -141,8 +141,8 @@
 
 /* Global Scrollbar Styling */
 ::-webkit-scrollbar {
-  height: 6px;
-  width: 6px;
+  height: 3   px;
+  width: 3px;
 }
 
 ::-webkit-scrollbar-track {
@@ -167,31 +167,32 @@
 }
 
 .scrollbar-overlay {
-  overflow-x: auto;
-}
-@supports (overflow-x: overlay) {
-  .scrollbar-overlay {
-    overflow-x: overlay;
-  }
+  overflow-x: overlay;
+  overflow-y: hidden;
+  scrollbar-width: very thin;
 }
 
+/* Remove standard scrollbar-width to ensure WebKit styles take precedence for overlay behavior */
+/* This is crucial for Chrome/Edge to allow overlay scrollbars */
+
 .scrollbar-overlay::-webkit-scrollbar {
-  height: 2px !important; /* Very thin for tabs */
-  width: 2px !important;
+  height: 1px !important;
+  width: 1px !important;
+  background: transparent;
 }
 
 .scrollbar-overlay::-webkit-scrollbar-track {
-  background: transparent !important; /* Transparent track for overlay effect */
+  background: transparent !important;
 }
 
 .scrollbar-overlay::-webkit-scrollbar-thumb {
-  background: rgba(58, 63, 74, 0.5) !important; /* Semi-transparent thumb */
+  background: transparent !important;
   border: none !important;
   border-radius: 999px !important;
 }
 
-.scrollbar-overlay::-webkit-scrollbar-thumb:hover {
-  background: rgba(76, 83, 98, 0.8) !important;
+.scrollbar-overlay:hover::-webkit-scrollbar-thumb {
+  background: rgba(150, 150, 150, 0.5) !important;
 }
 
 .ai-chat-message pre.ai-code-block,

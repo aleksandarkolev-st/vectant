@@ -14,12 +14,13 @@ import {
     saveFileContentThunk,
     updateContent,
     selectOpenFiles,
+    selectLoadingFiles,
     selectFileThunk,
     closeFile,
     reorderOpenFiles
 } from '@/redux/workspaceSlice';
 import { selectAutoSaveEnabled, selectAutoCompletionEnabled, toggleAutoCompletion, selectShowAnonymousPresence, selectPresenceGranularity, toggleShowAnonymousPresence, setPresenceGranularity } from '@/redux/uiSlice';
-import { Circle, Save, Sparkles, EyeOff } from 'lucide-react'; // Added Sparkles, EyeOff
+import { Circle, Save, Sparkles, EyeOff, Loader2 } from 'lucide-react'; // Added Sparkles, EyeOff
 import { getFileIcon } from '@/utils/fileIcons';
 import {
     ResizableHandle,
@@ -124,6 +125,7 @@ const EditorPanel = ({
     const breadcrumb = useAppSelector(selectBreadcrumb);
     const fileCacheEntries = useAppSelector(selectFileCacheEntries);
     const openFiles = useAppSelector(selectOpenFiles);
+    const loadingFiles = useAppSelector(selectLoadingFiles);
     const rawFiles = useAppSelector(state => state.workspace.rawFiles);
     const showTerminal = useAppSelector(state => state.ui.showTerminal);
     const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
@@ -807,31 +809,18 @@ const EditorPanel = ({
                 <ResizablePanel defaultSize={70} minSize={20}>
                     <div className="h-full flex flex-col bg-[#1e1e1e]">
                         {/* Minimal Sleek Header */}
-                        <div className="h-9 px-3 border-b border-[#2b2b2b] bg-[#1e1e1e] flex justify-between items-center select-none">
+                        <div className="h-9 border-b border-[#2b2b2b] bg-[#1e1e1e] flex justify-between select-none">
 
                             {/* Breadcrumbs */}
-                                <div className="h-full flex items-center gap-2 overflow-hidden min-w-0">
+                                <div className="h-full flex overflow-auto min-w-0">
                                     {/* Tabs bar (sleek) */}
-                                    <div className="h-full block whitespace-nowrap scrollbar-overlay min-w-0 overflow-y-hidden">
+                                    <div className="h-full flex whitespace-nowrap scrollbar-overlay min-w-0 overflow-y-hidden">
                                         {openFiles && openFiles.length > 0 ? openFiles.map((file, idx) => {
                                                 const isActive = activeFile && file.path === activeFile.path;
                                             const fileIcon = getFileIcon(file.name || file.path || '');
                                             return (
                                                 <div key={`tab-wrap-${file.path}`} className="inline-flex items-center h-full align-top">
-                                                    {/* Separator between tabs (subtle) */}
-                                                    {idx > 0 && (
-                                                        <div
-                                                            key={`sep-${file.path}`}
-                                                            style={{ width: 1, height: 22, backgroundColor: TAB_TOKENS.separator, marginRight: 1}}
-                                                            aria-hidden="true"
-                                                        />
-                                                    )}
-
-                                                    <div
-                                                        key={`sep2-${file.path}`}
-                                                        style={{ width: 1, height: 22, backgroundColor: TAB_TOKENS.separator, marginRight: 6 }}
-                                                        aria-hidden="true"
-                                                    />
+                                                    
 
                                                 <div
                                                     key={file.path}
@@ -856,24 +845,21 @@ const EditorPanel = ({
                                                         e.preventDefault();
                                                         setTabContext({ visible: true, x: e.clientX, y: e.clientY, file, index: idx });
                                                     }}
-                                                    className={`group flex items-center gap-2 px-3 py-1 mr-0 rounded-t-md cursor-pointer select-none transition-all duration-180 ease-out ${isActive ? 'text-white' : 'text-gray-200'}`}
+                                                    className={`group flex items-center gap-2 px-3 cursor-pointer select-none transition-colors duration-100 ${isActive ? 'text-white' : 'text-gray-400 hover:bg-[#2a2d2e]'}`}
                                                     title={file.path}
                                                     style={{
-                                                        minWidth: 84,
-                                                        maxWidth: 420,
+                                                        minWidth: 120,
+                                                        maxWidth: 220,
                                                         height: '100%',
-                                                        backgroundColor: isActive ? TAB_TOKENS.activeBg : TAB_TOKENS.inactiveBg,
-                                                        borderBottom: isActive ? `2px solid ${TAB_TOKENS.primary}` : '2px solid transparent',
-                                                        boxShadow: isActive ? '0 6px 20px rgba(8,15,30,0.6)' : 'none',
-                                                        transitionProperty: 'background-color, border-bottom-color, box-shadow',
-                                                        transitionDuration: '180ms',
-                                                        transitionTimingFunction: 'ease-out'
+                                                        backgroundColor: isActive ? '#1e1e1e' : '#2d2d2d',
+                                                        borderRight: '1px solid #252526',
+                                                        borderTop: isActive ? `1px solid ${TAB_TOKENS.primary}` : '1px solid transparent',
                                                     }}
                                                 >
                                                     <span className="flex-shrink-0 text-sm opacity-90" aria-hidden="true">
-                                                        {fileIcon}
+                                                        {loadingFiles.includes(file.path) ? <Loader2 className="w-4 h-4 animate-spin text-blue-400" /> : fileIcon}
                                                     </span>
-                                                    <span className={`text-sm font-medium truncate max-w-[220px] ${isActive ? 'text-white' : 'text-gray-200'}`}>
+                                                    <span className={`text-sm font-small truncate max-w-[220px] ${isActive ? 'text-white' : 'text-gray-200'}`}>
                                                         {file.name}
                                                     </span>
 
@@ -935,7 +921,7 @@ const EditorPanel = ({
                             {/* Status & Controls */}
                             <div className="flex items-center gap-4">
                                 {/* Line/Col Info */}
-                                <div className="hidden md:flex gap-3 text-[11px] text-gray-500 font-mono">
+                                <div className="hidden md:flex gap-1 text-[11px] text-gray-500 font-mono px-2">
                                     <span>Ln {position.lineNumber}, Col {position.column}</span>
                                 </div>
 
@@ -946,13 +932,13 @@ const EditorPanel = ({
                                 </div>
 
                                 {/* Collaboration presence */}
-                                <div className="flex items-center gap-2 text-[11px] text-gray-400 ml-3">
+                                <div className="flex items-center gap-1 text-[11px] text-gray-400">
                                     <button 
                                         onClick={() => setIsPrivateMode(!isPrivateMode)}
-                                        className={`flex items-center gap-1 px-2 py-0.5 rounded transition-colors ${isPrivateMode ? 'bg-red-900/30 text-red-400' : 'hover:bg-[#2b2b2b]'}`}
+                                        className={`flex items-center px-1 py-0.5 rounded transition-colors ${isPrivateMode ? 'bg-red-900/30 text-red-400' : 'hover:bg-[#2b2b2b]'}`}
                                         title={isPrivateMode ? "Enable Collaboration" : "Disable Collaboration (Private Mode)"}
                                     >
-                                        {isPrivateMode ? <EyeOff className="w-3 h-3" /> : <div className="text-xs text-gray-300">👥</div>}
+                                        {isPrivateMode ? <EyeOff className="w-3 h-3" /> : <div className="text-xs text-gray-300 h-5">👥</div>}
                                         {isPrivateMode && <span className="text-[10px] font-bold">PRIVATE</span>}
                                     </button>
                                     
