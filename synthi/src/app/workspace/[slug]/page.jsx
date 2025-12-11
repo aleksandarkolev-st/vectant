@@ -25,6 +25,7 @@ import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
 import { useCompiler } from '@/hooks/useCompiler';
 import AIChatWindow from '@/components/chat/AIChatWindow';
 import { api } from '@/services/api';
+import WorkspaceNotFoundModal from '@/components/WorkspaceNotFoundModal';
 import { resolveDependencies } from '@/utils/dependencyResolver';
 import { DraggableVideoWidget } from '@/components/DraggableVideoWidget';
 import { useHMR } from '@/hooks/useHMR';
@@ -98,10 +99,41 @@ export default function EditorPage({ params }) {
     
     // 1. Consume the slug parameter and initiate fetch
     const { slug } = use(params);
+    const [workspaceMissing, setWorkspaceMissing] = useState(false);
+    const [workspaceMissingMessage, setWorkspaceMissingMessage] = useState('');
+
     useEffect(() => {
         if (slug) {
-            dispatch(setSlug(slug)); // Save slug globally
-            dispatch(fetchFilesThunk(slug)); // Initiate data fetch
+            const init = async () => {
+                dispatch(setSlug(slug)); // Save slug globally
+                try {
+                    const result = await dispatch(fetchFilesThunk(slug));
+                    if (fetchFilesThunk.rejected.match(result)) {
+                        const message = result.error && result.error.message ? result.error.message : (result.error || 'Unknown error');
+                        if (message && message.toLowerCase().includes('workspace not found')) {
+                            setWorkspaceMissing(true);
+                            setWorkspaceMissingMessage(message);
+                        } else {
+                            // Non-404 errors: log and do not display the not-found modal
+                            console.error('Failed to fetch workspace files:', message);
+                        }
+                        } else {
+                            // Successful
+                            setWorkspaceMissing(false);
+                            setWorkspaceMissingMessage('');
+                    }
+                } catch (e) {
+                    const msg = e?.message || String(e);
+                    if (msg.toLowerCase().includes('workspace not found')) {
+                        setWorkspaceMissing(true);
+                        setWorkspaceMissingMessage(msg);
+                    } else {
+                        // Don't hide the page for transient errors; just log
+                        console.error('Failed to load workspace files', e);
+                    }
+                }
+            };
+            init();
         }
     }, [slug, dispatch]);
 
@@ -355,8 +387,12 @@ export default function EditorPage({ params }) {
         </ResizablePanel>
     );
 
+    if (workspaceMissing) {
+        return <WorkspaceNotFoundModal slug={slug} message={workspaceMissingMessage} open={true} />;
+    }
+
     return (
-        <div className="flex flex-col h-screen bg-[#1e1e1e] text-gray-200">
+        <div className={`flex flex-col h-screen bg-[#1e1e1e] text-gray-200`}>
             <TopNav
                 title={activeFile? activeFile.name : 'Synthi Workspace'}
                 onRun={handleRun}

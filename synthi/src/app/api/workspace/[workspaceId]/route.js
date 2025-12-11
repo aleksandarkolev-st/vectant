@@ -1,5 +1,8 @@
 import { Storage } from '@google-cloud/storage';
 import { NextResponse } from 'next/server';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
 
 const storage = new Storage({
     projectId: process.env.GCP_PROJECT_ID,
@@ -73,6 +76,19 @@ export async function GET(request, { params }) {
 
     if (!workspaceId) {
         return NextResponse.json({ error: 'Workspace ID is required.' }, { status: 400 });
+    }
+
+    try {
+        const workspace = await prisma.workspace.findUnique({
+            where: { slug: workspaceId }
+        });
+
+        if (!workspace) {
+            return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+        }
+    } catch (error) {
+        console.error('Database Error:', error);
+        return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
     }
 
     const storagePathPrefix = `workspaces/${workspaceId}/`;

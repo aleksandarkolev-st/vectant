@@ -1,41 +1,66 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { fetchGitStatus, fetchRemote, commitChanges, pushChanges, pullChanges, stageFile, unstageFile, discardChange, initRepo, cloneRepo, addRemote, removeRemote, fetchRemotes, fetchCommitHistory, fetchUnpushedCommits } from '@/redux/gitSlice';
+import { fetchGitStatus, fetchRemote, commitChanges, pushChanges, pullChanges, stageFile, unstageFile, discardChange, initRepo, cloneRepo, addRemote, removeRemote, fetchRemotes, fetchCommitHistory, fetchUnpushedCommits, fetchStashList, stashPush, stashPop, stashDrop, clearError, stageAll, unstageAll, discardAll } from '@/redux/gitSlice';
 import { refreshWorkspaceThunk, openDiffThunk, fetchFilesThunk } from '@/redux/workspaceSlice';
-import { RefreshCw, Check, UploadCloud, Plus, Minus, DownloadCloud, Undo2, Globe, Trash2, Copy } from 'lucide-react';
+import { RefreshCw, Check, UploadCloud, Plus, Minus, DownloadCloud, Undo2, Globe, Trash2, Copy, Archive, ArchiveRestore } from 'lucide-react';
 import { getFileLanguage } from '@/utils/fileUtils';
 
 export function GitStatus({ slug }) {
     const dispatch = useDispatch();
-    const { status, loading, error, remotes } = useSelector(state => state.git);
+    const { status, loading, error, remotes, stashList } = useSelector(state => state.git);
     const { commitHistory, unpushedCommits } = useSelector(state => state.git);
     const [message, setMessage] = useState('');
+    const [commitBody, setCommitBody] = useState(''); // Multi-line commit body
+    const [showCommitBody, setShowCommitBody] = useState(false);
     const [showAddRemote, setShowAddRemote] = useState(false);
     const [newRemoteName, setNewRemoteName] = useState('origin');
     const [newRemoteUrl, setNewRemoteUrl] = useState('');
     const [showAllCommits, setShowAllCommits] = useState(false);
+    const [showStash, setShowStash] = useState(false);
+    const [stashMessage, setStashMessage] = useState('');
+    
+    // Use visibility-based refresh instead of constant polling
+    const refreshGitData = useCallback(() => {
+        if (slug) {
+            dispatch(fetchGitStatus(slug));
+            dispatch(fetchRemotes(slug));
+            dispatch(fetchCommitHistory({ slug }));
+            dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+            dispatch(fetchStashList(slug));
+        }
+    }, [slug, dispatch]);
 
     useEffect(() => {
         if (slug) {
             // Initial fetch
-            dispatch(fetchGitStatus(slug));
-            dispatch(fetchRemotes(slug));
-            dispatch(fetchCommitHistory(slug));
-            dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+            refreshGitData();
             
-            // Poll every 5 seconds
+            // Refresh on window focus instead of constant polling
+            const handleFocus = () => {
+                refreshGitData();
+            };
+            
+            window.addEventListener('focus', handleFocus);
+            
+            // Light poll every 30 seconds instead of 5 (only status)
             const interval = setInterval(() => {
-                dispatch(fetchGitStatus(slug));
-            }, 5000); 
-            return () => clearInterval(interval);
+                if (document.hasFocus()) {
+                    dispatch(fetchGitStatus(slug));
+                }
+            }, 30000); 
+            
+            return () => {
+                clearInterval(interval);
+                window.removeEventListener('focus', handleFocus);
+            };
         }
-    }, [slug, dispatch]);
+    }, [slug, dispatch, refreshGitData]);
 
     const handleSync = () => {
         if (slug) {
             dispatch(fetchRemote(slug));
             dispatch(fetchRemotes(slug));
-            dispatch(fetchCommitHistory(slug));
+            dispatch(fetchCommitHistory({ slug }));
             dispatch(fetchUnpushedCommits({ slug, max: 50 }));
         }
     };
@@ -78,7 +103,7 @@ export function GitStatus({ slug }) {
     };
 
     const handleFetchHistory = () => {
-        if (slug) dispatch(fetchCommitHistory(slug));
+        if (slug) dispatch(fetchCommitHistory({ slug }));
     };
 
     const handleFetchUnpushed = () => {
@@ -93,11 +118,36 @@ export function GitStatus({ slug }) {
 
     const handleCommit = async () => {
         if (slug && message) {
-            const resultAction = await dispatch(commitChanges({ slug, message }));
+            // Combine title and body for multi-line commit message
+            const fullMessage = commitBody ? `${message}\n\n${commitBody}` : message;
+            const resultAction = await dispatch(commitChanges({ slug, message: fullMessage }));
             if (commitChanges.fulfilled.match(resultAction)) {
-                // dispatch(pushChanges(slug)); // Don't auto-push
                 setMessage('');
+                setCommitBody('');
+                setShowCommitBody(false);
             }
+        }
+    };
+
+    // Stash handlers
+    const handleStashPush = async () => {
+        if (slug) {
+            await dispatch(stashPush({ slug, message: stashMessage }));
+            setStashMessage('');
+            dispatch(fetchGitStatus(slug));
+        }
+    };
+
+    const handleStashPop = async (index = 0) => {
+        if (slug) {
+            await dispatch(stashPop({ slug, index }));
+            dispatch(refreshWorkspaceThunk());
+        }
+    };
+
+    const handleStashDrop = async (index = 0) => {
+        if (slug && confirm('Are you sure you want to drop this stash?')) {
+            await dispatch(stashDrop({ slug, index }));
         }
     };
 
@@ -106,9 +156,21 @@ export function GitStatus({ slug }) {
         dispatch(stageFile({ slug, filePath }));
     };
 
+    const handleStageAll = () => {
+        if (slug) {
+            dispatch(stageAll(slug));
+        }
+    };
+
     const handleUnstage = (e, filePath) => {
         e.stopPropagation();
         dispatch(unstageFile({ slug, filePath }));
+    };
+
+    const handleUnstageAll = () => {
+        if (slug) {
+            dispatch(unstageAll(slug));
+        }
     };
 
     const handleDiscard = async (e, filePath) => {
@@ -116,6 +178,15 @@ export function GitStatus({ slug }) {
         if (confirm(`Are you sure you want to discard changes in ${filePath}?`)) {
             const result = await dispatch(discardChange({ slug, filePath }));
             if (discardChange.fulfilled.match(result)) {
+                dispatch(refreshWorkspaceThunk());
+            }
+        }
+    };
+
+    const handleDiscardAll = async () => {
+        if (confirm('Are you sure you want to discard ALL changes? This cannot be undone!')) {
+            const result = await dispatch(discardAll(slug));
+            if (discardAll.fulfilled.match(result)) {
                 dispatch(refreshWorkspaceThunk());
             }
         }
@@ -377,12 +448,77 @@ export function GitStatus({ slug }) {
                     )}
                 </div>
 
+                {/* Stash Section */}
+                <div className="mb-4">
+                    <div className="flex justify-between items-center mb-1 px-1">
+                        <div className="text-xs font-semibold text-gray-400">STASH</div>
+                        <button 
+                            onClick={() => setShowStash(!showStash)}
+                            className="hover:bg-gray-700 p-1 rounded text-gray-400 hover:text-white"
+                            title={showStash ? "Hide stash" : "Show stash"}
+                        >
+                            <Archive className="w-3 h-3" />
+                        </button>
+                    </div>
+                    {showStash && (
+                        <div className="space-y-2">
+                            {hasChanges && (
+                                <div className="flex gap-2">
+                                    <input
+                                        type="text"
+                                        value={stashMessage}
+                                        onChange={(e) => setStashMessage(e.target.value)}
+                                        placeholder="Stash message (optional)..."
+                                        className="flex-1 bg-[#1e1e1e] border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 focus:outline-none focus:border-blue-500"
+                                    />
+                                    <button 
+                                        onClick={handleStashPush}
+                                        disabled={!hasChanges}
+                                        className="bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white px-2 py-1 rounded text-xs"
+                                        title="Stash changes"
+                                    >
+                                        Stash
+                                    </button>
+                                </div>
+                            )}
+                            {stashList && stashList.length > 0 ? (
+                                <ul className="text-sm space-y-1">
+                                    {stashList.map((s, idx) => (
+                                        <li key={s.hash || idx} className="p-1 rounded hover:bg-gray-800 flex items-center gap-2 group">
+                                            <div className="font-mono text-xs text-gray-400">stash@{`{${idx}}`}</div>
+                                            <div className="truncate text-gray-200 text-xs flex-1">{s.message || 'WIP'}</div>
+                                            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                                                <button 
+                                                    onClick={() => handleStashPop(idx)}
+                                                    className="hover:bg-gray-700 p-1 rounded text-gray-400 hover:text-white"
+                                                    title="Pop stash"
+                                                >
+                                                    <ArchiveRestore className="w-3 h-3" />
+                                                </button>
+                                                <button 
+                                                    onClick={() => handleStashDrop(idx)}
+                                                    className="hover:bg-red-900/50 p-1 rounded text-gray-400 hover:text-red-400"
+                                                    title="Drop stash"
+                                                >
+                                                    <Trash2 className="w-3 h-3" />
+                                                </button>
+                                            </div>
+                                        </li>
+                                    ))}
+                                </ul>
+                            ) : (
+                                <div className="text-xs text-gray-600 px-1 italic">No stashed changes</div>
+                            )}
+                        </div>
+                    )}
+                </div>
+
                 {/* Commit history */}
                 <div className="mb-4">
                     <div className="flex justify-between items-center mb-1 px-1">
                         <div className="text-xs font-semibold text-gray-400">COMMIT HISTORY</div>
                         <div className="flex gap-2">
-                            <button onClick={() => dispatch(fetchCommitHistory(slug))} className="hover:bg-gray-700 p-1 rounded text-gray-300 text-xs">Refresh</button>
+                            <button onClick={() => dispatch(fetchCommitHistory({ slug }))} className="hover:bg-gray-700 p-1 rounded text-gray-300 text-xs">Refresh</button>
                         </div>
                     </div>
                     {commitHistory && commitHistory.all && commitHistory.all.length > 0 ? (
@@ -422,7 +558,16 @@ export function GitStatus({ slug }) {
                         {/* Staged Changes */}
                         {staged.length > 0 && (
                             <div>
-                                <div className="text-xs font-semibold text-gray-400 mb-1 px-1">STAGED CHANGES</div>
+                                <div className="flex items-center justify-between mb-1 px-1">
+                                    <div className="text-xs font-semibold text-gray-400">STAGED CHANGES</div>
+                                    <button 
+                                        onClick={handleUnstageAll}
+                                        className="text-xs text-gray-400 hover:text-white hover:bg-gray-700 px-2 py-0.5 rounded transition-all"
+                                        title="Unstage All"
+                                    >
+                                        Unstage All
+                                    </button>
+                                </div>
                                 <ul className="text-sm space-y-1">
                                     {staged.map(file => (
                                         <li 
@@ -452,7 +597,25 @@ export function GitStatus({ slug }) {
                         {/* Changes */}
                         {changes.length > 0 && (
                             <div>
-                                <div className="text-xs font-semibold text-gray-400 mb-1 px-1">CHANGES</div>
+                                <div className="flex items-center justify-between mb-1 px-1">
+                                    <div className="text-xs font-semibold text-gray-400">CHANGES</div>
+                                    <div className="flex gap-1">
+                                        <button 
+                                            onClick={handleDiscardAll}
+                                            className="text-xs text-gray-400 hover:text-red-400 hover:bg-gray-700 px-2 py-0.5 rounded transition-all"
+                                            title="Discard All Changes"
+                                        >
+                                            Discard All
+                                        </button>
+                                        <button 
+                                            onClick={handleStageAll}
+                                            className="text-xs text-gray-400 hover:text-white hover:bg-gray-700 px-2 py-0.5 rounded transition-all"
+                                            title="Stage All Changes"
+                                        >
+                                            Stage All
+                                        </button>
+                                    </div>
+                                </div>
                                 <ul className="text-sm space-y-1">
                                     {changes.map(file => (
                                         <li 
@@ -492,23 +655,41 @@ export function GitStatus({ slug }) {
             </div>
             {hasChanges && (
                 <div className="p-2 border-t border-gray-800">
-                    <div className="flex gap-2">
-                        <input 
-                            type="text" 
-                            value={message}
-                            onChange={(e) => setMessage(e.target.value)}
-                            placeholder="Commit message..."
-                            className="flex-1 bg-[#1e1e1e] border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 focus:outline-none focus:border-blue-500"
-                            onKeyDown={(e) => e.key === 'Enter' && handleCommit()}
-                        />
-                        <button 
-                            onClick={handleCommit}
-                            disabled={!message || staged.length === 0}
-                            className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white p-1 rounded"
-                            title="Commit Staged"
-                        >
-                            <Check className="w-4 h-4" />
-                        </button>
+                    <div className="space-y-2">
+                        <div className="flex gap-2">
+                            <input 
+                                type="text" 
+                                value={message}
+                                onChange={(e) => setMessage(e.target.value)}
+                                placeholder="Commit message title..."
+                                className="flex-1 bg-[#1e1e1e] border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 focus:outline-none focus:border-blue-500"
+                                onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleCommit()}
+                            />
+                            <button 
+                                onClick={() => setShowCommitBody(!showCommitBody)}
+                                className={`p-1 rounded text-xs ${showCommitBody ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-700'}`}
+                                title="Add description"
+                            >
+                                ⋮
+                            </button>
+                            <button 
+                                onClick={handleCommit}
+                                disabled={!message || staged.length === 0}
+                                className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white p-1 rounded"
+                                title="Commit Staged"
+                            >
+                                <Check className="w-4 h-4" />
+                            </button>
+                        </div>
+                        {showCommitBody && (
+                            <textarea
+                                value={commitBody}
+                                onChange={(e) => setCommitBody(e.target.value)}
+                                placeholder="Extended description (optional)..."
+                                className="w-full bg-[#1e1e1e] border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 focus:outline-none focus:border-blue-500 resize-none"
+                                rows={3}
+                            />
+                        )}
                     </div>
                 </div>
             )}

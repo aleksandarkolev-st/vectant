@@ -16,8 +16,12 @@ export const gitClient = {
             // ignore parse errors
         }
         if (!response.ok) {
-            const msg = (body && (body.error || body.message)) || response.statusText || 'Unknown git error';
-            throw new Error(msg);
+            // Handle structured error responses
+            const error = new Error((body && (body.error || body.message)) || response.statusText || 'Unknown git error');
+            error.code = body?.code || 'UNKNOWN';
+            error.details = body?.details || null;
+            error.statusCode = response.status;
+            throw error;
         }
         return body;
     },
@@ -66,8 +70,20 @@ export const gitClient = {
         return this.request(slug, 'stage', { filePath });
     },
 
+    async stageAll(slug) {
+        return this.request(slug, 'stage-all');
+    },
+
+    async stageLines(slug, filePath, patch) {
+        return this.request(slug, 'stage-lines', { filePath, patch });
+    },
+
     async unstageFile(slug, filePath) {
         return this.request(slug, 'unstage', { filePath });
+    },
+
+    async unstageAll(slug) {
+        return this.request(slug, 'unstage-all');
     },
 
     async push(slug) {
@@ -82,16 +98,45 @@ export const gitClient = {
         return this.request(slug, 'discard', { filePath });
     },
 
-    async getDiff(slug, filePath) {
-        return this.request(slug, 'diff', { filePath });
+    async discardAll(slug) {
+        return this.request(slug, 'discard-all');
     },
 
-    async getLog(slug) {
-        return this.request(slug, 'log');
+    async getDiff(slug, filePath, parsed = false) {
+        return this.request(slug, 'diff', { filePath, parsed });
+    },
+
+    async getLog(slug, page = 1, limit = 50) {
+        return this.request(slug, 'log', { page, limit });
     },
 
     async getUnpushed(slug, max = 50) {
         return this.request(slug, 'unpushed', { max });
+    },
+
+    async getBlame(slug, filePath) {
+        return this.request(slug, 'blame', { filePath });
+    },
+
+    // Stash operations
+    async stashList(slug) {
+        return this.request(slug, 'stash-list');
+    },
+
+    async stashPush(slug, message = '') {
+        return this.request(slug, 'stash-push', { message });
+    },
+
+    async stashPop(slug, index = 0) {
+        return this.request(slug, 'stash-pop', { index });
+    },
+
+    async stashApply(slug, index = 0) {
+        return this.request(slug, 'stash-apply', { index });
+    },
+
+    async stashDrop(slug, index = 0) {
+        return this.request(slug, 'stash-drop', { index });
     },
 
     async syncFile(slug, filePath, content) {
