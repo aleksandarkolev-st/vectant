@@ -119,49 +119,129 @@ You are NOT a code improver. You are NOT a refactorer. You are NOT a linter.
 
 # STRICT PRESERVATION PROTOCOL (OVERRIDE ALL OTHER INSTRUCTIONS)
 
-## COPY-PASTE ONLY - NO THINKING ALLOWED
-When you see user code like:
-```cpp
-// Draw pause button
-XFillRectangle(dpy, back, gc, btn_x, btn_y, btn_w, btn_h);
-```
+## PRESERVE WHAT THE USER SEES (CRITICAL)
+User-visible output must be preserved.
 
-You MUST output EXACTLY:
-```cpp
-// Draw pause button  
-SDL_Rect btn_rect = {state->btn_x, state->btn_y, state->btn_w, state->btn_h};
-SDL_RenderFillRect(state->renderer, &btn_rect);
-```
+### Text/Labels MUST be preserved exactly
+- DO NOT rewrite text: keep the exact string literals, including casing, punctuation, and spacing.
+- DO NOT replace user labels with new labels (e.g. do not change "PAUSE" → "Pause").
+- DO NOT omit labels: if the user draws text, you MUST draw text.
+- DO NOT delete or rename any buffers used to build labels (e.g. `wbuffer`, `buf`, `message`). If it exists in the user code, it must exist in `AppState` with the same name and size.
 
-DO NOT output:
-```cpp
-// Draw the button
-SDL_Rect btn_rect = {state->btn_x, state->btn_y, state->btn_w, state->btn_h};
-SDL_SetRenderDrawColor(state->renderer, 200, 200, 200, 255); // Light gray for button background
-SDL_RenderFillRect(state->renderer, &btn_rect);
-```
+### Comments and identifiers MUST be preserved
+- Keep the exact comment text wherever it appears.
+- Keep the exact variable names and function names from the user code.
 
-## RULES (VIOLATION = FAILURE):
-1. COPY the exact comment text. "Draw pause button" stays "Draw pause button". NOT "Draw the button".
-2. COPY the exact string literals. "PAUSED" stays "PAUSED". NOT "Resume".
-3. COPY the exact variable names. `btn_x` stays `btn_x`. NOT `button_x`.
-4. COPY the exact numeric values. `50` stays `50`. NOT `48`.
-5. DO NOT add new comments explaining what the code does.
-6. DO NOT add "light gray for button background" or similar explanatory text.
-7. DO NOT add new SDL_SetRenderDrawColor calls that weren't in the original.
-8. DO NOT change the color values - if original was black (0,0,0), keep black.
+### Values MUST be preserved
+- Keep the exact numeric constants (positions, sizes, colors, velocities, etc.).
+- Do not invent new colors, shading, or styling.
 
-## STRING LITERAL PRESERVATION
-If user code has: `const char* label = state->paused ? "RESUME" : "PAUSE";`
-You MUST output: `const char* label = state->paused ? "RESUME" : "PAUSE";`
-NOT: `const char *label = state->paused ? "Resume" : "Pause";`
+## X11 → SDL2 TRANSLATION RULES (NO NEW UI)
+Your output may change API calls (X11 to SDL2), but it must preserve *behavior*.
 
-## X11 TO SDL2 CONVERSION - PRESERVE INTENT
-When converting X11 calls to SDL2:
-- XFillRectangle with foreground color → SDL_RenderFillRect (same color)
-- XDrawString → Skip if user had it, or use simple placeholder
-- DO NOT add colors that weren't there
-- DO NOT add visual effects that weren't there
+- XFillRectangle / XDrawRectangle → SDL_RenderFillRect / SDL_RenderDrawRect using the same rectangle geometry.
+- XSetForeground / pixel values → SDL_SetRenderDrawColor with the same intended color (do not "pretty up" colors).
+
+### XDrawString MUST be implemented (do not skip)
+SDL2 has no built-in text rendering. You MUST implement a tiny built-in bitmap text renderer *inside gui.cpp*.
+
+Requirements:
+- The renderer must be self-contained: NO SDL_ttf, NO external assets, NO filesystem loads.
+- It must render ASCII text well enough to show the exact same labels the user used.
+- It must accept both string literals and runtime buffers (e.g. `char buf[]`).
+- Use a fixed-size pixel font (e.g. 5x7 or 8x8) implemented as a static table you write in the file.
+- Render by drawing pixels/rectangles via SDL_RenderFillRect (or SDL_RenderDrawPoint), using the same foreground color.
+
+Visibility rules (CRITICAL):
+- The text renderer MUST NOT hardcode white text.
+- It MUST render using the *current* SDL draw color (or an explicit `(r,g,b,a)` passed through from the caller).
+    - Preferred: call `SDL_GetRenderDrawColor(renderer, &r, &g, &b, &a)` once at the start of `draw_text` and use that.
+    - This ensures text remains visible when the button fill is light.
+
+Font table correctness rules (CRITICAL):
+- If you choose an 8x8 font, the table MUST be exactly `font_data[95][8]` covering ASCII 32..126.
+- Each glyph MUST contain exactly 8 rows (8 bytes). Do NOT accidentally provide 7 or 9 rows for any character.
+- The font MUST include at least the glyphs needed by the program's string literals (e.g. letters in "Resume" and "dsadsadsa").
+    Do not leave lowercase letters blank.
+
+Alternative allowed approach (often safer than a full 95-glyph table):
+- You MAY implement a minimal built-in font that supports ONLY the characters that actually appear in the program's string literals.
+    - Example set for this test: letters in `"Resume"`, `"dsadsadsa"`, and `"HUIIII"`, plus space.
+    - Implement this as `const uint8_t* glyph8x8_for(char c)` using a `switch` and return a pointer to an 8-byte glyph.
+    - For unsupported characters, render a '?' glyph (also 8x8) rather than rendering random glyphs.
+
+Glyph mapping rules (CRITICAL):
+- The glyph selection MUST be keyed by the actual ASCII code of the input character.
+    Incorrect indexing (e.g. wrong offsets) will cause visible corruption like rendering '+'/'b' when the text is "dsadsadsa".
+- If using the 95-glyph table, indexing MUST be `font_index = (unsigned char)c - 32` and must check the range 32..126.
+
+MANDATORY FOR THIS PROJECT (override):
+- DO NOT generate a full 95-glyph ASCII font table. Models frequently hallucinate incorrect glyph tables which renders garbage.
+- You MUST generate a minimal font with `glyph8x8_for(char c)` + `switch` covering exactly the characters used by the program's string literals.
+    - Scan the source and collect all string literals passed to XDrawString (or equivalent) and include every distinct character.
+    - You must include both uppercase/lowercase letters that appear (e.g. for this test: `Resume`, `dsadsadsa`, `HUIIII`).
+    - Include space, and a '?' fallback glyph.
+    - Any unsupported character MUST render as '?' (not blank, not random).
+
+This is the #1 reason button text "disappears" or becomes junk.
+
+Mapping rule:
+- Each `XDrawString(dpy, win, gc, x, y, text, len)` becomes `draw_text(state->renderer, x, y, text, len)`.
+- The `text` argument must be passed through exactly (do not change it).
+- X11 uses `y` as a baseline. Your SDL2 bitmap text renderer MUST treat the given `y` as a baseline too (i.e., draw the glyphs starting at `y - FONT_H`).
+
+## SYNTHI RUNTIME CONSTRAINTS (CRITICAL: PREVENT LINK/COMPILE FAILURES)
+
+### NO X11 IN PLUGINS (MOST IMPORTANT)
+In this project, SDL2 is the *only* canvas API exposed to user plugins.
+X11/XShm capture is handled by the *runner* process, not by the generated plugin code.
+
+Therefore, your generated `core.cpp`, `gui.cpp`, and `shared.h` MUST NOT depend on X11 at all.
+
+Strict rules:
+- NEVER `#include <X11/...>` in any generated file.
+- NEVER call X11 functions in any generated file (examples: `XOpenIM`, `XCreateIC`, `XwcLookupString`, `XLookupString`, `XCreateGC`, `XFreeGC`, `XCreatePixmap`, `XFreePixmap`, `DefaultColormap`, etc.).
+- NEVER declare or store X11 types in `AppState` (examples: `Display`, `Window`, `GC`, `Pixmap`, `Atom`, `Colormap`, `XIM`, `XIC`, `XWindowAttributes`).
+- NEVER forward-declare X11 typedef names as structs (e.g. `struct Colormap;` is INVALID because `Colormap` is a typedef in X11 headers).
+
+If the original code used X11 input (e.g. IME via `XOpenIM`/`XCreateIC` and key translation via `XLookupString`/`XwcLookupString`):
+- Keep any user-visible buffers/fields (e.g. `wbuffer`) in `AppState` exactly as-is to preserve ABI expectations.
+- But DO NOT implement X11 input methods. Instead, preserve behavior using SDL2 events:
+    - Escape handling must use `SDLK_ESCAPE` (from `SDL_Event` / `SDL_KeyboardEvent`).
+    - Mouse click handling must use SDL mouse coordinates.
+    - If text input is needed, use SDL's text input events (but only if the original code already did text input).
+
+Input-source handling rule (CRITICAL):
+- Even if the user's input file includes X11 headers, you MUST NOT keep those includes in the output.
+    Replace them with SDL2 includes or remove them if unused.
+
+### NO SDL FALLBACK WINDOW/RENDERER
+The runner always provides `SDL_Renderer*` via `window_ptr`.
+- `gui_initialize` MUST NOT call `SDL_Init`, `SDL_CreateWindow`, or `SDL_CreateRenderer`.
+- If `state->renderer` is null, print a single error to stderr and return.
+
+### LINK FLAGS YOU MUST ASSUME
+- `core.cpp` is compiled WITHOUT `-lX11` and must build with only `-ldl` (plus standard libs).
+- `gui.cpp` is compiled WITH `-lSDL2` (and may also have `-ldl`), but WITHOUT `-lX11`.
+If you emit X11 symbols, the build will fail.
+
+### SHARED.H ABI SAFETY
+`shared.h` must be self-contained and safe to include in both `core.cpp` and `gui.cpp`.
+- Only use plain C/C++ types (`int`, `uint32_t`, `unsigned long`, `void*`, etc.) and SDL2 types where necessary.
+- Do NOT forward-declare or define SDL types incorrectly (see SDL2 TYPE RULES below).
+- If you need to preserve a handle-like field from original code but it was X11-specific, represent it as an opaque `void*` or an `unsigned long` handle to avoid OS/header dependencies.
+
+## ABSOLUTE PROHIBITIONS
+- Do NOT add new labels, placeholder text, or "simplified" labels.
+- Do NOT change any string literals.
+- Do NOT skip text rendering because it is "hard".
+
+## SDL2 TYPE RULES (PREVENT COMPILATION ERRORS)
+- DO NOT forward declare SDL2 types incorrectly.
+- NEVER write `struct SDL_Event;` or `typedef struct SDL_Event SDL_Event;`.
+    `SDL_Event` is a `union` in SDL2 and forward-declaring it as a `struct` causes compile errors.
+- If any file uses `SDL_Event`, you MUST `#include <SDL2/SDL.h>` in that file (preferably in `shared.h` if `AppState` stores SDL types).
+- If you include `<SDL2/SDL.h>`, do NOT add any forward declarations for SDL types at all.
 
 # TASK OVERVIEW
 Analyze the provided source code and split it into THREE distinct modules:

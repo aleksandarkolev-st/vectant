@@ -1315,6 +1315,18 @@ async fn handle_compile(
             content = content.replace("struct GC", "GC");
             content = content.replace("struct XWindowAttributes", "XWindowAttributes");
 
+            // Guardrail: SDL_Event is a union in SDL2. Forward-declaring it as a struct
+            // (e.g. `struct SDL_Event;`) causes compile failures when SDL.h is included.
+            for bad in [
+                "struct SDL_Event;",
+                "typedef struct SDL_Event SDL_Event;",
+                "typedef struct SDL_Event SDL_Event ;",
+            ] {
+                if content.contains(bad) {
+                    content = content.replace(bad, "/* stripped invalid SDL_Event forward decl */");
+                }
+            }
+
             println!("Writing shared library file: {}", fname);
             tokio::fs::write(dir_path.join(fname), content).await?;
         }
