@@ -622,7 +622,15 @@ fn main() {
                                     eprintln!("[Runner] [HMR] Phase 2: Saving state from old module '{}'...", name);
                                     
                                     // Save state BEFORE any cleanup - use module-specific state
-                                    let save_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut std::ffi::c_char>, _> = old_lib.get(b"on_save_state");
+                                    // Prefer ABI-prefixed symbols, fall back to legacy.
+                                    let save_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut std::ffi::c_char>, _> =
+                                        if name == "core" {
+                                            old_lib.get(b"core_on_save_state").or_else(|_| old_lib.get(b"on_save_state"))
+                                        } else if name == "gui" {
+                                            old_lib.get(b"gui_on_save_state").or_else(|_| old_lib.get(b"on_save_state"))
+                                        } else {
+                                            old_lib.get(b"on_save_state")
+                                        };
                                     if let Ok(f) = save_func {
                                         // Use module's own state for save, not the shared app_state.raw
                                         let state_to_save = if !module_prev_state.is_null() { module_prev_state } else { app_state.raw };
@@ -822,7 +830,9 @@ fn main() {
                                     // Core module cleanup must NOT call on_unload (would dlclose gui.so)
                                     if name == "gui" {
                                         // GUI cleanup is always safe - it only touches GuiState
-                                        let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = old_lib.get(b"on_unload");
+                                        // Prefer ABI-prefixed unload symbol, fall back to legacy.
+                                        let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> =
+                                            old_lib.get(b"gui_on_unload").or_else(|_| old_lib.get(b"on_unload"));
                                         if let Ok(f) = func {
                                             // Pass the old GUI state for cleanup
                                             f(module_prev_state);
@@ -844,7 +854,15 @@ fn main() {
                                 // Cleanup any modules from mode switching
                                 for (old_name, old_lib) in deferred_unloads {
                                     eprintln!("[Runner] [HMR] Deferred cleanup of '{}'...", old_name);
-                                    let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = old_lib.get(b"on_unload");
+                                    // Mode-switch unloads are legacy modules; still prefer known ABI symbol names.
+                                    let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> =
+                                        if old_name == "gui" {
+                                            old_lib.get(b"gui_on_unload").or_else(|_| old_lib.get(b"on_unload"))
+                                        } else if old_name == "core" {
+                                            old_lib.get(b"core_on_unload").or_else(|_| old_lib.get(b"on_unload"))
+                                        } else {
+                                            old_lib.get(b"on_unload")
+                                        };
                                     if let Ok(f) = func {
                                         f(std::ptr::null_mut());
                                     }
@@ -887,7 +905,15 @@ fn main() {
                              let module_state_ptr = module_states.get(name).map(|s| s.state_ptr).unwrap_or(std::ptr::null_mut());
                              module_states.remove(name);
                              unsafe {
-                                 let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"on_unload");
+                                 // Prefer ABI-prefixed unload symbols, fall back to legacy.
+                                 let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> =
+                                     if name == "core" {
+                                         lib.get(b"core_on_unload").or_else(|_| lib.get(b"on_unload"))
+                                     } else if name == "gui" {
+                                         lib.get(b"gui_on_unload").or_else(|_| lib.get(b"on_unload"))
+                                     } else {
+                                         lib.get(b"on_unload")
+                                     };
                                  if let Ok(f) = func {
                                      f(module_state_ptr);
                                  }

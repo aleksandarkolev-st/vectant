@@ -426,6 +426,30 @@ impl HmrStatus {
         }
     }
     
+    /// Create a rejected status with custom fallback action
+    pub fn rejected_with_fallback(module: &str, reason: &str, fallback: &str) -> Self {
+        HmrStatus::Rejected {
+            module: module.to_string(),
+            reason: reason.to_string(),
+            fallback: fallback.to_string(),
+        }
+    }
+    
+    /// Create a compile error status
+    pub fn compile_error(module: &str, errors: Vec<String>) -> Self {
+        HmrStatus::CompileError {
+            module: module.to_string(),
+            errors,
+        }
+    }
+    
+    /// Create a full reload required status
+    pub fn full_reload(reason: &str) -> Self {
+        HmrStatus::FullReloadRequired {
+            reason: reason.to_string(),
+        }
+    }
+    
     pub fn capability_detected(module: &str, report: &CapabilityReport) -> Self {
         HmrStatus::CapabilityDetected {
             module: module.to_string(),
