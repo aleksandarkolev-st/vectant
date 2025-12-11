@@ -78,7 +78,7 @@ export function useAnalyzerGateway({
     } finally {
       setIsAnalyzing(false);
     }
-  }, []);
+  }, [SUPPORTED_ANALYZER_LANGS]);
 
   const askAi = useCallback(async ({ code, lang, prompt, mode, files, focusPath, onProgress, model, apiKey } = {}) => {
     if (!clientRef.current) {
