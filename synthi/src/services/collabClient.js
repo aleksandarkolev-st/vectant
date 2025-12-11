@@ -466,20 +466,43 @@ class CollabClient {
       model = monaco.editor.createModel(entry.ytext.toString() || '', undefined, uri);
     }
 
-    // If model has content while ytext empty, push content into ytext
-    if (entry.ytext.length === 0 && model.getValue()) {
-      // Use simple replace
-      entry.doc.transact(() => {
-        entry.ytext.delete(0, entry.ytext.length);
-        entry.ytext.insert(0, model.getValue());
-      });
-    } else if (entry.ytext.length > 0) {
-      // If ytext has content, it takes precedence over local model initialization
-      // (which might be empty or stale if Redux hasn't loaded yet)
-      const remoteContent = entry.ytext.toString();
-      if (model.getValue() !== remoteContent) {
-        model.setValue(remoteContent);
+    // Ensure the editor uses this model (critical for collab/LSP to work together)
+    // This prevents a model mismatch where the Editor component's internal model
+    // differs from the one we bind to Yjs.
+    const currentModel = editor.getModel();
+    const currentModelContent = currentModel ? currentModel.getValue() : '';
+    
+    // Determine which content source to use:
+    // 1. If ytext has content (from server/other clients), use it (authoritative)
+    // 2. If ytext is empty but model has content, seed ytext with model content
+    // 3. If both empty, nothing to do
+    const ytextContent = entry.ytext.toString();
+    const ytextHasContent = ytextContent.length > 0;
+    const modelHasContent = currentModelContent.length > 0;
+    
+    if (ytextHasContent) {
+      // Ytext is authoritative - sync model to ytext content
+      if (model.getValue() !== ytextContent) {
+        model.setValue(ytextContent);
       }
+    } else if (modelHasContent) {
+      // Ytext is empty, seed it with model content (only once)
+      entry.doc.transact(() => {
+        // Clear and insert to ensure no duplication
+        if (entry.ytext.length > 0) {
+          entry.ytext.delete(0, entry.ytext.length);
+        }
+        entry.ytext.insert(0, currentModelContent);
+      });
+      // Also ensure our target model has the content
+      if (model !== currentModel && model.getValue() !== currentModelContent) {
+        model.setValue(currentModelContent);
+      }
+    }
+    
+    // Now set the model on the editor if different
+    if (currentModel !== model) {
+      editor.setModel(model);
     }
 
     const binding = new MonacoTextBinding(entry.ytext, model, editor, entry.provider.awareness, monaco);
@@ -519,9 +542,21 @@ class CollabClient {
     const statusHandler = ({ status }) => console.debug('[Collab]', entry.key, 'status', status);
     entry.provider.on('status', statusHandler);
 
+    // Track connection status
+    let wsConnected = entry.provider.wsconnected || false;
+    const connectionHandler = ({ status }) => {
+      wsConnected = (status === 'connected');
+    };
+    entry.provider.on('status', connectionHandler);
+
     // Return an object that allows cleanup
     return {
       key: entry.key,
+      // Expose method to check if remote changes are being applied
+      // This allows the Editor to skip Redux updates during remote sync
+      isApplyingRemote: () => binding._applyingRemote,
+      // Expose WebSocket connection status
+      isConnected: () => entry.provider.wsconnected || wsConnected,
       updateLocalUnsaved: (isUnsaved) => {
         if (entry.provider && entry.provider.awareness) {
             const current = entry.provider.awareness.getLocalState();

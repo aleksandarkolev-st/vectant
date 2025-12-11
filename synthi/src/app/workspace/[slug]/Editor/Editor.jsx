@@ -144,6 +144,7 @@ const EditorPanel = ({
     const slug = useAppSelector(state => state.workspace.slug);
     const session = useSession();
     const collabBindingRef = useRef(null);
+    const [collabConnected, setCollabConnected] = useState(false); // Track if collab is actively bound
     const [hoverPresence, setHoverPresence] = useState(null); // { user, clientId, rect }
     // small timeout ref used to keep the hover card alive while moving the pointer
     const hoverHideTimeoutRef = useRef(null);
@@ -488,12 +489,11 @@ const EditorPanel = ({
 
     // Hook up Yjs-based collaboration when an editor and activeFile are present.
     useEffect(() => {
-        if (!editorInstance || !monacoInstance || !activeFile || !slug || isPrivateMode) return;
-
-        // Seed the document on the server if it is empty, using the current editor content.
-        try {
-            collabClient.seedContentIfEmpty(slug, activeFile.path, latestCodeRef.current).catch(() => {});
-        } catch (e) { /* ignore */ }
+        if (!editorInstance || !monacoInstance || !activeFile || !slug || isPrivateMode) {
+            // Clear collab connected state if dependencies are missing
+            setCollabConnected(false);
+            return;
+        }
 
         const user = (session?.data?.user) ? { id: session.data.user.id || session.data.user.email || session.data.user.name, name: session.data.user.name || session.data.user.email, email: session.data.user.email || null, isAnonymous: false } : { id: null, name: 'Anonymous', email: null, isAnonymous: true };
 
@@ -502,6 +502,7 @@ const EditorPanel = ({
             const showLineDecorations = (presenceGranularity === 'line');
             const bindingHandle = collabClient.attachEditor({ editor: editorInstance, monaco: monacoInstance, slug, path: activeFile.path, user, options: { showLineDecorations } });
             collabBindingRef.current = bindingHandle;
+            setCollabConnected(true); // Mark collab as connected
             
             // Sync initial unsaved state
             bindingHandle.updateLocalUnsaved(isUnsaved);
@@ -517,12 +518,14 @@ const EditorPanel = ({
 
         } catch (e) {
             console.warn('[Collab] Failed to attach editor to collaborative session', e);
+            setCollabConnected(false);
         }
 
         return () => {
             try { collabBindingRef.current?._awarenessUnsub?.(); } catch (e) { /* ignore */ }
             try { collabBindingRef.current?.dispose(); } catch (e) { /* ignore */ }
             collabBindingRef.current = null;
+            setCollabConnected(false);
             setRemoteUnsaved(false);
         };
     }, [editorInstance, monacoInstance, activeFile, slug, session, presenceGranularity, isPrivateMode]);
@@ -680,6 +683,15 @@ const EditorPanel = ({
     }, []);
 
     const handleCodeChange = useCallback((newCode) => {
+        // Skip Redux update if collab is applying remote changes to prevent feedback loop
+        // This is critical: when remote Yjs changes come in, collabClient applies them via
+        // executeEdits which triggers onChange. If we push to Redux, it would cause the 
+        // value prop to change, triggering another setValue, conflicting with LSP versioning.
+        if (collabBindingRef.current?.isApplyingRemote?.()) {
+            latestCodeRef.current = newCode;
+            return;
+        }
+
         cancelActiveCompletion({ resetSuggestion: true, reason: 'edit' });
         latestCodeRef.current = newCode;
         if (!pendingContentFrameRef.current) {
@@ -1065,7 +1077,10 @@ const EditorPanel = ({
                                                 key={activeFileIdentity}
                                                 height="100%"
                                                 path={activeFile ? `/synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}` : undefined}
-                                                value={code ?? ''}
+                                                // When collab is connected, don't pass value prop (uncontrolled mode)
+                                                // This prevents React from fighting with Yjs for model ownership
+                                                // The collabClient becomes the single source of truth
+                                                {...(collabConnected ? {} : { value: code ?? '' })}
                                                 language={activeLanguage}
                                                 theme="synthi-theme"
                                                 options={{
