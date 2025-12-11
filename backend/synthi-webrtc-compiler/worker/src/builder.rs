@@ -205,3 +205,143 @@ impl BuildSession {
         self.session_hash == hash
     }
 }
+
+// ============================================================
+// REBUILD DECISION MATRIX
+// ============================================================
+// Determines what needs to be rebuilt based on file changes
+// ============================================================
+
+/// What modules need to be rebuilt
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RebuildScope {
+    /// Nothing changed
+    None,
+    /// Only GUI needs rebuild (core state preserved)
+    GuiOnly,
+    /// Only Core needs rebuild (will trigger GUI reload too due to ABI)
+    CoreOnly,
+    /// Both modules need rebuild
+    Both,
+    /// Full reload required (entry point or shared header changed)
+    FullReload,
+}
+
+impl RebuildScope {
+    /// Combine two scopes (take the more extensive one)
+    pub fn merge(&self, other: &RebuildScope) -> RebuildScope {
+        match (self, other) {
+            (RebuildScope::None, x) | (x, RebuildScope::None) => x.clone(),
+            (RebuildScope::FullReload, _) | (_, RebuildScope::FullReload) => RebuildScope::FullReload,
+            (RebuildScope::Both, _) | (_, RebuildScope::Both) => RebuildScope::Both,
+            (RebuildScope::CoreOnly, _) | (_, RebuildScope::CoreOnly) => RebuildScope::Both,
+            (RebuildScope::GuiOnly, RebuildScope::GuiOnly) => RebuildScope::GuiOnly,
+        }
+    }
+}
+
+/// Content hashes for change detection
+#[derive(Debug, Clone, Default)]
+pub struct ModuleHashes {
+    pub shared_hash: u64,
+    pub core_hash: u64,
+    pub gui_hash: u64,
+    pub main_hash: u64,
+}
+
+impl ModuleHashes {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Determine rebuild scope from changed files
+pub fn determine_rebuild_scope(
+    changed_files: &[String],
+    prev_hashes: &ModuleHashes,
+    new_hashes: &ModuleHashes,
+) -> RebuildScope {
+    let mut scope = RebuildScope::None;
+    
+    for file in changed_files {
+        let file_lower = file.to_lowercase();
+        
+        // Check file type and merge scopes
+        let file_scope = if file_lower.ends_with("shared.h") || file_lower.ends_with("shared.hpp") {
+            // Shared header changed - need to rebuild both
+            RebuildScope::FullReload
+        } else if file_lower.contains("core") && is_source_file(&file_lower) {
+            // Core source changed
+            if prev_hashes.shared_hash != new_hashes.shared_hash {
+                // ABI might have changed - full reload
+                RebuildScope::FullReload
+            } else {
+                RebuildScope::CoreOnly
+            }
+        } else if file_lower.contains("gui") && is_source_file(&file_lower) {
+            // GUI source changed - can swap independently
+            RebuildScope::GuiOnly
+        } else if is_source_file(&file_lower) {
+            // Other source file (main or unknown)
+            RebuildScope::Both
+        } else {
+            RebuildScope::None
+        };
+        
+        scope = scope.merge(&file_scope);
+    }
+    
+    // Additional hash-based checks
+    if prev_hashes.shared_hash != new_hashes.shared_hash {
+        scope = RebuildScope::FullReload;
+    }
+    
+    scope
+}
+
+fn is_source_file(path: &str) -> bool {
+    path.ends_with(".cpp") || 
+    path.ends_with(".c") || 
+    path.ends_with(".h") || 
+    path.ends_with(".hpp") ||
+    path.ends_with(".rs") ||
+    path.ends_with(".py") ||
+    path.ends_with(".js") ||
+    path.ends_with(".ts")
+}
+
+/// Calculate hash for file content
+pub fn hash_content(content: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Analyze workspace and compute hashes for all relevant files
+pub fn compute_module_hashes(workspace_root: &Path) -> ModuleHashes {
+    let mut hashes = ModuleHashes::new();
+    
+    // Look for standard files
+    let files_to_check = [
+        ("shared.h", &mut hashes.shared_hash),
+        ("shared.hpp", &mut hashes.shared_hash),
+        ("core.cpp", &mut hashes.core_hash),
+        ("core.c", &mut hashes.core_hash),
+        ("gui.cpp", &mut hashes.gui_hash),
+        ("gui.c", &mut hashes.gui_hash),
+        ("main.cpp", &mut hashes.main_hash),
+        ("main.c", &mut hashes.main_hash),
+    ];
+    
+    for (filename, hash_field) in files_to_check.iter() {
+        let path = workspace_root.join(filename);
+        if let Ok(content) = fs::read_to_string(&path) {
+            **hash_field = hash_content(&content);
+        }
+    }
+    
+    hashes
+}

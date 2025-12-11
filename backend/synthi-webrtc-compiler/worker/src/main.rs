@@ -10,6 +10,7 @@ mod watcher;
 mod server;
 mod storage;
 
+use builder::{RebuildScope, ModuleHashes, hash_content};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
@@ -110,6 +111,11 @@ struct RunnerState {
     height: u32,
     wsl_display_str: String,
     gst_display_str: String,
+    // Module hashes for differential rebuild
+    module_hashes: ModuleHashes,
+    // Loaded module paths (for determining what to reload)
+    loaded_core_path: Option<String>,
+    loaded_gui_path: Option<String>,
 }
 
 struct LspSessionState {
@@ -1284,8 +1290,161 @@ async fn handle_compile(
             let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
         }
 
+        // ============================================================
+        // DIFFERENTIAL REBUILD: Compute new hashes and determine scope
+        // ============================================================
+        let mut new_hashes = ModuleHashes::new();
+        if let Some(shared) = split_data.get("shared") {
+            let content = shared["content"].as_str().unwrap_or("");
+            new_hashes.shared_hash = hash_content(content);
+        }
+        if let Some(core) = split_data.get("core") {
+            let content = core["content"].as_str().unwrap_or("");
+            new_hashes.core_hash = hash_content(content);
+        }
+        if let Some(gui) = split_data.get("gui") {
+            let content = gui["content"].as_str().unwrap_or("");
+            new_hashes.gui_hash = hash_content(content);
+        }
+        
+        // Get previous hashes from runner state (if exists)
+        let (prev_hashes, prev_core_path, prev_gui_path) = {
+            let guard = runner_store.lock().await;
+            if let Some(state) = guard.as_ref() {
+                (state.module_hashes.clone(), state.loaded_core_path.clone(), state.loaded_gui_path.clone())
+            } else {
+                (ModuleHashes::new(), None, None)
+            }
+        };
+        
+        // Determine rebuild scope
+        let rebuild_scope = if prev_hashes.shared_hash != new_hashes.shared_hash && prev_hashes.shared_hash != 0 {
+            eprintln!("[Main] Shared header changed - full rebuild needed");
+            RebuildScope::Both
+        } else if prev_hashes.core_hash != new_hashes.core_hash && prev_hashes.core_hash != 0 {
+            eprintln!("[Main] Core changed - rebuild core (GUI will reload with new CoreAPI)");
+            RebuildScope::Both // Core change affects GUI's CoreAPI reference
+        } else if prev_hashes.gui_hash != new_hashes.gui_hash && prev_hashes.gui_hash != 0 {
+            eprintln!("[Main] GUI-only change detected - rebuilding GUI only!");
+            RebuildScope::GuiOnly
+        } else {
+            eprintln!("[Main] First build or no changes detected - full build");
+            RebuildScope::Both
+        };
+        
+        // Notify frontend of rebuild scope
+        let scope_msg = match rebuild_scope {
+            RebuildScope::GuiOnly => "GUI-only rebuild (core state preserved)",
+            RebuildScope::CoreOnly => "Core rebuild (GUI will reload)",
+            RebuildScope::Both => "Full rebuild",
+            RebuildScope::FullReload => "Full reload required",
+            RebuildScope::None => "No changes",
+        };
+        let payload = serde_json::json!({
+            "sessionId": session_id.clone(),
+            "type": "stderr",
+            "line": format!("[HMR] {}\n", scope_msg)
+        });
+        let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+
+        // ============================================================
+        // POST-AI VALIDATION: Check required exports exist in generated code
+        // ============================================================
+        let mut validation_errors: Vec<String> = Vec::new();
+        let mut validation_warnings: Vec<String> = Vec::new();
+        
+        // Validate core.cpp required exports
+        if let Some(core) = split_data.get("core") {
+            let content = core["content"].as_str().unwrap_or("");
+            
+            // Required core exports (check for both new and legacy symbol names)
+            let has_on_load = content.contains("extern \"C\" void* core_on_load") || 
+                             content.contains("extern \"C\" void* on_load");
+            let has_on_update = content.contains("extern \"C\" void core_on_update") || 
+                               content.contains("extern \"C\" void on_update");
+            
+            if !has_on_load {
+                validation_errors.push("core.cpp missing required export: on_load or core_on_load".to_string());
+            }
+            if !has_on_update {
+                validation_warnings.push("core.cpp missing on_update/core_on_update - app will be blocking".to_string());
+            }
+            
+            // Check for ABI version constant (warning if missing)
+            if !content.contains("SYNTHI_CORE_ABI_VERSION") && !content.contains("abi_version") {
+                validation_warnings.push("core.cpp should define abi_version field in state struct".to_string());
+            }
+            
+            // Dangerous patterns: GUI code modifying CoreState directly
+            if content.contains("GuiState") && content.contains("CoreState") {
+                // This is allowed - core might reference GUI types for callbacks
+            }
+        }
+        
+        // Validate gui.cpp required exports
+        if let Some(gui) = split_data.get("gui") {
+            let content = gui["content"].as_str().unwrap_or("");
+            
+            // Required GUI exports (check for both new and legacy symbol names)
+            let has_gui_render = content.contains("extern \"C\" void gui_on_render") ||
+                                content.contains("extern \"C\" void gui_render");
+            
+            if !has_gui_render {
+                validation_errors.push("gui.cpp missing required export: gui_render or gui_on_render".to_string());
+            }
+            
+            // Warning: GUI should not modify CoreState directly (HMR safety)
+            if content.contains("CoreState*") && content.contains("->") {
+                // Check if it's writing to CoreState (not just reading)
+                if content.contains("core_state->") && 
+                   (content.contains("= ") || content.contains("++") || content.contains("--")) {
+                    validation_warnings.push("gui.cpp may be modifying CoreState - HMR state preservation may be affected".to_string());
+                }
+            }
+        }
+        
+        // Report validation results
+        if !validation_warnings.is_empty() {
+            for warning in &validation_warnings {
+                let payload = serde_json::json!({
+                    "sessionId": session_id.clone(),
+                    "type": "stderr",
+                    "line": format!("[Validation Warning] {}\n", warning)
+                });
+                let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+            }
+        }
+        
+        if !validation_errors.is_empty() {
+            // Send all errors to frontend
+            for error in &validation_errors {
+                let payload = serde_json::json!({
+                    "sessionId": session_id.clone(),
+                    "type": "stderr",
+                    "line": format!("[Validation Error] {}\n", error)
+                });
+                let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+            }
+            
+            // Don't fail completely - continue with compilation but warn
+            let payload = serde_json::json!({
+                "sessionId": session_id.clone(),
+                "type": "stderr",
+                "line": "[Validation] Continuing with compilation despite validation issues...\n"
+            });
+            let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+        }
+
         let mut core_lib_path = String::new();
         let mut gui_lib_path = String::new();
+        
+        // Reuse previous paths if not rebuilding that module
+        if rebuild_scope == RebuildScope::GuiOnly {
+            if let Some(path) = prev_core_path {
+                core_lib_path = path;
+                eprintln!("[Main] Reusing existing core library: {}", core_lib_path);
+            }
+        }
 
         if let Some(shared) = split_data.get("shared") {
             let fname = shared["filename"].as_str().unwrap_or("shared.h");
@@ -1331,6 +1490,8 @@ async fn handle_compile(
             tokio::fs::write(dir_path.join(fname), content).await?;
         }
 
+        // Skip core compilation if GUI-only rebuild (reuse existing core.so)
+        if rebuild_scope != RebuildScope::GuiOnly {
         if let Some(core) = split_data.get("core") {
             let fname = core["filename"].as_str().unwrap_or("core.cpp");
             let mut content = core["content"].as_str().unwrap_or("").to_string();
@@ -1621,6 +1782,13 @@ extern "C" void* on_load_from_json(const char* json) {
                     }
                 }
                 modules_to_load.push(("core".to_string(), core_lib_path.clone()));
+            }
+        }
+        } else {
+            // GUI-only rebuild: reuse existing core library path
+            if let Some(ref existing_core) = state.loaded_core_path {
+                core_lib_path = existing_core.clone();
+                println!("GUI-only rebuild: reusing existing core at {}", core_lib_path);
             }
         }
 
@@ -2366,6 +2534,9 @@ extern "C" void* on_load_from_json(const char* json) {
             height: req_height,
             wsl_display_str,
             gst_display_str,
+            module_hashes: ModuleHashes::new(),
+            loaded_core_path: None,
+            loaded_gui_path: None,
         });
     }
 
@@ -2436,6 +2607,15 @@ extern "C" void* on_load_from_json(const char* json) {
         
         if existing_runner_can_hmr {
             eprintln!("[Main] HMR update sent to existing runner: {} module(s) loaded", modules_to_load.len());
+        }
+        
+        // Update RunnerState with new module hashes and paths for future differential rebuilds
+        state.module_hashes = new_hashes;
+        if !core_lib_path.is_empty() {
+            state.loaded_core_path = Some(core_lib_path.clone());
+        }
+        if !gui_lib_path.is_empty() {
+            state.loaded_gui_path = Some(gui_lib_path.clone());
         }
     }
     

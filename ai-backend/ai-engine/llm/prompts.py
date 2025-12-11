@@ -655,9 +655,10 @@ Example of CORRECT state structure (SDL2 ONLY - NO X11):
 // DO NOT add Display*, Window, GC, Pixmap, XIM, XIC to AppState!
 
 struct AppState {
-    // ABI Safety Checks (CRITICAL)
-    uint32_t magic;       // Must be 0xDEADBEEF
-    uint32_t struct_size; // Must be sizeof(AppState)
+    // ABI Safety Checks (CRITICAL - first 3 fields MUST be in this exact order)
+    uint32_t magic;       // Must be 0xDEADBEEF for core, 0x60108EEF for GUI
+    uint32_t struct_size; // Must be sizeof(AppState) or sizeof(GuiState)
+    uint32_t abi_version; // Must be 1 (SYNTHI_ABI_VERSION_1)
 
     // SDL2 handles ONLY - NO X11 handles!
     SDL_Renderer* renderer; // Provided by Runner via window_ptr
@@ -908,6 +909,34 @@ struct AppState {
 
     Ensure AppState struct definition in shared.h matches the original variables exactly to allow safe casting.
 
+3.7 SYMBOL NAMING CONVENTION (HMR V1)
+
+The Synthi runtime supports both LEGACY and PREFIXED symbol names. Prefixed names are preferred for clarity:
+
+### CORE module symbols (core.cpp):
+| Preferred (New)     | Legacy (Still Supported) | Description                              |
+|---------------------|--------------------------|------------------------------------------|
+| core_on_load        | on_load                  | Initialize/migrate state                 |
+| core_on_update      | on_update                | Game tick / logic update                 |
+| core_on_unload      | on_unload                | Cleanup before unload                    |
+| core_get_api        | get_core_api             | Return CoreAPI* for GUI to call core     |
+
+### GUI module symbols (gui.cpp):
+| Preferred (New)     | Legacy (Still Supported) | Description                              |
+|---------------------|--------------------------|------------------------------------------|
+| gui_on_load         | gui_initialize           | Initialize GUI state                     |
+| gui_on_render       | gui_render               | Render frame                             |
+| gui_on_event        | gui_on_event             | Handle SDL_Event                         |
+| gui_on_unload       | gui_cleanup              | Cleanup before unload                    |
+
+### ABI Version Constants:
+The runner checks ABI version to ensure compatibility. Include in your state structs:
+```cpp
+#define SYNTHI_ABI_VERSION 1
+#define CORE_STATE_MAGIC 0xDEADBEEF
+#define GUI_STATE_MAGIC  0x60108EEF  // "GUIBEEF" in hex-speak
+```
+
 4. SHARED MODULE REQUIREMENTS (C/C++)
 
 The shared.h file MUST contain:
@@ -940,8 +969,9 @@ Define the COMPLETE AppState structure with ALL fields used by GUI. You MUST inc
 C++
 
 typedef struct {
-    uint32_t magic;       // 0xDEADBEEF
-    uint32_t struct_size; // sizeof(AppState)
+    uint32_t magic;       // 0xDEADBEEF for core, 0x60108EEF for GUI
+    uint32_t struct_size; // sizeof(AppState) or sizeof(GuiState)
+    uint32_t abi_version; // SYNTHI_ABI_VERSION (currently 1)
     // ... other fields ...
 } AppState;
 

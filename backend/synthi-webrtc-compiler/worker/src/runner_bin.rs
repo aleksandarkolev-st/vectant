@@ -17,6 +17,7 @@ use x11rb::protocol::xproto::*;
 use x11rb::protocol::shm::{self, ConnectionExt as ShmConnectionExt};
 
 mod plugin_contract;
+use plugin_contract::{ModuleSlot, ModuleInfo, RebuildScope, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
 
 // SDL2 Definitions
 #[cfg(target_os = "linux")]
@@ -85,14 +86,37 @@ struct AppState {
 }
 
 // Per-module state tracking for independent swaps
+// Enhanced to track ABI version and CoreAPI pointer for proper HMR
 struct ModuleState {
-    state_ptr: *mut c_void,  // Module's own state (CoreState or GuiState)
+    state_ptr: *mut c_void,      // Module's own state (CoreState or GuiState)
+    abi_version: u32,            // ABI version reported by the module
+    core_api_ptr: *mut c_void,   // For GUI: pointer to CoreAPI from core module
 }
 
 impl Default for ModuleState {
     fn default() -> Self {
-        ModuleState { state_ptr: std::ptr::null_mut() }
+        ModuleState { 
+            state_ptr: std::ptr::null_mut(),
+            abi_version: 0,
+            core_api_ptr: std::ptr::null_mut(),
+        }
     }
+}
+
+unsafe impl Send for ModuleState {}
+unsafe impl Sync for ModuleState {}
+
+// Validation helper: check state header magic and size
+unsafe fn validate_state_magic(state: *mut c_void, expected_magic: u32) -> bool {
+    if state.is_null() { return false; }
+    let magic = *(state as *const u32);
+    magic == expected_magic
+}
+
+// Extract ABI version from state header (third u32 field)
+unsafe fn get_module_abi_version(state: *mut c_void) -> u32 {
+    if state.is_null() { return 0; }
+    *((state as *const u32).add(2))
 }
 
 #[repr(C)]
@@ -448,14 +472,90 @@ fn main() {
                             Ok(new_lib) => {
                                 eprintln!("[Runner] [HMR] New library opened. Validating symbols...");
                                 
-                                // Validate new library has required symbols BEFORE any state changes
-                                let new_load_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"on_load");
-                                let new_entry_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = new_lib.get(b"entrypoint");
-                                let new_update_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = new_lib.get(b"on_update");
+                                // ============================================================
+                                // SYMBOL VALIDATION: Check for new prefixed or legacy symbols
+                                // ============================================================
+                                // New ABI v1.0: core_on_load, gui_on_load, etc.
+                                // Legacy: on_load, entrypoint, on_update, etc.
+                                // ============================================================
                                 
-                                if new_load_func.is_err() && new_entry_func.is_err() && new_update_func.is_err() && name != "main" {
-                                     eprintln!("[Runner] [HMR] ERROR: New library missing required symbols. Aborting HMR (old module continues).");
-                                     continue;
+                                let slot = ModuleSlot::from_str(name);
+                                let mut has_required_symbols = false;
+                                let mut module_abi_version: u32 = 0;
+                                
+                                match slot {
+                                    Some(ModuleSlot::Core) => {
+                                        // Core module: require core_on_load, core_on_update, core_get_api
+                                        // OR legacy on_load/on_update for backward compat
+                                        let core_load: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"core_on_load");
+                                        let core_update: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = new_lib.get(b"core_on_update");
+                                        let core_get_api: Result<Symbol<unsafe extern "C" fn() -> *mut c_void>, _> = new_lib.get(b"core_get_api");
+                                        let legacy_load: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"on_load");
+                                        let legacy_update: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = new_lib.get(b"on_update");
+                                        
+                                        if (core_load.is_ok() && core_update.is_ok()) || (legacy_load.is_ok() && legacy_update.is_ok()) {
+                                            has_required_symbols = true;
+                                        }
+                                        
+                                        // Try to get ABI version
+                                        let get_abi: Result<Symbol<unsafe extern "C" fn() -> c_uint>, _> = new_lib.get(b"core_get_abi_version");
+                                        if let Ok(f) = get_abi {
+                                            module_abi_version = f();
+                                            eprintln!("[Runner] [HMR] Core reports ABI version: {}", module_abi_version);
+                                        }
+                                    },
+                                    Some(ModuleSlot::Gui) => {
+                                        // GUI module: require gui_on_load, gui_on_render
+                                        // OR legacy on_load + gui_render for backward compat
+                                        let gui_load: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"gui_on_load");
+                                        let gui_render: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = new_lib.get(b"gui_on_render");
+                                        let legacy_load: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"on_load");
+                                        let legacy_render: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = new_lib.get(b"gui_render");
+                                        let legacy_on_render: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = new_lib.get(b"on_render");
+                                        
+                                        if (gui_load.is_ok() && gui_render.is_ok()) || 
+                                           (legacy_load.is_ok() && (legacy_render.is_ok() || legacy_on_render.is_ok())) {
+                                            has_required_symbols = true;
+                                        }
+                                        
+                                        // Try to get ABI version
+                                        let get_abi: Result<Symbol<unsafe extern "C" fn() -> c_uint>, _> = new_lib.get(b"gui_get_abi_version");
+                                        if let Ok(f) = get_abi {
+                                            module_abi_version = f();
+                                            eprintln!("[Runner] [HMR] GUI reports ABI version: {}", module_abi_version);
+                                        }
+                                    },
+                                    Some(ModuleSlot::Main) | None => {
+                                        // Legacy main module: require on_load or entrypoint + on_update
+                                        let legacy_load: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"on_load");
+                                        let legacy_entry: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = new_lib.get(b"entrypoint");
+                                        let legacy_update: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = new_lib.get(b"on_update");
+                                        
+                                        if (legacy_load.is_ok() || legacy_entry.is_ok()) && legacy_update.is_ok() {
+                                            has_required_symbols = true;
+                                        } else if legacy_load.is_ok() || legacy_entry.is_ok() {
+                                            // Allow modules with just load/entrypoint (render-only modules)
+                                            has_required_symbols = true;
+                                        }
+                                    }
+                                }
+                                
+                                if !has_required_symbols {
+                                    eprintln!("[Runner] [HMR] ERROR: Module '{}' missing required symbols. Aborting HMR (old module continues).", name);
+                                    eprintln!("[Runner] [HMR] Expected: {} = core_on_load+core_on_update | gui = gui_on_load+gui_on_render | main = on_load+on_update", name);
+                                    continue;
+                                }
+                                
+                                // Check ABI version compatibility (if reported)
+                                if module_abi_version > 0 {
+                                    let expected_abi = match slot {
+                                        Some(ModuleSlot::Core) => SYNTHI_CORE_ABI_VERSION,
+                                        Some(ModuleSlot::Gui) => SYNTHI_GUI_ABI_VERSION,
+                                        _ => 1,
+                                    };
+                                    if module_abi_version > expected_abi {
+                                        eprintln!("[Runner] [HMR] WARNING: Module ABI version {} > runner supported {}. May have issues.", module_abi_version, expected_abi);
+                                    }
                                 }
 
                                 let is_reload = modules.contains_key(name) || !modules.is_empty();
@@ -524,8 +624,8 @@ fn main() {
                                 // Phase 3: Pre-initialize NEW module (prepare new state)
                                 // ============================================================
                                 // INDEPENDENT SWAP: GUI module gets its own state.
-                                // For "gui" module, we also pass the core state pointer
-                                // so GUI can read (but not modify) core state.
+                                // For "gui" module, we also pass the CoreAPI pointer
+                                // so GUI can access core state safely.
                                 // ============================================================
                                 eprintln!("[Runner] [HMR] Phase 3: Pre-initializing new module '{}'...", name);
                                 
@@ -536,30 +636,118 @@ fn main() {
                                 
                                 // Start with module's previous state or null for fresh init
                                 let mut new_state: *mut c_void = module_prev_state;
+                                let mut core_api_ptr: *mut c_void = std::ptr::null_mut();
                                 
                                 // If we have saved state, restore it to new module
+                                // Try new symbol name first, then legacy
                                 if let Some(ref json) = json_state {
-                                    let load_json_func: Result<Symbol<unsafe extern "C" fn(*const std::ffi::c_char) -> *mut c_void>, _> = new_lib.get(b"on_load_from_json");
-                                    if let Ok(f) = load_json_func {
+                                    let load_json_new: Result<Symbol<unsafe extern "C" fn(*const std::ffi::c_char) -> *mut c_void>, _> = 
+                                        if name == "core" { new_lib.get(b"core_on_load_from_json") }
+                                        else if name == "gui" { new_lib.get(b"gui_on_load_from_json") }
+                                        else { new_lib.get(b"on_load_from_json") };
+                                    let load_json_legacy: Result<Symbol<unsafe extern "C" fn(*const std::ffi::c_char) -> *mut c_void>, _> = new_lib.get(b"on_load_from_json");
+                                    
+                                    if let Ok(f) = load_json_new.or(load_json_legacy) {
                                         eprintln!("[Runner] [HMR] Restoring state from JSON into new module '{}'...", name);
                                         new_state = f(json.as_ptr());
                                     }
                                 }
                                 
-                                // Initialize graphics on new module
-                                let new_load_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"on_load");
-                                let new_entry_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = new_lib.get(b"entrypoint");
+                                // Get CoreAPI pointer from core module (for GUI initialization)
+                                if name == "gui" {
+                                    if let Some(core_lib) = modules.get("core") {
+                                        let get_api_new: Result<Symbol<unsafe extern "C" fn() -> *mut c_void>, _> = core_lib.get(b"core_get_api");
+                                        let get_api_legacy: Result<Symbol<unsafe extern "C" fn() -> *mut c_void>, _> = core_lib.get(b"get_core_api");
+                                        if let Ok(f) = get_api_new.or(get_api_legacy) {
+                                            core_api_ptr = f();
+                                            eprintln!("[Runner] [HMR] Got CoreAPI pointer for GUI: {:p}", core_api_ptr);
+                                        }
+                                    }
+                                }
                                 
-                                if let Ok(f) = new_load_func {
-                                    eprintln!("[Runner] [HMR] Calling on_load on new module (graphics init)...");
-                                    new_state = f(new_state, win_ptr);
-                                    eprintln!("[Runner] [HMR] New module on_load complete. State: {:p}", new_state);
-                                } else if let Ok(f) = new_entry_func {
-                                    if !is_reload {
-                                        eprintln!("[Runner] [HMR] Calling entrypoint (first load only)...");
-                                        new_state = f(new_state);
+                                // Initialize module - try new symbols first, then legacy
+                                match slot {
+                                    Some(ModuleSlot::Core) => {
+                                        // Try core_on_load first, then legacy on_load
+                                        let core_load: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"core_on_load");
+                                        let legacy_load: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"on_load");
+                                        
+                                        if let Ok(f) = core_load {
+                                            eprintln!("[Runner] [HMR] Calling core_on_load...");
+                                            new_state = f(new_state, win_ptr);
+                                        } else if let Ok(f) = legacy_load {
+                                            eprintln!("[Runner] [HMR] Calling legacy on_load for core...");
+                                            new_state = f(new_state, win_ptr);
+                                        }
+                                        eprintln!("[Runner] [HMR] Core module initialized. State: {:p}", new_state);
+                                    },
+                                    Some(ModuleSlot::Gui) => {
+                                        // Try gui_on_load first (with CoreAPI*), then legacy on_load
+                                        let gui_load: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"gui_on_load");
+                                        let legacy_load: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"on_load");
+                                        
+                                        if let Ok(f) = gui_load {
+                                            eprintln!("[Runner] [HMR] Calling gui_on_load with CoreAPI...");
+                                            new_state = f(new_state, win_ptr, core_api_ptr);
+                                        } else if let Ok(f) = legacy_load {
+                                            eprintln!("[Runner] [HMR] Calling legacy on_load for gui...");
+                                            new_state = f(new_state, win_ptr);
+                                        }
+                                        eprintln!("[Runner] [HMR] GUI module initialized. State: {:p}", new_state);
+                                    },
+                                    Some(ModuleSlot::Main) | None => {
+                                        // Legacy main module
+                                        let legacy_load: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"on_load");
+                                        let legacy_entry: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = new_lib.get(b"entrypoint");
+                                        
+                                        if let Ok(f) = legacy_load {
+                                            eprintln!("[Runner] [HMR] Calling on_load on main module...");
+                                            new_state = f(new_state, win_ptr);
+                                        } else if let Ok(f) = legacy_entry {
+                                            if !is_reload {
+                                                eprintln!("[Runner] [HMR] Calling entrypoint (first load only)...");
+                                                new_state = f(new_state);
+                                            } else {
+                                                eprintln!("[Runner] [HMR] Skipping entrypoint on reload (would block).");
+                                            }
+                                        }
+                                        eprintln!("[Runner] [HMR] Main module initialized. State: {:p}", new_state);
+                                    }
+                                }
+                                
+                                // Validate state header after initialization
+                                if !new_state.is_null() {
+                                    let expected_magic = match slot {
+                                        Some(ModuleSlot::Core) => CORE_STATE_MAGIC,
+                                        Some(ModuleSlot::Gui) => GUI_STATE_MAGIC,
+                                        _ => CORE_STATE_MAGIC, // Legacy uses same magic
+                                    };
+                                    let magic_ok = validate_state_magic(new_state, expected_magic);
+                                    let state_abi = get_module_abi_version(new_state);
+                                    
+                                    if magic_ok {
+                                        eprintln!("[Runner] [HMR] State validated: magic OK, ABI version = {}", state_abi);
+                                        
+                                        // Cross-check state ABI vs module-reported ABI
+                                        if module_abi_version > 0 && state_abi > 0 && module_abi_version != state_abi {
+                                            eprintln!("[Runner] [HMR] WARNING: Module ABI ({}) != state ABI ({}). Possible state corruption.", 
+                                                     module_abi_version, state_abi);
+                                        }
+                                        
+                                        // Check for major version incompatibility
+                                        let expected_abi = match slot {
+                                            Some(ModuleSlot::Core) => SYNTHI_CORE_ABI_VERSION,
+                                            Some(ModuleSlot::Gui) => SYNTHI_GUI_ABI_VERSION,
+                                            _ => 1,
+                                        };
+                                        if state_abi > expected_abi {
+                                            eprintln!("[Runner] [HMR] WARNING: State ABI {} > runner supported {}. HMR may have issues - consider full reload.", 
+                                                     state_abi, expected_abi);
+                                        }
                                     } else {
-                                        eprintln!("[Runner] [HMR] Skipping entrypoint on reload (would block).");
+                                        // Magic mismatch - could be legacy format, try to continue gracefully
+                                        eprintln!("[Runner] [HMR] WARNING: State magic mismatch (expected 0x{:08X}). May be legacy format.", expected_magic);
+                                        eprintln!("[Runner] [HMR] Continuing with module load - HMR state preservation may not work correctly.");
                                     }
                                 }
                                 
@@ -579,8 +767,12 @@ fn main() {
                                 modules.insert(name.to_string(), new_lib);
                                 loaded_paths.insert(name.to_string(), path.to_string());
                                 
-                                // Store module-specific state
-                                module_states.insert(name.to_string(), ModuleState { state_ptr: new_state });
+                                // Store module-specific state with ABI version and CoreAPI pointer
+                                module_states.insert(name.to_string(), ModuleState { 
+                                    state_ptr: new_state,
+                                    abi_version: module_abi_version,
+                                    core_api_ptr: if name == "gui" { core_api_ptr } else { std::ptr::null_mut() },
+                                });
                                 
                                 // For "core" or "main", also update the shared app_state.raw
                                 // GUI should NOT update app_state.raw - it has its own state
@@ -591,7 +783,7 @@ fn main() {
                                     eprintln!("[Runner] [HMR] Module '{}' has independent state (not updating app_state.raw)", name);
                                 }
                                 
-                                eprintln!("[Runner] [HMR] ATOMIC SWAP complete. Module '{}' is now active.", name);
+                                eprintln!("[Runner] [HMR] ATOMIC SWAP complete. Module '{}' is now active. ABI={}", name, module_abi_version);
                                 
                                 // ============================================================
                                 // Phase 5: Deferred cleanup of OLD module(s)
@@ -699,21 +891,26 @@ fn main() {
         for name in &keys {
             if let Some(lib) = modules.get(name) {
                 unsafe {
-                    let update_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = lib.get(b"on_update");
-                    match update_func {
-                        Ok(f) => {
-                            // INDEPENDENT SWAP: Use module-specific state for GUI
-                            let state_ptr = if name == "gui" {
-                                module_states.get(name).map(|s| s.state_ptr).unwrap_or(app_state.raw)
-                            } else {
-                                // For core/main, use shared app_state.raw
-                                app_state.raw
-                            };
-                            f(state_ptr, dt);
-                        },
-                        Err(_) => {
-                            // Module doesn't have on_update - that's fine for GUI-only modules
-                        }
+                    // Try new symbol names first, then legacy
+                    let update_func: Option<Symbol<unsafe extern "C" fn(*mut c_void, f64)>> = 
+                        if name == "core" {
+                            lib.get(b"core_on_update").ok().or_else(|| lib.get(b"on_update").ok())
+                        } else if name == "gui" {
+                            // GUI doesn't have on_update in new ABI (only on_render)
+                            lib.get(b"gui_on_update").ok().or_else(|| lib.get(b"on_update").ok())
+                        } else {
+                            lib.get(b"on_update").ok()
+                        };
+                    
+                    if let Some(f) = update_func {
+                        // INDEPENDENT SWAP: Use module-specific state for GUI
+                        let state_ptr = if name == "gui" {
+                            module_states.get(name).map(|s| s.state_ptr).unwrap_or(app_state.raw)
+                        } else {
+                            // For core/main, use shared app_state.raw
+                            app_state.raw
+                        };
+                        f(state_ptr, dt);
                     }
                 }
             }
@@ -721,22 +918,22 @@ fn main() {
         
         // Render pass: 
         // INDEPENDENT SWAP: For GUI-only updates, call gui's on_render with gui's state.
-        // For split mode (core+gui): Core's on_update already calls gui internally via dlsym.
-        //   We need to call on_render on core to trigger rendering.
+        // For split mode (core+gui): Call gui_on_render independently.
         // For non-split mode (main): Call main's on_render/gui_render.
         
         // Check if GUI module has an independent on_render
         if let Some(lib) = modules.get("gui") {
             unsafe {
-                let render_func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"on_render");
-                let gui_render_func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"gui_render");
+                // Try new symbol first, then legacy
+                let render_func: Option<Symbol<unsafe extern "C" fn(*mut c_void)>> = 
+                    lib.get(b"gui_on_render").ok()
+                        .or_else(|| lib.get(b"on_render").ok())
+                        .or_else(|| lib.get(b"gui_render").ok());
                 
                 // Get GUI's own state
                 let gui_state = module_states.get("gui").map(|s| s.state_ptr).unwrap_or(app_state.raw);
                 
-                if let Ok(f) = render_func {
-                    f(gui_state);
-                } else if let Ok(f) = gui_render_func {
+                if let Some(f) = render_func {
                     f(gui_state);
                 }
             }
