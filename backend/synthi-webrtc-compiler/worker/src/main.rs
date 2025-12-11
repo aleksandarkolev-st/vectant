@@ -1105,24 +1105,62 @@ async fn handle_compile(
     // Check if we need to restart due to GUI mode change or blocking app
     // We do this early because we consume req.files later
     // If use_ai_split is true, we assume the AI will generate the necessary hooks (on_update, etc.)
-    let source_has_hooks = req.source.contains("on_update") || req.source.contains("on_load") || req.source.contains("entrypoint") || req.source.contains("gui_on_update");
-    let files_have_hooks = req.files.iter().any(|f| f.content.contains("on_update") || f.content.contains("on_load") || f.content.contains("entrypoint") || f.content.contains("gui_on_update"));
+    let source_has_hooks = req.source.contains("on_update") || req.source.contains("on_load") || req.source.contains("gui_on_update");
+    let files_have_hooks = req.files.iter().any(|f| f.content.contains("on_update") || f.content.contains("on_load") || f.content.contains("gui_on_update"));
     
     // Check if existing runner is already HMR-capable (from previous AI split)
     let existing_runner_is_hmr = {
-        let guard = runner_store.lock().await;
-        guard.as_ref().map(|s| s.is_hmr_capable).unwrap_or(false)
+        let mut guard = runner_store.lock().await;
+        // Check if process is still alive before reusing
+        let is_alive = if let Some(state) = guard.as_mut() {
+             if let Some(child) = &mut state.process {
+                 match child.try_wait() {
+                     Ok(Some(status)) => {
+                         eprintln!("[Main] Existing runner process has exited with status: {}", status);
+                         false
+                     },
+                     Ok(None) => true, // Still running
+                     Err(e) => {
+                         eprintln!("[Main] Error checking runner process status: {}", e);
+                         false
+                     }
+                 }
+             } else {
+                 false
+             }
+        } else {
+            false
+        };
+
+        if !is_alive {
+            *guard = None; // Clear dead runner
+            false
+        } else {
+            guard.as_ref().map(|s| s.is_hmr_capable).unwrap_or(false)
+        }
     };
     
-    // App supports HMR if:
-    // 1. use_ai_split is true (AI will generate hooks), OR
-    // 2. Source code already has hooks, OR  
-    // 3. Files already have hooks, OR
-    // 4. Existing runner is already running HMR-capable code
-    let has_on_update = req.use_ai_split || source_has_hooks || files_have_hooks || existing_runner_is_hmr;
+    // CRITICAL FIX: If the existing runner is HMR-capable (meaning AI split was used before),
+    // we should continue using AI split for consistency. This ensures that when a user:
+    // 1. Runs with AI split → code gets transformed, runner is HMR-capable
+    // 2. Makes a change and saves → AI split should happen again automatically
+    // 
+    // Without this, subsequent saves would compile raw code (no hooks) and HMR would fail.
+    let use_ai_split = req.use_ai_split || (existing_runner_is_hmr && req.is_gui);
     
-    eprintln!("[Main] HMR detection: use_ai_split={}, source_has_hooks={}, files_have_hooks={}, existing_runner_is_hmr={}, has_on_update={}", 
-        req.use_ai_split, source_has_hooks, files_have_hooks, existing_runner_is_hmr, has_on_update);
+    if use_ai_split != req.use_ai_split {
+        eprintln!("[Main] Auto-enabling AI split (existing runner is HMR-capable)");
+    }
+    
+    // HMR is possible if:
+    // 1. use_ai_split is true (AI will generate hooks), OR
+    // 2. Source code already has hooks (on_update, on_load), OR  
+    // 3. Files already have hooks
+    let current_code_has_hooks = use_ai_split || source_has_hooks || files_have_hooks;
+    let has_on_update = current_code_has_hooks;
+    
+    eprintln!("[Main] HMR detection: use_ai_split={} (req={}), source_has_hooks={}, files_have_hooks={}, existing_runner_is_hmr={}, has_on_update={}", 
+        use_ai_split, req.use_ai_split, source_has_hooks, files_have_hooks, existing_runner_is_hmr, has_on_update);
 
     // Generate a unique filename for the shared library to support HMR
     let timestamp = Utc::now().timestamp_millis();
@@ -1198,7 +1236,7 @@ async fn handle_compile(
         s.finish()
     }
 
-    if req.use_ai_split {
+    if use_ai_split {
         let split_data = match perform_ai_split(&req).await {
             Ok(d) => d,
             Err(e) => {
@@ -1665,6 +1703,13 @@ extern "C" void* on_load_from_json(const char* json) {
                         }
                     }
                 }
+                
+                // NOTE: Do NOT add GUI to modules_to_load!
+                // Core.cpp handles loading gui.so internally via dlopen in on_load.
+                // If we also send "load gui" to the runner, gui.so gets loaded TWICE,
+                // which causes conflicts and crashes during HMR.
+                // The symlinks above ensure core can find gui.so at "./gui.so".
+                
                 // Critical Fix for HMR:
                 // If GUI changes, we MUST reload 'core' because 'core' holds the handle to 'gui'.
                 // Core only loads gui in on_load. So we force core to reload.
@@ -1721,7 +1766,7 @@ extern "C" void* on_load_from_json(const char* json) {
                         let _ = tokio::fs::copy(&gui_lib_path, &link_path).await;
                     }
                 }
-                modules_to_load.push(("gui".to_string(), gui_lib_path.clone()));
+                // NOTE: Do NOT add stub GUI to modules_to_load - core handles loading it
                 // Ensure core reloads to pick up stub symbols
                 if !modules_to_load.iter().any(|(n, _)| n == "core") {
                     let cache = compile_cache.lock().await;
@@ -1870,7 +1915,7 @@ extern "C" void* on_load_from_json(const char* json) {
     let req_height = req.height.unwrap_or(720);
     
     eprintln!("[Main] Restart check: is_gui={}, has_on_update={}, is_blocking_app={}, use_ai_split={}", 
-        req.is_gui, has_on_update, is_blocking_app, req.use_ai_split);
+        req.is_gui, has_on_update, is_blocking_app, use_ai_split);
     
     // Reuse Xvfb/GStreamer if possible
     let mut reused_xvfb: Option<tokio::process::Child> = None;
@@ -1902,7 +1947,7 @@ extern "C" void* on_load_from_json(const char* json) {
         // We have an existing runner but can't do HMR - need to restart
         let gui_mode_changed = state.is_gui != req.is_gui;
         eprintln!("[Main] Restarting runner: gui_mode_changed={}, is_blocking_app={}, use_ai_split={}", 
-            gui_mode_changed, is_blocking_app, req.use_ai_split);
+            gui_mode_changed, is_blocking_app, use_ai_split);
         
         // If resolution matches and is_gui matches, we can reuse Xvfb/GStreamer
         let can_reuse = state.is_gui == req.is_gui && state.width == req_width && state.height == req_height;

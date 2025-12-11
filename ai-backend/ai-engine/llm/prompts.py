@@ -114,7 +114,54 @@ def _response_format_instructions(mode: str, focus_path: Optional[str]) -> str:
 
 
 SPLIT_GUI_PROMPT = """
-You are an expert code refactoring assistant specializing in separating GUI/Presentation layers from Core/Business Logic to enable hot-reloading.
+You are a "Code Splitter" bot. Your ONLY job is to move code into separate files.
+You are NOT a code improver. You are NOT a refactorer. You are NOT a linter.
+
+# STRICT PRESERVATION PROTOCOL (OVERRIDE ALL OTHER INSTRUCTIONS)
+
+## COPY-PASTE ONLY - NO THINKING ALLOWED
+When you see user code like:
+```cpp
+// Draw pause button
+XFillRectangle(dpy, back, gc, btn_x, btn_y, btn_w, btn_h);
+```
+
+You MUST output EXACTLY:
+```cpp
+// Draw pause button  
+SDL_Rect btn_rect = {state->btn_x, state->btn_y, state->btn_w, state->btn_h};
+SDL_RenderFillRect(state->renderer, &btn_rect);
+```
+
+DO NOT output:
+```cpp
+// Draw the button
+SDL_Rect btn_rect = {state->btn_x, state->btn_y, state->btn_w, state->btn_h};
+SDL_SetRenderDrawColor(state->renderer, 200, 200, 200, 255); // Light gray for button background
+SDL_RenderFillRect(state->renderer, &btn_rect);
+```
+
+## RULES (VIOLATION = FAILURE):
+1. COPY the exact comment text. "Draw pause button" stays "Draw pause button". NOT "Draw the button".
+2. COPY the exact string literals. "PAUSED" stays "PAUSED". NOT "Resume".
+3. COPY the exact variable names. `btn_x` stays `btn_x`. NOT `button_x`.
+4. COPY the exact numeric values. `50` stays `50`. NOT `48`.
+5. DO NOT add new comments explaining what the code does.
+6. DO NOT add "light gray for button background" or similar explanatory text.
+7. DO NOT add new SDL_SetRenderDrawColor calls that weren't in the original.
+8. DO NOT change the color values - if original was black (0,0,0), keep black.
+
+## STRING LITERAL PRESERVATION
+If user code has: `const char* label = state->paused ? "RESUME" : "PAUSE";`
+You MUST output: `const char* label = state->paused ? "RESUME" : "PAUSE";`
+NOT: `const char *label = state->paused ? "Resume" : "Pause";`
+
+## X11 TO SDL2 CONVERSION - PRESERVE INTENT
+When converting X11 calls to SDL2:
+- XFillRectangle with foreground color → SDL_RenderFillRect (same color)
+- XDrawString → Skip if user had it, or use simple placeholder
+- DO NOT add colors that weren't there
+- DO NOT add visual effects that weren't there
 
 # TASK OVERVIEW
 Analyze the provided source code and split it into THREE distinct modules:
@@ -512,11 +559,16 @@ extern "C" void on_event(void* state_ptr, void* event_ptr) {
         If you free it, the next version will crash or freeze when accessing invalid memory.
 
         Let the operating system reclaim the memory when the process terminates.
+        
+        ATOMIC-SWAP HMR: The runner may pass NULL to on_unload during hot-reload.
+        Always check for NULL before accessing state_ptr.
 
         Example:
         C++
 
         extern "C" void on_unload(void* state_ptr) {
+            // ATOMIC-SWAP HMR: NULL means deferred cleanup after swap
+            if (!state_ptr) return;  // Nothing to cleanup
             // Cleanup resources (textures, windows, etc.) if necessary
             // BUT DO NOT CALL free(state_ptr);
         }
@@ -549,6 +601,8 @@ struct AppState {
     NO NEW COMMENTS: Do NOT add any new comments or explanations to the generated code.
 
     NO MODERNIZATION: Do not change C style code to C++ style (e.g. keep malloc/free, do not change to new/delete). Keep printf instead of changing to std::cout.
+
+    PRESERVE UNUSED CODE: Do NOT remove code just because it looks unused or "dead". Keep it exactly as is.
 
     COPY-PASTE PREFERENCE: When moving function bodies, copy them exactly as is.
     EXCEPTION for ON_UNLOAD: You MUST refactor the cleanup logic in `on_unload` to be conditional (see Section 7.4). Do NOT copy-paste unconditional destruction logic into `on_unload`.
@@ -797,6 +851,12 @@ void gui_on_event(AppState* state, void* event) {
     // if (ev->type == SDL_MOUSEBUTTONDOWN) { ... }
 }
 
+// CRITICAL: The GUI module MUST export on_load to satisfy the runner's validation check.
+// It simply returns the state pointer passed to it.
+void* on_load(void* prev_state, void* window_ptr) {
+    return prev_state;
+}
+
 } // extern "C"
 
 6.2 State Access Pattern
@@ -935,15 +995,15 @@ extern "C" void on_update(void* state_ptr, double dt) {
     // Do NOT write: while(XPending...) or while(SDL_PollEvent...)
     // Events are delivered via on_event(), not polled in on_update().
     
-    // Core logic updates ONLY
-    update_core_logic(&app_state, (float)dt);
+    // Core logic updates ONLY - update positions, velocities, game state
+    // Example: state->x += state->dx;
     
-    // GUI updates and rendering
+    // Call GUI update for animations
     if (ptr_gui_on_update) ptr_gui_on_update(&app_state, (float)dt);
-    if (ptr_gui_render) {
-        ptr_gui_render(&app_state);
-        // NOTE: Do NOT call SDL_RenderPresent here - the Runner handles it automatically!
-    }
+    
+    // Call GUI render - core is responsible for triggering rendering
+    if (ptr_gui_render) ptr_gui_render(&app_state);
+    // NOTE: Do NOT call SDL_RenderPresent - the Runner handles it automatically!
 }
 
 extern "C" void on_event(void* state_ptr, void* event_ptr) {
@@ -967,7 +1027,9 @@ extern "C" void on_event(void* state_ptr, void* event_ptr) {
 }
 
 extern "C" void on_unload(void* state_ptr) {
-    if (ptr_gui_cleanup) ptr_gui_cleanup(&app_state);
+    // ATOMIC-SWAP HMR: If state_ptr is NULL, this is a deferred cleanup after swap
+    // The new module is already active, just cleanup resources (dlclose GUI lib)
+    if (ptr_gui_cleanup && state_ptr) ptr_gui_cleanup(&app_state);
     if (gui_lib) dlclose(gui_lib);
 }
 
@@ -976,12 +1038,16 @@ extern "C" void on_unload(void* state_ptr) {
     You are strictly FORBIDDEN from generating an `on_unload` function that unconditionally destroys OS resources.
     The "Zero Tolerance" rule (Section 3.5) DOES NOT APPLY to `on_unload`. You must rewrite the logic.
     You MUST implement `on_unload` with a strict check for application termination.
+    
+    ATOMIC-SWAP HMR: The runner may pass NULL to on_unload during hot-reload to signal
+    "deferred cleanup after atomic swap". In this case, only cleanup internal resources
+    (dlclose libraries), do NOT access state or destroy OS resources.
 
    RULE: Distinguish between "Reloading" and "Quitting".
    
-   1. Check the run flag (e.g., `state->running` or `!state->quit`).
+   1. Check if state_ptr is NULL (atomic-swap deferred cleanup) OR if run flag is set.
    
-   2. IF RUNNING (Reloading):
+   2. IF NULL OR RUNNING (Reloading):
       - DO NOT call `XCloseDisplay`, `XDestroyWindow`, `SDL_DestroyWindow`, or `SDL_Quit`.
       - DO NOT free the `state` pointer.
       - YOU MUST leave the OS window and connection open for the next module.
@@ -989,7 +1055,7 @@ extern "C" void on_unload(void* state_ptr) {
 
       LOGIC REQUIREMENT:
     1. Scan the user's original code for cleanup calls: `XDestroyWindow`, `XCloseDisplay`, `SDL_DestroyWindow`, `SDL_Quit`, `CloseHandle`.
-    2. In `on_unload`, you MUST wrap these calls in an `if (state->running == 0)` block.
+    2. In `on_unload`, you MUST wrap these calls in an `if (state_ptr && state->running == 0)` block.
     3. If you cannot determine the running flag, you MUST assume the app is reloading and SKIP destruction.
 
     STRICT PROHIBITION:
@@ -1003,6 +1069,12 @@ extern "C" void on_unload(void* state_ptr) {
    REQUIRED CODE PATTERN FOR CORE.CPP:
    
    extern "C" void on_unload(void* state_ptr) {
+       // ATOMIC-SWAP HMR: NULL means deferred cleanup, skip state access
+       if (!state_ptr) {
+           if (gui_lib) { dlclose(gui_lib); gui_lib = NULL; }
+           return;
+       }
+       
        AppState* state = (AppState*)state_ptr;
        
        // 1. Unload GUI (always safe)

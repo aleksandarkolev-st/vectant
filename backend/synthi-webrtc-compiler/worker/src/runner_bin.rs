@@ -42,9 +42,22 @@ extern "C" {
     fn SDL_UpdateTexture(texture: *mut c_void, rect: *const c_void, pixels: *const c_void, pitch: c_int) -> c_int;
     fn SDL_RenderCopy(renderer: *mut c_void, texture: *mut c_void, srcrect: *const c_void, dstrect: *const c_void) -> c_int;
     fn SDL_PollEvent(event: *mut SDL_Event) -> c_int;
+    fn SDL_PushEvent(event: *mut SDL_Event) -> c_int;
     fn SDL_Quit();
     fn SDL_GetError() -> *const i8;
 }
+
+// SDL2 Event Types
+#[cfg(target_os = "linux")]
+const SDL_MOUSEMOTION: u32 = 0x400;
+#[cfg(target_os = "linux")]
+const SDL_MOUSEBUTTONDOWN: u32 = 0x401;
+#[cfg(target_os = "linux")]
+const SDL_MOUSEBUTTONUP: u32 = 0x402;
+#[cfg(target_os = "linux")]
+const SDL_KEYDOWN: u32 = 0x300;
+#[cfg(target_os = "linux")]
+const SDL_KEYUP: u32 = 0x301;
 
 const SDL_INIT_VIDEO: u32 = 0x00000020;
 const SDL_WINDOW_SHOWN: u32 = 0x00000004;
@@ -270,31 +283,30 @@ fn main() {
                 "input" => {
                     #[cfg(target_os = "linux")]
                     if parts.len() >= 2 {
-                        // Find the target window (plugin window)
-                        if let Ok(tree_reply) = x11_conn.query_tree(x11_root).unwrap().reply() {
-                             let target = tree_reply.children.last().copied().unwrap_or(x11_root);
-                             
-                             match parts[1] {
+                        // Create SDL events and push them to SDL's event queue
+                        // This ensures they get picked up by SDL_PollEvent and passed to on_event
+                        unsafe {
+                            match parts[1] {
                                 "motion" => {
                                     if parts.len() >= 4 {
-                                        if let (Ok(x), Ok(y)) = (parts[2].parse::<i16>(), parts[3].parse::<i16>()) {
-                                            let event = MotionNotifyEvent {
-                                                response_type: MOTION_NOTIFY_EVENT,
-                                                detail: 0.into(),
-                                                sequence: 0,
-                                                time: x11rb::CURRENT_TIME,
-                                                root: x11_root,
-                                                event: target,
-                                                child: 0,
-                                                root_x: x,
-                                                root_y: y,
-                                                event_x: x,
-                                                event_y: y,
-                                                state: 0u16.into(),
-                                                same_screen: true,
-                                            };
-                                            x11_conn.send_event(false, target, EventMask::NO_EVENT, event).ok();
-                                            x11_conn.flush().ok();
+                                        if let (Ok(x), Ok(y)) = (parts[2].parse::<i32>(), parts[3].parse::<i32>()) {
+                                            // Create SDL_MouseMotionEvent
+                                            let mut event: SDL_Event = std::mem::zeroed();
+                                            let event_ptr = event.data.as_mut_ptr();
+                                            // SDL_MouseMotionEvent layout:
+                                            // type (u32), timestamp (u32), windowID (u32), which (u32), state (u32), x (i32), y (i32), xrel (i32), yrel (i32)
+                                            *(event_ptr as *mut u32) = SDL_MOUSEMOTION;
+                                            *(event_ptr.add(4) as *mut u32) = 0; // timestamp
+                                            *(event_ptr.add(8) as *mut u32) = 0; // windowID
+                                            *(event_ptr.add(12) as *mut u32) = 0; // which (mouse)
+                                            *(event_ptr.add(16) as *mut u32) = 0; // state (button mask)
+                                            *(event_ptr.add(20) as *mut i32) = x; // x
+                                            *(event_ptr.add(24) as *mut i32) = y; // y
+                                            *(event_ptr.add(28) as *mut i32) = 0; // xrel
+                                            *(event_ptr.add(32) as *mut i32) = 0; // yrel
+                                            
+                                            SDL_PushEvent(&mut event);
+                                            eprintln!("[Runner] Pushed SDL mouse motion event: ({}, {})", x, y);
                                         }
                                     }
                                 },
@@ -302,32 +314,61 @@ fn main() {
                                     if parts.len() >= 6 {
                                         let type_str = parts[2];
                                         let btn = parts[3].parse::<u8>().unwrap_or(1);
-                                        let x = parts[4].parse::<i16>().unwrap_or(0);
-                                        let y = parts[5].parse::<i16>().unwrap_or(0);
+                                        let x = parts[4].parse::<i32>().unwrap_or(0);
+                                        let y = parts[5].parse::<i32>().unwrap_or(0);
                                         
-                                        let event_type = if type_str == "down" { BUTTON_PRESS_EVENT } else { BUTTON_RELEASE_EVENT };
+                                        let event_type = if type_str == "down" { SDL_MOUSEBUTTONDOWN } else { SDL_MOUSEBUTTONUP };
                                         
-                                        let event = ButtonPressEvent {
-                                            response_type: event_type,
-                                            detail: btn.into(),
-                                            sequence: 0,
-                                            time: x11rb::CURRENT_TIME,
-                                            root: x11_root,
-                                            event: target,
-                                            child: 0,
-                                            root_x: x,
-                                            root_y: y,
-                                            event_x: x,
-                                            event_y: y,
-                                            state: 0u16.into(),
-                                            same_screen: true,
-                                        };
-                                        x11_conn.send_event(false, target, EventMask::NO_EVENT, event).ok();
-                                        x11_conn.flush().ok();
+                                        // Create SDL_MouseButtonEvent
+                                        let mut event: SDL_Event = std::mem::zeroed();
+                                        let event_ptr = event.data.as_mut_ptr();
+                                        // SDL_MouseButtonEvent layout:
+                                        // type (u32), timestamp (u32), windowID (u32), which (u32), button (u8), state (u8), clicks (u8), padding (u8), x (i32), y (i32)
+                                        *(event_ptr as *mut u32) = event_type;
+                                        *(event_ptr.add(4) as *mut u32) = 0; // timestamp
+                                        *(event_ptr.add(8) as *mut u32) = 0; // windowID
+                                        *(event_ptr.add(12) as *mut u32) = 0; // which (mouse)
+                                        *(event_ptr.add(16) as *mut u8) = btn; // button
+                                        *(event_ptr.add(17) as *mut u8) = if type_str == "down" { 1 } else { 0 }; // state
+                                        *(event_ptr.add(18) as *mut u8) = 1; // clicks
+                                        *(event_ptr.add(20) as *mut i32) = x; // x
+                                        *(event_ptr.add(24) as *mut i32) = y; // y
+                                        
+                                        SDL_PushEvent(&mut event);
+                                        eprintln!("[Runner] Pushed SDL mouse {} event: btn={}, ({}, {})", type_str, btn, x, y);
                                     }
                                 },
-                                _ => {}
-                             }
+                                "key" => {
+                                    if parts.len() >= 4 {
+                                        let type_str = parts[2];
+                                        let keycode = parts[3].parse::<i32>().unwrap_or(0);
+                                        
+                                        let event_type = if type_str == "down" { SDL_KEYDOWN } else { SDL_KEYUP };
+                                        
+                                        // Create SDL_KeyboardEvent
+                                        let mut event: SDL_Event = std::mem::zeroed();
+                                        let event_ptr = event.data.as_mut_ptr();
+                                        // SDL_KeyboardEvent layout:
+                                        // type (u32), timestamp (u32), windowID (u32), state (u8), repeat (u8), padding (u16), keysym (SDL_Keysym)
+                                        // SDL_Keysym: scancode (u32), sym (i32), mod (u16), unused (u32)
+                                        *(event_ptr as *mut u32) = event_type;
+                                        *(event_ptr.add(4) as *mut u32) = 0; // timestamp
+                                        *(event_ptr.add(8) as *mut u32) = 0; // windowID
+                                        *(event_ptr.add(12) as *mut u8) = if type_str == "down" { 1 } else { 0 }; // state
+                                        *(event_ptr.add(13) as *mut u8) = 0; // repeat
+                                        // keysym starts at offset 16
+                                        *(event_ptr.add(16) as *mut u32) = keycode as u32; // scancode
+                                        *(event_ptr.add(20) as *mut i32) = keycode; // sym (SDLK_*)
+                                        *(event_ptr.add(24) as *mut u16) = 0; // mod
+                                        
+                                        SDL_PushEvent(&mut event);
+                                        eprintln!("[Runner] Pushed SDL key {} event: keycode={}", type_str, keycode);
+                                    }
+                                },
+                                _ => {
+                                    eprintln!("[Runner] Unknown input type: {}", parts[1]);
+                                }
+                            }
                         }
                     }
                 },
@@ -353,8 +394,18 @@ fn main() {
                     }
 
                     unsafe {
-                        // Phase 4: Smooth Transition
-                        eprintln!("[Runner] Opening library: {}", path);
+                        // ============================================================
+                        // ATOMIC-SWAP HMR: Zero-flicker hot module replacement
+                        // ============================================================
+                        // Strategy:
+                        // 1. Load NEW library while OLD is still active (old keeps rendering)
+                        // 2. Save state from OLD module
+                        // 3. Pre-initialize NEW module with saved state + graphics
+                        // 4. ATOMIC SWAP: Replace module reference in single operation
+                        // 5. Defer OLD module cleanup (on_unload + drop) until after swap
+                        // ============================================================
+                        
+                        eprintln!("[Runner] [HMR] Phase 1: Loading new library (old still active): {}", path);
                         #[cfg(unix)]
                         let lib_result = {
                             use libloading::os::unix::{Library, RTLD_NOW, RTLD_LOCAL};
@@ -364,141 +415,167 @@ fn main() {
                         let lib_result = Library::new(path);
 
                         match lib_result {
-                            Ok(lib) => {
-                                eprintln!("[Runner] Library opened. Resolving symbols...");
+                            Ok(new_lib) => {
+                                eprintln!("[Runner] [HMR] New library opened. Validating symbols...");
                                 
-                                // Check for on_load or entrypoint or on_update BEFORE unloading the old one
-                                let load_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = lib.get(b"on_load");
-                                let entry_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = lib.get(b"entrypoint");
-                                let update_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = lib.get(b"on_update");
+                                // Validate new library has required symbols BEFORE any state changes
+                                let new_load_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"on_load");
+                                let new_entry_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = new_lib.get(b"entrypoint");
+                                let new_update_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = new_lib.get(b"on_update");
                                 
-                                if load_func.is_err() && entry_func.is_err() && update_func.is_err() && name != "main" {
-                                     eprintln!("[Runner] ERROR: New library missing required symbols. Aborting.");
+                                if new_load_func.is_err() && new_entry_func.is_err() && new_update_func.is_err() && name != "main" {
+                                     eprintln!("[Runner] [HMR] ERROR: New library missing required symbols. Aborting HMR (old module continues).");
                                      continue;
                                 }
 
-                                // Now it is safe to unload the old one
-                                // CRITICAL FIX: Treat as reload if:
-                                // 1. This exact module name already exists, OR
-                                // 2. ANY module is already loaded (runner is already initialized)
-                                // This handles the case where first load uses AI split (core/gui modules)
-                                // but subsequent loads use non-split (main module).
                                 let is_reload = modules.contains_key(name) || !modules.is_empty();
-                                eprintln!("[Runner] is_reload={} for module '{}', modules.keys={:?}", is_reload, name, modules.keys().collect::<Vec<_>>());
+                                eprintln!("[Runner] [HMR] is_reload={} for module '{}', modules.keys={:?}", is_reload, name, modules.keys().collect::<Vec<_>>());
                                 
-                                // CRITICAL: When loading 'main', unload ALL other modules (core, gui)
-                                // When loading 'core'/'gui', unload 'main' if present
-                                // This prevents multiple modules rendering simultaneously causing flickering
+                                // Collect modules to remove for mode switching (but don't remove yet!)
+                                let mut deferred_unloads: Vec<(String, Library)> = Vec::new();
+                                
                                 if name == "main" {
-                                    // Switching to non-split mode: unload core and gui
+                                    // Switching to non-split mode: will unload core and gui AFTER swap
                                     let modules_to_remove: Vec<String> = modules.keys()
                                         .filter(|k| *k != "main")
                                         .cloned()
                                         .collect();
                                     for old_name in modules_to_remove {
                                         if let Some(old_lib) = modules.remove(&old_name) {
-                                            eprintln!("[Runner] Unloading conflicting module '{}' (switching to main)...", old_name);
+                                            eprintln!("[Runner] [HMR] Deferring unload of '{}' (mode switch to main)", old_name);
                                             loaded_paths.remove(&old_name);
-                                            let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = old_lib.get(b"on_unload");
-                                            if let Ok(f) = func {
-                                                f(app_state.raw);
-                                            }
+                                            deferred_unloads.push((old_name, old_lib));
                                         }
                                     }
                                 } else if name == "core" || name == "gui" {
-                                    // Switching to split mode: unload main if present
+                                    // Switching to split mode: will unload main AFTER swap
                                     if let Some(old_lib) = modules.remove("main") {
-                                        eprintln!("[Runner] Unloading 'main' module (switching to split mode)...");
+                                        eprintln!("[Runner] [HMR] Deferring unload of 'main' (mode switch to split)");
                                         loaded_paths.remove("main");
-                                        let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = old_lib.get(b"on_unload");
-                                        if let Ok(f) = func {
-                                            f(app_state.raw);
-                                        }
+                                        deferred_unloads.push(("main".to_string(), old_lib));
                                     }
                                 }
                                 
+                                // ============================================================
+                                // Phase 2: Save state from OLD module (while it's still valid)
+                                // ============================================================
+                                let mut json_state: Option<std::ffi::CString> = None;
+                                let mut old_lib_for_cleanup: Option<Library> = None;
+                                
                                 if let Some(old_lib) = modules.remove(name) {
-                                     eprintln!("[Runner] Unloading old module '{}'...", name);
-                                     
-                                     // 1. Try to save state to JSON
-                                     let save_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut std::ffi::c_char>, _> = old_lib.get(b"on_save_state");
-                                     let mut json_state: Option<std::ffi::CString> = None;
-                                     
-                                     if let Ok(f) = save_func {
-                                         let ptr = f(app_state.raw);
-                                         if !ptr.is_null() {
-                                             let c_str = std::ffi::CStr::from_ptr(ptr);
-                                             json_state = Some(c_str.to_owned());
-                                             eprintln!("[Runner] Saved state: {:?}", c_str);
-                                             // Free the string if the plugin allocated it (assuming malloc)
-                                             libc::free(ptr as *mut c_void);
-                                         }
-                                     }
-
-                                     loaded_paths.remove(name);
-                                     let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = old_lib.get(b"on_unload");
-                                     if let Ok(f) = func {
-                                         eprintln!("[Runner] Calling on_unload...");
-                                         f(app_state.raw);
-                                         eprintln!("[Runner] on_unload finished.");
-                                     }
-                                     
-                                     // 2. If we have JSON state, try to load it into the NEW library
-                                     if let Some(json) = json_state {
-                                         let load_json_func: Result<Symbol<unsafe extern "C" fn(*const std::ffi::c_char) -> *mut c_void>, _> = lib.get(b"on_load_from_json");
-                                         if let Ok(f) = load_json_func {
-                                             eprintln!("[Runner] Restoring state from JSON...");
-                                             app_state.raw = f(json.as_ptr());
-                                             // Skip the standard on_load since we just loaded from JSON
-                                             modules.insert(name.to_string(), lib);
-                                             loaded_paths.insert(name.to_string(), path.to_string());
-                                             eprintln!("[Runner] Module '{}' registered successfully (JSON restored).", name);
-                                             continue; 
-                                         }
-                                     }
-                                }
-
-                                // Initialize the new one (Standard Path)
-                                // CRITICAL: Register module BEFORE calling entrypoint/on_load
-                                // because entrypoint may block (run main loop) and never return.
-                                // We need the module registered so subsequent reloads know it exists.
-                                modules.insert(name.to_string(), lib);
-                                loaded_paths.insert(name.to_string(), path.to_string());
-                                eprintln!("[Runner] Module '{}' registered.", name);
-                                
-                                // Re-get symbols from the inserted library
-                                let lib_ref = modules.get(name).unwrap();
-                                let load_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = lib_ref.get(b"on_load");
-                                let entry_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = lib_ref.get(b"entrypoint");
-                                
-                                if let Ok(f) = load_func {
-                                    eprintln!("[Runner] Found 'on_load'. Calling...");
-                                    // Pass the SDL renderer to the plugin.
-                                    // The plugin should use this for all rendering operations.
-                                    #[cfg(target_os = "linux")]
-                                    let win_ptr = renderer;
-                                    #[cfg(not(target_os = "linux"))]
-                                    let win_ptr = std::ptr::null_mut();
+                                    eprintln!("[Runner] [HMR] Phase 2: Saving state from old module '{}'...", name);
                                     
-                                    app_state.raw = f(app_state.raw, win_ptr);
-                                    eprintln!("[Runner] 'on_load' returned. AppState raw: {:p}", app_state.raw);
-                                } else if let Ok(f) = entry_func {
-                                     // CRITICAL: Only call entrypoint on FIRST load, not on reloads!
-                                     // entrypoint typically runs main() which blocks.
-                                     // For HMR reloads, we should NOT call it again.
-                                     if is_reload {
-                                         eprintln!("[Runner] Found 'entrypoint' but skipping on reload (would block). Module will use existing state.");
-                                     } else {
-                                         eprintln!("[Runner] Found 'entrypoint'. Calling (first load only)...");
-                                         app_state.raw = f(app_state.raw);
-                                         eprintln!("[Runner] 'entrypoint' returned. AppState raw: {:p}", app_state.raw);
-                                     }
+                                    // Save state BEFORE any cleanup
+                                    let save_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut std::ffi::c_char>, _> = old_lib.get(b"on_save_state");
+                                    if let Ok(f) = save_func {
+                                        let ptr = f(app_state.raw);
+                                        if !ptr.is_null() {
+                                            let c_str = std::ffi::CStr::from_ptr(ptr);
+                                            json_state = Some(c_str.to_owned());
+                                            eprintln!("[Runner] [HMR] State saved: {:?}", c_str);
+                                            libc::free(ptr as *mut c_void);
+                                        }
+                                    }
+                                    
+                                    loaded_paths.remove(name);
+                                    // Store old lib for deferred cleanup
+                                    old_lib_for_cleanup = Some(old_lib);
                                 }
                                 
-                                eprintln!("[Runner] Module '{}' initialization complete.", name);
+                                // ============================================================
+                                // Phase 3: Pre-initialize NEW module (prepare new state)
+                                // ============================================================
+                                eprintln!("[Runner] [HMR] Phase 3: Pre-initializing new module...");
+                                
+                                #[cfg(target_os = "linux")]
+                                let win_ptr = renderer;
+                                #[cfg(not(target_os = "linux"))]
+                                let win_ptr = std::ptr::null_mut();
+                                
+                                let mut new_state: *mut c_void = app_state.raw;
+                                
+                                // If we have saved state, restore it to new module
+                                if let Some(ref json) = json_state {
+                                    let load_json_func: Result<Symbol<unsafe extern "C" fn(*const std::ffi::c_char) -> *mut c_void>, _> = new_lib.get(b"on_load_from_json");
+                                    if let Ok(f) = load_json_func {
+                                        eprintln!("[Runner] [HMR] Restoring state from JSON into new module...");
+                                        new_state = f(json.as_ptr());
+                                    }
+                                }
+                                
+                                // Initialize graphics on new module
+                                let new_load_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"on_load");
+                                let new_entry_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = new_lib.get(b"entrypoint");
+                                
+                                if let Ok(f) = new_load_func {
+                                    eprintln!("[Runner] [HMR] Calling on_load on new module (graphics init)...");
+                                    new_state = f(new_state, win_ptr);
+                                    eprintln!("[Runner] [HMR] New module on_load complete. State: {:p}", new_state);
+                                } else if let Ok(f) = new_entry_func {
+                                    if !is_reload {
+                                        eprintln!("[Runner] [HMR] Calling entrypoint (first load only)...");
+                                        new_state = f(new_state);
+                                    } else {
+                                        eprintln!("[Runner] [HMR] Skipping entrypoint on reload (would block).");
+                                    }
+                                }
+                                
+                                // ============================================================
+                                // Phase 4: ATOMIC SWAP - Single operation, no gap
+                                // ============================================================
+                                eprintln!("[Runner] [HMR] Phase 4: ATOMIC SWAP executing...");
+                                
+                                // This is the critical section - happens in one "instant"
+                                // The main loop won't see an empty modules map
+                                modules.insert(name.to_string(), new_lib);
+                                loaded_paths.insert(name.to_string(), path.to_string());
+                                app_state.raw = new_state;
+                                
+                                eprintln!("[Runner] [HMR] ATOMIC SWAP complete. Module '{}' is now active.", name);
+                                
+                                // ============================================================
+                                // Phase 5: Deferred cleanup of OLD module(s)
+                                // ============================================================
+                                // Now that new module is active, we can safely cleanup old ones
+                                // The main loop is already using the new module
+                                
+                                if let Some(old_lib) = old_lib_for_cleanup {
+                                    eprintln!("[Runner] [HMR] Phase 5: Cleaning up old module '{}'...", name);
+                                    // CRITICAL: Do NOT call on_unload here for core module!
+                                    // Core's on_unload calls dlclose(gui_lib), but the NEW core
+                                    // has already dlopened gui.so. Calling dlclose would unload
+                                    // the gui.so that the new core is using, causing a crash.
+                                    // 
+                                    // Instead, just let the old library drop. The old core's
+                                    // internal gui_lib pointer becomes invalid, but that's fine
+                                    // because we never call into it again.
+                                    //
+                                    // The NEW core will load its own fresh gui.so handle.
+                                    if name != "core" {
+                                        let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = old_lib.get(b"on_unload");
+                                        if let Ok(f) = func {
+                                            f(std::ptr::null_mut()); // Pass null to signal "don't touch state"
+                                        }
+                                    } else {
+                                        eprintln!("[Runner] [HMR] Skipping on_unload for 'core' (would dlclose gui.so needed by new core)");
+                                    }
+                                    // old_lib drops here, unloading the shared library
+                                }
+                                
+                                // Cleanup any modules from mode switching
+                                for (old_name, old_lib) in deferred_unloads {
+                                    eprintln!("[Runner] [HMR] Deferred cleanup of '{}'...", old_name);
+                                    let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = old_lib.get(b"on_unload");
+                                    if let Ok(f) = func {
+                                        f(std::ptr::null_mut());
+                                    }
+                                    // old_lib drops here
+                                }
+                                
+                                eprintln!("[Runner] [HMR] Hot reload complete for '{}'. Zero-flicker swap successful.", name);
                             }
                             Err(e) => {
-                                eprintln!("[Runner] Error loading library: {}", e);
+                                eprintln!("[Runner] [HMR] Error loading new library (old module continues): {}", e);
                             }
                         }
                     }
@@ -534,14 +611,8 @@ fn main() {
         let dt = now.duration_since(last_frame).as_secs_f64();
         last_frame = now;
 
-        // Clear screen
-        #[cfg(target_os = "linux")]
-        if !renderer.is_null() {
-            unsafe {
-                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-                SDL_RenderClear(renderer);
-            }
-        }
+        // NOTE: Do NOT clear screen here - let the user's gui_render handle it.
+        // Clearing here and in gui_render can cause timing issues.
 
         // Run update loop for all loaded modules
         // Deterministic order: "core" first, then others sorted alphabetically
@@ -552,40 +623,45 @@ fn main() {
             else { a.cmp(b) }
         });
 
-        for name in keys {
-            if let Some(lib) = modules.get(&name) {
+        for name in &keys {
+            if let Some(lib) = modules.get(name) {
                 unsafe {
                     let update_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = lib.get(b"on_update");
                     match update_func {
                         Ok(f) => {
-                            // Log once per second per module to prove it's being called
-                            if last_log.elapsed() < Duration::from_millis(20) {
-                                // println!("[Runner] Calling on_update for {}", name);
-                            }
                             f(app_state.raw, dt);
                         },
-                        Err(e) => {
-                            // Only log this error once every 5 seconds to avoid spamming if it's missing
-                            if last_log.elapsed() > Duration::from_secs(4) {
-                                println!("[Runner] WARNING: Module '{}' does not export 'on_update': {}", name, e);
-                            }
+                        Err(_) => {
+                            // Module doesn't have on_update - that's fine for GUI-only modules
                         }
                     }
-
-                    // Try to call on_render if it exists (Critical for GUI modules)
-                    // Fallback to gui_render if on_render is missing (for backward compatibility)
-                    let render_func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"on_render");
-                    let gui_render_func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"gui_render");
-                    
-                    if let Ok(f) = render_func {
-                        f(app_state.raw);
-                    } else if let Ok(f) = gui_render_func {
-                         // Only log this fallback once
-                         if last_log.elapsed() > Duration::from_secs(4) {
-                             eprintln!("[Runner] WARNING: Module '{}' uses 'gui_render' (deprecated). Please rename to 'on_render'.", name);
-                         }
-                         f(app_state.raw);
-                    }
+                }
+            }
+        }
+        
+        // Render pass: 
+        // For split mode (core+gui): Core's on_update already calls gui internally via dlsym.
+        //   We need to call on_render on core to trigger rendering.
+        // For non-split mode (main): Call main's on_render/gui_render.
+        if let Some(lib) = modules.get("core") {
+            unsafe {
+                // Core may export on_render that calls ptr_gui_render internally
+                let render_func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"on_render");
+                if let Ok(f) = render_func {
+                    f(app_state.raw);
+                }
+                // If core doesn't have on_render, that's OK - core's on_update handles rendering
+            }
+        } else if let Some(lib) = modules.get("main") {
+            // Fallback for non-split mode: call main's render
+            unsafe {
+                let render_func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"on_render");
+                let gui_render_func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = lib.get(b"gui_render");
+                
+                if let Ok(f) = render_func {
+                    f(app_state.raw);
+                } else if let Ok(f) = gui_render_func {
+                    f(app_state.raw);
                 }
             }
         }
