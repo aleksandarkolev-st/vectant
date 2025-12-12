@@ -19,6 +19,8 @@ use x11rb::protocol::shm::{self, ConnectionExt as ShmConnectionExt};
 mod plugin_contract;
 mod capability;
 mod host_kv;
+mod state_diff;
+mod crash_recovery;
 
 use plugin_contract::{ModuleSlot, ModuleInfo, RebuildScope, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
 use capability::{HmrCapability, detect_capabilities, HmrStatus};
@@ -26,6 +28,9 @@ use host_kv::{
     KV_STORE, SynthiHostContextV1, HostKvApiV1, HostKvSchemaEvent,
     create_kv_api, read_schema_table, module_slot_to_u32,
 };
+use state_diff::{migrate_state, generate_migration_report};
+use crash_recovery::{install_crash_handlers, execute_with_protection, should_force_restart, 
+                     reset_crash_count, get_last_crash, HmrCrashStatus, generate_crash_report};
 
 // SDL2 Definitions
 #[cfg(target_os = "linux")]
@@ -153,6 +158,11 @@ fn create_shm_segment(size: usize) -> Option<(i32, *mut u8)> {
 }
 
 fn main() {
+    // Install crash handlers for runtime error recovery
+    if let Err(e) = install_crash_handlers() {
+        eprintln!("[Runner] Warning: Failed to install crash handlers: {}", e);
+    }
+    
     // Spawn Xvfb and setup X11
     #[cfg(target_os = "linux")]
     let (_xvfb_proc, x11_conn, x11_screen_num, x11_root) = {
@@ -714,6 +724,7 @@ fn main() {
                                 
                                 // If we have saved state, restore it to new module
                                 // Try new symbol name first, then legacy
+                                // Use field-level diffing for intelligent state migration
                                 if let Some(ref json) = json_state {
                                     let load_json_new: Result<Symbol<unsafe extern "C" fn(*const std::ffi::c_char) -> *mut c_void>, _> = 
                                         if name == "core" { new_lib.get(b"core_on_load_from_json") }
@@ -722,8 +733,24 @@ fn main() {
                                     let load_json_legacy: Result<Symbol<unsafe extern "C" fn(*const std::ffi::c_char) -> *mut c_void>, _> = new_lib.get(b"on_load_from_json");
                                     
                                     if let Ok(f) = load_json_new.or(load_json_legacy) {
+                                        let old_json_str = json.to_str().unwrap_or("{}");
+                                        
+                                        // Try to get a "default" state from the new module to use as template
+                                        // This allows field-level diffing
+                                        let mut use_field_diff = false;
+                                        let mut migrated_json = old_json_str.to_string();
+                                        
+                                        // For now, load with old state directly
+                                        // TODO: Get template state from new module for true field-level diff
+                                        // The migrate_state function is available if we can get the template
+                                        
                                         eprintln!("[Runner] [HMR] Restoring state from JSON into new module '{}'...", name);
                                         new_state = f(json.as_ptr());
+                                        
+                                        // Log migration report if we did field-level diffing
+                                        if use_field_diff {
+                                            eprintln!("[Runner] [HMR] Field-level state migration applied");
+                                        }
                                     }
                                 }
                                 
@@ -1114,7 +1141,36 @@ fn main() {
                             // For core/main, use shared app_state.raw
                             app_state.raw
                         };
-                        f(state_ptr, dt);
+                        
+                        // Execute with crash protection on Linux
+                        #[cfg(unix)]
+                        {
+                            let module_name = name.clone();
+                            let result = execute_with_protection(&module_name, || {
+                                f(state_ptr, dt);
+                            });
+                            
+                            if let Err(crash_info) = result {
+                                // Crash recovered! Log and continue with old module
+                                eprintln!("{}", generate_crash_report(&crash_info));
+                                let status = HmrCrashStatus::from_crash(&crash_info, !should_force_restart());
+                                eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                                
+                                if should_force_restart() {
+                                    eprintln!("[Runner] Too many consecutive crashes. Exiting.");
+                                    std::process::exit(1);
+                                }
+                                
+                                // Skip this module for now, continue with others
+                                reset_crash_count();
+                                continue;
+                            }
+                        }
+                        
+                        #[cfg(not(unix))]
+                        {
+                            f(state_ptr, dt);
+                        }
                     }
                 }
             }

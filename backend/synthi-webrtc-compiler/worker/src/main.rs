@@ -13,6 +13,9 @@ mod capability;
 mod shim;
 mod host_kv;
 mod plugin_contract;
+mod incremental_cache;
+mod state_diff;
+mod crash_recovery;
 
 use builder::{RebuildScope, ModuleHashes, hash_content};
 use capability::{detect_capabilities, HmrCapability, HmrStatus, CapabilityReport};

@@ -33,6 +33,35 @@ const STATUS_CONFIGS = {
         show: true,
         autoHide: 3000,
     },
+    'state-migrated': {
+        color: 'bg-green-400',
+        text: 'State Migrated',
+        show: true,
+        autoHide: 3000,
+    },
+    'crash-recovered': {
+        color: 'bg-orange-500',
+        text: 'Crash Recovered',
+        show: true,
+        autoHide: 5000,
+    },
+    'crash-fatal': {
+        color: 'bg-red-700',
+        text: 'Fatal Crash - Restart Required',
+        show: true,
+    },
+    'host-kv-preserved': {
+        color: 'bg-cyan-500',
+        text: 'State Preserved',
+        show: true,
+        autoHide: 2000,
+    },
+    'host-kv-reset-schema': {
+        color: 'bg-yellow-600',
+        text: 'Schema Changed - Namespace Reset',
+        show: true,
+        autoHide: 4000,
+    },
     check: {
         color: 'bg-yellow-500 animate-pulse',
         text: 'Checking...',

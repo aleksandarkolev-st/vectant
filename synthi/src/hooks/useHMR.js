@@ -94,6 +94,37 @@ export function useHMR() {
                     } else if (statusData.status === 'compile-error') {
                         setStatus('fail');
                         dispatchHMRStatus(message);
+                    } else if (statusData.status === 'crash-recovered') {
+                        // Runtime crash was caught and recovered
+                        setStatus('rejected');
+                        dispatchHMRStatus({
+                            ...message,
+                            data: {
+                                ...statusData,
+                                status: 'crash-recovered',
+                                message: `Plugin crashed (${statusData.signal || 'unknown'}) but recovered. Old module continues.`
+                            }
+                        });
+                    } else if (statusData.status === 'crash-fatal') {
+                        // Too many crashes, need full restart
+                        setStatus('fail');
+                        dispatchHMRStatus(message);
+                    } else if (statusData.status === 'state-migrated') {
+                        // Field-level state migration occurred
+                        dispatchHMRStatus({
+                            ...message,
+                            data: {
+                                ...statusData,
+                                status: 'applied',
+                                message: `State migrated: ${statusData.preserved || 0} fields preserved, ${statusData.reset || 0} reset`
+                            }
+                        });
+                    } else if (statusData.status === 'host-kv-preserved') {
+                        // Host KV namespaces preserved
+                        dispatchHMRStatus(message);
+                    } else if (statusData.status === 'host-kv-reset-schema') {
+                        // Host KV namespace reset due to schema change
+                        dispatchHMRStatus(message);
                     }
                     
                     return; // Don't pass to runtime for these messages

@@ -109,6 +109,14 @@ export class CompilerClient {
                 if (typeof window !== 'undefined' && window.dispatchEvent) {
                     window.dispatchEvent(new CustomEvent('synthi:gui-end', { detail: parsed }));
                 }
+            } else if (parsed && parsed.type === 'hmr-status') {
+                // Native HMR status from Rust worker - dispatch to HMR system
+                console.log('[CompilerClient] Dispatching synthi:hmr-status (native)', parsed);
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    window.dispatchEvent(new CustomEvent('synthi:hmr-status', { detail: parsed.data || parsed }));
+                }
+                // Don't log HMR status to build log
+                return;
             } else if (parsed && (parsed.type === 'update' || parsed.type === 'hash' || parsed.type === 'ok' || parsed.type === 'reload')) {
                 console.log('[CompilerClient] Dispatching synthi:hmr-update', parsed);
                 if (typeof window !== 'undefined' && window.dispatchEvent) {
@@ -127,6 +135,14 @@ export class CompilerClient {
                         }
                     };
                     window.dispatchEvent(new CustomEvent('synthi:hmr-update', { detail: hmrMsg }));
+                }
+                return;
+            } else if (parsed && parsed.status && (parsed.status === 'applied' || parsed.status === 'rejected' || 
+                       parsed.status === 'compile-error' || parsed.status === 'crash-recovered')) {
+                // Direct HMR status object from runner
+                console.log('[CompilerClient] Dispatching synthi:hmr-status (runner)', parsed);
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    window.dispatchEvent(new CustomEvent('synthi:hmr-status', { detail: parsed }));
                 }
                 return;
             }
