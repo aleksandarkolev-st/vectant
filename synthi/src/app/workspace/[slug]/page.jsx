@@ -253,6 +253,14 @@ export default function EditorPage({ params }) {
         const source = typeof currentContent === 'string' ? currentContent : '';
         const filename = activeFile?.path || activeFile?.name || 'main';
 
+        // Check if language is supported for compilation to avoid errors
+        const ext = (filename.split('.').pop() || '').toLowerCase();
+        const supportedExts = ['cpp', 'cc', 'cxx', 'hpp', 'h', 'rs', 'ts', 'tsx'];
+        if (!supportedExts.includes(ext)) {
+            console.log(`[HMR] Skipping silent compilation for unsupported extension: .${ext}`);
+            return;
+        }
+
         const getContentForDependency = async (path) => {
             if (path === activeFile.path) return typeof currentContent === 'string' ? currentContent : '';
             if (fileContentCache.has(path)) return fileContentCache.get(path);
@@ -310,6 +318,12 @@ export default function EditorPage({ params }) {
         }
     };
 
+    const handleCopyLineUp = () => editor?.getAction('editor.action.copyLinesUpAction')?.run();
+    const handleCopyLineDown = () => editor?.getAction('editor.action.copyLinesDownAction')?.run();
+    const handleMoveLineUp = () => editor?.getAction('editor.action.moveLinesUpAction')?.run();
+    const handleMoveLineDown = () => editor?.getAction('editor.action.moveLinesDownAction')?.run();
+    const handleDuplicateSelection = () => editor?.getAction('editor.action.duplicateSelection')?.run();
+
     const EditorPanelComponent = (
         <EditorPanel
             onRun={handleRun}
@@ -366,6 +380,11 @@ export default function EditorPage({ params }) {
                 onRedo={handleRedo}
                 onToggleChat={handleToggleChat}
                 chatVisible={chatVisible}
+                onCopyLineUp={handleCopyLineUp}
+                onCopyLineDown={handleCopyLineDown}
+                onMoveLineUp={handleMoveLineUp}
+                onMoveLineDown={handleMoveLineDown}
+                onDuplicateSelection={handleDuplicateSelection}
             />
             {buildLogs.length > 0 && (
                 <div className="border-b border-[#2b2b2b] bg-[#121212] px-3 py-2 text-xs font-mono text-gray-200 max-h-28 overflow-auto">
