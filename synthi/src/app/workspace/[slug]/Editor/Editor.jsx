@@ -45,7 +45,7 @@ import { useAiCompletion } from './AICompletion';
 import { useDiffManager } from './diffManager';
 import { useEditorProviders } from './providers';
 import { useEditorEvents } from './events';
-import { takeLastChars } from './utils';
+import { takeLastChars, useCustomScrollbar } from './utils';
 import { SYNTHI_THEME } from './theme';
 import * as monaco from 'monaco-editor';
 
@@ -115,6 +115,7 @@ const EditorPanel = ({
     latestCompletion,
     aiBusy = false,
     onClearCompletion = null,
+    chatVisible = false,
 }) => {
     const dispatch = useAppDispatch();
 
@@ -800,6 +801,14 @@ const EditorPanel = ({
     const diffMode = useAppSelector(state => state.workspace.diffMode);
     const originalContent = useAppSelector(state => state.workspace.originalContent);
 
+    // --- Custom Scrollbar Logic ---
+    const {
+        tabsContainerRef,
+        scrollbarThumbRef,
+        handleScroll,
+        handleThumbMouseDown
+    } = useCustomScrollbar([openFiles]);
+
     // --- Render ---
 
 
@@ -812,14 +821,18 @@ const EditorPanel = ({
                         <div className="h-9 border-b border-[#2b2b2b] bg-[#1e1e1e] flex justify-between select-none">
 
                             {/* Breadcrumbs */}
-                                <div className="h-full flex overflow-auto min-w-0">
+                                <div className="h-full flex min-w-0 relative group tabs-container-wrapper">
                                     {/* Tabs bar (sleek) */}
-                                    <div className="h-full flex whitespace-nowrap scrollbar-overlay min-w-0 overflow-y-hidden">
+                                    <div
+                                        ref={tabsContainerRef}
+                                        onScroll={handleScroll}
+                                        className="h-full whitespace-nowrap min-w-0 tabs-scroll-container"
+                                    >
                                         {openFiles && openFiles.length > 0 ? openFiles.map((file, idx) => {
                                                 const isActive = activeFile && file.path === activeFile.path;
                                             const fileIcon = getFileIcon(file.name || file.path || '');
                                             return (
-                                                <div key={`tab-wrap-${file.path}`} className="inline-flex items-center h-full align-top">
+                                                <div key={`tab-wrap-${file.path}`} className="inline-flex items-center h-9 align-top">
                                                     
 
                                                 <div
@@ -845,13 +858,12 @@ const EditorPanel = ({
                                                         e.preventDefault();
                                                         setTabContext({ visible: true, x: e.clientX, y: e.clientY, file, index: idx });
                                                     }}
-                                                    className={`group flex items-center gap-2 px-3 cursor-pointer select-none transition-colors duration-100 ${isActive ? 'text-white' : 'text-gray-400 hover:bg-[#2a2d2e]'}`}
+                                                    className={`group flex items-center justify-center gap-1 px-2 cursor-pointer select-none transition-colors duration-100 ${isActive ? 'text-white bg-[#2b2b2b]' : 'text-gray-400 bg-[#1e1e1e] hover:bg-[#252525]'}`}
                                                     title={file.path}
                                                     style={{
                                                         minWidth: 120,
                                                         maxWidth: 220,
                                                         height: '100%',
-                                                        backgroundColor: isActive ? '#1e1e1e' : '#2d2d2d',
                                                         borderRight: '1px solid #252526',
                                                         borderTop: isActive ? `1px solid ${TAB_TOKENS.primary}` : '1px solid transparent',
                                                     }}
@@ -869,7 +881,7 @@ const EditorPanel = ({
                                                     {/* Close button appears on hover (VSCode behavior) */}
                                                     <button
                                                         onClick={(e) => { e.stopPropagation(); dispatch(closeFile(file.path)); }}
-                                                        className={`ml-3 flex items-center justify-center w-6 h-6 rounded transition-opacity duration-150 ${isActive ? 'text-white/80' : 'text-gray-300'}`}
+                                                        className={`ml-2 flex items-center justify-center w-6 h-6 rounded transition-opacity duration-150 ${isActive ? 'text-white/80' : 'text-gray-300'}`}
                                                         aria-label={`Close ${file.name}`}
                                                         style={{ opacity: 0 }}
                                                     >
@@ -888,6 +900,15 @@ const EditorPanel = ({
                                     }) : (
                                         <span className="text-gray-500 text-xs italic">No file open</span>
                                     )}
+                                    </div>
+                                    {/* Custom Scrollbar */}
+                                    <div className="custom-scrollbar-track">
+                                        <div
+                                            ref={scrollbarThumbRef}
+                                            className="custom-scrollbar-thumb"
+                                            onMouseDown={handleThumbMouseDown}
+                                        />
+                                    </div>
                                 </div>
                                 {/* Context menu for tabs */}
                                 {tabContext.visible && (
@@ -916,10 +937,10 @@ const EditorPanel = ({
                                     </div>
                                 )}
                                 {/* Removed global right-side unsaved dot; per-tab markers are used now */}
-                            </div>
+                            
 
                             {/* Status & Controls */}
-                            <div className="flex items-center gap-4">
+                            <div className="flex items-center gap-2">
                                 {/* Line/Col Info */}
                                 <div className="hidden md:flex gap-1 text-[11px] text-gray-500 font-mono px-2">
                                     <span>Ln {position.lineNumber}, Col {position.column}</span>
@@ -928,7 +949,7 @@ const EditorPanel = ({
                                 {/* LSP Status */}
                                 <div className="flex items-center gap-2 text-[11px] text-gray-500">
                                     <div className={`w-2 h-2 rounded-full ${lspStatus.startsWith('Ready') ? 'bg-green-500' : lspStatus.startsWith('Initializing') ? 'bg-yellow-500' : 'bg-gray-500'}`} />
-                                    <span>{lspStatus}</span>
+                                    {!chatVisible && <span>{lspStatus}</span>}
                                 </div>
 
                                 {/* Collaboration presence */}
@@ -982,17 +1003,17 @@ const EditorPanel = ({
                                 </div>
 
                                 {/* AI Status Indicator (Subtle) */}
-                                <div className="flex items-center gap-2 text-[11px]">
+                                <div className="flex items-center gap-2 text-xs">
                                     <div className={`transition-opacity duration-300 ${(aiCompletionState === 'loading' || aiBusy) ? 'opacity-100' : 'opacity-0'}`}>
                                         <Sparkles className="w-3.5 h-3.5 text-purple-400 animate-pulse" />
                                     </div>
                                     <span className={`uppercase tracking-wide ${aiAutoEnabled ? 'text-emerald-300' : 'text-gray-500'}`}>
-                                        AI Auto {aiAutoEnabled ? 'On' : 'Off'}
+                                        AI {aiAutoEnabled ? 'On' : 'Off'}
                                     </span>
                                 </div>
 
                                 {/* Manual Save (Optional since we have auto-save) */}
-                                <button onClick={handleSave} className="opacity-60 hover:opacity-100 transition-opacity">
+                                <button onClick={handleSave} className="opacity-60 hover:opacity-100 transition-opacity px-1">
                                     <Save className="w-4 h-4 text-gray-400" />
                                 </button>
                             </div>

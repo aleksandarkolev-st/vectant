@@ -320,6 +320,7 @@ export default function EditorPage({ params }) {
             latestCompletion={latestCompletion}
             aiBusy={aiBusy}
             onClearCompletion={handleClearLatestCompletion}
+            chatVisible={chatVisible}
         />
     );
 

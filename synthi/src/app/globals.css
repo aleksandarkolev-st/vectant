@@ -141,13 +141,14 @@
 
 /* Global Scrollbar Styling */
 ::-webkit-scrollbar {
-  height: 3   px;
+  height: 3px;
   width: 3px;
 }
 
 ::-webkit-scrollbar-track {
   background: #1d1f23;
   border-radius: 999px;
+  display:flex;
 }
 
 ::-webkit-scrollbar-thumb {
@@ -163,36 +164,58 @@
 /* Firefox */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #3a3f4a #1d1f23;
+  scrollbar-color: #3a3f4a transparent;
 }
 
-.scrollbar-overlay {
-  overflow-x: overlay;
+/* Custom Tabs Scrollbar - VS Code Style (Overlay) */
+.tabs-scroll-container {
+  display: flex !important;
+  flex-direction: row;
+  white-space: nowrap;
+  overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-width: very thin;
+  height: 100%;
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none;  /* IE 10+ */
 }
 
-/* Remove standard scrollbar-width to ensure WebKit styles take precedence for overlay behavior */
-/* This is crucial for Chrome/Edge to allow overlay scrollbars */
-
-.scrollbar-overlay::-webkit-scrollbar {
-  height: 1px !important;
-  width: 1px !important;
-  background: transparent;
+.tabs-scroll-container::-webkit-scrollbar {
+  display: none; /* Chrome/Safari/Webkit */
 }
 
-.scrollbar-overlay::-webkit-scrollbar-track {
-  background: transparent !important;
+/* Ensure children (tabs) align correctly */
+.tabs-scroll-container > div {
+  display: flex !important;
+  height: 100%;
+  flex-shrink: 0; /* Prevent shrinking */
 }
 
-.scrollbar-overlay::-webkit-scrollbar-thumb {
-  background: transparent !important;
-  border: none !important;
-  border-radius: 999px !important;
+/* Custom Scrollbar Overlay */
+.custom-scrollbar-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  z-index: 20;
+  pointer-events: none;
 }
 
-.scrollbar-overlay:hover::-webkit-scrollbar-thumb {
-  background: rgba(150, 150, 150, 0.5) !important;
+.custom-scrollbar-thumb {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background-color: rgba(128, 128, 128, 0.5);
+  border-radius: 3px;
+  cursor: pointer;
+  pointer-events: auto;
+  opacity: 0;
+  transition: opacity 0.2s ease-in-out;
+}
+
+.tabs-container-wrapper:hover .custom-scrollbar-thumb,
+.custom-scrollbar-thumb.visible {
+  opacity: 1;
 }
 
 .ai-chat-message pre.ai-code-block,
