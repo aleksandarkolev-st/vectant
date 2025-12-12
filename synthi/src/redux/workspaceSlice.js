@@ -76,52 +76,55 @@ export const saveFileContentThunk = createAsyncThunk(
         const state = getState().workspace;
         const { activeFile, currentContent, slug } = state;
 
-        if (!activeFile || currentContent === state.savedContent) {
+        if (!activeFile) {
             return;
         }
 
-        // If collaborative editing is active for this file, prefer the authoritative CRDT text
+        // Determine the authoritative content to save:
+        // 1. If a collab doc exists for this file, use the CRDT content (most up-to-date)
+        // 2. Otherwise fall back to Redux currentContent
+        let contentToSave = currentContent;
+        let usedCrdt = false;
+        
         try {
-            const states = collabClient.getActiveEditors(slug, activeFile.path);
-            // If there are collaborators, extract the Yjs text value
-            if (states && states.length > 0) {
-                const entryKey = `${slug}:${activeFile.path}`; // not used for lookup directly but we'll fetch via collabClient internals
-                // Retrieve the Yjs document content directly if available
-                // collabClient keeps docs in the form workspace:slug:path as key
-                const key = `workspace:${slug}:${activeFile.path.replace(/[^a-zA-Z0-9_.\-\/]/g, '_')}`;
-                const entry = collabClient.docs.get(key);
-                if (entry && entry.ytext) {
-                    const crdtText = entry.ytext.toString();
-                    // Use CRDT-derived content for save
-                    await api.saveFileContent(slug, activeFile.path, crdtText, activeFile.name);
-                } else {
-                    await api.saveFileContent(slug, activeFile.path, currentContent, activeFile.name);
+            // Build the key the same way collabClient does
+            const safePath = activeFile.path.replace(/[^a-zA-Z0-9_.\-\/]/g, '_');
+            const key = `workspace:${slug}:${safePath}`;
+            const entry = collabClient.docs.get(key);
+            
+            if (entry && entry.ytext) {
+                const crdtText = entry.ytext.toString();
+                if (crdtText && crdtText.length > 0) {
+                    contentToSave = crdtText;
+                    usedCrdt = true;
                 }
-            } else {
-                await api.saveFileContent(slug, activeFile.path, currentContent, activeFile.name);
             }
+        } catch (e) {
+            console.warn('[Save] Failed to get CRDT content, using Redux content', e);
+        }
+        
+        // Skip save if content hasn't changed
+        if (contentToSave === state.savedContent) {
+            return contentToSave; // Return content to ensure reducer still marks as saved
+        }
+
+        try {
+            await api.saveFileContent(slug, activeFile.path, contentToSave, activeFile.name);
             
             // Sync to Git
-            const contentToSync = (states && states.length > 0) ? 
-                (collabClient.docs.get(`workspace:${slug}:${activeFile.path.replace(/[^a-zA-Z0-9_.\-\/]/g, '_')}`)?.ytext?.toString() || currentContent) 
-                : currentContent;
-                
-            dispatch(syncFileToGit({ slug, filePath: activeFile.path, content: contentToSync }));
+            dispatch(syncFileToGit({ slug, filePath: activeFile.path, content: contentToSave }));
             dispatch(fetchGitStatus(slug));
 
         } catch (e) {
-            // Fallback: if anything goes wrong with collab client, save the current content
-            await api.saveFileContent(slug, activeFile.path, currentContent, activeFile.name);
-            
-            dispatch(syncFileToGit({ slug, filePath: activeFile.path, content: currentContent }));
-            dispatch(fetchGitStatus(slug));
+            console.error('[Save] Failed to save file', e);
+            throw e; // Re-throw so the thunk is rejected
         }
         
         // Ensure tree is revalidated silently after save
         dispatch(fetchFilesThunk(slug)); 
 
-        // Return content to update saved state and cache in the fulfilled reducer
-        return currentContent; 
+        // Return the content that was saved to update savedContent state
+        return contentToSave; 
     }
 );
 

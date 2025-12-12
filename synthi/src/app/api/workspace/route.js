@@ -38,32 +38,58 @@ export async function GET(request) {
 
 export async function POST(request) {
     try {
-        const { name } = await request.json();
+        const { name, slug, repoUrl } = await request.json();
 
         if (!name) {
             return NextResponse.json({ error: 'Workspace name is required.' }, { status: 400 });
         }
 
-        const newWorkspace = await prisma.workspace.create({
-            data: { name },
-        });
+        // Use provided slug (collab server) or generate one
+        let finalSlug = slug;
+        if (!finalSlug) {
+            finalSlug = `ws-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
+        }
 
-        const rootFolderPath = `workspaces/${newWorkspace.id}/`;
+        // Create workspace record in DB, include repoUrl if present
+        let newWorkspace;
+        try {
+            newWorkspace = await prisma.workspace.create({
+                data: {
+                    name,
+                    slug: finalSlug,
+                    repoUrl: repoUrl || null,
+                },
+            });
+        } catch (dbErr) {
+            // Handle unique constraint on slug gracefully
+            if (dbErr?.code === 'P2002' && dbErr?.meta?.target && dbErr.meta.target.includes('slug')) {
+                // If a workspace with this slug already exists, return 409
+                return NextResponse.json({ error: 'Workspace slug already exists.' }, { status: 409 });
+            }
+            throw dbErr;
+        }
+
+        const rootFolderPath = `workspaces/${finalSlug}/`;
         const bucket = storage.bucket(BUCKET_NAME);
         
-        await bucket.file(rootFolderPath).save('', {
-            contentType: 'application/x-directory',
-            resumable: false,
-            metadata: {
-                cacheControl: 'no-cache',
+        try {
+            await bucket.file(rootFolderPath).save('', {
+                contentType: 'application/x-directory',
+                resumable: false,
                 metadata: {
-                    isFolder: 'true',
-                    name: newWorkspace.name,
-                    createdBy: 'synthi-ide',
-                    isMarker: 'true'
+                    cacheControl: 'no-cache',
+                    metadata: {
+                        isFolder: 'true',
+                        name: newWorkspace.name,
+                        createdBy: 'synthi-ide',
+                        isMarker: 'true'
+                    }
                 }
-            }
-        });
+            });
+        } catch (err) {
+            // Log the error but do not remove workspace; return 201 since DB now has workspace
+            console.warn('Failed to create GCS marker folder for workspace', finalSlug, err?.message || err);
+        }
 
         return NextResponse.json(newWorkspace, { status: 201 });
     } catch (error) {

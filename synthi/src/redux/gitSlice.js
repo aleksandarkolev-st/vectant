@@ -35,8 +35,8 @@ export const fetchRemote = createAsyncThunk(
 
 export const fetchCommitHistory = createAsyncThunk(
     'git/fetchLog',
-    async (slug) => {
-        return await gitClient.getLog(slug);
+    async ({ slug, page = 1, limit = 50 }) => {
+        return await gitClient.getLog(slug, page, limit);
     }
 );
 
@@ -94,7 +94,7 @@ export const commitChanges = createAsyncThunk(
     async ({ slug, message }, { dispatch }) => {
         await gitClient.commit(slug, message);
         dispatch(fetchGitStatus(slug));
-        dispatch(fetchCommitHistory(slug));
+        dispatch(fetchCommitHistory({ slug }));
         dispatch(fetchUnpushedCommits({ slug, max: 50 }));
     }
 );
@@ -107,10 +107,26 @@ export const stageFile = createAsyncThunk(
     }
 );
 
+export const stageAll = createAsyncThunk(
+    'git/stageAll',
+    async (slug, { dispatch }) => {
+        await gitClient.stageAll(slug);
+        dispatch(fetchGitStatus(slug));
+    }
+);
+
 export const unstageFile = createAsyncThunk(
     'git/unstage',
     async ({ slug, filePath }, { dispatch }) => {
         await gitClient.unstageFile(slug, filePath);
+        dispatch(fetchGitStatus(slug));
+    }
+);
+
+export const unstageAll = createAsyncThunk(
+    'git/unstageAll',
+    async (slug, { dispatch }) => {
+        await gitClient.unstageAll(slug);
         dispatch(fetchGitStatus(slug));
     }
 );
@@ -121,7 +137,7 @@ export const pushChanges = createAsyncThunk(
         await gitClient.push(slug);
         dispatch(fetchGitStatus(slug));
         dispatch(fetchUnpushedCommits({ slug, max: 50 }));
-        dispatch(fetchCommitHistory(slug));
+        dispatch(fetchCommitHistory({ slug }));
         dispatch(fetchRemotes(slug));
     }
 );
@@ -129,10 +145,11 @@ export const pushChanges = createAsyncThunk(
 export const pullChanges = createAsyncThunk(
     'git/pull',
     async (slug, { dispatch }) => {
-        await gitClient.pull(slug);
+        const result = await gitClient.pull(slug);
         dispatch(fetchGitStatus(slug));
         dispatch(fetchUnpushedCommits({ slug, max: 50 }));
-        dispatch(fetchCommitHistory(slug));
+        dispatch(fetchCommitHistory({ slug }));
+        return result;
     }
 );
 
@@ -144,19 +161,85 @@ export const discardChange = createAsyncThunk(
     }
 );
 
+export const discardAll = createAsyncThunk(
+    'git/discardAll',
+    async (slug, { dispatch }) => {
+        await gitClient.discardAll(slug);
+        dispatch(fetchGitStatus(slug));
+    }
+);
+
+// Stash operations
+export const fetchStashList = createAsyncThunk(
+    'git/fetchStashList',
+    async (slug) => {
+        return await gitClient.stashList(slug);
+    }
+);
+
+export const stashPush = createAsyncThunk(
+    'git/stashPush',
+    async ({ slug, message }, { dispatch }) => {
+        await gitClient.stashPush(slug, message);
+        dispatch(fetchGitStatus(slug));
+        dispatch(fetchStashList(slug));
+    }
+);
+
+export const stashPop = createAsyncThunk(
+    'git/stashPop',
+    async ({ slug, index = 0 }, { dispatch }) => {
+        await gitClient.stashPop(slug, index);
+        dispatch(fetchGitStatus(slug));
+        dispatch(fetchStashList(slug));
+    }
+);
+
+export const stashApply = createAsyncThunk(
+    'git/stashApply',
+    async ({ slug, index = 0 }, { dispatch }) => {
+        await gitClient.stashApply(slug, index);
+        dispatch(fetchGitStatus(slug));
+    }
+);
+
+export const stashDrop = createAsyncThunk(
+    'git/stashDrop',
+    async ({ slug, index = 0 }, { dispatch }) => {
+        await gitClient.stashDrop(slug, index);
+        dispatch(fetchStashList(slug));
+    }
+);
+
+// Blame
+export const fetchBlame = createAsyncThunk(
+    'git/fetchBlame',
+    async ({ slug, filePath }) => {
+        return await gitClient.getBlame(slug, filePath);
+    }
+);
+
 const gitSlice = createSlice({
     name: 'git',
     initialState: {
         status: null,
         branches: { local: [], all: [] },
         remotes: [],
-        commitHistory: { all: [] },
+        commitHistory: { all: [], total: 0, page: 1, hasMore: false },
         unpushedCommits: [],
+        stashList: [],
+        blameData: [],
         currentBranch: 'main',
         loading: false,
         error: null,
+        errorCode: null, // For structured error handling
     },
-    reducers: {},
+    reducers: {
+        clearError: (state) => {
+            state.error = null;
+            state.errorCode = null;
+        }
+    },
     extraReducers: (builder) => {
         builder
             .addCase(fetchGitStatus.pending, (state) => {
@@ -164,6 +247,7 @@ const gitSlice = createSlice({
             })
             .addCase(fetchGitStatus.fulfilled, (state, action) => {
                 state.loading = false;
+                state.error = null;
                 state.status = action.payload.status;
                 state.branches = action.payload.branches || { local: [], all: [] };
                 if (action.payload.status) {
@@ -173,15 +257,24 @@ const gitSlice = createSlice({
             .addCase(fetchGitStatus.rejected, (state, action) => {
                 state.loading = false;
                 state.error = action.error.message;
+                state.errorCode = action.error.code || null;
             });
 
         builder
             .addCase(fetchCommitHistory.pending, (state) => { state.loading = true; state.error = null; })
-            .addCase(fetchCommitHistory.fulfilled, (state, action) => { state.loading = false; state.commitHistory = action.payload || { all: [] }; })
+            .addCase(fetchCommitHistory.fulfilled, (state, action) => { 
+                state.loading = false; 
+                state.commitHistory = action.payload || { all: [], total: 0, page: 1, hasMore: false }; 
+            })
             .addCase(fetchCommitHistory.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
             .addCase(fetchUnpushedCommits.pending, (state) => { state.loading = true; state.error = null; })
             .addCase(fetchUnpushedCommits.fulfilled, (state, action) => { state.loading = false; state.unpushedCommits = action.payload || []; })
             .addCase(fetchUnpushedCommits.rejected, (state, action) => { state.loading = false; state.error = action.error.message; });
+        
+        builder
+            .addCase(fetchStashList.fulfilled, (state, action) => { state.stashList = action.payload || []; })
+            .addCase(fetchBlame.fulfilled, (state, action) => { state.blameData = action.payload || []; });
+        
         builder
             .addCase(initRepo.pending, (state) => { state.loading = true; state.error = null; })
             .addCase(initRepo.fulfilled, (state) => { state.loading = false; })
@@ -204,4 +297,5 @@ const gitSlice = createSlice({
     },
 });
 
+export const { clearError } = gitSlice.actions;
 export default gitSlice.reducer;

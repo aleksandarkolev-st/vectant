@@ -147,11 +147,16 @@ const EditorPanel = ({
     const slug = useAppSelector(state => state.workspace.slug);
     const session = useSession();
     const collabBindingRef = useRef(null);
+    const [collabConnected, setCollabConnected] = useState(false); // Track if collab is actively bound
     const [hoverPresence, setHoverPresence] = useState(null); // { user, clientId, rect }
     // small timeout ref used to keep the hover card alive while moving the pointer
     const hoverHideTimeoutRef = useRef(null);
     const [isPrivateMode, setIsPrivateMode] = useState(false);
     const [remoteUnsaved, setRemoteUnsaved] = useState(false);
+    
+    // Track which file path the editor is currently bound to
+    // This prevents stale onChange handlers from writing to the wrong file
+    const boundFilePathRef = useRef(null);
 
     // Precompute hover-card style so JSX stays clean and well-formed
     const hoverCardStyle = (hoverPresence && hoverPresence.rect && typeof window !== 'undefined') ? (() => {
@@ -491,20 +496,43 @@ const EditorPanel = ({
 
     // Hook up Yjs-based collaboration when an editor and activeFile are present.
     useEffect(() => {
-        if (!editorInstance || !monacoInstance || !activeFile || !slug || isPrivateMode) return;
+        if (!editorInstance || !monacoInstance || !activeFile || !slug || isPrivateMode) {
+            // Clear collab connected state if dependencies are missing
+            setCollabConnected(false);
+            return;
+        }
 
-        // Seed the document on the server if it is empty, using the current editor content.
-        try {
-            collabClient.seedContentIfEmpty(slug, activeFile.path, latestCodeRef.current).catch(() => {});
-        } catch (e) { /* ignore */ }
+        // Verify the editor is still mounted and has a valid model before binding
+        const model = editorInstance.getModel?.();
+        if (!model) {
+            console.warn('[Collab] Editor model not available, skipping collab binding');
+            setCollabConnected(false);
+            return;
+        }
 
         const user = (session?.data?.user) ? { id: session.data.user.id || session.data.user.email || session.data.user.name, name: session.data.user.name || session.data.user.email, email: session.data.user.email || null, isAnonymous: false } : { id: null, name: 'Anonymous', email: null, isAnonymous: true };
 
         // Attach the editor to the collaboration binding
+        // IMPORTANT: Get content from file cache for THIS specific file path
+        // Do NOT use `code` as it may still contain content from the previous file
+        // during the transition between files.
         try {
             const showLineDecorations = (presenceGranularity === 'line');
-            const bindingHandle = collabClient.attachEditor({ editor: editorInstance, monaco: monacoInstance, slug, path: activeFile.path, user, options: { showLineDecorations } });
+            // Get content specifically for this file from the cache
+            const cachedContent = fileCacheEntries.find(([path]) => path === activeFile.path)?.[1];
+            const initialContent = typeof cachedContent === 'string' ? cachedContent : (typeof code === 'string' ? code : '');
+            const bindingHandle = collabClient.attachEditor({ 
+                editor: editorInstance, 
+                monaco: monacoInstance, 
+                slug, 
+                path: activeFile.path, 
+                user, 
+                initialContent,
+                options: { showLineDecorations } 
+            });
             collabBindingRef.current = bindingHandle;
+            boundFilePathRef.current = activeFile.path; // Track which file we're bound to
+            setCollabConnected(true); // Mark collab as connected
             
             // Sync initial unsaved state
             bindingHandle.updateLocalUnsaved(isUnsaved);
@@ -520,12 +548,15 @@ const EditorPanel = ({
 
         } catch (e) {
             console.warn('[Collab] Failed to attach editor to collaborative session', e);
+            setCollabConnected(false);
         }
 
         return () => {
             try { collabBindingRef.current?._awarenessUnsub?.(); } catch (e) { /* ignore */ }
             try { collabBindingRef.current?.dispose(); } catch (e) { /* ignore */ }
             collabBindingRef.current = null;
+            boundFilePathRef.current = null; // Clear bound file path
+            setCollabConnected(false);
             setRemoteUnsaved(false);
         };
     }, [editorInstance, monacoInstance, activeFile, slug, session, presenceGranularity, isPrivateMode]);
@@ -591,6 +622,16 @@ const EditorPanel = ({
     const activeLanguage = activeFile ? getMonacoLanguage(activeFile.name) : 'plaintext';
     const activeFileIdentity = activeFile ? `${activeFile.path ?? ''}-${activeFile.name ?? ''}` : 'no-file';
     const activeFileIcon = activeFile ? getFileIcon(activeFile.name || activeFile.path || '') : null;
+
+    // Clean up editor instance when activeFile changes to prevent stale references
+    useEffect(() => {
+        // When file identity changes, clear the editor instance to force re-bind
+        return () => {
+            // On cleanup (file switch), null out editor to prevent stale usage
+            setEditorInstance(null);
+            setCollabConnected(false);
+        };
+    }, [activeFileIdentity]);
 
     const {
         aiCompletionState,
@@ -683,6 +724,23 @@ const EditorPanel = ({
     }, []);
 
     const handleCodeChange = useCallback((newCode) => {
+        // CRITICAL: Only process changes if we're bound to the correct file
+        // This prevents stale onChange handlers from writing content to the wrong file
+        // during file transitions.
+        if (activeFile && boundFilePathRef.current && boundFilePathRef.current !== activeFile.path) {
+            console.debug('[Editor] Ignoring onChange for stale file binding', boundFilePathRef.current, 'vs', activeFile.path);
+            return;
+        }
+        
+        // Skip Redux update if collab is applying remote changes to prevent feedback loop
+        // This is critical: when remote Yjs changes come in, collabClient applies them via
+        // executeEdits which triggers onChange. If we push to Redux, it would cause the 
+        // value prop to change, triggering another setValue, conflicting with LSP versioning.
+        if (collabBindingRef.current?.isApplyingRemote?.()) {
+            latestCodeRef.current = newCode;
+            return;
+        }
+
         cancelActiveCompletion({ resetSuggestion: true, reason: 'edit' });
         latestCodeRef.current = newCode;
         if (!pendingContentFrameRef.current) {
@@ -776,6 +834,8 @@ const EditorPanel = ({
     // Handle updates from analysis (Markers)
     useEffect(() => {
         if (!editorInstance || !monacoInstance || !analysisResult) return;
+        const model = editorInstance.getModel?.();
+        if (!model) return; // Guard against disposed editor
         const issues = analysisResult?.static_analysis || analysisResult?.issues || [];
         const markers = issues.map(issue => ({
             startLineNumber: issue.line === 0 ? 1 : issue.line + 1,
@@ -785,7 +845,11 @@ const EditorPanel = ({
             message: issue.message,
             severity: issue.severity === 'error' ? monacoInstance.MarkerSeverity.Error : monacoInstance.MarkerSeverity.Warning
         }));
-        monacoInstance.editor.setModelMarkers(editorInstance.getModel(), 'analysis', markers);
+        try {
+            monacoInstance.editor.setModelMarkers(model, 'analysis', markers);
+        } catch (e) {
+            // Editor may have been disposed
+        }
     }, [editorInstance, monacoInstance, analysisResult]);
 
     // Handle external completion triggering (e.g. from Chat UI)
@@ -1092,6 +1156,8 @@ const EditorPanel = ({
                                                 key={activeFileIdentity}
                                                 height="100%"
                                                 path={activeFile ? `/synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}` : undefined}
+                                                // Always pass value on initial mount, then let collab take over
+                                                // This ensures Monaco has valid content before Yjs binds
                                                 value={code ?? ''}
                                                 language={activeLanguage}
                                                 theme="synthi-theme"
@@ -1104,6 +1170,12 @@ const EditorPanel = ({
                                                 }}
                                                 onChange={handleCodeChange}
                                                 onMount={(editor, monaco) => {
+                                                    // Verify editor has a valid model before storing reference
+                                                    const model = editor.getModel?.();
+                                                    if (!model) {
+                                                        console.warn('[Editor] onMount called but model is undefined, skipping');
+                                                        return;
+                                                    }
                                                     setEditorInstance(editor);
                                                     setMonacoInstance(monaco);
                                                     if (onEditorMount) onEditorMount(editor);
@@ -1117,7 +1189,13 @@ const EditorPanel = ({
                                                     });
 
                                                     // Ensure layout refreshes on mount
-                                                    setTimeout(() => editor.layout(), 100);
+                                                    setTimeout(() => {
+                                                        try {
+                                                            editor.layout();
+                                                        } catch (e) {
+                                                            // Editor may have been disposed
+                                                        }
+                                                    }, 100);
                                                 }}
                                             />
                                         )}
