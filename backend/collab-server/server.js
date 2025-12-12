@@ -50,6 +50,7 @@ try {
   }
 }
 const Y = require('yjs');
+const fileIndex = require('./fileIndex');
 
 // LevelDB persistence is optional — some environments (or registries) may not
 // provide a compatible `y-leveldb` binary. Try to load it and fall back to
@@ -226,6 +227,31 @@ const server = http.createServer(async (req, res) => {
                 case 'files':
                     result = await gitService.listFiles(slug);
                     break;
+                case 'files-meta':
+                  // Metadata only (no content)
+                  result = { files: await gitService.listFilesMeta(slug) };
+                  // Kick off index build in background (non-blocking)
+                  try {
+                    fileIndex.ensureIndex(slug, gitService.getRepoPath(slug)).catch(() => {});
+                  } catch (_) {}
+                  break;
+                case 'index-ensure':
+                  // Non-blocking ensure; returns immediately with current status
+                  try {
+                    fileIndex.ensureIndex(slug, gitService.getRepoPath(slug)).catch(() => {});
+                  } catch (_) {}
+                  result = fileIndex.getStatus(slug);
+                  break;
+                case 'index-status':
+                  result = fileIndex.getStatus(slug);
+                  break;
+                case 'search':
+                  // Index-first search; never reads disk on request
+                  result = fileIndex.search(slug, data.q || data.query || '');
+                  break;
+                case 'open-lookup':
+                  result = fileIndex.fileLookup(slug, data.q || data.query || '');
+                  break;
                 case 'file':
                     const content = await gitService.readFile(slug, data.path);
                     result = { content };
