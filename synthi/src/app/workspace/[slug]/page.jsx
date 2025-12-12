@@ -40,6 +40,7 @@ import { useHMR } from '@/hooks/useHMR';
 import { GitStatus } from '@/components/git/GitStatus';
 import ActivityBar from '../ActivityBar.jsx';
 import SearchView from './SearchView.jsx';
+import WorkspaceHydrator from '@/components/WorkspaceHydrator';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -429,6 +430,8 @@ export default function EditorPage({ params }) {
 
     return (
         <div className={`flex flex-col h-screen bg-[#1e1e1e] text-gray-200`}>
+            {/* Hydrate workspace-specific tabs from localStorage */}
+            <WorkspaceHydrator slug={slug} />
             <TopNav
                 title={activeFile? activeFile.name : 'Synthi Workspace'}
                 onRun={handleRun}
