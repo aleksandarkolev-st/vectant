@@ -77,6 +77,8 @@ pub struct CapabilityReport {
     pub exports: ExportSet,
     pub warnings: Vec<String>,
     pub can_shim: bool, // Whether we can auto-generate a shim to make it HMR-capable
+    pub has_host_kv: bool, // Whether module supports Host KV API
+    pub uses_host_context: bool, // Whether module uses *_on_load_host
 }
 
 /// Set of detected exports in a library
@@ -91,6 +93,10 @@ pub struct ExportSet {
     pub core_get_abi_version: bool,
     pub core_on_save_state: bool,
     pub core_on_load_from_json: bool,
+    // Core Host KV exports
+    pub core_on_load_host: bool,
+    pub core_host_kv_schemas_len: bool,
+    pub core_host_kv_schemas: bool,
     
     // GUI module exports
     pub gui_on_load: bool,
@@ -100,6 +106,10 @@ pub struct ExportSet {
     pub gui_get_abi_version: bool,
     pub gui_on_save_state: bool,
     pub gui_on_load_from_json: bool,
+    // GUI Host KV exports
+    pub gui_on_load_host: bool,
+    pub gui_host_kv_schemas_len: bool,
+    pub gui_host_kv_schemas: bool,
     
     // Legacy exports
     pub on_load: bool,
@@ -111,6 +121,10 @@ pub struct ExportSet {
     pub on_load_from_json: bool,
     pub gui_render: bool,
     pub on_render: bool,
+    // Legacy Host KV exports
+    pub on_load_host: bool,
+    pub host_kv_schemas_len: bool,
+    pub host_kv_schemas: bool,
     
     // Blocking app indicators
     pub main: bool,  // Has `main` symbol (C/C++ entry point)
@@ -144,6 +158,27 @@ impl ExportSet {
         // Has main/entrypoint but no on_update
         (self.main || self.entrypoint) && !self.on_update && !self.core_on_update
     }
+    
+    /// Check if this module supports Host KV
+    pub fn has_host_kv(&self) -> bool {
+        // Has on_load_host OR has schema exports
+        self.core_on_load_host || self.gui_on_load_host || self.on_load_host ||
+        (self.core_host_kv_schemas_len && self.core_host_kv_schemas) ||
+        (self.gui_host_kv_schemas_len && self.gui_host_kv_schemas) ||
+        (self.host_kv_schemas_len && self.host_kv_schemas)
+    }
+    
+    /// Check if this module uses host context loading (preferred path)
+    pub fn uses_host_context(&self) -> bool {
+        self.core_on_load_host || self.gui_on_load_host || self.on_load_host
+    }
+    
+    /// Check if this module has schema table exports
+    pub fn has_schema_table(&self) -> bool {
+        (self.core_host_kv_schemas_len && self.core_host_kv_schemas) ||
+        (self.gui_host_kv_schemas_len && self.gui_host_kv_schemas) ||
+        (self.host_kv_schemas_len && self.host_kv_schemas)
+    }
 }
 
 /// Inspect a compiled library and detect its capabilities
@@ -173,6 +208,8 @@ pub fn detect_capabilities(lib_path: &Path) -> Result<CapabilityReport, String> 
     let (module_type, hmr_capability) = classify_module(&exports);
     let warnings = generate_warnings(&exports, &module_type, &hmr_capability);
     let can_shim = can_generate_shim(&exports);
+    let has_host_kv = exports.has_host_kv();
+    let uses_host_context = exports.uses_host_context();
     
     Ok(CapabilityReport {
         module_type,
@@ -181,6 +218,8 @@ pub fn detect_capabilities(lib_path: &Path) -> Result<CapabilityReport, String> 
         exports,
         warnings,
         can_shim,
+        has_host_kv,
+        uses_host_context,
     })
 }
 
@@ -191,6 +230,7 @@ fn probe_exports(lib: &Library) -> ExportSet {
     // Type aliases for cleaner probing
     type VoidFn = unsafe extern "C" fn();
     type LoadFn = unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void;
+    type LoadHostFn = unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void;
     type UpdateFn = unsafe extern "C" fn(*mut c_void, f64);
     type EventFn = unsafe extern "C" fn(*mut c_void, *mut c_void);
     type UnloadFn = unsafe extern "C" fn(*mut c_void);
@@ -201,6 +241,8 @@ fn probe_exports(lib: &Library) -> ExportSet {
     type EntrypointFn = unsafe extern "C" fn(*mut c_void) -> *mut c_void;
     type RenderFn = unsafe extern "C" fn(*mut c_void);
     type GuiLoadFn = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> *mut c_void;
+    type SchemaLenFn = unsafe extern "C" fn() -> u32;
+    type SchemasFn = unsafe extern "C" fn() -> *const c_void;
     
     unsafe {
         // Core module exports
@@ -212,6 +254,10 @@ fn probe_exports(lib: &Library) -> ExportSet {
         exports.core_get_abi_version = lib.get::<Symbol<GetAbiFn>>(b"core_get_abi_version").is_ok();
         exports.core_on_save_state = lib.get::<Symbol<SaveStateFn>>(b"core_on_save_state").is_ok();
         exports.core_on_load_from_json = lib.get::<Symbol<LoadFromJsonFn>>(b"core_on_load_from_json").is_ok();
+        // Core Host KV exports
+        exports.core_on_load_host = lib.get::<Symbol<LoadHostFn>>(b"core_on_load_host").is_ok();
+        exports.core_host_kv_schemas_len = lib.get::<Symbol<SchemaLenFn>>(b"core_host_kv_schemas_len").is_ok();
+        exports.core_host_kv_schemas = lib.get::<Symbol<SchemasFn>>(b"core_host_kv_schemas").is_ok();
         
         // GUI module exports
         exports.gui_on_load = lib.get::<Symbol<GuiLoadFn>>(b"gui_on_load").is_ok();
@@ -221,6 +267,10 @@ fn probe_exports(lib: &Library) -> ExportSet {
         exports.gui_get_abi_version = lib.get::<Symbol<GetAbiFn>>(b"gui_get_abi_version").is_ok();
         exports.gui_on_save_state = lib.get::<Symbol<SaveStateFn>>(b"gui_on_save_state").is_ok();
         exports.gui_on_load_from_json = lib.get::<Symbol<LoadFromJsonFn>>(b"gui_on_load_from_json").is_ok();
+        // GUI Host KV exports
+        exports.gui_on_load_host = lib.get::<Symbol<LoadHostFn>>(b"gui_on_load_host").is_ok();
+        exports.gui_host_kv_schemas_len = lib.get::<Symbol<SchemaLenFn>>(b"gui_host_kv_schemas_len").is_ok();
+        exports.gui_host_kv_schemas = lib.get::<Symbol<SchemasFn>>(b"gui_host_kv_schemas").is_ok();
         
         // Legacy exports
         exports.on_load = lib.get::<Symbol<LoadFn>>(b"on_load").is_ok();
@@ -232,6 +282,10 @@ fn probe_exports(lib: &Library) -> ExportSet {
         exports.on_load_from_json = lib.get::<Symbol<LoadFromJsonFn>>(b"on_load_from_json").is_ok();
         exports.gui_render = lib.get::<Symbol<RenderFn>>(b"gui_render").is_ok();
         exports.on_render = lib.get::<Symbol<RenderFn>>(b"on_render").is_ok();
+        // Legacy Host KV exports
+        exports.on_load_host = lib.get::<Symbol<LoadHostFn>>(b"on_load_host").is_ok();
+        exports.host_kv_schemas_len = lib.get::<Symbol<SchemaLenFn>>(b"host_kv_schemas_len").is_ok();
+        exports.host_kv_schemas = lib.get::<Symbol<SchemasFn>>(b"host_kv_schemas").is_ok();
         
         // Blocking app indicator
         exports.main = lib.get::<Symbol<VoidFn>>(b"main").is_ok();
@@ -402,6 +456,34 @@ pub enum HmrStatus {
         capability: String,
         can_shim: bool,
         warnings: Vec<String>,
+        has_host_kv: bool,
+    },
+    // ============================================================
+    // HOST KV STATUS EVENTS
+    // ============================================================
+    /// Host KV is ready (session set, context available)
+    HostKvReady {
+        session_id: String,
+        module_slot: String,
+    },
+    /// Namespaces preserved on reload
+    HostKvPreserved {
+        module: String,
+        namespaces: Vec<String>,
+    },
+    /// Schema mismatch caused namespace reset
+    HostKvResetSchemaMismatch {
+        module: String,
+        namespace: String,
+        old_schema: u64,
+        new_schema: u64,
+    },
+    /// Write rejected (quota or invalid namespace)
+    HostKvWriteRejected {
+        module: String,
+        namespace: String,
+        key: String,
+        reason: String,
     },
 }
 
@@ -457,6 +539,43 @@ impl HmrStatus {
             capability: report.hmr_capability.description().to_string(),
             can_shim: report.can_shim,
             warnings: report.warnings.clone(),
+            has_host_kv: report.has_host_kv,
+        }
+    }
+    
+    /// Create host KV ready status
+    pub fn host_kv_ready(session_id: &str, module_slot: &str) -> Self {
+        HmrStatus::HostKvReady {
+            session_id: session_id.to_string(),
+            module_slot: module_slot.to_string(),
+        }
+    }
+    
+    /// Create host KV preserved status
+    pub fn host_kv_preserved(module: &str, namespaces: Vec<String>) -> Self {
+        HmrStatus::HostKvPreserved {
+            module: module.to_string(),
+            namespaces,
+        }
+    }
+    
+    /// Create host KV schema mismatch reset status
+    pub fn host_kv_reset_schema(module: &str, namespace: &str, old_schema: u64, new_schema: u64) -> Self {
+        HmrStatus::HostKvResetSchemaMismatch {
+            module: module.to_string(),
+            namespace: namespace.to_string(),
+            old_schema,
+            new_schema,
+        }
+    }
+    
+    /// Create host KV write rejected status
+    pub fn host_kv_write_rejected(module: &str, namespace: &str, key: &str, reason: &str) -> Self {
+        HmrStatus::HostKvWriteRejected {
+            module: module.to_string(),
+            namespace: namespace.to_string(),
+            key: key.to_string(),
+            reason: reason.to_string(),
         }
     }
 }

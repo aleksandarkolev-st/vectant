@@ -13,6 +13,9 @@ pub const SYNTHI_CORE_ABI_VERSION: u32 = 1;
 pub const SYNTHI_GUI_ABI_VERSION: u32 = 1;
 pub const SYNTHI_MIN_SUPPORTED_ABI: u32 = 1;
 
+/// Host KV API version
+pub const SYNTHI_HOST_KV_VERSION: u32 = 1;
+
 /// Magic numbers for struct validation
 pub const CORE_STATE_MAGIC: u32 = 0xDEADBEEF;
 pub const GUI_STATE_MAGIC: u32 = 0x60108EEF; // "GUI BEEF"
@@ -22,6 +25,7 @@ pub type StatePtr = *mut c_void;
 pub type RendererPtr = *mut c_void;
 pub type CoreApiPtr = *mut c_void;
 pub type SdlEventPtr = *mut c_void;
+pub type HostContextPtr = *const c_void;
 
 /// Module slot identifiers
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -77,15 +81,28 @@ pub mod core_symbols {
     pub const ON_SAVE_STATE: &[u8] = b"core_on_save_state\0";
     pub const ON_LOAD_FROM_JSON: &[u8] = b"core_on_load_from_json\0";
     
+    // ============================================================
+    // HOST KV SYMBOLS (optional, for host-context-aware loading)
+    // ============================================================
+    /// CoreState* core_on_load_host(CoreState* prev, const SynthiHostContextV1* host_ctx)
+    pub const ON_LOAD_HOST: &[u8] = b"core_on_load_host\0";
+    /// uint32_t core_host_kv_schemas_len(void)
+    pub const HOST_KV_SCHEMAS_LEN: &[u8] = b"core_host_kv_schemas_len\0";
+    /// const SynthiNamespaceSchemaV1* core_host_kv_schemas(void)
+    pub const HOST_KV_SCHEMAS: &[u8] = b"core_host_kv_schemas\0";
+    
     /// Required symbols that MUST be present
     pub const REQUIRED: &[&[u8]] = &[ON_LOAD, ON_UPDATE, GET_API];
     
     /// Optional symbols
-    pub const OPTIONAL: &[&[u8]] = &[ON_EVENT, ON_UNLOAD, GET_ABI_VERSION, ON_SAVE_STATE, ON_LOAD_FROM_JSON];
+    pub const OPTIONAL: &[&[u8]] = &[ON_EVENT, ON_UNLOAD, GET_ABI_VERSION, ON_SAVE_STATE, ON_LOAD_FROM_JSON, ON_LOAD_HOST, HOST_KV_SCHEMAS_LEN, HOST_KV_SCHEMAS];
     
     // Function signatures
     /// CoreState* core_on_load(CoreState* prev, void* renderer)
     pub type OnLoadFn = unsafe extern "C" fn(StatePtr, RendererPtr) -> StatePtr;
+    
+    /// CoreState* core_on_load_host(CoreState* prev, const SynthiHostContextV1* host_ctx)
+    pub type OnLoadHostFn = unsafe extern "C" fn(StatePtr, HostContextPtr) -> StatePtr;
     
     /// void core_on_update(CoreState* state, double dt)
     pub type OnUpdateFn = unsafe extern "C" fn(StatePtr, c_double);
@@ -107,6 +124,12 @@ pub mod core_symbols {
     
     /// CoreState* core_on_load_from_json(const char* json)
     pub type OnLoadFromJsonFn = unsafe extern "C" fn(*const c_char) -> StatePtr;
+    
+    /// uint32_t core_host_kv_schemas_len(void)
+    pub type HostKvSchemasLenFn = unsafe extern "C" fn() -> c_uint;
+    
+    /// const SynthiNamespaceSchemaV1* core_host_kv_schemas(void)
+    pub type HostKvSchemasFn = unsafe extern "C" fn() -> *const c_void;
 }
 
 // ============================================================
@@ -125,15 +148,28 @@ pub mod gui_symbols {
     pub const ON_SAVE_STATE: &[u8] = b"gui_on_save_state\0";
     pub const ON_LOAD_FROM_JSON: &[u8] = b"gui_on_load_from_json\0";
     
+    // ============================================================
+    // HOST KV SYMBOLS (optional, for host-context-aware loading)
+    // ============================================================
+    /// GuiState* gui_on_load_host(GuiState* prev, const SynthiHostContextV1* host_ctx)
+    pub const ON_LOAD_HOST: &[u8] = b"gui_on_load_host\0";
+    /// uint32_t gui_host_kv_schemas_len(void)
+    pub const HOST_KV_SCHEMAS_LEN: &[u8] = b"gui_host_kv_schemas_len\0";
+    /// const SynthiNamespaceSchemaV1* gui_host_kv_schemas(void)
+    pub const HOST_KV_SCHEMAS: &[u8] = b"gui_host_kv_schemas\0";
+    
     /// Required symbols that MUST be present
     pub const REQUIRED: &[&[u8]] = &[ON_LOAD, ON_RENDER];
     
     /// Optional symbols
-    pub const OPTIONAL: &[&[u8]] = &[ON_EVENT, ON_UNLOAD, GET_ABI_VERSION, ON_SAVE_STATE, ON_LOAD_FROM_JSON];
+    pub const OPTIONAL: &[&[u8]] = &[ON_EVENT, ON_UNLOAD, GET_ABI_VERSION, ON_SAVE_STATE, ON_LOAD_FROM_JSON, ON_LOAD_HOST, HOST_KV_SCHEMAS_LEN, HOST_KV_SCHEMAS];
     
     // Function signatures
     /// GuiState* gui_on_load(GuiState* prev, void* renderer, CoreAPI* api)
     pub type OnLoadFn = unsafe extern "C" fn(StatePtr, RendererPtr, CoreApiPtr) -> StatePtr;
+    
+    /// GuiState* gui_on_load_host(GuiState* prev, const SynthiHostContextV1* host_ctx)
+    pub type OnLoadHostFn = unsafe extern "C" fn(StatePtr, HostContextPtr) -> StatePtr;
     
     /// void gui_on_render(GuiState* state)
     pub type OnRenderFn = unsafe extern "C" fn(StatePtr);
@@ -152,6 +188,12 @@ pub mod gui_symbols {
     
     /// GuiState* gui_on_load_from_json(const char* json)
     pub type OnLoadFromJsonFn = unsafe extern "C" fn(*const c_char) -> StatePtr;
+    
+    /// uint32_t gui_host_kv_schemas_len(void)
+    pub type HostKvSchemasLenFn = unsafe extern "C" fn() -> c_uint;
+    
+    /// const SynthiNamespaceSchemaV1* gui_host_kv_schemas(void)
+    pub type HostKvSchemasFn = unsafe extern "C" fn() -> *const c_void;
 }
 
 // ============================================================
@@ -172,8 +214,19 @@ pub mod legacy_symbols {
     pub const GUI_RENDER: &[u8] = b"gui_render\0";
     pub const ON_RENDER: &[u8] = b"on_render\0";
     
+    // ============================================================
+    // HOST KV SYMBOLS (optional, for host-context-aware loading)
+    // ============================================================
+    /// void* on_load_host(void* prev, const SynthiHostContextV1* host_ctx)
+    pub const ON_LOAD_HOST: &[u8] = b"on_load_host\0";
+    /// uint32_t host_kv_schemas_len(void)
+    pub const HOST_KV_SCHEMAS_LEN: &[u8] = b"host_kv_schemas_len\0";
+    /// const SynthiNamespaceSchemaV1* host_kv_schemas(void)
+    pub const HOST_KV_SCHEMAS: &[u8] = b"host_kv_schemas\0";
+    
     // Function signatures (same as before for backward compatibility)
     pub type OnLoadFn = unsafe extern "C" fn(StatePtr, RendererPtr) -> StatePtr;
+    pub type OnLoadHostFn = unsafe extern "C" fn(StatePtr, HostContextPtr) -> StatePtr;
     pub type EntrypointFn = unsafe extern "C" fn(StatePtr) -> StatePtr;
     pub type OnUpdateFn = unsafe extern "C" fn(StatePtr, c_double);
     pub type OnEventFn = unsafe extern "C" fn(StatePtr, SdlEventPtr);
@@ -181,6 +234,8 @@ pub mod legacy_symbols {
     pub type OnSaveStateFn = unsafe extern "C" fn(StatePtr) -> *mut c_char;
     pub type OnLoadFromJsonFn = unsafe extern "C" fn(*const c_char) -> StatePtr;
     pub type RenderFn = unsafe extern "C" fn(StatePtr);
+    pub type HostKvSchemasLenFn = unsafe extern "C" fn() -> c_uint;
+    pub type HostKvSchemasFn = unsafe extern "C" fn() -> *const c_void;
 }
 
 // ============================================================

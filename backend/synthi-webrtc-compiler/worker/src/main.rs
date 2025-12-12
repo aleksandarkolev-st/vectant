@@ -11,6 +11,8 @@ mod server;
 mod storage;
 mod capability;
 mod shim;
+mod host_kv;
+mod plugin_contract;
 
 use builder::{RebuildScope, ModuleHashes, hash_content};
 use capability::{detect_capabilities, HmrCapability, HmrStatus, CapabilityReport};
@@ -2795,6 +2797,8 @@ extern "C" void* on_load_from_json(const char* json) {
         });
         
         let tx_clone2 = tx.clone();
+        let log_dc_for_status = log_dc.clone();
+        let sid_for_status = session_id.clone();
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr);
             let mut line = String::new();
@@ -2803,6 +2807,24 @@ extern "C" void* on_load_from_json(const char* json) {
                 match reader.read_line(&mut line).await {
                     Ok(0) => break,
                     Ok(_) => {
+                        // Runner emits structured HMR status as:
+                        // "[Runner] [HMR-STATUS] {json}"
+                        // Surface this as a real `hmr-status` event to the frontend.
+                        if let Some(idx) = line.find("[HMR-STATUS]") {
+                            let json_part = line[(idx + "[HMR-STATUS]".len())..].trim();
+                            if !json_part.is_empty() {
+                                if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_part) {
+                                    let payload = serde_json::json!({
+                                        "sessionId": sid_for_status.clone(),
+                                        "type": "hmr-status",
+                                        "data": val
+                                    });
+                                    let _ = log_dc_for_status
+                                        .send_text(serde_json::to_string(&payload).unwrap_or_default())
+                                        .await;
+                                }
+                            }
+                        }
                         let _ = tx_clone2.send(format!("STDERR:{}", line));
                     }
                     Err(_) => break,

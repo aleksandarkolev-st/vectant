@@ -387,6 +387,161 @@ extern "C" void gui_on_render(GuiState* state) {
 
 ---
 
+## Host KV API (v1.0)
+
+The Host KV API provides persistent key-value storage that survives hot reloads. This enables "Fast Refresh-like" state preservation where changing code doesn't lose application state.
+
+### Key Features
+
+- **Per-namespace schema validation**: Prevents stale state corruption
+- **Automatic namespace reset**: When schema changes, only affected namespace is cleared
+- **Quotas**: Prevent runaway storage (1MB per value, 20MB per module)
+- **Zero-copy hot reload**: KV data survives module reload without serialization
+
+### Optional Host KV Exports
+
+Add these exports to enable Host KV support:
+
+| Slot | Schema Length | Schema Table | Host-aware Load |
+|------|---------------|--------------|-----------------|
+| Core | `core_host_kv_schemas_len` | `core_host_kv_schemas` | `core_on_load_host` |
+| GUI | `gui_host_kv_schemas_len` | `gui_host_kv_schemas` | `gui_on_load_host` |
+| Main | `host_kv_schemas_len` | `host_kv_schemas` | `on_load_host` |
+
+### Runner Selection Rules
+
+1. If `*_on_load_host` exists, call it with `SynthiHostContextV1*`
+2. Else call existing `*_on_load` unchanged (renderer-pointer ABI intact)
+3. Schema exports are read regardless of load function used
+
+### SynthiHostContextV1 (passed to *_on_load_host)
+
+```c
+typedef struct SynthiHostContextV1 {
+    uint32_t host_api_version;      // Must be 1
+    const HostKvApiV1* kv;          // KV API vtable
+    const char* session_id;         // Session identifier
+    uint32_t session_id_len;
+    uint32_t module_slot;           // 0=core, 1=gui, 2=main
+    void* window;                   // SDL_Window* (optional)
+    void* renderer;                 // SDL_Renderer*
+    void* reserved[8];              // Future expansion
+} SynthiHostContextV1;
+```
+
+### HostKvApiV1 (vtable)
+
+```c
+typedef struct HostKvApiV1 {
+    uint32_t version;  // Must be 1
+    
+    // Set bytes: returns 0=OK, 2=INVALID_ARG, 3=QUOTA_EXCEEDED
+    int (*set_bytes)(ctx, ns, key, data, len);
+    
+    // Get bytes: returns 0=OK, 1=NOT_FOUND, allocates buffer
+    int (*get_bytes)(ctx, ns, key, &out, &out_len);
+    
+    // Delete key: returns 0=OK (idempotent)
+    int (*delete_key)(ctx, ns, key);
+    
+    // Clear namespace: returns 0=OK
+    int (*clear_namespace)(ctx, ns);
+    
+    // Get/set schema (optional)
+    int (*get_schema)(ctx, ns, &out_schema);
+    int (*set_schema)(ctx, ns, schema);
+    
+    // Memory management
+    void* (*host_alloc)(size);
+    void (*host_free)(ptr);
+    const char* (*last_error)(void);
+} HostKvApiV1;
+```
+
+### SynthiNamespaceSchemaV1 (for schema table export)
+
+```c
+typedef struct SynthiNamespaceSchemaV1 {
+    const char* ns;       // NUL-terminated namespace name
+    uint64_t schema_id;   // Schema version/hash
+} SynthiNamespaceSchemaV1;
+```
+
+### Return Codes
+
+| Code | Name | Description |
+|------|------|-------------|
+| 0 | OK | Success |
+| 1 | NOT_FOUND | Key doesn't exist |
+| 2 | INVALID_ARG | Bad ns/key, undeclared namespace |
+| 3 | QUOTA_EXCEEDED | Size/count limit exceeded |
+| 4 | INTERNAL_ERROR | Unexpected error |
+
+### Namespace/Key Validation
+
+- Allowed chars: `[a-zA-Z0-9._-]`
+- Max namespace length: 64 bytes
+- Max key length: 256 bytes
+- No `/` or `\` (avoid path-like keys)
+
+### Schema Rules
+
+1. Module declares namespaces via schema table exports
+2. On load/reload, runner reads schema table
+3. For each namespace:
+   - If no stored schema: store new schema ID
+   - If stored schema != new schema: **clear namespace, store new**
+   - If schemas match: preserve data
+4. Writing to undeclared namespace returns `INVALID_ARG`
+
+### Example: Core Module with Host KV
+
+```c
+#include "synthi_host_kv.h"
+
+static const SynthiNamespaceSchemaV1 g_schemas[] = {
+    { "app",      1 },  // Change to 2 when AppState struct changes
+    { "settings", 1 },
+};
+
+SYNTHI_EXPORT uint32_t core_host_kv_schemas_len(void) {
+    return sizeof(g_schemas) / sizeof(g_schemas[0]);
+}
+
+SYNTHI_EXPORT const SynthiNamespaceSchemaV1* core_host_kv_schemas(void) {
+    return g_schemas;
+}
+
+SYNTHI_EXPORT void* core_on_load_host(void* prev, const SynthiHostContextV1* ctx) {
+    CoreState* state = (CoreState*)prev;
+    if (!state) {
+        state = malloc(sizeof(CoreState));
+        memset(state, 0, sizeof(CoreState));
+        
+        // Try to restore from KV
+        uint8_t* data;
+        uint32_t len;
+        if (ctx->kv->get_bytes(ctx, "app", "state", &data, &len) == 0) {
+            if (len == sizeof(CoreState)) {
+                memcpy(state, data, len);
+            }
+            ctx->kv->host_free(data);
+        }
+    }
+    
+    state->renderer = ctx->renderer;
+    return state;
+}
+
+// Save state periodically or on specific events
+void save_state(CoreState* state, const SynthiHostContextV1* ctx) {
+    ctx->kv->set_bytes(ctx, "app", "state", (uint8_t*)state, sizeof(CoreState));
+}
+```
+
+---
+
 ## Changelog
 
 - **v1.0** (2024-12-12): Initial frozen specification
+- **v1.1** (2024-12-12): Added Host KV API for persistent state

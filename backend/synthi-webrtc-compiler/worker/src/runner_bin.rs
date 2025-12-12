@@ -3,7 +3,7 @@ use std::io::{self, BufRead, Write};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
-use std::ffi::{c_void, c_int, c_uint, c_ulong, c_long};
+use std::ffi::{c_void, c_int, c_uint, c_ulong, c_long, CString};
 use std::ptr;
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
@@ -18,9 +18,14 @@ use x11rb::protocol::shm::{self, ConnectionExt as ShmConnectionExt};
 
 mod plugin_contract;
 mod capability;
+mod host_kv;
 
 use plugin_contract::{ModuleSlot, ModuleInfo, RebuildScope, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
 use capability::{HmrCapability, detect_capabilities, HmrStatus};
+use host_kv::{
+    KV_STORE, SynthiHostContextV1, HostKvApiV1, HostKvSchemaEvent,
+    create_kv_api, read_schema_table, module_slot_to_u32,
+};
 
 // SDL2 Definitions
 #[cfg(target_os = "linux")]
@@ -291,6 +296,15 @@ fn main() {
     let mut frames_sent: u64 = 0;
     let mut last_frame_log = Instant::now();
     
+    // ============================================================
+    // HOST KV STATE
+    // ============================================================
+    // Session ID for Host KV scoping. Must be set via "set_session" command
+    // before loading modules that use Host KV.
+    let mut session_id: Option<String> = None;
+    let mut session_id_cstring: Option<CString> = None;
+    let kv_api = create_kv_api();
+    
     #[cfg(target_os = "linux")]
     eprintln!("[Runner] Frame capture enabled (Linux build)");
     #[cfg(not(target_os = "linux"))]
@@ -337,6 +351,38 @@ fn main() {
             if parts.is_empty() { continue; }
 
             match parts[0] {
+                // ============================================================
+                // SET_SESSION COMMAND - Must be called before loading Host KV modules
+                // ============================================================
+                "set_session" => {
+                    if parts.len() >= 2 {
+                        let new_session = parts[1].to_string();
+                        
+                        // Reject session change if already set (prevent silent keyspace switch)
+                        if let Some(ref existing) = session_id {
+                            if existing != &new_session {
+                                eprintln!("[Runner] [HOST-KV] ERROR: Cannot change session_id mid-run (current: {}, requested: {})", existing, new_session);
+                                continue;
+                            }
+                            // Same session, no-op
+                            eprintln!("[Runner] [HOST-KV] Session already set: {}", new_session);
+                            continue;
+                        }
+                        
+                        // Set the session
+                        session_id = Some(new_session.clone());
+                        session_id_cstring = CString::new(new_session.clone()).ok();
+                        
+                        eprintln!("[Runner] [HOST-KV] Session set: {}", new_session);
+                        
+                        // Emit status event
+                        let status = HmrStatus::host_kv_ready(&new_session, "pending");
+                        eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                    } else {
+                        eprintln!("[Runner] [HOST-KV] ERROR: set_session requires session_id argument");
+                    }
+                },
+                
                 "input" => {
                     #[cfg(target_os = "linux")]
                     if parts.len() >= 2 {
@@ -693,14 +739,80 @@ fn main() {
                                     }
                                 }
                                 
-                                // Initialize module - try new symbols first, then legacy
+                                // ============================================================
+                                // HOST KV: Read and register schema table BEFORE calling load
+                                // ============================================================
+                                // This allows the module to write to KV during on_load
+                                // ============================================================
+                                let module_slot = slot.unwrap_or(ModuleSlot::Main);
+                                let mut host_kv_events: Vec<HostKvSchemaEvent> = Vec::new();
+                                let has_host_kv_support: bool;
+                                
+                                if let Some(ref sid) = session_id {
+                                    // Read schema table from module
+                                    let schemas = read_schema_table(&new_lib, module_slot);
+                                    has_host_kv_support = !schemas.is_empty();
+                                    
+                                    if !schemas.is_empty() {
+                                        eprintln!("[Runner] [HOST-KV] Module '{}' declares {} namespaces: {:?}", 
+                                                 name, schemas.len(), schemas.iter().map(|(ns, _)| ns).collect::<Vec<_>>());
+                                        
+                                        // Register schemas and handle any resets
+                                        host_kv_events = KV_STORE.register_schemas(sid, module_slot_to_u32(module_slot), &schemas);
+                                        
+                                        // Emit HMR status for schema events
+                                        for event in &host_kv_events {
+                                            match event {
+                                                HostKvSchemaEvent::SchemaMismatchReset { namespace, old_schema, new_schema } => {
+                                                    let status = HmrStatus::host_kv_reset_schema(name, namespace, *old_schema, *new_schema);
+                                                    eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                                                },
+                                                HostKvSchemaEvent::NamespacePreserved { namespace } => {
+                                                    eprintln!("[Runner] [HOST-KV] Namespace '{}' preserved (schema unchanged)", namespace);
+                                                },
+                                                HostKvSchemaEvent::NamespaceRegistered { namespace, schema_id } => {
+                                                    eprintln!("[Runner] [HOST-KV] Namespace '{}' registered (schema={})", namespace, schema_id);
+                                                },
+                                                HostKvSchemaEvent::InvalidNamespace { namespace, reason } => {
+                                                    eprintln!("[Runner] [HOST-KV] WARNING: Invalid namespace '{}': {}", namespace, reason);
+                                                },
+                                            }
+                                        }
+                                    } else {
+                                        eprintln!("[Runner] [HOST-KV] Module '{}' does not export schema table", name);
+                                    }
+                                } else {
+                                    has_host_kv_support = false;
+                                    // Check if module tries to use Host KV without session set
+                                    let schemas = read_schema_table(&new_lib, module_slot);
+                                    if !schemas.is_empty() {
+                                        eprintln!("[Runner] [HOST-KV] WARNING: Module '{}' exports schema table but no session set! Host KV will not work.", name);
+                                        eprintln!("[Runner] [HOST-KV] Call 'set_session <session_id>' before loading modules that use Host KV.");
+                                    }
+                                }
+                                
+                                // ============================================================
+                                // Initialize module - prefer *_on_load_host if available
+                                // ============================================================
+                                // Selection rules:
+                                // 1. If *_on_load_host exists, call it with SynthiHostContextV1
+                                // 2. Else call existing *_on_load unchanged
+                                // ============================================================
                                 match slot {
                                     Some(ModuleSlot::Core) => {
-                                        // Try core_on_load first, then legacy on_load
+                                        // Try core_on_load_host first
+                                        let core_load_host: Result<Symbol<unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void>, _> = new_lib.get(b"core_on_load_host");
                                         let core_load: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"core_on_load");
                                         let legacy_load: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"on_load");
                                         
-                                        if let Ok(f) = core_load {
+                                        if core_load_host.is_ok() && session_id.is_some() && session_id_cstring.is_some() {
+                                            let f = core_load_host.unwrap();
+                                            let sid_cstr = session_id_cstring.as_ref().unwrap();
+                                            let host_ctx = SynthiHostContextV1::new(
+                                                &kv_api, sid_cstr, module_slot, win_ptr, win_ptr);
+                                            eprintln!("[Runner] [HMR] Calling core_on_load_host with Host KV context...");
+                                            new_state = f(new_state, &host_ctx as *const _ as *const c_void);
+                                        } else if let Ok(f) = core_load {
                                             eprintln!("[Runner] [HMR] Calling core_on_load...");
                                             new_state = f(new_state, win_ptr);
                                         } else if let Ok(f) = legacy_load {
@@ -710,11 +822,19 @@ fn main() {
                                         eprintln!("[Runner] [HMR] Core module initialized. State: {:p}", new_state);
                                     },
                                     Some(ModuleSlot::Gui) => {
-                                        // Try gui_on_load first (with CoreAPI*), then legacy on_load
+                                        // Try gui_on_load_host first
+                                        let gui_load_host: Result<Symbol<unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void>, _> = new_lib.get(b"gui_on_load_host");
                                         let gui_load: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"gui_on_load");
                                         let legacy_load: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"on_load");
                                         
-                                        if let Ok(f) = gui_load {
+                                        if gui_load_host.is_ok() && session_id.is_some() && session_id_cstring.is_some() {
+                                            let f = gui_load_host.unwrap();
+                                            let sid_cstr = session_id_cstring.as_ref().unwrap();
+                                            let host_ctx = SynthiHostContextV1::new(
+                                                &kv_api, sid_cstr, module_slot, win_ptr, win_ptr);
+                                            eprintln!("[Runner] [HMR] Calling gui_on_load_host with Host KV context...");
+                                            new_state = f(new_state, &host_ctx as *const _ as *const c_void);
+                                        } else if let Ok(f) = gui_load {
                                             eprintln!("[Runner] [HMR] Calling gui_on_load with CoreAPI...");
                                             new_state = f(new_state, win_ptr, core_api_ptr);
                                         } else if let Ok(f) = legacy_load {
@@ -724,11 +844,19 @@ fn main() {
                                         eprintln!("[Runner] [HMR] GUI module initialized. State: {:p}", new_state);
                                     },
                                     Some(ModuleSlot::Main) | None => {
-                                        // Legacy main module
+                                        // Try on_load_host first for legacy main module
+                                        let load_host: Result<Symbol<unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void>, _> = new_lib.get(b"on_load_host");
                                         let legacy_load: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"on_load");
                                         let legacy_entry: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>, _> = new_lib.get(b"entrypoint");
                                         
-                                        if let Ok(f) = legacy_load {
+                                        if load_host.is_ok() && session_id.is_some() && session_id_cstring.is_some() {
+                                            let f = load_host.unwrap();
+                                            let sid_cstr = session_id_cstring.as_ref().unwrap();
+                                            let host_ctx = SynthiHostContextV1::new(
+                                                &kv_api, sid_cstr, module_slot, win_ptr, win_ptr);
+                                            eprintln!("[Runner] [HMR] Calling on_load_host with Host KV context...");
+                                            new_state = f(new_state, &host_ctx as *const _ as *const c_void);
+                                        } else if let Ok(f) = legacy_load {
                                             eprintln!("[Runner] [HMR] Calling on_load on main module...");
                                             new_state = f(new_state, win_ptr);
                                         } else if let Ok(f) = legacy_entry {
@@ -740,6 +868,18 @@ fn main() {
                                             }
                                         }
                                         eprintln!("[Runner] [HMR] Main module initialized. State: {:p}", new_state);
+                                    }
+                                }
+                                
+                                // ============================================================
+                                // HOST KV: Emit preserved namespaces status
+                                // ============================================================
+                                if has_host_kv_support && session_id.is_some() {
+                                    let sid = session_id.as_ref().unwrap();
+                                    let preserved_namespaces = KV_STORE.get_preserved_namespaces(sid, module_slot_to_u32(module_slot));
+                                    if !preserved_namespaces.is_empty() {
+                                        let status = HmrStatus::host_kv_preserved(name, preserved_namespaces);
+                                        eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
                                     }
                                 }
                                 
