@@ -42,11 +42,27 @@ const FileTreeView = ({
     // inputRef retained ONLY for root-level creation (target: null)
     const inputRef = useRef(null); 
     const [contextTarget, setContextTarget] = useState(null);
+    const [isTreeHovered, setIsTreeHovered] = useState(false);
     const { mode, target, name } = uiActionState;
     const isCreating = mode.startsWith('create');
     const isRenaming = mode === 'rename';
     const isCreatingFile = mode === 'create-file';
     const isCreatingFolder = mode === 'create-folder';
+
+    const findParentFolderPath = (nodes, targetPath, parentPath = null) => {
+      for (const node of nodes || []) {
+        if (node?.path === targetPath) return parentPath;
+        if (node?.isFolder && node?.children?.length) {
+          const found = findParentFolderPath(node.children, targetPath, node.path);
+          if (found !== undefined) return found;
+        }
+      }
+      return undefined;
+    };
+
+    const activeFolderPath = activeFile?.path
+      ? (activeFile?.isFolder ? activeFile.path : (findParentFolderPath(files, activeFile.path) ?? null))
+      : undefined;
     
     // Helper for context menu (Inefficient but retained)
     const findNodeByName = (nodes, name) => {
@@ -133,15 +149,17 @@ const FileTreeView = ({
     >
       <ContextMenuTrigger asChild>
         <div
-          className="w-full h-full select-none bg-[#232323] text-gray-100 flex flex-col overflow-y-auto border-r border-[#343434]"
+          className="w-full h-full select-none bg-[#232323] text-gray-100 flex flex-col border-r border-[#343434]"
           onClick={() => {
             setContextTarget(null);
           }}
+          onMouseEnter={() => setIsTreeHovered(true)}
+          onMouseLeave={() => setIsTreeHovered(false)}
         >
           {/* Header */}
           <div className={`px-3 py-2 flex items-center ${isRightSide ? 'flex-row-reverse' : ''} justify-between border-b border-[#343434] sticky top-0 bg-[#202020] z-10`}>
             <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold tracking-wide uppercase text-gray-400">
+              <span className="text-sm font-semibold tracking-wide uppercase text-gray-300">
                 Project
               </span>
             </div>
@@ -159,7 +177,7 @@ const FileTreeView = ({
           </div>
 
           {/* File list */}
-          <div className="flex-grow">
+          <div className="flex-1 overflow-y-auto">
             {[...files]
               .sort((a, b) => {
                 // Sort folders first, then by name
@@ -167,10 +185,18 @@ const FileTreeView = ({
                 if (!a.isFolder && b.isFolder) return 1;
                 return a.name.localeCompare(b.name);
               })
-              .map((item, index) => (
+              .map((item, index, arr) => (
               <FileItem
                 key={item.path || index}
                 item={item}
+                level={0}
+                ancestorHasNext={[]}
+                hasNextSibling={index < arr.length - 1}
+                parentChildCount={arr.length}
+                showAllGuides={isTreeHovered}
+                activeFolderPath={activeFolderPath}
+                activeFolderLevel={activeFolderPath === null ? -1 : null}
+                withinActiveFolderSubtree={activeFolderPath === null && activeFolderPath !== undefined}
                 onFileSelect={onFileSelectHandler}
                 activeFile={activeFile}
                 onAction={handleTreeAction}
