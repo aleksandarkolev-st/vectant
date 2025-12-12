@@ -819,50 +819,99 @@ class GitService {
         const repoPath = this.getRepoPath(slug);
         const fullPath = path.join(repoPath, filePath);
         const dir = path.dirname(fullPath);
-        if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true });
-        }
-        fs.writeFileSync(fullPath, content);
+        await fs.promises.mkdir(dir, { recursive: true });
+        await fs.promises.writeFile(fullPath, content);
     }
     
     async deleteFile(slug, filePath) {
         const repoPath = this.getRepoPath(slug);
         const fullPath = path.join(repoPath, filePath);
-        if (fs.existsSync(fullPath)) {
-            fs.unlinkSync(fullPath);
+        try {
+            await fs.promises.unlink(fullPath);
+        } catch (_) {
+            // ignore
         }
     }
 
     async listFiles(slug) {
         const repoPath = this.getRepoPath(slug);
         if (!fs.existsSync(repoPath)) return [];
-        
-        const getFiles = (dir, baseDir) => {
-            let results = [];
-            const list = fs.readdirSync(dir);
-            list.forEach(file => {
-                if (file === '.git') return;
-                const filePath = path.join(dir, file);
-                const stat = fs.statSync(filePath);
-                if (stat && stat.isDirectory()) {
-                    results = results.concat(getFiles(filePath, baseDir));
-                } else {
-                    results.push(path.relative(baseDir, filePath).replace(/\\/g, '/'));
+        const metas = await this.listFilesMeta(slug);
+        return metas.map(m => m.path);
+    }
+
+    async listFilesMeta(slug) {
+        const repoPath = this.getRepoPath(slug);
+        try {
+            await fs.promises.access(repoPath);
+        } catch (_) {
+            return [];
+        }
+
+        const out = [];
+        const stack = [repoPath];
+
+        while (stack.length) {
+            const dir = stack.pop();
+            let dh;
+            try {
+                dh = await fs.promises.opendir(dir);
+            } catch (_) {
+                continue;
+            }
+
+            for await (const dirent of dh) {
+                const name = dirent.name;
+                if (name === '.git') continue;
+                const full = path.join(dir, name);
+                if (dirent.isDirectory()) {
+                    // Include folder markers so the tree can represent empty dirs
+                    try {
+                        const st = await fs.promises.stat(full);
+                        const relDir = path.relative(repoPath, full).replace(/\\/g, '/');
+                        if (relDir) {
+                            out.push({
+                                path: relDir,
+                                isFolder: true,
+                                size: 0,
+                                lastModified: st.mtimeMs,
+                                extension: '',
+                            });
+                        }
+                    } catch (_) {
+                        // ignore
+                    }
+                    stack.push(full);
+                } else if (dirent.isFile()) {
+                    let st;
+                    try {
+                        st = await fs.promises.stat(full);
+                    } catch (_) {
+                        continue;
+                    }
+                    const rel = path.relative(repoPath, full).replace(/\\/g, '/');
+                    const ext = (path.extname(rel).replace('.', '') || '').toLowerCase();
+                    out.push({
+                        path: rel,
+                        size: st.size,
+                        lastModified: st.mtimeMs,
+                        extension: ext,
+                    });
                 }
-            });
-            return results;
-        };
-        
-        return getFiles(repoPath, repoPath);
+            }
+        }
+
+        return out;
     }
 
     async readFile(slug, filePath) {
         const repoPath = this.getRepoPath(slug);
         const fullPath = path.join(repoPath, filePath);
-        if (fs.existsSync(fullPath)) {
-            return fs.readFileSync(fullPath, 'utf-8');
+        try {
+            return await fs.promises.readFile(fullPath, 'utf-8');
+        } catch (_) {
+            throw new Error('File not found');
         }
-        throw new Error('File not found');
     }
 
     async getFileContent(slug, filePath, ref = 'HEAD') {

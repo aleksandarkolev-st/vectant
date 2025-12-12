@@ -141,13 +141,14 @@
 
 /* Global Scrollbar Styling */
 ::-webkit-scrollbar {
-  height: 6px;
-  width: 6px;
+  height: 3px;
+  width: 3px;
 }
 
 ::-webkit-scrollbar-track {
   background: #1d1f23;
   border-radius: 999px;
+  display:flex;
 }
 
 ::-webkit-scrollbar-thumb {
@@ -163,35 +164,16 @@
 /* Firefox */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #3a3f4a #1d1f23;
+  scrollbar-color: #3a3f4a transparent;
 }
 
-.scrollbar-overlay {
-  overflow-x: auto;
+/* Utility to hide scrollbars */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
-@supports (overflow-x: overlay) {
-  .scrollbar-overlay {
-    overflow-x: overlay;
-  }
-}
-
-.scrollbar-overlay::-webkit-scrollbar {
-  height: 2px !important; /* Very thin for tabs */
-  width: 2px !important;
-}
-
-.scrollbar-overlay::-webkit-scrollbar-track {
-  background: transparent !important; /* Transparent track for overlay effect */
-}
-
-.scrollbar-overlay::-webkit-scrollbar-thumb {
-  background: rgba(58, 63, 74, 0.5) !important; /* Semi-transparent thumb */
-  border: none !important;
-  border-radius: 999px !important;
-}
-
-.scrollbar-overlay::-webkit-scrollbar-thumb:hover {
-  background: rgba(76, 83, 98, 0.8) !important;
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
 
 .ai-chat-message pre.ai-code-block,

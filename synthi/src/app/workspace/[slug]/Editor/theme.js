@@ -51,7 +51,7 @@ export const SYNTHI_THEME = {
         { token: 'storage.modifier', foreground: '569CD6' }, // const, static
     ],
     colors: {
-        'editor.background': '#1E1E1E',
+        'editor.background': '#202020',
         'editor.foreground': '#D4D4D4',
         'editorCursor.foreground': '#FFFFFF',
         'editor.lineHighlightBackground': '#2D2D30',

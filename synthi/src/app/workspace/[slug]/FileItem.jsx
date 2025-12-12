@@ -11,6 +11,13 @@ import { setUiActionName } from "@/redux/uiSlice";
 const FileItem = ({
   item,
   level = 0,
+  ancestorHasNext = [],
+  hasNextSibling = false,
+  parentChildCount = 0,
+  showAllGuides = false,
+  activeFolderPath = undefined,
+  activeFolderLevel = null,
+  withinActiveFolderSubtree = false,
   onFileSelect,
   activeFile,
   onAction,
@@ -20,7 +27,52 @@ const FileItem = ({
   handleKeyDown,
   handleBlur,
 }) => {
-  
+
+  const renderTreeGuides = (
+    guideLevel,
+    guideAncestorHasNext,
+    guideHasNextSibling,
+    drawCurrentLevel
+  ) => {
+    if (!guideLevel || guideLevel <= 0) return null;
+
+    const INDENT = 16;
+    const BASE = 8;
+    const xForCol = (colIndex) => BASE + colIndex * INDENT + INDENT / 2;
+    const connectorX = xForCol(guideLevel - 1);
+
+    return (
+      <div
+        className="pointer-events-none absolute inset-y-0 left-0 z-0"
+        aria-hidden="true"
+      >
+        {Array.isArray(guideAncestorHasNext) &&
+          guideAncestorHasNext.map((draw, colIndex) =>
+            draw ? (
+              <div
+                key={`tree-v-${colIndex}`}
+                className="absolute top-0 bottom-0 w-px bg-[#343434] opacity-100"
+                style={{ left: `${xForCol(colIndex)}px` }}
+              />
+            ) : null
+          )}
+
+        {drawCurrentLevel && (
+          <>
+            {/* Current column vertical connector */}
+            <div
+              className="absolute top-0 w-px bg-[#343434] opacity-100"
+              style={{
+                left: `${connectorX}px`,
+                bottom: guideHasNextSibling ? 0 : "50%",
+              }}
+            />
+          </>
+        )}
+      </div>
+    );
+  };
+
   // Helper: check if folder contains the active file
   const containsActiveFile = (folder, activeFilePath) => {
     if (!folder.isFolder || !folder.children || !activeFilePath) return false;
@@ -46,7 +98,7 @@ const FileItem = ({
   const isRenaming = mode === "rename";
   const isTargetForRename = isRenaming && target && item.path === target.path;
   const isParentForCreation =
-  isCreating && item.isFolder && target && item.path === target.path;
+    isCreating && item.isFolder && target && item.path === target.path;
   const isCreatingFolder = mode === "create-folder";
 
   // Local ref for input focus
@@ -193,6 +245,36 @@ useEffect(() => {
     ((item.children && item.children.length > 0) || isParentForCreation);
   const itemStyle = { paddingLeft: `${level * 16 + 8}px`, '--indent-level': level };
 
+  const isActiveFolder =
+    !!activeFolderPath && item.isFolder && item.path === activeFolderPath;
+
+  // Mark descendants of the active folder as "within" the active subtree.
+  // Note: the active folder row itself is NOT "within" (so it doesn't get indicators when not hovering).
+  const nextWithinActiveFolderSubtree = withinActiveFolderSubtree || isActiveFolder;
+
+  // Capture the active folder's depth so we can hide ancestor columns above it.
+  const nextActiveFolderLevel =
+    activeFolderLevel !== null && activeFolderLevel !== undefined
+      ? activeFolderLevel
+      : isActiveFolder
+        ? level
+        : null;
+
+  // When not hovered: show indicators ONLY inside the active folder subtree.
+  const guidesVisibleForRow = showAllGuides || withinActiveFolderSubtree;
+
+  // Only show indicators for a container if it has 2+ items.
+  // This flag controls the connector for the *current* nesting level.
+  const drawCurrentLevelGuides = guidesVisibleForRow && parentChildCount >= 2;
+
+  const maskedAncestorHasNext = (() => {
+    if (showAllGuides) return ancestorHasNext;
+    if (!withinActiveFolderSubtree) return ancestorHasNext;
+    if (nextActiveFolderLevel === null || nextActiveFolderLevel === undefined) return ancestorHasNext;
+    if (nextActiveFolderLevel <= 0) return ancestorHasNext;
+    return ancestorHasNext.map((v, i) => (i < nextActiveFolderLevel ? false : v));
+  })();
+
   const currentIcon = item.isFolder
     ? <FolderIcon isOpen={isOpen} />
     : getFileIcon(isRenaming && isTargetForRename ? (name || item.name) : item.name);
@@ -267,6 +349,8 @@ useEffect(() => {
         onClick={handleClick}
         onContextMenu={handleClick}
       >
+        {guidesVisibleForRow &&
+          renderTreeGuides(level, maskedAncestorHasNext, hasNextSibling, drawCurrentLevelGuides)}
         {isExpandable && (
           <div
             onClick={(e) => {
@@ -355,6 +439,13 @@ useEffect(() => {
               className="file-item relative flex items-center py-1 px-2"
               style={{ paddingLeft: `${(level + 1) * 16 + 8}px`, '--indent-level': level + 1 }}
             >
+              {guidesVisibleForRow &&
+                renderTreeGuides(
+                  level + 1,
+                  [...ancestorHasNext, hasNextSibling && drawCurrentLevelGuides],
+                  (item.children || []).length > 0,
+                  guidesVisibleForRow && (item.children || []).length >= 2
+                )}
               <div className="flex items-center">
                 <div className="w-4 h-4 mr-2 flex-shrink-0 flex items-center justify-center">
                   {isCreatingFolder ? (
@@ -386,11 +477,18 @@ useEffect(() => {
               if (!a.isFolder && b.isFolder) return 1;
               return a.name.localeCompare(b.name);
             })
-            .map((child, index) => (
+            .map((child, index, arr) => (
             <FileItem
               key={child.path || index}
               item={child}
               level={level + 1}
+              ancestorHasNext={[...ancestorHasNext, hasNextSibling && drawCurrentLevelGuides]}
+              hasNextSibling={index < arr.length - 1}
+              parentChildCount={arr.length}
+              showAllGuides={showAllGuides}
+              activeFolderPath={activeFolderPath}
+              activeFolderLevel={nextActiveFolderLevel}
+              withinActiveFolderSubtree={nextWithinActiveFolderSubtree}
               onFileSelect={onFileSelect}
               activeFile={activeFile}
               onAction={onAction}

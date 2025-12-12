@@ -13,6 +13,9 @@ import {
     getItemPathInBucket,
 } from '@/utils/fileUtils'; 
 import SynthiException from '@/components/SynthiException';
+import { fileCache } from '@/services/fileCache';
+import { loadScheduler } from '@/services/loadScheduler';
+import { perfMeasureToConsole, perfOnce } from '@/services/perfMarkers';
 
 // --- Initial State and Utilities ---
 
@@ -27,7 +30,8 @@ export const initialWorkspaceState = {
     savedContent: '',
     originalContent: '', // For diff view
     diffMode: false,     // Toggle diff view
-    fileContentCache: new Map(), // Non-serializable object handled by middleware config
+    fileContentCache: new Map(), // Deprecated (hybrid cache is in services/fileCache)
+    loadingFiles: [],    // Tracks files currently being fetched
     isLoading: false,
     status: 'idle',
     error: null,
@@ -39,6 +43,7 @@ export const initialWorkspaceState = {
 export const fetchFilesThunk = createAsyncThunk(
     'workspace/fetchFiles',
     async (slug, { dispatch, getState }) => {
+        const t0 = typeof performance !== 'undefined' ? performance.now() : 0;
         // Notify compiler client about the active slug
         try {
             getCompilerClient().setSlug(slug);
@@ -47,6 +52,7 @@ export const fetchFilesThunk = createAsyncThunk(
         }
 
         const files = await api.fetchFiles(slug);
+        if (t0) perfMeasureToConsole('startup_metadata_load_time', t0, { slug });
         const state = getState().workspace;
 
         // Determine if auto-selection is needed
@@ -127,19 +133,73 @@ export const selectFileThunk = createAsyncThunk(
     'workspace/selectFile',
     async (file, { getState }) => {
         const state = getState().workspace;
-        const cacheKey = file.path;
-        const cachedContent = state.fileContentCache.get(cacheKey);
-        
-        if (cachedContent!== undefined) {
-            return { file, content: cachedContent, fromCache: true };
-        } 
-        
-        if (file.path) {
-            const content = await api.fetchFileContent(state.slug, file.path);
-            return { file, content, fromCache: false };
+        const slug = state.slug;
+        const targetPath = file?.path;
+
+        if (!targetPath) {
+            return { file, content: file?.content || '', fromCache: false };
         }
 
-        return { file, content: file.content || '', fromCache: false };
+        // Active file must never be evicted.
+        fileCache.setActive(targetPath);
+
+        const cached = fileCache.get(targetPath);
+        if (cached !== undefined) {
+            return { file, content: cached, fromCache: true };
+        }
+
+        const t0 = typeof performance !== 'undefined' ? performance.now() : 0;
+        const content = await loadScheduler.requestFileContent(slug, targetPath, { priority: 'high', background: false });
+
+        perfOnce('first-file-open', () => {
+            if (t0) perfMeasureToConsole('first_file_open_latency', t0, { path: targetPath });
+        });
+
+        // Priority-based background prefetch (cancellable, yields to user loads)
+        try {
+            const rawFiles = state.rawFiles || [];
+            const openFiles = state.openFiles || [];
+            const dir = targetPath.includes('/') ? targetPath.slice(0, targetPath.lastIndexOf('/')) : '';
+
+            const stack = Array.isArray(rawFiles) ? [...rawFiles] : [];
+            const all = [];
+            while (stack.length) {
+                const n = stack.pop();
+                if (!n) continue;
+                if (n.isFolder) {
+                    if (Array.isArray(n.children)) stack.push(...n.children);
+                } else if (n.path) {
+                    all.push(n);
+                }
+            }
+
+            const sameDir = all.filter(n => {
+                if (!n?.path || n.path === targetPath) return false;
+                const parent = n.path.includes('/') ? n.path.slice(0, n.path.lastIndexOf('/')) : '';
+                return parent === dir;
+            });
+
+            const recent = openFiles
+                .filter(f => f?.path && f.path !== targetPath)
+                .map(f => {
+                    const meta = all.find(n => n.path === f.path);
+                    return meta ? meta : { path: f.path, size: Infinity };
+                });
+
+            const medium = new Map();
+            for (const n of [...sameDir, ...recent]) {
+                if (n?.path) medium.set(n.path, n);
+            }
+
+            loadScheduler.prefetch(slug, Array.from(medium.values()), { priority: 'medium' });
+
+            // Lowest priority crawl pool (remaining files)
+            loadScheduler.setLowPriorityPool(slug, all.map(n => n.path).filter(p => p && p !== targetPath));
+        } catch (e) {
+            // ignore
+        }
+
+        return { file, content, fromCache: false };
     }
 );
 
@@ -264,14 +324,9 @@ export const openDiffThunk = createAsyncThunk(
 
         // 1. Fetch current content (working copy)
         let currentContent = '';
-        const cacheKey = file.path;
-        const cachedContent = state.fileContentCache.get(cacheKey);
-        
-        if (cachedContent !== undefined) {
-            currentContent = cachedContent;
-        } else {
-            currentContent = await api.fetchFileContent(slug, file.path);
-        }
+        const cachedContent = fileCache.get(file.path);
+        if (cachedContent !== undefined) currentContent = cachedContent;
+        else currentContent = await loadScheduler.requestFileContent(slug, file.path, { priority: 'high', background: false });
 
         // 2. Fetch original content (HEAD)
         let originalContent = '';
@@ -334,9 +389,16 @@ const workspaceSlice = createSlice({
                     const newIndex = Math.max(0, idx - 1);
                     const newFile = state.openFiles[newIndex] || null;
                     state.activeFile = newFile;
-                    if (newFile && newFile.path && state.fileContentCache.has(newFile.path)) {
-                        state.currentContent = state.fileContentCache.get(newFile.path);
-                        state.savedContent = state.fileContentCache.get(newFile.path);
+                    if (newFile && newFile.path) {
+                        fileCache.setActive(newFile.path);
+                        const cached = fileCache.get(newFile.path);
+                        if (cached !== undefined) {
+                            state.currentContent = cached;
+                            state.savedContent = cached;
+                        } else {
+                            state.currentContent = '';
+                            state.savedContent = '';
+                        }
                     } else {
                         state.currentContent = '';
                         state.savedContent = '';
@@ -356,9 +418,7 @@ const workspaceSlice = createSlice({
         setExternalFileContent: (state, action) => {
             const { path, content } = action.payload || {};
             if (!path || typeof content !== 'string') return;
-            const newMap = new Map(state.fileContentCache);
-            newMap.set(path, content);
-            state.fileContentCache = newMap;
+            fileCache.set(path, content);
             if (state.activeFile?.path === path) {
                 state.currentContent = content;
                 state.savedContent = content;
@@ -375,13 +435,10 @@ const workspaceSlice = createSlice({
             }
 
             // 2. Migrate cache entry (CRITICAL for data integrity)
-            const cachedContent = state.fileContentCache.get(item.path);
-            if (cachedContent!== undefined) {
-                // Ensure state mutation safety by creating a new Map instance for Redux state
-                const newMap = new Map(state.fileContentCache);
-                newMap.delete(item.path);
-                newMap.set(newPath, cachedContent);
-                state.fileContentCache = newMap;
+            const cachedContent = fileCache.get(item.path);
+            if (cachedContent !== undefined) {
+                fileCache.set(newPath, cachedContent);
+                fileCache.delete(item.path);
             }
         },
         setSlug: (state, action) => {
@@ -389,6 +446,8 @@ const workspaceSlice = createSlice({
         },
         clearFileCache: (state) => {
             state.fileContentCache = new Map();
+            try { fileCache.clear(); } catch (_) {}
+            try { loadScheduler.cancelBackground(); } catch (_) {}
         },
         hydrateWorkspace: (state, action) => {
             const { openFiles, activeFile } = action.payload;
@@ -435,6 +494,18 @@ const workspaceSlice = createSlice({
 
         // --- SELECT FILE ---
         builder
+            .addCase(selectFileThunk.pending, (state, action) => {
+                const file = action.meta.arg;
+                if (file && file.path && !state.loadingFiles.includes(file.path)) {
+                    state.loadingFiles.push(file.path);
+                }
+            })
+            .addCase(selectFileThunk.rejected, (state, action) => {
+                const file = action.meta.arg;
+                if (file && file.path) {
+                    state.loadingFiles = state.loadingFiles.filter(p => p !== file.path);
+                }
+            })
             .addCase(openDiffThunk.fulfilled, (state, action) => {
                 const { file, currentContent, originalContent } = action.payload;
                 state.activeFile = file;
@@ -450,18 +521,19 @@ const workspaceSlice = createSlice({
                 }
                 
                 // Update cache
-                const newMap = new Map(state.fileContentCache);
-                newMap.set(file.path, currentContent);
-                state.fileContentCache = newMap;
+                try { fileCache.set(file.path, currentContent); } catch (_) {}
             })
             .addCase(selectFileThunk.fulfilled, (state, action) => {
                 const { file, content, fromCache } = action.payload;
                 
+                // Remove from loading list
+                if (file && file.path) {
+                    state.loadingFiles = state.loadingFiles.filter(p => p !== file.path);
+                }
+                
                 // Cache unsaved content of OLD active file before switching
                 if (state.activeFile && state.activeFile.path && state.currentContent!== state.savedContent) {
-                    const updatedCache = new Map(state.fileContentCache);
-                    updatedCache.set(state.activeFile.path, state.currentContent);
-                    state.fileContentCache = updatedCache;
+                    try { fileCache.set(state.activeFile.path, state.currentContent); } catch (_) {}
                 }
 
                 // Switch to new file
@@ -470,12 +542,11 @@ const workspaceSlice = createSlice({
                 state.savedContent = content;
                 state.diffMode = false; // Disable diff mode
                 
-                // Update cache if content was newly fetched (and not from cache)
-                if (!fromCache) {
-                    const updatedCache = new Map(state.fileContentCache);
-                    updatedCache.set(file.path, content);
-                    state.fileContentCache = updatedCache;
-                }
+                // Ensure active file pinned + cache populated (LRU)
+                try {
+                    fileCache.setActive(file.path);
+                    if (!fromCache) fileCache.set(file.path, content);
+                } catch (_) {}
 
                 // Ensure the file appears in the open tabs list
                 try {
@@ -489,16 +560,10 @@ const workspaceSlice = createSlice({
         builder
           .addCase(saveFileContentThunk.fulfilled, (state, action) => {
                 if (action.payload) {
-                    const savedContent = action.payload;
-                    state.savedContent = savedContent;
-                    // Also update currentContent to match what was saved
-                    // This ensures isUnsaved check works correctly when collab is active
-                    state.currentContent = savedContent;
-                    const updatedCache = new Map(state.fileContentCache);
-                    if (state.activeFile && state.activeFile.path) {
-                        updatedCache.set(state.activeFile.path, savedContent);
-                    }
-                    state.fileContentCache = updatedCache;
+                    state.savedContent = action.payload;
+                    try {
+                        if (state.activeFile && state.activeFile.path) fileCache.set(state.activeFile.path, action.payload);
+                    } catch (_) {}
                     // Mark active tab as saved
                     try {
                         if (state.activeFile && state.activeFile.path) {
@@ -514,11 +579,7 @@ const workspaceSlice = createSlice({
           .addCase(deleteItemThunk.fulfilled, (state, action) => {
                 if (action.payload.deleted) {
                     const deletedPath = action.payload.path;
-                    
-                    // Clear cache
-                    const newMap = new Map(state.fileContentCache);
-                    newMap.delete(deletedPath);
-                    state.fileContentCache = newMap;
+                    try { fileCache.delete(deletedPath); } catch (_) {}
                     
                     // Clear editor if active file was deleted
                     if (state.activeFile && state.activeFile.path === deletedPath) {
@@ -576,6 +637,7 @@ export const selectFilesTree = (state) => state.workspace.rawFiles;
 
 export const selectActiveFile = (state) => state.workspace.activeFile;
 export const selectOpenFiles = (state) => state.workspace.openFiles || [];
+export const selectLoadingFiles = (state) => state.workspace.loadingFiles || [];
 export const selectCurrentContent = (state) => state.workspace.currentContent;
 export const selectIsUnsaved = createSelector(
     selectCurrentContent,

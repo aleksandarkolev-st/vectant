@@ -18,7 +18,14 @@ import {
 import FileTreeView from "./FileTree.jsx";
 import dynamic from 'next/dynamic';
 
-const EditorPanel = dynamic(() => import('./Editor/Editor.jsx'), { ssr: false });
+const EditorPanel = dynamic(() => import('./Editor/Editor.jsx'), {
+    ssr: false,
+    loading: () => (
+        <ResizablePanel defaultSize={76} minSize={20} className="min-w-0 bg-[#202020]">
+            <div className="h-full w-full bg-[#202020]" />
+        </ResizablePanel>
+    ),
+});
 
 import { getFileLanguage } from '@/utils/fileUtils';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
@@ -26,14 +33,18 @@ import { useCompiler } from '@/hooks/useCompiler';
 import AIChatWindow from '@/components/chat/AIChatWindow';
 import { api } from '@/services/api';
 import WorkspaceNotFoundModal from '@/components/WorkspaceNotFoundModal';
+import { fileCache } from '@/services/fileCache';
 import { resolveDependencies } from '@/utils/dependencyResolver';
 import { DraggableVideoWidget } from '@/components/DraggableVideoWidget';
 import { useHMR } from '@/hooks/useHMR';
 import { GitStatus } from '@/components/git/GitStatus';
+import ActivityBar from '../ActivityBar.jsx';
+import SearchView from './SearchView.jsx';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
     const [chatVisible, setChatVisible] = useState(false);
+    const [sidebarView, setSidebarView] = useState('explorer');
     const [guiConfig, setGuiConfig] = useState(null);
     const [isGuiRunning, setIsGuiRunning] = useState(false);
     const [editor, setEditor] = useState(null);
@@ -143,7 +154,7 @@ export default function EditorPage({ params }) {
     const treeOnRight = useAppSelector(selectTreeOnRight);
     const currentContent = useAppSelector(selectCurrentContent);
     const rawFiles = useAppSelector(state => state.workspace.rawFiles);
-    const fileContentCache = useAppSelector(state => state.workspace.fileContentCache);
+    // File contents are cached via an in-memory LRU cache service (not Redux)
 
     const [initialContent, setInitialContent] = useState('');
     const [hasInitialSnapshot, setHasInitialSnapshot] = useState(false);
@@ -245,9 +256,8 @@ export default function EditorPage({ params }) {
                 return typeof currentContent === 'string' ? currentContent : '';
             }
             // Check cache
-            if (fileContentCache.has(path)) {
-                return fileContentCache.get(path);
-            }
+            const cached = fileCache.get(path);
+            if (cached !== undefined) return cached;
             // Fetch
             return await api.fetchFileContent(slug, path);
         };
@@ -276,7 +286,7 @@ export default function EditorPage({ params }) {
             console.error('Compile failed', err);
             appendBuildLog(`error: ${err?.message || err}`);
         }
-    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, fileContentCache, slug, compile]);
+    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile]);
 
     const handleSave = useCallback(async () => {
         if (!activeFile) return;
@@ -285,9 +295,18 @@ export default function EditorPage({ params }) {
         const source = typeof currentContent === 'string' ? currentContent : '';
         const filename = activeFile?.path || activeFile?.name || 'main';
 
+        // Check if language is supported for compilation to avoid errors
+        const ext = (filename.split('.').pop() || '').toLowerCase();
+        const supportedExts = ['cpp', 'cc', 'cxx', 'hpp', 'h', 'rs', 'ts', 'tsx'];
+        if (!supportedExts.includes(ext)) {
+            console.log(`[HMR] Skipping silent compilation for unsupported extension: .${ext}`);
+            return;
+        }
+
         const getContentForDependency = async (path) => {
             if (path === activeFile.path) return typeof currentContent === 'string' ? currentContent : '';
-            if (fileContentCache.has(path)) return fileContentCache.get(path);
+            const cached = fileCache.get(path);
+            if (cached !== undefined) return cached;
             return await api.fetchFileContent(slug, path);
         };
 
@@ -310,7 +329,7 @@ export default function EditorPage({ params }) {
         } catch (err) {
             console.error('[HMR] Silent compile failed', err);
         }
-    }, [activeFile, currentContent, rawFiles, fileContentCache, slug, compile]);
+    }, [activeFile, currentContent, rawFiles, slug, compile]);
 
     const handleEditorMount = (editorInstance) => {
         setEditor(editorInstance);
@@ -342,6 +361,12 @@ export default function EditorPage({ params }) {
         }
     };
 
+    const handleCopyLineUp = () => editor?.getAction('editor.action.copyLinesUpAction')?.run();
+    const handleCopyLineDown = () => editor?.getAction('editor.action.copyLinesDownAction')?.run();
+    const handleMoveLineUp = () => editor?.getAction('editor.action.moveLinesUpAction')?.run();
+    const handleMoveLineDown = () => editor?.getAction('editor.action.moveLinesDownAction')?.run();
+    const handleDuplicateSelection = () => editor?.getAction('editor.action.duplicateSelection')?.run();
+
     const EditorPanelComponent = (
         <EditorPanel
             onRun={handleRun}
@@ -352,27 +377,38 @@ export default function EditorPage({ params }) {
             latestCompletion={latestCompletion}
             aiBusy={aiBusy}
             onClearCompletion={handleClearLatestCompletion}
+            chatVisible={chatVisible}
         />
     );
 
     const FileTreePanel = (
-        <ResizablePanel defaultSize={15} minSize={10} maxSize={35} className={`${treeOnRight? 'border-l' : 'border-r'} border-[#545454] bg-[#252526]`}>
-            <ResizablePanelGroup direction="vertical">
-                <ResizablePanel defaultSize={65} minSize={20}>
-                    <FileTreeView
-                        onToggleOrientation={toggleTreeOrientation}
-                    />
-                </ResizablePanel>
-                <ResizableHandle withHandle />
-                <ResizablePanel defaultSize={35} minSize={10}>
-                    <GitStatus slug={slug} />
-                </ResizablePanel>
-            </ResizablePanelGroup>
+        <ResizablePanel defaultSize={15} minSize={12} maxSize={35} className={`${treeOnRight? 'border-l' : 'border-r'} border-[#545454] bg-[#1e1e1e]`}>
+            <div className="flex h-full min-w-0">
+                <ActivityBar
+                    active={sidebarView}
+                    onSelect={(id) => setSidebarView(id === 'search' ? 'search' : 'explorer')}
+                />
+                <div className="flex-1 min-w-0">
+                    <ResizablePanelGroup direction="vertical">
+                        <ResizablePanel defaultSize={65} minSize={20}>
+                            {sidebarView === 'search' ? (
+                                <SearchView slug={slug} onToggleOrientation={toggleTreeOrientation} />
+                            ) : (
+                                <FileTreeView onToggleOrientation={toggleTreeOrientation} />
+                            )}
+                        </ResizablePanel>
+                        <ResizableHandle withHandle />
+                        <ResizablePanel defaultSize={35} minSize={10}>
+                            <GitStatus slug={slug} />
+                        </ResizablePanel>
+                    </ResizablePanelGroup>
+                </div>
+            </div>
         </ResizablePanel>
     );
 
     const ChatPanel = (
-        <ResizablePanel defaultSize={24} minSize={23} maxSize={45} className="border-l border-[#545454] bg-[#171717] min-w-0">
+        <ResizablePanel defaultSize={24} minSize={20} maxSize={45} className="border-l border-[#545454] bg-[#171717] min-w-0">
             <AIChatWindow
                 docked={true}
                 isVisible={chatVisible}
@@ -401,6 +437,11 @@ export default function EditorPage({ params }) {
                 onRedo={handleRedo}
                 onToggleChat={handleToggleChat}
                 chatVisible={chatVisible}
+                onCopyLineUp={handleCopyLineUp}
+                onCopyLineDown={handleCopyLineDown}
+                onMoveLineUp={handleMoveLineUp}
+                onMoveLineDown={handleMoveLineDown}
+                onDuplicateSelection={handleDuplicateSelection}
             />
             {buildLogs.length > 0 && (
                 <div className="border-b border-[#2b2b2b] bg-[#121212] px-3 py-2 text-xs font-mono text-gray-200 max-h-28 overflow-auto">

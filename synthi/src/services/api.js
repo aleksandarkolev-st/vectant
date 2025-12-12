@@ -2,6 +2,76 @@
 
 import SynthiException from "@/components/SynthiException";
 
+function languageFromExtension(ext) {
+    const m = {
+        js: 'javascript',
+        jsx: 'javascript',
+        ts: 'typescript',
+        tsx: 'typescript',
+        py: 'python',
+        rs: 'rust',
+        json: 'json',
+        md: 'markdown',
+        txt: 'plaintext',
+        html: 'html',
+        css: 'css',
+        yml: 'yaml',
+        yaml: 'yaml',
+        toml: 'toml',
+    };
+    return m[String(ext || '').toLowerCase()] || (ext ? String(ext).toLowerCase() : 'plaintext');
+}
+
+function buildTreeFromFlatMeta(flatFiles) {
+    const root = { name: 'root', isFolder: true, children: [], path: '' };
+    const files = Array.isArray(flatFiles) ? flatFiles : [];
+
+    for (const f of files) {
+        const relPath = String(f.path || '').replace(/\\/g, '/');
+        if (!relPath) continue;
+        const parts = relPath.split('/').filter(Boolean);
+        let currentNode = root;
+        let cumulativePath = '';
+
+        for (let i = 0; i < parts.length; i++) {
+            const partName = parts[i];
+            const isLast = i === parts.length - 1;
+            const markerIsFolder = f && f.isFolder === true;
+            const isFolder = markerIsFolder ? true : !isLast;
+            cumulativePath = cumulativePath ? `${cumulativePath}/${partName}` : partName;
+
+            let child = currentNode.children.find(c => c.name === partName);
+            if (!child) {
+                child = {
+                    name: partName,
+                    path: cumulativePath,
+                    isFolder,
+                    children: isFolder ? [] : undefined,
+                };
+                currentNode.children.push(child);
+            }
+
+            // If this is a folder marker, ensure folder shape even if it already existed as a file path segment.
+            if (markerIsFolder) {
+                child.isFolder = true;
+                if (!child.children) child.children = [];
+            }
+
+            if (isLast && !isFolder) {
+                const ext = (f.extension || partName.split('.').pop() || '').toLowerCase();
+                child.size = Number(f.size) || 0;
+                child.lastModified = Number(f.lastModified) || null;
+                child.extension = ext;
+                child.language = f.language || languageFromExtension(ext);
+            }
+
+            if (isFolder) currentNode = child;
+        }
+    }
+
+    return root.children;
+}
+
 export class ApiClient {
     constructor(baseUrl = '/api/workspace') {
         this.baseUrl = baseUrl;
@@ -22,17 +92,73 @@ export class ApiClient {
 
     // READ
     async fetchFiles(slug) {
+        const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
+
+        // Prefer collab-server metadata (disk-backed, fast, no contents)
+        try {
+            const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/files-meta`);
+            if (res.ok) {
+                const data = await res.json();
+                const tree = buildTreeFromFlatMeta(data.files);
+                // Ensure index build in background (non-blocking)
+                try { this.ensureIndex(slug); } catch (_) {}
+                return tree;
+            }
+        } catch (e) {
+            // fall back to storage
+        }
+
         const response = await fetch(`${this.baseUrl}/${slug}`);
         const data = await this._handleResponse(response).then(r => r.json());
-        // Simulating the tree structure creation here (or it happens in a selector)
+        try { this.ensureIndex(slug); } catch (_) {}
         return data.files;
     }
 
-    async fetchFileContent(slug, filePath) {
+    async ensureIndex(slug) {
+        try {
+            const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
+            // Fire and forget; must not block UI.
+            fetch(`${COLLAB_SERVER_URL}/git/${slug}/index-ensure`).catch(() => {});
+        } catch (_) {
+            // ignore
+        }
+
+        // Same-origin fallback index (works even if collab-server is not running)
+        try {
+            fetch(`${this.baseUrl}/${slug}/index/ensure`).catch(() => {});
+        } catch (_) {
+            // ignore
+        }
+    }
+
+    async searchIndex(slug, query, options = {}) {
+        const q = String(query || '');
+
+        // 1) Prefer collab-server index when available
+        try {
+            const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
+            const url = `${COLLAB_SERVER_URL}/git/${slug}/search?q=${encodeURIComponent(q)}`;
+            const res = await fetch(url, { signal: options.signal });
+            if (res.ok) return await res.json();
+        } catch (_) {
+            // fall back
+        }
+
+        // 2) Same-origin index fallback (never throws network errors to UI)
+        try {
+            const res2 = await fetch(`${this.baseUrl}/${slug}/search?q=${encodeURIComponent(q)}`, { signal: options.signal });
+            if (!res2.ok) return { status: 'error', results: [] };
+            return await res2.json();
+        } catch (_) {
+            return { status: 'error', results: [] };
+        }
+    }
+
+    async fetchFileContent(slug, filePath, options = {}) {
         // Try fetching from Collab Server first (Source of Truth for Git)
         try {
              const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
-             const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/file?path=${encodeURIComponent(filePath)}`);
+             const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/file?path=${encodeURIComponent(filePath)}`, { signal: options.signal });
              if (res.ok) {
                  const data = await res.json();
                  if (typeof data.content === 'string') {
@@ -43,7 +169,16 @@ export class ApiClient {
             console.warn("Failed to fetch from collab server, falling back to storage", e);
         }
 
-        const response = await fetch(`${this.baseUrl}/${slug}/item?filePath=${encodeURIComponent(filePath)}`);
+        const response = await fetch(`${this.baseUrl}/${slug}/item?filePath=${encodeURIComponent(filePath)}`, { signal: options.signal });
+        return this._handleResponse(response).then(r => r.text());
+    }
+
+    // READ (Storage only; skips collab server)
+    async fetchFileContentStorageOnly(slug, filePath, options = {}) {
+        const response = await fetch(
+            `${this.baseUrl}/${slug}/item?filePath=${encodeURIComponent(filePath)}`,
+            { signal: options.signal }
+        );
         return this._handleResponse(response).then(r => r.text());
     }
 
