@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { Search, TerminalSquare, Play, Settings, Undo2, Redo2, MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { toggleAutoSave, selectAutoSaveEnabled, toggleAutoCompletion, selectAutoCompletionEnabled, startCreate } from '@/redux/uiSlice';
-import { selectActiveFile, selectFilesTree, saveFileContentThunk } from '@/redux/workspaceSlice';
+import { selectActiveFile, selectFilesTree, saveFileContentThunk, selectFileThunk } from '@/redux/workspaceSlice';
 import { BranchSelector } from '@/components/git/BranchSelector';
+import { getFileIcon } from '@/utils/fileIcons';
 
 export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo, onToggleChat, chatVisible }) {
   const dispatch = useAppDispatch();
@@ -19,6 +20,36 @@ export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo,
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [isFileMenuOpen, setIsFileMenuOpen] = useState(false);
+
+  // Flatten files tree for search
+  const allFiles = useMemo(() => {
+    const files = [];
+    const traverse = (nodes) => {
+      if (!nodes) return;
+      nodes.forEach(node => {
+        if (!node.isFolder) {
+          files.push(node);
+        }
+        if (node.children) {
+          traverse(node.children);
+        }
+      });
+    };
+    traverse(filesTree);
+    return files;
+  }, [filesTree]);
+
+  const searchResults = useMemo(() => {
+    if (!searchText.trim()) return [];
+    const lower = searchText.toLowerCase();
+    return allFiles.filter(f => f.name.toLowerCase().includes(lower) || f.path.toLowerCase().includes(lower)).slice(0, 10);
+  }, [allFiles, searchText]);
+
+  const handleFileSelect = (file) => {
+    dispatch(selectFileThunk(file));
+    setSearchText('');
+    setSearchOpen(false);
+  };
 
   const handleSave = async () => {
     if (!activeFile) return;
@@ -83,10 +114,32 @@ export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo,
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
           onFocus={() => setSearchOpen(true)}
-          onBlur={() => setSearchOpen(false)}
+          onBlur={() => setTimeout(() => setSearchOpen(false), 200)}
           placeholder={searchOpen ? "Search files, symbols, commands…" : title}
           className="w-full h-7 bg-[#262626] text-sm text-gray-100 rounded-md pl-8 pr-3 py-1.5 outline-none border border-[#3b3b3b] focus:border-emerald-500 transition-all duration-200"
         />
+        {/* Search Results Dropdown */}
+        {searchOpen && searchText && (
+          <div className="absolute top-full left-0 w-full mt-1 bg-[#262626] border border-[#3b3b3b] rounded-md shadow-lg z-[9999] max-h-60 overflow-y-auto">
+            {searchResults.length > 0 ? (
+              searchResults.map((file) => (
+                <div
+                  key={file.path}
+                  className="flex items-center px-3 py-2 cursor-pointer hover:bg-[#2e2e2e] text-sm text-gray-200"
+                  onClick={() => handleFileSelect(file)}
+                >
+                  <span className="mr-2 flex-shrink-0">{getFileIcon(file.name)}</span>
+                  <div className="flex flex-col overflow-hidden min-w-0">
+                    <span className="truncate font-medium">{file.name}</span>
+                    <span className="truncate text-xs text-gray-500">{file.path}</span>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="px-3 py-2 text-sm text-gray-500">No results found</div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex-1 flex items-center gap-2">
