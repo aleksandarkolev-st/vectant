@@ -934,7 +934,8 @@ impl WidgetDetector {
             (r"struct\s+(\w+)", 7), // "struct " prefix
         ];
         
-        for (prefix, skip) in &[(b"class ", 6usize), (b"struct ", 7usize)] {
+        let patterns: &[(&[u8], usize)] = &[(b"class ", 6), (b"struct ", 7)];
+        for (prefix, skip) in patterns {
             let bytes = line.as_bytes();
             if let Some(pos) = bytes.windows(prefix.len()).position(|w| w == *prefix) {
                 let rest = &line[pos + skip..];

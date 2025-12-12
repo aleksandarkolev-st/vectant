@@ -368,9 +368,8 @@ fn parse_with_addr2line(lib_path: &Path) -> Result<ParsedDebugInfo, String> {
         
         if let Ok(output) = a2l_output {
             if output.status.success() {
-                let lines: Vec<&str> = String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .collect();
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let lines: Vec<&str> = stdout.lines().collect();
                 
                 // addr2line outputs: function\nfile:line for each address
                 for (i, addr) in addresses.iter().enumerate() {

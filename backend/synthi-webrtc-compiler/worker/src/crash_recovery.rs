@@ -25,6 +25,9 @@ use std::ffi::c_void;
 use libc::{c_int, siginfo_t, sigaction, sigemptyset, SA_SIGINFO, SIGSEGV, SIGABRT, SIGFPE, SIGBUS};
 
 #[cfg(unix)]
+use setjmp;
+
+#[cfg(unix)]
 use std::mem::MaybeUninit;
 
 /// Global flag indicating we're in plugin code (can recover from crash)
@@ -173,7 +176,7 @@ extern "C" fn crash_handler(sig: c_int, info: *mut siginfo_t, _context: *mut c_v
         // longjmp back to the safe point
         RECOVERY_POINT.with(|jmp_buf| {
             if !jmp_buf.borrow().is_null() {
-                libc::longjmp(*jmp_buf.borrow() as *mut _, 1);
+                setjmp::longjmp(*jmp_buf.borrow() as *mut setjmp::jmp_buf, 1);
             }
         });
     }
@@ -253,7 +256,7 @@ where
     }
     
     // Allocate jump buffer on stack
-    let mut jmp_buf: MaybeUninit<libc::jmp_buf> = MaybeUninit::uninit();
+    let mut jmp_buf: MaybeUninit<setjmp::jmp_buf> = MaybeUninit::uninit();
     
     unsafe {
         // Set recovery point
@@ -268,7 +271,7 @@ where
         IN_PLUGIN_CONTEXT.store(true, Ordering::SeqCst);
         
         // Set up the jump point
-        let setjmp_result = libc::setjmp(jmp_buf.as_mut_ptr());
+        let setjmp_result = setjmp::setjmp(jmp_buf.as_mut_ptr());
         
         if setjmp_result == 0 {
             // Normal execution path

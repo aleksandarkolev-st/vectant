@@ -765,7 +765,6 @@ impl DiagnosticEvent {
 
 use std::path::Path;
 use std::fs;
-use std::collections::HashMap;
 
 /// Extract a code snippet from a source file around a given line
 /// Returns (snippet, start_line) where start_line is 1-indexed
