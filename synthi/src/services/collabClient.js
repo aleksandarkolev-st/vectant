@@ -49,8 +49,10 @@ class MonacoTextBinding {
           } catch (e) {
             console.warn('[Collab] failed to apply remote diff to Monaco model', e?.message || e);
           } finally {
-            // Small delay before lifting guard to allow Monaco to stabilize
-            setTimeout(() => { this._applyingRemote = false; }, 0);
+            // Reset flag synchronously but use requestAnimationFrame to ensure
+            // Monaco's synchronous onDidChangeContent handlers have completed.
+            // The nested setTimeout(0) was too aggressive and could race.
+            requestAnimationFrame(() => { this._applyingRemote = false; });
           }
         }, 0);
 
@@ -107,10 +109,24 @@ class MonacoTextBinding {
     // When the Monaco model changes locally, reflect into Yjs
     this._modelListener = this.model.onDidChangeContent((e) => {
       if (this._applyingRemote) return;
+      if (this._destroyed) return; // Don't write if binding is destroyed
+      // Skip changes that came from our own collab edits (check source/origin)
+      // Monaco's executeEdits passes a source string we can check
+      if (e.isFlush) return; // setValue or similar bulk operation, skip to avoid loops
+      // Verify we're still the active model on the editor
+      if (this.editor.getModel() !== this.model) {
+        console.debug('[Collab] Ignoring model change for inactive model');
+        return;
+      }
       try {
         const value = this.model.getValue();
         const doc = this.ytext.doc;
         if (!doc) return;
+        
+        // Check if ytext already has this exact content to avoid redundant writes
+        const currentYtext = this.ytext.toString();
+        if (currentYtext === value) return;
+        
         // Full replace for now — later can patch using diffs for efficiency
         doc.transact(() => {
           this.ytext.delete(0, this.ytext.length);
@@ -454,7 +470,7 @@ class CollabClient {
     if (map.size === 0) this._awarenessListeners.delete(key);
   }
 
-  attachEditor({ editor, monaco, slug, path, user }) {
+  attachEditor({ editor, monaco, slug, path, user, initialContent }) {
     if (!editor || !monaco || !slug || !path) return null;
 
     const entry = this.ensureDoc(slug, path);
@@ -466,44 +482,103 @@ class CollabClient {
       model = monaco.editor.createModel(entry.ytext.toString() || '', undefined, uri);
     }
 
-    // Ensure the editor uses this model (critical for collab/LSP to work together)
-    // This prevents a model mismatch where the Editor component's internal model
-    // differs from the one we bind to Yjs.
-    const currentModel = editor.getModel();
-    const currentModelContent = currentModel ? currentModel.getValue() : '';
+    // IMPORTANT: Use the explicit initialContent passed from Redux store
+    // Do NOT use editor.getModel().getValue() as that may have stale content
+    // from a previously opened file, causing content duplication.
+    const providedContent = typeof initialContent === 'string' ? initialContent : '';
     
     // Determine which content source to use:
     // 1. If ytext has content (from server/other clients), use it (authoritative)
-    // 2. If ytext is empty but model has content, seed ytext with model content
+    // 2. If ytext is empty but initialContent was provided, seed ytext with it
     // 3. If both empty, nothing to do
+    // 
+    // CRITICAL: We must wait for the provider to sync before deciding ytext is empty.
+    // Otherwise we race: ytext appears empty, we seed with initialContent, then
+    // server sends the real content and Yjs merges them → content doubles.
+    // 
+    // Check if provider is synced; if not, delay seeding until sync event.
+    const isSynced = entry.provider.synced;
     const ytextContent = entry.ytext.toString();
     const ytextHasContent = ytextContent.length > 0;
-    const modelHasContent = currentModelContent.length > 0;
+    const hasProvidedContent = providedContent.length > 0;
     
-    if (ytextHasContent) {
-      // Ytext is authoritative - sync model to ytext content
-      if (model.getValue() !== ytextContent) {
-        model.setValue(ytextContent);
-      }
-    } else if (modelHasContent) {
-      // Ytext is empty, seed it with model content (only once)
-      entry.doc.transact(() => {
-        // Clear and insert to ensure no duplication
-        if (entry.ytext.length > 0) {
-          entry.ytext.delete(0, entry.ytext.length);
+    // Track if we've already seeded this doc to prevent double-seeding
+    if (!entry._seeded) {
+      entry._seeded = false;
+    }
+    
+    const doSeed = () => {
+      // Only seed once per doc lifecycle
+      if (entry._seeded) return;
+      
+      const currentYtext = entry.ytext.toString();
+      if (currentYtext.length > 0) {
+        // Ytext has content now (from server), use it
+        if (model.getValue() !== currentYtext) {
+          model.setValue(currentYtext);
         }
-        entry.ytext.insert(0, currentModelContent);
-      });
-      // Also ensure our target model has the content
-      if (model !== currentModel && model.getValue() !== currentModelContent) {
-        model.setValue(currentModelContent);
+        entry._seeded = true;
+      } else if (hasProvidedContent) {
+        // Ytext is truly empty after sync, seed with provided content
+        entry.doc.transact(() => {
+          if (entry.ytext.length > 0) {
+            entry.ytext.delete(0, entry.ytext.length);
+          }
+          entry.ytext.insert(0, providedContent);
+        });
+        if (model.getValue() !== providedContent) {
+          model.setValue(providedContent);
+        }
+        entry._seeded = true;
+      }
+    };
+    
+    if (isSynced) {
+      // Provider already synced, safe to seed now
+      if (ytextHasContent) {
+        // Ytext is authoritative - sync model to ytext content
+        if (model.getValue() !== ytextContent) {
+          model.setValue(ytextContent);
+        }
+        entry._seeded = true;
+      } else if (hasProvidedContent && !entry._seeded) {
+        doSeed();
+      }
+    } else {
+      // Wait for sync before seeding to avoid racing with server content
+      const syncHandler = () => {
+        entry.provider.off('sync', syncHandler);
+        doSeed();
+      };
+      entry.provider.on('sync', syncHandler);
+      
+      // Set model content optimistically so user sees something
+      // but don't write to ytext yet
+      if (model.getValue() !== providedContent && hasProvidedContent) {
+        model.setValue(providedContent);
       }
     }
     
     // Now set the model on the editor if different
+    const currentModel = editor.getModel();
     if (currentModel !== model) {
       editor.setModel(model);
     }
+
+    // CLEANUP: Ensure we don't create duplicate bindings for the same model
+    // or editor instance. If there is an existing binding for this model or
+    // editor, destroy it and remove it from the entry.bindings set to avoid
+    // duplicate writes that could cause the file content to double/grow.
+    try {
+      for (const existing of Array.from(entry.bindings)) {
+        try {
+          if (existing && (existing.model === model || existing.editor === editor)) {
+            try { existing.destroy(); } catch (_) {}
+            entry.bindings.delete(existing);
+          }
+        } catch (_) { /* ignore iteration/destroy errors */ }
+      }
+    } catch (_) {}
 
     const binding = new MonacoTextBinding(entry.ytext, model, editor, entry.provider.awareness, monaco);
 
@@ -611,12 +686,34 @@ class CollabClient {
   async seedContentIfEmpty(slug, path, initialContent) {
     if (!slug || !path) return;
     const entry = this.ensureDoc(slug, path);
-    // Wait for provider sync once
-    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Wait for provider to sync before deciding if ytext is empty
+    // This prevents racing with server content
+    if (!entry.provider.synced) {
+      await new Promise(resolve => {
+        const handler = () => {
+          entry.provider.off('sync', handler);
+          resolve();
+        };
+        entry.provider.on('sync', handler);
+        // Fallback timeout in case sync never fires
+        setTimeout(() => {
+          entry.provider.off('sync', handler);
+          resolve();
+        }, 2000);
+      });
+    }
+    
+    // Only seed if truly empty and not already seeded
+    if (entry._seeded) return;
     if (entry.ytext.length === 0 && typeof initialContent === 'string' && initialContent.length > 0) {
       entry.doc.transact(() => {
-        entry.ytext.insert(0, initialContent);
+        // Double-check length inside transaction
+        if (entry.ytext.length === 0) {
+          entry.ytext.insert(0, initialContent);
+        }
       });
+      entry._seeded = true;
     }
   }
 

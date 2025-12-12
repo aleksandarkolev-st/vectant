@@ -13,7 +13,7 @@ const nextConfig = {
       config.resolve.alias = {
         ...config.resolve.alias,
         // Force all yjs imports to use the same instance
-        'yjs': path.resolve(__dirname, 'node_modules/yjs'),
+        'yjs': path.resolve(__dirname, 'node_modules/yjs/dist/yjs.mjs'),
       };
     }
     return config;

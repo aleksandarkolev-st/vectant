@@ -150,6 +150,10 @@ const EditorPanel = ({
     const hoverHideTimeoutRef = useRef(null);
     const [isPrivateMode, setIsPrivateMode] = useState(false);
     const [remoteUnsaved, setRemoteUnsaved] = useState(false);
+    
+    // Track which file path the editor is currently bound to
+    // This prevents stale onChange handlers from writing to the wrong file
+    const boundFilePathRef = useRef(null);
 
     // Precompute hover-card style so JSX stays clean and well-formed
     const hoverCardStyle = (hoverPresence && hoverPresence.rect && typeof window !== 'undefined') ? (() => {
@@ -506,10 +510,25 @@ const EditorPanel = ({
         const user = (session?.data?.user) ? { id: session.data.user.id || session.data.user.email || session.data.user.name, name: session.data.user.name || session.data.user.email, email: session.data.user.email || null, isAnonymous: false } : { id: null, name: 'Anonymous', email: null, isAnonymous: true };
 
         // Attach the editor to the collaboration binding
+        // IMPORTANT: Get content from file cache for THIS specific file path
+        // Do NOT use `code` as it may still contain content from the previous file
+        // during the transition between files.
         try {
             const showLineDecorations = (presenceGranularity === 'line');
-            const bindingHandle = collabClient.attachEditor({ editor: editorInstance, monaco: monacoInstance, slug, path: activeFile.path, user, options: { showLineDecorations } });
+            // Get content specifically for this file from the cache
+            const cachedContent = fileCacheEntries.find(([path]) => path === activeFile.path)?.[1];
+            const initialContent = typeof cachedContent === 'string' ? cachedContent : (typeof code === 'string' ? code : '');
+            const bindingHandle = collabClient.attachEditor({ 
+                editor: editorInstance, 
+                monaco: monacoInstance, 
+                slug, 
+                path: activeFile.path, 
+                user, 
+                initialContent,
+                options: { showLineDecorations } 
+            });
             collabBindingRef.current = bindingHandle;
+            boundFilePathRef.current = activeFile.path; // Track which file we're bound to
             setCollabConnected(true); // Mark collab as connected
             
             // Sync initial unsaved state
@@ -533,6 +552,7 @@ const EditorPanel = ({
             try { collabBindingRef.current?._awarenessUnsub?.(); } catch (e) { /* ignore */ }
             try { collabBindingRef.current?.dispose(); } catch (e) { /* ignore */ }
             collabBindingRef.current = null;
+            boundFilePathRef.current = null; // Clear bound file path
             setCollabConnected(false);
             setRemoteUnsaved(false);
         };
@@ -701,6 +721,14 @@ const EditorPanel = ({
     }, []);
 
     const handleCodeChange = useCallback((newCode) => {
+        // CRITICAL: Only process changes if we're bound to the correct file
+        // This prevents stale onChange handlers from writing content to the wrong file
+        // during file transitions.
+        if (activeFile && boundFilePathRef.current && boundFilePathRef.current !== activeFile.path) {
+            console.debug('[Editor] Ignoring onChange for stale file binding', boundFilePathRef.current, 'vs', activeFile.path);
+            return;
+        }
+        
         // Skip Redux update if collab is applying remote changes to prevent feedback loop
         // This is critical: when remote Yjs changes come in, collabClient applies them via
         // executeEdits which triggers onChange. If we push to Redux, it would cause the 
