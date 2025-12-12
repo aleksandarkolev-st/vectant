@@ -37,6 +37,7 @@ import { fileCache } from '@/services/fileCache';
 import { resolveDependencies } from '@/utils/dependencyResolver';
 import { DraggableVideoWidget } from '@/components/DraggableVideoWidget';
 import { useHMR } from '@/hooks/useHMR';
+import ErrorOverlay from '@/components/ErrorOverlay';
 import { GitStatus } from '@/components/git/GitStatus';
 import ActivityBar from '../ActivityBar.jsx';
 import SearchView from './SearchView.jsx';
@@ -236,6 +237,14 @@ export default function EditorPage({ params }) {
             console.warn('No active file selected for compilation.');
             return;
         }
+        
+        // Dispatch optimistic "compiling" status immediately for fast feedback
+        if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('synthi:hmr-status', {
+                detail: { status: 'compiling', module: activeFile?.name || 'unknown' }
+            }));
+        }
+        
         const source = typeof currentContent === 'string' ? currentContent : '';
         // Use the full path to preserve directory structure in the worker
         const filename = activeFile?.path || activeFile?.name || 'main';
@@ -290,6 +299,13 @@ export default function EditorPage({ params }) {
 
     const handleSave = useCallback(async () => {
         if (!activeFile) return;
+        
+        // Dispatch optimistic "compiling" status immediately for fast feedback
+        if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('synthi:hmr-status', {
+                detail: { status: 'compiling', module: activeFile?.name || 'unknown' }
+            }));
+        }
         
         // Similar to handleRun but silent and doesn't force terminal open
         const source = typeof currentContent === 'string' ? currentContent : '';
@@ -491,6 +507,9 @@ export default function EditorPage({ params }) {
             </ResizablePanelGroup>
 
             {/* Chat is rendered inside the ResizablePanelGroup when visible (see `ChatPanel`) */}
+            
+            {/* Error Overlay for compile/runtime errors */}
+            <ErrorOverlay />
         </div>
     );
 }
