@@ -1694,7 +1694,288 @@ Before outputting your JSON, scan core.cpp content for these patterns:
 5. `gui_on_event(` without `ptr_` → STOP and fix to `ptr_gui_on_event(`
 6. `extern void gui_` → STOP and remove this line
 
-If ANY of these patterns exist in core.cpp, your output is INVALID. """
+If ANY of these patterns exist in core.cpp, your output is INVALID.
+
+# ============================================================
+# HOST KV API (PERSISTENT STATE ACROSS HOT RELOADS)
+# ============================================================
+# The Host KV API provides persistent key-value storage that survives
+# hot reloads. Use this when you want state to persist even when code changes.
+# This enables "Fast Refresh-like" behavior from React/Next.js.
+# ============================================================
+
+## 12. HOST KV API OVERVIEW
+
+The Runner provides a KV storage API that plugins can use to persist state across hot reloads.
+This is OPTIONAL but recommended for better developer experience.
+
+### 12.1 WHEN TO USE HOST KV
+
+Use Host KV when:
+- You want game state to survive code edits (score, level, position)
+- You want settings to persist across reloads
+- You want to implement undo/redo history that survives reloads
+
+Do NOT use Host KV when:
+- The data is purely transient (frame timers, animation interpolation)
+- The data can be easily recomputed (cached calculations)
+
+### 12.2 HOW IT WORKS
+
+1. **Declare Namespaces**: Your module exports a schema table declaring which namespaces it uses
+2. **Use Host Context**: Implement `*_on_load_host` instead of `*_on_load` to receive the KV API
+3. **Read/Write Keys**: Use the KV API to store and retrieve persistent state
+4. **Schema Safety**: If you change your schema_id, only that namespace is cleared (not everything)
+
+### 12.3 C ABI STRUCTS (EMBEDDED IN YOUR GENERATED CODE)
+
+```cpp
+// Return codes
+#define SYNTHI_KV_OK              0
+#define SYNTHI_KV_NOT_FOUND       1
+#define SYNTHI_KV_INVALID_ARG     2
+#define SYNTHI_KV_QUOTA_EXCEEDED  3
+#define SYNTHI_KV_INTERNAL_ERROR  4
+
+// Module slots
+#define SYNTHI_MODULE_SLOT_CORE 0
+#define SYNTHI_MODULE_SLOT_GUI  1
+#define SYNTHI_MODULE_SLOT_MAIN 2
+
+// Quotas (for reference)
+#define SYNTHI_KV_MAX_VALUE_BYTES       1000000   // 1 MB per value
+#define SYNTHI_KV_MAX_KEYS_PER_NS       2000      // 2000 keys per namespace
+#define SYNTHI_KV_MAX_NAMESPACE_LEN     64
+#define SYNTHI_KV_MAX_KEY_LEN           256
+
+// Forward declarations
+typedef struct SynthiHostContextV1 SynthiHostContextV1;
+typedef struct HostKvApiV1 HostKvApiV1;
+typedef struct SynthiNamespaceSchemaV1 SynthiNamespaceSchemaV1;
+
+// KV API vtable
+struct HostKvApiV1 {
+    uint32_t version;
+    int (*set_bytes)(const SynthiHostContextV1* ctx, const char* ns, const char* key, const uint8_t* data, uint32_t len);
+    int (*get_bytes)(const SynthiHostContextV1* ctx, const char* ns, const char* key, uint8_t** out, uint32_t* out_len);
+    int (*delete_key)(const SynthiHostContextV1* ctx, const char* ns, const char* key);
+    int (*clear_namespace)(const SynthiHostContextV1* ctx, const char* ns);
+    int (*get_schema)(const SynthiHostContextV1* ctx, const char* ns, uint64_t* out_schema);
+    int (*set_schema)(const SynthiHostContextV1* ctx, const char* ns, uint64_t schema);
+    void* (*host_alloc)(uint32_t size);
+    void (*host_free)(void* ptr);
+    const char* (*last_error)(void);
+};
+
+// Host context passed to *_on_load_host
+struct SynthiHostContextV1 {
+    uint32_t host_api_version;      // Must be 1
+    const HostKvApiV1* kv;          // KV API vtable
+    const char* session_id;         // Session identifier
+    uint32_t session_id_len;
+    uint32_t module_slot;           // 0=core, 1=gui, 2=main
+    void* window;                   // SDL_Window* or NULL
+    void* renderer;                 // SDL_Renderer*
+    void* reserved[8];              // Future expansion
+};
+
+// Schema entry for declaring namespaces
+struct SynthiNamespaceSchemaV1 {
+    const char* ns;                 // Namespace name (NUL-terminated, max 64 chars)
+    uint64_t schema_id;             // Change this when data format changes
+};
+```
+
+### 12.4 CORE MODULE WITH HOST KV
+
+```cpp
+// shared.h additions for Host KV
+// (Include the structs from 12.3 above)
+
+// core.cpp with Host KV support
+
+// 1. Declare your namespaces (schema table)
+static const SynthiNamespaceSchemaV1 g_core_schemas[] = {
+    { "game",     1 },  // Game state - schema version 1
+    { "settings", 1 },  // Settings
+};
+
+// 2. Export schema table
+extern "C" uint32_t core_host_kv_schemas_len(void) {
+    return sizeof(g_core_schemas) / sizeof(g_core_schemas[0]);
+}
+
+extern "C" const SynthiNamespaceSchemaV1* core_host_kv_schemas(void) {
+    return g_core_schemas;
+}
+
+// 3. Store host context for later use
+static const SynthiHostContextV1* g_host_ctx = NULL;
+
+// 4. Implement core_on_load_host (preferred over core_on_load)
+extern "C" void* core_on_load_host(void* prev_state, const SynthiHostContextV1* host_ctx) {
+    g_host_ctx = host_ctx;  // Store for later saves
+    
+    AppState* state = (AppState*)prev_state;
+    if (!state) {
+        state = (AppState*)malloc(sizeof(AppState));
+        memset(state, 0, sizeof(AppState));
+        state->magic = 0xDEADBEEF;
+        state->struct_size = sizeof(AppState);
+        
+        // Try to restore from KV storage
+        uint8_t* data;
+        uint32_t len;
+        if (host_ctx->kv->get_bytes(host_ctx, "game", "state", &data, &len) == SYNTHI_KV_OK) {
+            if (len == sizeof(AppState)) {
+                memcpy(state, data, sizeof(AppState));
+            }
+            host_ctx->kv->host_free(data);
+        }
+    }
+    
+    state->renderer = (SDL_Renderer*)host_ctx->renderer;
+    return state;
+}
+
+// 5. Save state helper (call periodically or on important changes)
+void save_game_state(AppState* state) {
+    if (g_host_ctx && g_host_ctx->kv) {
+        g_host_ctx->kv->set_bytes(g_host_ctx, "game", "state", 
+                                   (uint8_t*)state, sizeof(AppState));
+    }
+}
+
+// 6. Still export core_on_load for backward compatibility
+extern "C" void* core_on_load(void* prev_state, void* renderer) {
+    // Fallback when Host KV not available
+    AppState* state = (AppState*)prev_state;
+    if (!state) {
+        state = (AppState*)malloc(sizeof(AppState));
+        memset(state, 0, sizeof(AppState));
+        state->magic = 0xDEADBEEF;
+        state->struct_size = sizeof(AppState);
+    }
+    state->renderer = (SDL_Renderer*)renderer;
+    return state;
+}
+```
+
+### 12.5 GUI MODULE WITH HOST KV
+
+```cpp
+// gui.cpp with Host KV support
+
+static const SynthiNamespaceSchemaV1 g_gui_schemas[] = {
+    { "ui", 1 },  // UI state (window positions, scroll positions, etc.)
+};
+
+extern "C" uint32_t gui_host_kv_schemas_len(void) {
+    return sizeof(g_gui_schemas) / sizeof(g_gui_schemas[0]);
+}
+
+extern "C" const SynthiNamespaceSchemaV1* gui_host_kv_schemas(void) {
+    return g_gui_schemas;
+}
+
+static const SynthiHostContextV1* g_gui_host_ctx = NULL;
+
+extern "C" void* gui_on_load_host(void* prev_state, const SynthiHostContextV1* host_ctx) {
+    g_gui_host_ctx = host_ctx;
+    
+    GuiState* state = (GuiState*)prev_state;
+    if (!state) {
+        state = (GuiState*)malloc(sizeof(GuiState));
+        memset(state, 0, sizeof(GuiState));
+        state->magic = 0x60108EEF;
+        state->struct_size = sizeof(GuiState);
+        
+        // Restore UI state
+        uint8_t* data;
+        uint32_t len;
+        if (host_ctx->kv->get_bytes(host_ctx, "ui", "layout", &data, &len) == SYNTHI_KV_OK) {
+            // Deserialize UI state...
+            host_ctx->kv->host_free(data);
+        }
+    }
+    
+    state->renderer = (SDL_Renderer*)host_ctx->renderer;
+    return state;
+}
+```
+
+### 12.6 LEGACY MAIN MODULE WITH HOST KV
+
+For single-file apps (no core/gui split), use unprefixed symbols:
+
+```cpp
+static const SynthiNamespaceSchemaV1 g_schemas[] = {
+    { "app", 1 },
+};
+
+extern "C" uint32_t host_kv_schemas_len(void) {
+    return sizeof(g_schemas) / sizeof(g_schemas[0]);
+}
+
+extern "C" const SynthiNamespaceSchemaV1* host_kv_schemas(void) {
+    return g_schemas;
+}
+
+extern "C" void* on_load_host(void* prev_state, const SynthiHostContextV1* host_ctx) {
+    // Implementation...
+}
+```
+
+### 12.7 HOST KV RULES (CRITICAL)
+
+1. **Namespace Validation**: 
+   - Only `[a-zA-Z0-9._-]` allowed in namespace/key names
+   - Max 64 chars for namespace, 256 for key
+   - No `/` or `\\` in names
+
+2. **Schema Safety**:
+   - Change `schema_id` when your data format changes
+   - Only the affected namespace is cleared, not everything
+   - Example: Changing "game" schema clears "game" keys but keeps "settings" keys
+
+3. **Memory Management**:
+   - `get_bytes` allocates memory via `host_alloc` - YOU must call `host_free`
+   - `set_bytes` copies data - your buffer can be freed immediately
+
+4. **Quotas**:
+   - Max 1MB per value
+   - Max 2000 keys per namespace  
+   - Max 20MB total per module
+
+5. **Symbol Priority**:
+   - Runner prefers `*_on_load_host` over `*_on_load`
+   - If `*_on_load_host` exists, it's called with host context
+   - Otherwise `*_on_load` is called with just renderer pointer
+
+### 12.8 WHEN TO GENERATE HOST KV CODE
+
+Generate Host KV support when:
+- The user's code has significant state that should survive reloads
+- The code has game progress, scores, levels, or similar persistent data
+- The code has user settings or preferences
+- The user explicitly asks for persistent state
+
+Do NOT generate Host KV for:
+- Simple "hello world" or demo code
+- Code with only transient state (animations, frame counters)
+- Code where state can be easily recreated
+
+### 12.9 HOST KV EXPORT CHECKLIST
+
+If generating Host KV code, verify:
+- [ ] Schema table is declared as static const array
+- [ ] `*_host_kv_schemas_len()` returns count
+- [ ] `*_host_kv_schemas()` returns pointer to array
+- [ ] `*_on_load_host()` is implemented
+- [ ] `*_on_load()` fallback still exists for compatibility
+- [ ] Host context pointer is stored for later use
+- [ ] `host_free()` is called after `get_bytes()`
+"""
 
 def build_prompt(
     code: str,
