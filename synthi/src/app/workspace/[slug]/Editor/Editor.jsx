@@ -14,12 +14,13 @@ import {
     saveFileContentThunk,
     updateContent,
     selectOpenFiles,
+    selectLoadingFiles,
     selectFileThunk,
     closeFile,
     reorderOpenFiles
 } from '@/redux/workspaceSlice';
 import { selectAutoSaveEnabled, selectAutoCompletionEnabled, toggleAutoCompletion, selectShowAnonymousPresence, selectPresenceGranularity, toggleShowAnonymousPresence, setPresenceGranularity } from '@/redux/uiSlice';
-import { Circle, Save, Sparkles, EyeOff } from 'lucide-react'; // Added Sparkles, EyeOff
+import { Circle, Save, Sparkles, EyeOff, Loader2 } from 'lucide-react'; // Added Sparkles, EyeOff
 import { getFileIcon } from '@/utils/fileIcons';
 import {
     ResizableHandle,
@@ -44,7 +45,7 @@ import { useAiCompletion } from './AICompletion';
 import { useDiffManager } from './diffManager';
 import { useEditorProviders } from './providers';
 import { useEditorEvents } from './events';
-import { takeLastChars } from './utils';
+import { takeLastChars, useCustomScrollbar } from './utils';
 import { SYNTHI_THEME } from './theme';
 import * as monaco from 'monaco-editor';
 
@@ -114,6 +115,7 @@ const EditorPanel = ({
     latestCompletion,
     aiBusy = false,
     onClearCompletion = null,
+    chatVisible = false,
 }) => {
     const dispatch = useAppDispatch();
 
@@ -124,6 +126,7 @@ const EditorPanel = ({
     const breadcrumb = useAppSelector(selectBreadcrumb);
     const fileCacheEntries = useAppSelector(selectFileCacheEntries);
     const openFiles = useAppSelector(selectOpenFiles);
+    const loadingFiles = useAppSelector(selectLoadingFiles);
     const rawFiles = useAppSelector(state => state.workspace.rawFiles);
     const showTerminal = useAppSelector(state => state.ui.showTerminal);
     const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
@@ -798,6 +801,14 @@ const EditorPanel = ({
     const diffMode = useAppSelector(state => state.workspace.diffMode);
     const originalContent = useAppSelector(state => state.workspace.originalContent);
 
+    // --- Custom Scrollbar Logic ---
+    const {
+        tabsContainerRef,
+        scrollbarThumbRef,
+        handleScroll,
+        handleThumbMouseDown
+    } = useCustomScrollbar([openFiles]);
+
     // --- Render ---
 
 
@@ -807,31 +818,22 @@ const EditorPanel = ({
                 <ResizablePanel defaultSize={70} minSize={20}>
                     <div className="h-full flex flex-col bg-[#1e1e1e]">
                         {/* Minimal Sleek Header */}
-                        <div className="h-9 px-3 border-b border-[#2b2b2b] bg-[#1e1e1e] flex justify-between items-center select-none">
+                        <div className="h-9 border-b border-[#2b2b2b] bg-[#1e1e1e] flex justify-between select-none">
 
                             {/* Breadcrumbs */}
-                                <div className="h-full flex items-center gap-2 overflow-hidden min-w-0">
+                                <div className="h-full flex min-w-0 relative group tabs-container-wrapper">
                                     {/* Tabs bar (sleek) */}
-                                    <div className="h-full block whitespace-nowrap scrollbar-overlay min-w-0 overflow-y-hidden">
+                                    <div
+                                        ref={tabsContainerRef}
+                                        onScroll={handleScroll}
+                                        className="h-full whitespace-nowrap min-w-0 tabs-scroll-container"
+                                    >
                                         {openFiles && openFiles.length > 0 ? openFiles.map((file, idx) => {
                                                 const isActive = activeFile && file.path === activeFile.path;
                                             const fileIcon = getFileIcon(file.name || file.path || '');
                                             return (
-                                                <div key={`tab-wrap-${file.path}`} className="inline-flex items-center h-full align-top">
-                                                    {/* Separator between tabs (subtle) */}
-                                                    {idx > 0 && (
-                                                        <div
-                                                            key={`sep-${file.path}`}
-                                                            style={{ width: 1, height: 22, backgroundColor: TAB_TOKENS.separator, marginRight: 1}}
-                                                            aria-hidden="true"
-                                                        />
-                                                    )}
-
-                                                    <div
-                                                        key={`sep2-${file.path}`}
-                                                        style={{ width: 1, height: 22, backgroundColor: TAB_TOKENS.separator, marginRight: 6 }}
-                                                        aria-hidden="true"
-                                                    />
+                                                <div key={`tab-wrap-${file.path}`} className="inline-flex items-center h-9 align-top">
+                                                    
 
                                                 <div
                                                     key={file.path}
@@ -856,24 +858,20 @@ const EditorPanel = ({
                                                         e.preventDefault();
                                                         setTabContext({ visible: true, x: e.clientX, y: e.clientY, file, index: idx });
                                                     }}
-                                                    className={`group flex items-center gap-2 px-3 py-1 mr-0 rounded-t-md cursor-pointer select-none transition-all duration-180 ease-out ${isActive ? 'text-white' : 'text-gray-200'}`}
+                                                    className={`group flex items-center justify-center gap-1 px-2 cursor-pointer select-none transition-colors duration-100 ${isActive ? 'text-white bg-[#2b2b2b]' : 'text-gray-400 bg-[#1e1e1e] hover:bg-[#252525]'}`}
                                                     title={file.path}
                                                     style={{
-                                                        minWidth: 84,
-                                                        maxWidth: 420,
+                                                        minWidth: 120,
+                                                        maxWidth: 220,
                                                         height: '100%',
-                                                        backgroundColor: isActive ? TAB_TOKENS.activeBg : TAB_TOKENS.inactiveBg,
-                                                        borderBottom: isActive ? `2px solid ${TAB_TOKENS.primary}` : '2px solid transparent',
-                                                        boxShadow: isActive ? '0 6px 20px rgba(8,15,30,0.6)' : 'none',
-                                                        transitionProperty: 'background-color, border-bottom-color, box-shadow',
-                                                        transitionDuration: '180ms',
-                                                        transitionTimingFunction: 'ease-out'
+                                                        borderRight: '1px solid #252526',
+                                                        borderTop: isActive ? `1px solid ${TAB_TOKENS.primary}` : '1px solid transparent',
                                                     }}
                                                 >
                                                     <span className="flex-shrink-0 text-sm opacity-90" aria-hidden="true">
-                                                        {fileIcon}
+                                                        {loadingFiles.includes(file.path) ? <Loader2 className="w-4 h-4 animate-spin text-blue-400" /> : fileIcon}
                                                     </span>
-                                                    <span className={`text-sm font-medium truncate max-w-[220px] ${isActive ? 'text-white' : 'text-gray-200'}`}>
+                                                    <span className={`text-sm font-small truncate max-w-[220px] ${isActive ? 'text-white' : 'text-gray-200'}`}>
                                                         {file.name}
                                                     </span>
 
@@ -883,7 +881,7 @@ const EditorPanel = ({
                                                     {/* Close button appears on hover (VSCode behavior) */}
                                                     <button
                                                         onClick={(e) => { e.stopPropagation(); dispatch(closeFile(file.path)); }}
-                                                        className={`ml-3 flex items-center justify-center w-6 h-6 rounded transition-opacity duration-150 ${isActive ? 'text-white/80' : 'text-gray-300'}`}
+                                                        className={`ml-2 flex items-center justify-center w-6 h-6 rounded transition-opacity duration-150 ${isActive ? 'text-white/80' : 'text-gray-300'}`}
                                                         aria-label={`Close ${file.name}`}
                                                         style={{ opacity: 0 }}
                                                     >
@@ -902,6 +900,15 @@ const EditorPanel = ({
                                     }) : (
                                         <span className="text-gray-500 text-xs italic">No file open</span>
                                     )}
+                                    </div>
+                                    {/* Custom Scrollbar */}
+                                    <div className="custom-scrollbar-track">
+                                        <div
+                                            ref={scrollbarThumbRef}
+                                            className="custom-scrollbar-thumb"
+                                            onMouseDown={handleThumbMouseDown}
+                                        />
+                                    </div>
                                 </div>
                                 {/* Context menu for tabs */}
                                 {tabContext.visible && (
@@ -930,29 +937,29 @@ const EditorPanel = ({
                                     </div>
                                 )}
                                 {/* Removed global right-side unsaved dot; per-tab markers are used now */}
-                            </div>
+                            
 
                             {/* Status & Controls */}
-                            <div className="flex items-center gap-4">
+                            <div className="flex items-center gap-2">
                                 {/* Line/Col Info */}
-                                <div className="hidden md:flex gap-3 text-[11px] text-gray-500 font-mono">
+                                <div className="hidden md:flex gap-1 text-[11px] text-gray-500 font-mono px-2">
                                     <span>Ln {position.lineNumber}, Col {position.column}</span>
                                 </div>
 
                                 {/* LSP Status */}
                                 <div className="flex items-center gap-2 text-[11px] text-gray-500">
                                     <div className={`w-2 h-2 rounded-full ${lspStatus.startsWith('Ready') ? 'bg-green-500' : lspStatus.startsWith('Initializing') ? 'bg-yellow-500' : 'bg-gray-500'}`} />
-                                    <span>{lspStatus}</span>
+                                    {!chatVisible && <span>{lspStatus}</span>}
                                 </div>
 
                                 {/* Collaboration presence */}
-                                <div className="flex items-center gap-2 text-[11px] text-gray-400 ml-3">
+                                <div className="flex items-center gap-1 text-[11px] text-gray-400">
                                     <button 
                                         onClick={() => setIsPrivateMode(!isPrivateMode)}
-                                        className={`flex items-center gap-1 px-2 py-0.5 rounded transition-colors ${isPrivateMode ? 'bg-red-900/30 text-red-400' : 'hover:bg-[#2b2b2b]'}`}
+                                        className={`flex items-center px-1 py-0.5 rounded transition-colors ${isPrivateMode ? 'bg-red-900/30 text-red-400' : 'hover:bg-[#2b2b2b]'}`}
                                         title={isPrivateMode ? "Enable Collaboration" : "Disable Collaboration (Private Mode)"}
                                     >
-                                        {isPrivateMode ? <EyeOff className="w-3 h-3" /> : <div className="text-xs text-gray-300">👥</div>}
+                                        {isPrivateMode ? <EyeOff className="w-3 h-3" /> : <div className="text-xs text-gray-300 h-5">👥</div>}
                                         {isPrivateMode && <span className="text-[10px] font-bold">PRIVATE</span>}
                                     </button>
                                     
@@ -996,17 +1003,17 @@ const EditorPanel = ({
                                 </div>
 
                                 {/* AI Status Indicator (Subtle) */}
-                                <div className="flex items-center gap-2 text-[11px]">
+                                <div className="flex items-center gap-2 text-xs">
                                     <div className={`transition-opacity duration-300 ${(aiCompletionState === 'loading' || aiBusy) ? 'opacity-100' : 'opacity-0'}`}>
                                         <Sparkles className="w-3.5 h-3.5 text-purple-400 animate-pulse" />
                                     </div>
                                     <span className={`uppercase tracking-wide ${aiAutoEnabled ? 'text-emerald-300' : 'text-gray-500'}`}>
-                                        AI Auto {aiAutoEnabled ? 'On' : 'Off'}
+                                        AI {aiAutoEnabled ? 'On' : 'Off'}
                                     </span>
                                 </div>
 
                                 {/* Manual Save (Optional since we have auto-save) */}
-                                <button onClick={handleSave} className="opacity-60 hover:opacity-100 transition-opacity">
+                                <button onClick={handleSave} className="opacity-60 hover:opacity-100 transition-opacity px-1">
                                     <Save className="w-4 h-4 text-gray-400" />
                                 </button>
                             </div>
