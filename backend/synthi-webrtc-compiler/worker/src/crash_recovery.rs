@@ -36,6 +36,15 @@ static CRASH_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Maximum consecutive crashes before giving up
 const MAX_CONSECUTIVE_CRASHES: u32 = 3;
 
+/// Source location for crash
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CrashSourceLocation {
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+    pub function: Option<String>,
+}
+
 /// Crash recovery state
 #[derive(Debug, Clone)]
 pub struct CrashInfo {
@@ -45,6 +54,12 @@ pub struct CrashInfo {
     pub address: Option<u64>,
     pub timestamp: u64,
     pub backtrace: Option<String>,
+    /// Source-mapped location (if debug info available)
+    pub source_location: Option<CrashSourceLocation>,
+    /// Source-mapped stack frames (if debug info available)
+    pub source_frames: Vec<CrashSourceLocation>,
+    /// Path to the crashed library (for source map lookup)
+    pub lib_path: Option<String>,
 }
 
 impl CrashInfo {
@@ -56,7 +71,21 @@ impl CrashInfo {
             "address": self.address,
             "timestamp": self.timestamp,
             "backtrace": self.backtrace,
+            "source_location": self.source_location,
+            "source_frames": self.source_frames,
+            "lib_path": self.lib_path,
         }).to_string()
+    }
+    
+    /// Get primary source location as string
+    pub fn source_location_str(&self) -> Option<String> {
+        self.source_location.as_ref().map(|loc| {
+            if let Some(ref func) = loc.function {
+                format!("{} at {}:{}", func, loc.file, loc.line)
+            } else {
+                format!("{}:{}", loc.file, loc.line)
+            }
+        })
     }
 }
 
@@ -64,6 +93,14 @@ impl CrashInfo {
 lazy_static::lazy_static! {
     static ref LAST_CRASH: Mutex<Option<CrashInfo>> = Mutex::new(None);
     static ref CURRENT_MODULE: Mutex<String> = Mutex::new(String::new());
+    static ref CURRENT_LIB_PATH: Mutex<String> = Mutex::new(String::new());
+}
+
+/// Set the current library path for source map lookup
+pub fn set_current_lib_path(path: &str) {
+    if let Ok(mut guard) = CURRENT_LIB_PATH.lock() {
+        *guard = path.to_string();
+    }
 }
 
 #[cfg(unix)]
@@ -100,6 +137,10 @@ extern "C" fn crash_handler(sig: c_int, info: *mut siginfo_t, _context: *mut c_v
         .map(|m| m.clone())
         .unwrap_or_else(|_| "unknown".to_string());
     
+    let lib_path = CURRENT_LIB_PATH.lock()
+        .map(|p| if p.is_empty() { None } else { Some(p.clone()) })
+        .unwrap_or(None);
+    
     let crash_info = CrashInfo {
         signal: sig as i32,
         signal_name: signal_name.to_string(),
@@ -110,6 +151,9 @@ extern "C" fn crash_handler(sig: c_int, info: *mut siginfo_t, _context: *mut c_v
             .unwrap()
             .as_secs(),
         backtrace: capture_backtrace(),
+        source_location: None, // Will be resolved later with source map
+        source_frames: Vec::new(),
+        lib_path,
     };
     
     // Store crash info
@@ -258,6 +302,9 @@ where
                     address: None,
                     timestamp: 0,
                     backtrace: None,
+                    source_location: None,
+                    source_frames: Vec::new(),
+                    lib_path: None,
                 });
             
             Err(crash_info)
@@ -387,6 +434,9 @@ mod tests {
             address: Some(0xDEADBEEF),
             timestamp: 12345,
             backtrace: None,
+            source_location: None,
+            source_frames: Vec::new(),
+            lib_path: None,
         };
         
         let json = info.to_json();

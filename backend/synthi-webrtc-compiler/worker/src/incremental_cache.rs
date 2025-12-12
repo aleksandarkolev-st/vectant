@@ -431,6 +431,473 @@ pub async fn link_objects(
     Ok(())
 }
 
+// ============================================================
+// INCREMENTAL LINKING CACHE
+// ============================================================
+// Caches relocatable object files (.o) and tracks which objects
+// are needed for final linking. When only one object changes,
+// we re-link only that object with cached others.
+// ============================================================
+
+/// Link cache entry - tracks which objects make up a shared library
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinkCacheEntry {
+    /// Hash of all object file hashes combined
+    pub combined_hash: u64,
+    /// Individual object file hashes (in order)
+    pub object_hashes: Vec<u64>,
+    /// Paths to the cached object files
+    pub object_paths: Vec<PathBuf>,
+    /// Output shared library path
+    pub output_path: PathBuf,
+    /// Size in bytes
+    pub size_bytes: u64,
+    /// Unix timestamp
+    pub created_at: u64,
+}
+
+/// Incremental link cache
+#[derive(Debug)]
+pub struct LinkCache {
+    /// Cache directory
+    cache_dir: PathBuf,
+    /// Module -> LinkCacheEntry
+    index: RwLock<HashMap<String, LinkCacheEntry>>,
+}
+
+impl LinkCache {
+    pub async fn new(cache_dir: PathBuf) -> Result<Self, std::io::Error> {
+        fs::create_dir_all(&cache_dir).await?;
+        
+        let index_path = cache_dir.join("link_index.json");
+        let index = if index_path.exists() {
+            match fs::read_to_string(&index_path).await {
+                Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
+                Err(_) => HashMap::new(),
+            }
+        } else {
+            HashMap::new()
+        };
+        
+        Ok(Self {
+            cache_dir,
+            index: RwLock::new(index),
+        })
+    }
+    
+    /// Check if we can do incremental link (only some objects changed)
+    pub async fn get_incremental_link_info(
+        &self,
+        module: &str,
+        new_object_hashes: &[u64],
+    ) -> Option<IncrementalLinkInfo> {
+        let index = self.index.read().await;
+        let entry = index.get(module)?;
+        
+        if entry.object_hashes.len() != new_object_hashes.len() {
+            // Object count changed - can't do incremental link
+            return None;
+        }
+        
+        // Find which objects changed
+        let mut changed_indices = Vec::new();
+        let mut unchanged_paths = Vec::new();
+        
+        for (i, (old_hash, new_hash)) in entry.object_hashes.iter()
+            .zip(new_object_hashes.iter())
+            .enumerate() 
+        {
+            if old_hash != new_hash {
+                changed_indices.push(i);
+            } else if entry.object_paths[i].exists() {
+                unchanged_paths.push((i, entry.object_paths[i].clone()));
+            }
+        }
+        
+        // Only beneficial if some objects are unchanged
+        if unchanged_paths.is_empty() || changed_indices.len() == new_object_hashes.len() {
+            return None;
+        }
+        
+        Some(IncrementalLinkInfo {
+            changed_indices,
+            unchanged_objects: unchanged_paths,
+            previous_output: entry.output_path.clone(),
+        })
+    }
+    
+    /// Store link result
+    pub async fn put(
+        &self,
+        module: String,
+        object_hashes: Vec<u64>,
+        object_paths: Vec<PathBuf>,
+        output_path: PathBuf,
+    ) -> Result<(), std::io::Error> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        let mut combined_hasher = DefaultHasher::new();
+        for hash in &object_hashes {
+            hash.hash(&mut combined_hasher);
+        }
+        let combined_hash = combined_hasher.finish();
+        
+        let size_bytes = fs::metadata(&output_path).await
+            .map(|m| m.len())
+            .unwrap_or(0);
+        
+        let entry = LinkCacheEntry {
+            combined_hash,
+            object_hashes,
+            object_paths,
+            output_path,
+            size_bytes,
+            created_at: now,
+        };
+        
+        let mut index = self.index.write().await;
+        index.insert(module, entry);
+        
+        // Save index
+        let data = serde_json::to_string_pretty(&*index).unwrap_or_default();
+        let index_path = self.cache_dir.join("link_index.json");
+        fs::write(index_path, data).await
+    }
+    
+    /// Clear link cache for a module
+    pub async fn clear(&self, module: &str) {
+        let mut index = self.index.write().await;
+        index.remove(module);
+    }
+}
+
+/// Information for incremental linking
+#[derive(Debug)]
+pub struct IncrementalLinkInfo {
+    /// Indices of objects that need to be recompiled
+    pub changed_indices: Vec<usize>,
+    /// (index, path) of unchanged objects that can be reused
+    pub unchanged_objects: Vec<(usize, PathBuf)>,
+    /// Previous output path (for reference)
+    pub previous_output: PathBuf,
+}
+
+// ============================================================
+// TWO-PHASE INCREMENTAL LINK
+// ============================================================
+// Phase 1: Compile changed source files to .o (or reuse cached)
+// Phase 2: Link all .o files (cached + new) into .so
+// ============================================================
+
+/// Result of incremental compilation phase
+#[derive(Debug)]
+pub struct IncrementalCompileResult {
+    /// All object files to link (in order)
+    pub object_paths: Vec<PathBuf>,
+    /// Hashes of all objects (in order)
+    pub object_hashes: Vec<u64>,
+    /// Which objects were freshly compiled
+    pub compiled_indices: Vec<usize>,
+    /// Which objects were reused from cache
+    pub cached_indices: Vec<usize>,
+    /// Total compile time in ms
+    pub compile_time_ms: u64,
+}
+
+/// Incrementally compile multiple source files
+pub async fn incremental_compile_multi(
+    compile_cache: &IncrementalCache,
+    sources: &[(&Path, &str)], // (path, content)
+    headers: &[(&str, &str)],
+    output_dir: &Path,
+    compiler: &str,
+    flags: &[&str],
+) -> Result<IncrementalCompileResult, String> {
+    use std::time::Instant;
+    use tokio::process::Command;
+    
+    let start = Instant::now();
+    let mut object_paths = Vec::with_capacity(sources.len());
+    let mut object_hashes = Vec::with_capacity(sources.len());
+    let mut compiled_indices = Vec::new();
+    let mut cached_indices = Vec::new();
+    
+    for (i, (source_path, source_content)) in sources.iter().enumerate() {
+        let key = IncrementalCache::cache_key(source_content, flags, headers);
+        
+        // Compute content hash for tracking
+        let mut hasher = DefaultHasher::new();
+        source_content.hash(&mut hasher);
+        let content_hash = hasher.finish();
+        object_hashes.push(content_hash);
+        
+        // Check compile cache
+        if let Some(cached_path) = compile_cache.get(&key).await {
+            object_paths.push(cached_path);
+            cached_indices.push(i);
+            continue;
+        }
+        
+        // Cache miss - compile
+        let object_path = output_dir.join(format!("{}.o", key));
+        
+        let mut cmd = Command::new(compiler);
+        cmd.arg("-c")
+           .arg("-fPIC")
+           .args(flags)
+           .arg(source_path)
+           .arg("-o")
+           .arg(&object_path);
+        
+        if let Some(parent) = source_path.parent() {
+            cmd.current_dir(parent);
+        }
+        
+        let output = cmd.output().await
+            .map_err(|e| format!("Failed to run compiler: {}", e))?;
+        
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("Compilation failed for {}:\n{}", source_path.display(), stderr));
+        }
+        
+        // Store in cache
+        let object_data = fs::read(&object_path).await
+            .map_err(|e| format!("Failed to read object file: {}", e))?;
+        
+        let mut flags_hasher = DefaultHasher::new();
+        for flag in flags {
+            flag.hash(&mut flags_hasher);
+        }
+        let flags_hash = flags_hasher.finish();
+        
+        let mut headers_hasher = DefaultHasher::new();
+        for (name, content) in headers {
+            name.hash(&mut headers_hasher);
+            content.hash(&mut headers_hasher);
+        }
+        let headers_hash = headers_hasher.finish();
+        
+        let cached = compile_cache.put(key, content_hash, flags_hash, headers_hash, &object_data)
+            .await
+            .map_err(|e| format!("Failed to cache object: {}", e))?;
+        
+        object_paths.push(cached);
+        compiled_indices.push(i);
+    }
+    
+    let compile_time_ms = start.elapsed().as_millis() as u64;
+    
+    Ok(IncrementalCompileResult {
+        object_paths,
+        object_hashes,
+        compiled_indices,
+        cached_indices,
+        compile_time_ms,
+    })
+}
+
+/// Incrementally link object files
+/// Uses ld -r for relocatable objects when beneficial
+pub async fn incremental_link(
+    link_cache: &LinkCache,
+    module: &str,
+    objects: &IncrementalCompileResult,
+    output_path: &Path,
+    linker: &str,
+    flags: &[&str],
+) -> Result<IncrementalLinkResult, String> {
+    use std::time::Instant;
+    use tokio::process::Command;
+    
+    let start = Instant::now();
+    
+    // Check if we can do incremental link
+    let link_info = link_cache.get_incremental_link_info(module, &objects.object_hashes).await;
+    
+    let link_strategy = if let Some(info) = &link_info {
+        // Calculate savings: if >50% objects unchanged, use incremental
+        let unchanged_ratio = info.unchanged_objects.len() as f32 / objects.object_paths.len() as f32;
+        if unchanged_ratio > 0.5 {
+            LinkStrategy::Incremental
+        } else {
+            LinkStrategy::Full
+        }
+    } else {
+        LinkStrategy::Full
+    };
+    
+    // Perform link
+    let mut cmd = Command::new(linker);
+    cmd.arg("-shared")
+       .args(flags);
+    
+    for obj in &objects.object_paths {
+        cmd.arg(obj);
+    }
+    
+    cmd.arg("-o").arg(output_path);
+    
+    let output = cmd.output().await
+        .map_err(|e| format!("Failed to run linker: {}", e))?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Linking failed:\n{}", stderr));
+    }
+    
+    let link_time_ms = start.elapsed().as_millis() as u64;
+    
+    // Update link cache
+    link_cache.put(
+        module.to_string(),
+        objects.object_hashes.clone(),
+        objects.object_paths.clone(),
+        output_path.to_path_buf(),
+    ).await.map_err(|e| format!("Failed to update link cache: {}", e))?;
+    
+    Ok(IncrementalLinkResult {
+        output_path: output_path.to_path_buf(),
+        strategy: link_strategy,
+        link_time_ms,
+        total_objects: objects.object_paths.len(),
+        cached_objects: objects.cached_indices.len(),
+    })
+}
+
+/// Link strategy used
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkStrategy {
+    /// Full link of all objects
+    Full,
+    /// Incremental link (some objects reused)
+    Incremental,
+}
+
+/// Result of incremental link
+#[derive(Debug)]
+pub struct IncrementalLinkResult {
+    pub output_path: PathBuf,
+    pub strategy: LinkStrategy,
+    pub link_time_ms: u64,
+    pub total_objects: usize,
+    pub cached_objects: usize,
+}
+
+impl IncrementalLinkResult {
+    pub fn to_status_string(&self) -> String {
+        format!(
+            "[Link] {} in {}ms ({}/{} objects cached)",
+            match self.strategy {
+                LinkStrategy::Full => "Full link",
+                LinkStrategy::Incremental => "Incremental link",
+            },
+            self.link_time_ms,
+            self.cached_objects,
+            self.total_objects
+        )
+    }
+}
+
+// ============================================================
+// HEADER DEPENDENCY TRACKING
+// ============================================================
+// Track which headers each source file depends on to improve
+// cache invalidation accuracy.
+// ============================================================
+
+/// Header classification
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderType {
+    /// User header (local to project) - changes should invalidate cache
+    User,
+    /// System header (from /usr/include, etc.) - changes ignored
+    System,
+    /// SDK header (SDL2, etc.) - changes invalidate affected files
+    Sdk,
+}
+
+/// Parse compiler -M output to extract header dependencies
+pub fn parse_makefile_deps(makefile_output: &str) -> Vec<(String, HeaderType)> {
+    let mut headers = Vec::new();
+    
+    // -M output format: target.o: source.cpp header1.h header2.h ...
+    // May span multiple lines with \ continuations
+    let joined = makefile_output.replace("\\\n", " ");
+    
+    for line in joined.lines() {
+        // Skip the target part
+        if let Some(colon_pos) = line.find(':') {
+            let deps = &line[colon_pos + 1..];
+            
+            for dep in deps.split_whitespace() {
+                let dep = dep.trim();
+                if dep.is_empty() {
+                    continue;
+                }
+                
+                // Classify header
+                let header_type = classify_header(dep);
+                headers.push((dep.to_string(), header_type));
+            }
+        }
+    }
+    
+    headers
+}
+
+/// Classify a header file path
+pub fn classify_header(path: &str) -> HeaderType {
+    let path_lower = path.to_lowercase();
+    
+    // System headers
+    if path_lower.starts_with("/usr/include")
+        || path_lower.starts_with("/usr/lib")
+        || path_lower.starts_with("/usr/local/include")
+        || path_lower.contains("/c++/")
+        || path_lower.contains("/bits/")
+        || path_lower.contains("/sys/")
+    {
+        return HeaderType::System;
+    }
+    
+    // SDK headers (SDL, X11, etc.)
+    if path_lower.contains("/sdl2/")
+        || path_lower.contains("/x11/")
+        || path_lower.contains("/gl/")
+        || path_lower.contains("/gtk")
+        || path_lower.contains("/qt")
+    {
+        return HeaderType::Sdk;
+    }
+    
+    // Default to user header
+    HeaderType::User
+}
+
+/// Compute header hash considering only user/SDK headers
+pub fn compute_smart_headers_hash(headers: &[(String, HeaderType)], header_contents: &HashMap<String, String>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    
+    for (path, htype) in headers {
+        // Skip system headers
+        if *htype == HeaderType::System {
+            continue;
+        }
+        
+        // Include path and content in hash
+        path.hash(&mut hasher);
+        if let Some(content) = header_contents.get(path) {
+            content.hash(&mut hasher);
+        }
+    }
+    
+    hasher.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,5 +927,23 @@ mod tests {
         let retrieved = cache.get(&key).await;
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap(), path);
+    }
+    
+    #[test]
+    fn test_classify_header() {
+        assert_eq!(classify_header("/usr/include/stdio.h"), HeaderType::System);
+        assert_eq!(classify_header("/usr/include/c++/11/vector"), HeaderType::System);
+        assert_eq!(classify_header("/usr/include/SDL2/SDL.h"), HeaderType::Sdk);
+        assert_eq!(classify_header("./shared.h"), HeaderType::User);
+        assert_eq!(classify_header("myheader.h"), HeaderType::User);
+    }
+    
+    #[test]
+    fn test_parse_makefile_deps() {
+        let output = "main.o: main.cpp shared.h /usr/include/stdio.h \\\n /usr/include/SDL2/SDL.h";
+        let deps = parse_makefile_deps(output);
+        
+        assert!(deps.iter().any(|(p, _)| p == "main.cpp"));
+        assert!(deps.iter().any(|(p, _)| p == "shared.h"));
     }
 }

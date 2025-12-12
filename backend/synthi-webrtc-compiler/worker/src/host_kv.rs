@@ -585,6 +585,273 @@ impl HostKvStore {
             })
             .unwrap_or_default()
     }
+    
+    // ============================================================
+    // PERSISTENCE (Cross-Session State)
+    // ============================================================
+    
+    /// Serialize all storage to a JSON string for disk persistence
+    pub fn serialize_to_json(&self) -> Result<String, String> {
+        let storage = self.storage.read().map_err(|e| format!("Lock error: {}", e))?;
+        
+        // Convert to serializable format
+        let mut serializable: HashMap<String, SerializableModuleStorage> = HashMap::new();
+        
+        for ((session_id, module_slot), module_storage) in storage.iter() {
+            let key = format!("{}:{}", session_id, module_slot);
+            
+            let mut namespaces = HashMap::new();
+            for (ns_name, ns_data) in &module_storage.namespaces {
+                // Convert bytes to base64 for JSON serialization
+                let mut data: HashMap<String, String> = HashMap::new();
+                for (k, v) in &ns_data.data {
+                    data.insert(k.clone(), base64_encode(v));
+                }
+                
+                namespaces.insert(ns_name.clone(), SerializableNamespaceData {
+                    schema_id: ns_data.schema_id,
+                    data,
+                    total_bytes: ns_data.total_bytes,
+                });
+            }
+            
+            serializable.insert(key, SerializableModuleStorage {
+                declared_namespaces: module_storage.declared_namespaces.clone(),
+                namespaces,
+                total_bytes: module_storage.total_bytes,
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            });
+        }
+        
+        serde_json::to_string_pretty(&serializable)
+            .map_err(|e| format!("Serialization error: {}", e))
+    }
+    
+    /// Deserialize storage from a JSON string
+    pub fn deserialize_from_json(&self, json: &str) -> Result<usize, String> {
+        let serializable: HashMap<String, SerializableModuleStorage> = 
+            serde_json::from_str(json).map_err(|e| format!("Parse error: {}", e))?;
+        
+        let mut storage = self.storage.write().map_err(|e| format!("Lock error: {}", e))?;
+        let mut loaded_count = 0;
+        
+        for (key, ser_storage) in serializable {
+            // Parse key "session_id:module_slot"
+            let parts: Vec<&str> = key.rsplitn(2, ':').collect();
+            if parts.len() != 2 {
+                continue;
+            }
+            
+            let module_slot: u32 = match parts[0].parse() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let session_id = parts[1].to_string();
+            
+            // Convert back from serializable format
+            let mut namespaces = HashMap::new();
+            for (ns_name, ser_ns) in ser_storage.namespaces {
+                let mut data: HashMap<String, Vec<u8>> = HashMap::new();
+                for (k, v) in ser_ns.data {
+                    if let Some(decoded) = base64_decode(&v) {
+                        data.insert(k, decoded);
+                    }
+                }
+                
+                namespaces.insert(ns_name, NamespaceData {
+                    schema_id: ser_ns.schema_id,
+                    data,
+                    total_bytes: ser_ns.total_bytes,
+                });
+            }
+            
+            let module_storage = ModuleStorage {
+                declared_namespaces: ser_storage.declared_namespaces,
+                namespaces,
+                total_bytes: ser_storage.total_bytes,
+            };
+            
+            storage.insert((session_id, module_slot), module_storage);
+            loaded_count += 1;
+        }
+        
+        Ok(loaded_count)
+    }
+    
+    /// Save storage to a file
+    pub fn save_to_file(&self, path: &std::path::Path) -> Result<(), String> {
+        let json = self.serialize_to_json()?;
+        std::fs::write(path, json).map_err(|e| format!("Write error: {}", e))
+    }
+    
+    /// Load storage from a file
+    pub fn load_from_file(&self, path: &std::path::Path) -> Result<usize, String> {
+        let json = std::fs::read_to_string(path).map_err(|e| format!("Read error: {}", e))?;
+        self.deserialize_from_json(&json)
+    }
+    
+    /// Clean up stale sessions (older than TTL)
+    pub fn cleanup_stale_sessions(&self, ttl_secs: u64) -> usize {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        // For cleanup, we'd need to track timestamps per session
+        // This is a simplified version that just clears all data
+        // In production, you'd track last-access timestamps
+        
+        // Note: This is a placeholder. Full implementation would require
+        // tracking access timestamps per (session_id, module_slot)
+        let _ = ttl_secs;
+        let _ = now;
+        0
+    }
+    
+    /// Get statistics about stored data
+    pub fn get_stats(&self) -> KvStoreStats {
+        let storage = self.storage.read().unwrap();
+        
+        let mut total_sessions = std::collections::HashSet::new();
+        let mut total_namespaces = 0;
+        let mut total_keys = 0;
+        let mut total_bytes = 0usize;
+        
+        for ((session_id, _), module_storage) in storage.iter() {
+            total_sessions.insert(session_id.clone());
+            
+            for (_, ns_data) in &module_storage.namespaces {
+                total_namespaces += 1;
+                total_keys += ns_data.data.len();
+                total_bytes += ns_data.total_bytes;
+            }
+        }
+        
+        KvStoreStats {
+            session_count: total_sessions.len(),
+            module_count: storage.len(),
+            namespace_count: total_namespaces,
+            key_count: total_keys,
+            total_bytes,
+        }
+    }
+}
+
+/// Statistics about KV store
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KvStoreStats {
+    pub session_count: usize,
+    pub module_count: usize,
+    pub namespace_count: usize,
+    pub key_count: usize,
+    pub total_bytes: usize,
+}
+
+/// Serializable version of NamespaceData (bytes as base64)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerializableNamespaceData {
+    schema_id: Option<u64>,
+    data: HashMap<String, String>, // key -> base64-encoded value
+    total_bytes: usize,
+}
+
+/// Serializable version of ModuleStorage
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerializableModuleStorage {
+    declared_namespaces: HashMap<String, u64>,
+    namespaces: HashMap<String, SerializableNamespaceData>,
+    total_bytes: usize,
+    timestamp: u64, // Last modification time
+}
+
+/// Simple base64 encoding
+fn base64_encode(data: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    
+    let mut result = String::new();
+    let mut i = 0;
+    
+    while i < data.len() {
+        let b0 = data[i] as usize;
+        let b1 = data.get(i + 1).copied().unwrap_or(0) as usize;
+        let b2 = data.get(i + 2).copied().unwrap_or(0) as usize;
+        
+        result.push(ALPHABET[(b0 >> 2) & 0x3F] as char);
+        result.push(ALPHABET[((b0 << 4) | (b1 >> 4)) & 0x3F] as char);
+        
+        if i + 1 < data.len() {
+            result.push(ALPHABET[((b1 << 2) | (b2 >> 6)) & 0x3F] as char);
+        } else {
+            result.push('=');
+        }
+        
+        if i + 2 < data.len() {
+            result.push(ALPHABET[b2 & 0x3F] as char);
+        } else {
+            result.push('=');
+        }
+        
+        i += 3;
+    }
+    
+    result
+}
+
+/// Simple base64 decoding
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    const DECODE: [i8; 128] = [
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,-1,-1,63,
+        52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,
+        -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
+        15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,
+        -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
+        41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1,
+    ];
+    
+    let bytes: Vec<u8> = s.bytes().filter(|&b| b != b'=').collect();
+    let mut result = Vec::with_capacity(bytes.len() * 3 / 4);
+    
+    let mut i = 0;
+    while i + 3 < bytes.len() {
+        let b0 = DECODE.get(bytes[i] as usize).copied().unwrap_or(-1);
+        let b1 = DECODE.get(bytes[i + 1] as usize).copied().unwrap_or(-1);
+        let b2 = DECODE.get(bytes[i + 2] as usize).copied().unwrap_or(-1);
+        let b3 = DECODE.get(bytes[i + 3] as usize).copied().unwrap_or(-1);
+        
+        if b0 < 0 || b1 < 0 || b2 < 0 || b3 < 0 {
+            return None;
+        }
+        
+        result.push(((b0 << 2) | (b1 >> 4)) as u8);
+        result.push(((b1 << 4) | (b2 >> 2)) as u8);
+        result.push(((b2 << 6) | b3) as u8);
+        
+        i += 4;
+    }
+    
+    // Handle remaining bytes
+    if i + 1 < bytes.len() {
+        let b0 = DECODE.get(bytes[i] as usize).copied().unwrap_or(-1);
+        let b1 = DECODE.get(bytes[i + 1] as usize).copied().unwrap_or(-1);
+        
+        if b0 >= 0 && b1 >= 0 {
+            result.push(((b0 << 2) | (b1 >> 4)) as u8);
+            
+            if i + 2 < bytes.len() {
+                let b2 = DECODE.get(bytes[i + 2] as usize).copied().unwrap_or(-1);
+                if b2 >= 0 {
+                    result.push(((b1 << 4) | (b2 >> 2)) as u8);
+                }
+            }
+        }
+    }
+    
+    Some(result)
 }
 
 // ============================================================

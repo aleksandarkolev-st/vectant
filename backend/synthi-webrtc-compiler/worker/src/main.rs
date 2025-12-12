@@ -16,8 +16,12 @@ mod plugin_contract;
 mod incremental_cache;
 mod state_diff;
 mod crash_recovery;
+mod error_parser;
+mod source_map;
 
 use builder::{RebuildScope, ModuleHashes, hash_content};
+use error_parser::{parse_compiler_output, CompilerType, DiagnosticEvent, DiagnosticReport};
+use source_map::debug_compile_flags;
 use capability::{detect_capabilities, HmrCapability, HmrStatus, CapabilityReport};
 use shim::{auto_shim, ShimMode, detect_shim_mode};
 use gstreamer as gst;
@@ -1753,13 +1757,32 @@ extern "C" void* on_load_from_json(const char* json) {
                 let mut cmd = system_command("g++");
                 cmd.arg("-shared").arg("-fPIC")
                    .arg("-D_POSIX_C_SOURCE=199309L")
+                   // Debug flags for source map generation
+                   .arg("-g").arg("-gdwarf-4").arg("-fno-omit-frame-pointer")
+                   // Add JSON diagnostics flag for structured error parsing
+                   .arg("-fdiagnostics-format=json")
                    .arg(fname).arg("-I.").arg("-o").arg(&core_out)
-                   .arg("-ldl");
+                   .arg("-ldl")
+                   // Export symbols for backtracing
+                   .arg("-rdynamic");
                 cmd.current_dir(&dir_path);
                 
                 let output = cmd.output().await?;
                 if !output.status.success() {
                      let stderr = String::from_utf8_lossy(&output.stderr);
+                     
+                     // Parse compiler output into structured diagnostics
+                     let diag_report = parse_compiler_output(&stderr, "core", CompilerType::Gcc, true);
+                     let diag_event = DiagnosticEvent::new("core", diag_report.clone())
+                         .with_session(session_id.clone().unwrap_or_default());
+                     
+                     // Send structured diagnostics
+                     let diag_payload = serde_json::json!({
+                        "sessionId": session_id.clone(),
+                        "type": "compile-diagnostics",
+                        "data": serde_json::from_str::<serde_json::Value>(&diag_event.to_json()).unwrap_or_default()
+                     });
+                     let _ = log_dc.send_text(serde_json::to_string(&diag_payload).unwrap_or_default()).await;
                      
                      // Send compile error HMR status - rollback behavior keeps old module
                      let status = HmrStatus::compile_error("core", vec![stderr.to_string()]);
@@ -1792,7 +1815,8 @@ extern "C" void* on_load_from_json(const char* json) {
                         "status": "done",
                         "success": false,
                         "stage": "compile_core",
-                        "error": stderr
+                        "error": stderr,
+                        "diagnostics": diag_report.diagnostics.len()
                     });
                     let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
                     return Ok(());
@@ -1881,8 +1905,14 @@ extern "C" void* on_load_from_json(const char* json) {
                 let mut cmd = system_command("g++");
                 cmd.arg("-shared").arg("-fPIC")
                    .arg("-D_POSIX_C_SOURCE=199309L")
+                   // Debug flags for source map generation
+                   .arg("-g").arg("-gdwarf-4").arg("-fno-omit-frame-pointer")
+                   // Add JSON diagnostics flag for structured error parsing
+                   .arg("-fdiagnostics-format=json")
                    .arg(fname).arg("-I.").arg("-o").arg(&gui_out)
-                   .arg("-ldl");
+                   .arg("-ldl")
+                   // Export symbols for backtracing
+                   .arg("-rdynamic");
                 
                 if req.is_gui {
                     cmd.arg("-lSDL2");
@@ -1897,6 +1927,19 @@ extern "C" void* on_load_from_json(const char* json) {
                 let output = cmd.output().await?;
                 if !output.status.success() {
                      let stderr = String::from_utf8_lossy(&output.stderr);
+                     
+                     // Parse compiler output into structured diagnostics
+                     let diag_report = parse_compiler_output(&stderr, "gui", CompilerType::Gcc, true);
+                     let diag_event = DiagnosticEvent::new("gui", diag_report.clone())
+                         .with_session(session_id.clone().unwrap_or_default());
+                     
+                     // Send structured diagnostics
+                     let diag_payload = serde_json::json!({
+                        "sessionId": session_id.clone(),
+                        "type": "compile-diagnostics",
+                        "data": serde_json::from_str::<serde_json::Value>(&diag_event.to_json()).unwrap_or_default()
+                     });
+                     let _ = log_dc.send_text(serde_json::to_string(&diag_payload).unwrap_or_default()).await;
                      
                      // Send compile error HMR status - rollback behavior keeps old module
                      let status = HmrStatus::compile_error("gui", vec![stderr.to_string()]);
