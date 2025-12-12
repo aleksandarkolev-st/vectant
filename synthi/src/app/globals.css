@@ -167,55 +167,13 @@
   scrollbar-color: #3a3f4a transparent;
 }
 
-/* Custom Tabs Scrollbar - VS Code Style (Overlay) */
-.tabs-scroll-container {
-  display: flex !important;
-  flex-direction: row;
-  white-space: nowrap;
-  overflow-x: auto;
-  overflow-y: hidden;
-  height: 100%;
-  scrollbar-width: none; /* Firefox */
-  -ms-overflow-style: none;  /* IE 10+ */
+/* Utility to hide scrollbars */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
-
-.tabs-scroll-container::-webkit-scrollbar {
-  display: none; /* Chrome/Safari/Webkit */
-}
-
-/* Ensure children (tabs) align correctly */
-.tabs-scroll-container > div {
-  display: flex !important;
-  height: 100%;
-  flex-shrink: 0; /* Prevent shrinking */
-}
-
-/* Custom Scrollbar Overlay */
-.custom-scrollbar-track {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 3px;
-  z-index: 20;
-  pointer-events: none;
-}
-
-.custom-scrollbar-thumb {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  background-color: rgba(128, 128, 128, 0.5);
-  border-radius: 3px;
-  cursor: pointer;
-  pointer-events: auto;
-  opacity: 0;
-  transition: opacity 0.2s ease-in-out;
-}
-
-.tabs-container-wrapper:hover .custom-scrollbar-thumb,
-.custom-scrollbar-thumb.visible {
-  opacity: 1;
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
 
 .ai-chat-message pre.ai-code-block,

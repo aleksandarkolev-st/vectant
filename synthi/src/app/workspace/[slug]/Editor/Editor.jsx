@@ -826,13 +826,13 @@ const EditorPanel = ({
                                     <div
                                         ref={tabsContainerRef}
                                         onScroll={handleScroll}
-                                        className="h-full whitespace-nowrap min-w-0 tabs-scroll-container"
+                                        className="h-full whitespace-nowrap min-w-0 flex flex-row overflow-x-auto overflow-y-hidden no-scrollbar"
                                     >
                                         {openFiles && openFiles.length > 0 ? openFiles.map((file, idx) => {
                                                 const isActive = activeFile && file.path === activeFile.path;
                                             const fileIcon = getFileIcon(file.name || file.path || '');
                                             return (
-                                                <div key={`tab-wrap-${file.path}`} className="inline-flex items-center h-9 align-top">
+                                                <div key={`tab-wrap-${file.path}`} className="inline-flex items-center h-9 align-top flex-shrink-0">
                                                     
 
                                                 <div
@@ -902,10 +902,10 @@ const EditorPanel = ({
                                     )}
                                     </div>
                                     {/* Custom Scrollbar */}
-                                    <div className="custom-scrollbar-track">
+                                    <div className="absolute left-0 right-0 bottom-0 h-[3px] z-20 pointer-events-none">
                                         <div
                                             ref={scrollbarThumbRef}
-                                            className="custom-scrollbar-thumb"
+                                            className="absolute top-0 bottom-0 bg-gray-500/50 rounded-[3px] cursor-pointer pointer-events-auto opacity-0 transition-opacity duration-200 group-hover:opacity-100 [&.visible]:opacity-100"
                                             onMouseDown={handleThumbMouseDown}
                                         />
                                     </div>

@@ -145,7 +145,11 @@ export const useCustomScrollbar = (dependencies = []) => {
         const container = tabsContainerRef.current;
         if (!container) return;
         
-        const resizeObserver = new ResizeObserver(updateScrollbar);
+        const resizeObserver = new ResizeObserver(() => {
+            requestAnimationFrame(() => {
+                updateScrollbar();
+            });
+        });
         resizeObserver.observe(container);
         
         // Initial update
