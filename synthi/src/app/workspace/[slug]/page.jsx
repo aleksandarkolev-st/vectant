@@ -32,6 +32,7 @@ import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
 import { useCompiler } from '@/hooks/useCompiler';
 import AIChatWindow from '@/components/chat/AIChatWindow';
 import { api } from '@/services/api';
+import { fileCache } from '@/services/fileCache';
 import { resolveDependencies } from '@/utils/dependencyResolver';
 import { DraggableVideoWidget } from '@/components/DraggableVideoWidget';
 import { useHMR } from '@/hooks/useHMR';
@@ -121,7 +122,7 @@ export default function EditorPage({ params }) {
     const treeOnRight = useAppSelector(selectTreeOnRight);
     const currentContent = useAppSelector(selectCurrentContent);
     const rawFiles = useAppSelector(state => state.workspace.rawFiles);
-    const fileContentCache = useAppSelector(state => state.workspace.fileContentCache);
+    // File contents are cached via an in-memory LRU cache service (not Redux)
 
     const [initialContent, setInitialContent] = useState('');
     const [hasInitialSnapshot, setHasInitialSnapshot] = useState(false);
@@ -223,9 +224,8 @@ export default function EditorPage({ params }) {
                 return typeof currentContent === 'string' ? currentContent : '';
             }
             // Check cache
-            if (fileContentCache.has(path)) {
-                return fileContentCache.get(path);
-            }
+            const cached = fileCache.get(path);
+            if (cached !== undefined) return cached;
             // Fetch
             return await api.fetchFileContent(slug, path);
         };
@@ -254,7 +254,7 @@ export default function EditorPage({ params }) {
             console.error('Compile failed', err);
             appendBuildLog(`error: ${err?.message || err}`);
         }
-    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, fileContentCache, slug, compile]);
+    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile]);
 
     const handleSave = useCallback(async () => {
         if (!activeFile) return;
@@ -273,7 +273,8 @@ export default function EditorPage({ params }) {
 
         const getContentForDependency = async (path) => {
             if (path === activeFile.path) return typeof currentContent === 'string' ? currentContent : '';
-            if (fileContentCache.has(path)) return fileContentCache.get(path);
+            const cached = fileCache.get(path);
+            if (cached !== undefined) return cached;
             return await api.fetchFileContent(slug, path);
         };
 
@@ -296,7 +297,7 @@ export default function EditorPage({ params }) {
         } catch (err) {
             console.error('[HMR] Silent compile failed', err);
         }
-    }, [activeFile, currentContent, rawFiles, fileContentCache, slug, compile]);
+    }, [activeFile, currentContent, rawFiles, slug, compile]);
 
     const handleEditorMount = (editorInstance) => {
         setEditor(editorInstance);

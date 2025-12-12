@@ -1,50 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAppDispatch, useAppSelector } from "@/redux/hooks";
 import { selectFileThunk } from "@/redux/workspaceSlice";
 import { api } from "@/services/api";
 import { PanelLeftClose, PanelRightClose, ChevronDown, ChevronRight } from "lucide-react";
 import { selectTreeOnRight } from "@/redux/uiSlice";
-
-function flattenFiles(nodes, out = []) {
-  for (const node of nodes || []) {
-    if (!node) continue;
-    if (node.isFolder) {
-      if (node.children?.length) flattenFiles(node.children, out);
-    } else {
-      out.push(node);
-    }
-  }
-  return out;
-}
-
-function findMatchesInContent(content, query) {
-  const q = query.toLowerCase();
-  const lines = String(content ?? "").split(/\r?\n/);
-
-  const matches = [];
-  for (let i = 0; i < lines.length; i++) {
-    const lineText = lines[i];
-    if (lineText.toLowerCase().includes(q)) {
-      matches.push({
-        lineNumber: i + 1,
-        preview: lineText.length > 240 ? lineText.slice(0, 240) + "…" : lineText,
-      });
-      if (matches.length >= 200) break;
-    }
-  }
-
-  return matches;
-}
+import { perfMeasureToConsole } from "@/services/perfMarkers";
 
 export default function SearchView({ slug, onToggleOrientation }) {
   const dispatch = useAppDispatch();
   const isRightSide = useAppSelector(selectTreeOnRight);
-  const rawFiles = useAppSelector((state) => state.workspace.rawFiles);
-  const fileContentCache = useAppSelector((state) => state.workspace.fileContentCache);
-
-  const allFiles = useMemo(() => flattenFiles(rawFiles), [rawFiles]);
 
   const [query, setQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
@@ -73,36 +39,10 @@ export default function SearchView({ slug, onToggleOrientation }) {
 
       (async () => {
         setIsSearching(true);
+        const t0 = typeof performance !== 'undefined' ? performance.now() : 0;
         try {
-          const nextResults = [];
-
-          for (const file of allFiles) {
-            if (controller.signal.aborted) return;
-            if (!file?.path) continue;
-
-            let content;
-            if (fileContentCache?.has?.(file.path)) {
-              content = fileContentCache.get(file.path);
-            } else {
-              content = await api.fetchFileContentStorageOnly(slug, file.path, {
-                signal: controller.signal,
-              });
-            }
-
-            if (controller.signal.aborted) return;
-
-            // Skip extremely large payloads to avoid UI jank
-            if (typeof content === "string" && content.length > 2_000_000) continue;
-
-            const matches = findMatchesInContent(content, q);
-            if (matches.length) {
-              nextResults.push({
-                file,
-                matches,
-                matchCount: matches.length,
-              });
-            }
-          }
+          const resp = await api.searchIndex(slug, q, { signal: controller.signal });
+          const nextResults = Array.isArray(resp?.results) ? resp.results : [];
 
           if (controller.signal.aborted) return;
 
@@ -112,6 +52,7 @@ export default function SearchView({ slug, onToggleOrientation }) {
 
           setResults(nextResults);
           setExpanded(nextExpanded);
+          if (t0) perfMeasureToConsole('search_response_time', t0, { status: resp?.status });
         } catch (e) {
           if (!controller.signal.aborted) {
             console.error("Search failed", e);
@@ -124,7 +65,7 @@ export default function SearchView({ slug, onToggleOrientation }) {
     }, 200);
 
     return () => clearTimeout(t);
-  }, [query, allFiles, fileContentCache, slug]);
+  }, [query, slug]);
 
   const toggleExpanded = (filePath) => {
     setExpanded((prev) => {
