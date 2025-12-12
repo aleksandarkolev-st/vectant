@@ -47,6 +47,15 @@ export class ApiClient {
         return this._handleResponse(response).then(r => r.text());
     }
 
+    // READ (Storage only; skips collab server)
+    async fetchFileContentStorageOnly(slug, filePath, options = {}) {
+        const response = await fetch(
+            `${this.baseUrl}/${slug}/item?filePath=${encodeURIComponent(filePath)}`,
+            { signal: options.signal }
+        );
+        return this._handleResponse(response).then(r => r.text());
+    }
+
     // MUTATIONS (Write Operations)
     async saveFileContent(slug, filePath, content, fileName) {
         const formData = new FormData();

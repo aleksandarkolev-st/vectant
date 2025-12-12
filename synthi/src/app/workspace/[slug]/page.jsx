@@ -29,10 +29,13 @@ import { resolveDependencies } from '@/utils/dependencyResolver';
 import { DraggableVideoWidget } from '@/components/DraggableVideoWidget';
 import { useHMR } from '@/hooks/useHMR';
 import { GitStatus } from '@/components/git/GitStatus';
+import ActivityBar from '../ActivityBar.jsx';
+import SearchView from './SearchView.jsx';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
     const [chatVisible, setChatVisible] = useState(false);
+    const [sidebarView, setSidebarView] = useState('explorer');
     const [guiConfig, setGuiConfig] = useState(null);
     const [isGuiRunning, setIsGuiRunning] = useState(false);
     const [editor, setEditor] = useState(null);
@@ -325,23 +328,33 @@ export default function EditorPage({ params }) {
     );
 
     const FileTreePanel = (
-        <ResizablePanel defaultSize={15} minSize={10} maxSize={35} className={`${treeOnRight? 'border-l' : 'border-r'} border-[#545454] bg-[#252526]`}>
-            <ResizablePanelGroup direction="vertical">
-                <ResizablePanel defaultSize={65} minSize={20}>
-                    <FileTreeView
-                        onToggleOrientation={toggleTreeOrientation}
-                    />
-                </ResizablePanel>
-                <ResizableHandle withHandle />
-                <ResizablePanel defaultSize={35} minSize={10}>
-                    <GitStatus slug={slug} />
-                </ResizablePanel>
-            </ResizablePanelGroup>
+        <ResizablePanel defaultSize={15} minSize={12} maxSize={35} className={`${treeOnRight? 'border-l' : 'border-r'} border-[#545454] bg-[#1e1e1e]`}>
+            <div className="flex h-full min-w-0">
+                <ActivityBar
+                    active={sidebarView}
+                    onSelect={(id) => setSidebarView(id === 'search' ? 'search' : 'explorer')}
+                />
+                <div className="flex-1 min-w-0">
+                    <ResizablePanelGroup direction="vertical">
+                        <ResizablePanel defaultSize={65} minSize={20}>
+                            {sidebarView === 'search' ? (
+                                <SearchView slug={slug} onToggleOrientation={toggleTreeOrientation} />
+                            ) : (
+                                <FileTreeView onToggleOrientation={toggleTreeOrientation} />
+                            )}
+                        </ResizablePanel>
+                        <ResizableHandle withHandle />
+                        <ResizablePanel defaultSize={35} minSize={10}>
+                            <GitStatus slug={slug} />
+                        </ResizablePanel>
+                    </ResizablePanelGroup>
+                </div>
+            </div>
         </ResizablePanel>
     );
 
     const ChatPanel = (
-        <ResizablePanel defaultSize={24} minSize={23} maxSize={45} className="border-l border-[#545454] bg-[#171717] min-w-0">
+        <ResizablePanel defaultSize={24} minSize={20} maxSize={45} className="border-l border-[#545454] bg-[#171717] min-w-0">
             <AIChatWindow
                 docked={true}
                 isVisible={chatVisible}

@@ -157,7 +157,7 @@ const FileTreeView = ({
           onMouseLeave={() => setIsTreeHovered(false)}
         >
           {/* Header */}
-          <div className={`px-3 py-2 flex items-center ${isRightSide ? 'flex-row-reverse' : ''} justify-between border-b border-[#343434] sticky top-0 bg-[#202020] z-10`}>
+          <div className={`px-3 py-2 flex items-center ${isRightSide ? 'flex-row-reverse' : ''} justify-between border-b border-[#343434] sticky top-0 bg-[#1e1e1e] z-10`}>
             <div className="flex items-center gap-2">
               <span className="text-sm font-semibold tracking-wide uppercase text-gray-300">
                 Project

@@ -816,7 +816,7 @@ const EditorPanel = ({
         <ResizablePanel defaultSize={76} minSize={20}>
             <ResizablePanelGroup direction="vertical" className="h-full">
                 <ResizablePanel defaultSize={70} minSize={20}>
-                    <div className="h-full flex flex-col bg-[#1e1e1e]">
+                    <div className="h-full flex flex-col bg-[#202020]">
                         {/* Minimal Sleek Header */}
                         <div className="h-9 border-b border-[#2b2b2b] bg-[#1e1e1e] flex justify-between select-none">
 
