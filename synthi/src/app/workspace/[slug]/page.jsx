@@ -18,7 +18,14 @@ import {
 import FileTreeView from "./FileTree.jsx";
 import dynamic from 'next/dynamic';
 
-const EditorPanel = dynamic(() => import('./Editor/Editor.jsx'), { ssr: false });
+const EditorPanel = dynamic(() => import('./Editor/Editor.jsx'), {
+    ssr: false,
+    loading: () => (
+        <ResizablePanel defaultSize={76} minSize={20} className="min-w-0 bg-[#202020]">
+            <div className="h-full w-full bg-[#202020]" />
+        </ResizablePanel>
+    ),
+});
 
 import { getFileLanguage } from '@/utils/fileUtils';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
