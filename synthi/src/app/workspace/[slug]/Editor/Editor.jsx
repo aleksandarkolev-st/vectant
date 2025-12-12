@@ -19,7 +19,7 @@ import {
     closeFile,
     reorderOpenFiles
 } from '@/redux/workspaceSlice';
-import { selectAutoSaveEnabled, selectAutoCompletionEnabled, toggleAutoCompletion, selectShowAnonymousPresence, selectPresenceGranularity, toggleShowAnonymousPresence, setPresenceGranularity } from '@/redux/uiSlice';
+import { selectAutoSaveEnabled, selectAutoCompletionEnabled, toggleAutoCompletion, selectShowAnonymousPresence, selectPresenceGranularity, toggleShowAnonymousPresence, setPresenceGranularity, startCreate } from '@/redux/uiSlice';
 import { Circle, Save, Sparkles, EyeOff, Loader2 } from 'lucide-react'; // Added Sparkles, EyeOff
 import { getFileIcon } from '@/utils/fileIcons';
 import {
@@ -739,6 +739,26 @@ const EditorPanel = ({
             if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
                 e.preventDefault();
                 dispatch(toggleAutoCompletion());
+            }
+            // New File: Ctrl + M
+            if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'm' || e.key === 'M')) {
+                e.preventDefault();
+                let target = null;
+                if (activeFile && activeFile.path.includes('/')) {
+                    const parentPath = activeFile.path.substring(0, activeFile.path.lastIndexOf('/'));
+                    target = { path: parentPath, isFolder: true };
+                }
+                dispatch(startCreate({ type: 'file', target }));
+            }
+            // New Folder: Ctrl + Shift + M
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'm' || e.key === 'M')) {
+                e.preventDefault();
+                let target = null;
+                if (activeFile && activeFile.path.includes('/')) {
+                    const parentPath = activeFile.path.substring(0, activeFile.path.lastIndexOf('/'));
+                    target = { path: parentPath, isFolder: true };
+                }
+                dispatch(startCreate({ type: 'folder', target }));
             }
             // (Removed Ctrl/Cmd+W to avoid closing the browser tab)
         };

@@ -10,7 +10,24 @@ import { selectActiveFile, selectFilesTree, saveFileContentThunk, selectFileThun
 import { BranchSelector } from '@/components/git/BranchSelector';
 import { getFileIcon } from '@/utils/fileIcons';
 
-export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo, onToggleChat, chatVisible }) {
+export default function TopNav({ 
+  title, 
+  onRun, 
+  onToggleTerminal, 
+  onUndo, 
+  onRedo, 
+  onCommandPalette,
+  onToggleChat, 
+  chatVisible,
+  onNewFile,
+  onNewFolder,
+  onSave,
+  onCopyLineUp,
+  onCopyLineDown,
+  onMoveLineUp,
+  onMoveLineDown,
+  onDuplicateSelection
+}) {
   const dispatch = useAppDispatch();
   const slug = useAppSelector(state => state.workspace.slug);
   const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
@@ -51,56 +68,8 @@ export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo,
     setSearchOpen(false);
   };
 
-  const handleSave = async () => {
-    if (!activeFile) return;
-    
-    try {
-      await dispatch(saveFileContentThunk()).unwrap();
-      console.log('File saved successfully');
-    } catch (error) {
-      console.error('Failed to save file:', error);
-    }
-  };
-
-  const getTargetFolder = (activeFile, filesTree) => {
-  // Safety check: ensure filesTree is an array
-  if (!filesTree || !Array.isArray(filesTree)) {
-    console.warn('filesTree is not an array:', filesTree);
-    return null;
-  }
-  
-  if (!activeFile) return null;
-  
-  // If active file is a folder, use it
-  if (activeFile.isFolder) {
-    return activeFile;
-  }
-  
-  // Otherwise, find the parent folder
-  const findParentFolder = (nodes, targetPath) => {
-    if (!Array.isArray(nodes)) return null;
-    
-    for (const node of nodes) {
-      if (node.isFolder && node.children && Array.isArray(node.children)) {
-        // Check if this folder contains the target file
-        const hasChild = node.children.some(child => child.path === targetPath);
-        if (hasChild) {
-          return node;
-        }
-        // Recursively search in children
-        const found = findParentFolder(node.children, targetPath);
-        if (found) return found;
-      }
-    }
-    return null;
-  };
-  
-  return findParentFolder(filesTree, activeFile.path);
-};
-
-
   return (
-    <div className="flex items-center h-10 px-3 border-b border-[#2a2a2a] bg-[#1e1e1e] space-x-4">
+    <div className="flex items-center h-10 px-1 border-b border-[#2a2a2a] bg-[#1e1e1e] space-x-4">
       <div className="h-26 w-auto">
         <img src="/synthi-logo.svg" alt="Synthi" className="h-full w-auto" />
       </div>
@@ -120,7 +89,7 @@ export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo,
         />
         {/* Search Results Dropdown */}
         {searchOpen && searchText && (
-          <div className="absolute top-full left-0 w-full mt-1 bg-[#262626] border border-[#3b3b3b] rounded-md shadow-lg z-[9999] max-h-60 overflow-y-auto">
+          <div className="absolute top-full left-0 w-full mt-1 bg-[#262626] border border-[#3b3b3b] rounded-md shadow-lg z-[100] max-h-60 overflow-y-auto">
             {searchResults.length > 0 ? (
               searchResults.map((file) => (
                 <div
@@ -142,7 +111,7 @@ export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo,
         )}
       </div>
 
-      <div className="flex-1 flex items-center gap-2">
+      <div className="flex-1 flex items-center gap-1">
         <Popover open={isFileMenuOpen} onOpenChange={setIsFileMenuOpen}>
           <PopoverTrigger asChild>
             <Button 
@@ -153,36 +122,34 @@ export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo,
               File
             </Button>
           </PopoverTrigger>
-          <PopoverContent className="min-w-[220px] border-[#262626] p-1" style={{ backgroundColor: '#262626'}}>
+          <PopoverContent className="min-w-[320px] border-[#262626] p-1" style={{ backgroundColor: '#262626'}}>
             <div className="flex flex-col text-sm">
               <button 
-                className="flex items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors"
-                onClick={() => {
-                  const target = getTargetFolder(activeFile, filesTree);
-                  dispatch(startCreate({ type: 'file', target }));
-                }}
+                className="flex justify-between items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors"
+                onClick={onNewFile}
               >
-                New File
+                <span>New File</span>
+                <span className="text-xs text-gray-400">Ctrl+M</span>
               </button>
               <button 
-                className="flex items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors"
-                onClick={() => {
-                  const target = getTargetFolder(activeFile, filesTree);
-                  dispatch(startCreate({ type: 'folder', target }));
-                }}
+                className="flex justify-between items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors"
+                onClick={onNewFolder}
               >
-                New Folder
+                <span>New Folder</span>
+                <span className="text-xs text-gray-400">Ctrl+Shift+M</span>
               </button>
               <div className="border-t border-[#3a3a3a] my-1"></div>
-              <button className="flex items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors">
-                Open File
+              <button className="flex justify-between items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors">
+                <span>Open File</span>
+                <span className="text-xs text-gray-400">Ctrl+O</span>
               </button>
-              <button className="flex items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors">
-                Open Folder
+              <button className="flex justify-between items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors">
+                <span>Open Folder</span>
+                <span className="text-xs text-gray-400">Ctrl+K Ctrl+O</span>
               </button>
               <div className="border-t border-[#3a3a3a] my-1"></div>
               <button 
-                className="flex items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors"
+                className="flex justify-between items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors"
                 onClick={(e) => {
                   e.stopPropagation();
                   handleSave().finally(() => {
@@ -191,10 +158,12 @@ export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo,
                 }}
                 disabled={!activeFile}
               >
-                Save
+                <span>Save</span>
+                <span className="text-xs text-gray-400">Ctrl+S</span>
               </button>
-              <button className="flex items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors">
-                Save As
+              <button className="flex justify-between items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors">
+                <span>Save As</span>
+                <span className="text-xs text-gray-400">Ctrl+Shift+S</span>
               </button>
             </div>
           </PopoverContent>
@@ -209,7 +178,7 @@ export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo,
               Edit
             </Button>
           </PopoverTrigger>
-          <PopoverContent className="min-w-[220px] border-[#262626] p-0" style={{ backgroundColor: '#262626' }}>
+          <PopoverContent className="min-w-[320px] border-[#262626] p-0" style={{ backgroundColor: '#262626' }}>
             <div className="flex flex-col p-1">
               <button 
                 className="flex justify-between items-center w-full px-3 py-1.5 text-sm text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors"
@@ -261,13 +230,50 @@ export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo,
               Selection
             </Button>
           </PopoverTrigger>
-          <PopoverContent className="min-w-[220px] border-[#262626] p-1" style={{ backgroundColor: '#262626'}}>
+          <PopoverContent className="min-w-[320px] border-[#262626] p-1" style={{ backgroundColor: '#262626'}}>
             <div className="flex flex-col text-sm">
-              <button className="flex items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors">
-                Select All
+              <button className="flex justify-between items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors">
+                <span>Select All</span>
+                <span className="text-xs text-gray-400">Ctrl+A</span>
               </button>
-              <button className="flex items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors">
-                Expand Selection
+              <button className="flex justify-between items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors">
+                <span>Expand Selection</span>
+                <span className="text-xs text-gray-400">Shift+Alt+Right</span>
+              </button>
+              <div className="border-t border-[#3a3a3a] my-1"></div>
+              <button 
+                className="flex justify-between items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors"
+                onClick={onCopyLineUp}
+              >
+                <span>Copy Line Up</span>
+                <span className="text-xs text-gray-400">Shift+Alt+UpArrow</span>
+              </button>
+              <button 
+                className="flex justify-between items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors"
+                onClick={onCopyLineDown}
+              >
+                <span>Copy Line Down</span>
+                <span className="text-xs text-gray-400">Shift+Alt+DownArrow</span>
+              </button>
+              <button 
+                className="flex justify-between items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors"
+                onClick={onMoveLineUp}
+              >
+                <span>Move Line Up</span>
+                <span className="text-xs text-gray-400">Alt+UpArrow</span>
+              </button>
+              <button 
+                className="flex justify-between items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors"
+                onClick={onMoveLineDown}
+              >
+                <span>Move Line Down</span>
+                <span className="text-xs text-gray-400">Alt+DownArrow</span>
+              </button>
+              <button 
+                className="flex justify-between items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors"
+                onClick={onDuplicateSelection}
+              >
+                <span>Duplicate Selection</span>
               </button>
             </div>
           </PopoverContent>
@@ -283,20 +289,28 @@ export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo,
               View
             </Button>
           </PopoverTrigger>
-          <PopoverContent className="min-w-[220px] border-[#262626] p-1" style={{ backgroundColor: '#262626'}}>
+          <PopoverContent className="min-w-[320px] border-[#262626] p-1" style={{ backgroundColor: '#262626'}}>
             <div className="flex flex-col text-sm">
-              <button className="flex items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors">
-                Open View...
+              <button 
+                className="flex justify-between items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors"
+                onClick={onCommandPalette}
+              >
+                <span>Command Palette...</span>
+                <span className="text-xs text-gray-400">Ctrl+Shift+P</span>
               </button>
-              <button className="flex items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors">
-                Appearence
+              <button className="flex justify-between items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors">
+                <span>Open View...</span>
+              </button>
+              <div className="border-t border-[#3a3a3a] my-1"></div>
+              <button className="flex justify-between items-center w-full px-3 py-1.5 text-gray-200 hover:bg-[#2a2d2e] hover:text-emerald-400 hover:rounded-md text-left transition-colors">
+                <span>Appearance</span>
               </button>
             </div>
           </PopoverContent>
         </Popover>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1">
         <BranchSelector slug={slug} />
         <div className="w-px h-4 bg-[#3a3a3a] mx-1"></div>
 
@@ -337,8 +351,8 @@ export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo,
               <Settings className="w-4 h-4" />
             </Button>
           </PopoverTrigger>
-          <PopoverContent className="min-w-[220px] bg-[#262626] border-[#3a3a3a] border-[#262626]" style={{ backgroundColor: '#262626'}}>
-            <div className="text-xs text-gray-400 mb-2 font-semibold">Settings</div>
+          <PopoverContent className="min-w-[320px] bg-[#262626] border-[#3a3a3a] border-[#262626] p-1" style={{ backgroundColor: '#262626'}}>
+            <div className="text-xs text-gray-400 font-semibold p-2">Settings</div>
             <div className="flex flex-col">
               {/* Auto-save toggle */}
               <div className="flex items-center justify-between py-1">
@@ -373,12 +387,14 @@ export default function TopNav({ title, onRun, onToggleTerminal, onUndo, onRedo,
                 </button>
               </div>
               <div className="border-t border-[#3a3a3a] my-1"></div>
-              <div className="text-xs text-gray-400 mb-1 font-semibold">Quick actions</div>
-              <button className="text-left text-sm px-1 py-1.5 text-gray-200 hover:text-emerald-400 hover:bg-[#2a2d2e] hover:rounded-md transition-colors" onClick={onRun}>
-                Run current file
+              <div className="text-xs text-gray-400 font-semibold p-2">Quick actions</div>
+              <button className="flex justify-between items-center w-full text-left text-sm px-1 py-1.5 text-gray-200 hover:text-emerald-400 hover:bg-[#2a2d2e] hover:rounded-md transition-colors" onClick={onRun}>
+                <span>Run current file</span>
+                <span className="text-xs text-gray-400">F5</span>
               </button>
-              <button className="text-left text-sm px-1 py-1.5 text-gray-200 hover:text-emerald-400 hover:bg-[#2a2d2e] hover:rounded-md transition-colors" onClick={onToggleTerminal}>
-                Toggle terminal
+              <button className="flex justify-between items-center w-full text-left text-sm px-1 py-1.5 text-gray-200 hover:text-emerald-400 hover:bg-[#2a2d2e] hover:rounded-md transition-colors" onClick={onToggleTerminal}>
+                <span>Toggle terminal</span>
+                <span className="text-xs text-gray-400">Ctrl+`</span>
               </button>
             </div>
           </PopoverContent>

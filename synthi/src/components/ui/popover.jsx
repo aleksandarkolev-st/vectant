@@ -7,7 +7,7 @@ export const Popover = PopoverPrimitive.Root;
 export const PopoverTrigger = PopoverPrimitive.Trigger;
 
 export const PopoverContent = React.forwardRef(function PopoverContent(
-  { className = '', sideOffset = 4, align = 'start', children, ...props },
+  { className = '', sideOffset = 2, align = 'start', children, ...props },
   ref
 ) {
   return (
@@ -16,7 +16,7 @@ export const PopoverContent = React.forwardRef(function PopoverContent(
         ref={ref}
         sideOffset={sideOffset}
         align={align}
-        className={`z-50 rounded-md border bg-popover p-2 text-popover-foreground shadow-md focus:outline-none ${className}`}
+        className={`z-50 rounded-md border bg-popover p-0 text-popover-foreground shadow-md focus:outline-none ${className}`}
         {...props}
       >
         {children}
