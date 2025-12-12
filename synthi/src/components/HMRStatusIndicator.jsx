@@ -21,6 +21,12 @@ const STATUS_CONFIGS = {
         text: '',
         show: false,
     },
+    compiling: {
+        color: 'bg-yellow-400 animate-pulse',
+        text: 'Compiling...',
+        show: true,
+        // No autoHide - will be replaced by compile result
+    },
     applied: {
         color: 'bg-green-500',
         text: 'HMR Applied',
@@ -59,6 +65,38 @@ const STATUS_CONFIGS = {
     'host-kv-reset-schema': {
         color: 'bg-yellow-600',
         text: 'Schema Changed - Namespace Reset',
+        show: true,
+        autoHide: 4000,
+    },
+    // Fast Refresh boundary statuses
+    'boundary-violation': {
+        color: 'bg-orange-600',
+        text: 'Fast Refresh Boundary Crossed',
+        show: true,
+        autoHide: 5000,
+    },
+    // Widget-level HMR statuses
+    'widgets-detected': {
+        color: 'bg-purple-400',
+        text: 'Widgets Detected',
+        show: true,
+        autoHide: 2000,
+    },
+    'widget-compiled': {
+        color: 'bg-purple-500',
+        text: 'Widget Updated',
+        show: true,
+        autoHide: 1500,
+    },
+    'widgets-compiled': {
+        color: 'bg-purple-500',
+        text: 'Widget HMR Complete',
+        show: true,
+        autoHide: 2500,
+    },
+    'widget-compile-error': {
+        color: 'bg-red-500',
+        text: 'Widget Compile Error',
         show: true,
         autoHide: 4000,
     },
@@ -104,6 +142,13 @@ const STATUS_CONFIGS = {
         color: 'bg-red-600',
         text: 'Compile Error',
         show: true,
+        // No autoHide - user needs to see this
+    },
+    'compile-warning': {
+        color: 'bg-yellow-600',
+        text: 'Compiled with Warnings',
+        show: true,
+        autoHide: 4000,
     },
     'capability-detected': {
         color: 'bg-blue-400',
@@ -157,6 +202,17 @@ export function HMRStatusIndicator({ className }) {
 
     const config = STATUS_CONFIGS[status] || STATUS_CONFIGS.idle;
     
+    // Build display text, adding counts if available
+    let displayText = config.text;
+    if (details?.errorCount !== undefined && details.errorCount > 0) {
+        displayText = `${details.errorCount} Error${details.errorCount > 1 ? 's' : ''}`;
+        if (details.warningCount > 0) {
+            displayText += `, ${details.warningCount} Warning${details.warningCount > 1 ? 's' : ''}`;
+        }
+    } else if (details?.warningCount > 0 && status === 'compile-warning') {
+        displayText = `${details.warningCount} Warning${details.warningCount > 1 ? 's' : ''}`;
+    }
+    
     if (!visible || !config.show) {
         return null;
     }
@@ -175,7 +231,7 @@ export function HMRStatusIndicator({ className }) {
             
             {/* Status Text */}
             <span className="text-sm text-gray-200 font-medium">
-                {config.text}
+                {displayText}
             </span>
             
             {/* Expanded Details */}

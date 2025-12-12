@@ -125,6 +125,42 @@ export function useHMR() {
                     } else if (statusData.status === 'host-kv-reset-schema') {
                         // Host KV namespace reset due to schema change
                         dispatchHMRStatus(message);
+                    } else if (statusData.status === 'boundary-violation') {
+                        // Fast Refresh boundary crossed - show warning/error
+                        setStatus(statusData.canProceed ? 'check' : 'full-reload-required');
+                        dispatchHMRStatus({
+                            ...message,
+                            data: {
+                                ...statusData,
+                                message: statusData.summary || 'Fast Refresh boundary crossed'
+                            }
+                        });
+                    } else if (statusData.status === 'widgets-detected') {
+                        // Widget-level HMR detected multiple components
+                        dispatchHMRStatus({
+                            ...message,
+                            data: {
+                                ...statusData,
+                                message: `Detected ${statusData.count} widgets for component-level HMR`
+                            }
+                        });
+                    } else if (statusData.status === 'widget-compiled') {
+                        // Individual widget compiled successfully
+                        dispatchHMRStatus(message);
+                    } else if (statusData.status === 'widgets-compiled') {
+                        // Widget compilation summary
+                        setStatus('applied');
+                        dispatchHMRStatus({
+                            ...message,
+                            data: {
+                                ...statusData,
+                                status: 'applied',
+                                message: statusData.message || `Widget HMR: ${statusData.loaded} components updated`
+                            }
+                        });
+                    } else if (statusData.status === 'widget-compile-error') {
+                        // Individual widget failed to compile
+                        dispatchHMRStatus(message);
                     }
                     
                     return; // Don't pass to runtime for these messages

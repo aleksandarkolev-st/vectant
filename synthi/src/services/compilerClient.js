@@ -109,6 +109,26 @@ export class CompilerClient {
                 if (typeof window !== 'undefined' && window.dispatchEvent) {
                     window.dispatchEvent(new CustomEvent('synthi:gui-end', { detail: parsed }));
                 }
+            } else if (parsed && parsed.type === 'compile-diagnostics') {
+                // Structured compile diagnostics - dispatch to error overlay
+                console.log('[CompilerClient] Dispatching synthi:compile-diagnostics', parsed);
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    window.dispatchEvent(new CustomEvent('synthi:compile-diagnostics', { detail: parsed }));
+                    // Also dispatch hmr-status for the indicator
+                    if (parsed.error_count > 0) {
+                        window.dispatchEvent(new CustomEvent('synthi:hmr-status', { 
+                            detail: { 
+                                status: 'compile-error', 
+                                module: parsed.module,
+                                diagnostics: parsed.diagnostics,
+                                error_count: parsed.error_count,
+                                warning_count: parsed.warning_count
+                            } 
+                        }));
+                    }
+                }
+                // Don't log structured diagnostics to build log (they go to overlay)
+                return;
             } else if (parsed && parsed.type === 'hmr-status') {
                 // Native HMR status from Rust worker - dispatch to HMR system
                 console.log('[CompilerClient] Dispatching synthi:hmr-status (native)', parsed);
@@ -138,7 +158,8 @@ export class CompilerClient {
                 }
                 return;
             } else if (parsed && parsed.status && (parsed.status === 'applied' || parsed.status === 'rejected' || 
-                       parsed.status === 'compile-error' || parsed.status === 'crash-recovered')) {
+                       parsed.status === 'compile-error' || parsed.status === 'crash-recovered' ||
+                       parsed.status === 'state-migrated' || parsed.status === 'crash-fatal')) {
                 // Direct HMR status object from runner
                 console.log('[CompilerClient] Dispatching synthi:hmr-status (runner)', parsed);
                 if (typeof window !== 'undefined' && window.dispatchEvent) {

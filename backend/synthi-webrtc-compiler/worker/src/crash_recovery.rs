@@ -389,7 +389,7 @@ pub fn generate_crash_report(crash: &CrashInfo) -> String {
 
 use serde::{Serialize, Deserialize};
 
-/// HMR crash status event
+/// HMR crash status event - sent to frontend for error overlay display
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HmrCrashStatus {
     pub status: String,
@@ -398,10 +398,48 @@ pub struct HmrCrashStatus {
     pub recovered: bool,
     pub crash_count: u32,
     pub message: String,
+    /// Full crash info for detailed display in error overlay
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crash_info: Option<CrashInfoJson>,
+}
+
+/// JSON-serializable version of CrashInfo for frontend
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrashInfoJson {
+    pub signal: i32,
+    pub signal_name: String,
+    pub module_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    pub timestamp: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backtrace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_location: Option<CrashSourceLocation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_frames: Vec<CrashSourceLocation>,
+}
+
+impl From<&CrashInfo> for CrashInfoJson {
+    fn from(info: &CrashInfo) -> Self {
+        Self {
+            signal: info.signal,
+            signal_name: info.signal_name.clone(),
+            module_name: info.module_name.clone(),
+            address: info.address.map(|a| format!("0x{:X}", a)),
+            timestamp: info.timestamp,
+            backtrace: info.backtrace.clone(),
+            source_location: info.source_location.clone(),
+            source_frames: info.source_frames.clone(),
+        }
+    }
 }
 
 impl HmrCrashStatus {
     pub fn from_crash(crash: &CrashInfo, recovered: bool) -> Self {
+        let location_str = crash.source_location_str()
+            .unwrap_or_else(|| "unknown location".to_string());
+        
         Self {
             status: if recovered { "crash-recovered" } else { "crash-fatal" }.to_string(),
             module: crash.module_name.clone(),
@@ -409,10 +447,11 @@ impl HmrCrashStatus {
             recovered,
             crash_count: CRASH_COUNT.load(Ordering::SeqCst),
             message: if recovered {
-                format!("Plugin crashed but recovered. Old module continues running.")
+                format!("Plugin crashed at {} but recovered. Old module continues running.", location_str)
             } else {
-                format!("Plugin crashed. Too many consecutive crashes, restart required.")
+                format!("Plugin crashed at {}. Too many consecutive crashes, restart required.", location_str)
             },
+            crash_info: Some(CrashInfoJson::from(crash)),
         }
     }
     

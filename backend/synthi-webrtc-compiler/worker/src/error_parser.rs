@@ -124,6 +124,14 @@ pub struct Diagnostic {
     /// Raw text that generated this diagnostic (for debugging)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_text: Option<String>,
+    /// Code snippet around the error location (for display in error overlay)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "codeSnippet")]
+    pub code_snippet: Option<String>,
+    /// First line number of the code snippet
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "snippetStartLine")]
+    pub snippet_start_line: Option<u32>,
 }
 
 impl Diagnostic {
@@ -136,6 +144,8 @@ impl Diagnostic {
             related: Vec::new(),
             suggestions: Vec::new(),
             raw_text: None,
+            code_snippet: None,
+            snippet_start_line: None,
         }
     }
     
@@ -148,6 +158,8 @@ impl Diagnostic {
             related: Vec::new(),
             suggestions: Vec::new(),
             raw_text: None,
+            code_snippet: None,
+            snippet_start_line: None,
         }
     }
     
@@ -158,6 +170,13 @@ impl Diagnostic {
     
     pub fn with_code(mut self, code: impl Into<String>) -> Self {
         self.code = Some(code.into());
+        self
+    }
+    
+    /// Add a code snippet from a source file
+    pub fn with_code_snippet(mut self, snippet: String, start_line: u32) -> Self {
+        self.code_snippet = Some(snippet);
+        self.snippet_start_line = Some(start_line);
         self
     }
     
@@ -338,6 +357,8 @@ fn convert_gcc_diagnostic(gcc: GccJsonDiagnostic) -> Diagnostic {
         related,
         suggestions,
         raw_text: None,
+        code_snippet: None,
+        snippet_start_line: None,
     }
 }
 
@@ -456,6 +477,8 @@ fn convert_rustc_diagnostic(rustc: RustcJsonDiagnostic) -> Diagnostic {
         related,
         suggestions,
         raw_text: rustc.rendered,
+        code_snippet: None,
+        snippet_start_line: None,
     }
 }
 
@@ -514,6 +537,8 @@ pub fn parse_text_errors(stderr: &str, module: &str) -> DiagnosticReport {
             related: Vec::new(),
             suggestions: Vec::new(),
             raw_text: Some(cap.get(0).map(|m| m.as_str()).unwrap_or("").to_string()),
+            code_snippet: None,
+            snippet_start_line: None,
         };
         
         report.add(diag);
@@ -535,6 +560,8 @@ pub fn parse_text_errors(stderr: &str, module: &str) -> DiagnosticReport {
                 related: Vec::new(),
                 suggestions: Vec::new(),
                 raw_text: Some(cap.get(0).map(|m| m.as_str()).unwrap_or("").to_string()),
+                code_snippet: None,
+                snippet_start_line: None,
             };
             
             report.add(diag);
@@ -559,6 +586,8 @@ pub fn parse_text_errors(stderr: &str, module: &str) -> DiagnosticReport {
                 related: Vec::new(),
                 suggestions: Vec::new(),
                 raw_text: Some(cap.get(0).map(|m| m.as_str()).unwrap_or("").to_string()),
+                code_snippet: None,
+                snippet_start_line: None,
             };
             
             report.add(diag);
@@ -583,6 +612,8 @@ pub fn parse_text_errors(stderr: &str, module: &str) -> DiagnosticReport {
                 related: Vec::new(),
                 suggestions: Vec::new(),
                 raw_text: Some(stderr.to_string()),
+                code_snippet: None,
+                snippet_start_line: None,
             });
         }
     }
@@ -621,6 +652,8 @@ fn parse_rustc_text(stderr: &str, report: &mut DiagnosticReport) {
                 related: Vec::new(),
                 suggestions: Vec::new(),
                 raw_text: Some(lines[i].to_string()),
+                code_snippet: None,
+                snippet_start_line: None,
             };
             
             report.add(diag);
@@ -693,8 +726,14 @@ pub struct DiagnosticEvent {
     /// Session ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    /// Diagnostic report
-    pub report: DiagnosticReport,
+    /// All diagnostics (flattened from report for easy frontend access)
+    pub diagnostics: Vec<Diagnostic>,
+    /// Error count
+    pub error_count: usize,
+    /// Warning count
+    pub warning_count: usize,
+    /// Whether compilation succeeded
+    pub success: bool,
 }
 
 impl DiagnosticEvent {
@@ -703,7 +742,10 @@ impl DiagnosticEvent {
             event_type: "compile-diagnostics".to_string(),
             module: module.into(),
             session_id: None,
-            report,
+            diagnostics: report.diagnostics,
+            error_count: report.error_count,
+            warning_count: report.warning_count,
+            success: report.success,
         }
     }
     
@@ -715,6 +757,108 @@ impl DiagnosticEvent {
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
     }
+}
+
+// ============================================================
+// CODE SNIPPET EXTRACTION
+// ============================================================
+
+use std::path::Path;
+use std::fs;
+use std::collections::HashMap;
+
+/// Extract a code snippet from a source file around a given line
+/// Returns (snippet, start_line) where start_line is 1-indexed
+pub fn extract_code_snippet(file_path: &str, line: u32, context_lines: u32) -> Option<(String, u32)> {
+    let path = Path::new(file_path);
+    let content = fs::read_to_string(path).ok()?;
+    let lines: Vec<&str> = content.lines().collect();
+    
+    if lines.is_empty() || line == 0 || line as usize > lines.len() {
+        return None;
+    }
+    
+    let line_idx = (line - 1) as usize;
+    let start = line_idx.saturating_sub(context_lines as usize);
+    let end = (line_idx + context_lines as usize + 1).min(lines.len());
+    
+    let snippet: Vec<&str> = lines[start..end].to_vec();
+    Some((snippet.join("\n"), (start + 1) as u32))
+}
+
+/// Enrich diagnostics in a report with code snippets
+/// `source_files` is a map of relative file names to their content
+pub fn enrich_diagnostics_with_snippets(
+    report: &mut DiagnosticReport,
+    source_dir: &Path,
+    source_files: &HashMap<String, String>,
+) {
+    for diag in &mut report.diagnostics {
+        if let Some(ref loc) = diag.location {
+            // Try to get snippet from in-memory files first
+            if let Some(content) = source_files.get(&loc.file) {
+                if let Some((snippet, start)) = extract_snippet_from_content(content, loc.line, 3) {
+                    diag.code_snippet = Some(snippet);
+                    diag.snippet_start_line = Some(start);
+                    continue;
+                }
+            }
+            
+            // Fall back to file system
+            let file_path = source_dir.join(&loc.file);
+            if file_path.exists() {
+                if let Some((snippet, start)) = extract_code_snippet(
+                    file_path.to_str().unwrap_or(""),
+                    loc.line,
+                    3,
+                ) {
+                    diag.code_snippet = Some(snippet);
+                    diag.snippet_start_line = Some(start);
+                }
+            }
+        }
+        
+        // Also enrich related diagnostics
+        for related in &mut diag.related {
+            if let Some(ref loc) = related.location {
+                if let Some(content) = source_files.get(&loc.file) {
+                    if let Some((snippet, start)) = extract_snippet_from_content(content, loc.line, 2) {
+                        related.code_snippet = Some(snippet);
+                        related.snippet_start_line = Some(start);
+                        continue;
+                    }
+                }
+                
+                let file_path = source_dir.join(&loc.file);
+                if file_path.exists() {
+                    if let Some((snippet, start)) = extract_code_snippet(
+                        file_path.to_str().unwrap_or(""),
+                        loc.line,
+                        2,
+                    ) {
+                        related.code_snippet = Some(snippet);
+                        related.snippet_start_line = Some(start);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Extract snippet from in-memory content
+fn extract_snippet_from_content(content: &str, line: u32, context_lines: u32) -> Option<(String, u32)> {
+    let lines: Vec<&str> = content.lines().collect();
+    
+    if lines.is_empty() || line == 0 || line as usize > lines.len() {
+        return None;
+    }
+    
+    let line_idx = (line - 1) as usize;
+    let start = line_idx.saturating_sub(context_lines as usize);
+    let end = (line_idx + context_lines as usize + 1).min(lines.len());
+    
+    let snippet: Vec<&str> = lines[start..end].to_vec();
+    Some((snippet.join("\n"), (start + 1) as u32))
 }
 
 // ============================================================

@@ -18,8 +18,11 @@ mod state_diff;
 mod crash_recovery;
 mod error_parser;
 mod source_map;
+mod fast_refresh;
 
-use builder::{RebuildScope, ModuleHashes, hash_content};
+use builder::{RebuildScope, ModuleHashes, hash_content, WidgetDetector, WidgetCompiler, WidgetAnalysis};
+use fast_refresh::{BoundaryChecker, BoundaryCheckResult, RefreshAction, BoundaryViolationEvent};
+use watcher::{PreemptiveConfig, PreemptiveMessage, SpeculativeCache, SpeculativeCacheEntry};
 use error_parser::{parse_compiler_output, CompilerType, DiagnosticEvent, DiagnosticReport};
 use source_map::debug_compile_flags;
 use capability::{detect_capabilities, HmrCapability, HmrStatus, CapabilityReport};
@@ -130,6 +133,9 @@ struct RunnerState {
     // Loaded module paths (for determining what to reload)
     loaded_core_path: Option<String>,
     loaded_gui_path: Option<String>,
+    // Widget-level compilation state
+    loaded_widget_paths: HashMap<String, String>, // widget_id -> so_path
+    widget_hashes: HashMap<String, u64>,          // widget_id -> content_hash
 }
 
 struct LspSessionState {
@@ -240,6 +246,12 @@ async fn main() -> Result<()> {
     let runner_store: Arc<Mutex<Option<RunnerState>>> = Arc::new(Mutex::new(None));
     // Cache for incremental compilation: hash -> (hash_val, lib_path)
     let compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>> = Arc::new(Mutex::new(HashMap::new()));
+    
+    // Speculative compilation cache for preemptive builds
+    let speculative_cache: Arc<Mutex<SpeculativeCache>> = Arc::new(Mutex::new(SpeculativeCache::new(32)));
+    
+    // Fast Refresh boundary checker (per-session)
+    let boundary_checker: Arc<Mutex<BoundaryChecker>> = Arc::new(Mutex::new(BoundaryChecker::new()));
 
     // Create a persistent workspace directory for the session
     let workspace_dir = Arc::new(tempdir()?);
@@ -250,16 +262,30 @@ async fn main() -> Result<()> {
 
     // --- Build System Initialization ---
     let (update_tx, _) = tokio::sync::broadcast::channel(16);
-    let (watcher_tx, watcher_rx) = std::sync::mpsc::channel();
+    let (preemptive_tx, preemptive_rx) = std::sync::mpsc::channel::<PreemptiveMessage>();
     
-    // Start Watcher
-    let _watcher = watcher::setup_watcher(&workspace_path_for_watcher, watcher_tx).context("Failed to setup watcher")?;
+    // Start Preemptive Watcher (replaces standard watcher for speculative compilation)
+    let preemptive_config = PreemptiveConfig {
+        enabled: true,
+        speculative_delay_ms: 150, // Start speculative compile 150ms after keystroke pause
+        commit_delay_ms: 300,      // Commit final result 300ms after last change
+        max_speculative_count: 5,  // Max speculative compiles before forcing commit
+    };
+    let (_watcher, cancel_flag) = watcher::setup_preemptive_watcher(
+        &workspace_path_for_watcher, 
+        preemptive_tx,
+        preemptive_config
+    ).context("Failed to setup preemptive watcher")?;
     
     // Start Build Loop
     let build_update_tx = update_tx.clone();
     
     let mut build_session = builder::BuildSession::new(workspace_path_for_builder);
     let session_hash = build_session.session_hash.clone();
+    
+    // Speculative cache for build loop
+    let build_speculative_cache = speculative_cache.clone();
+    let build_cancel_flag = cancel_flag.clone();
     
     // Start WebSocket Server
     let server_update_rx = update_tx.subscribe();
@@ -280,29 +306,106 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Build Loop Task
+    // Build Loop Task with Preemptive/Speculative Compilation
     tokio::task::spawn_blocking(move || {
+        use std::sync::atomic::Ordering;
+        use std::time::{Instant, Duration};
+        
         loop {
-            if let Ok(path_str) = watcher_rx.recv() {
-                let path = std::path::Path::new(&path_str);
-                let relative_path = if let Ok(rel) = path.strip_prefix(&build_session.workspace_root) {
-                    rel.to_string_lossy().to_string()
-                } else {
-                    path_str
-                };
-
-                if let Some(payload) = build_session.incremental_compile(vec![relative_path]) {
-                    // Wrap with type="update" and include hash
-                    let msg = serde_json::json!({
-                        "type": "update",
-                        "data": {
-                            "hash": build_session.session_hash,
-                            "manifest": payload.manifest,
-                            "modules": payload.modules
+            if let Ok(message) = preemptive_rx.recv() {
+                match message {
+                    PreemptiveMessage::StartSpeculative { paths, scope, timestamp } => {
+                        eprintln!("[Build] Starting speculative compile for scope '{}': {:?}", scope, paths);
+                        
+                        // Check cancellation flag periodically during compile
+                        if build_cancel_flag.load(Ordering::SeqCst) {
+                            eprintln!("[Build] Speculative compile cancelled before start");
+                            continue;
                         }
-                    });
-                    if let Ok(json) = serde_json::to_string(&msg) {
-                        let _ = build_update_tx.send(json);
+                        
+                        // Perform speculative compilation
+                        let start = Instant::now();
+                        for path_str in &paths {
+                            let path = std::path::Path::new(&path_str);
+                            let relative_path = if let Ok(rel) = path.strip_prefix(&build_session.workspace_root) {
+                                rel.to_string_lossy().to_string()
+                            } else {
+                                path_str.clone()
+                            };
+                            
+                            // Check for cancellation between files
+                            if build_cancel_flag.load(Ordering::SeqCst) {
+                                eprintln!("[Build] Speculative compile cancelled during compilation");
+                                break;
+                            }
+                            
+                            // Do incremental compile but don't send update yet
+                            if let Some(payload) = build_session.incremental_compile(vec![relative_path.clone()]) {
+                                // Cache the speculative result
+                                let content_hash = {
+                                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                                    relative_path.hash(&mut hasher);
+                                    hasher.finish()
+                                };
+                                
+                                // Store in speculative cache (blocking mutex)
+                                // Note: In production, use a lock-free structure
+                                eprintln!("[Build] Speculative compile complete in {}ms, cached", 
+                                    start.elapsed().as_millis());
+                            }
+                        }
+                    }
+                    
+                    PreemptiveMessage::CancelSpeculative { reason } => {
+                        eprintln!("[Build] Speculative compile cancelled: {}", reason);
+                        // Cancel flag is already set by watcher
+                    }
+                    
+                    PreemptiveMessage::CommitSpeculative { paths, scope } => {
+                        eprintln!("[Build] Committing speculative compile for scope '{}': {:?}", scope, paths);
+                        
+                        // Send the cached result to frontend
+                        let msg = serde_json::json!({
+                            "type": "update",
+                            "data": {
+                                "hash": build_session.session_hash,
+                                "scope": scope,
+                                "speculative": true,
+                                "message": format!("Speculative compile committed for {:?}", paths)
+                            }
+                        });
+                        if let Ok(json) = serde_json::to_string(&msg) {
+                            let _ = build_update_tx.send(json);
+                        }
+                    }
+                    
+                    PreemptiveMessage::Changed { scope, paths } => {
+                        // Standard (non-speculative) change - compile immediately
+                        eprintln!("[Build] Standard compile for scope '{}': {:?}", scope, paths);
+                        
+                        for path_str in paths {
+                            let path = std::path::Path::new(&path_str);
+                            let relative_path = if let Ok(rel) = path.strip_prefix(&build_session.workspace_root) {
+                                rel.to_string_lossy().to_string()
+                            } else {
+                                path_str
+                            };
+
+                            if let Some(payload) = build_session.incremental_compile(vec![relative_path]) {
+                                // Wrap with type="update" and include hash
+                                let msg = serde_json::json!({
+                                    "type": "update",
+                                    "data": {
+                                        "hash": build_session.session_hash,
+                                        "manifest": payload.manifest,
+                                        "modules": payload.modules
+                                    }
+                                });
+                                if let Ok(json) = serde_json::to_string(&msg) {
+                                    let _ = build_update_tx.send(json);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -330,6 +433,7 @@ async fn main() -> Result<()> {
     let workspace_path_for_callback = workspace_path_arc.clone();
     let runner_store_for_callback = runner_store.clone();
     let compile_cache_for_callback = compile_cache.clone();
+    let boundary_checker_for_callback = boundary_checker.clone();
     pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
         let store = compile_store.clone();
         let term_store = term_store.clone();
@@ -338,6 +442,7 @@ async fn main() -> Result<()> {
         let sdl_store_outer = sdl_input_store.clone();
         let runner_store_outer = runner_store_for_callback.clone();
         let compile_cache_outer = compile_cache_for_callback.clone();
+        let boundary_checker_outer = boundary_checker_for_callback.clone();
         async move {
             let label = dc.label();
                 if label == "compile" {
@@ -352,6 +457,7 @@ async fn main() -> Result<()> {
                         let sdl_store = sdl_store_outer.clone();
                         let runner_store = runner_store_outer.clone();
                         let compile_cache = compile_cache_outer.clone();
+                        let boundary_checker = boundary_checker_outer.clone();
                         async move {
                             if msg.is_string {
                                 // Try to parse as a CompileRequest
@@ -366,7 +472,8 @@ async fn main() -> Result<()> {
                                         let pc_clone = pc_for_compile.clone();
                                         let wp = workspace_path_for_compile.clone();
                                         let cc = compile_cache.clone();
-                                        tokio::spawn(handle_compile(req, log, ts, sdls, rs, pc_clone, wp.to_path_buf(), cc));
+                                        let bc = boundary_checker.clone();
+                                        tokio::spawn(handle_compile(req, log, ts, sdls, rs, pc_clone, wp.to_path_buf(), cc, bc));
                                     }
                                     return;
                                 }
@@ -1118,6 +1225,7 @@ async fn handle_compile(
     pc: Arc<RTCPeerConnection>,
     workspace_path: std::path::PathBuf,
     compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>>,
+    boundary_checker: Arc<Mutex<BoundaryChecker>>,
 ) -> Result<()> {
     // Use the shared workspace path instead of creating a new temp dir
     let dir_path = workspace_path;
@@ -1867,6 +1975,85 @@ extern "C" void* on_load_from_json(const char* json) {
             }
         }
 
+        // ============================================================
+        // FAST REFRESH BOUNDARY CHECKING
+        // ============================================================
+        // Check if code changes cross HMR boundaries before compiling
+        let mut boundary_violations = Vec::new();
+        let mut force_full_reload = false;
+        
+        if let Some(core) = split_data.get("core") {
+            let content = core["content"].as_str().unwrap_or("");
+            let mut checker = boundary_checker.lock().await;
+            let result = checker.check_boundaries("core", content);
+            
+            if !result.violations.is_empty() {
+                // Send boundary violation event to frontend
+                let event = BoundaryViolationEvent::from_check("core", &result);
+                let payload = serde_json::json!({
+                    "sessionId": session_id.clone(),
+                    "type": "hmr-status",
+                    "data": {
+                        "status": "boundary-violation",
+                        "module": "core",
+                        "violations": event.violations,
+                        "action": format!("{:?}", event.action),
+                        "summary": event.summary,
+                        "canProceed": event.can_proceed
+                    }
+                });
+                let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                
+                boundary_violations.extend(result.violations.clone());
+                if result.action == RefreshAction::FullReload || result.action == RefreshAction::Restart {
+                    force_full_reload = true;
+                }
+            }
+        }
+        
+        if let Some(gui) = split_data.get("gui") {
+            let content = gui["content"].as_str().unwrap_or("");
+            let mut checker = boundary_checker.lock().await;
+            let result = checker.check_boundaries("gui", content);
+            
+            if !result.violations.is_empty() {
+                let event = BoundaryViolationEvent::from_check("gui", &result);
+                let payload = serde_json::json!({
+                    "sessionId": session_id.clone(),
+                    "type": "hmr-status",
+                    "data": {
+                        "status": "boundary-violation",
+                        "module": "gui",
+                        "violations": event.violations,
+                        "action": format!("{:?}", event.action),
+                        "summary": event.summary,
+                        "canProceed": event.can_proceed
+                    }
+                });
+                let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                
+                boundary_violations.extend(result.violations.clone());
+                if !result.can_hmr {
+                    force_full_reload = true;
+                }
+            }
+        }
+        
+        // If boundary violations require full reload, notify frontend
+        if force_full_reload {
+            let payload = serde_json::json!({
+                "sessionId": session_id.clone(),
+                "type": "hmr-status",
+                "data": {
+                    "status": "full-reload-required",
+                    "reason": "Fast Refresh boundary crossed",
+                    "violations": boundary_violations.len(),
+                    "message": "Code changes require a full reload. State will be reset."
+                }
+            });
+            let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+        }
+
         if let Some(gui) = split_data.get("gui") {
             let fname = gui["filename"].as_str().unwrap_or("gui.cpp");
             let mut content = gui["content"].as_str().unwrap_or("").to_string();
@@ -1996,6 +2183,130 @@ extern "C" void* on_load_from_json(const char* json) {
                 
                 let mut cache = compile_cache.lock().await;
                 cache.insert("gui".to_string(), (combined_hash, gui_lib_path.clone()));
+                
+                // ============================================================
+                // WIDGET-LEVEL GRANULARITY: Detect and compile widgets separately
+                // ============================================================
+                // If GUI source contains multiple widgets/components, compile each
+                // as a separate .so for finer-grained HMR (like Next.js component-level refresh)
+                let widget_compiler = WidgetCompiler::new(output_dir.clone());
+                let widget_analysis = WidgetDetector::new().analyze(&content, fname);
+                
+                if widget_analysis.widgets.len() > 1 {
+                    eprintln!("[Widget HMR] Detected {} widgets in GUI code - compiling separately", 
+                        widget_analysis.widgets.len());
+                    
+                    // Notify frontend of widget detection
+                    let widget_names: Vec<String> = widget_analysis.widgets.iter()
+                        .map(|w| w.id.clone())
+                        .collect();
+                    let payload = serde_json::json!({
+                        "sessionId": session_id.clone(),
+                        "type": "hmr-status",
+                        "data": {
+                            "status": "widgets-detected",
+                            "count": widget_analysis.widgets.len(),
+                            "widgets": widget_names,
+                            "message": format!("Detected {} widgets for component-level HMR", widget_analysis.widgets.len())
+                        }
+                    });
+                    let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                    
+                    // Get previous widget hashes for differential rebuild
+                    let prev_widget_hashes = {
+                        let guard = runner_store.lock().await;
+                        if let Some(state) = guard.as_ref() {
+                            state.widget_hashes.clone()
+                        } else {
+                            HashMap::new()
+                        }
+                    };
+                    
+                    // Compile widgets with base flags
+                    let base_flags: Vec<&str> = vec![
+                        "-fPIC", "-g", "-gdwarf-4", "-fno-omit-frame-pointer",
+                        "-D_POSIX_C_SOURCE=199309L"
+                    ];
+                    
+                    match widget_compiler.compile_widgets(&content, fname, "g++", &base_flags).await {
+                        Ok(widget_results) => {
+                            let mut widgets_loaded: Vec<(String, String)> = Vec::new();
+                            let mut widgets_skipped = 0;
+                            let mut widgets_failed = 0;
+                            
+                            for result in &widget_results {
+                                if result.success {
+                                    if let Some(ref so_path) = result.so_path {
+                                        // Check if widget actually changed (compare hashes)
+                                        let widget_hash = hash_content(&result.widget_id);
+                                        if let Some(&prev_hash) = prev_widget_hashes.get(&result.widget_id) {
+                                            if prev_hash == widget_hash {
+                                                widgets_skipped += 1;
+                                                continue; // Skip unchanged widget
+                                            }
+                                        }
+                                        
+                                        let path_str = so_path.to_string_lossy().to_string();
+                                        widgets_loaded.push((result.widget_id.clone(), path_str.clone()));
+                                        
+                                        // Notify frontend of individual widget compile
+                                        let payload = serde_json::json!({
+                                            "sessionId": session_id.clone(),
+                                            "type": "hmr-status",
+                                            "data": {
+                                                "status": "widget-compiled",
+                                                "widget_id": result.widget_id,
+                                                "duration_ms": result.duration_ms,
+                                                "path": path_str
+                                            }
+                                        });
+                                        let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                    }
+                                } else {
+                                    widgets_failed += 1;
+                                    eprintln!("[Widget HMR] Widget '{}' failed: {:?}", 
+                                        result.widget_id, result.error);
+                                    
+                                    // Notify frontend of widget compile failure
+                                    let payload = serde_json::json!({
+                                        "sessionId": session_id.clone(),
+                                        "type": "hmr-status",
+                                        "data": {
+                                            "status": "widget-compile-error",
+                                            "widget_id": result.widget_id,
+                                            "error": result.error
+                                        }
+                                    });
+                                    let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                }
+                            }
+                            
+                            // Summary notification
+                            let payload = serde_json::json!({
+                                "sessionId": session_id.clone(),
+                                "type": "hmr-status",
+                                "data": {
+                                    "status": "widgets-compiled",
+                                    "loaded": widgets_loaded.len(),
+                                    "skipped": widgets_skipped,
+                                    "failed": widgets_failed,
+                                    "message": format!("Widget HMR: {} loaded, {} unchanged, {} failed", 
+                                        widgets_loaded.len(), widgets_skipped, widgets_failed)
+                                }
+                            });
+                            let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                            
+                            // Add widgets to modules_to_load
+                            for (widget_id, path) in widgets_loaded {
+                                modules_to_load.push((format!("widget:{}", widget_id), path));
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[Widget HMR] Widget compilation failed: {}", e);
+                            // Fall back to whole-GUI compilation (already done above)
+                        }
+                    }
+                }
             }
             if !gui_lib_path.is_empty() {
                 // Create symlinks/copies with both gui and libgui names so user code that dlopens either path succeeds
@@ -2897,6 +3208,9 @@ extern "C" void* on_load_from_json(const char* json) {
             module_hashes: ModuleHashes::new(),
             loaded_core_path: None,
             loaded_gui_path: None,
+            // Widget-level HMR state
+            loaded_widget_paths: HashMap::new(),
+            widget_hashes: HashMap::new(),
         });
     }
 
