@@ -1194,6 +1194,47 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
     Ok(split_data)
 }
 
+async fn perform_ai_fix(code: &str, error: &str) -> Result<String> {
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "code": code,
+        "error": error,
+        "mode": "fix"
+    });
+
+    let backend_url = std::env::var("AI_BACKEND_URL")
+        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
+    let url = format!("{}/refactor/fix", backend_url);
+
+    let res = client.post(&url)
+        .json(&payload)
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    let result_str = res["result"].as_str().ok_or(anyhow::anyhow!("No result from AI"))?;
+    
+    // Clean markdown
+    let clean_code = if let Some(start) = result_str.find("```") {
+        let s = &result_str[start+3..];
+        if let Some(newline) = s.find('\n') {
+             let s = &s[newline+1..];
+             if let Some(end) = s.rfind("```") {
+                 &s[..end]
+             } else {
+                 s
+             }
+        } else {
+            s
+        }
+    } else {
+        result_str
+    }.trim();
+
+    Ok(clean_code.to_string())
+}
+
 async fn handle_compile(
     req: CompileRequest,
     log_dc: Arc<RTCDataChannel>,
@@ -1830,14 +1871,24 @@ extern "C" void* on_load_from_json(const char* json) {
                     if *h == content_hash {
                         cached_path = Some(p.clone());
                     }
+                    let p = core_out.to_string_lossy().to_string();
+                    
+                    let mut cache = compile_cache.lock().await;
+                    cache.insert("core".to_string(), (content_hash, p.clone()));
+                    return Ok(Some(p));
                 }
             }
+            Ok(None)
+        };
 
-            if let Some(p) = cached_path {
-                core_lib_path = p;
-                println!("Using cached core library: {}", core_lib_path);
-            } else {
-                tokio::fs::write(dir_path.join(fname), &content).await?;
+        let gui_future = async {
+            if let Some(gui) = split_data.get("gui") {
+                let fname = gui["filename"].as_str().unwrap_or("gui.cpp");
+                let mut content = gui["content"].as_str().unwrap_or("").to_string();
+
+                if content.contains("main(") && !content.contains("extern \"C\" void* entrypoint") {
+                     content.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
+                }
                 
                 let core_out = output_dir.join(format!("libcore_{}.{}", timestamp, ext));
                 let mut cmd = system_command("g++");
@@ -1924,7 +1975,15 @@ extern "C" void* on_load_from_json(const char* json) {
                 let mut cache = compile_cache.lock().await;
                 cache.insert("core".to_string(), (content_hash, core_lib_path.clone()));
             }
-            if !core_lib_path.is_empty() {
+            Ok(None)
+        };
+
+        // Run compilations in parallel
+        let (core_res, gui_res) = tokio::join!(core_future, gui_future);
+
+        if let Ok(Some(p)) = core_res {
+            core_lib_path = p;
+             if !core_lib_path.is_empty() {
                 // Create symlink ./core.so -> core_lib_path so gui can dlopen("./core.so")
                 #[cfg(unix)]
                 {
@@ -2449,6 +2508,7 @@ extern "C" void* on_load_from_json(const char* json) {
                 if req.is_gui {
                     c.arg("-lSDL2").arg("-lX11");
                 }
+                apply_build_directives(&req.source, &mut c);
                 c
             }
             "rust" => {
@@ -3360,5 +3420,53 @@ fn system_command(program: &str) -> Command {
         cmd
     } else {
         Command::new(program)
+    }
+}
+
+fn apply_build_directives(content: &str, cmd: &mut Command) {
+    for line in content.lines() {
+        // Parse custom linker flags
+        // Format: // LINK: -lSDL2 -lGL
+        if let Some(flags) = line.trim().strip_prefix("// LINK:") {
+            for flag in flags.split_whitespace() {
+                cmd.arg(flag);
+            }
+        }
+        
+        // Parse pkg-config dependencies
+        // Format: // PKG: gtk+-3.0 opencv4
+        if let Some(pkgs) = line.trim().strip_prefix("// PKG:") {
+            let pkgs_str = pkgs.trim();
+            if !pkgs_str.is_empty() {
+                let mut pkg_cmd = if cfg!(target_os = "windows") {
+                    let mut c = std::process::Command::new("wsl");
+                    c.arg("pkg-config");
+                    c
+                } else {
+                    std::process::Command::new("pkg-config")
+                };
+                
+                let output = pkg_cmd
+                    .arg("--cflags")
+                    .arg("--libs")
+                    .args(pkgs_str.split_whitespace())
+                    .output();
+                
+                match output {
+                    Ok(out) if out.status.success() => {
+                        let flags = String::from_utf8_lossy(&out.stdout);
+                        for flag in flags.split_whitespace() {
+                            cmd.arg(flag);
+                        }
+                    },
+                    Ok(out) => {
+                        println!("pkg-config failed for {}: {}", pkgs_str, String::from_utf8_lossy(&out.stderr));
+                    }
+                    Err(e) => {
+                        println!("Failed to run pkg-config: {}", e);
+                    }
+                }
+            }
+        }
     }
 }
