@@ -1,5 +1,8 @@
 import { Storage } from '@google-cloud/storage';
 import { NextResponse } from 'next/server';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
 
 const storage = new Storage({
     projectId: process.env.GCP_PROJECT_ID,
@@ -75,6 +78,19 @@ export async function GET(request, { params }) {
         return NextResponse.json({ error: 'Workspace ID is required.' }, { status: 400 });
     }
 
+    try {
+        const workspace = await prisma.workspace.findUnique({
+            where: { slug: workspaceId }
+        });
+
+        if (!workspace) {
+            return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+        }
+    } catch (error) {
+        console.error('Database Error:', error);
+        return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    }
+
     const storagePathPrefix = `workspaces/${workspaceId}/`;
 
     try {
@@ -83,8 +99,12 @@ export async function GET(request, { params }) {
             autoPaginate: true, 
         });
 
-        // Check if empty and try to sync from collab server
-        if (files.length === 0) {
+        // Check if empty (or only contains the marker folder itself) and try to sync from collab server
+        // The marker folder is stored as an object with name ending in '/' (e.g. "workspaces/slug/")
+        // If files.length === 1 and it's the folder itself, we should treat it as empty and sync.
+        const isEmpty = files.length === 0 || (files.length === 1 && files[0].name === storagePathPrefix);
+
+        if (isEmpty) {
              const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
              try {
                  const res = await fetch(`${COLLAB_SERVER_URL}/git/${workspaceId}/files`);

@@ -50,6 +50,7 @@ try {
   }
 }
 const Y = require('yjs');
+const fileIndex = require('./fileIndex');
 
 // LevelDB persistence is optional — some environments (or registries) may not
 // provide a compatible `y-leveldb` binary. Try to load it and fall back to
@@ -160,11 +161,86 @@ const server = http.createServer(async (req, res) => {
                 case 'init':
                     result = await gitService.initRepo(slug, data.remoteUrl);
                     break;
-                case 'clone':
-                    result = await gitService.cloneRepo(slug, data.repoUrl, data.token);
-                    // Save metadata
-                    workspaceManager.addWorkspace(slug, data.repoUrl, data.owner, data.name);
+                case 'add-remote':
+                    result = await gitService.addRemote(slug, data.name, data.url);
                     break;
+                case 'remove-remote':
+                    result = await gitService.removeRemote(slug, data.name);
+                    break;
+                case 'remotes':
+                    result = await gitService.getRemotes(slug);
+                    break;
+                case 'clone':
+                  result = await gitService.cloneRepo(slug, data.repoUrl, data.token);
+                  // Save metadata locally
+                  workspaceManager.addWorkspace(slug, data.repoUrl, data.owner, data.name);
+
+                  // Try to create the workspace in the main Synthi app DB so the web UI finds it.
+                  // Use environment var SYNTHI_APP_URL or default to http://localhost:3000
+                  const SYNTHI_APP_URL = process.env.SYNTHI_APP_URL || 'http://localhost:3000';
+
+                  // Determine fetch function - prefer global fetch (Node 18+), otherwise require node-fetch
+                  let fetchFunc = null;
+                  if (typeof fetch === 'function') {
+                    fetchFunc = fetch;
+                  } else {
+                    try {
+                      fetchFunc = require('node-fetch');
+                    } catch (e) {
+                      fetchFunc = null;
+                    }
+                  }
+
+                  if (fetchFunc) {
+                    const payload = {
+                      name: data.name || slug,
+                      slug: slug,
+                      repoUrl: data.repoUrl || null
+                    };
+
+                    // Retry mechanism
+                    const maxAttempts = 3;
+                    let attempt = 0;
+                    let created = false;
+                    while (attempt < maxAttempts && !created) {
+                      attempt += 1;
+                      try {
+                        const res = await fetchFunc(`${SYNTHI_APP_URL}/api/workspace`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify(payload),
+                        });
+
+                        if (res.ok || res.status === 409) { // 201 created or 409 already exists are acceptable
+                          created = true;
+                          console.log(`[Collab] Notified Synthi app to create workspace '${slug}' (status ${res.status})`);
+                          break;
+                        } else {
+                          const txt = await res.text().catch(() => '');
+                          console.warn(`[Collab] Synthi app returned ${res.status} creating workspace '${slug}': ${txt}`);
+                        }
+                      } catch (err) {
+                        console.warn(`[Collab] Attempt ${attempt} failed to call Synthi app for workspace creation:`, err?.message || err);
+                      }
+
+                      if (!created && attempt < maxAttempts) {
+                        // simple exponential backoff
+                        await new Promise(r => setTimeout(r, 1000 * attempt));
+                      }
+                    }
+
+                    if (!created) {
+                      // If we could not create the workspace record, fail the request - otherwise the UI will redirect to a workspace that 404s
+                      const errMsg = `Failed to notify Synthi app to create workspace '${slug}' after ${maxAttempts} attempts.`;
+                      console.error('[Collab]', errMsg);
+                      // Throw an error to be handled by the outer catch and return non-200
+                      throw new Error(errMsg);
+                    }
+                  } else {
+                    console.warn('[Collab] Fetch not available - skipping workspace creation in main app. Set SYNTHI_APP_URL or install node-fetch.');
+                  }
+
+                  break;
                 case 'status':
                     result = await gitService.getStatus(slug);
                     break;
@@ -183,8 +259,17 @@ const server = http.createServer(async (req, res) => {
                 case 'stage':
                     result = await gitService.stageFile(slug, data.filePath);
                     break;
+                case 'stage-all':
+                    result = await gitService.stageAll(slug);
+                    break;
+                case 'stage-lines':
+                    result = await gitService.stageLines(slug, data.filePath, data.patch);
+                    break;
                 case 'unstage':
                     result = await gitService.unstageFile(slug, data.filePath);
+                    break;
+                case 'unstage-all':
+                    result = await gitService.unstageAll(slug);
                     break;
                 case 'push':
                     result = await gitService.push(slug);
@@ -195,15 +280,41 @@ const server = http.createServer(async (req, res) => {
                 case 'discard':
                     result = await gitService.discardChange(slug, data.filePath);
                     break;
+                case 'discard-all':
+                    result = await gitService.discardAll(slug);
+                    break;
                 case 'diff':
-                    result = await gitService.getDiff(slug, data.filePath);
+                    result = await gitService.getDiff(slug, data.filePath, { parsed: data.parsed });
                     break;
                 case 'file-content':
                     const fileContent = await gitService.getFileContent(slug, data.filePath, data.ref);
                     result = { content: fileContent };
                     break;
                 case 'log':
-                    result = await gitService.getLog(slug);
+                    result = await gitService.getLog(slug, { page: data.page, limit: data.limit });
+                    break;
+                case 'unpushed':
+                    const max = data && data.max ? parseInt(data.max, 10) : 50;
+                    result = await gitService.getUnpushedCommits(slug, max);
+                    break;
+                case 'blame':
+                    result = await gitService.getBlame(slug, data.filePath);
+                    break;
+                // Stash operations
+                case 'stash-list':
+                    result = await gitService.stashList(slug);
+                    break;
+                case 'stash-push':
+                    result = await gitService.stashPush(slug, data.message);
+                    break;
+                case 'stash-pop':
+                    result = await gitService.stashPop(slug, data.index);
+                    break;
+                case 'stash-apply':
+                    result = await gitService.stashApply(slug, data.index);
+                    break;
+                case 'stash-drop':
+                    result = await gitService.stashDrop(slug, data.index);
                     break;
                 case 'sync':
                     // Sync a single file
@@ -213,6 +324,31 @@ const server = http.createServer(async (req, res) => {
                 case 'files':
                     result = await gitService.listFiles(slug);
                     break;
+                case 'files-meta':
+                  // Metadata only (no content)
+                  result = { files: await gitService.listFilesMeta(slug) };
+                  // Kick off index build in background (non-blocking)
+                  try {
+                    fileIndex.ensureIndex(slug, gitService.getRepoPath(slug)).catch(() => {});
+                  } catch (_) {}
+                  break;
+                case 'index-ensure':
+                  // Non-blocking ensure; returns immediately with current status
+                  try {
+                    fileIndex.ensureIndex(slug, gitService.getRepoPath(slug)).catch(() => {});
+                  } catch (_) {}
+                  result = fileIndex.getStatus(slug);
+                  break;
+                case 'index-status':
+                  result = fileIndex.getStatus(slug);
+                  break;
+                case 'search':
+                  // Index-first search; never reads disk on request
+                  result = fileIndex.search(slug, data.q || data.query || '');
+                  break;
+                case 'open-lookup':
+                  result = fileIndex.fileLookup(slug, data.q || data.query || '');
+                  break;
                 case 'file':
                     const content = await gitService.readFile(slug, data.path);
                     result = { content };
@@ -225,9 +361,28 @@ const server = http.createServer(async (req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(result));
         } catch (e) {
-            console.error(e);
-            res.writeHead(500);
-            res.end(JSON.stringify({ error: e.message }));
+            // Handle structured GitError responses
+            if (e.code && e.toJSON) {
+                const statusCode = e.code === 'REPO_NOT_FOUND' || e.code === 'REPO_NOT_INITIALIZED' ? 404 : 
+                                   e.code === 'AUTH_FAILED' || e.code === 'NO_REMOTE' ? 400 :
+                                   e.code === 'MERGE_CONFLICT' ? 409 : 400;
+                console.debug('[Collab] Git error:', e.code, e.message);
+                res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(e.toJSON()));
+                return;
+            }
+            
+            // Legacy error handling for unstructured errors
+            const msg = e?.message || '';
+            if (msg.includes('not initialized') || msg.includes('not found') || msg.includes('no remote configured') || msg.includes('no configured push destination') || msg.includes('authentication failed') || msg.includes('user cancelled') || msg.includes('user cancelled dialog') || msg.includes('repository not found') || msg.includes('remote: repository not found')) {
+                console.debug('[Collab] Client error in /git/:', msg);
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: msg }));
+            } else {
+                console.error(e);
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: msg }));
+            }
         }
     });
     return;
