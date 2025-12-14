@@ -133,6 +133,7 @@ export const selectFileThunk = createAsyncThunk(
     'workspace/selectFile',
     async (file, { getState }) => {
         const state = getState().workspace;
+        const gitState = getState().git;
         const slug = state.slug;
         const targetPath = file?.path;
 
@@ -140,10 +141,26 @@ export const selectFileThunk = createAsyncThunk(
             return { file, content: file?.content || '', fromCache: false };
         }
 
+        // Check if this file has a merge conflict - if so, always read from filesystem
+        const conflictedFiles = gitState?.status?.conflictedFiles || [];
+        const hasConflict = conflictedFiles.includes(targetPath);
+        
+        if (hasConflict) {
+            console.log('[Workspace] File has merge conflict, forcing fresh read:', targetPath);
+            // Invalidate cache for this file
+            fileCache.delete(targetPath);
+            // Destroy collab doc to prevent Yjs from overwriting
+            try {
+                collabClient.destroyDocument(slug, targetPath);
+            } catch (e) {
+                console.warn('[Workspace] Error destroying collab doc:', e);
+            }
+        }
+
         // Active file must never be evicted.
         fileCache.setActive(targetPath);
 
-        const cached = fileCache.get(targetPath);
+        const cached = hasConflict ? undefined : fileCache.get(targetPath);
         if (cached !== undefined) {
             return { file, content: cached, fromCache: true };
         }
@@ -418,7 +435,7 @@ const workspaceSlice = createSlice({
         setExternalFileContent: (state, action) => {
             const { path, content } = action.payload || {};
             if (!path || typeof content !== 'string') return;
-            fileCache.set(path, content);
+            state.fileContentCache.set(path, content);
             if (state.activeFile?.path === path) {
                 state.currentContent = content;
                 state.savedContent = content;
@@ -435,10 +452,11 @@ const workspaceSlice = createSlice({
             }
 
             // 2. Migrate cache entry (CRITICAL for data integrity)
-            const cachedContent = fileCache.get(item.path);
-            if (cachedContent !== undefined) {
-                fileCache.set(newPath, cachedContent);
-                fileCache.delete(item.path);
+            const cachedContent = state.fileContentCache.get(item.path);
+            if (cachedContent!== undefined) {
+                // Ensure state mutation safety by creating a new Map instance for Redux state
+                state.fileContentCache.delete(item.path);
+                state.fileContentCache.set(newPath, cachedContent);
             }
         },
         setSlug: (state, action) => {
@@ -533,7 +551,7 @@ const workspaceSlice = createSlice({
                 
                 // Cache unsaved content of OLD active file before switching
                 if (state.activeFile && state.activeFile.path && state.currentContent!== state.savedContent) {
-                    try { fileCache.set(state.activeFile.path, state.currentContent); } catch (_) {}
+                    state.fileContentCache.set(state.activeFile.path, state.currentContent);
                 }
 
                 // Switch to new file
@@ -542,11 +560,10 @@ const workspaceSlice = createSlice({
                 state.savedContent = content;
                 state.diffMode = false; // Disable diff mode
                 
-                // Ensure active file pinned + cache populated (LRU)
-                try {
-                    fileCache.setActive(file.path);
-                    if (!fromCache) fileCache.set(file.path, content);
-                } catch (_) {}
+                // Update cache if content was newly fetched (and not from cache)
+                if (!fromCache) {
+                    state.fileContentCache.set(file.path, content);
+                }
 
                 // Ensure the file appears in the open tabs list
                 try {
@@ -561,9 +578,9 @@ const workspaceSlice = createSlice({
           .addCase(saveFileContentThunk.fulfilled, (state, action) => {
                 if (action.payload) {
                     state.savedContent = action.payload;
-                    try {
-                        if (state.activeFile && state.activeFile.path) fileCache.set(state.activeFile.path, action.payload);
-                    } catch (_) {}
+                    if (state.activeFile && state.activeFile.path) {
+                        state.fileContentCache.set(state.activeFile.path, action.payload);
+                    }
                     // Mark active tab as saved
                     try {
                         if (state.activeFile && state.activeFile.path) {
@@ -579,7 +596,9 @@ const workspaceSlice = createSlice({
           .addCase(deleteItemThunk.fulfilled, (state, action) => {
                 if (action.payload.deleted) {
                     const deletedPath = action.payload.path;
-                    try { fileCache.delete(deletedPath); } catch (_) {}
+                    
+                    // Clear cache
+                    state.fileContentCache.delete(deletedPath);
                     
                     // Clear editor if active file was deleted
                     if (state.activeFile && state.activeFile.path === deletedPath) {
@@ -610,6 +629,47 @@ const workspaceSlice = createSlice({
                 (action) => MUTATION_THUNK_TYPES.some(type => action.type === `${type}/fulfilled`),
                 (state) => {
                     state.status = 'succeeded';
+                }
+            )
+          // Handle git conflicts - invalidate cache for conflicted files
+          .addMatcher(
+                (action) => action.type === 'git/conflictsDetected',
+                (state, action) => {
+                    // Ensure conflictedFiles is an array
+                    let conflictedFiles = action.payload;
+                    if (!conflictedFiles) {
+                        conflictedFiles = [];
+                    } else if (!Array.isArray(conflictedFiles)) {
+                        // If it's an object with a conflictedFiles or conflicted property, extract it
+                        if (conflictedFiles.conflictedFiles && Array.isArray(conflictedFiles.conflictedFiles)) {
+                            conflictedFiles = conflictedFiles.conflictedFiles;
+                        } else if (conflictedFiles.conflicted && Array.isArray(conflictedFiles.conflicted)) {
+                            conflictedFiles = conflictedFiles.conflicted;
+                        } else {
+                            conflictedFiles = [];
+                        }
+                    }
+                    
+                    const slug = state.slug;
+                    
+                    console.log('[Workspace] Processing conflict invalidation for files:', conflictedFiles, 'slug:', slug);
+                    
+                    // Clear cache and reset collab docs for each conflicted file 
+                    // so they get re-read from filesystem with conflict markers
+                    if (conflictedFiles.length > 0) {
+                        conflictedFiles.forEach(filePath => {
+                            try { 
+                                console.log('[Workspace] Invalidating cache for:', filePath);
+                                fileCache.delete(filePath);
+                                // Also destroy the collab document so it gets recreated fresh
+                                if (slug) {
+                                    collabClient.destroyDocument(slug, filePath);
+                                }
+                            } catch (e) {
+                                console.warn('[Workspace] Error invalidating:', filePath, e);
+                            }
+                        });
+                    }
                 }
             );
     },

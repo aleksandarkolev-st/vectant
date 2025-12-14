@@ -11,10 +11,15 @@ path = "src/main.rs"
 name = "runner"
 path = "src/runner_bin.rs"
 
+[features]
+default = []
+backtrace = ["dep:backtrace"]
+
 [dependencies]
 anyhow = "1.0"
 futures = "0.3"
 futures-util = "0.3"
+lazy_static = "1.4"
 object_store = { version = "0.11.0", features = ["gcp"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -30,3 +35,9 @@ notify = "8.2.0"
 uuid = "1.19.0"
 libloading = "0.8"
 reqwest = { version = "0.11", features = ["json", "blocking"] }
+x11rb = { version = "0.13", features = ["allow-unsafe-code", "dl-libxcb", "shm"] }
+libc = "0.2"
+setjmp = "0.1"
+regex = "1"
+backtrace = { version = "0.3", optional = true }
+num_cpus = "1.16"

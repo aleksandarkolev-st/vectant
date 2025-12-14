@@ -47,6 +47,13 @@ export const fetchUnpushedCommits = createAsyncThunk(
     }
 );
 
+export const fetchIncomingCommits = createAsyncThunk(
+    'git/fetchIncoming',
+    async ({ slug, max = 50 }) => {
+        return await gitClient.getIncoming(slug, max);
+    }
+);
+
 export const initRepo = createAsyncThunk(
     'git/init',
     async ({ slug, remoteUrl }, { dispatch }) => {
@@ -96,6 +103,8 @@ export const commitChanges = createAsyncThunk(
         dispatch(fetchGitStatus(slug));
         dispatch(fetchCommitHistory({ slug }));
         dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+        // After a commit (especially merge commit), refresh incoming to clear merged commits
+        dispatch(fetchIncomingCommits({ slug, max: 50 }));
     }
 );
 
@@ -144,12 +153,54 @@ export const pushChanges = createAsyncThunk(
 
 export const pullChanges = createAsyncThunk(
     'git/pull',
-    async (slug, { dispatch }) => {
-        const result = await gitClient.pull(slug);
-        dispatch(fetchGitStatus(slug));
-        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
-        dispatch(fetchCommitHistory({ slug }));
-        return result;
+    async (slug, { dispatch, rejectWithValue }) => {
+        try {
+            const result = await gitClient.pull(slug);
+            dispatch(fetchGitStatus(slug));
+            dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+            dispatch(fetchCommitHistory({ slug }));
+            
+            // If pull resulted in conflicts (shouldn't normally happen here since server throws)
+            if (result && (result.hasConflicts || result.conflicted?.length > 0)) {
+                dispatch({ type: 'git/conflictsDetected', payload: result.conflicted || [] });
+            }
+            
+            return result;
+        } catch (error) {
+            // Check if this is a merge conflict error
+            if (error.code === 'MERGE_CONFLICT' || error.statusCode === 409) {
+                // Server sends conflictedFiles in details
+                const conflictedFiles = error.details?.conflictedFiles || error.details?.conflicted || [];
+                
+                console.log('[Git] Merge conflict detected, files:', conflictedFiles);
+                
+                // Clear Yjs collab persistence for conflicted files to ensure fresh content loads
+                if (conflictedFiles.length > 0) {
+                    try {
+                        await gitClient.clearCollabPersistence(slug, conflictedFiles);
+                        console.log('[Git] Cleared collab persistence for conflicted files');
+                    } catch (e) {
+                        console.warn('[Git] Failed to clear collab persistence:', e);
+                    }
+                }
+                
+                // Dispatch conflict detection action to invalidate caches
+                dispatch({ type: 'git/conflictsDetected', payload: conflictedFiles });
+                
+                // Still refresh git status to show the conflicts in UI
+                dispatch(fetchGitStatus(slug));
+                dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+                dispatch(fetchCommitHistory({ slug }));
+                
+                // Return a special payload instead of rejecting
+                return rejectWithValue({
+                    code: 'MERGE_CONFLICT',
+                    message: error.message,
+                    conflicted: conflictedFiles
+                });
+            }
+            throw error;
+        }
     }
 );
 
@@ -219,6 +270,50 @@ export const fetchBlame = createAsyncThunk(
     }
 );
 
+// Merge Conflict Resolution
+export const resolveConflictOurs = createAsyncThunk(
+    'git/resolveConflictOurs',
+    async ({ slug, filePath }, { dispatch }) => {
+        await gitClient.resolveConflictOurs(slug, filePath);
+        dispatch(fetchGitStatus(slug));
+    }
+);
+
+export const resolveConflictTheirs = createAsyncThunk(
+    'git/resolveConflictTheirs',
+    async ({ slug, filePath }, { dispatch }) => {
+        await gitClient.resolveConflictTheirs(slug, filePath);
+        dispatch(fetchGitStatus(slug));
+    }
+);
+
+export const markResolved = createAsyncThunk(
+    'git/markResolved',
+    async ({ slug, filePath }, { dispatch }) => {
+        await gitClient.markResolved(slug, filePath);
+        dispatch(fetchGitStatus(slug));
+        // Refresh incoming commits as conflict resolution progresses
+        dispatch(fetchIncomingCommits({ slug, max: 50 }));
+    }
+);
+
+export const abortMerge = createAsyncThunk(
+    'git/abortMerge',
+    async (slug, { dispatch }) => {
+        await gitClient.abortMerge(slug);
+        dispatch(fetchGitStatus(slug));
+        // After aborting merge, incoming commits should reappear as still pending
+        dispatch(fetchIncomingCommits({ slug, max: 50 }));
+    }
+);
+
+export const fetchConflictVersions = createAsyncThunk(
+    'git/fetchConflictVersions',
+    async ({ slug, filePath }) => {
+        return await gitClient.getConflictVersions(slug, filePath);
+    }
+);
+
 const gitSlice = createSlice({
     name: 'git',
     initialState: {
@@ -227,6 +322,7 @@ const gitSlice = createSlice({
         remotes: [],
         commitHistory: { all: [], total: 0, page: 1, hasMore: false },
         unpushedCommits: [],
+        incomingCommits: [],
         stashList: [],
         blameData: [],
         currentBranch: 'main',
@@ -269,7 +365,10 @@ const gitSlice = createSlice({
             .addCase(fetchCommitHistory.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
             .addCase(fetchUnpushedCommits.pending, (state) => { state.loading = true; state.error = null; })
             .addCase(fetchUnpushedCommits.fulfilled, (state, action) => { state.loading = false; state.unpushedCommits = action.payload || []; })
-            .addCase(fetchUnpushedCommits.rejected, (state, action) => { state.loading = false; state.error = action.error.message; });
+            .addCase(fetchUnpushedCommits.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
+            .addCase(fetchIncomingCommits.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(fetchIncomingCommits.fulfilled, (state, action) => { state.loading = false; state.incomingCommits = action.payload || []; })
+            .addCase(fetchIncomingCommits.rejected, (state, action) => { state.loading = false; state.error = action.error.message; });
         
         builder
             .addCase(fetchStashList.fulfilled, (state, action) => { state.stashList = action.payload || []; })
@@ -290,10 +389,33 @@ const gitSlice = createSlice({
             .addCase(pushChanges.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
             .addCase(pullChanges.pending, (state) => { state.loading = true; state.error = null; })
             .addCase(pullChanges.fulfilled, (state) => { state.loading = false; })
-            .addCase(pullChanges.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
+            .addCase(pullChanges.rejected, (state, action) => { 
+                state.loading = false; 
+                // If it's a merge conflict, don't show it as an error (it's expected)
+                if (action.payload?.code === 'MERGE_CONFLICT') {
+                    state.error = null; // Clear error - conflicts are shown in status
+                } else {
+                    state.error = action.error?.message || action.payload?.message || 'Pull failed'; 
+                }
+            })
             .addCase(fetchRemotes.fulfilled, (state, action) => {
                 state.remotes = action.payload;
             });
+        
+        // Merge conflict resolution handlers
+        builder
+            .addCase(resolveConflictOurs.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(resolveConflictOurs.fulfilled, (state) => { state.loading = false; })
+            .addCase(resolveConflictOurs.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
+            .addCase(resolveConflictTheirs.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(resolveConflictTheirs.fulfilled, (state) => { state.loading = false; })
+            .addCase(resolveConflictTheirs.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
+            .addCase(markResolved.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(markResolved.fulfilled, (state) => { state.loading = false; })
+            .addCase(markResolved.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
+            .addCase(abortMerge.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(abortMerge.fulfilled, (state) => { state.loading = false; })
+            .addCase(abortMerge.rejected, (state, action) => { state.loading = false; state.error = action.error.message; });
     },
 });
 

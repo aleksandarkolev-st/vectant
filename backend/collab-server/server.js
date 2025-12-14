@@ -95,6 +95,10 @@ if (LeveldbPersistence) {
         console.warn('[Collab] failed to encode state for', docName, e?.message || e);
       }
     }
+    
+    async clearDocument(docName) {
+      this.store.delete(docName);
+    }
   }
 
   persistence = new InMemoryPersistence();
@@ -102,6 +106,27 @@ if (LeveldbPersistence) {
 
 const gitService = require('./gitService');
 const workspaceManager = require('./workspaceManager');
+
+/**
+ * Clear Yjs persistence for a document (used when merge conflicts need fresh file content).
+ * @param {string} docName - The document name (room key), e.g., "workspace:slug:filepath"
+ */
+async function clearDocumentPersistence(docName) {
+  try {
+    if (persistence.clearDocument && typeof persistence.clearDocument === 'function') {
+      await persistence.clearDocument(docName);
+      console.log('[Collab] Cleared persistence for document:', docName);
+    } else if (persistence.flushDocument && typeof persistence.flushDocument === 'function') {
+      // LeveldbPersistence may use flushDocument or similar
+      await persistence.flushDocument(docName);
+      console.log('[Collab] Flushed document from persistence:', docName);
+    } else {
+      console.warn('[Collab] No clearDocument method available on persistence');
+    }
+  } catch (e) {
+    console.warn('[Collab] Error clearing persistence for', docName, e?.message || e);
+  }
+}
 
 const server = http.createServer(async (req, res) => {
   // CORS headers
@@ -283,6 +308,22 @@ const server = http.createServer(async (req, res) => {
                 case 'discard-all':
                     result = await gitService.discardAll(slug);
                     break;
+                // Merge conflict resolution
+                case 'resolve-ours':
+                    result = await gitService.resolveConflictOurs(slug, data.filePath);
+                    break;
+                case 'resolve-theirs':
+                    result = await gitService.resolveConflictTheirs(slug, data.filePath);
+                    break;
+                case 'mark-resolved':
+                    result = await gitService.markResolved(slug, data.filePath);
+                    break;
+                case 'abort-merge':
+                    result = await gitService.abortMerge(slug);
+                    break;
+                case 'conflict-versions':
+                    result = await gitService.getConflictVersions(slug, data.filePath);
+                    break;
                 case 'diff':
                     result = await gitService.getDiff(slug, data.filePath, { parsed: data.parsed });
                     break;
@@ -296,6 +337,10 @@ const server = http.createServer(async (req, res) => {
                 case 'unpushed':
                     const max = data && data.max ? parseInt(data.max, 10) : 50;
                     result = await gitService.getUnpushedCommits(slug, max);
+                    break;
+                case 'incoming':
+                    const incomingMax = data && data.max ? parseInt(data.max, 10) : 50;
+                    result = await gitService.getIncomingCommits(slug, incomingMax);
                     break;
                 case 'blame':
                     result = await gitService.getBlame(slug, data.filePath);
@@ -352,6 +397,19 @@ const server = http.createServer(async (req, res) => {
                 case 'file':
                     const content = await gitService.readFile(slug, data.path);
                     result = { content };
+                    break;
+                case 'write-file':
+                    await gitService.writeFile(slug, data.path, data.content);
+                    result = { success: true };
+                    break;
+                case 'clear-collab':
+                    // Clear Yjs persistence for specified files (used after merge conflict resolution)
+                    const filesToClear = Array.isArray(data.files) ? data.files : (data.path ? [data.path] : []);
+                    for (const filePath of filesToClear) {
+                        const docName = `workspace:${slug}:${filePath}`;
+                        await clearDocumentPersistence(docName);
+                    }
+                    result = { success: true, cleared: filesToClear.length };
                     break;
                 default:
                     res.writeHead(404);
