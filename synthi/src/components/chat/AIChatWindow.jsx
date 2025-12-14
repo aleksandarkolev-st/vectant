@@ -280,6 +280,15 @@ const AIChatWindow = ({
         ? 'h-full w-full min-w-0 max-w-full bg-transparent flex flex-col min-h-0'
         : 'fixed top-10 right-0 bottom-0 w-96 bg-[#1e1e1e] border-l border-[#545454] rounded-l-lg shadow-2xl flex flex-col min-h-0 z-40';
 
+    const codeContainerStyle = {
+        width: '100%',
+        maxWidth: '100%',
+        minWidth: 0,
+        boxSizing: 'border-box',
+        overflowX: 'auto',
+        overflowY: 'auto',
+    };
+
     return (
         <div
             className={`${containerClass} ${isDragging ? 'ring-2 ring-emerald-500/50' : ''}`}
@@ -436,7 +445,7 @@ const AIChatWindow = ({
                                                 {(msg.logs || []).map((entry, idx) => {
                                                     return (
                                                         <div key={`${msg.id}-log-${idx}`} className="text-gray-300">
-                                                            <span className="truncate max-w-[440px] block">
+                                                            <span className="block whitespace-normal break-words leading-snug">
                                                                 {entry}
                                                             </span>
                                                         </div>
@@ -452,10 +461,10 @@ const AIChatWindow = ({
                                 const snapshot = msg.snapshot || {};
                                 const hasFiles = (snapshot.fileSuggestions || []).length > 0;
                                 return (
-                                    <div key={msg.id} className="flex justify-start">
-                                        <div className="w-full">
+                                    <div key={msg.id} className="flex justify-start min-w-0">
+                                        <div className="w-full min-w-0">
                                             {hasFiles ? (
-                                                <div className="space-y-3">
+                                                <div className="space-y-3 min-w-0">
                                                     {snapshot.fileSuggestions.map((suggestion, idx) => {
                                                         const stats = diffStats(suggestion.chunks);
                                                         const badgeText = `${fileSuggestionStatusLabel(suggestion.status)}`;
@@ -463,7 +472,11 @@ const AIChatWindow = ({
                                                         const statsRemText = `-${stats.removals}`;
                                                         const collapsed = collapsedFiles[suggestion.path] === true;
                                                         return (
-                                                        <div key={`${suggestion.path}-${suggestion.status}-${idx}`} className="px-3 py-3 bg-[#171717] border border-[#3a3a3a] rounded">
+                                                        <div
+                                                            key={`${suggestion.path}-${suggestion.status}-${idx}`}
+                                                            className="px-3 py-3 bg-[#171717] border border-[#3a3a3a] rounded min-w-0 "
+                                                            style={codeContainerStyle}
+                                                        >
                                                             <div className="flex items-center justify-between gap-2 mb-3">
                                                                 <div>
                                                                     <div className="text-sm font-medium text-gray-100 break-all">
@@ -582,7 +595,10 @@ const AIChatWindow = ({
                                                                     {suggestion.error}
                                                                 </div>
                                                             ) : !collapsed ? (
-                                                                <div className="max-h-[70vh] min-h-[140px] overflow-auto overflow-x-auto text-xs font-mono bg-[#0f0f10] rounded p-2">
+                                                                <div
+                                                                    className="max-h-[70vh] min-h-[140px] overflow-auto overflow-x-auto text-xs font-mono bg-[#0f0f10] rounded p-2 ai-diff-code min-w-0 w-full max-w-full"
+                                                                    style={codeContainerStyle}
+                                                                >
                                                                     {renderDiffChunkList(suggestion.chunks)}
                                                                 </div>
                                                             ) : null}
@@ -591,7 +607,7 @@ const AIChatWindow = ({
                                                     })}
                                                 </div>
                                             ) : snapshot.suggestedCode ? (
-                                                <div className="px-2 py-2 bg-[#171717] border border-[#3a3a3a] rounded">
+                                                <div className="px-2 py-2 bg-[#171717] border border-[#3a3a3a] rounded min-w-0">
                                                     <div className="flex items-center justify-between mb-2">
                                                         <div className="text-sm font-medium text-gray-200">Suggestion</div>
                                                         {snapshot.suggestedCode && msg.role === 'suggestion-live' && (
@@ -618,7 +634,7 @@ const AIChatWindow = ({
                                                         </button>
                                                     </div>
                                                     {suggestionExpanded && (
-                                                        <div className="max-h-[70vh] min-h-[140px] overflow-auto text-xs font-mono">
+                                                        <div className="max-h-[70vh] min-h-[140px] overflow-auto overflow-x-auto text-xs font-mono ai-diff-code min-w-0 w-full max-w-full rounded bg-[#0f0f10] border border-[#2f2f2f] p-2">
                                                             {renderDiffChunkList(snapshot.diffChunks || [])}
                                                         </div>
                                                     )}
@@ -658,7 +674,7 @@ const AIChatWindow = ({
                                         </div>
                                     )}
                                     <div
-                                        className="break-normal whitespace-normal text-xs leading-relaxed ai-chat-content"
+                                        className="break-normal whitespace-normal text-xs leading-relaxed ai-chat-content min-w-0"
                                         dangerouslySetInnerHTML={{ __html: formatMessageContent(msg.content) }}
                                     />
                                     <span className="text-xs opacity-70 mt-1 block">
@@ -681,7 +697,7 @@ const AIChatWindow = ({
                                     className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                                 >
                                     <div
-                                        className={`max-w-[80%] px-3 py-2 rounded-lg text-sm ai-chat-message ${
+                                        className={`max-w-[80%] px-3 py-2 rounded-lg text-sm ai-chat-message min-w-0 ${
                                             msg.role === 'user'
                                                 ? 'bg-emerald-600 text-white'
                                                 : 'bg-[#2d2d30] text-gray-200 border border-[#454545]'
@@ -758,21 +774,6 @@ const AIChatWindow = ({
                     </Button>
                 </div>
             </div>
-            <style jsx global>{`
-                .ai-chat-message pre {
-                    white-space: pre;
-                    overflow-x: auto;
-                    overflow-y: hidden;
-                    max-width: 100%;
-                }
-                .ai-chat-message code {
-                    white-space: pre;
-                    overflow-x: auto;
-                    display: inline-block;
-                    max-width: 100%;
-                    vertical-align: top;
-                }
-            `}</style>
         </div>
     );
 };

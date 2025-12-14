@@ -122,6 +122,87 @@
   }
 }
 
+.ai-chat-message code:not(pre code) {
+  white-space: pre;
+  overflow-x: auto;
+  overflow-y: auto;
+  max-width: 100%;
+  display: inline-block;
+  vertical-align: top;
+  padding: 0.15rem 0.35rem;
+  margin: 0 0.1rem;
+  background: #151515;
+  border: 1px solid #2c2c2c;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* Global Scrollbar Styling */
+::-webkit-scrollbar {
+  height: 3px;
+  width: 3px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1d1f23;
+  border-radius: 999px;
+  display:flex;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #3a3f4a;
+  border-radius: 999px;
+  border: 1px solid #23262c;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #4c5362;
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3a3f4a transparent;
+}
+
+/* Utility to hide scrollbars */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.ai-chat-message pre.ai-code-block,
+.ai-code-block {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+  text-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: auto;
+}
+
+.ai-chat-message pre.ai-code-block code.ai-code-block,
+.ai-code-block code.ai-code-block {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+  text-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: auto;
+}
 .synthi-cursor-widget {
   position: absolute;
   width: 2px !important;

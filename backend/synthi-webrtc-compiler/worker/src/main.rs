@@ -1,9 +1,6 @@
 use std::sync::Arc;
-use std::process::Stdio;
 use std::collections::HashMap;
-use std::env;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use std::process::Stdio;
 
 mod builder;
 mod watcher;
@@ -28,35 +25,16 @@ use source_map::debug_compile_flags;
 use capability::{detect_capabilities, HmrCapability, HmrStatus, CapabilityReport};
 use shim::{auto_shim, ShimMode, detect_shim_mode};
 use gstreamer as gst;
-use gstreamer::prelude::*;
-use gstreamer_app as gst_app;
-
 use anyhow::{Context, Result};
 use futures::{FutureExt, StreamExt, SinkExt};
-use serde::{Deserialize, Serialize};
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader, AsyncWriteExt};
-use chrono::{Utc, SecondsFormat};
-use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use webrtc::api::media_engine::MediaEngine;
-use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::RTCDataChannel;
-use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-use webrtc::peer_connection::configuration::RTCConfiguration;
-use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
-use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
-use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
-use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType, RTCRtpCodecParameters};
-use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
-use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
-use webrtc::rtp::packet::Packet;
-use webrtc::util::marshal::Unmarshal;
 use bytes::Bytes;
 
 #[derive(Debug, Deserialize)]
