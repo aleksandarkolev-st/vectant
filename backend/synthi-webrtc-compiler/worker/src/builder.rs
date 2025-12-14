@@ -724,7 +724,7 @@ fn is_source_file(path: &str) -> bool {
 pub struct WidgetComponent {
     /// Unique widget identifier (e.g., "slider_widget", "button_panel")
     pub id: String,
-    /// Widget class/struct name as found in source
+    /// Widget class/struct name as found in source (or synthetic name for functions)
     pub class_name: String,
     /// Source file containing the widget
     pub source_file: String,
@@ -738,6 +738,10 @@ pub struct WidgetComponent {
     pub state_vars: Vec<String>,
     /// Generated entry point function name
     pub entry_point: String,
+    /// Whether this is a class-based widget (true) or a standalone function (false)
+    pub is_class_based: bool,
+    /// The original function name (if function-based)
+    pub original_function: Option<String>,
 }
 
 /// Widget detection results
@@ -749,6 +753,8 @@ pub struct WidgetAnalysis {
     pub shared_state: SharedWidgetState,
     /// Widget dependency graph
     pub dependency_graph: HashMap<String, Vec<String>>,
+    /// Shared context code (helper functions, includes, typedefs) that widgets depend on
+    pub shared_context_code: String,
 }
 
 /// Shared state between widgets
@@ -832,9 +838,9 @@ impl WidgetDetector {
         let widget_regions = self.find_widget_regions(&lines);
         
         // Phase 2: Extract each widget's code and analyze dependencies
-        for (class_name, start_line, end_line) in widget_regions {
-            let widget_code = lines[start_line..=end_line].join("\n");
-            let id = self.generate_widget_id(&class_name);
+        for (class_name, start_line, end_line, is_class_based, original_func) in &widget_regions {
+            let widget_code = lines[*start_line..=*end_line].join("\n");
+            let id = self.generate_widget_id(class_name);
             let entry_point = format!("{}_on_render", id);
             
             // Find state variable accesses
@@ -848,20 +854,22 @@ impl WidgetDetector {
             }
             
             // Find dependencies on other widgets
-            let dependencies = self.extract_widget_dependencies(&widget_code, &class_name);
+            let dependencies = self.extract_widget_dependencies(&widget_code, class_name);
             
             // Generate the component code with entry point wrapper
-            let component_code = self.generate_widget_module(&class_name, &widget_code, &entry_point, &state_vars);
+            let component_code = self.generate_widget_module(class_name, &widget_code, &entry_point, &state_vars, *is_class_based, original_func.as_deref());
             
             widgets.push(WidgetComponent {
                 id,
-                class_name,
+                class_name: class_name.clone(),
                 source_file: source_file.to_string(),
                 line_range: (start_line + 1, end_line + 1), // 1-indexed
                 code: component_code,
                 dependencies,
                 state_vars,
                 entry_point,
+                is_class_based: *is_class_based,
+                original_function: original_func.clone(),
             });
         }
         
@@ -877,17 +885,36 @@ impl WidgetDetector {
             header_code: self.generate_shared_state_header(&shared_vars),
         };
         
+        // Phase 3: Extract shared context code (non-widget functions, includes, typedefs)
+        // This is everything in the source that ISN'T a widget - helper functions, type definitions, etc.
+        // Convert widget_regions to the format expected by extract_shared_context
+        let regions_for_context: Vec<(String, usize, usize)> = widget_regions.iter()
+            .map(|(name, start, end, _, _)| (name.clone(), *start, *end))
+            .collect();
+        let shared_context_code = self.extract_shared_context(&lines, &regions_for_context);
+        
         WidgetAnalysis {
             widgets,
             shared_state,
             dependency_graph,
+            shared_context_code,
         }
     }
     
     /// Find regions in code that define widgets
-    fn find_widget_regions(&self, lines: &[&str]) -> Vec<(String, usize, usize)> {
+    /// Returns: Vec<(class_name, start_line, end_line, is_class_based, original_function_name)>
+    fn find_widget_regions(&self, lines: &[&str]) -> Vec<(String, usize, usize, bool, Option<String>)> {
         let mut regions = Vec::new();
         let mut i = 0;
+        
+        // Functions that should NOT be treated as widgets (they're helpers or lifecycle hooks)
+        let excluded_functions = [
+            "draw_text", "get_glyph", "init", "setup", "cleanup", "destroy",
+            "gui_on_load", "gui_on_unload", "gui_on_event", "gui_on_save_state",
+            "core_on_load", "core_on_unload", "core_on_update", "core_on_event",
+            "on_load", "on_unload", "on_update", "on_event", "on_save_state",
+            "main", "_user_main", "SDL_main",
+        ];
         
         while i < lines.len() {
             let line = lines[i].trim();
@@ -898,23 +925,34 @@ impl WidgetDetector {
                 if self.is_widget_class(&class_name) {
                     // Find the end of the class definition
                     if let Some(end_line) = self.find_class_end(lines, i) {
-                        regions.push((class_name, i, end_line));
+                        regions.push((class_name, i, end_line, true, None));
                         i = end_line;
                     }
                 }
             }
             
-            // Also look for standalone render functions
+            // Also look for standalone render functions - but be more selective
             if let Some(func_name) = self.extract_function_name(line) {
-                if self.patterns.render_func_patterns.iter().any(|p| func_name.to_lowercase().contains(p)) {
-                    // Check if this function contains SDL rendering calls
-                    if let Some(end_line) = self.find_function_end(lines, i) {
-                        let func_code: String = lines[i..=end_line].join("\n");
-                        if self.contains_render_calls(&func_code) {
-                            // Create synthetic widget for standalone render function
-                            let widget_name = format!("{}Widget", self.to_pascal_case(&func_name));
-                            regions.push((widget_name, i, end_line));
-                            i = end_line;
+                // Skip excluded functions
+                let is_excluded = excluded_functions.iter().any(|ex| func_name.to_lowercase() == ex.to_lowercase());
+                
+                // Only consider functions that look like top-level widget entry points
+                // They should have "widget" in the name OR be gui_on_render specifically
+                let is_widget_entry = func_name.to_lowercase().contains("widget") 
+                    || func_name == "gui_on_render"
+                    || (func_name.to_lowercase().ends_with("_on_render") && !is_excluded);
+                
+                if is_widget_entry && !is_excluded {
+                    if self.patterns.render_func_patterns.iter().any(|p| func_name.to_lowercase().contains(p)) {
+                        // Check if this function contains SDL rendering calls
+                        if let Some(end_line) = self.find_function_end(lines, i) {
+                            let func_code: String = lines[i..=end_line].join("\n");
+                            if self.contains_render_calls(&func_code) {
+                                // Create synthetic widget for standalone render function
+                                let widget_name = format!("{}_widget", func_name.to_lowercase());
+                                regions.push((widget_name, i, end_line, false, Some(func_name)));
+                                i = end_line;
+                            }
                         }
                     }
                 }
@@ -1116,13 +1154,37 @@ impl WidgetDetector {
         original_code: &str,
         entry_point: &str,
         state_vars: &[String],
+        is_class_based: bool,
+        original_function: Option<&str>,
     ) -> String {
         let mut code = String::new();
         
-        // Header with includes
+        // Header with includes - include shared.h for AppState and other shared types
         code.push_str("// Auto-generated widget module\n");
-        code.push_str("#include \"widget_shared_state.h\"\n");
-        code.push_str("#include <SDL2/SDL.h>\n\n");
+        code.push_str("#include <SDL2/SDL.h>\n");
+        code.push_str("#include <stdint.h>\n");
+        code.push_str("#include <string.h>\n");
+        code.push_str("#include <stdio.h>\n");
+        code.push_str("#include <stdlib.h>\n\n");
+        
+        // Try to include shared.h if it exists (for AppState definition)
+        code.push_str("// Include shared state definitions\n");
+        code.push_str("#if __has_include(\"shared.h\")\n");
+        code.push_str("#include \"shared.h\"\n");
+        code.push_str("#endif\n\n");
+        
+        // Include widget shared state header
+        code.push_str("#include \"widget_shared_state.h\"\n\n");
+        
+        // Include the shared context header with helper functions (get_glyph, draw_text, etc.)
+        code.push_str("// Include shared context for widget dependencies\n");
+        code.push_str("#include \"widget_context.h\"\n\n");
+        
+        // Include the full GUI header for any additional types
+        code.push_str("// Include full GUI header if available\n");
+        code.push_str("#if __has_include(\"gui.h\")\n");
+        code.push_str("#include \"gui.h\"\n");
+        code.push_str("#endif\n\n");
         
         // Original widget code
         code.push_str("// Original widget code\n");
@@ -1135,8 +1197,42 @@ impl WidgetDetector {
             "extern \"C\" void {}(SDL_Renderer* renderer, WidgetSharedState* state) {{\n",
             entry_point
         ));
-        code.push_str(&format!("    static {} widget;\n", class_name));
-        code.push_str("    widget.render(renderer, state);\n");
+        code.push_str("    (void)renderer; (void)state; // Suppress unused warnings\n");
+        
+        if is_class_based {
+            // For class-based widgets, instantiate the class and call render
+            code.push_str(&format!("    static {} widget;\n", class_name));
+            code.push_str("    widget.render(renderer, state);\n");
+        } else if let Some(func_name) = original_function {
+            // For function-based widgets, we need to call them correctly based on signature
+            // Check if the function takes (void* state_ptr) - the gui_on_render signature
+            let code_lower = original_code.to_lowercase();
+            let func_lower = func_name.to_lowercase();
+            
+            if code_lower.contains(&format!("void {}(void*", func_lower)) 
+               || code_lower.contains(&format!("{} (void*", func_lower))
+               || original_code.contains("void* state_ptr") {
+                // gui_on_render style: void gui_on_render(void* state_ptr)
+                code.push_str(&format!("    // Function takes void* state_ptr\n"));
+                code.push_str(&format!("    {}((void*)state);\n", func_name));
+            } else if code_lower.contains(&format!("void {}(sdl_renderer*", func_lower))
+                    || original_code.contains("SDL_Renderer* renderer") {
+                // Check if it takes (SDL_Renderer*, WidgetSharedState*)
+                if original_code.contains("WidgetSharedState*") {
+                    code.push_str(&format!("    // Function takes SDL_Renderer*, WidgetSharedState*\n"));
+                    code.push_str(&format!("    {}(renderer, state);\n", func_name));
+                } else {
+                    // Just takes SDL_Renderer*
+                    code.push_str(&format!("    // Function takes SDL_Renderer*\n"));
+                    code.push_str(&format!("    {}(renderer);\n", func_name));
+                }
+            } else {
+                // Unknown signature - call with state cast to void*
+                code.push_str(&format!("    // Unknown signature - passing state as void*\n"));
+                code.push_str(&format!("    {}((void*)state);\n", func_name));
+            }
+        }
+        
         code.push_str("}\n\n");
         
         // Export symbol
@@ -1181,6 +1277,242 @@ impl WidgetDetector {
         
         code
     }
+    
+    /// Extract shared context code (non-widget code) that widgets depend on.
+    /// This includes: includes, typedefs, helper functions, structs that aren't widgets
+    fn extract_shared_context(&self, lines: &[&str], widget_regions: &[(String, usize, usize)]) -> String {
+        let mut context_code = String::new();
+        
+        // Header for the shared context
+        context_code.push_str("// Auto-generated shared context for widgets\n");
+        context_code.push_str("// Contains helper functions, includes, and non-widget code\n");
+        context_code.push_str("#pragma once\n\n");
+        
+        // CRITICAL: Add ABI version constants that widgets depend on
+        context_code.push_str("// Synthi ABI version constants\n");
+        context_code.push_str("#ifndef SYNTHI_ABI_VERSION\n");
+        context_code.push_str("#define SYNTHI_ABI_VERSION 1\n");
+        context_code.push_str("#endif\n\n");
+        
+        context_code.push_str("#ifndef CORE_STATE_MAGIC\n");
+        context_code.push_str("#define CORE_STATE_MAGIC 0xDEADBEEF\n");
+        context_code.push_str("#endif\n\n");
+        
+        context_code.push_str("#ifndef GUI_STATE_MAGIC\n");
+        context_code.push_str("#define GUI_STATE_MAGIC 0x60108EEF\n");
+        context_code.push_str("#endif\n\n");
+        
+        // Standard includes that widgets commonly need
+        context_code.push_str("#include <SDL2/SDL.h>\n");
+        context_code.push_str("#include <stdint.h>\n");
+        context_code.push_str("#include <string.h>\n");
+        context_code.push_str("#include <stdio.h>\n");
+        context_code.push_str("#include <stdlib.h>\n");
+        context_code.push_str("#include <stdbool.h>\n\n");
+        
+        // Add fallback AppState definition if not defined elsewhere
+        // This ensures widgets that reference AppState can compile
+        context_code.push_str("// Fallback AppState definition for widget compatibility\n");
+        context_code.push_str("#ifndef WIDGET_APPSTATE_DEFINED\n");
+        context_code.push_str("#define WIDGET_APPSTATE_DEFINED\n");
+        context_code.push_str("typedef struct AppState {\n");
+        context_code.push_str("    uint32_t magic;\n");
+        context_code.push_str("    uint32_t struct_size;\n");
+        context_code.push_str("    uint32_t abi_version;\n");
+        context_code.push_str("    SDL_Renderer* renderer;\n");
+        context_code.push_str("    int running;\n");
+        context_code.push_str("    int btn_x, btn_y, btn_w, btn_h;\n");
+        context_code.push_str("    int click_count;\n");
+        context_code.push_str("    void* user_data;\n");
+        context_code.push_str("} AppState;\n");
+        context_code.push_str("#endif\n\n");
+        
+        // Create a set of line ranges that are widgets (to exclude them)
+        let mut widget_line_set: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for (_, start, end) in widget_regions {
+            for line_num in *start..=*end {
+                widget_line_set.insert(line_num);
+            }
+        }
+        
+        // Track which functions we're skipping (gui_on_load should NOT be in widget context)
+        let excluded_functions = ["gui_on_load", "core_on_load", "on_load"];
+        
+        // Extract non-widget code
+        let mut i = 0;
+        while i < lines.len() {
+            if widget_line_set.contains(&i) {
+                i += 1;
+                continue;
+            }
+            
+            let line = lines[i];
+            let trimmed = line.trim();
+            
+            // Skip empty lines at this phase
+            if trimmed.is_empty() {
+                i += 1;
+                continue;
+            }
+            
+            // Include #include directives
+            if trimmed.starts_with("#include") {
+                context_code.push_str(line);
+                context_code.push('\n');
+                i += 1;
+                continue;
+            }
+            
+            // Include #define directives
+            if trimmed.starts_with("#define") || trimmed.starts_with("#ifndef") || 
+               trimmed.starts_with("#ifdef") || trimmed.starts_with("#endif") {
+                context_code.push_str(line);
+                context_code.push('\n');
+                i += 1;
+                continue;
+            }
+            
+            // Include typedef
+            if trimmed.starts_with("typedef") {
+                context_code.push_str(line);
+                context_code.push('\n');
+                // Handle multi-line typedef
+                if !trimmed.ends_with(';') {
+                    i += 1;
+                    while i < lines.len() && !lines[i].trim().ends_with(';') {
+                        context_code.push_str(lines[i]);
+                        context_code.push('\n');
+                        i += 1;
+                    }
+                    if i < lines.len() {
+                        context_code.push_str(lines[i]);
+                        context_code.push('\n');
+                    }
+                }
+                i += 1;
+                continue;
+            }
+            
+            // Include struct/class definitions that aren't widgets
+            if (trimmed.starts_with("struct") || trimmed.starts_with("class")) && !widget_line_set.contains(&i) {
+                if let Some(class_name) = self.extract_class_name(trimmed) {
+                    if !self.is_widget_class(&class_name) {
+                        // Include this struct/class
+                        if let Some(end) = self.find_class_end(lines, i) {
+                            for j in i..=end {
+                                context_code.push_str(lines[j]);
+                                context_code.push('\n');
+                            }
+                            i = end + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+            
+            // Include function definitions (helper functions like get_glyph, draw_text)
+            // BUT skip lifecycle functions like gui_on_load that have complex dependencies
+            if self.looks_like_function_def(trimmed) && !widget_line_set.contains(&i) {
+                // Check if this is an excluded function
+                let should_exclude = excluded_functions.iter().any(|f| trimmed.contains(f));
+                
+                if !should_exclude {
+                    // Check it's not inside a widget
+                    if let Some(end) = self.find_function_end(lines, i) {
+                        // Verify this function is not part of any widget region
+                        let is_in_widget = widget_regions.iter().any(|(_, ws, we)| i >= *ws && i <= *we);
+                        if !is_in_widget {
+                            for j in i..=end {
+                                context_code.push_str(lines[j]);
+                                context_code.push('\n');
+                            }
+                            i = end + 1;
+                            continue;
+                        }
+                    }
+                } else {
+                    // Skip this function entirely
+                    if let Some(end) = self.find_function_end(lines, i) {
+                        i = end + 1;
+                        continue;
+                    }
+                }
+            }
+            
+            // Include global variables - handle multi-line array initializations
+            if self.looks_like_global_var(trimmed) && !widget_line_set.contains(&i) {
+                // Check if this is a multi-line array initialization
+                if trimmed.contains("= {") && !trimmed.ends_with("};") {
+                    // Multi-line array - find the closing brace
+                    context_code.push_str(line);
+                    context_code.push('\n');
+                    i += 1;
+                    let mut brace_count = 1;
+                    while i < lines.len() && brace_count > 0 {
+                        let inner_line = lines[i];
+                        for ch in inner_line.chars() {
+                            if ch == '{' {
+                                brace_count += 1;
+                            } else if ch == '}' {
+                                brace_count -= 1;
+                            }
+                        }
+                        context_code.push_str(inner_line);
+                        context_code.push('\n');
+                        i += 1;
+                    }
+                    continue;
+                } else {
+                    context_code.push_str(line);
+                    context_code.push('\n');
+                }
+            }
+            
+            i += 1;
+        }
+        
+        context_code
+    }
+    
+    /// Check if a line looks like a function definition
+    fn looks_like_function_def(&self, line: &str) -> bool {
+        // Simple heuristic: has a '(' and ends with '{' or has return type before name(
+        if line.contains('(') && !line.starts_with("if") && !line.starts_with("while") &&
+           !line.starts_with("for") && !line.starts_with("switch") && !line.starts_with("//") {
+            // Check for common function patterns
+            let has_brace = line.ends_with('{') || line.ends_with(')');
+            let has_type = line.contains("void") || line.contains("int") || line.contains("bool") ||
+                          line.contains("char") || line.contains("float") || line.contains("double") ||
+                          line.contains("uint") || line.contains("const");
+            return has_brace || has_type;
+        }
+        false
+    }
+    
+    /// Check if a line looks like a global variable declaration
+    fn looks_like_global_var(&self, line: &str) -> bool {
+        // Simple heuristic: starts with type keywords and has = or ;
+        let trimmed = line.trim();
+        
+        // Skip lines that look like function definitions
+        if trimmed.contains('(') && !trimmed.contains("= {") {
+            return false;
+        }
+        
+        // Check for common global variable patterns
+        let has_storage_class = trimmed.starts_with("static") || trimmed.starts_with("const") ||
+                                trimmed.starts_with("extern");
+        let has_type = trimmed.contains("int ") || trimmed.contains("bool ") ||
+                       trimmed.contains("float ") || trimmed.contains("char ") ||
+                       trimmed.contains("uint8_t") || trimmed.contains("uint16_t") ||
+                       trimmed.contains("uint32_t") || trimmed.contains("int8_t") ||
+                       trimmed.contains("size_t") || trimmed.contains("double ");
+        
+        if has_storage_class || has_type {
+            return trimmed.contains('=') || trimmed.ends_with(';');
+        }
+        false
+    }
 }
 
 /// Widget compilation manager
@@ -1216,6 +1548,11 @@ impl WidgetCompiler {
         let shared_header_path = self.output_dir.join("widget_shared_state.h");
         tokio::fs::write(&shared_header_path, &analysis.shared_state.header_code).await
             .map_err(|e| format!("Failed to write shared state header: {}", e))?;
+        
+        // Write shared context header (helper functions, non-widget code)
+        let context_header_path = self.output_dir.join("widget_context.h");
+        tokio::fs::write(&context_header_path, &analysis.shared_context_code).await
+            .map_err(|e| format!("Failed to write shared context header: {}", e))?;
         
         // Compile each widget
         let mut results = Vec::new();
