@@ -114,6 +114,10 @@ export const gitClient = {
         return this.request(slug, 'unpushed', { max });
     },
 
+    async getIncoming(slug, max = 50) {
+        return this.request(slug, 'incoming', { max });
+    },
+
     async getBlame(slug, filePath) {
         return this.request(slug, 'blame', { filePath });
     },
@@ -145,5 +149,44 @@ export const gitClient = {
 
     async getFileContent(slug, filePath, ref = 'HEAD') {
         return this.request(slug, 'file-content', { filePath, ref });
+    },
+
+    // Merge conflict resolution
+    async resolveConflictOurs(slug, filePath) {
+        return this.request(slug, 'resolve-ours', { filePath });
+    },
+
+    async resolveConflictTheirs(slug, filePath) {
+        return this.request(slug, 'resolve-theirs', { filePath });
+    },
+
+    async markResolved(slug, filePath) {
+        return this.request(slug, 'mark-resolved', { filePath });
+    },
+
+    async abortMerge(slug) {
+        return this.request(slug, 'abort-merge');
+    },
+
+    async getConflictVersions(slug, filePath) {
+        return this.request(slug, 'conflict-versions', { filePath });
+    },
+
+    async readFile(slug, path) {
+        return this.request(slug, 'file', { path });
+    },
+
+    async writeFile(slug, path, content) {
+        return this.request(slug, 'write-file', { path, content });
+    },
+    
+    /**
+     * Clear Yjs collaboration persistence for specified files.
+     * Used after merge conflict resolution to ensure fresh content loads.
+     * @param {string} slug - Workspace slug
+     * @param {string[]} files - Array of file paths to clear
+     */
+    async clearCollabPersistence(slug, files) {
+        return this.request(slug, 'clear-collab', { files });
     }
 };
