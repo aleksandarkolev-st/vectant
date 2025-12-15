@@ -399,6 +399,68 @@
   }
 }
 
+/* Animated tab border - gradient rotation */
+@keyframes tab-border-rotate {
+  0% {
+    background: linear-gradient(#0d0e14, #0d0e14) padding-box, 
+                linear-gradient(0deg, #327464, #3d8b78, #4a9d89, #327464) border-box;
+  }
+  25% {
+    background: linear-gradient(#0d0e14, #0d0e14) padding-box, 
+                linear-gradient(90deg, #327464, #3d8b78, #4a9d89, #327464) border-box;
+  }
+  50% {
+    background: linear-gradient(#0d0e14, #0d0e14) padding-box, 
+                linear-gradient(180deg, #327464, #3d8b78, #4a9d89, #327464) border-box;
+  }
+  75% {
+    background: linear-gradient(#0d0e14, #0d0e14) padding-box, 
+                linear-gradient(270deg, #327464, #3d8b78, #4a9d89, #327464) border-box;
+  }
+  100% {
+    background: linear-gradient(#0d0e14, #0d0e14) padding-box, 
+                linear-gradient(360deg, #327464, #3d8b78, #4a9d89, #327464) border-box;
+  }
+}
+
+/* Animated dashed border flow */
+@keyframes tab-dash-flow {
+  0% {
+    border-color: rgba(50, 116, 100, 0.3);
+  }
+  50% {
+    border-color: rgba(61, 139, 120, 0.6);
+  }
+  100% {
+    border-color: rgba(50, 116, 100, 0.3);
+  }
+}
+
+/* Tab glow pulse animation */
+@keyframes tab-glow-pulse {
+  0%, 100% {
+    opacity: 0.5;
+    box-shadow: 0 0 8px rgba(50, 116, 100, 0.25), inset 0 0 4px rgba(50, 116, 100, 0.05);
+  }
+  50% {
+    opacity: 0.8;
+    box-shadow: 0 0 16px rgba(50, 116, 100, 0.4), inset 0 0 8px rgba(50, 116, 100, 0.1);
+  }
+}
+
+/* Tab underline shimmer animation - subtle gradient movement */
+@keyframes tab-underline-shimmer {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
 /* Minimap custom styling */
 .monaco-editor .minimap {
   opacity: 0.7;

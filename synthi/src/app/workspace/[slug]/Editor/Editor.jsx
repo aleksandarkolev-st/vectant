@@ -169,6 +169,10 @@ const EditorPanel = ({
     // This prevents stale onChange handlers from writing to the wrong file
     const boundFilePathRef = useRef(null);
 
+    // Animated tab indicator state - simple underline that slides
+    const [tabIndicator, setTabIndicator] = useState({ left: 0, width: 0, visible: false });
+    const tabRefs = useRef({});
+
     // Precompute hover-card style so JSX stays clean and well-formed
     const hoverCardStyle = (hoverPresence && hoverPresence.rect && typeof window !== 'undefined') ? (() => {
         const cardW = 224; const cardH = 76;
@@ -907,6 +911,47 @@ const EditorPanel = ({
         handleThumbMouseDown
     } = useCustomScrollbar([openFiles]);
 
+    // --- Animated Tab Indicator Logic ---
+    useEffect(() => {
+        if (!activeFile || !tabsContainerRef.current) {
+            setTabIndicator(prev => ({ ...prev, visible: false }));
+            return;
+        }
+
+        const updateIndicator = () => {
+            const activeTabEl = tabRefs.current[activeFile.path];
+            const container = tabsContainerRef.current;
+            
+            if (activeTabEl && container) {
+                const containerRect = container.getBoundingClientRect();
+                const tabRect = activeTabEl.getBoundingClientRect();
+                
+                setTabIndicator({
+                    left: tabRect.left - containerRect.left + container.scrollLeft,
+                    width: tabRect.width,
+                    visible: true
+                });
+            }
+        };
+
+        // Small delay to ensure DOM is ready after tab switch
+        const timeoutId = setTimeout(updateIndicator, 10);
+
+        // Also update on scroll
+        const container = tabsContainerRef.current;
+        container?.addEventListener('scroll', updateIndicator);
+        
+        // Update on resize
+        const resizeObserver = new ResizeObserver(updateIndicator);
+        if (container) resizeObserver.observe(container);
+
+        return () => {
+            clearTimeout(timeoutId);
+            container?.removeEventListener('scroll', updateIndicator);
+            resizeObserver.disconnect();
+        };
+    }, [activeFile, openFiles]);
+
     // --- Render ---
 
 
@@ -924,8 +969,23 @@ const EditorPanel = ({
                                     <div
                                         ref={tabsContainerRef}
                                         onScroll={handleScroll}
-                                        className="h-full whitespace-nowrap min-w-0 flex flex-row overflow-x-auto overflow-y-hidden no-scrollbar"
+                                        className="h-full whitespace-nowrap min-w-0 flex flex-row overflow-x-auto overflow-y-hidden no-scrollbar relative"
                                     >
+                                        {/* Animated Tab Indicator - Smooth sliding underline */}
+                                        <div
+                                            className="absolute bottom-0 h-[2px] pointer-events-none"
+                                            style={{
+                                                left: tabIndicator.left,
+                                                width: tabIndicator.width,
+                                                opacity: tabIndicator.visible ? 1 : 0,
+                                                background: 'linear-gradient(90deg, #327464, #4a9d89, #327464)',
+                                                backgroundSize: '200% 100%',
+                                                animation: 'tab-underline-shimmer 2s ease-in-out infinite',
+                                                boxShadow: '0 0 8px rgba(50, 116, 100, 0.5), 0 0 2px rgba(50, 116, 100, 0.8)',
+                                                transition: 'left 0.25s cubic-bezier(0.4, 0, 0.2, 1), width 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.15s ease',
+                                                borderRadius: '2px 2px 0 0',
+                                            }}
+                                        />
                                         {openFiles && openFiles.length > 0 ? openFiles.map((file, idx) => {
                                                 const isActive = activeFile && file.path === activeFile.path;
                                             const fileIcon = getFileIcon(file.name || file.path || '');
@@ -933,7 +993,11 @@ const EditorPanel = ({
                                             const pathParts = file.path.split('/').filter(Boolean);
                                             const parentPath = pathParts.length > 1 ? pathParts.slice(0, -1).join(' › ') : '';
                                             return (
-                                                <div key={`tab-wrap-${file.path}`} className="inline-flex items-center h-9 align-top flex-shrink-0">
+                                                <div 
+                                                    key={`tab-wrap-${file.path}`} 
+                                                    ref={(el) => { tabRefs.current[file.path] = el; }}
+                                                    className="inline-flex items-center h-9 align-top flex-shrink-0"
+                                                >
                                                     
 
                                                 <div
@@ -967,10 +1031,9 @@ const EditorPanel = ({
                                                         height: '100%',
                                                         borderRight: `1px solid ${TAB_TOKENS.borderSubtle}`,
                                                         borderLeft: idx === 0 ? 'none' : 'none',
-                                                        borderTop: isActive ? `2px solid ${TAB_TOKENS.primary}` : '2px solid transparent',
+                                                        borderTop: '2px solid transparent',
                                                         borderBottom: isActive ? 'none' : `1px solid ${TAB_TOKENS.borderSubtle}`,
                                                         borderRadius: isActive ? '8px 8px 0 0' : '0',
-                                                        boxShadow: isActive ? TAB_TOKENS.primaryGlow : 'none',
                                                         marginLeft: '0',
                                                         position: 'relative',
                                                     }}
