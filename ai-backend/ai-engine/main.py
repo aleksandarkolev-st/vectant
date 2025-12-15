@@ -30,20 +30,36 @@ app = FastAPI()
 
 # Initialize proactive analyzer with shared cache
 _analysis_cache = AnalysisCache(max_entries=2000, max_age_seconds=3600)
-_proactive_analyzer: Optional[ProactiveAnalyzer] = None
+_proactive_analyzer_no_ai: Optional[ProactiveAnalyzer] = None
 
 
 def get_proactive_analyzer(llm_provider=None) -> ProactiveAnalyzer:
-    """Get or create the proactive analyzer singleton."""
-    global _proactive_analyzer
-    if _proactive_analyzer is None:
-        _proactive_analyzer = ProactiveAnalyzer(
+    """
+    Get or create the proactive analyzer.
+    
+    If llm_provider is supplied, always creates a fresh analyzer with AI enabled.
+    If llm_provider is None, returns a cached analyzer with AI disabled (fast path).
+    """
+    global _proactive_analyzer_no_ai
+    
+    if llm_provider is not None:
+        # AI tier requested - create fresh analyzer with provider
+        return ProactiveAnalyzer(
             cache=_analysis_cache,
             llm_provider=llm_provider,
             enable_ai=True,
             ai_min_confidence=0.6,
         )
-    return _proactive_analyzer
+    
+    # No AI - use cached analyzer for speed
+    if _proactive_analyzer_no_ai is None:
+        _proactive_analyzer_no_ai = ProactiveAnalyzer(
+            cache=_analysis_cache,
+            llm_provider=None,
+            enable_ai=False,
+            ai_min_confidence=0.6,
+        )
+    return _proactive_analyzer_no_ai
 
 
 class FileModel(BaseModel):

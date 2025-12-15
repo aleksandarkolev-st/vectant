@@ -232,11 +232,19 @@ export default function EditorPage({ params }) {
     }, [currentContent, activeFile, hasLoadedInitialFile, analyzeCode]);
 
     // Run proactive analysis (AI-powered error detection) on content change
+    // Track pending AI analysis
+    const aiAnalysisRef = useRef(null);
+
     useEffect(() => {
         if (!activeFile || !currentContent || !hasLoadedInitialFile) return;
 
         if (proactiveTimeoutRef.current) {
             clearTimeout(proactiveTimeoutRef.current);
+        }
+
+        // Cancel any pending AI analysis when content changes
+        if (aiAnalysisRef.current) {
+            aiAnalysisRef.current.cancelled = true;
         }
 
         // Debounce proactive analysis to avoid overwhelming the backend
@@ -253,21 +261,46 @@ export default function EditorPage({ params }) {
             }
 
             setIsAnalyzingProactive(true);
+            
+            // STEP 1: Run fast static+semantic analysis first for immediate feedback
             analyzeProactive({
                 code: typeof currentContent === 'string' ? currentContent : '',
                 lang: normalizedLang,
                 filePath: activeFile?.path || activeFile?.name || 'untitled',
-                includeAi: false, // Disable slow AI tier for fast responsive UX - use static+semantic only
+                includeAi: false, // Fast tier first
             })
-                .then((result) => {
-                    const diags = result?.diagnostics || result?.data?.diagnostics || [];
-                    setDiagnostics(diags);
+                .then((fastResult) => {
+                    const fastDiags = fastResult?.diagnostics || fastResult?.data?.diagnostics || [];
+                    setDiagnostics(fastDiags);
+                    lastProactiveSignatureRef.current = signature;
+                    setIsAnalyzingProactive(false);
+                    
+                    // STEP 2: Run AI analysis in background for logic error detection
+                    const aiTracker = { cancelled: false };
+                    aiAnalysisRef.current = aiTracker;
+                    
+                    analyzeProactive({
+                        code: typeof currentContent === 'string' ? currentContent : '',
+                        lang: normalizedLang,
+                        filePath: activeFile?.path || activeFile?.name || 'untitled',
+                        includeAi: true, // AI tier for logic errors
+                    })
+                        .then((aiResult) => {
+                            // Only update if not cancelled
+                            if (!aiTracker.cancelled) {
+                                const aiDiags = aiResult?.diagnostics || aiResult?.data?.diagnostics || [];
+                                // Merge AI diagnostics with existing (AI tier adds more, doesn't replace)
+                                setDiagnostics(aiDiags);
+                            }
+                        })
+                        .catch((err) => {
+                            if (!aiTracker.cancelled) {
+                                console.error('AI analysis failed:', err);
+                            }
+                        });
                 })
                 .catch((err) => {
                     console.error('Proactive analysis failed', err);
-                })
-                .finally(() => {
-                    lastProactiveSignatureRef.current = signature;
                     setIsAnalyzingProactive(false);
                 });
         }, 300); // Fast 300ms debounce for near-realtime feedback
