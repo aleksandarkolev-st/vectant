@@ -759,14 +759,10 @@ const EditorPanel = ({
     }, []);
 
     const handleCodeChange = useCallback((newCode) => {
-        // DEBUG: Log when onChange is called
-        console.debug('[Editor] handleCodeChange called, code length:', newCode?.length);
-        
         // CRITICAL: Only process changes if we're bound to the correct file
         // This prevents stale onChange handlers from writing content to the wrong file
         // during file transitions.
         if (activeFile && boundFilePathRef.current && boundFilePathRef.current !== activeFile.path) {
-            console.debug('[Editor] Ignoring onChange for stale file binding', boundFilePathRef.current, 'vs', activeFile.path);
             return;
         }
         
@@ -775,7 +771,6 @@ const EditorPanel = ({
         // executeEdits which triggers onChange. If we push to Redux, it would cause the 
         // value prop to change, triggering another setValue, conflicting with LSP versioning.
         if (collabBindingRef.current?.isApplyingRemote?.()) {
-            console.debug('[Editor] Ignoring onChange - remote changes being applied');
             latestCodeRef.current = newCode;
             return;
         }
@@ -784,7 +779,6 @@ const EditorPanel = ({
         latestCodeRef.current = newCode;
         if (!pendingContentFrameRef.current) {
             pendingContentFrameRef.current = requestAnimationFrame(() => {
-                console.debug('[Editor] Dispatching updateContent');
                 dispatch(updateContent(latestCodeRef.current));
                 pendingContentFrameRef.current = null;
             });

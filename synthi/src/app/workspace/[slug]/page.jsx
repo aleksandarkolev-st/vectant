@@ -257,12 +257,10 @@ export default function EditorPage({ params }) {
                 code: typeof currentContent === 'string' ? currentContent : '',
                 lang: normalizedLang,
                 filePath: activeFile?.path || activeFile?.name || 'untitled',
-                includeAi: true, // Enable AI analysis for better detection
+                includeAi: false, // Disable slow AI tier for fast responsive UX - use static+semantic only
             })
                 .then((result) => {
-                    console.log('[ProactiveAnalysis] Result:', result);
                     const diags = result?.diagnostics || result?.data?.diagnostics || [];
-                    console.log('[ProactiveAnalysis] Diagnostics:', diags);
                     setDiagnostics(diags);
                 })
                 .catch((err) => {
@@ -272,7 +270,7 @@ export default function EditorPage({ params }) {
                     lastProactiveSignatureRef.current = signature;
                     setIsAnalyzingProactive(false);
                 });
-        }, 800); // Slightly longer debounce than static analysis
+        }, 300); // Fast 300ms debounce for near-realtime feedback
 
         return () => {
             if (proactiveTimeoutRef.current) {

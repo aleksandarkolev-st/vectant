@@ -163,6 +163,7 @@ export const useEditorProviders = ({
                                 (fix.location?.endColumn ?? (marker.endColumn - 1)) + 1
                             );
                             
+                            // Monaco IWorkspaceTextEdit format requires resource, textEdit, and versionId
                             actions.push({
                                 title: fix.description || 'Apply fix',
                                 kind: 'quickfix',
@@ -171,7 +172,8 @@ export const useEditorProviders = ({
                                 edit: {
                                     edits: [{
                                         resource: model.uri,
-                                        edit: {
+                                        versionId: undefined,
+                                        textEdit: {
                                             range: fixRange,
                                             text: fix.replacementText || '',
                                         },
