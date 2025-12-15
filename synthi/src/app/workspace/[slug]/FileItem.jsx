@@ -342,8 +342,8 @@ useEffect(() => {
         ref={fileContentRef}
         data-node-path={item.path}
         data-node-name={item.name}
-        className={`file-item relative group flex items-center py-1.5 px-2 rounded-md hover:bg-[#1f2433] cursor-pointer transition-all ${
-          isSelected ? 'bg-[#262f44] border-l-[3px] border-[#63e6be]' : 'border-l-[3px] border-transparent'
+        className={`file-item relative group flex items-center py-1.5 px-2 rounded-md hover:bg-[#1d2230] cursor-pointer transition-all ${
+          isSelected ? 'bg-[#1f2d4a] border-l-[3px] border-[#7fffe1] shadow-[0_0_0_1px_rgba(127,255,225,0.18)]' : 'border-l-[3px] border-transparent'
         }`}
         style={itemStyle}
         onClick={handleClick}

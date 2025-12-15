@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Send, X, Plus, ChevronDown, ChevronRight, Sparkles, Eye, FileCode, Paperclip } from 'lucide-react';
+import { Send, X, Plus, ChevronDown, ChevronRight, Sparkles, FileCode, Paperclip } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -405,11 +405,11 @@ const AIChatWindow = ({
                                                         return (
                                                             <div
                                                                 key={`${suggestion.path}-${suggestion.status}-${idx}`}
-                                                                className="rounded-lg border border-[#27272a] bg-[#0f0f12] overflow-hidden min-w-0"
+                                                                className="rounded-lg border border-[#2f2f35] bg-[#0d0d11] overflow-hidden min-w-0 shadow-[0_8px_24px_rgba(0,0,0,0.28)]"
                                                                 style={codeContainerStyle}
                                                             >
                                                                 {/* File header - visually dominant */}
-                                                                <div className="flex items-center justify-between gap-3 px-3 py-2.5 bg-[#18181b] border-b border-[#27272a]">
+                                                                <div className="flex items-center justify-between gap-3 px-3 py-2 bg-[#141418] border-b border-[#1f1f23]">
                                                                     <div className="flex items-center gap-3 min-w-0 flex-1">
                                                                         <button
                                                                             onClick={async () => {
@@ -468,12 +468,12 @@ const AIChatWindow = ({
                                                                         </div>
                                                                     </div>
                                                                     {/* Status badge */}
-                                                                    <div className={`flex-shrink-0 px-2.5 py-1 rounded-full text-[11px] font-semibold uppercase tracking-wide ${fileSuggestionStatusClasses(suggestion.status)}`}>
+                                                                    <div className={`flex-shrink-0 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide opacity-80 ${fileSuggestionStatusClasses(suggestion.status)}`}>
                                                                         {badgeText}
                                                                     </div>
                                                                 </div>
                                                                 {/* Actions bar */}
-                                                                <div className="flex items-center justify-between gap-2 px-3 py-2 bg-[#131316] border-b border-[#1f1f23]">
+                                                                <div className="flex items-center justify-between gap-2 px-3 py-1.5 bg-[#111116] border-b border-[#1c1c20]">
                                                                     <button
                                                                         className="text-[#71717a] hover:text-[#e4e4e7] text-xs flex items-center gap-1 font-medium transition-colors"
                                                                         onClick={() => toggleFilePreview(suggestion.path)}
@@ -482,22 +482,22 @@ const AIChatWindow = ({
                                                                         {collapsed ? 'Show diff' : 'Hide diff'}
                                                                     </button>
                                                                     {suggestion.status === 'pending' && msg.role === 'suggestion-live' && (
-                                                                        <div className="flex items-center gap-2">
-                                                                            {/* Preview - tertiary (subtle) */}
+                                                                        <div className="flex items-center gap-4">
+                                                                            {/* Preview - tertiary (very passive) */}
                                                                             {!suggestion.isNewFile && !suggestion.deleteFile && !suggestion.deleteFolder && !suggestion.isFolder && (
                                                                                 <button
                                                                                     disabled={Boolean(suggestion.error)}
                                                                                     onClick={() => handlePreviewFileSuggestion(activeSession?.id || activeSessionId, suggestion.path)}
-                                                                                    className="text-xs font-medium text-[#71717a] hover:text-[#a1a1aa] px-2 py-1 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                                                                    className="text-[11px] font-medium text-[#6b7280] hover:text-[#9ca3af] px-1.5 py-1 rounded disabled:opacity-40 disabled:cursor-not-allowed"
                                                                                 >
-                                                                                    <Eye className="w-3.5 h-3.5 inline mr-1" />Preview
+                                                                                    Preview
                                                                                 </button>
                                                                             )}
-                                                                            {/* Reject - secondary (outlined) */}
+                                                                            {/* Reject - neutral */}
                                                                             <button
                                                                                 disabled={suggestion.status !== 'pending'}
                                                                                 onClick={() => handleRejectFileSuggestion(activeSession?.id || activeSessionId, suggestion.path)}
-                                                                                className="text-xs font-semibold text-[#a1a1aa] hover:text-white px-3 py-1.5 rounded-md border border-[#3f3f46] hover:border-[#52525b] bg-transparent hover:bg-[#27272a] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                                                                                className="text-[11px] font-semibold text-red-500 opacity-75 py-1 rounded-md hover:border-[#3a3b41] bg-transparent hover:-translate-y-1 cursor-pointer hover:underline duration-300 hover:opacity-100 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                                                                             >
                                                                                 Reject
                                                                             </button>
@@ -505,7 +505,7 @@ const AIChatWindow = ({
                                                                             <button
                                                                                 disabled={suggestion.status !== 'pending' || Boolean(suggestion.error)}
                                                                                 onClick={() => handleApplyFileSuggestion(activeSession?.id || activeSessionId, suggestion.path)}
-                                                                                className="text-xs font-semibold text-white px-4 py-1.5 rounded-md bg-[#4aba9a] hover:bg-[#3da88a] border border-[#4aba9a] hover:border-[#3da88a] shadow-sm shadow-[#4aba9a]/20 transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none"
+                                                                                className="text-xs font-semibold text-emerald-400 hover:-translate-y-1 cursor-pointer duration-300 opacity-75 hover:opacity-100 py-1 rounded-md shadow-sm hover:underline transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none"
                                                                             >
                                                                                 Apply
                                                                             </button>
@@ -519,7 +519,7 @@ const AIChatWindow = ({
                                                                     </div>
                                                                 ) : !collapsed ? (
                                                                     <div
-                                                                        className="max-h-[50vh] min-h-[100px] overflow-auto overflow-x-auto text-xs font-mono bg-[#09090b] ai-diff-code min-w-0 w-full max-w-full"
+                                                                        className="max-h-[45vh] min-h-[80px] overflow-auto overflow-x-auto text-xs font-mono bg-[#09090b] ai-diff-code min-w-0 w-full max-w-full"
                                                                         style={codeContainerStyle}
                                                                     >
                                                                         {renderDiffChunkList(suggestion.chunks)}
@@ -530,9 +530,9 @@ const AIChatWindow = ({
                                                     })}
                                                 </div>
                                             ) : snapshot.suggestedCode ? (
-                                                <div className="rounded-lg border border-[#27272a] bg-[#0f0f12] overflow-hidden min-w-0">
+                                                <div className="rounded-lg border border-[#2f2f35] bg-[#0d0d11] overflow-hidden min-w-0 shadow-[0_8px_24px_rgba(0,0,0,0.28)]">
                                                     {/* Header */}
-                                                    <div className="flex items-center justify-between px-3 py-2.5 bg-[#18181b] border-b border-[#27272a]">
+                                                    <div className="flex items-center justify-between px-3 py-2 bg-[#141418] border-b border-[#1f1f23]">
                                                         <div className="flex items-center gap-2">
                                                             <Sparkles className="w-4 h-4 text-[#4aba9a]" />
                                                             <span className="text-[13px] font-semibold text-[#e4e4e7]">AI Suggestion</span>
@@ -545,17 +545,17 @@ const AIChatWindow = ({
                                                         </div>
                                                         {snapshot.suggestedCode && msg.role === 'suggestion-live' && (
                                                             <div className="flex items-center gap-2">
-                                                                {/* Reject - secondary */}
+                                                                {/* Reject - neutral */}
                                                                 <button
                                                                     onClick={() => { setSuggestionExpanded(false); rejectSuggestion(); }}
-                                                                    className="text-xs font-semibold text-[#a1a1aa] hover:text-white px-3 py-1.5 rounded-md border border-[#3f3f46] hover:border-[#52525b] bg-transparent hover:bg-[#27272a] transition-all"
+                                                                    className="text-[11px] font-semibold text-red-500 px-2.5 py-1.25 rounded-md border border-[#2f3035] hover:border-[#3a3b41] bg-transparent hover:bg-[#18181f] transition-all"
                                                                 >
                                                                     Reject
                                                                 </button>
                                                                 {/* Apply - primary */}
                                                                 <button
                                                                     onClick={() => { setSuggestionExpanded(false); applySuggestion(); }}
-                                                                    className="text-xs font-semibold text-white px-4 py-1.5 rounded-md bg-[#4aba9a] hover:bg-[#3da88a] border border-[#4aba9a] shadow-sm shadow-[#4aba9a]/20 transition-all"
+                                                                    className="text-xs font-semibold px-4 text-emerald-400 py-1.5 rounded-md bg-[#4aba9a] hover:bg-[#3da88a] border border-[#4aba9a] shadow-sm shadow-[#4aba9a]/20 transition-all"
                                                                 >
                                                                     Apply
                                                                 </button>
@@ -563,7 +563,7 @@ const AIChatWindow = ({
                                                         )}
                                                     </div>
                                                     {/* Toggle bar */}
-                                                    <div className="flex items-center justify-between px-3 py-2 bg-[#131316] border-b border-[#1f1f23]">
+                                                    <div className="flex items-center justify-between px-3 py-1.5 bg-[#111116] border-b border-[#1c1c20]">
                                                         <span className="text-[11px] text-[#71717a] font-medium">Preview diff</span>
                                                         <button
                                                             className="text-[#71717a] hover:text-[#e4e4e7] text-xs flex items-center gap-1 font-medium transition-colors"
@@ -575,7 +575,7 @@ const AIChatWindow = ({
                                                     </div>
                                                     {/* Diff content */}
                                                     {suggestionExpanded && (
-                                                        <div className="max-h-[50vh] min-h-[100px] overflow-auto overflow-x-auto text-xs font-mono ai-diff-code min-w-0 w-full max-w-full bg-[#09090b]">
+                                                        <div className="max-h-[45vh] min-h-[80px] overflow-auto overflow-x-auto text-xs font-mono ai-diff-code min-w-0 w-full max-w-full bg-[#09090b]">
                                                             {renderDiffChunkList(snapshot.diffChunks || [])}
                                                         </div>
                                                     )}

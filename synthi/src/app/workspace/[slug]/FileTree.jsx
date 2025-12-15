@@ -149,7 +149,7 @@ const FileTreeView = ({
     >
       <ContextMenuTrigger asChild>
         <div
-          className="w-full h-full select-none bg-[#151929] text-[#f8f9fb] flex flex-col border-r border-[#363c4d]"
+          className="w-full h-full select-none bg-[#0f1422] text-[#f8f9fb] flex flex-col border-r border-[#252a38]"
           onClick={() => {
             setContextTarget(null);
           }}
@@ -157,7 +157,7 @@ const FileTreeView = ({
           onMouseLeave={() => setIsTreeHovered(false)}
         >
           {/* Header - Better separation */}
-          <div className={`px-3 py-1 flex items-center ${isRightSide ? 'flex-row-reverse' : ''} justify-between border-b border-[#363c4d] sticky top-0 bg-[#151929] z-10`}>
+          <div className={`px-3 py-1 flex items-center ${isRightSide ? 'flex-row-reverse' : ''} justify-between border-b border-[#252a38] sticky top-0 bg-[#10172a] z-10`}>
             <div className="flex items-center gap-2">
               <span className="text-[11px] font-semibold tracking-widest uppercase text-[#f1f3f8]">
                 Explorer
