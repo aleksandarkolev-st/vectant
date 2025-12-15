@@ -23,37 +23,37 @@ export default function StatusBar({
   // Detect language from active file extension
   const language = activeFile?.name ? getMonacoLanguage(activeFile.name) : 'plaintext';
   
-  // Determine compiler status styling with Synthi brand colors
+  // Determine compiler status styling with better contrast for critical states
   const getCompilerStatusStyle = () => {
     switch (compilerStatus) {
       case 'connected':
         return { 
           dot: 'bg-[#4ade80]', 
           text: 'Connected',
-          pillBorder: 'border-[#4ade8040]',
+          pillBorder: 'border-[#4ade8050]',
           textColor: 'text-[#4ade80]'
         };
       case 'connecting':
         return { 
           dot: 'bg-[#fbbf24] animate-pulse', 
           text: 'Connecting...',
-          pillBorder: 'border-[#fbbf2440]',
+          pillBorder: 'border-[#fbbf2450]',
           textColor: 'text-[#fbbf24]'
         };
       case 'error':
         return { 
-          dot: 'bg-[#ff5757]', 
+          dot: 'bg-[#ff5757] animate-pulse', 
           text: 'Error',
-          pillBorder: 'border-[#ff575740]',
-          textColor: 'text-[#ff5757]'
+          pillBorder: 'border-[#ff575750]',
+          textColor: 'text-[#ff5757] font-semibold'
         };
       case 'disconnected':
       default:
         return { 
-          dot: 'bg-[#6b7089]', 
+          dot: 'bg-[#5a6178]', 
           text: 'Disconnected',
-          pillBorder: 'border-[#32334a]',
-          textColor: 'text-[#6b7089]'
+          pillBorder: 'border-[#2a2b38]',
+          textColor: 'text-[#5a6178]'
         };
     }
   };
@@ -61,35 +61,39 @@ export default function StatusBar({
   const statusStyle = getCompilerStatusStyle();
 
   return (
-    <div className="h-6 flex-shrink-0 flex items-center justify-between px-2 bg-[#0a0b10] border-t border-[#1c1d26] text-[11px] select-none font-[var(--font-ui)]">
-      {/* Left Section */}
-      <div className="flex items-center gap-2">
+    <div className="h-7 flex-shrink-0 flex items-center justify-between px-3 bg-[#08090d] border-t-2 border-[#1a1b24] text-[12px] select-none font-[var(--font-ui)]">
+      {/* Left Section - Grouped info */}
+      <div className="flex items-center gap-3">
         {/* Branch Selector - Compact with pill style */}
-        <div className="flex items-center rounded-full px-1">
+        <div className="flex items-center rounded-md px-1">
           <BranchSelector slug={slug} />
         </div>
         
-        <div className="w-px h-3 bg-[#1c1d26]"></div>
+        <div className="w-px h-4 bg-[#1a1b24]"></div>
         
-        {/* Compiler Status - Pill/Badge shaped indicator */}
-        <div className={`flex items-center gap-1.5 px-2.5 py-0.5 ${statusStyle.pillBg} transition-all cursor-default`}>
-          <Cpu className={`w-3 h-3 ${statusStyle.textColor}`} strokeWidth={2} />
-          <div className={`w-1.5 h-1.5 rounded-full ${statusStyle.dot}`} />
-          <span className={`${statusStyle.textColor} font-medium`}>{statusStyle.text}</span>
+        {/* Compiler Status - Pill/Badge shaped indicator with better contrast */}
+        <div className={`flex items-center gap-2 px-2.5 py-1 ${statusStyle.pillBg} transition-all cursor-default`}>
+          <Cpu className={`w-3.5 h-3.5 ${statusStyle.textColor}`} strokeWidth={2} />
+          <div className={`w-2 h-2 rounded-full ${statusStyle.dot}`} />
+          <span className={`${statusStyle.textColor} font-semibold`}>{statusStyle.text}</span>
         </div>
       </div>
       
-      {/* Right Section */}
-      <div className="flex items-center mr-1">
-        {/* Line/Column - Pill style */}
-        <div className="flex items-center gap-1 px-2.5 py-0.5 rounded-full cursor-pointer hover:border-[#32746440] transition-colors">
-          <span className="text-[#a8adc0]">Ln {position.lineNumber}, Col {position.column}</span>
+      {/* Right Section - Better grouped */}
+      <div className="flex items-center gap-3 mr-1">
+        {/* Line/Column - Clearer */}
+        <div className="flex items-center gap-1 px-2 py-0.5 rounded-md cursor-pointer hover:bg-[#101118] transition-colors">
+          <span className="text-[#9ba2b8] font-medium">Ln {position.lineNumber}</span>
+          <span className="text-[#5a6178]">:</span>
+          <span className="text-[#9ba2b8] font-medium">Col {position.column}</span>
         </div>
         
+        <div className="w-px h-4 bg-[#1a1b24]"></div>
+        
         {/* Language - Pill style with accent on hover */}
-        <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full cursor-pointer hover:border-[#32746440] hover:bg-[#32746410] transition-all">
-          <Zap className="w-3 h-3 text-[#327464]" strokeWidth={2} />
-          <span className="text-[#a8adc0] capitalize">{language}</span>
+        <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-pointer hover:bg-[#3a857415] transition-all">
+          <Zap className="w-3.5 h-3.5 text-[#3a8574]" strokeWidth={2} />
+          <span className="text-[#9ba2b8] font-medium capitalize">{language}</span>
         </div>
       </div>
     </div>

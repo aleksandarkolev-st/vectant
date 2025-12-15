@@ -3,11 +3,11 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { use } from 'react';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent } from '@/redux/workspaceSlice';
-import { 
-    selectShowTerminal, 
-    selectTreeOnRight, 
-    toggleTerminal, 
-    setTreeOrientation 
+import {
+    selectShowTerminal,
+    selectTreeOnRight,
+    toggleTerminal,
+    setTreeOrientation
 } from '@/redux/uiSlice';
 import TopNav from '../TopNav.jsx';
 import {
@@ -110,7 +110,7 @@ export default function EditorPage({ params }) {
         setCompletionClearSignal((v) => v + 1);
     }, []);
     const [aiBusy, setAiBusy] = useState(false);
-    
+
     // 1. Consume the slug parameter and initiate fetch
     const { slug } = use(params);
     const [workspaceMissing, setWorkspaceMissing] = useState(false);
@@ -131,10 +131,10 @@ export default function EditorPage({ params }) {
                             // Non-404 errors: log and do not display the not-found modal
                             console.error('Failed to fetch workspace files:', message);
                         }
-                        } else {
-                            // Successful
-                            setWorkspaceMissing(false);
-                            setWorkspaceMissingMessage('');
+                    } else {
+                        // Successful
+                        setWorkspaceMissing(false);
+                        setWorkspaceMissingMessage('');
                     }
                 } catch (e) {
                     const msg = e?.message || String(e);
@@ -162,10 +162,10 @@ export default function EditorPage({ params }) {
     const [initialContent, setInitialContent] = useState('');
     const [hasInitialSnapshot, setHasInitialSnapshot] = useState(false);
 
-    
+
     // Track if we've loaded the initial file content
     const [hasLoadedInitialFile, setHasLoadedInitialFile] = useState(false);
-    
+
     // 3. Load content for the initially selected file
     useEffect(() => {
         if (activeFile && !hasLoadedInitialFile) {
@@ -173,7 +173,7 @@ export default function EditorPage({ params }) {
             setHasLoadedInitialFile(true);
         }
     }, [activeFile, hasLoadedInitialFile, dispatch]);
-    
+
     // Local state for layout management (used to force remount of ResizablePanelGroup)
     const [panelGroupKey, setPanelGroupKey] = useState(0);
 
@@ -208,12 +208,12 @@ export default function EditorPage({ params }) {
                 lang: normalizedLang,
                 code: typeof currentContent === 'string' ? currentContent : '',
             })
-            .catch((err) => {
-                console.error('Static analysis failed', err);
-            })
-            .finally(() => {
-                lastAnalyzedSignatureRef.current = signature;
-            });
+                .catch((err) => {
+                    console.error('Static analysis failed', err);
+                })
+                .finally(() => {
+                    lastAnalyzedSignatureRef.current = signature;
+                });
         }, 500);
 
         return () => {
@@ -239,14 +239,14 @@ export default function EditorPage({ params }) {
             console.warn('No active file selected for compilation.');
             return;
         }
-        
+
         // Dispatch optimistic "compiling" status immediately for fast feedback
         if (typeof window !== 'undefined') {
             window.dispatchEvent(new CustomEvent('synthi:hmr-status', {
                 detail: { status: 'compiling', module: activeFile?.name || 'unknown' }
             }));
         }
-        
+
         const source = typeof currentContent === 'string' ? currentContent : '';
         // Use the full path to preserve directory structure in the worker
         const filename = activeFile?.path || activeFile?.name || 'main';
@@ -275,10 +275,10 @@ export default function EditorPage({ params }) {
 
         let additionalFiles = [];
         try {
-             additionalFiles = await resolveDependencies(activeFile, rawFiles, getContentForDependency);
+            additionalFiles = await resolveDependencies(activeFile, rawFiles, getContentForDependency);
         } catch (e) {
-             console.error("Dependency resolution failed", e);
-             appendBuildLog(`Warning: Dependency resolution failed: ${e.message}`);
+            console.error("Dependency resolution failed", e);
+            appendBuildLog(`Warning: Dependency resolution failed: ${e.message}`);
         }
 
         try {
@@ -301,14 +301,14 @@ export default function EditorPage({ params }) {
 
     const handleSave = useCallback(async () => {
         if (!activeFile) return;
-        
+
         // Dispatch optimistic "compiling" status immediately for fast feedback
         if (typeof window !== 'undefined') {
             window.dispatchEvent(new CustomEvent('synthi:hmr-status', {
                 detail: { status: 'compiling', module: activeFile?.name || 'unknown' }
             }));
         }
-        
+
         // Similar to handleRun but silent and doesn't force terminal open
         const source = typeof currentContent === 'string' ? currentContent : '';
         const filename = activeFile?.path || activeFile?.name || 'main';
@@ -330,9 +330,9 @@ export default function EditorPage({ params }) {
 
         let additionalFiles = [];
         try {
-             additionalFiles = await resolveDependencies(activeFile, rawFiles, getContentForDependency);
+            additionalFiles = await resolveDependencies(activeFile, rawFiles, getContentForDependency);
         } catch (e) {
-             console.error("Dependency resolution failed during save", e);
+            console.error("Dependency resolution failed during save", e);
         }
 
         try {
@@ -400,7 +400,7 @@ export default function EditorPage({ params }) {
     );
 
     const FileTreePanel = (
-        <ResizablePanel defaultSize={15} minSize={12} maxSize={35} className={`${treeOnRight? 'border-l' : 'border-r'} border-[#27272a] bg-[#09090b]`}>
+        <ResizablePanel defaultSize={20} minSize={12} maxSize={35} className={`${treeOnRight ? 'border-l' : 'border-r'} border-[#27272a] bg-[#09090b]`}>
             <div className="flex h-full min-w-0">
                 <ActivityBar
                     active={sidebarView}
@@ -447,79 +447,80 @@ export default function EditorPage({ params }) {
 
     return (
         <div className={`flex flex-col h-screen overflow-hidden bg-[#09090b] text-[#D7DAE0]`}>
-        <div className={`flex flex-col h-screen bg-[#1e1e1e] text-gray-200`}>
-            {/* Hydrate workspace-specific tabs from localStorage */}
-            <WorkspaceHydrator slug={slug} />
-            <TopNav
-                title={activeFile? activeFile.name : 'Synthi Workspace'}
-                onRun={handleRun}
-                onToggleTerminal={() => dispatch(toggleTerminal())}
-                onUndo={handleUndo}
-                onRedo={handleRedo}
-                onToggleChat={handleToggleChat}
-                chatVisible={chatVisible}
-                onCopyLineUp={handleCopyLineUp}
-                onCopyLineDown={handleCopyLineDown}
-                onMoveLineUp={handleMoveLineUp}
-                onMoveLineDown={handleMoveLineDown}
-                onDuplicateSelection={handleDuplicateSelection}
-            />
-            {buildLogs.length > 0 && (
-                <div className="border-b border-[#1a1a1e] bg-[#09090b] px-3 py-2 text-xs font-mono text-[#D7DAE0] max-h-28 overflow-auto">
-                    {buildLogs.map((line, idx) => (
-                        <div key={idx} className="leading-5 whitespace-pre-wrap">{line}</div>
-                    ))}
-                </div>
-            )}
-            <DraggableVideoWidget
-                guiConfig={guiConfig}
-                setGuiConfig={setGuiConfig}
-                isGuiRunning={isGuiRunning}
-                setIsGuiRunning={setIsGuiRunning}
-                mediaStream={mediaStream}
-                sendGuiEvent={sendGuiEvent}
-            />
-            <ResizablePanelGroup
-                direction="horizontal"
-                className="flex-1 min-h-0"
-                key={panelGroupKey}
-            >
-                {treeOnRight ? (
-                    <>
-                        {EditorPanelComponent}
-                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                        {FileTreePanel}
-                        {chatVisible && (
-                            <>
-                                            <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                                            {ChatPanel}
-                            </>
-                        )}
-                    </>
-                ) : (
-                    <>
-                        {FileTreePanel}
-                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                        {EditorPanelComponent}
-                        {chatVisible && (
-                            <>
-                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                                {ChatPanel}
-                            </>
-                        )}
-                    </>
+            <div className={`flex flex-col h-screen bg-[#1e1e1e] text-gray-200`}>
+                {/* Hydrate workspace-specific tabs from localStorage */}
+                <WorkspaceHydrator slug={slug} />
+                <TopNav
+                    title={activeFile ? activeFile.name : 'Synthi Workspace'}
+                    onRun={handleRun}
+                    onToggleTerminal={() => dispatch(toggleTerminal())}
+                    onUndo={handleUndo}
+                    onRedo={handleRedo}
+                    onToggleChat={handleToggleChat}
+                    chatVisible={chatVisible}
+                    onCopyLineUp={handleCopyLineUp}
+                    onCopyLineDown={handleCopyLineDown}
+                    onMoveLineUp={handleMoveLineUp}
+                    onMoveLineDown={handleMoveLineDown}
+                    onDuplicateSelection={handleDuplicateSelection}
+                />
+                {buildLogs.length > 0 && (
+                    <div className="border-b border-[#1a1a1e] bg-[#09090b] px-3 py-2 text-xs font-mono text-[#D7DAE0] max-h-28 overflow-auto">
+                        {buildLogs.map((line, idx) => (
+                            <div key={idx} className="leading-5 whitespace-pre-wrap">{line}</div>
+                        ))}
+                    </div>
                 )}
-            </ResizablePanelGroup>
+                <DraggableVideoWidget
+                    guiConfig={guiConfig}
+                    setGuiConfig={setGuiConfig}
+                    isGuiRunning={isGuiRunning}
+                    setIsGuiRunning={setIsGuiRunning}
+                    mediaStream={mediaStream}
+                    sendGuiEvent={sendGuiEvent}
+                />
+                <ResizablePanelGroup
+                    direction="horizontal"
+                    className="flex-1 min-h-0"
+                    key={panelGroupKey}
+                >
+                    {treeOnRight ? (
+                        <>
+                            {EditorPanelComponent}
+                            <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                            {FileTreePanel}
+                            {chatVisible && (
+                                <>
+                                    <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                    {ChatPanel}
+                                </>
+                            )}
+                        </>
+                    ) : (
+                        <>
+                            {FileTreePanel}
+                            <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                            {EditorPanelComponent}
+                            {chatVisible && (
+                                <>
+                                    <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                    {ChatPanel}
+                                </>
+                            )}
+                        </>
+                    )}
+                </ResizablePanelGroup>
 
-            {/* Chat is rendered inside the ResizablePanelGroup when visible (see `ChatPanel`) */}
-            
-            {/* Status Bar - VS Code style bottom bar with branch selector */}
-            <StatusBar 
-                slug={slug}
-            />
-            
-            {/* Error Overlay for compile/runtime errors */}
-            <ErrorOverlay />
+                {/* Chat is rendered inside the ResizablePanelGroup when visible (see `ChatPanel`) */}
+
+                {/* Status Bar - VS Code style bottom bar with branch selector */}
+                <StatusBar
+                    slug={slug}
+                />
+
+                {/* Error Overlay for compile/runtime errors */}
+                <ErrorOverlay />
+            </div>
         </div>
     );
 }

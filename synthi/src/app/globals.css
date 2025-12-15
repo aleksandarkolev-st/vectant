@@ -6,17 +6,21 @@
 
 /* ===== SYNTHI PREMIUM DARK PALETTE - Distinctive Brand Theme ===== */
 :root {
-  /* Dark Blue-Gray Backgrounds (Unique Synthi Style) */
-  --bg-app: #0a0b10;
-  --bg-editor: #0d0e14;
-  --bg-sidebar: #090a0f;
-  --bg-panel: #12131a;
-  --border-subtle: #1c1d26;
-  --border-medium: #252633;
-  --border-focus: #32334a;
-  --text-primary: #f0f2f5;
-  --text-secondary: #a8adc0;
-  --text-muted: #6b7089;
+  /* Dark Blue-Gray Backgrounds (Unique Synthi Style) - More extreme contrast */
+  --bg-app: #08090d;
+  --bg-editor: #0c0d12;
+  --bg-sidebar: #070810;
+  --bg-panel: #101118;
+  --bg-surface: #14151d;
+  --bg-elevated: #1a1b24;
+  --border-subtle: #1a1b24;
+  --border-medium: #2a2b38;
+  --border-focus: #3a3b52;
+  --border-strong: #42445a;
+  --text-primary: #f4f5f8;
+  --text-secondary: #9ba2b8;
+  --text-muted: #5a6178;
+  --text-dim: #3d4256;
   
   /* Synthi Brand Accent - Teal #327464 */
   --accent-primary: #327464;
@@ -29,14 +33,14 @@
   --accent-success: #4ade80;
   --accent-warning: #fbbf24;
   
-  /* Synthi Syntax Highlighting - Unique Pastel Theme */
-  --syntax-keyword: #327464;
+  /* Synthi Syntax Highlighting - Unique Pastel Theme with better contrast */
+  --syntax-keyword: #3a8574;
   --syntax-string: #a8e6cf;
-  --syntax-function: #88c0fc;
-  --syntax-comment: #5a5f7a;
-  --syntax-preprocessor: #c4b5fd;
-  --syntax-number: #ffd93d;
-  --syntax-type: #7dd3fc;
+  --syntax-function: #7cb8f8;
+  --syntax-comment: #454a5e;
+  --syntax-preprocessor: #b8a8f0;
+  --syntax-number: #f5d142;
+  --syntax-type: #8ad4ff;
   
   /* Shadows for depth */
   --shadow-panel: 0 2px 8px rgba(0, 0, 0, 0.6);
@@ -480,4 +484,79 @@
   font-size: 12px;
   color: #f0f2f5;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+/* ===== Typography Hierarchy System ===== */
+.synthi-heading {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+
+.synthi-label {
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.synthi-body {
+  font-weight: 400;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.synthi-dim {
+  color: var(--text-dim);
+  opacity: 0.7;
+}
+
+/* Inactive content - aggressive dim */
+.synthi-inactive {
+  opacity: 0.5;
+  transition: opacity 0.15s ease;
+}
+.synthi-inactive:hover {
+  opacity: 0.85;
+}
+
+/* Chevron animation for AI chat input controls */
+@keyframes chevron-float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes chevron-bounce {
+  0%, 100% {
+    transform: rotate(180deg) translateY(0px);
+  }
+  50% {
+    transform: rotate(180deg) translateY(2px);
+  }
+}
+
+@keyframes bounce-subtle {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+.animate-chevron-float {
+  animation: chevron-float 2s ease-in-out infinite;
+}
+
+.animate-chevron-bounce {
+  animation: chevron-bounce 2s ease-in-out infinite;
+}
+
+.animate-bounce-subtle {
+  animation: bounce-subtle 2s ease-in-out infinite;
 }

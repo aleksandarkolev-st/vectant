@@ -9,20 +9,20 @@ export const EDITOR_OPTIONS = {
     fontFamily: "'JetBrains Mono', 'Geist Mono', 'Fira Code', Consolas, 'Courier New', monospace",
     fontLigatures: true, // Essential for "sleek" feel
     fontSize: 14,
-    // Line height 1.6 creates premium vertical rhythm
-    lineHeight: 22.4, // 14 * 1.6 = 22.4
+    // Line height 1.75 for improved readability
+    lineHeight: 24.5, // 14 * 1.75 = 24.5
     letterSpacing: 0.5,
     wordWrap: 'off',
     scrollBeyondLastLine: true,
     automaticLayout: true,
-    // Smooth cursor animation
+    // Smooth cursor animation with stronger visual anchor
     cursorBlinking: "smooth", // Smooth fading cursor
     cursorSmoothCaretAnimation: "on", // Cursor glides smoothly
     cursorStyle: "line", // Thin line cursor
     cursorWidth: 2, // 2px width for the line cursor
     smoothScrolling: true,
     contextmenu: false, // We use our own custom context menu
-    padding: { top: 12, bottom: 16 },
+    padding: { top: 16, bottom: 20 },
     bracketPairColorization: { enabled: true }, // VS Code style brackets
     guides: {
         indentation: true,

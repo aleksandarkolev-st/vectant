@@ -1,15 +1,16 @@
 export const fileSuggestionStatusClasses = (status) => {
     switch (status) {
         case 'saving':
-            return 'text-amber-200 bg-amber-500/10 border border-amber-500/40';
+            return 'text-amber-300 bg-amber-500/20 border border-amber-400/50';
         case 'applied':
-            return 'text-emerald-200 bg-emerald-500/10 border border-emerald-500/40';
+            return 'text-emerald-300 bg-emerald-500/20 border border-emerald-400/50';
         case 'rejected':
-            return 'text-gray-300 bg-gray-600/10 border border-gray-500/30';
+            return 'text-zinc-400 bg-zinc-600/20 border border-zinc-500/40';
         case 'error':
-            return 'text-rose-200 bg-rose-500/10 border border-rose-500/40';
+            return 'text-rose-300 bg-rose-500/20 border border-rose-400/50';
         default:
-            return 'text-amber-200 bg-amber-500/10 border border-amber-500/40';
+            // Pending - stronger yellow/amber for visibility
+            return 'text-amber-300 bg-amber-500/20 border border-amber-400/50';
     }
 };
 

@@ -342,8 +342,8 @@ useEffect(() => {
         ref={fileContentRef}
         data-node-path={item.path}
         data-node-name={item.name}
-        className={`file-item relative group flex items-center py-2 px-2 rounded-md hover:bg-[#1a1d23] cursor-pointer transition-colors ${
-          isSelected ? 'bg-[#1a1d23] border-l-2 border-[#3b82f6]' : 'border-l-2 border-transparent'
+        className={`file-item relative group flex items-center py-1.5 px-2 rounded-md hover:bg-[#1d2230] cursor-pointer transition-all ${
+          isSelected ? 'bg-[#1f2d4a] border-l-[3px] border-[#7fffe1] shadow-[0_0_0_1px_rgba(127,255,225,0.18)]' : 'border-l-[3px] border-transparent'
         }`}
         style={itemStyle}
         onClick={handleClick}
@@ -361,7 +361,7 @@ useEffect(() => {
             <ChevronIcon isOpen={isOpen} isSelected={isSelected} />
           </div>
         )}
-        <div className="w-5 h-5 mr-2.5 flex-shrink-0 flex items-center justify-center text-base">
+        <div className={`w-3.5 h-3.5 mr-2.5 flex-shrink-0 flex items-center justify-center text-sm ${isSelected ? 'opacity-98' : 'opacity-95'}`}>
           {currentIcon}
         </div>
         {/* replaced the early return block, stopping files (children from showing during rename) */}
@@ -374,12 +374,12 @@ useEffect(() => {
             onKeyDown={handleKeyDown}
             onBlur={handleBlur}
             placeholder={item.isFolder ? "Rename folder..." : "Rename file..."}
-            className="w-full bg-transparent border-none outline-none text-sm text-[#e8eaed] placeholder-[#6b7280]"
+            className="w-full bg-transparent border-none outline-none text-[12px] text-[#ffffff] placeholder-[#c7ccda]"
           />
         ) : (
           <div className="file-content flex items-center gap-2">
             <span
-              className={`text-sm truncate leading-relaxed ${isSelected ? "text-[#e8eaed] font-medium" : "text-[#9ba1ab]"}`}
+              className={`text-[12px] truncate leading-relaxed ${isSelected ? "text-[#ffffff] font-semibold" : "text-[#eef1f7]"}`}
             >
               {item.name}
             </span>
