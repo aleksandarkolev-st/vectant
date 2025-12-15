@@ -1,14 +1,14 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { fetchGitStatus, fetchRemote, commitChanges, pushChanges, pullChanges, stageFile, unstageFile, discardChange, initRepo, cloneRepo, addRemote, removeRemote, fetchRemotes, fetchCommitHistory, fetchUnpushedCommits, fetchStashList, stashPush, stashPop, stashDrop, clearError, stageAll, unstageAll, discardAll } from '@/redux/gitSlice';
-import { refreshWorkspaceThunk, openDiffThunk, fetchFilesThunk } from '@/redux/workspaceSlice';
-import { RefreshCw, Check, UploadCloud, Plus, Minus, DownloadCloud, Undo2, Globe, Trash2, Copy, Archive, ArchiveRestore } from 'lucide-react';
+import { fetchGitStatus, fetchRemote, commitChanges, pushChanges, pullChanges, stageFile, unstageFile, discardChange, initRepo, cloneRepo, addRemote, removeRemote, fetchRemotes, fetchCommitHistory, fetchUnpushedCommits, fetchIncomingCommits, fetchStashList, stashPush, stashPop, stashDrop, clearError, stageAll, unstageAll, discardAll, resolveConflictOurs, resolveConflictTheirs, markResolved, abortMerge } from '@/redux/gitSlice';
+import { refreshWorkspaceThunk, openDiffThunk, fetchFilesThunk, selectFileThunk } from '@/redux/workspaceSlice';
+import { RefreshCw, Check, UploadCloud, Plus, Minus, DownloadCloud, Undo2, Globe, Trash2, Copy, Archive, ArchiveRestore, AlertTriangle, GitMerge, X, Edit3 } from 'lucide-react';
 import { getFileLanguage } from '@/utils/fileUtils';
 
 export function GitStatus({ slug }) {
     const dispatch = useDispatch();
     const { status, loading, error, remotes, stashList } = useSelector(state => state.git);
-    const { commitHistory, unpushedCommits } = useSelector(state => state.git);
+    const { commitHistory, unpushedCommits, incomingCommits } = useSelector(state => state.git);
     const [message, setMessage] = useState('');
     const [commitBody, setCommitBody] = useState(''); // Multi-line commit body
     const [showCommitBody, setShowCommitBody] = useState(false);
@@ -26,6 +26,7 @@ export function GitStatus({ slug }) {
             dispatch(fetchRemotes(slug));
             dispatch(fetchCommitHistory({ slug }));
             dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+            dispatch(fetchIncomingCommits({ slug, max: 50 }));
             dispatch(fetchStashList(slug));
         }
     }, [slug, dispatch]);
@@ -62,6 +63,7 @@ export function GitStatus({ slug }) {
             dispatch(fetchRemotes(slug));
             dispatch(fetchCommitHistory({ slug }));
             dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+            dispatch(fetchIncomingCommits({ slug, max: 50 }));
         }
     };
 
@@ -202,6 +204,16 @@ export function GitStatus({ slug }) {
         dispatch(openDiffThunk(file));
     };
 
+    // Open conflict files in regular editor (not diff view) so the conflict banner works
+    const handleConflictFileClick = (filePath) => {
+        const file = {
+            name: filePath.split('/').pop(),
+            path: filePath,
+            language: getFileLanguage(filePath)
+        };
+        dispatch(selectFileThunk(file));
+    };
+
     const [cloneUrl, setCloneUrl] = useState('');
     const [showClone, setShowClone] = useState(false);
 
@@ -279,12 +291,45 @@ export function GitStatus({ slug }) {
 
     const staged = status.files ? status.files.filter(f => f.index !== ' ' && f.index !== '?') : [];
     const changes = status.files ? status.files.filter(f => f.working_dir !== ' ' || f.index === '?') : [];
+    
+    // Check for merge conflicts
+    const conflictedFiles = status.conflictedFiles || [];
+    const hasConflicts = status.hasConflicts || conflictedFiles.length > 0;
 
     // Note: A file can be both staged and modified (appear in both lists)
 
     const hasChanges = staged.length > 0 || changes.length > 0;
 
+    // Conflict resolution handlers
+    const handleResolveOurs = async (e, filePath) => {
+        e.stopPropagation();
+        if (slug) {
+            await dispatch(resolveConflictOurs({ slug, filePath }));
+            dispatch(refreshWorkspaceThunk());
+        }
+    };
 
+    const handleResolveTheirs = async (e, filePath) => {
+        e.stopPropagation();
+        if (slug) {
+            await dispatch(resolveConflictTheirs({ slug, filePath }));
+            dispatch(refreshWorkspaceThunk());
+        }
+    };
+
+    const handleMarkResolved = async (e, filePath) => {
+        e.stopPropagation();
+        if (slug) {
+            await dispatch(markResolved({ slug, filePath }));
+        }
+    };
+
+    const handleAbortMerge = async () => {
+        if (slug && confirm('Are you sure you want to abort the merge? All merge progress will be lost.')) {
+            await dispatch(abortMerge(slug));
+            dispatch(refreshWorkspaceThunk());
+        }
+    };
 
     return (
         <div className="flex flex-col h-full w-full overflow-hidden">
@@ -337,6 +382,73 @@ export function GitStatus({ slug }) {
                                     Authentication failed — the server attempted to push but couldn't authenticate with the remote. You can either add a remote URL with an access token (https://&lt;token&gt;@github.com/owner/repo.git) or configure SSH/credentials for the collab server.
                                 </div>
                             )}
+                    </div>
+                )}
+
+                {/* Merge Conflict Warning Banner */}
+                {hasConflicts && (
+                    <div className="mb-4 p-3 bg-orange-900/50 border border-orange-700 rounded">
+                        <div className="flex items-center gap-2 mb-2">
+                            <AlertTriangle className="w-4 h-4 text-orange-400" />
+                            <span className="text-sm font-semibold text-orange-300">Merge Conflicts Detected</span>
+                        </div>
+                        <p className="text-xs text-orange-200 mb-2">
+                            {conflictedFiles.length} file{conflictedFiles.length > 1 ? 's' : ''} have conflicts that must be resolved before you can commit.
+                        </p>
+                        <button
+                            onClick={handleAbortMerge}
+                            className="bg-orange-700 hover:bg-orange-600 text-white px-3 py-1 rounded text-xs flex items-center gap-1"
+                        >
+                            <X className="w-3 h-3" />
+                            Abort Merge
+                        </button>
+                    </div>
+                )}
+
+                {/* Conflicted Files Section */}
+                {hasConflicts && conflictedFiles.length > 0 && (
+                    <div className="mb-4">
+                        <div className="flex items-center gap-2 mb-2 px-1">
+                            <GitMerge className="w-3 h-3 text-orange-400" />
+                            <div className="text-xs font-semibold text-orange-400">MERGE CONFLICTS</div>
+                        </div>
+                        <ul className="text-sm space-y-1">
+                            {conflictedFiles.map(filePath => (
+                                <li 
+                                    key={`conflict-${filePath}`} 
+                                    className="flex items-center justify-between bg-orange-900/20 hover:bg-orange-900/30 p-2 rounded group border border-orange-800/50"
+                                    onClick={() => handleConflictFileClick(filePath)}
+                                >
+                                    <div className="flex items-center gap-2 overflow-hidden">
+                                        <AlertTriangle className="w-3 h-3 text-orange-400 flex-shrink-0" />
+                                        <span className="truncate text-orange-200" title={filePath}>{filePath}</span>
+                                    </div>
+                                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                                        <button 
+                                            onClick={(e) => handleResolveOurs(e, filePath)}
+                                            className="bg-blue-700 hover:bg-blue-600 px-2 py-0.5 rounded text-xs text-white"
+                                            title="Accept current branch (ours)"
+                                        >
+                                            Ours
+                                        </button>
+                                        <button 
+                                            onClick={(e) => handleResolveTheirs(e, filePath)}
+                                            className="bg-green-700 hover:bg-green-600 px-2 py-0.5 rounded text-xs text-white"
+                                            title="Accept incoming changes (theirs)"
+                                        >
+                                            Theirs
+                                        </button>
+                                        <button 
+                                            onClick={(e) => handleMarkResolved(e, filePath)}
+                                            className="bg-gray-600 hover:bg-gray-500 px-2 py-0.5 rounded text-xs text-white"
+                                            title="Mark as resolved (after manual edit)"
+                                        >
+                                            Resolved
+                                        </button>
+                                    </div>
+                                </li>
+                            ))}
+                        </ul>
                     </div>
                 )}
 
@@ -445,6 +557,35 @@ export function GitStatus({ slug }) {
                         </ul>
                     ) : (
                         <div className="text-xs text-[#52525b] px-1 italic">No unpushed commits</div>
+                    )}
+                </div>
+
+                {/* Incoming commits section (after fetch, before pull) */}
+                <div className="mb-4">
+                    <div className="flex justify-between items-center mb-1 px-1">
+                        <div className="text-xs font-semibold text-gray-400">INCOMING COMMITS</div>
+                            {incomingCommits && incomingCommits.length > 0 && (
+                                <div className="flex items-center gap-2">
+                                <div className="text-xs text-gray-500">{incomingCommits.length} commit{incomingCommits.length > 1 ? 's' : ''}</div>
+                                <button onClick={handlePull} className="bg-green-600 hover:bg-green-700 text-white px-2 py-0.5 rounded text-xs">Pull</button>
+                                </div>
+                        )}
+                    </div>
+                    {incomingCommits && incomingCommits.length > 0 ? (
+                                <ul className="text-sm space-y-1">
+                            {incomingCommits.map(c => (
+                                <li key={c.hash} className="p-1 rounded hover:bg-gray-800 flex items-center gap-2 border-l-2 border-green-600 pl-2">
+                                    <div className="font-mono text-xs text-green-400">{c.hash.substring(0,7)}</div>
+                                    <div className="truncate text-gray-200 text-xs">{c.message}</div>
+                                    <div className="text-xs text-gray-500 ml-auto">{c.author_name} • {c.date}</div>
+                                    <button onClick={() => navigator.clipboard.writeText(c.hash)} title="Copy hash" className="ml-2 opacity-80 hover:text-white text-gray-400 p-1 rounded">
+                                        <Copy className="w-3 h-3" />
+                                    </button>
+                                </li>
+                            ))}
+                        </ul>
+                    ) : (
+                        <div className="text-xs text-gray-600 px-1 italic">No incoming commits (fetch to check)</div>
                     )}
                 </div>
 

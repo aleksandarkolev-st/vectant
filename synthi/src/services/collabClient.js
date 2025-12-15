@@ -361,6 +361,59 @@ class CollabClient {
     return `workspace:${slug}:${safePath}`;
   }
 
+  /**
+   * Reset/invalidate a document's content, forcing a fresh load from the server.
+   * Used when local filesystem has changed (e.g., merge conflicts).
+   */
+  resetDocument(slug, path, newContent) {
+    const key = this._roomKey(slug, path);
+    const entry = this.docs.get(key);
+    if (!entry) return;
+
+    try {
+      // Update the Yjs document with the new content
+      entry.doc.transact(() => {
+        if (entry.ytext.length > 0) {
+          entry.ytext.delete(0, entry.ytext.length);
+        }
+        if (newContent) {
+          entry.ytext.insert(0, newContent);
+        }
+      });
+      // Reset the seeded flag so the content can be refreshed
+      entry._seeded = false;
+      console.log('[Collab] Reset document content for', key);
+    } catch (e) {
+      console.warn('[Collab] Failed to reset document:', e);
+    }
+  }
+
+  /**
+   * Destroy and remove a document from the cache, forcing a fresh connection on next access.
+   */
+  destroyDocument(slug, path) {
+    const key = this._roomKey(slug, path);
+    const entry = this.docs.get(key);
+    if (!entry) return;
+
+    try {
+      // Dispose all bindings
+      entry.bindings.forEach(binding => {
+        try { binding.destroy(); } catch (_) {}
+      });
+      entry.bindings.clear();
+      
+      // Destroy provider and doc
+      try { entry.provider.destroy(); } catch (_) {}
+      try { entry.doc.destroy(); } catch (_) {}
+      
+      this.docs.delete(key);
+      console.log('[Collab] Destroyed document for', key);
+    } catch (e) {
+      console.warn('[Collab] Failed to destroy document:', e);
+    }
+  }
+
   ensureDoc(slug, path) {
     const key = this._roomKey(slug, path);
     if (this.docs.has(key)) return this.docs.get(key);

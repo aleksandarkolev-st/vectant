@@ -47,6 +47,7 @@ import { useEditorProviders } from './providers';
 import { useEditorEvents } from './events';
 import { takeLastChars, useCustomScrollbar } from './utils';
 import { SYNTHI_THEME } from './theme';
+import { ConflictBanner } from './ConflictBanner';
 import * as monaco from 'monaco-editor';
 import { toast } from 'sonner';
 
@@ -62,6 +63,7 @@ const ErrorAction = {
 import { toSocket, WebSocketMessageReader, WebSocketMessageWriter } from 'vscode-ws-jsonrpc';
 import { MonacoSocketAdapter } from '@/services/MonacoSocketAdapter';
 import collabClient from '@/services/collabClient';
+import { gitClient } from '@/services/gitClient';
 import { useSession } from 'next-auth/react';
 import { useCompiler } from '@/hooks/useCompiler';
 import { CompilerStatus } from '@/services/compilerClient';
@@ -144,6 +146,10 @@ const EditorPanel = ({
     const aiAutoEnabled = useAppSelector(selectAutoCompletionEnabled);
     const showAnonymousPresence = useAppSelector(selectShowAnonymousPresence);
     const presenceGranularity = useAppSelector(selectPresenceGranularity);
+    
+    // Git status for conflict detection
+    const gitStatus = useAppSelector(state => state.git?.status);
+    const conflictedFiles = gitStatus?.conflictedFiles || [];
 
     // Local state
     const [position, setPosition] = useState({ lineNumber: 1, column: 1 });
@@ -517,6 +523,18 @@ const EditorPanel = ({
             return;
         }
 
+        // Skip Yjs collaboration for files with merge conflicts
+        // This ensures the editor shows the actual filesystem content with conflict markers
+        // rather than stale content from Yjs persistence
+        const isConflicted = conflictedFiles.includes(activeFile.path);
+        if (isConflicted) {
+            console.log('[Collab] Skipping Yjs binding for conflicted file:', activeFile.path);
+            // Destroy any existing collab doc for this file to ensure fresh content
+            try { collabClient.destroyDocument(slug, activeFile.path); } catch (e) { /* ignore */ }
+            setCollabConnected(false);
+            return;
+        }
+
         // Verify the editor is still mounted and has a valid model before binding
         const model = editorInstance.getModel?.();
         if (!model) {
@@ -574,7 +592,7 @@ const EditorPanel = ({
             setCollabConnected(false);
             setRemoteUnsaved(false);
         };
-    }, [editorInstance, monacoInstance, activeFile, slug, session, presenceGranularity, isPrivateMode]);
+    }, [editorInstance, monacoInstance, activeFile, slug, session, presenceGranularity, isPrivateMode, conflictedFiles]);
 
     // Sync local unsaved state to awareness
     useEffect(() => {
@@ -1206,6 +1224,25 @@ const EditorPanel = ({
                                     </div>
                                 </div>
                             </div>
+                        )}
+
+                        {/* Merge Conflict Banner */}
+                        {activeFile && (
+                            <ConflictBanner
+                                content={code}
+                                filePath={activeFile.path}
+                                slug={slug}
+                                onContentChange={async (newContent) => {
+                                    dispatch(updateContent(newContent));
+                                    // Also write to git filesystem to persist resolution
+                                    try {
+                                        await gitClient.writeFile(slug, activeFile.path, newContent);
+                                    } catch (e) {
+                                        console.warn('[Conflict] Failed to write resolved content:', e);
+                                    }
+                                }}
+                                editorInstance={editorInstance}
+                            />
                         )}
 
                         {/* Editor Container */}
