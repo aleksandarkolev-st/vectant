@@ -374,12 +374,14 @@ const workspaceSlice = createSlice({
                 if (state.activeFile && state.activeFile.path) {
                     const activePath = state.activeFile.path;
                     const isUnsaved = newContent !== state.savedContent;
+                    console.debug('[Redux updateContent] path:', activePath, 'isUnsaved:', isUnsaved, 
+                                  'contentLen:', newContent.length, 'savedLen:', state.savedContent?.length);
                     const idx = state.openFiles.findIndex(f => f.path === activePath);
                     if (idx !== -1) {
                         state.openFiles[idx] = { ...state.openFiles[idx], isUnsaved };
                     }
                 }
-            } catch (e) { /* ignore */ }
+            } catch (e) { console.warn('[Redux updateContent] error:', e); }
         },
         setDiffMode: (state, action) => {
             state.diffMode = action.payload;
