@@ -1,65 +1,138 @@
+// Synthi Premium Dark Theme - Distinctive Brand with Teal Accent
 export const SYNTHI_THEME = {
     base: 'vs-dark',
     inherit: true,
     rules: [
-        { token: '', foreground: 'D4D4D4' },
-        { token: 'comment', foreground: '6A9955' },
-        { token: 'string', foreground: 'CE9178' },
-        { token: 'keyword', foreground: '569CD6' },
-        { token: 'keyword.control', foreground: 'C586C0' }, // if, else, return, etc.
-        { token: 'operator', foreground: 'D4D4D4' },
-        { token: 'number', foreground: 'B5CEA8' },
-        { token: 'regexp', foreground: 'D16969' },
-        { token: 'namespace', foreground: '4EC9B0' },
+        // Base text
+        { token: '', foreground: 'f0f2f5' },
+        
+        // Comments - Muted blue-gray
+        { token: 'comment', foreground: '5a5f7a', fontStyle: 'italic' },
+        
+        // Strings - Soft Pastel Mint Green
+        { token: 'string', foreground: 'a8e6cf' },
+        { token: 'string.escape', foreground: '7dd3b4' },
+        
+        // Keywords - Synthi Teal (Primary accent)
+        { token: 'keyword', foreground: '327464' },
+        { token: 'keyword.control', foreground: '327464' },
+        { token: 'keyword.operator', foreground: '3d8b78' },
+        
+        // Operators - Light gray
+        { token: 'operator', foreground: 'a8adc0' },
+        
+        // Numbers - Warm Gold
+        { token: 'number', foreground: 'ffd93d' },
+        { token: 'number.float', foreground: 'ffd93d' },
+        { token: 'number.hex', foreground: 'ffb347' },
+        
+        // Regex - Coral
+        { token: 'regexp', foreground: 'ff6b6b' },
+        
+        // Namespace - Teal accent
+        { token: 'namespace', foreground: '3d8b78' },
 
-        // Types & Classes - Teal/Cyan
-        { token: 'type', foreground: '4EC9B0' },
-        { token: 'class', foreground: '4EC9B0' },
-        { token: 'struct', foreground: '4EC9B0' },
-        { token: 'interface', foreground: '4EC9B0' },
-        { token: 'enum', foreground: '4EC9B0' },
-        { token: 'type.identifier', foreground: '4EC9B0' },
-        { token: 'delimiter', foreground: 'D4D4D4' },
+        // Types & Classes - Sky Blue
+        { token: 'type', foreground: '7dd3fc' },
+        { token: 'class', foreground: '7dd3fc' },
+        { token: 'struct', foreground: '7dd3fc' },
+        { token: 'interface', foreground: '7dd3fc' },
+        { token: 'enum', foreground: '7dd3fc' },
+        { token: 'type.identifier', foreground: '7dd3fc' },
+        { token: 'delimiter', foreground: '6b7089' },
 
-        // Functions - Yellow
-        { token: 'function', foreground: 'DCDCAA' },
-        { token: 'method', foreground: 'DCDCAA' },
-        { token: 'identifier.function', foreground: 'DCDCAA' },
+        // Functions - Soft Blue
+        { token: 'function', foreground: '88c0fc' },
+        { token: 'method', foreground: '88c0fc' },
+        { token: 'identifier.function', foreground: '88c0fc' },
 
-        // Variables & Parameters - Light Blue
-        { token: 'variable', foreground: '9CDCFE' },
-        { token: 'parameter', foreground: '9CDCFE' },
-        { token: 'identifier', foreground: '9CDCFE' },
-        { token: 'variable.parameter', foreground: '9CDCFE' },
+        // Variables & Parameters - Light text
+        { token: 'variable', foreground: 'f0f2f5' },
+        { token: 'parameter', foreground: 'a8adc0' },
+        { token: 'identifier', foreground: 'f0f2f5' },
+        { token: 'variable.parameter', foreground: 'a8adc0' },
 
-        // Properties - Light Blue (or sometimes lighter)
-        { token: 'property', foreground: '9CDCFE' },
-        { token: 'field', foreground: '9CDCFE' },
+        // Properties - Lavender
+        { token: 'property', foreground: 'c4b5fd' },
+        { token: 'field', foreground: 'c4b5fd' },
 
-        // Constants - Blue or specific color
-        { token: 'constant', foreground: '569CD6' },
-        { token: 'constant.language', foreground: '569CD6' }, // true, false, null
+        // Constants - Gold
+        { token: 'constant', foreground: 'ffd93d' },
+        { token: 'constant.language', foreground: '4a9e8a' }, // true, false, null
 
-        // Macros / Preprocessor - Purple
-        { token: 'macro', foreground: 'C586C0' },
-        { token: 'annotation', foreground: 'C586C0' },
-        { token: 'keyword.directive', foreground: 'C586C0' }, // #include, #define
+        // Macros / Preprocessor - LAVENDER (Unique!)
+        { token: 'macro', foreground: 'c4b5fd' },
+        { token: 'annotation', foreground: 'c4b5fd' },
+        { token: 'keyword.directive', foreground: 'c4b5fd' }, // #include, #define
+        { token: 'meta.preprocessor', foreground: 'c4b5fd' },
 
-        // Storage - Blue
-        { token: 'storage', foreground: '569CD6' },
-        { token: 'storage.type', foreground: '569CD6' }, // int, void, etc.
-        { token: 'storage.modifier', foreground: '569CD6' }, // const, static
+        // Storage - Teal
+        { token: 'storage', foreground: '3d8b78' },
+        { token: 'storage.type', foreground: '3d8b78' }, // int, void, etc.
+        { token: 'storage.modifier', foreground: '3d8b78' }, // const, static
+        
+        // HTML/XML tags
+        { token: 'tag', foreground: '327464' },
+        { token: 'tag.attribute.name', foreground: 'c4b5fd' },
+        { token: 'tag.attribute.value', foreground: 'a8e6cf' },
     ],
     colors: {
-        'editor.background': '#202020',
-        'editor.foreground': '#D4D4D4',
-        'editorCursor.foreground': '#FFFFFF',
-        'editor.lineHighlightBackground': '#2D2D30',
-        'editorLineNumber.foreground': '#858585',
-        'editor.selectionBackground': '#264F78',
-        'editor.inactiveSelectionBackground': '#3A3D41',
-        'editorIndentGuide.background': '#404040',
-        'editorIndentGuide.activeBackground': '#707070',
-        'editorWhitespace.foreground': '#3B3A32',
+        // Editor background - Dark blue-gray (Unique!)
+        'editor.background': '#0d0e14',
+        'editor.foreground': '#f0f2f5',
+        
+        // Cursor - Teal accent with glow effect
+        'editorCursor.foreground': '#327464',
+        
+        // Line highlight - Subtle teal tint
+        'editor.lineHighlightBackground': '#1a1b25',
+        'editor.lineHighlightBorder': '#32746430',
+        
+        // Line numbers - Muted, active gets accent
+        'editorLineNumber.foreground': '#5a5f7a',
+        'editorLineNumber.activeForeground': '#327464',
+        
+        // Selection - Teal tinted
+        'editor.selectionBackground': '#32746435',
+        'editor.inactiveSelectionBackground': '#32746418',
+        
+        // Indent guides
+        'editorIndentGuide.background': '#1c1d26',
+        'editorIndentGuide.activeBackground': '#32334a',
+        
+        // Whitespace
+        'editorWhitespace.foreground': '#1c1d26',
+        
+        // Gutter
+        'editorGutter.background': '#0d0e14',
+        
+        // Minimap - Styled
+        'minimap.background': '#0a0b10',
+        'minimapSlider.background': '#32746420',
+        'minimapSlider.hoverBackground': '#32746435',
+        'minimapSlider.activeBackground': '#32746450',
+        
+        // Scrollbar - Teal accent
+        'scrollbar.shadow': '#00000000',
+        'scrollbarSlider.background': '#32746430',
+        'scrollbarSlider.hoverBackground': '#32746450',
+        'scrollbarSlider.activeBackground': '#32746470',
+        
+        // Widget
+        'editorWidget.background': '#0d0e14',
+        'editorWidget.border': '#1c1d26',
+        
+        // Bracket matching - Teal glow
+        'editorBracketMatch.background': '#32746425',
+        'editorBracketMatch.border': '#327464',
+        
+        // Find/Search - Distinct highlight
+        'editor.findMatchBackground': '#ffd93d30',
+        'editor.findMatchHighlightBackground': '#ffd93d20',
+        'editor.findMatchBorder': '#ffd93d',
+        
+        // Word highlight
+        'editor.wordHighlightBackground': '#32746420',
+        'editor.wordHighlightStrongBackground': '#32746430',
     }
 };

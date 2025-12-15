@@ -21,8 +21,8 @@ import dynamic from 'next/dynamic';
 const EditorPanel = dynamic(() => import('./Editor/Editor.jsx'), {
     ssr: false,
     loading: () => (
-        <ResizablePanel defaultSize={76} minSize={20} className="min-w-0 bg-[#202020]">
-            <div className="h-full w-full bg-[#202020]" />
+        <ResizablePanel defaultSize={76} minSize={20} className="min-w-0 bg-[#18181b]">
+            <div className="h-full w-full bg-[#18181b]" />
         </ResizablePanel>
     ),
 });
@@ -41,6 +41,7 @@ import ErrorOverlay from '@/components/ErrorOverlay';
 import { GitStatus } from '@/components/git/GitStatus';
 import ActivityBar from '../ActivityBar.jsx';
 import SearchView from './SearchView.jsx';
+import StatusBar from '../StatusBar.jsx';
 import WorkspaceHydrator from '@/components/WorkspaceHydrator';
 
 export default function EditorPage({ params }) {
@@ -399,7 +400,7 @@ export default function EditorPage({ params }) {
     );
 
     const FileTreePanel = (
-        <ResizablePanel defaultSize={15} minSize={12} maxSize={35} className={`${treeOnRight? 'border-l' : 'border-r'} border-[#545454] bg-[#1e1e1e]`}>
+        <ResizablePanel defaultSize={15} minSize={12} maxSize={35} className={`${treeOnRight? 'border-l' : 'border-r'} border-[#27272a] bg-[#09090b]`}>
             <div className="flex h-full min-w-0">
                 <ActivityBar
                     active={sidebarView}
@@ -414,8 +415,8 @@ export default function EditorPage({ params }) {
                                 <FileTreeView onToggleOrientation={toggleTreeOrientation} />
                             )}
                         </ResizablePanel>
-                        <ResizableHandle withHandle />
-                        <ResizablePanel defaultSize={35} minSize={10}>
+                        <ResizableHandle />
+                        <ResizablePanel defaultSize={7} minSize={7}>
                             <GitStatus slug={slug} />
                         </ResizablePanel>
                     </ResizablePanelGroup>
@@ -425,7 +426,7 @@ export default function EditorPage({ params }) {
     );
 
     const ChatPanel = (
-        <ResizablePanel defaultSize={24} minSize={20} maxSize={45} className="border-l border-[#545454] bg-[#171717] min-w-0">
+        <ResizablePanel defaultSize={24} minSize={20} maxSize={45} className="border-l border-[#1a1a1e] bg-[#09090b] min-w-0">
             <AIChatWindow
                 docked={true}
                 isVisible={chatVisible}
@@ -445,6 +446,7 @@ export default function EditorPage({ params }) {
     }
 
     return (
+        <div className={`flex flex-col h-screen overflow-hidden bg-[#09090b] text-[#D7DAE0]`}>
         <div className={`flex flex-col h-screen bg-[#1e1e1e] text-gray-200`}>
             {/* Hydrate workspace-specific tabs from localStorage */}
             <WorkspaceHydrator slug={slug} />
@@ -463,7 +465,7 @@ export default function EditorPage({ params }) {
                 onDuplicateSelection={handleDuplicateSelection}
             />
             {buildLogs.length > 0 && (
-                <div className="border-b border-[#2b2b2b] bg-[#121212] px-3 py-2 text-xs font-mono text-gray-200 max-h-28 overflow-auto">
+                <div className="border-b border-[#1a1a1e] bg-[#09090b] px-3 py-2 text-xs font-mono text-[#D7DAE0] max-h-28 overflow-auto">
                     {buildLogs.map((line, idx) => (
                         <div key={idx} className="leading-5 whitespace-pre-wrap">{line}</div>
                     ))}
@@ -485,11 +487,11 @@ export default function EditorPage({ params }) {
                 {treeOnRight ? (
                     <>
                         {EditorPanelComponent}
-                        <ResizableHandle withHandle className="!pointer-events-auto bg-[#545454] hover:bg-emerald-500 w-0.5 z-50" />
+                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
                         {FileTreePanel}
                         {chatVisible && (
                             <>
-                                            <ResizableHandle withHandle className="!pointer-events-auto bg-[#545454] hover:bg-emerald-500 w-0.5 z-50" />
+                                            <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
                                             {ChatPanel}
                             </>
                         )}
@@ -497,11 +499,11 @@ export default function EditorPage({ params }) {
                 ) : (
                     <>
                         {FileTreePanel}
-                        <ResizableHandle withHandle className="!pointer-events-auto bg-[#545454] hover:bg-emerald-500 w-0.5 z-50" />
+                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
                         {EditorPanelComponent}
                         {chatVisible && (
                             <>
-                                <ResizableHandle withHandle className="!pointer-events-auto bg-[#545454] hover:bg-emerald-500 w-0.5 z-50" />
+                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
                                 {ChatPanel}
                             </>
                         )}
@@ -510,6 +512,11 @@ export default function EditorPage({ params }) {
             </ResizablePanelGroup>
 
             {/* Chat is rendered inside the ResizablePanelGroup when visible (see `ChatPanel`) */}
+            
+            {/* Status Bar - VS Code style bottom bar with branch selector */}
+            <StatusBar 
+                slug={slug}
+            />
             
             {/* Error Overlay for compile/runtime errors */}
             <ErrorOverlay />
