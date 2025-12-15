@@ -38,7 +38,7 @@ export function BranchSelector({ slug }) {
 
     return (
         <Select value={currentBranch || ''} onValueChange={handleValueChange} disabled={loading}>
-            <SelectTrigger className="h-5 w-auto gap-1.5 border-none bg-transparent px-1.5 text-[11px] text-[#f0f2f5] hover:text-[#f0f2f5] hover:bg-[#1c1d26] rounded-full focus:ring-0 focus:ring-offset-0 data-[size=default]:h-5 data-[size=default]:px-1.5 data-[size=default]:py-0 [&>svg:last-child]:w-3 [&>svg:last-child]:h-3 [&>svg:last-child]:opacity-50">
+            <SelectTrigger className="h-5 w-auto gap-1.5 border-none bg-transparent px-1.5 text-[11px] text-[#f0f2f5] hover:text-[#f0f2f5] hover:bg-[#1c1d26] rounded-full focus:ring-0 focus:ring-offset-0 data-[size=default]:h-5 data-[size=default]:px-1.5 data-[size=default]:py-0 [&>svg:last-child]:w-3 [&>svg:last-child]:h-3 [&>svg:last-child]:opacity-50 duration-300 hover:-translate-y-0.5 transition-all cursor-pointer">
                 <GitBranch className="w-3.5 h-3.5 text-[#327464]" strokeWidth={1.5} />
                 <SelectValue placeholder="Select branch" />
             </SelectTrigger>

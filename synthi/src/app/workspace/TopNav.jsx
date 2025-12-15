@@ -113,7 +113,7 @@ export default function TopNav({
         <Button 
           variant="ghost" 
           size="sm" 
-          className="h-8 w-8 p-0 text-[#a8adc0] hover:bg-[#1c1d26] hover:text-[#f0f2f5] transition-colors rounded-lg" 
+          className="h-8 w-8 p-0 text-[#a8adc0] hover:bg-[#1c1d26] hover:text-[#f0f2f5] cursor-pointer duration-300 hover:-translate-y-0.5 transition-all rounded-lg" 
           onClick={onToggleTerminal}
           title="Toggle Terminal"
         >
@@ -125,7 +125,7 @@ export default function TopNav({
         <Button 
           variant="ghost" 
           size="sm" 
-          className={`h-8 w-8 p-0 text-[#a8adc0] hover:bg-[#1c1d26] hover:text-[#f0f2f5] transition-colors rounded-lg ${chatVisible ? 'text-[#327464] bg-[#32746415] border border-[#32746440]' : ''}`} 
+          className={`h-8 w-8 p-0 text-[#a8adc0] hover:bg-[#1c1d26] hover:text-[#f0f2f5] cursor-pointer transition-colors duration-300 hover:-translate-y-0.5 transition-all rounded-lg ${chatVisible ? 'text-[#327464] bg-[#32746415] border border-[#32746440]' : ''}`} 
           onClick={onToggleChat}
           aria-label="Toggle Chat"
           title="Toggle Chat"
@@ -134,18 +134,18 @@ export default function TopNav({
         </Button>
         <Button
           size="sm" 
-          className="h-8 w-8 p-0 text-white transition-colors rounded-lg bg-gradient-to-r from-[#327464] to-[#3d8b78] hover:opacity-90 shadow-[0_0_10px_rgba(50,116,100,0.3)]" 
+          className="h-8 w-8 p-0 transition-colors rounded-lg bg-[#0a0b10] hover:bg-[#1c1d26] cursor-pointer duration-300 hover:-translate-y-0.5 transition-all" 
           onClick={onRun}
           title="Run Code"
         >
-          <Play className="w-4 h-4 text-white" strokeWidth={2} />
+          <Play className="w-4 h-4 text-[#327464]" strokeWidth={2} />
         </Button>
         <Popover>
           <PopoverTrigger asChild>
             <Button 
               variant="ghost" 
               size="sm" 
-              className="h-8 text-[#a8adc0] hover:bg-[#1c1d26] hover:text-[#f0f2f5] transition-colors rounded-lg"
+              className="h-8 text-[#a8adc0] hover:bg-[#1c1d26] hover:text-[#f0f2f5] duration-300 hover:-translate-y-0.5 transition-all cursor-pointer rounded-lg"
             >
               <Settings className="w-4 h-4" strokeWidth={2} />
             </Button>

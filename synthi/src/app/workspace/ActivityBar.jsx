@@ -62,8 +62,6 @@ export default function ActivityBar({ active = "explorer", onSelect, badges = {}
           <Sparkles className="w-4 h-4 text-[#327464] group-hover:text-[#3d8b78]" strokeWidth={2} />
         </div>
       </div>
-      
-      <div className="w-full flex flex-col">{bottomItems.map(renderButton)}</div>
     </div>
   );
 }
