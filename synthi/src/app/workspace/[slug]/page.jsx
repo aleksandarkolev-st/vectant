@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { use } from 'react';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent } from '@/redux/workspaceSlice';
@@ -43,15 +43,17 @@ import ActivityBar from '../ActivityBar.jsx';
 import SearchView from './SearchView.jsx';
 import StatusBar from '../StatusBar.jsx';
 import WorkspaceHydrator from '@/components/WorkspaceHydrator';
+import { ProblemsPanel } from '@/components/analysis';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
     const [chatVisible, setChatVisible] = useState(false);
     const [sidebarView, setSidebarView] = useState('explorer');
+    const [showProblemsPanel, setShowProblemsPanel] = useState(false);
     const [guiConfig, setGuiConfig] = useState(null);
     const [isGuiRunning, setIsGuiRunning] = useState(false);
     const [editor, setEditor] = useState(null);
-    const { analyzeCode, lastResult } = useAnalyzerGateway();
+    const { analyzeCode, analyzeProactive, lastResult, isAnalyzing: isAnalyzingGateway } = useAnalyzerGateway();
     const { compile, mediaStream } = useCompiler();
     useHMR();
     const [latestCompletion, setLatestCompletion] = useState(null);
@@ -60,6 +62,12 @@ export default function EditorPage({ params }) {
     const [useAiSplit, setUseAiSplit] = useState(false);
     const analysisTimeoutRef = useRef(null);
     const lastAnalyzedSignatureRef = useRef('');
+    
+    // Proactive analysis state
+    const [diagnostics, setDiagnostics] = useState([]);
+    const [isAnalyzingProactive, setIsAnalyzingProactive] = useState(false);
+    const proactiveTimeoutRef = useRef(null);
+    const lastProactiveSignatureRef = useRef('');
 
     useEffect(() => {
         const handleGuiStart = (e) => {
@@ -222,6 +230,63 @@ export default function EditorPage({ params }) {
             }
         };
     }, [currentContent, activeFile, hasLoadedInitialFile, analyzeCode]);
+
+    // Run proactive analysis (AI-powered error detection) on content change
+    useEffect(() => {
+        if (!activeFile || !currentContent || !hasLoadedInitialFile) return;
+
+        if (proactiveTimeoutRef.current) {
+            clearTimeout(proactiveTimeoutRef.current);
+        }
+
+        // Debounce proactive analysis to avoid overwhelming the backend
+        proactiveTimeoutRef.current = setTimeout(() => {
+            const langSource =
+                activeFile.language ||
+                (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
+                'plaintext';
+            const normalizedLang = langSource.toLowerCase();
+            const signature = `proactive::${activeFile?.path || activeFile?.name || ''}::${currentContent}`;
+
+            if (lastProactiveSignatureRef.current === signature) {
+                return;
+            }
+
+            setIsAnalyzingProactive(true);
+            analyzeProactive({
+                code: typeof currentContent === 'string' ? currentContent : '',
+                lang: normalizedLang,
+                filePath: activeFile?.path || activeFile?.name || 'untitled',
+                includeAi: true, // Enable AI analysis for better detection
+            })
+                .then((result) => {
+                    console.log('[ProactiveAnalysis] Result:', result);
+                    const diags = result?.diagnostics || result?.data?.diagnostics || [];
+                    console.log('[ProactiveAnalysis] Diagnostics:', diags);
+                    setDiagnostics(diags);
+                })
+                .catch((err) => {
+                    console.error('Proactive analysis failed', err);
+                })
+                .finally(() => {
+                    lastProactiveSignatureRef.current = signature;
+                    setIsAnalyzingProactive(false);
+                });
+        }, 800); // Slightly longer debounce than static analysis
+
+        return () => {
+            if (proactiveTimeoutRef.current) {
+                clearTimeout(proactiveTimeoutRef.current);
+            }
+        };
+    }, [currentContent, activeFile, hasLoadedInitialFile, analyzeProactive]);
+
+    // Compute diagnostic summary
+    const diagnosticSummary = useMemo(() => {
+        const errors = diagnostics.filter(d => d.severity === 'error').length;
+        const warnings = diagnostics.filter(d => d.severity === 'warning').length;
+        return { errors, warnings, total: diagnostics.length };
+    }, [diagnostics]);
 
     // NOTE: Completion requests are handled centrally by the Editor component
     // to avoid duplicate requests, races, and abort-related errors. If you need
@@ -392,6 +457,7 @@ export default function EditorPage({ params }) {
             onToggleTerminal={() => dispatch(toggleTerminal())}
             onEditorMount={handleEditorMount}
             analysisResult={lastResult}
+            diagnostics={diagnostics}
             latestCompletion={latestCompletion}
             aiBusy={aiBusy}
             onClearCompletion={handleClearLatestCompletion}
@@ -513,9 +579,37 @@ export default function EditorPage({ params }) {
 
                 {/* Chat is rendered inside the ResizablePanelGroup when visible (see `ChatPanel`) */}
 
+                {/* Problems Panel - Shows diagnostics from proactive analysis */}
+                {showProblemsPanel && (
+                    <div className="h-48 max-h-48 flex-shrink-0 border-t border-[#1a1b24]">
+                        <ProblemsPanel
+                            diagnostics={diagnostics}
+                            summary={diagnosticSummary}
+                            isAnalyzing={isAnalyzingProactive}
+                            filePath={activeFile?.path || activeFile?.name || 'Current File'}
+                            onClose={() => setShowProblemsPanel(false)}
+                            onNavigate={(location) => {
+                                if (editor) {
+                                    const position = {
+                                        lineNumber: (location.line ?? 0) + 1,
+                                        column: (location.column ?? 0) + 1,
+                                    };
+                                    editor.setPosition(position);
+                                    editor.revealPositionInCenter(position);
+                                    editor.focus();
+                                }
+                            }}
+                            className="h-full rounded-none border-0"
+                        />
+                    </div>
+                )}
+
                 {/* Status Bar - VS Code style bottom bar with branch selector */}
                 <StatusBar
                     slug={slug}
+                    diagnosticSummary={diagnosticSummary}
+                    isAnalyzing={isAnalyzingProactive}
+                    onProblemsClick={() => setShowProblemsPanel(prev => !prev)}
                 />
 
                 {/* Error Overlay for compile/runtime errors */}

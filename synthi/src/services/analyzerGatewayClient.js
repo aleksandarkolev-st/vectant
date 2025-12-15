@@ -127,6 +127,53 @@ export class AnalyzerGatewayClient {
     return this._sendRequest('analyze/ai', payload, options);
   }
 
+  /**
+   * Run proactive analysis (static + semantic + optional AI)
+   * @param {Object} payload - Analysis request
+   * @param {string} payload.code - Code to analyze
+   * @param {string} payload.lang - Language identifier
+   * @param {string} [payload.filePath] - File path for context
+   * @param {string[]} [payload.tiers] - Tiers to run: 'static', 'semantic', 'ai'
+   * @param {boolean} [payload.includeAi] - Include AI analysis tier
+   * @param {number} [payload.maxDiagnostics] - Max diagnostics to return
+   * @param {Array} [payload.relatedFiles] - Related files for context
+   * @param {Object} [options] - Request options
+   * @param {Function} [options.onTierComplete] - Callback when a tier completes
+   * @returns {Promise<Object>} Analysis result with diagnostics
+   */
+  analyzeProactive(payload, options = {}) {
+    return this._sendRequest('analyze/proactive', payload, {
+      ...options,
+      onStream: (data) => {
+        // Handle tier completion events
+        if (data?.tier && typeof options.onTierComplete === 'function') {
+          options.onTierComplete({
+            tier: data.tier,
+            diagnostics: data.diagnostics || [],
+            elapsedMs: data.elapsedMs || 0,
+            fromCache: data.fromCache || false,
+          });
+        }
+        // Also forward to generic stream handler if provided
+        if (typeof options.onStream === 'function') {
+          options.onStream(data);
+        }
+      },
+    });
+  }
+
+  /**
+   * Run quick proactive analysis (static + semantic only, optimized for real-time)
+   * @param {Object} payload - Analysis request
+   * @param {string} payload.code - Code to analyze  
+   * @param {string} payload.lang - Language identifier
+   * @param {string} [payload.filePath] - File path for context
+   * @returns {Promise<Object>} Quick analysis result
+   */
+  analyzeProactiveQuick(payload) {
+    return this._sendRequest('analyze/proactive/quick', payload);
+  }
+
   _sendRequest(action, data, options = {}) {
     if (this.isDisposed) {
       return Promise.reject(new SynthiException('Gateway client has been disposed', 'The analyzer gateway client has been disposed and can no longer process requests.'));
