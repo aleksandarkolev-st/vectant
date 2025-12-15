@@ -149,35 +149,35 @@ const FileTreeView = ({
     >
       <ContextMenuTrigger asChild>
         <div
-          className="w-full h-full select-none bg-[#232323] text-gray-100 flex flex-col border-r border-[#343434]"
+          className="w-full h-full select-none bg-[#0B0E13] text-[#f8f9fb] flex flex-col border-r border-[#252a38]"
           onClick={() => {
             setContextTarget(null);
           }}
           onMouseEnter={() => setIsTreeHovered(true)}
           onMouseLeave={() => setIsTreeHovered(false)}
         >
-          {/* Header */}
-          <div className={`px-3 py-2 flex items-center ${isRightSide ? 'flex-row-reverse' : ''} justify-between border-b border-[#343434] sticky top-0 bg-[#1e1e1e] z-10`}>
+          {/* Header - Better separation */}
+          <div className={`px-3 py-1 flex items-center ${isRightSide ? 'flex-row-reverse' : ''} justify-between border-[#252a38] sticky top-0 bg-[#0B0E13] z-10`}>
             <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold tracking-wide uppercase text-gray-300">
-                Project
+              <span className="text-[11px] font-semibold tracking-widest uppercase text-[#f1f3f8]">
+                Explorer
               </span>
             </div>
             <button
               onClick={onToggleOrientation}
-              className={`p-1.5 rounded border border-[#3a3a3a] bg-[#262626] hover:bg-[#2f2f2f] transition ${isRightSide ? 'mr-auto' : 'ml-auto'}`}
+              className={`p-1 rounded border border-[#3f4557] bg-[#1c2130] hover:bg-[#232a3b] hover:border-[#63e6be] transition opacity-90 hover:opacity-100 ${isRightSide ? 'mr-auto' : 'ml-auto'}`}
               title={isRightSide ? "Move to left" : "Move to right"}
             >
               {isRightSide ? (
-                <PanelLeftClose className="w-4 h-4 text-gray-300" />
+                <PanelLeftClose className="w-3.5 h-3.5 text-[#f8f9fb]" />
               ) : (
-                <PanelRightClose className="w-4 h-4 text-gray-300" />
+                <PanelRightClose className="w-3.5 h-3.5 text-[#f8f9fb]" />
               )}
             </button>
           </div>
 
-          {/* File list */}
-          <div className="flex-1 overflow-y-auto">
+          {/* File list - slightly tighter spacing for compactness */}
+          <div className="flex-1 overflow-y-auto py-0.5">
             {[...files]
               .sort((a, b) => {
                 // Sort folders first, then by name
@@ -240,28 +240,32 @@ const FileTreeView = ({
       </ContextMenuTrigger>
 
       {/* Context Menu */}
-      <ContextMenuContent className="w-48 bg-[#1f1f1f] border border-[#333] text-gray-200 shadow-lg">
+      <ContextMenuContent className="w-52 bg-[#14161a] border border-[#252830] text-[#e8eaed] shadow-xl rounded-lg">
         {contextTarget ? (
           contextTarget.isFolder ? (
             <>
               <ContextMenuItem
                 onClick={() => handleTreeAction("new-file", contextTarget)}
+                className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
               >
                 New File
               </ContextMenuItem>
               <ContextMenuItem
                 onClick={() => handleTreeAction("new-folder", contextTarget)}
+                className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
               >
                 New Folder
               </ContextMenuItem>
-              <ContextMenuSeparator />
+              <ContextMenuSeparator className="bg-[#252830] my-1" />
               <ContextMenuItem
                 onClick={() => handleTreeAction("rename", contextTarget)}
+                className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
               >
                 Rename
               </ContextMenuItem>
               <ContextMenuItem
                 onClick={() => handleTreeAction("delete", contextTarget)}
+                className="px-3 py-2.5 text-sm hover:bg-[#f87171]/10 hover:text-[#f87171] cursor-pointer rounded-md mx-1"
               >
                 Delete
               </ContextMenuItem>
@@ -275,7 +279,7 @@ const FileTreeView = ({
                   if (el) {
                     el.setAttribute('data-loading', 'true');
                     const spinner = document.createElement("div");
-                    spinner.className = "ml-2 h-3 w-3 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin";
+                    spinner.className = "ml-2 h-3 w-3 border-2 border-[#3b82f6] border-t-transparent rounded-full animate-spin";
                     spinner.setAttribute('data-spinner', 'true');
                     const content = el.querySelector(".file-content");
                     if (content) {
@@ -290,17 +294,20 @@ const FileTreeView = ({
                   // Then load the file
                   onFileSelectHandler(contextTarget);
                 }}
+                className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
               >
                 Open
               </ContextMenuItem>
-              <ContextMenuSeparator />
+              <ContextMenuSeparator className="bg-[#252830] my-1" />
               <ContextMenuItem
                 onClick={() => handleTreeAction("rename", contextTarget)}
+                className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
               >
                 Rename
               </ContextMenuItem>
               <ContextMenuItem
                 onClick={() => handleTreeAction("delete", contextTarget)}
+                className="px-3 py-2.5 text-sm hover:bg-[#f87171]/10 hover:text-[#f87171] cursor-pointer rounded-md mx-1"
               >
                 Delete
               </ContextMenuItem>
@@ -310,11 +317,13 @@ const FileTreeView = ({
           <>
             <ContextMenuItem
               onClick={() => handleTreeAction("new-file-root")}
+              className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
             >
               New File
             </ContextMenuItem>
             <ContextMenuItem
               onClick={() => handleTreeAction("new-folder-root")}
+              className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
             >
               New Folder
             </ContextMenuItem>

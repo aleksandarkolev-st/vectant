@@ -1,8 +1,73 @@
 
+/* ============================================
+   Synthi Brand Theme Editor Overrides
+   ============================================ */
+
+/* Editor container with rounded top corners */
+.monaco-editor {
+    overflow: hidden;
+}
+
+/* Monaco link hover styling with Synthi teal accent */
 .monaco-link-hover {
     text-decoration: underline;
     cursor: pointer !important;
-    color: #4ec9b0 !important;
+    color: #327464 !important;
+}
+
+/* Monaco editor scrollbars - Synthi styled with teal accent */
+.monaco-editor .scrollbar .slider {
+    background: linear-gradient(180deg, rgba(50, 116, 100, 0.4) 0%, rgba(61, 139, 120, 0.3) 100%) !important;
+    border-radius: 4px !important;
+}
+
+.monaco-editor .scrollbar .slider:hover {
+    background: linear-gradient(180deg, rgba(50, 116, 100, 0.6) 0%, rgba(61, 139, 120, 0.5) 100%) !important;
+}
+
+/* Monaco minimap slider - Teal tinted */
+.monaco-editor .minimap-slider .minimap-slider-horizontal {
+    background-color: rgba(50, 116, 100, 0.25) !important;
+}
+
+/* Monaco editor selection and highlight colors - Teal accent */
+.monaco-editor .selected-text {
+    background-color: rgba(50, 116, 100, 0.3) !important;
+}
+
+.monaco-editor .selectionHighlight {
+    background-color: rgba(50, 116, 100, 0.15) !important;
+}
+
+/* Monaco find match highlight - Gold for visibility */
+.monaco-editor .findMatch {
+    background-color: rgba(255, 217, 61, 0.25) !important;
+    border: 1px solid rgba(255, 217, 61, 0.5) !important;
+}
+
+.monaco-editor .currentFindMatch {
+    background-color: rgba(255, 217, 61, 0.45) !important;
+    border: 1px solid #ffd93d !important;
+}
+
+/* Monaco line highlight - STRONGER active-line background with clear visual anchor */
+.monaco-editor .current-line {
+    background-color: rgba(58, 133, 116, 0.14) !important;
+    border-left: 3px solid rgba(58, 133, 116, 0.7) !important;
+    box-shadow: inset 6px 0 12px -6px rgba(58, 133, 116, 0.15) !important;
+}
+
+/* Monaco bracket match - Teal glow */
+.monaco-editor .bracket-match {
+    background-color: rgba(58, 133, 116, 0.25) !important;
+    border: 1px solid #3a8574 !important;
+    box-shadow: 0 0 8px rgba(58, 133, 116, 0.35) !important;
+}
+
+/* Active line number highlight - stronger */
+.monaco-editor .line-numbers.active-line-number {
+    color: #4aba9a !important;
+    font-weight: 600 !important;
 }
 
 /* Collab presence and remote cursor/selection defaults */
