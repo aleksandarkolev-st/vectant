@@ -4,47 +4,47 @@ export const SYNTHI_THEME = {
     inherit: true,
     rules: [
         // Base text
-        { token: '', foreground: 'f0f2f5' },
+        { token: '', foreground: 'f4f5f8' },
         
-        // Comments - Muted blue-gray
-        { token: 'comment', foreground: '5a5f7a', fontStyle: 'italic' },
+        // Comments - Lower saturation, more muted for less visual noise
+        { token: 'comment', foreground: '454a5e', fontStyle: 'italic' },
         
         // Strings - Soft Pastel Mint Green
         { token: 'string', foreground: 'a8e6cf' },
         { token: 'string.escape', foreground: '7dd3b4' },
         
-        // Keywords - Synthi Teal (Primary accent)
-        { token: 'keyword', foreground: '327464' },
-        { token: 'keyword.control', foreground: '327464' },
-        { token: 'keyword.operator', foreground: '3d8b78' },
+        // Keywords - Synthi Teal (Primary accent) - slightly brighter
+        { token: 'keyword', foreground: '3a8574' },
+        { token: 'keyword.control', foreground: '3a8574' },
+        { token: 'keyword.operator', foreground: '4a9a88' },
         
         // Operators - Light gray
         { token: 'operator', foreground: 'a8adc0' },
         
         // Numbers - Warm Gold
-        { token: 'number', foreground: 'ffd93d' },
-        { token: 'number.float', foreground: 'ffd93d' },
-        { token: 'number.hex', foreground: 'ffb347' },
+        { token: 'number', foreground: 'f5d142' },
+        { token: 'number.float', foreground: 'f5d142' },
+        { token: 'number.hex', foreground: 'f5b847' },
         
         // Regex - Coral
         { token: 'regexp', foreground: 'ff6b6b' },
         
         // Namespace - Teal accent
-        { token: 'namespace', foreground: '3d8b78' },
+        { token: 'namespace', foreground: '4a9a88' },
 
-        // Types & Classes - Sky Blue
-        { token: 'type', foreground: '7dd3fc' },
-        { token: 'class', foreground: '7dd3fc' },
-        { token: 'struct', foreground: '7dd3fc' },
-        { token: 'interface', foreground: '7dd3fc' },
-        { token: 'enum', foreground: '7dd3fc' },
-        { token: 'type.identifier', foreground: '7dd3fc' },
-        { token: 'delimiter', foreground: '6b7089' },
+        // Types & Classes - Sky Blue - higher contrast
+        { token: 'type', foreground: '8ad4ff' },
+        { token: 'class', foreground: '8ad4ff' },
+        { token: 'struct', foreground: '8ad4ff' },
+        { token: 'interface', foreground: '8ad4ff' },
+        { token: 'enum', foreground: '8ad4ff' },
+        { token: 'type.identifier', foreground: '8ad4ff' },
+        { token: 'delimiter', foreground: '5a6178' },
 
-        // Functions - Soft Blue
-        { token: 'function', foreground: '88c0fc' },
-        { token: 'method', foreground: '88c0fc' },
-        { token: 'identifier.function', foreground: '88c0fc' },
+        // Functions - Brighter blue for better contrast vs types
+        { token: 'function', foreground: '7cb8f8' },
+        { token: 'method', foreground: '7cb8f8' },
+        { token: 'identifier.function', foreground: '7cb8f8' },
 
         // Variables & Parameters - Light text
         { token: 'variable', foreground: 'f0f2f5' },
@@ -77,28 +77,28 @@ export const SYNTHI_THEME = {
         { token: 'tag.attribute.value', foreground: 'a8e6cf' },
     ],
     colors: {
-        // Editor background - Dark blue-gray (Unique!)
-        'editor.background': '#0d0e14',
-        'editor.foreground': '#f0f2f5',
+        // Editor background - Darker for more contrast
+        'editor.background': '#0c0d12',
+        'editor.foreground': '#f4f5f8',
         
         // Cursor - Teal accent with glow effect
-        'editorCursor.foreground': '#327464',
+        'editorCursor.foreground': '#3a8574',
         
-        // Line highlight - Subtle teal tint
-        'editor.lineHighlightBackground': '#1a1b25',
-        'editor.lineHighlightBorder': '#32746430',
+        // Line highlight - STRONGER active line background
+        'editor.lineHighlightBackground': '#1e2030',
+        'editor.lineHighlightBorder': '#3a857450',
         
-        // Line numbers - Muted, active gets accent
-        'editorLineNumber.foreground': '#5a5f7a',
-        'editorLineNumber.activeForeground': '#327464',
+        // Line numbers - More muted, active gets stronger accent
+        'editorLineNumber.foreground': '#454a5e',
+        'editorLineNumber.activeForeground': '#4aba9a',
         
-        // Selection - Teal tinted
-        'editor.selectionBackground': '#32746435',
-        'editor.inactiveSelectionBackground': '#32746418',
+        // Selection - Teal tinted, slightly more visible
+        'editor.selectionBackground': '#3a857440',
+        'editor.inactiveSelectionBackground': '#3a857420',
         
-        // Indent guides
-        'editorIndentGuide.background': '#1c1d26',
-        'editorIndentGuide.activeBackground': '#32334a',
+        // Indent guides - more subtle
+        'editorIndentGuide.background': '#1a1b24',
+        'editorIndentGuide.activeBackground': '#2a2b38',
         
         // Whitespace
         'editorWhitespace.foreground': '#1c1d26',

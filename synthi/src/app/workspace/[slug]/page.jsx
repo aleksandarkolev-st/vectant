@@ -400,7 +400,7 @@ export default function EditorPage({ params }) {
     );
 
     const FileTreePanel = (
-        <ResizablePanel defaultSize={15} minSize={12} maxSize={35} className={`${treeOnRight ? 'border-l' : 'border-r'} border-[#27272a] bg-[#09090b]`}>
+        <ResizablePanel defaultSize={20} minSize={12} maxSize={35} className={`${treeOnRight ? 'border-l' : 'border-r'} border-[#27272a] bg-[#09090b]`}>
             <div className="flex h-full min-w-0">
                 <ActivityBar
                     active={sidebarView}

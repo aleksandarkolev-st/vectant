@@ -326,15 +326,6 @@ export default function TerminalPane() {
       {(connectionState === 'error' || connectionState === 'closed') && (
         <div className="absolute inset-0 bg-[#0a0b10]/98 backdrop-blur-md flex items-center justify-center z-10">
           <div className="flex flex-col items-center gap-4 p-8 max-w-md text-center">
-            {/* Animated Synthi branded icon */}
-            <div className="relative">
-              <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-[#32746420] to-[#3d8b7820] border border-[#32746440] flex items-center justify-center animate-pulse">
-                <WifiOff className="w-10 h-10 text-[#327464]" strokeWidth={1.5} />
-              </div>
-              {/* Glow effect */}
-              <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-[#327464] to-[#3d8b78] opacity-20 blur-xl -z-10" />
-            </div>
-            
             {/* Title with gradient */}
             <h3 className="text-xl font-bold bg-gradient-to-r from-[#f0f2f5] to-[#a8adc0] bg-clip-text text-transparent">
               Terminal Disconnected
@@ -344,21 +335,7 @@ export default function TerminalPane() {
             <p className="text-sm text-[#6b7089] leading-relaxed">
               {errorMessage || 'The connection to the Synthi terminal server was lost. This may be due to network issues or server maintenance.'}
             </p>
-            
-            {/* Reconnect button - Synthi branded */}
-            <button
-              onClick={handleReconnect}
-              className="mt-2 flex items-center gap-2 px-5 py-2.5 rounded-full bg-gradient-to-r from-[#327464] to-[#3d8b78] text-white font-medium text-sm hover:opacity-90 transition-all shadow-[0_0_20px_rgba(50,116,100,0.3)] hover:shadow-[0_0_25px_rgba(50,116,100,0.4)]"
-            >
-              <RefreshCw className="w-4 h-4" strokeWidth={2} />
-              Reconnect
-            </button>
-            
-            {/* Synthi branding */}
-            <div className="flex items-center gap-2 mt-4 text-[#6b7089] text-xs">
-              <Zap className="w-3 h-3 text-[#327464]" />
-              <span>Powered by Synthi</span>
-            </div>
+          
           </div>
         </div>
       )}

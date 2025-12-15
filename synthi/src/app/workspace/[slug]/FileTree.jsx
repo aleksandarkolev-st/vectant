@@ -149,35 +149,35 @@ const FileTreeView = ({
     >
       <ContextMenuTrigger asChild>
         <div
-          className="w-full h-full select-none bg-[#09090b] text-[#e8eaed] flex flex-col border-r border-[#252830]"
+          className="w-full h-full select-none bg-[#151929] text-[#f8f9fb] flex flex-col border-r border-[#363c4d]"
           onClick={() => {
             setContextTarget(null);
           }}
           onMouseEnter={() => setIsTreeHovered(true)}
           onMouseLeave={() => setIsTreeHovered(false)}
         >
-          {/* Header */}
-          <div className={`px-4 py-1 flex items-center ${isRightSide ? 'flex-row-reverse' : ''} justify-between border-b border-[#252830] sticky top-0 bg-[#0d0f12] z-10`}>
+          {/* Header - Better separation */}
+          <div className={`px-3 py-1 flex items-center ${isRightSide ? 'flex-row-reverse' : ''} justify-between border-b border-[#363c4d] sticky top-0 bg-[#151929] z-10`}>
             <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold tracking-wider uppercase text-[#e8eaed]">
-                Project
+              <span className="text-[11px] font-semibold tracking-widest uppercase text-[#f1f3f8]">
+                Explorer
               </span>
             </div>
             <button
               onClick={onToggleOrientation}
-              className={`p-1.5 rounded border border-[#2d313a] bg-[#14161a] hover:bg-[#252830] hover:border-[#3b82f6] transition ${isRightSide ? 'mr-auto' : 'ml-auto'}`}
+              className={`p-1 rounded border border-[#3f4557] bg-[#1c2130] hover:bg-[#232a3b] hover:border-[#63e6be] transition opacity-90 hover:opacity-100 ${isRightSide ? 'mr-auto' : 'ml-auto'}`}
               title={isRightSide ? "Move to left" : "Move to right"}
             >
               {isRightSide ? (
-                <PanelLeftClose className="w-4 h-4 text-[#9ba1ab]" />
+                <PanelLeftClose className="w-3.5 h-3.5 text-[#f8f9fb]" />
               ) : (
-                <PanelRightClose className="w-4 h-4 text-[#9ba1ab]" />
+                <PanelRightClose className="w-3.5 h-3.5 text-[#f8f9fb]" />
               )}
             </button>
           </div>
 
-          {/* File list */}
-          <div className="flex-1 overflow-y-auto">
+          {/* File list - slightly tighter spacing for compactness */}
+          <div className="flex-1 overflow-y-auto py-0.5">
             {[...files]
               .sort((a, b) => {
                 // Sort folders first, then by name

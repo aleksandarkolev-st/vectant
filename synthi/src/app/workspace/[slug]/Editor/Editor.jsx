@@ -98,23 +98,23 @@ const TerminalManagerDyn = dynamic(() => import('../../TerminalManager.jsx'), {
 
 let servicesInitialized = false;
 
-// ===== SYNTHI BRAND Design Tokens =====
+// ===== SYNTHI BRAND Design Tokens - Updated for better contrast =====
 const TAB_TOKENS = {
     // Active tab matches editor exactly (seamless connection)
-    activeBg: '#0d0e14',      // bg-editor (dark blue-gray)
-    // Inactive tabs match app background
-    inactiveBg: '#0a0b10',    // bg-app (dark blue-gray)
-    hoverBg: '#12131a',       // panel bg
-    // Accent color for focus indicators - TEAL
-    primary: '#327464',       // accent-primary (Synthi teal)
-    primaryGlow: '0 0 12px rgba(50, 116, 100, 0.5)',
-    // Border colors
-    borderSubtle: '#1c1d26',  // border-subtle
-    borderFocus: '#32334a',   // border-focus
-    // Text colors
-    textPrimary: '#f0f2f5',   // text-primary
-    textSecondary: '#a8adc0', // text-secondary
-    textInactive: '#6b7089',  // text for inactive tabs
+    activeBg: '#0c0d12',      // bg-editor (darker)
+    // Inactive tabs much more faded
+    inactiveBg: '#08090d',    // bg-app (darker)
+    hoverBg: '#101118',       // panel bg
+    // Accent color for focus indicators - TEAL - brighter
+    primary: '#3a8574',       // accent-primary (Synthi teal)
+    primaryGlow: '0 0 14px rgba(58, 133, 116, 0.6)',
+    // Border colors - stronger
+    borderSubtle: '#1a1b24',  // border-subtle
+    borderFocus: '#3a3b52',   // border-focus
+    // Text colors - more contrast
+    textPrimary: '#f4f5f8',   // text-primary
+    textSecondary: '#9ba2b8', // text-secondary
+    textInactive: '#4a5066',  // text for inactive tabs - much dimmer
     // Status colors
     unsaved: '#ff6b6b',       // coral red for unsaved
 };
@@ -977,9 +977,9 @@ const EditorPanel = ({
         <ResizablePanel defaultSize={76} minSize={20}>
             <ResizablePanelGroup direction="vertical" className="h-full">
                 <ResizablePanel defaultSize={70} minSize={20}>
-                    <div className="h-full flex flex-col bg-[#0d0e14] rounded-tl-lg rounded-tr-lg overflow-hidden">
+                    <div className="h-full flex flex-col bg-[#0c0d12] rounded-tl-lg rounded-tr-lg overflow-hidden">
                         {/* Minimal Sleek Header - Synthi Brand Theme */}
-                        <div className="h-10 border-b border-[#1c1d26] bg-[#0a0b10] flex justify-between select-none shadow-sm">
+                        <div className="h-10 border-b-2 border-[#1a1b24] bg-[#08090d] flex justify-between select-none shadow-sm">
 
                             {/* Breadcrumbs */}
                                 <div className="h-full flex min-w-0 relative group tabs-container-wrapper">
@@ -989,17 +989,17 @@ const EditorPanel = ({
                                         onScroll={handleScroll}
                                         className="h-full whitespace-nowrap min-w-0 flex flex-row overflow-x-auto overflow-y-hidden no-scrollbar relative"
                                     >
-                                        {/* Animated Tab Indicator - Smooth sliding underline */}
+                                        {/* Animated Tab Indicator - Strong underline */}
                                         <div
-                                            className="absolute bottom-0 h-[2px] pointer-events-none"
+                                            className="absolute bottom-0 h-[3px] pointer-events-none"
                                             style={{
                                                 left: tabIndicator.left,
                                                 width: tabIndicator.width,
                                                 opacity: tabIndicator.visible ? 1 : 0,
-                                                background: 'linear-gradient(90deg, #327464, #4a9d89, #327464)',
+                                                background: 'linear-gradient(90deg, #3a8574, #4aba9a, #3a8574)',
                                                 backgroundSize: '200% 100%',
                                                 animation: 'tab-underline-shimmer 2s ease-in-out infinite',
-                                                boxShadow: '0 0 8px rgba(50, 116, 100, 0.5), 0 0 2px rgba(50, 116, 100, 0.8)',
+                                                boxShadow: '0 0 10px rgba(58, 133, 116, 0.6), 0 0 3px rgba(74, 186, 154, 0.9)',
                                                 transition: 'left 0.25s cubic-bezier(0.4, 0, 0.2, 1), width 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.15s ease',
                                                 borderRadius: '2px 2px 0 0',
                                             }}
@@ -1041,11 +1041,11 @@ const EditorPanel = ({
                                                         e.preventDefault();
                                                         setTabContext({ visible: true, x: e.clientX, y: e.clientY, file, index: idx });
                                                     }}
-                                                    className={`group flex items-center gap-2 px-3 cursor-pointer select-none transition-all duration-200 ${isActive ? 'text-[#f0f2f5] bg-[#0d0e14]' : 'text-[#a8adc0] bg-[#0a0b10] hover:bg-[#12131a] hover:text-[#f0f2f5]'}`}
+                                                    className={`group flex items-center gap-2 px-3 cursor-pointer select-none transition-all duration-200 ${isActive ? 'text-[#f4f5f8] bg-[#0c0d12]' : 'text-[#4a5066] bg-[#08090d] hover:bg-[#0c0d12] hover:text-[#9ba2b8] opacity-60 hover:opacity-90'}`}
                                                     title={file.path}
                                                     style={{
-                                                        minWidth: 140,
-                                                        maxWidth: 280,
+                                                        minWidth: 130,
+                                                        maxWidth: 260,
                                                         height: '100%',
                                                         borderRight: `1px solid ${TAB_TOKENS.borderSubtle}`,
                                                         borderLeft: idx === 0 ? 'none' : 'none',
@@ -1056,28 +1056,28 @@ const EditorPanel = ({
                                                         position: 'relative',
                                                     }}
                                                 >
-                                                    <span className="flex-shrink-0 text-base opacity-90" aria-hidden="true">
-                                                        {loadingFiles.includes(file.path) ? <Loader2 className="w-4 h-4 animate-spin text-[#327464]" /> : fileIcon}
+                                                    <span className={`flex-shrink-0 text-sm ${isActive ? 'opacity-90' : 'opacity-50'}`} aria-hidden="true">
+                                                        {loadingFiles.includes(file.path) ? <Loader2 className="w-4 h-4 animate-spin text-[#3a8574]" /> : fileIcon}
                                                     </span>
                                                     <div className="flex flex-col min-w-0 overflow-hidden">
-                                                        <span className={`text-sm font-medium truncate ${isActive ? 'text-[#f0f2f5]' : 'text-[#a8adc0]'}`}>
+                                                        <span className={`text-[13px] truncate ${isActive ? 'text-[#f4f5f8] font-semibold' : 'text-[#9ba2b8] font-normal'}`}>
                                                             {file.name}
                                                         </span>
-                                                        {/* Breadcrumb path - shows parent folder context */}
-                                                        {parentPath && (
-                                                            <span className="text-[10px] text-[#6b7089] truncate">
+                                                        {/* Breadcrumb path - shows parent folder context - only for active */}
+                                                        {parentPath && isActive && (
+                                                            <span className="text-[9px] text-[#5a6178] truncate">
                                                                 {parentPath}
                                                             </span>
                                                         )}
                                                     </div>
 
                                                     {/* Unsaved marker - coral dot with glow */}
-                                                    <span aria-hidden="true" className={`ml-auto w-2.5 h-2.5 rounded-full flex-shrink-0 transition-opacity shadow-[0_0_6px_rgba(255,107,107,0.6)] ${file.isUnsaved || (isActive && remoteUnsaved) ? '' : 'opacity-0'}`} style={{ backgroundColor: '#ff6b6b' }} />
+                                                    <span aria-hidden="true" className={`ml-auto w-2 h-2 rounded-full flex-shrink-0 transition-opacity shadow-[0_0_6px_rgba(255,107,107,0.6)] ${file.isUnsaved || (isActive && remoteUnsaved) ? '' : 'opacity-0'}`} style={{ backgroundColor: '#ff6b6b' }} />
 
                                                     {/* Close button appears on hover (VSCode behavior) */}
                                                     <button
                                                         onClick={(e) => { e.stopPropagation(); dispatch(closeFile(file.path)); }}
-                                                        className={`flex items-center justify-center w-5 h-5 rounded-full transition-all duration-150 ${isActive ? 'text-[#f0f2f5]/80 hover:text-[#f0f2f5] hover:bg-[#32746430]' : 'text-[#6b7089] hover:text-[#f0f2f5] hover:bg-[#1c1d26]'}`}
+                                                        className={`flex items-center justify-center w-5 h-5 rounded-full transition-all duration-150 ${isActive ? 'text-[#f4f5f8]/80 hover:text-[#f4f5f8] hover:bg-[#3a857430]' : 'text-[#5a6178] hover:text-[#f4f5f8] hover:bg-[#1a1b24]'}`}
                                                         aria-label={`Close ${file.name}`}
                                                         style={{ opacity: 0 }}
                                                     >
@@ -1094,14 +1094,14 @@ const EditorPanel = ({
                                             </div>
                                         );
                                     }) : (
-                                        <span className="text-[#6b7089] text-xs italic px-3 flex items-center">No file open</span>
+                                        <span className="text-[#5a6178] text-xs italic px-3 flex items-center">No file open</span>
                                     )}
                                     </div>
                                     {/* Custom Scrollbar - Synthi accent */}
                                     <div className="absolute left-0 right-0 bottom-0 h-[3px] z-20 pointer-events-none">
                                         <div
                                             ref={scrollbarThumbRef}
-                                            className="absolute top-0 bottom-0 bg-gradient-to-r from-[#32746450] to-[#3d8b7850] rounded-[3px] cursor-pointer pointer-events-auto opacity-0 transition-opacity duration-200 group-hover:opacity-100 [&.visible]:opacity-100"
+                                            className="absolute top-0 bottom-0 bg-gradient-to-r from-[#3a857450] to-[#4a9a8850] rounded-[3px] cursor-pointer pointer-events-auto opacity-0 transition-opacity duration-200 group-hover:opacity-100 [&.visible]:opacity-100"
                                             onMouseDown={handleThumbMouseDown}
                                         />
                                     </div>
@@ -1112,9 +1112,9 @@ const EditorPanel = ({
                                         style={{ position: 'fixed', left: tabContext.x, top: tabContext.y, zIndex: 9999 }}
                                         onMouseLeave={() => setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 })}
                                     >
-                                        <div className="bg-[#0d0e14] border border-[#1c1d26] rounded-lg shadow-lg text-sm text-[#f0f2f5]">
-                                            <div className="px-3 py-2 hover:bg-[#32746415] hover:text-[#327464] cursor-pointer rounded-t-lg transition-colors" onClick={() => { if (tabContext.file) dispatch(closeFile(tabContext.file.path)); setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 }); }}>Close</div>
-                                            <div className="px-3 py-2 hover:bg-[#32746415] hover:text-[#327464] cursor-pointer transition-colors" onClick={() => {
+                                        <div className="bg-[#0c0d12] border border-[#1a1b24] rounded-lg shadow-lg text-sm text-[#f4f5f8]">
+                                            <div className="px-3 py-2 hover:bg-[#3a857418] hover:text-[#4aba9a] cursor-pointer rounded-t-lg transition-colors" onClick={() => { if (tabContext.file) dispatch(closeFile(tabContext.file.path)); setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 }); }}>Close</div>
+                                            <div className="px-3 py-2 hover:bg-[#3a857418] hover:text-[#4aba9a] cursor-pointer transition-colors" onClick={() => {
                                                 if (tabContext.file) {
                                                     const keep = tabContext.file.path;
                                                     const toClose = openFiles.filter(f => f.path !== keep).map(f => f.path);
@@ -1122,7 +1122,7 @@ const EditorPanel = ({
                                                 }
                                                 setTabContext({ visible: false, x: 0, y: 0, file: null, index: -1 });
                                             }}>Close Others</div>
-                                            <div className="px-3 py-2 hover:bg-[#32746415] hover:text-[#327464] cursor-pointer rounded-b-lg transition-colors" onClick={() => {
+                                            <div className="px-3 py-2 hover:bg-[#3a857418] hover:text-[#4aba9a] cursor-pointer rounded-b-lg transition-colors" onClick={() => {
                                                 if (tabContext.index >= 0) {
                                                     const toClose = openFiles.slice(tabContext.index + 1).map(f => f.path);
                                                     toClose.forEach(p => dispatch(closeFile(p)));
@@ -1138,13 +1138,13 @@ const EditorPanel = ({
                             {/* Status & Controls */}
                             <div className="flex items-center gap-2 pr-2">
                                 {/* Collaboration presence */}
-                                <div className="flex items-center gap-1 text-[11px] text-[#a8adc0]">
+                                <div className="flex items-center gap-1 text-[11px] text-[#9ba2b8]">
                                     <button 
                                         onClick={() => setIsPrivateMode(!isPrivateMode)}
-                                        className={`flex items-center px-1.5 py-0.5 rounded-full transition-all ${isPrivateMode ? 'bg-[#ff575720] text-[#ff5757] border border-[#ff575740]' : 'hover:bg-[#1c1d26]'}`}
+                                        className={`flex items-center px-1.5 py-0.5 rounded-full transition-all ${isPrivateMode ? 'bg-[#ff575720] text-[#ff5757] border border-[#ff575740]' : 'hover:bg-[#1a1b24]'}`}
                                         title={isPrivateMode ? "Enable Collaboration" : "Disable Collaboration (Private Mode)"}
                                     >
-                                        {isPrivateMode ? <EyeOff className="w-3 h-3" /> : <div className="text-xs text-[#a8adc0] h-5">👥</div>}
+                                        {isPrivateMode ? <EyeOff className="w-3 h-3" /> : <div className="text-xs text-[#9ba2b8] h-5">👥</div>}
                                         {isPrivateMode && <span className="text-[10px] font-bold ml-1">PRIVATE</span>}
                                     </button>
                                     
