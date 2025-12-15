@@ -111,7 +111,22 @@ const AIChatWindow = ({
         const el = modelButtonRef.current;
         if (!el) return;
         const rect = el.getBoundingClientRect();
-        setModelMenuPos({ top: rect.bottom + 6, left: rect.left });
+        const estimatedHeight = modelChoice === 'custom' ? 260 : 140;
+        const menuWidth = 288; // tailwind w-72
+
+        const margin = 8;
+        // Always open upward since button is at the bottom
+        let top = rect.top - estimatedHeight - 6;
+        // Ensure it doesn't go above viewport
+        top = Math.max(margin, top);
+
+        let left = rect.left;
+        if (left + menuWidth > window.innerWidth - margin) {
+            left = window.innerWidth - menuWidth - margin;
+        }
+        left = Math.max(margin, left);
+
+        setModelMenuPos({ top, left });
     };
 
     useEffect(() => {
@@ -308,70 +323,6 @@ const AIChatWindow = ({
                             </div>
                             <h2 className="text-sm font-semibold text-[#e8eaed]">AI Assistant</h2>
                         </div>
-                        <div className="relative">
-                            <Button
-                                ref={modelButtonRef}
-                                variant="ghost"
-                                size="sm"
-                                className="text-xs px-2.5 py-1.5 h-7 rounded-full bg-[#1a1d23] border border-[#252830] text-[#9ba1ab] hover:text-[#e8eaed] hover:border-[#8b5cf6] hover:bg-[#252830] transition-all"
-                                onClick={() => setModelMenuOpen((v) => !v)}
-                                title="Switch AI model"
-                            >
-                                <span className="flex items-center gap-1.5">
-                                    {modelChoice === 'custom' ? 'Custom' : 'Gemini'}
-                                    <ChevronDown className="w-3 h-3" />
-                                </span>
-                            </Button>
-                            {modelMenuOpen && (
-                                <div
-                                    className="fixed w-72 bg-[#14161a] border border-[#252830] rounded-lg shadow-2xl z-[9999] p-3 space-y-3"
-                                    style={{ top: modelMenuPos.top, left: modelMenuPos.left }}
-                                >
-                                    <div className="text-xs text-[#6b7280] font-semibold uppercase tracking-wider">Model selection</div>
-                                    <div className="flex gap-2 text-xs text-[#e8eaed]">
-                                        <button
-                                            className={`flex-1 px-3 py-2 rounded-lg border transition-all ${modelChoice === 'gemini' ? 'border-[#8b5cf6] bg-[#8b5cf6]/10 text-[#a78bfa]' : 'border-[#252830] hover:border-[#3d4250] hover:bg-[#1a1d23]'}`}
-                                            onClick={() => setModelChoice('gemini')}
-                                        >
-                                            Gemini (default)
-                                        </button>
-                                        <button
-                                            className={`flex-1 px-3 py-2 rounded-lg border transition-all ${modelChoice === 'custom' ? 'border-[#8b5cf6] bg-[#8b5cf6]/10 text-[#a78bfa]' : 'border-[#252830] hover:border-[#3d4250] hover:bg-[#1a1d23]'}`}
-                                            onClick={() => setModelChoice('custom')}
-                                        >
-                                            Custom
-                                        </button>
-                                    </div>
-                                    {modelChoice === 'custom' && (
-                                        <div className="space-y-3 pt-1">
-                                            <div>
-                                                <label className="block text-[11px] text-[#6b7280] mb-1.5 uppercase tracking-wider">Model ID</label>
-                                                <Input
-                                                    value={customModel}
-                                                    onChange={(e) => setCustomModel(e.target.value)}
-                                                    placeholder="e.g. gpt-4.1, gemini-1.5-pro"
-                                                    className="text-xs bg-[#0d0f12] border-[#252830] focus:border-[#8b5cf6]"
-                                                />
-                                            </div>
-                                            <div>
-                                                <label className="block text-[11px] text-[#6b7280] mb-1.5 uppercase tracking-wider">API Key</label>
-                                                <Input
-                                                    type="password"
-                                                    value={customApiKey}
-                                                    onChange={(e) => setCustomApiKey(e.target.value)}
-                                                    placeholder="Enter custom API key"
-                                                    className="text-xs bg-[#0d0f12] border-[#252830] focus:border-[#8b5cf6]"
-                                                />
-                                            </div>
-                                            <div className="text-[11px] text-[#6b7280] flex items-center gap-1.5">
-                                                <Eye className="w-3 h-3" />
-                                                Key stored locally in your browser
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-                        </div>
                     </div>
                     <div className="flex items-center gap-2">
                         {(suggestedCode || fileSuggestions.length > 0) && (
@@ -446,19 +397,10 @@ const AIChatWindow = ({
                 <div className="space-y-4 min-w-0">
                     {timeline.length === 0 ? (
                         <div className="flex flex-col items-center justify-center h-48 text-center px-6">
-                            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#8b5cf6]/20 to-[#ec4899]/20 flex items-center justify-center mb-4">
-                                <Sparkles className="w-8 h-8 text-[#8b5cf6]" strokeWidth={1.5} />
-                            </div>
                             <h3 className="text-sm font-medium text-[#e8eaed] mb-2">How can I help you?</h3>
                             <p className="text-xs text-[#6b7280] leading-relaxed">
                                 Ask me to explain code, fix bugs, add features, or refactor your project.
                             </p>
-                            {activeFile && (
-                                <div className="mt-4 flex items-center gap-1.5 text-[11px] text-[#6b7280] bg-[#1a1d23] px-3 py-1.5 rounded-full">
-                                    <Eye className="w-3 h-3" />
-                                    <span>I can see: {activeFile.name || activeFile.path?.split('/').pop()}</span>
-                                </div>
-                            )}
                         </div>
                     ) : (
                         timeline.map((msg) => {
@@ -595,7 +537,7 @@ const AIChatWindow = ({
                                                                     className="text-[#a1a1aa] hover:text-[#e4e4e7] text-xs flex items-center gap-1"
                                                                     onClick={() => toggleFilePreview(suggestion.path)}
                                                                 >
-                                                                    {collapsed ? <ChevronRight className="w-4 h-4" strokeWidth={1.5} /> : <ChevronDown className="w-4 h-4" strokeWidth={1.5} />}
+                                                                    {collapsed ? <Chevron className="w-4 h-4" strokeWidth={1.5} /> : <ChevronDown className="w-4 h-4" strokeWidth={1.5} />}
                                                                     {collapsed ? 'Show diff' : 'Hide diff'}
                                                                 </button>
                                                                 {suggestion.status === 'pending' && msg.role === 'suggestion-live' && (
@@ -783,16 +725,102 @@ const AIChatWindow = ({
                     </div>
                 )}
                 <div className="flex gap-2">
-                    <textarea
-                        value={inputValue}
-                        onChange={(e) => setInputValue(e.target.value)}
-                        onKeyPress={handleKeyPress}
-                        placeholder="Ask AI for suggestions... (Enter to send)"
-                        disabled={isLoading || !clientReady}
-                        className="flex-1 min-h-[42px] max-h-[140px] resize-y overflow-auto placeholder:text-[#52525b] w-full min-w-0 rounded-md border border-[#3f3f46] bg-[#18181b] px-3 py-2 text-base text-[#e4e4e7] shadow-xs transition-[color,box-shadow] outline-none disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-[#3b82f6] focus-visible:ring-[#3b82f6]/50 focus-visible:ring-[3px]"
-                        rows={1}
-                        style={{ minHeight: '42px', maxHeight: '140px' }}
-                    />
+                    <div className="flex-1 flex flex-col gap-0 border border-[#3f3f46] rounded-md bg-[#18181b] overflow-hidden focus-within:border-[#3b82f6] focus-within:ring-[3px] focus-within:ring-[#3b82f6]/50 transition-[border-color,box-shadow]">
+                        <textarea
+                            value={inputValue}
+                            onChange={(e) => setInputValue(e.target.value)}
+                            onKeyPress={handleKeyPress}
+                            placeholder="Ask AI for suggestions... (Enter to send)"
+                            disabled={isLoading || !clientReady}
+                            className="w-full min-h-[42px] max-h-[140px] resize-none overflow-auto placeholder:text-[#52525b] min-w-0 border-none bg-transparent px-3 pt-2 pb-2 text-base text-[#e4e4e7] outline-none disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm"
+                            rows={1}
+                            style={{ minHeight: '42px', maxHeight: '140px' }}
+                        />
+                        <div className="flex items-center gap-2 px-2 pb-2 border-t border-[#3f3f46]/50">
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                disabled
+                                className="text-xs px-2.5 py-1 h-6 rounded-md bg-transparent border-none text-[#6b7280] hover:text-[#9ba1ab] transition-colors"
+                                title="Agent selection (coming soon)"
+                            >
+                                <span className="flex items-center gap-1.5">
+                                    Agent
+                                    <ChevronDown className="w-3 h-3 transition-transform duration-200 animate-bounce-subtle" />
+                                </span>
+                            </Button>
+
+                            <div className="w-px h-4 bg-[#3f3f46]" aria-hidden="true" />
+
+                            <div className="relative">
+                                <Button
+                                    ref={modelButtonRef}
+                                    variant="ghost"
+                                    size="sm"
+                                    className="text-xs px-2.5 py-1 h-6 rounded-md bg-transparent border-none text-[#9ba1ab] hover:text-[#e8eaed] transition-colors"
+                                    onClick={() => setModelMenuOpen((v) => !v)}
+                                    title="Switch AI model"
+                                >
+                                    <span className="flex items-center gap-1.5">
+                                        {modelChoice === 'custom' ? (effectiveModel || 'Custom') : 'Gemini'}
+                                        <ChevronDown 
+                                            className={`w-3 h-3 transition-transform duration-300 ${modelMenuOpen ? 'rotate-180' : 'rotate-0'}`}
+                                            style={{ animation: modelMenuOpen ? 'none' : 'chevron-float 2s ease-in-out infinite' }}
+                                        />
+                                    </span>
+                                </Button>
+                                {modelMenuOpen && (
+                                    <div
+                                        className="fixed w-72 bg-[#14161a] border border-[#252830] rounded-lg shadow-2xl z-[9999] p-3 space-y-3"
+                                        style={{ top: modelMenuPos.top, left: modelMenuPos.left }}
+                                    >
+                                        <div className="text-xs text-[#6b7280] font-semibold uppercase tracking-wider">Model selection</div>
+                                        <div className="flex gap-2 text-xs text-[#e8eaed]">
+                                            <button
+                                                className={`flex-1 px-3 py-2 rounded-lg border transition-all ${modelChoice === 'gemini' ? 'border-[#8b5cf6] bg-[#8b5cf6]/10 text-[#a78bfa]' : 'border-[#252830] hover:border-[#3d4250] hover:bg-[#1a1d23]'}`}
+                                                onClick={() => setModelChoice('gemini')}
+                                            >
+                                                Gemini (default)
+                                            </button>
+                                            <button
+                                                className={`flex-1 px-3 py-2 rounded-lg border transition-all ${modelChoice === 'custom' ? 'border-[#8b5cf6] bg-[#8b5cf6]/10 text-[#a78bfa]' : 'border-[#252830] hover:border-[#3d4250] hover:bg-[#1a1d23]'}`}
+                                                onClick={() => setModelChoice('custom')}
+                                            >
+                                                Custom
+                                            </button>
+                                        </div>
+                                        {modelChoice === 'custom' && (
+                                            <div className="space-y-3 pt-1">
+                                                <div>
+                                                    <label className="block text-[11px] text-[#6b7280] mb-1.5 uppercase tracking-wider">Model ID</label>
+                                                    <Input
+                                                        value={customModel}
+                                                        onChange={(e) => setCustomModel(e.target.value)}
+                                                        placeholder="e.g. gpt-4.1, gemini-1.5-pro"
+                                                        className="text-xs bg-[#0d0f12] border-[#252830] focus:border-[#8b5cf6]"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[11px] text-[#6b7280] mb-1.5 uppercase tracking-wider">API Key</label>
+                                                    <Input
+                                                        type="password"
+                                                        value={customApiKey}
+                                                        onChange={(e) => setCustomApiKey(e.target.value)}
+                                                        placeholder="Enter custom API key"
+                                                        className="text-xs bg-[#0d0f12] border-[#252830] focus:border-[#8b5cf6]"
+                                                    />
+                                                </div>
+                                                <div className="text-[11px] text-[#6b7280] flex items-center gap-1.5">
+                                                    <Eye className="w-3 h-3" />
+                                                    Key stored locally in your browser
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
                     {controller ? (
                         <Button
                             variant="ghost"

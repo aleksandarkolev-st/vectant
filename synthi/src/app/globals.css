@@ -481,3 +481,43 @@
   color: #f0f2f5;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
 }
+
+/* Chevron animation for AI chat input controls */
+@keyframes chevron-float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes chevron-bounce {
+  0%, 100% {
+    transform: rotate(180deg) translateY(0px);
+  }
+  50% {
+    transform: rotate(180deg) translateY(2px);
+  }
+}
+
+@keyframes bounce-subtle {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+.animate-chevron-float {
+  animation: chevron-float 2s ease-in-out infinite;
+}
+
+.animate-chevron-bounce {
+  animation: chevron-bounce 2s ease-in-out infinite;
+}
+
+.animate-bounce-subtle {
+  animation: bounce-subtle 2s ease-in-out infinite;
+}
