@@ -17,141 +17,141 @@ import { cn } from '@/lib/utils';
 
 const STATUS_CONFIGS = {
     idle: {
-        color: 'bg-gray-400',
+        color: 'bg-[#71717a]',
         text: '',
         show: false,
     },
     compiling: {
-        color: 'bg-yellow-400 animate-pulse',
+        color: 'bg-[#eab308] animate-pulse',
         text: 'Compiling...',
         show: true,
         // No autoHide - will be replaced by compile result
     },
     applied: {
-        color: 'bg-green-500',
+        color: 'bg-[#22c55e]',
         text: 'HMR Applied',
         show: true,
         autoHide: 2000,
     },
     'shim-applied': {
-        color: 'bg-blue-500',
+        color: 'bg-[#327464]',
         text: 'Auto-shim enabled',
         show: true,
         autoHide: 3000,
     },
     'state-migrated': {
-        color: 'bg-green-400',
+        color: 'bg-[#22c55e]',
         text: 'State Migrated',
         show: true,
         autoHide: 3000,
     },
     'crash-recovered': {
-        color: 'bg-orange-500',
+        color: 'bg-[#f97316]',
         text: 'Crash Recovered',
         show: true,
         autoHide: 5000,
     },
     'crash-fatal': {
-        color: 'bg-red-700',
+        color: 'bg-[#ef4444]',
         text: 'Fatal Crash - Restart Required',
         show: true,
     },
     'host-kv-preserved': {
-        color: 'bg-cyan-500',
+        color: 'bg-[#3d8b78]',
         text: 'State Preserved',
         show: true,
         autoHide: 2000,
     },
     'host-kv-reset-schema': {
-        color: 'bg-yellow-600',
+        color: 'bg-[#eab308]',
         text: 'Schema Changed - Namespace Reset',
         show: true,
         autoHide: 4000,
     },
     // Fast Refresh boundary statuses
     'boundary-violation': {
-        color: 'bg-orange-600',
+        color: 'bg-[#f97316]',
         text: 'Fast Refresh Boundary Crossed',
         show: true,
         autoHide: 5000,
     },
     // Widget-level HMR statuses
     'widgets-detected': {
-        color: 'bg-purple-400',
+        color: 'bg-[#327464]',
         text: 'Widgets Detected',
         show: true,
         autoHide: 2000,
     },
     'widget-compiled': {
-        color: 'bg-purple-500',
+        color: 'bg-[#3d8b78]',
         text: 'Widget Updated',
         show: true,
         autoHide: 1500,
     },
     'widgets-compiled': {
-        color: 'bg-purple-500',
+        color: 'bg-[#3d8b78]',
         text: 'Widget HMR Complete',
         show: true,
         autoHide: 2500,
     },
     'widget-compile-error': {
-        color: 'bg-red-500',
+        color: 'bg-[#ef4444]',
         text: 'Widget Compile Error',
         show: true,
         autoHide: 4000,
     },
     check: {
-        color: 'bg-yellow-500 animate-pulse',
+        color: 'bg-[#eab308] animate-pulse',
         text: 'Checking...',
         show: true,
     },
     prepare: {
-        color: 'bg-yellow-500 animate-pulse',
+        color: 'bg-[#eab308] animate-pulse',
         text: 'Preparing...',
         show: true,
     },
     dispose: {
-        color: 'bg-yellow-500 animate-pulse',
+        color: 'bg-[#eab308] animate-pulse',
         text: 'Disposing...',
         show: true,
     },
     apply: {
-        color: 'bg-yellow-500 animate-pulse',
+        color: 'bg-[#eab308] animate-pulse',
         text: 'Applying...',
         show: true,
     },
     'full-reload-required': {
-        color: 'bg-orange-500',
+        color: 'bg-[#f97316]',
         text: 'Full Reload Required',
         show: true,
         autoHide: 4000,
     },
     rejected: {
-        color: 'bg-red-500',
+        color: 'bg-[#ef4444]',
         text: 'HMR Failed',
         show: true,
         autoHide: 4000,
     },
     fail: {
-        color: 'bg-red-500',
+        color: 'bg-[#ef4444]',
         text: 'HMR Failed',
         show: true,
         autoHide: 4000,
     },
     'compile-error': {
-        color: 'bg-red-600',
+        color: 'bg-[#ef4444]',
         text: 'Compile Error',
         show: true,
         // No autoHide - user needs to see this
     },
     'compile-warning': {
-        color: 'bg-yellow-600',
+        color: 'bg-[#eab308]',
         text: 'Compiled with Warnings',
         show: true,
         autoHide: 4000,
     },
     'capability-detected': {
-        color: 'bg-blue-400',
+        color: 'bg-[#327464]',
         text: 'Module Analyzed',
         show: true,
         autoHide: 2000,
@@ -220,37 +220,37 @@ export function HMRStatusIndicator({ className }) {
     return (
         <div 
             className={cn(
-                "fixed bottom-4 right-4 z-50 flex items-center gap-2 px-3 py-2 rounded-lg shadow-lg bg-gray-900/90 backdrop-blur-sm border border-gray-700 transition-all duration-300 cursor-pointer",
+                "fixed bottom-4 right-4 z-50 flex items-center gap-2 px-3 py-2 rounded shadow-lg bg-[#09090b]/95 backdrop-blur-sm border border-[#1a1a1e] transition-all duration-300 cursor-pointer",
                 expanded && "flex-col items-start",
                 className
             )}
             onClick={() => setExpanded(!expanded)}
         >
             {/* Status Dot */}
-            <div className={cn("w-2 h-2 rounded-full", config.color)} />
+            <div className={cn("w-2.5 h-2.5 rounded-full", config.color)} />
             
             {/* Status Text */}
-            <span className="text-sm text-gray-200 font-medium">
+            <span className="text-sm text-[#fafafa] font-medium">
                 {displayText}
             </span>
             
             {/* Expanded Details */}
             {expanded && details && (
-                <div className="text-xs text-gray-400 mt-2 space-y-1 max-w-xs">
+                <div className="text-xs text-[#71717a] mt-2 space-y-1 max-w-xs">
                     {details.module && (
-                        <div>Module: <span className="text-gray-300">{details.module}</span></div>
+                        <div>Module: <span className="text-[#a1a1aa]">{details.module}</span></div>
                     )}
                     {details.capability && (
-                        <div>Capability: <span className="text-gray-300">{details.capability}</span></div>
+                        <div>Capability: <span className="text-[#a1a1aa]">{details.capability}</span></div>
                     )}
                     {details.reason && (
-                        <div>Reason: <span className="text-gray-300">{details.reason}</span></div>
+                        <div>Reason: <span className="text-[#a1a1aa]">{details.reason}</span></div>
                     )}
                     {details.message && (
                         <div>{details.message}</div>
                     )}
                     {details.warnings && details.warnings.length > 0 && (
-                        <div className="text-yellow-400">
+                        <div className="text-[#eab308]">
                             {details.warnings.map((w, i) => (
                                 <div key={i}>⚠️ {w}</div>
                             ))}
@@ -258,7 +258,7 @@ export function HMRStatusIndicator({ className }) {
                     )}
                     {details.state_preserved !== undefined && (
                         <div>
-                            State: <span className={details.state_preserved ? "text-green-400" : "text-yellow-400"}>
+                            State: <span className={details.state_preserved ? "text-[#22c55e]" : "text-[#eab308]"}>
                                 {details.state_preserved ? "Preserved" : "Reset"}
                             </span>
                         </div>

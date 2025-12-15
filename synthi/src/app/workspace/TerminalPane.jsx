@@ -1,5 +1,6 @@
 'use client';
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap } from 'lucide-react';
 
 export default function TerminalPane() {
   const containerRef = useRef(null);
@@ -8,6 +9,9 @@ export default function TerminalPane() {
   const currentSessionIdRef = useRef(null);
   const inputBufferRef = useRef('');
   const initializedRef = useRef(false);
+  const [connectionState, setConnectionState] = useState('connecting'); // 'connecting' | 'connected' | 'error' | 'closed'
+  const [errorMessage, setErrorMessage] = useState('');
+  const reconnectAttemptsRef = useRef(0);
   // Use the same SIGNAL URL as compilerClient when available, fallback to localhost
   const MACHINE_WS = typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_COMPILE_SIGNAL_URL
     ? process.env.NEXT_PUBLIC_COMPILE_SIGNAL_URL
@@ -29,8 +33,33 @@ export default function TerminalPane() {
 
       term = new Terminal({
         convertEol: true,
-        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-        theme: { background: '#1e1e1e', foreground: '#d4d4d4' },
+        fontFamily: 'ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Monaco, Consolas, monospace',
+        fontSize: 13,
+        lineHeight: 1.5,
+        theme: { 
+          // Synthi dark blue-gray theme with teal accent
+          background: '#0a0b10',
+          foreground: '#f0f2f5',
+          cursor: '#327464',
+          cursorAccent: '#0a0b10',
+          selectionBackground: 'rgba(50, 116, 100, 0.3)',
+          black: '#0a0b10',
+          red: '#ff6b6b',
+          green: '#a8e6cf',
+          yellow: '#ffd93d',
+          blue: '#88c0fc',
+          magenta: '#c4b5fd',
+          cyan: '#327464',
+          white: '#f0f2f5',
+          brightBlack: '#6b7089',
+          brightRed: '#ff8a8a',
+          brightGreen: '#b8f0db',
+          brightYellow: '#ffe566',
+          brightBlue: '#a8d4ff',
+          brightMagenta: '#d8c9fe',
+          brightCyan: '#3d8b78',
+          brightWhite: '#ffffff'
+        },
         cursorBlink: true,
         allowTransparency: false,
         cols: 80,
@@ -59,6 +88,9 @@ export default function TerminalPane() {
         try { ws.binaryType = 'arraybuffer'; } catch (e) { /* ignore */ }
         ws.onopen = () => {
           console.log('WebSocket connected');
+          setConnectionState('connected');
+          setErrorMessage('');
+          reconnectAttemptsRef.current = 0;
           try {
             const { cols, rows } = term;
             console.log(`Terminal size: ${cols}x${rows}`);
@@ -80,14 +112,17 @@ export default function TerminalPane() {
           }
         };
         ws.onerror = (error) => {
-          try { term.write('\r\n\x1b[31mWebSocket connection error. Terminal unavailable.\x1b[0m\r\n'); } catch (_) {}
+          setConnectionState('error');
+          setErrorMessage('Connection failed. The terminal server may be unavailable.');
           console.error('WebSocket error:', error);
         };
         ws.onclose = (event) => {
           console.log('WebSocket closed', event.code, event.reason, event.wasClean);
+          setConnectionState('closed');
         };
       } else {
-        try { term.write('\r\n\x1b[31mWebSocket: failed to create connection to ' + String(MACHINE_WS) + '\x1b[0m\r\n'); } catch (_) {}
+        setConnectionState('error');
+        setErrorMessage(`Failed to connect to ${MACHINE_WS}`);
       }
       
       let isResizing = false;
@@ -264,9 +299,69 @@ export default function TerminalPane() {
     };
   }, []);
 
+  const handleReconnect = () => {
+    setConnectionState('connecting');
+    setErrorMessage('');
+    reconnectAttemptsRef.current += 1;
+    
+    // Close existing connection
+    if (wsRef.current) {
+      try { wsRef.current.close(); } catch (e) {}
+    }
+    
+    // Re-initialize
+    initializedRef.current = false;
+    
+    // Force re-mount by triggering useEffect
+    setTimeout(() => {
+      window.location.reload();
+    }, 100);
+  };
+
   return (
-    <div className="h-full w-full bg-[#1e1e1e] overflow-hidden">
+    <div className="h-full w-full bg-[#0a0b10] overflow-hidden relative">
       <div ref={containerRef} className="h-full w-full" />
+      
+      {/* Synthi Branded Error Overlay */}
+      {(connectionState === 'error' || connectionState === 'closed') && (
+        <div className="absolute inset-0 bg-[#0a0b10]/98 backdrop-blur-md flex items-center justify-center z-10">
+          <div className="flex flex-col items-center gap-4 p-8 max-w-md text-center">
+            {/* Animated Synthi branded icon */}
+            <div className="relative">
+              <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-[#32746420] to-[#3d8b7820] border border-[#32746440] flex items-center justify-center animate-pulse">
+                <WifiOff className="w-10 h-10 text-[#327464]" strokeWidth={1.5} />
+              </div>
+              {/* Glow effect */}
+              <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-[#327464] to-[#3d8b78] opacity-20 blur-xl -z-10" />
+            </div>
+            
+            {/* Title with gradient */}
+            <h3 className="text-xl font-bold bg-gradient-to-r from-[#f0f2f5] to-[#a8adc0] bg-clip-text text-transparent">
+              Terminal Disconnected
+            </h3>
+            
+            {/* Message */}
+            <p className="text-sm text-[#6b7089] leading-relaxed">
+              {errorMessage || 'The connection to the Synthi terminal server was lost. This may be due to network issues or server maintenance.'}
+            </p>
+            
+            {/* Reconnect button - Synthi branded */}
+            <button
+              onClick={handleReconnect}
+              className="mt-2 flex items-center gap-2 px-5 py-2.5 rounded-full bg-gradient-to-r from-[#327464] to-[#3d8b78] text-white font-medium text-sm hover:opacity-90 transition-all shadow-[0_0_20px_rgba(50,116,100,0.3)] hover:shadow-[0_0_25px_rgba(50,116,100,0.4)]"
+            >
+              <RefreshCw className="w-4 h-4" strokeWidth={2} />
+              Reconnect
+            </button>
+            
+            {/* Synthi branding */}
+            <div className="flex items-center gap-2 mt-4 text-[#6b7089] text-xs">
+              <Zap className="w-3 h-3 text-[#327464]" />
+              <span>Powered by Synthi</span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

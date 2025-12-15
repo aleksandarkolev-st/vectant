@@ -149,7 +149,7 @@ const FileTreeView = ({
     >
       <ContextMenuTrigger asChild>
         <div
-          className="w-full h-full select-none bg-[#232323] text-gray-100 flex flex-col border-r border-[#343434]"
+          className="w-full h-full select-none bg-[#09090b] text-[#e8eaed] flex flex-col border-r border-[#252830]"
           onClick={() => {
             setContextTarget(null);
           }}
@@ -157,21 +157,21 @@ const FileTreeView = ({
           onMouseLeave={() => setIsTreeHovered(false)}
         >
           {/* Header */}
-          <div className={`px-3 py-2 flex items-center ${isRightSide ? 'flex-row-reverse' : ''} justify-between border-b border-[#343434] sticky top-0 bg-[#1e1e1e] z-10`}>
+          <div className={`px-4 py-1 flex items-center ${isRightSide ? 'flex-row-reverse' : ''} justify-between border-b border-[#252830] sticky top-0 bg-[#0d0f12] z-10`}>
             <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold tracking-wide uppercase text-gray-300">
+              <span className="text-xs font-semibold tracking-wider uppercase text-[#e8eaed]">
                 Project
               </span>
             </div>
             <button
               onClick={onToggleOrientation}
-              className={`p-1.5 rounded border border-[#3a3a3a] bg-[#262626] hover:bg-[#2f2f2f] transition ${isRightSide ? 'mr-auto' : 'ml-auto'}`}
+              className={`p-1.5 rounded border border-[#2d313a] bg-[#14161a] hover:bg-[#252830] hover:border-[#3b82f6] transition ${isRightSide ? 'mr-auto' : 'ml-auto'}`}
               title={isRightSide ? "Move to left" : "Move to right"}
             >
               {isRightSide ? (
-                <PanelLeftClose className="w-4 h-4 text-gray-300" />
+                <PanelLeftClose className="w-4 h-4 text-[#9ba1ab]" />
               ) : (
-                <PanelRightClose className="w-4 h-4 text-gray-300" />
+                <PanelRightClose className="w-4 h-4 text-[#9ba1ab]" />
               )}
             </button>
           </div>
@@ -240,28 +240,32 @@ const FileTreeView = ({
       </ContextMenuTrigger>
 
       {/* Context Menu */}
-      <ContextMenuContent className="w-48 bg-[#1f1f1f] border border-[#333] text-gray-200 shadow-lg">
+      <ContextMenuContent className="w-52 bg-[#14161a] border border-[#252830] text-[#e8eaed] shadow-xl rounded-lg">
         {contextTarget ? (
           contextTarget.isFolder ? (
             <>
               <ContextMenuItem
                 onClick={() => handleTreeAction("new-file", contextTarget)}
+                className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
               >
                 New File
               </ContextMenuItem>
               <ContextMenuItem
                 onClick={() => handleTreeAction("new-folder", contextTarget)}
+                className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
               >
                 New Folder
               </ContextMenuItem>
-              <ContextMenuSeparator />
+              <ContextMenuSeparator className="bg-[#252830] my-1" />
               <ContextMenuItem
                 onClick={() => handleTreeAction("rename", contextTarget)}
+                className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
               >
                 Rename
               </ContextMenuItem>
               <ContextMenuItem
                 onClick={() => handleTreeAction("delete", contextTarget)}
+                className="px-3 py-2.5 text-sm hover:bg-[#f87171]/10 hover:text-[#f87171] cursor-pointer rounded-md mx-1"
               >
                 Delete
               </ContextMenuItem>
@@ -275,7 +279,7 @@ const FileTreeView = ({
                   if (el) {
                     el.setAttribute('data-loading', 'true');
                     const spinner = document.createElement("div");
-                    spinner.className = "ml-2 h-3 w-3 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin";
+                    spinner.className = "ml-2 h-3 w-3 border-2 border-[#3b82f6] border-t-transparent rounded-full animate-spin";
                     spinner.setAttribute('data-spinner', 'true');
                     const content = el.querySelector(".file-content");
                     if (content) {
@@ -290,17 +294,20 @@ const FileTreeView = ({
                   // Then load the file
                   onFileSelectHandler(contextTarget);
                 }}
+                className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
               >
                 Open
               </ContextMenuItem>
-              <ContextMenuSeparator />
+              <ContextMenuSeparator className="bg-[#252830] my-1" />
               <ContextMenuItem
                 onClick={() => handleTreeAction("rename", contextTarget)}
+                className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
               >
                 Rename
               </ContextMenuItem>
               <ContextMenuItem
                 onClick={() => handleTreeAction("delete", contextTarget)}
+                className="px-3 py-2.5 text-sm hover:bg-[#f87171]/10 hover:text-[#f87171] cursor-pointer rounded-md mx-1"
               >
                 Delete
               </ContextMenuItem>
@@ -310,11 +317,13 @@ const FileTreeView = ({
           <>
             <ContextMenuItem
               onClick={() => handleTreeAction("new-file-root")}
+              className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
             >
               New File
             </ContextMenuItem>
             <ContextMenuItem
               onClick={() => handleTreeAction("new-folder-root")}
+              className="px-3 py-2.5 text-sm hover:bg-[#252830] hover:text-[#3b82f6] cursor-pointer rounded-md mx-1"
             >
               New Folder
             </ContextMenuItem>
