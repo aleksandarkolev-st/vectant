@@ -1504,10 +1504,17 @@ async fn handle_compile(
             let content = core["content"].as_str().unwrap_or("");
             
             // Required core exports (check for both new and legacy symbol names)
-            let has_on_load = content.contains("extern \"C\" void* core_on_load") || 
-                             content.contains("extern \"C\" void* on_load");
-            let has_on_update = content.contains("extern \"C\" void core_on_update") || 
-                               content.contains("extern \"C\" void on_update");
+            // Support both inline: `extern "C" void* on_load(...)` 
+            // and block: `extern "C" { ... void* on_load(...) ... }`
+            let has_extern_c_block = content.contains("extern \"C\" {");
+            let has_on_load_fn = content.contains("void* core_on_load") || content.contains("void* on_load");
+            let has_on_update_fn = content.contains("void core_on_update") || content.contains("void on_update");
+            let has_inline_on_load = content.contains("extern \"C\" void* core_on_load") || 
+                                     content.contains("extern \"C\" void* on_load");
+            let has_inline_on_update = content.contains("extern \"C\" void core_on_update") || 
+                                       content.contains("extern \"C\" void on_update");
+            let has_on_load = has_inline_on_load || (has_extern_c_block && has_on_load_fn);
+            let has_on_update = has_inline_on_update || (has_extern_c_block && has_on_update_fn);
             
             if !has_on_load {
                 validation_errors.push("core.cpp missing required export: on_load or core_on_load".to_string());
@@ -1516,8 +1523,14 @@ async fn handle_compile(
                 validation_warnings.push("core.cpp missing on_update/core_on_update - app will be blocking".to_string());
             }
             
-            // Check for ABI version constant (warning if missing)
-            if !content.contains("SYNTHI_CORE_ABI_VERSION") && !content.contains("abi_version") {
+            // Check for ABI version constant (check in core.cpp content and shared.h)
+            let shared_content = split_data.get("shared")
+                .and_then(|s| s["content"].as_str())
+                .unwrap_or("");
+            let has_abi_version = content.contains("SYNTHI_CORE_ABI_VERSION") || 
+                                  content.contains("abi_version") ||
+                                  shared_content.contains("abi_version");
+            if !has_abi_version {
                 validation_warnings.push("core.cpp should define abi_version field in state struct".to_string());
             }
             
@@ -1532,8 +1545,13 @@ async fn handle_compile(
             let content = gui["content"].as_str().unwrap_or("");
             
             // Required GUI exports (check for both new and legacy symbol names)
-            let has_gui_render = content.contains("extern \"C\" void gui_on_render") ||
-                                content.contains("extern \"C\" void gui_render");
+            // Support both inline: `extern "C" void gui_render(...)` 
+            // and block: `extern "C" { ... void gui_render(...) ... }`
+            let has_extern_c_block = content.contains("extern \"C\" {");
+            let has_gui_render_fn = content.contains("void gui_on_render") || content.contains("void gui_render");
+            let has_inline_extern = content.contains("extern \"C\" void gui_on_render") ||
+                                    content.contains("extern \"C\" void gui_render");
+            let has_gui_render = has_inline_extern || (has_extern_c_block && has_gui_render_fn);
             
             if !has_gui_render {
                 validation_errors.push("gui.cpp missing required export: gui_render or gui_on_render".to_string());
