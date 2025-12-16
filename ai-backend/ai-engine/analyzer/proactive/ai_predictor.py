@@ -33,47 +33,33 @@ from .types import (
 )
 
 
-# Prompt template for AI error prediction
-AI_ERROR_PREDICTION_PROMPT = """You are an expert code reviewer with deep knowledge of software engineering best practices, security vulnerabilities, and common bugs. Analyze the following code for potential issues that might not be caught by a compiler or linter.
+# Prompt template for AI error prediction - WITH SIMPLE FIXES
+AI_ERROR_PREDICTION_PROMPT = """Analyze this code for logic errors. Return JSON array.
 
-Focus on:
-1. **Logic Errors**: Off-by-one errors, incorrect conditions, wrong operators
-2. **Security Issues**: SQL injection, XSS, insecure defaults, hardcoded secrets
-3. **Race Conditions**: Data races, deadlocks, TOCTOU vulnerabilities
-4. **Resource Leaks**: Unclosed files, database connections, memory leaks
-5. **API Misuse**: Incorrect function usage, wrong parameter types, deprecated APIs
-6. **Edge Cases**: Null/undefined handling, empty collections, boundary conditions
-7. **Performance Issues**: N+1 queries, unnecessary allocations, blocking operations
+Each issue needs:
+- "line": line number (1-indexed)
+- "message": brief description  
+- "explanation": why it's wrong
+- "severity": "error" or "warning"
+- "confidence": 0.0-1.0
+- "wrong": the exact wrong string in the code (copy exactly from code)
+- "correct": what it should be replaced with
 
-For each issue found, respond with a JSON array of objects with these fields:
-- "line": 1-indexed line number where the issue starts
-- "endLine": 1-indexed line number where the issue ends (same as line if single line)
-- "column": 0-indexed column where the issue starts
-- "endColumn": 0-indexed column where the issue ends
-- "severity": "error" | "warning" | "info" | "hint"
-- "category": one of "logic_error", "security", "concurrency", "resource_leak", "type_error", "performance", "best_practice"
-- "message": Brief description of the issue (1 sentence)
-- "explanation": Detailed explanation of why this is a problem and how to fix it (2-3 sentences)
-- "confidence": 0.0 to 1.0 confidence score
-- "fix": (optional) suggested code replacement
+Example for code with "Odd" that should be "Even":
+[{"line": 3, "message": "Wrong label", "explanation": "Prints Odd for even numbers", "severity": "warning", "confidence": 0.9, "wrong": "Odd!", "correct": "Even!"}]
 
-If no issues are found, respond with an empty array: []
-
-IMPORTANT: 
-- Only report issues you're reasonably confident about (confidence >= 0.6)
-- Don't report obvious syntax errors (the compiler will catch those)
-- Don't repeat issues already caught by static analysis
-- Be specific about line numbers and locations
-- Keep explanations concise but actionable
+Rules:
+- Find LOGIC errors only (wrong conditions, swapped values)
+- "wrong" must be an EXACT substring from the code on that line
+- "correct" is the replacement
+- Return [] if no issues
+- JSON only, no markdown
 
 Language: {language}
-File: {file_path}
 
-```{language}
 {code}
-```
 
-Respond ONLY with a valid JSON array, no markdown, no explanation outside the JSON:"""
+JSON:"""
 
 
 CATEGORY_MAP = {
@@ -151,7 +137,9 @@ class AIErrorPredictor:
         except Exception as e:
             # Don't crash on AI errors, just return empty
             diagnostics = []
+            import traceback
             print(f"[AIErrorPredictor] Analysis failed: {e}")
+            print(f"[AIErrorPredictor] Traceback: {traceback.format_exc()}")
         
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         
@@ -169,21 +157,9 @@ class AIErrorPredictor:
     ) -> List[Diagnostic]:
         """Run the actual AI analysis."""
         
-        # Build the prompt
-        prompt = AI_ERROR_PREDICTION_PROMPT.format(
-            language=file.language,
-            file_path=file.path,
-            code=file.content,
-        )
-        
-        # Add context about related files if available
-        if related_files:
-            context_parts = []
-            for rf in related_files[:5]:  # Limit context
-                context_parts.append(f"--- {rf.path} ---\n{rf.content[:2000]}")
-            
-            if context_parts:
-                prompt += f"\n\nRelated files for context:\n" + "\n".join(context_parts)
+        # Build the prompt - simple string replacement
+        prompt = AI_ERROR_PREDICTION_PROMPT.replace("{language}", file.language) \
+                                           .replace("{code}", file.content)
         
         # Call the LLM
         response = await self._provider.ask_llm(
@@ -249,26 +225,50 @@ class AIErrorPredictor:
         if not message:
             return None
         
-        # Parse line numbers (1-indexed in response, convert to 0-indexed)
-        line = max(0, min(item.get("line", 1) - 1, max_line))
-        end_line = max(line, min(item.get("endLine", line + 1) - 1, max_line))
+        # Parse line number (1-indexed in response, convert to 0-indexed)
+        line_num = max(0, min(int(item.get("line", 1)) - 1, max_line))
         
-        # Parse columns
-        line_length = len(lines[line]) if line < len(lines) else 0
-        column = max(0, min(item.get("column", 0), line_length))
-        end_column = max(column, min(item.get("endColumn", line_length), line_length))
+        # Get the actual line content
+        line_content = lines[line_num] if line_num < len(lines) else ""
+        line_length = len(line_content)
         
         # Parse severity
-        severity_str = item.get("severity", "warning").lower()
+        severity_str = str(item.get("severity", "warning")).lower()
         severity = SEVERITY_MAP.get(severity_str, Severity.WARNING)
         
-        # Parse category
-        category_str = item.get("category", "logic_error").lower().replace(" ", "_")
-        category = CATEGORY_MAP.get(category_str, DiagnosticCategory.LOGIC_ERROR)
-        
         # Parse confidence
-        confidence = float(item.get("confidence", 0.7))
-        confidence = max(0.0, min(1.0, confidence))
+        try:
+            confidence = float(item.get("confidence", 0.7))
+            confidence = max(0.0, min(1.0, confidence))
+        except (ValueError, TypeError):
+            confidence = 0.7
+        
+        # Find the exact position of "wrong" string in the line
+        wrong_str = item.get("wrong", "")
+        correct_str = item.get("correct", "")
+        
+        # Default to highlighting the trimmed content of the line (skip leading whitespace)
+        leading_whitespace = len(line_content) - len(line_content.lstrip())
+        column = leading_whitespace
+        end_column = max(line_length, column + 1)  # At least 1 character
+        
+        if wrong_str and wrong_str in line_content:
+            # Found the exact wrong string - get its position
+            column = line_content.find(wrong_str)
+            end_column = column + len(wrong_str)
+        elif wrong_str:
+            # Try case-insensitive search
+            lower_line = line_content.lower()
+            lower_wrong = wrong_str.lower()
+            if lower_wrong in lower_line:
+                column = lower_line.find(lower_wrong)
+                end_column = column + len(wrong_str)
+            else:
+                # Try to find partial match (first word of wrong_str)
+                first_word = wrong_str.split()[0] if wrong_str.split() else wrong_str
+                if first_word in line_content:
+                    column = line_content.find(first_word)
+                    end_column = column + len(first_word)
         
         # Build diagnostic
         diagnostic = Diagnostic(
@@ -276,24 +276,29 @@ class AIErrorPredictor:
             severity=severity,
             tier=AnalysisTier.AI,
             location=DiagnosticLocation(
-                line=line,
+                line=line_num,
                 column=column,
-                end_line=end_line,
+                end_line=line_num,
                 end_column=end_column,
             ),
-            code=f"AI{category_str[:3].upper()}{hash(message) % 100:02d}",
-            category=category,
+            code="AILOG",
+            category=DiagnosticCategory.LOGIC_ERROR,
             source="synthi-ai",
             explanation=item.get("explanation", ""),
             confidence=confidence,
         )
         
-        # Add fix if provided
-        if "fix" in item and item["fix"]:
+        # Add fix if we have both wrong and correct strings
+        if wrong_str and correct_str and wrong_str in line_content:
             diagnostic.fixes.append(CodeFix(
-                description="AI-suggested fix",
-                replacement_text=str(item["fix"]),
-                location=diagnostic.location,
+                description=f"Replace '{wrong_str}' with '{correct_str}'",
+                replacement_text=correct_str,
+                location=DiagnosticLocation(
+                    line=line_num,
+                    column=column,
+                    end_line=line_num,
+                    end_column=end_column,
+                ),
                 is_preferred=True,
             ))
         

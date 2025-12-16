@@ -56,19 +56,27 @@ const CATEGORY_ICONS = {
 export function createMonacoMarkers(diagnostics, monaco) {
   if (!diagnostics || !monaco) return [];
   
-  return diagnostics.map(diagnostic => ({
-    severity: SEVERITY_TO_MONACO[diagnostic.severity] || SEVERITY_TO_MONACO.info,
-    message: formatDiagnosticMessage(diagnostic),
-    startLineNumber: (diagnostic.location?.line ?? 0) + 1, // Monaco is 1-indexed
-    startColumn: (diagnostic.location?.column ?? 0) + 1,
-    endLineNumber: (diagnostic.location?.endLine ?? diagnostic.location?.line ?? 0) + 1,
-    endColumn: (diagnostic.location?.endColumn ?? diagnostic.location?.column ?? 0) + 1,
-    source: diagnostic.source || `synthi-${diagnostic.tier}`,
-    code: diagnostic.code,
-    // Store original diagnostic for quick fixes
-    relatedInformation: diagnostic.relatedInformation || [],
-    tags: getTags(diagnostic),
-  }));
+  return diagnostics.map(diagnostic => {
+    const column = diagnostic.location?.column ?? 0;
+    const endColumn = diagnostic.location?.endColumn ?? column;
+    const startCol = column + 1; // Monaco is 1-indexed
+    // Ensure at least 1 character width for the marker
+    const endCol = Math.max(endColumn + 1, startCol + 1);
+    
+    return {
+      severity: SEVERITY_TO_MONACO[diagnostic.severity] || SEVERITY_TO_MONACO.info,
+      message: formatDiagnosticMessage(diagnostic),
+      startLineNumber: (diagnostic.location?.line ?? 0) + 1, // Monaco is 1-indexed
+      startColumn: startCol,
+      endLineNumber: (diagnostic.location?.endLine ?? diagnostic.location?.line ?? 0) + 1,
+      endColumn: endCol,
+      source: diagnostic.source || `synthi-${diagnostic.tier}`,
+      code: diagnostic.code,
+      // Store original diagnostic for quick fixes
+      relatedInformation: diagnostic.relatedInformation || [],
+      tags: getTags(diagnostic),
+    };
+  });
 }
 
 /**
@@ -147,8 +155,13 @@ export function createDiagnosticDecorations(diagnostics) {
   
   return diagnostics.map(diagnostic => {
     const line = (diagnostic.location?.line ?? 0) + 1;
-    const startCol = (diagnostic.location?.column ?? 0) + 1;
-    const endCol = (diagnostic.location?.endColumn ?? startCol) + 1;
+    const column = diagnostic.location?.column ?? 0;
+    const endColumn = diagnostic.location?.endColumn ?? column;
+    
+    // Convert from 0-indexed to 1-indexed for Monaco
+    const startCol = column + 1;
+    // Ensure the range is at least 1 character wide
+    const endCol = Math.max(endColumn + 1, startCol + 1);
     
     const isAi = diagnostic.tier === 'ai';
     const icon = CATEGORY_ICONS[diagnostic.category] || '⚠️';

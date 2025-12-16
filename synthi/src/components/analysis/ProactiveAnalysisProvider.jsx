@@ -261,9 +261,15 @@ export function ProactiveAnalysisProvider({
     const { editor } = firstEntry;
     
     // Set cursor position (convert from 0-indexed to 1-indexed)
+    const column = location.column ?? 0;
+    const endColumn = location.endColumn ?? column;
+    const startCol = column + 1;
+    // Ensure at least 1 character selection width
+    const endCol = Math.max(endColumn + 1, startCol + 1);
+    
     const position = {
       lineNumber: (location.line ?? 0) + 1,
-      column: (location.column ?? 0) + 1,
+      column: startCol,
     };
     
     editor.setPosition(position);
@@ -271,12 +277,12 @@ export function ProactiveAnalysisProvider({
     editor.focus();
     
     // Optionally highlight the range
-    if (location.endLine !== undefined) {
+    if (location.endLine !== undefined || location.endColumn !== undefined) {
       editor.setSelection({
         startLineNumber: position.lineNumber,
-        startColumn: position.column,
+        startColumn: startCol,
         endLineNumber: (location.endLine ?? location.line ?? 0) + 1,
-        endColumn: (location.endColumn ?? location.column ?? 0) + 1,
+        endColumn: endCol,
       });
     }
   }, []);
