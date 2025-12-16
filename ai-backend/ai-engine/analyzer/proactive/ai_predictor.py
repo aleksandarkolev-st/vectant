@@ -33,31 +33,62 @@ from .types import (
 )
 
 
-# Prompt template for AI error prediction - WITH SIMPLE FIXES
-AI_ERROR_PREDICTION_PROMPT = """Analyze this code for logic errors. Return JSON array.
+# Prompt template for AI error prediction - PRECISE SENIOR DEV LEVEL
+AI_ERROR_PREDICTION_PROMPT = """You are a senior software engineer conducting a thorough code review. Analyze this {language} code for bugs that would cause incorrect runtime behavior.
 
-Each issue needs:
-- "line": line number (1-indexed)
-- "message": brief description  
-- "explanation": why it's wrong
-- "severity": "error" or "warning"
-- "confidence": 0.0-1.0
-- "wrong": the exact wrong string in the code (copy exactly from code)
-- "correct": what it should be replaced with
+ANALYSIS APPROACH:
+1. Trace through the code mentally - what happens for different inputs?
+2. Check boundary conditions and edge cases
+3. Verify logic operators (&&, ||, !, ==, !=, <, >, <=, >=)
+4. Check off-by-one errors in loops and array access
+5. Verify function return values and early returns
+6. Check for swapped conditions or inverted logic
 
-Example for code with "Odd" that should be "Even":
-[{"line": 3, "message": "Wrong label", "explanation": "Prints Odd for even numbers", "severity": "warning", "confidence": 0.9, "wrong": "Odd!", "correct": "Even!"}]
+RESPOND WITH A JSON ARRAY. Each issue must have these EXACT fields:
 
-Rules:
-- Find LOGIC errors only (wrong conditions, swapped values)
-- "wrong" must be an EXACT substring from the code on that line
-- "correct" is the replacement
-- Return [] if no issues
-- JSON only, no markdown
+{{
+  "line_start": <number>,        // First line of the problematic code (1-indexed)
+  "line_end": <number>,          // Last line of the problematic code (1-indexed)
+  "snippet": "<string>",         // EXACT code to highlight (copy verbatim from source)
+  "message": "<string>",         // Clear, actionable description (like a PR comment)
+  "explanation": "<string>",     // WHY this is wrong - trace through with example values
+  "severity": "error"|"warning", // error = will definitely fail, warning = likely bug
+  "confidence": <0.0-1.0>,       // Your confidence this is a real bug
+  "fix_snippet": "<string>",     // The corrected code (same structure as snippet)
+  "category": "<string>"         // One of: logic_error, off_by_one, wrong_operator, wrong_condition, type_error, null_reference, boundary_error
+}}
 
-Language: {language}
+PRECISION REQUIREMENTS:
+- "snippet" must be an EXACT substring that appears in the code
+- For single-expression bugs: snippet = just the wrong expression (e.g., "n % 2 == 0")
+- For multi-line logic bugs: snippet = the entire flawed block (function body, if-else, loop)
+- line_start/line_end must match where snippet appears
+- fix_snippet must be a drop-in replacement for snippet
 
+EXAMPLE 1 - Wrong operator:
+Code line 5: `if (n % 2 == 0) {{ print("Odd"); }}`
+Response: [{{"line_start": 5, "line_end": 5, "snippet": "n % 2 == 0", "message": "Condition checks for even but prints 'Odd'", "explanation": "n % 2 == 0 is true when n is EVEN, but the code prints 'Odd'. For n=4: 4%2=0, condition is true, prints 'Odd' incorrectly.", "severity": "error", "confidence": 0.95, "fix_snippet": "n % 2 != 0", "category": "wrong_operator"}}]
+
+EXAMPLE 2 - Flawed function logic (multi-line):
+```
+def is_prime(n):
+    for i in range(2, n):
+        if n % i == 0:
+            return True
+    return False
+```
+Response: [{{"line_start": 1, "line_end": 5, "snippet": "def is_prime(n):\\n    for i in range(2, n):\\n        if n % i == 0:\\n            return True\\n    return False", "message": "Return values are inverted - returns True for non-primes", "explanation": "When n%i==0, n is divisible by i, meaning n is NOT prime. But code returns True. For n=4: 4%2=0, returns True (wrong, 4 is not prime).", "severity": "error", "confidence": 0.98, "fix_snippet": "def is_prime(n):\\n    for i in range(2, n):\\n        if n % i == 0:\\n            return False\\n    return True", "category": "logic_error"}}]
+
+RULES:
+- Only report bugs that cause INCORRECT BEHAVIOR (not style issues)
+- Be specific - vague issues waste developer time
+- If no bugs found, return: []
+- JSON only, no markdown fences or explanation outside the array
+
+CODE TO ANALYZE:
+```{language}
 {code}
+```
 
 JSON:"""
 
@@ -199,10 +230,11 @@ class AIErrorPredictor:
         
         lines = file.content.splitlines()
         max_line = len(lines) - 1
+        full_code = file.content
         
         for item in items:
             try:
-                diagnostic = self._parse_diagnostic_item(item, lines, max_line)
+                diagnostic = self._parse_diagnostic_item(item, lines, max_line, full_code)
                 if diagnostic:
                     diagnostics.append(diagnostic)
             except Exception:
@@ -215,6 +247,7 @@ class AIErrorPredictor:
         item: Dict[str, Any],
         lines: List[str],
         max_line: int,
+        full_code: str,
     ) -> Optional[Diagnostic]:
         """Parse a single diagnostic item from the LLM response."""
         if not isinstance(item, dict):
@@ -225,12 +258,13 @@ class AIErrorPredictor:
         if not message:
             return None
         
-        # Parse line number (1-indexed in response, convert to 0-indexed)
-        line_num = max(0, min(int(item.get("line", 1)) - 1, max_line))
+        # Parse line numbers (1-indexed in response, convert to 0-indexed)
+        # Support both old format (line) and new format (line_start, line_end)
+        line_start = item.get("line_start") or item.get("line", 1)
+        line_end = item.get("line_end") or line_start
         
-        # Get the actual line content
-        line_content = lines[line_num] if line_num < len(lines) else ""
-        line_length = len(line_content)
+        line_num = max(0, min(int(line_start) - 1, max_line))
+        end_line_num = max(line_num, min(int(line_end) - 1, max_line))
         
         # Parse severity
         severity_str = str(item.get("severity", "warning")).lower()
@@ -243,32 +277,68 @@ class AIErrorPredictor:
         except (ValueError, TypeError):
             confidence = 0.7
         
-        # Find the exact position of "wrong" string in the line
-        wrong_str = item.get("wrong", "")
-        correct_str = item.get("correct", "")
+        # Parse category
+        category_str = item.get("category", "logic_error").lower().replace("-", "_").replace(" ", "_")
+        category = CATEGORY_MAP.get(category_str, DiagnosticCategory.LOGIC_ERROR)
         
-        # Default to highlighting the trimmed content of the line (skip leading whitespace)
-        leading_whitespace = len(line_content) - len(line_content.lstrip())
-        column = leading_whitespace
-        end_column = max(line_length, column + 1)  # At least 1 character
+        # Get snippet - the exact code to highlight
+        snippet = item.get("snippet", "") or item.get("wrong", "")
+        fix_snippet = item.get("fix_snippet", "") or item.get("correct", "")
         
-        if wrong_str and wrong_str in line_content:
-            # Found the exact wrong string - get its position
-            column = line_content.find(wrong_str)
-            end_column = column + len(wrong_str)
-        elif wrong_str:
-            # Try case-insensitive search
-            lower_line = line_content.lower()
-            lower_wrong = wrong_str.lower()
-            if lower_wrong in lower_line:
-                column = lower_line.find(lower_wrong)
-                end_column = column + len(wrong_str)
+        # Normalize snippet (handle escaped newlines from JSON)
+        snippet = snippet.replace("\\n", "\n").replace("\\t", "\t")
+        fix_snippet = fix_snippet.replace("\\n", "\n").replace("\\t", "\t")
+        
+        # Try to find the exact position of the snippet in the code
+        column = 0
+        end_column = 0
+        snippet_found = False
+        
+        if snippet:
+            # First, try to find in the full code
+            snippet_idx = full_code.find(snippet)
+            if snippet_idx != -1:
+                # Found exact match - calculate line and column
+                lines_before = full_code[:snippet_idx].splitlines()
+                if lines_before:
+                    line_num = len(lines_before) - 1
+                    column = len(lines_before[-1]) if lines_before else 0
+                else:
+                    line_num = 0
+                    column = snippet_idx
+                
+                # Calculate end position
+                snippet_lines = snippet.splitlines()
+                if len(snippet_lines) > 1:
+                    end_line_num = line_num + len(snippet_lines) - 1
+                    end_column = len(snippet_lines[-1])
+                else:
+                    end_line_num = line_num
+                    end_column = column + len(snippet)
+                
+                snippet_found = True
             else:
-                # Try to find partial match (first word of wrong_str)
-                first_word = wrong_str.split()[0] if wrong_str.split() else wrong_str
-                if first_word in line_content:
-                    column = line_content.find(first_word)
-                    end_column = column + len(first_word)
+                # Try case-insensitive or normalized whitespace search
+                normalized_code = " ".join(full_code.split())
+                normalized_snippet = " ".join(snippet.split())
+                
+                if normalized_snippet in normalized_code:
+                    # Found with normalized whitespace - fall back to line-based
+                    snippet_found = False  # Will use line-based highlighting
+        
+        # If snippet not found exactly, highlight the full line range
+        if not snippet_found:
+            start_line_content = lines[line_num] if line_num < len(lines) else ""
+            end_line_content = lines[end_line_num] if end_line_num < len(lines) else ""
+            
+            # Start at first non-whitespace character
+            column = len(start_line_content) - len(start_line_content.lstrip())
+            # End at line length
+            end_column = len(end_line_content)
+        
+        # Ensure valid range
+        if end_line_num == line_num and end_column <= column:
+            end_column = column + 1  # At least 1 character
         
         # Build diagnostic
         diagnostic = Diagnostic(
@@ -278,25 +348,27 @@ class AIErrorPredictor:
             location=DiagnosticLocation(
                 line=line_num,
                 column=column,
-                end_line=line_num,
+                end_line=end_line_num,
                 end_column=end_column,
             ),
-            code="AILOG",
-            category=DiagnosticCategory.LOGIC_ERROR,
+            code=f"AI{category_str[:3].upper()}",
+            category=category,
             source="synthi-ai",
             explanation=item.get("explanation", ""),
             confidence=confidence,
         )
         
-        # Add fix if we have both wrong and correct strings
-        if wrong_str and correct_str and wrong_str in line_content:
+        # Add fix if we have both snippet and fix_snippet
+        if snippet and fix_snippet and snippet_found:
+            # Truncate description if too long
+            desc = fix_snippet if len(fix_snippet) < 50 else f"{fix_snippet[:47]}..."
             diagnostic.fixes.append(CodeFix(
-                description=f"Replace '{wrong_str}' with '{correct_str}'",
-                replacement_text=correct_str,
+                description=f"Apply fix: {desc}",
+                replacement_text=fix_snippet,
                 location=DiagnosticLocation(
                     line=line_num,
                     column=column,
-                    end_line=line_num,
+                    end_line=end_line_num,
                     end_column=end_column,
                 ),
                 is_preferred=True,
