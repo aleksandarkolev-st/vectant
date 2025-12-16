@@ -16,6 +16,8 @@ mod crash_recovery;
 mod error_parser;
 mod source_map;
 mod fast_refresh;
+mod mobile_routing;
+mod flutter_builder;
 
 use builder::{RebuildScope, ModuleHashes, hash_content, WidgetDetector, WidgetCompiler, WidgetAnalysis};
 use fast_refresh::{BoundaryChecker, BoundaryCheckResult, RefreshAction, BoundaryViolationEvent};
