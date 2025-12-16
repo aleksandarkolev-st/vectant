@@ -55,38 +55,43 @@ export const useEditorProviders = ({
         const originalText = model.getValueInRange(range);
         const replacementText = fix.replacementText || '';
         
-        // Skip if same content
-        if (originalText === replacementText) return;
+        // Skip if same content or empty replacement
+        if (originalText === replacementText || !replacementText) return;
         
-        // Create a content widget showing the preview
+        // Create DOM node once (must be cached for Monaco content widgets)
+        const domNode = document.createElement('div');
+        domNode.className = 'synthi-fix-preview-container';
+        domNode.style.zIndex = '9999';
+        domNode.style.position = 'relative';
+        domNode.innerHTML = `
+            <div class="synthi-fix-preview-header">
+                <span class="synthi-fix-preview-icon">💡</span>
+                <span>Suggested Fix Preview</span>
+            </div>
+            <div class="synthi-fix-preview-content">
+                <div class="synthi-fix-preview-old">
+                    <span class="synthi-fix-label">Current:</span>
+                    <code>${escapeHtml(originalText.split('\n').slice(0, 5).join('\n'))}</code>
+                </div>
+                <div class="synthi-fix-preview-arrow">→</div>
+                <div class="synthi-fix-preview-new">
+                    <span class="synthi-fix-label">After fix:</span>
+                    <code>${escapeHtml(replacementText.split('\n').slice(0, 5).join('\n'))}</code>
+                </div>
+            </div>
+        `;
+
+        // Create content widget with cached DOM node
         const widgetId = 'synthi-fix-preview-widget';
         const widget = {
             getId: () => widgetId,
-            getDomNode: () => {
-                const node = document.createElement('div');
-                node.className = 'synthi-fix-preview-container';
-                node.innerHTML = `
-                    <div class="synthi-fix-preview-header">
-                        <span class="synthi-fix-preview-icon">💡</span>
-                        <span>Suggested Fix Preview</span>
-                    </div>
-                    <div class="synthi-fix-preview-content">
-                        <div class="synthi-fix-preview-old">
-                            <span class="synthi-fix-label">Current:</span>
-                            <code>${escapeHtml(originalText.split('\n').slice(0, 5).join('\n'))}</code>
-                        </div>
-                        <div class="synthi-fix-preview-arrow">→</div>
-                        <div class="synthi-fix-preview-new">
-                            <span class="synthi-fix-label">After fix:</span>
-                            <code>${escapeHtml(replacementText.split('\n').slice(0, 5).join('\n'))}</code>
-                        </div>
-                    </div>
-                `;
-                return node;
-            },
+            getDomNode: () => domNode, // Return cached node
             getPosition: () => ({
-                position: { lineNumber: range.endLineNumber, column: range.endColumn },
-                preference: [monacoInstance.editor.ContentWidgetPositionPreference.BELOW],
+                position: { lineNumber: range.endLineNumber + 1, column: 1 },
+                preference: [
+                    monacoInstance.editor.ContentWidgetPositionPreference.BELOW,
+                    monacoInstance.editor.ContentWidgetPositionPreference.ABOVE,
+                ],
             }),
         };
         
@@ -207,9 +212,13 @@ export const useEditorProviders = ({
                     if (!firstFixDiagnostic) {
                         const matchingDiag = currentDiagnostics.find(d => {
                             const loc = d.location || {};
-                            return d.fixes?.length > 0 &&
-                                   loc.line === m.startLineNumber - 1 &&
-                                   m.message.includes(d.message);
+                            // Check if line matches (loc.line is 0-indexed, m.startLineNumber is 1-indexed)
+                            const lineMatches = loc.line === m.startLineNumber - 1;
+                            // Check if message matches (flexible matching)
+                            const msgMatches = m.message.includes(d.message) || d.message.includes(m.message) || 
+                                               m.message.toLowerCase() === d.message.toLowerCase();
+                            // Must have fixes
+                            return d.fixes?.length > 0 && lineMatches && msgMatches;
                         });
                         
                         if (matchingDiag?.fixes?.length > 0) {
@@ -243,17 +252,27 @@ export const useEditorProviders = ({
             }
         });
         
-        // Hide preview when cursor moves away
-        const cursorListener = editorInstance.onDidChangeCursorPosition(() => {
+        // Hide preview when cursor moves significantly away
+        let hideTimeout = null;
+        const cursorListener = editorInstance.onDidChangeCursorPosition((e) => {
             if (hoverTimeout) clearTimeout(hoverTimeout);
-            // Delay hiding to allow clicking on the fix
-            setTimeout(() => hideFixPreview(), 300);
+            // Only hide if cursor moves to a different line
+            if (hideTimeout) clearTimeout(hideTimeout);
+            hideTimeout = setTimeout(() => hideFixPreview(), 500);
+        });
+        
+        // Also hide on scroll
+        const scrollListener = editorInstance.onDidScrollChange(() => {
+            if (hoverTimeout) clearTimeout(hoverTimeout);
+            hideFixPreview();
         });
         
         return () => {
             hoverProviderRef.current?.dispose();
             cursorListener?.dispose();
+            scrollListener?.dispose();
             if (hoverTimeout) clearTimeout(hoverTimeout);
+            if (hideTimeout) clearTimeout(hideTimeout);
         };
     }, [monacoInstance, editorInstance, activeLanguage]);
 
