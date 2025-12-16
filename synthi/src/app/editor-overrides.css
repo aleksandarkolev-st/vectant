@@ -78,3 +78,88 @@
 /* Base glyph margin style used by per-line presence badges. Specific content and
     color are injected per-client at runtime by the collab client. */
 .monaco-editor .glyph-margin .collab-line-badge { display: inline-block; height: 14px; width: 14px; border-radius: 14px; margin-left: 2px; box-sizing: border-box; }
+
+
+/* ============================================
+   Proactive Analysis Diagnostic Styles
+   ============================================ */
+
+/* Error diagnostics - Red underline */
+.synthi-error-line-highlight {
+    background-color: rgba(255, 0, 0, 0.06) !important;
+    border-left: 3px solid rgba(255, 80, 80, 0.6) !important;
+}
+
+.synthi-diagnostic-error {
+    background-color: rgba(255, 80, 80, 0.12);
+    text-decoration: underline wavy;
+    text-decoration-color: #ff5555;
+}
+
+/* Warning diagnostics - Amber/Yellow underline */
+.synthi-diagnostic-warning {
+    background-color: rgba(255, 200, 0, 0.08);
+    text-decoration: underline wavy;
+    text-decoration-color: #ffcc00;
+}
+
+/* Info diagnostics - Blue dashed underline */
+.synthi-diagnostic-info {
+    background-color: rgba(100, 180, 255, 0.06);
+    text-decoration: underline dashed;
+    text-decoration-color: #64b5f6;
+}
+
+/* Hint diagnostics - Green dotted underline */
+.synthi-diagnostic-hint {
+    text-decoration: underline dotted;
+    text-decoration-color: #4caf50;
+}
+
+/* AI-specific diagnostics - Purple gradient with distinct style */
+.synthi-ai-diagnostic-inline {
+    background: linear-gradient(90deg, rgba(147, 51, 234, 0.08), rgba(79, 70, 229, 0.08));
+    text-decoration: underline wavy;
+    text-decoration-color: rgba(147, 51, 234, 0.7);
+}
+
+/* Glyph margin icons for diagnostics */
+.synthi-glyph-error {
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23ff5555'/%3E%3Cpath d='M5 5l6 6M11 5l-6 6' stroke='white' stroke-width='1.5'/%3E%3C/svg%3E") center center no-repeat !important;
+    background-size: 14px !important;
+}
+
+.synthi-glyph-warning {
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 2L2 14h12L8 2z' fill='%23ffcc00'/%3E%3Cpath d='M8 6v4M8 11.5v.5' stroke='%23333' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") center center no-repeat !important;
+    background-size: 14px !important;
+}
+
+.synthi-glyph-info {
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%2364b5f6'/%3E%3Cpath d='M8 5v.5M8 7v4' stroke='white' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") center center no-repeat !important;
+    background-size: 14px !important;
+}
+
+.synthi-glyph-hint {
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='5' fill='none' stroke='%234caf50' stroke-width='1.5'/%3E%3Cpath d='M8 5v4M8 11v.5' stroke='%234caf50' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") center center no-repeat !important;
+    background-size: 14px !important;
+}
+
+/* Unused code styling (faded) */
+.synthi-diagnostic-unused {
+    opacity: 0.5;
+}
+
+/* Static tier indicator - subtle left border */
+.synthi-diagnostic-static {
+    border-left: 2px solid rgba(100, 100, 100, 0.3);
+}
+
+/* Semantic tier indicator - blue left border */
+.synthi-diagnostic-semantic {
+    border-left: 2px solid rgba(100, 150, 255, 0.4);
+}
+
+/* AI tier indicator - purple left border */
+.synthi-diagnostic-ai {
+    border-left: 2px solid rgba(147, 51, 234, 0.5);
+}

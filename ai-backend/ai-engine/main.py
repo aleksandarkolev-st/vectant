@@ -6,8 +6,10 @@ import requests
 import json
 import sys
 import os
+import asyncio
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from analyzer import get_analyzer
 from analyzer import supported_languages
@@ -15,7 +17,49 @@ from analyzer import supported_languages
 from llm.providers import get_provider
 from llm.prompts import SPLIT_GUI_PROMPT
 
+# Proactive Analysis imports
+from analyzer.proactive import (
+    ProactiveAnalyzer,
+    AnalysisResult,
+    AnalysisTier,
+)
+from analyzer.proactive.types import AnalysisRequest, FileContext
+from analyzer.proactive.cache import AnalysisCache
+
 app = FastAPI()
+
+# Initialize proactive analyzer with shared cache
+_analysis_cache = AnalysisCache(max_entries=2000, max_age_seconds=3600)
+_proactive_analyzer_no_ai: Optional[ProactiveAnalyzer] = None
+
+
+def get_proactive_analyzer(llm_provider=None) -> ProactiveAnalyzer:
+    """
+    Get or create the proactive analyzer.
+    
+    If llm_provider is supplied, always creates a fresh analyzer with AI enabled.
+    If llm_provider is None, returns a cached analyzer with AI disabled (fast path).
+    """
+    global _proactive_analyzer_no_ai
+    
+    if llm_provider is not None:
+        # AI tier requested - create fresh analyzer with provider
+        return ProactiveAnalyzer(
+            cache=_analysis_cache,
+            llm_provider=llm_provider,
+            enable_ai=True,
+            ai_min_confidence=0.6,
+        )
+    
+    # No AI - use cached analyzer for speed
+    if _proactive_analyzer_no_ai is None:
+        _proactive_analyzer_no_ai = ProactiveAnalyzer(
+            cache=_analysis_cache,
+            llm_provider=None,
+            enable_ai=False,
+            ai_min_confidence=0.6,
+        )
+    return _proactive_analyzer_no_ai
 
 
 class FileModel(BaseModel):
@@ -42,6 +86,19 @@ class AnalyzeAiRequest(BaseModel):
     api_key: Optional[str] = None
 
 
+class ProactiveAnalysisRequest(BaseModel):
+    """Request for proactive code analysis."""
+    code: str
+    lang: str
+    file_path: Optional[str] = "untitled"
+    related_files: Optional[List[FileModel]] = None
+    tiers: Optional[List[str]] = None  # "static", "semantic", "ai"
+    include_ai: Optional[bool] = True
+    max_diagnostics: Optional[int] = 50
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+
+
 @app.post("/analyze/static")
 def analyze_code(req: AnalyzeRequest):
     try:
@@ -56,6 +113,116 @@ def analyze_code(req: AnalyzeRequest):
         "static_analysis": static_results,
         "lang": canonical_lang,
     }
+
+
+@app.post("/analyze/proactive")
+async def analyze_proactive(req: ProactiveAnalysisRequest):
+    """
+    Proactive code analysis endpoint.
+    
+    Runs multi-tier analysis (static, semantic, AI) to detect
+    potential errors before compilation.
+    
+    Returns diagnostics from all tiers with severity, location,
+    and suggested fixes.
+    """
+    def select_provider():
+        if req.api_key:
+            model_name = (req.model or '').lower()
+            if 'gemini' in model_name:
+                return get_provider(provider_name='gemini', use_custom=True)
+            return get_provider(provider_name='chatgpt', use_custom=True)
+        return get_provider()
+    
+    # Determine which tiers to run
+    tiers = []
+    if req.tiers:
+        tier_map = {
+            'static': AnalysisTier.STATIC,
+            'semantic': AnalysisTier.SEMANTIC,
+            'ai': AnalysisTier.AI,
+        }
+        tiers = [tier_map[t.lower()] for t in req.tiers if t.lower() in tier_map]
+    else:
+        # Default: run all tiers
+        tiers = [AnalysisTier.STATIC, AnalysisTier.SEMANTIC]
+        if req.include_ai:
+            tiers.append(AnalysisTier.AI)
+    
+    # Build file context
+    file_context = FileContext(
+        path=req.file_path or "untitled",
+        content=req.code,
+        language=req.lang,
+    )
+    
+    # Build related files context
+    related_files = []
+    if req.related_files:
+        for rf in req.related_files:
+            related_files.append(FileContext(
+                path=rf.path or rf.name or f"file-{len(related_files)}",
+                content=rf.content,
+                language=req.lang,
+            ))
+    
+    # Create analysis request
+    analysis_request = AnalysisRequest(
+        file=file_context,
+        related_files=related_files,
+        tiers=tiers,
+        max_diagnostics=req.max_diagnostics or 50,
+        include_fixes=True,
+    )
+    
+    # Get analyzer with provider for AI tier
+    provider = select_provider() if AnalysisTier.AI in tiers else None
+    analyzer = get_proactive_analyzer(llm_provider=provider)
+    
+    try:
+        result = await analyzer.analyze(analysis_request)
+        return result.to_dict()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@app.post("/analyze/proactive/quick")
+async def analyze_proactive_quick(req: ProactiveAnalysisRequest):
+    """
+    Quick proactive analysis (static + semantic only).
+    
+    Optimized for real-time feedback during typing.
+    Typically completes in < 200ms.
+    """
+    file_context = FileContext(
+        path=req.file_path or "untitled",
+        content=req.code,
+        language=req.lang,
+    )
+    
+    analyzer = get_proactive_analyzer()
+    
+    try:
+        result = await analyzer.analyze_quick(file_context)
+        return result.to_dict()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Quick analysis failed: {str(e)}")
+
+
+@app.get("/analyze/proactive/cache/stats")
+async def get_cache_stats():
+    """Get proactive analysis cache statistics."""
+    analyzer = get_proactive_analyzer()
+    return await analyzer.get_cache_stats()
+
+
+@app.post("/analyze/proactive/cache/clear")
+async def clear_cache():
+    """Clear the proactive analysis cache."""
+    analyzer = get_proactive_analyzer()
+    await analyzer.clear_cache()
+    return {"status": "ok", "message": "Cache cleared"}
+
 
 @app.post("/analyze/ai")
 async def analyze_code_ai(req: AnalyzeAiRequest):
