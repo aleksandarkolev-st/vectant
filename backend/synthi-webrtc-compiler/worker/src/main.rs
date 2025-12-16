@@ -1,6 +1,9 @@
 use std::sync::Arc;
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
+use std::env;
 
 mod builder;
 mod watcher;
@@ -17,26 +20,46 @@ mod error_parser;
 mod source_map;
 mod fast_refresh;
 mod mobile_routing;
-mod flutter_builder;
+mod react_native_builder;
+mod android_emulator;
+mod mobile_job;
 
-use builder::{RebuildScope, ModuleHashes, hash_content, WidgetDetector, WidgetCompiler, WidgetAnalysis};
-use fast_refresh::{BoundaryChecker, BoundaryCheckResult, RefreshAction, BoundaryViolationEvent};
-use watcher::{PreemptiveConfig, PreemptiveMessage, SpeculativeCache, SpeculativeCacheEntry};
-use error_parser::{parse_compiler_output, CompilerType, DiagnosticEvent, DiagnosticReport};
-use source_map::debug_compile_flags;
-use capability::{detect_capabilities, HmrCapability, HmrStatus, CapabilityReport};
+use builder::{RebuildScope, ModuleHashes, hash_content, WidgetDetector, WidgetCompiler};
+use fast_refresh::{BoundaryChecker, RefreshAction, BoundaryViolationEvent};
+use watcher::{PreemptiveConfig, PreemptiveMessage, SpeculativeCache};
+use error_parser::{parse_compiler_output, CompilerType, DiagnosticEvent};
+use capability::{detect_capabilities, HmrCapability, HmrStatus};
 use shim::{auto_shim, ShimMode, detect_shim_mode};
+use serde::{Serialize, Deserialize};
 use gstreamer as gst;
+use gstreamer::prelude::{ElementExt, Cast, GstObjectExt, GstBinExt};
+use gstreamer_app as gst_app;
 use anyhow::{Context, Result};
 use futures::{FutureExt, StreamExt, SinkExt};
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex};
+use tokio::process::Command;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use chrono::Utc;
+use webrtc::api::APIBuilder;
+use webrtc::api::media_engine::MediaEngine;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::RTCDataChannel;
+use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
+use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
+use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType};
+use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
+use webrtc::track::track_local::TrackLocal;
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+use webrtc::track::track_local::TrackLocalWriter;
+use webrtc::util::Unmarshal;
+use webrtc::rtp::packet::Packet;
 use bytes::Bytes;
 
 #[derive(Debug, Deserialize)]
@@ -90,6 +113,12 @@ struct CompileRequest {
     supports_h265: Option<bool>,
     #[serde(default)]
     use_ai_split: bool,
+    /// Target platform for execution: "native" (default), "react-native-emulator", etc.
+    #[serde(default)]
+    target: Option<String>,
+    /// Project root path for mobile builds (relative to workspace)
+    #[serde(default)]
+    project_root: Option<String>,
 }
 
 struct RunnerState {
@@ -442,10 +471,34 @@ async fn main() -> Result<()> {
                             if msg.is_string {
                                 // Try to parse as a CompileRequest
                                 if let Ok(req) = serde_json::from_slice::<CompileRequest>(&msg.data) {
-                                    eprintln!("[Main] Received CompileRequest: is_gui={}, use_ai_split={}, lang={}", 
-                                        req.is_gui, req.use_ai_split, req.language);
+                                    eprintln!("[Main] Received CompileRequest: is_gui={}, use_ai_split={}, lang={}, target={:?}", 
+                                        req.is_gui, req.use_ai_split, req.language, req.target);
                                     let log_dc = { store.lock().await.clone() };
                                     if let Some(log) = log_dc {
+                                        // Check if this is a mobile emulator target
+                                        if let Some(ref target) = req.target {
+                                            if target == "react-native-emulator" {
+                                                let session_id = req.session_id.clone().unwrap_or_else(|| {
+                                                    format!("sess-{}-{}", chrono::Utc::now().timestamp_millis(), uuid::Uuid::new_v4().as_u128() % 100000)
+                                                });
+                                                let wp = workspace_path_for_compile.clone();
+                                                let project_root = req.project_root.clone();
+                                                tokio::spawn(async move {
+                                                    if let Err(e) = mobile_job::handle_react_native_emulator_job(
+                                                        log,
+                                                        session_id,
+                                                        wp.to_path_buf(),
+                                                        project_root,
+                                                        false, // debug build by default
+                                                    ).await {
+                                                        eprintln!("[Main] Mobile emulator job failed: {:?}", e);
+                                                    }
+                                                });
+                                                return;
+                                            }
+                                        }
+                                        
+                                        // Default: native compile flow
                                         let ts = term_store_for_msg.clone();
                                         let sdls = sdl_store.clone();
                                         let rs = runner_store.clone();

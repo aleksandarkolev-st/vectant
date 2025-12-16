@@ -389,9 +389,10 @@ export class CompilerClient {
         return channel;
     }
 
-    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false } = {}) {
-        const lang = language || this._mapLanguage(filename);
-        if (!lang) throw new SynthiException('Unsupported language for compilation', 'The file extension is not supported by the compiler.');
+    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false, target = null, projectRoot = null } = {}) {
+        // For mobile targets, language detection is optional
+        const lang = target === 'react-native-emulator' ? (language || 'javascript') : (language || this._mapLanguage(filename));
+        if (!target && !lang) throw new SynthiException('Unsupported language for compilation', 'The file extension is not supported by the compiler.');
         await this.connect();
 
         if (onLog) this.logHandlers.add(onLog);
@@ -425,6 +426,26 @@ export class CompilerClient {
                     }
                 } catch (e) { /* ignore */ }
 
+                // Check for mobile job completion
+                if (parsed && parsed.type === 'mobile-status' && parsed.status === 'done') {
+                    this.logHandlers.delete(handleLog);
+                    if (onLog) this.logHandlers.delete(onLog);
+                    if (parsed.data?.success) {
+                        resolve(parsed);
+                    } else {
+                        reject(new SynthiException('Mobile build failed', parsed.message || 'Mobile emulator job failed'));
+                    }
+                    return;
+                }
+
+                // Check for mobile job error
+                if (parsed && parsed.type === 'mobile-status' && parsed.status === 'error') {
+                    this.logHandlers.delete(handleLog);
+                    if (onLog) this.logHandlers.delete(onLog);
+                    reject(new SynthiException('Mobile build failed', parsed.message || 'Mobile emulator job failed'));
+                    return;
+                }
+
                 // Check for final JSON status message to resolve/reject for this session
                 if (parsed && parsed.status === 'done') {
                     // cleanup
@@ -451,7 +472,9 @@ export class CompilerClient {
                     width: width,
                     height: height,
                     supports_h265: this.supportsH265,
-                    use_ai_split: useAiSplit
+                    use_ai_split: useAiSplit,
+                    target: target,
+                    project_root: projectRoot
                 }));
             } catch (e) {
                 this.logHandlers.delete(handleLog);
