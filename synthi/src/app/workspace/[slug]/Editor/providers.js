@@ -12,11 +12,14 @@ export const useEditorProviders = ({
     rawFiles = [],
     fileCacheEntries = new Map(),
     activeFile,
-    lspReady = false
+    lspReady = false,
+    diagnostics = [] // Proactive analysis diagnostics for quick fixes
 }) => {
     const hoverProviderRef = useRef(null);
     const inlineCompletionProviderRef = useRef(null);
     const completionProviderRef = useRef(null);
+    const codeActionProviderRef = useRef(null);
+    const diagnosticsRef = useRef(diagnostics);
 
     // Use refs for complex objects to avoid useEffect dependency crashes
     const fileCacheRef = useRef(fileCacheEntries);
@@ -27,7 +30,8 @@ export const useEditorProviders = ({
         fileCacheRef.current = fileCacheEntries;
         rawFilesRef.current = rawFiles;
         activeFileRef.current = activeFile;
-    }, [fileCacheEntries, rawFiles, activeFile]);
+        diagnosticsRef.current = diagnostics;
+    }, [fileCacheEntries, rawFiles, activeFile, diagnostics]);
 
     // 0. Standard Library & Workspace IntelliSense (C++) - REMOVED
     // We rely entirely on the LSP server for IntelliSense.
@@ -112,7 +116,82 @@ export const useEditorProviders = ({
         return () => hoverProviderRef.current?.dispose();
     }, [monacoInstance, editorInstance, activeLanguage]);
 
-    // 4. Semantic Tokens (Custom Highlighting for Classes/Types)
+    // 4. Code Action Provider (Quick Fixes)
+    useEffect(() => {
+        if (!editorInstance || !monacoInstance) return;
+        codeActionProviderRef.current?.dispose();
+        
+        // Helper to find diagnostics for a given range
+        const getDiagnosticsForRange = (startLine, startCol, endLine, endCol) => {
+            const currentDiagnostics = diagnosticsRef.current || [];
+            return currentDiagnostics.filter(d => {
+                const loc = d.location || {};
+                const dLine = loc.line ?? 0;
+                const dCol = loc.column ?? 0;
+                const dEndLine = loc.endLine ?? dLine;
+                const dEndCol = loc.endColumn ?? dCol;
+                
+                // Check if ranges overlap
+                return !(dEndLine < startLine || dLine > endLine || 
+                        (dLine === endLine && dEndCol < startCol) ||
+                        (dEndLine === startLine && dCol > endCol));
+            });
+        };
+        
+        codeActionProviderRef.current = monacoInstance.languages.registerCodeActionProvider(activeLanguage, {
+            provideCodeActions: (model, range, context, token) => {
+                const actions = [];
+                const markers = context.markers || [];
+                
+                for (const marker of markers) {
+                    // Find matching diagnostic with fixes
+                    const matchingDiagnostics = getDiagnosticsForRange(
+                        marker.startLineNumber - 1,
+                        marker.startColumn - 1,
+                        marker.endLineNumber - 1,
+                        marker.endColumn - 1
+                    );
+                    
+                    for (const diagnostic of matchingDiagnostics) {
+                        if (!diagnostic.fixes?.length) continue;
+                        
+                        for (const fix of diagnostic.fixes) {
+                            const fixRange = new monacoInstance.Range(
+                                (fix.location?.line ?? (marker.startLineNumber - 1)) + 1,
+                                (fix.location?.column ?? (marker.startColumn - 1)) + 1,
+                                (fix.location?.endLine ?? (marker.endLineNumber - 1)) + 1,
+                                (fix.location?.endColumn ?? (marker.endColumn - 1)) + 1
+                            );
+                            
+                            // Monaco IWorkspaceTextEdit format requires resource, textEdit, and versionId
+                            actions.push({
+                                title: fix.description || 'Apply fix',
+                                kind: 'quickfix',
+                                diagnostics: [marker],
+                                isPreferred: fix.isPreferred || false,
+                                edit: {
+                                    edits: [{
+                                        resource: model.uri,
+                                        versionId: undefined,
+                                        textEdit: {
+                                            range: fixRange,
+                                            text: fix.replacementText || '',
+                                        },
+                                    }],
+                                },
+                            });
+                        }
+                    }
+                }
+                
+                return { actions, dispose: () => {} };
+            },
+        });
+        
+        return () => codeActionProviderRef.current?.dispose();
+    }, [monacoInstance, editorInstance, activeLanguage]);
+
+    // 5. Semantic Tokens (Custom Highlighting for Classes/Types)
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
 

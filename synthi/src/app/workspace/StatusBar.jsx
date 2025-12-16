@@ -5,7 +5,7 @@ import { BranchSelector } from '@/components/git/BranchSelector';
 import { selectCursorPosition } from '@/redux/uiSlice';
 import { selectActiveFile } from '@/redux/workspaceSlice';
 import { getMonacoLanguage } from '@/utils/languageMapper';
-import { Cpu, Zap } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2 } from 'lucide-react';
 
 /**
  * StatusBar Component - Synthi styled bottom status bar
@@ -15,6 +15,9 @@ import { Cpu, Zap } from 'lucide-react';
 export default function StatusBar({ 
   slug,
   compilerStatus = 'disconnected',
+  diagnosticSummary = { errors: 0, warnings: 0, total: 0 },
+  isAnalyzing = false,
+  onProblemsClick,
 }) {
   const currentBranch = useSelector(state => state.git?.currentBranch);
   const position = useSelector(selectCursorPosition);
@@ -59,6 +62,9 @@ export default function StatusBar({
   };
   
   const statusStyle = getCompilerStatusStyle();
+  
+  // Determine if there are problems to show
+  const hasProblems = diagnosticSummary.errors > 0 || diagnosticSummary.warnings > 0;
 
   return (
     <div className="h-7 flex-shrink-0 flex items-center justify-between px-3 bg-[#08090d] border-t-2 border-[#1a1b24] text-[12px] select-none font-[var(--font-ui)]">
@@ -67,6 +73,42 @@ export default function StatusBar({
         {/* Branch Selector - Compact with pill style */}
         <div className="flex items-center rounded-md px-1">
           <BranchSelector slug={slug} />
+        </div>
+        
+        <div className="w-px h-4 bg-[#1a1b24]"></div>
+        
+        {/* Problems Indicator - Clickable to toggle problems panel */}
+        <div 
+          onClick={onProblemsClick}
+          className={`flex items-center gap-2 px-2 py-0.5 rounded-md cursor-pointer transition-all ${
+            hasProblems 
+              ? 'hover:bg-[#ff575715] bg-[#ff575708]' 
+              : 'hover:bg-[#101118]'
+          }`}
+        >
+          {isAnalyzing ? (
+            <>
+              <Loader2 className="w-3.5 h-3.5 text-[#9ba2b8] animate-spin" strokeWidth={2} />
+              <span className="text-[#9ba2b8]">Analyzing...</span>
+            </>
+          ) : (
+            <>
+              <AlertCircle 
+                className={`w-3.5 h-3.5 ${diagnosticSummary.errors > 0 ? 'text-[#ff5757]' : 'text-[#5a6178]'}`} 
+                strokeWidth={2} 
+              />
+              <span className={diagnosticSummary.errors > 0 ? 'text-[#ff5757] font-semibold' : 'text-[#9ba2b8]'}>
+                {diagnosticSummary.errors}
+              </span>
+              <AlertTriangle 
+                className={`w-3.5 h-3.5 ${diagnosticSummary.warnings > 0 ? 'text-[#fbbf24]' : 'text-[#5a6178]'}`} 
+                strokeWidth={2} 
+              />
+              <span className={diagnosticSummary.warnings > 0 ? 'text-[#fbbf24] font-semibold' : 'text-[#9ba2b8]'}>
+                {diagnosticSummary.warnings}
+              </span>
+            </>
+          )}
         </div>
         
         <div className="w-px h-4 bg-[#1a1b24]"></div>

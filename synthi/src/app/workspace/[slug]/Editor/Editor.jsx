@@ -125,6 +125,7 @@ const EditorPanel = ({
     onToggleTerminal,
     onEditorMount,
     analysisResult,
+    diagnostics = [],
     latestCompletion,
     aiBusy = false,
     onClearCompletion = null,
@@ -718,7 +719,8 @@ const EditorPanel = ({
         rawFiles,
         fileCacheEntries,
         activeFile,
-        lspReady: lspStatus.startsWith('Ready')
+        lspReady: lspStatus.startsWith('Ready'),
+        diagnostics // Pass proactive analysis diagnostics for quick fixes
     });
 
     // --- Event Handlers ---
@@ -761,7 +763,6 @@ const EditorPanel = ({
         // This prevents stale onChange handlers from writing content to the wrong file
         // during file transitions.
         if (activeFile && boundFilePathRef.current && boundFilePathRef.current !== activeFile.path) {
-            console.debug('[Editor] Ignoring onChange for stale file binding', boundFilePathRef.current, 'vs', activeFile.path);
             return;
         }
         
@@ -869,24 +870,55 @@ const EditorPanel = ({
 
     // Handle updates from analysis (Markers)
     useEffect(() => {
-        if (!editorInstance || !monacoInstance || !analysisResult) return;
+        if (!editorInstance || !monacoInstance) return;
         const model = editorInstance.getModel?.();
         if (!model) return; // Guard against disposed editor
-        const issues = analysisResult?.static_analysis || analysisResult?.issues || [];
-        const markers = issues.map(issue => ({
+        
+        // Combine diagnostics from static analysis and proactive analysis
+        const staticIssues = analysisResult?.static_analysis || analysisResult?.issues || [];
+        const proactiveDiagnostics = diagnostics || [];
+        
+        // Convert static analysis format to markers
+        const staticMarkers = staticIssues.map(issue => ({
             startLineNumber: issue.line === 0 ? 1 : issue.line + 1,
             startColumn: Math.max(1, (issue.column || 0) + 1),
             endLineNumber: issue.end_line ? issue.end_line + 1 : (issue.line === 0 ? 1 : issue.line + 1),
             endColumn: issue.end_column ? issue.end_column + 1 : 100,
             message: issue.message,
-            severity: issue.severity === 'error' ? monacoInstance.MarkerSeverity.Error : monacoInstance.MarkerSeverity.Warning
+            severity: issue.severity === 'error' ? monacoInstance.MarkerSeverity.Error : 
+                     issue.severity === 'warning' ? monacoInstance.MarkerSeverity.Warning :
+                     monacoInstance.MarkerSeverity.Info,
+            source: 'synthi-static',
+            code: issue.code,
         }));
+        
+        // Convert proactive diagnostics format to markers
+        const proactiveMarkers = proactiveDiagnostics.map(diag => {
+            const location = diag.location || {};
+            return {
+                startLineNumber: (location.line ?? 0) + 1,
+                startColumn: Math.max(1, (location.column ?? 0) + 1),
+                endLineNumber: (location.endLine ?? location.line ?? 0) + 1,
+                endColumn: Math.max(1, (location.endColumn ?? location.column ?? 0) + 1),
+                message: `[${(diag.tier || 'analysis').toUpperCase()}] ${diag.message}`,
+                severity: diag.severity === 'error' ? monacoInstance.MarkerSeverity.Error :
+                         diag.severity === 'warning' ? monacoInstance.MarkerSeverity.Warning :
+                         diag.severity === 'hint' ? monacoInstance.MarkerSeverity.Hint :
+                         monacoInstance.MarkerSeverity.Info,
+                source: `synthi-${diag.tier || 'proactive'}`,
+                code: diag.code,
+            };
+        });
+        
+        // Combine all markers
+        const allMarkers = [...staticMarkers, ...proactiveMarkers];
+        
         try {
-            monacoInstance.editor.setModelMarkers(model, 'analysis', markers);
+            monacoInstance.editor.setModelMarkers(model, 'synthi-analysis', allMarkers);
         } catch (e) {
             // Editor may have been disposed
         }
-    }, [editorInstance, monacoInstance, analysisResult]);
+    }, [editorInstance, monacoInstance, analysisResult, diagnostics]);
 
     // Handle external completion triggering (e.g. from Chat UI)
     useEffect(() => {
