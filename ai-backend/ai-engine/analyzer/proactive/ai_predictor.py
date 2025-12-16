@@ -48,42 +48,40 @@ RESPOND WITH A JSON ARRAY. Each issue must have these EXACT fields:
 
 {{
   "line_start": <number>,        // First line of the problematic code (1-indexed)
-  "line_end": <number>,          // Last line of the problematic code (1-indexed)
-  "snippet": "<string>",         // EXACT code to highlight (copy verbatim from source)
+  "line_end": <number>,          // Last line of the problematic code (1-indexed)  
+  "snippet": "<string>",         // EXACT code to highlight - copy CHARACTER BY CHARACTER from source
   "message": "<string>",         // Clear, actionable description (like a PR comment)
   "explanation": "<string>",     // WHY this is wrong - trace through with example values
   "severity": "error"|"warning", // error = will definitely fail, warning = likely bug
   "confidence": <0.0-1.0>,       // Your confidence this is a real bug
-  "fix_snippet": "<string>",     // The corrected code (same structure as snippet)
-  "category": "<string>"         // One of: logic_error, off_by_one, wrong_operator, wrong_condition, type_error, null_reference, boundary_error
+  "fix_snippet": "<string>",     // REQUIRED: The corrected code (drop-in replacement for snippet)
+  "category": "<string>"         // One of: logic_error, off_by_one, wrong_operator, wrong_condition, boundary_error, missing_check
 }}
 
-PRECISION REQUIREMENTS:
-- "snippet" must be an EXACT substring that appears in the code
-- For single-expression bugs: snippet = just the wrong expression (e.g., "n % 2 == 0")
-- For multi-line logic bugs: snippet = the entire flawed block (function body, if-else, loop)
-- line_start/line_end must match where snippet appears
-- fix_snippet must be a drop-in replacement for snippet
+CRITICAL - EVERY ISSUE MUST HAVE A FIX:
+- "snippet" MUST be copied exactly from the code (preserve spaces, operators, etc.)
+- "fix_snippet" MUST be provided - show how to fix the issue
+- For missing validation: snippet = the function/if line, fix_snippet = add the check
+- For wrong logic: snippet = the wrong expression, fix_snippet = corrected expression
 
-EXAMPLE 1 - Wrong operator:
-Code line 5: `if (n % 2 == 0) {{ print("Odd"); }}`
-Response: [{{"line_start": 5, "line_end": 5, "snippet": "n % 2 == 0", "message": "Condition checks for even but prints 'Odd'", "explanation": "n % 2 == 0 is true when n is EVEN, but the code prints 'Odd'. For n=4: 4%2=0, condition is true, prints 'Odd' incorrectly.", "severity": "error", "confidence": 0.95, "fix_snippet": "n % 2 != 0", "category": "wrong_operator"}}]
+EXAMPLE 1 - Missing negative check:
+Code: `int power(int base, int exp) {{ if (exp == 0) return 1; return base * power(base, exp - 1); }}`
+Response: [{{"line_start": 1, "line_end": 1, "snippet": "if (exp == 0) return 1;", "message": "Missing check for negative exponents causes infinite recursion", "explanation": "When exp is negative, exp-1 goes to -2, -3, etc. forever. power(2, -1) will stack overflow.", "severity": "error", "confidence": 0.95, "fix_snippet": "if (exp < 0) return 0; if (exp == 0) return 1;", "category": "missing_check"}}]
 
-EXAMPLE 2 - Flawed function logic (multi-line):
-```
-def is_prime(n):
-    for i in range(2, n):
-        if n % i == 0:
-            return True
-    return False
-```
-Response: [{{"line_start": 1, "line_end": 5, "snippet": "def is_prime(n):\\n    for i in range(2, n):\\n        if n % i == 0:\\n            return True\\n    return False", "message": "Return values are inverted - returns True for non-primes", "explanation": "When n%i==0, n is divisible by i, meaning n is NOT prime. But code returns True. For n=4: 4%2=0, returns True (wrong, 4 is not prime).", "severity": "error", "confidence": 0.98, "fix_snippet": "def is_prime(n):\\n    for i in range(2, n):\\n        if n % i == 0:\\n            return False\\n    return True", "category": "logic_error"}}]
+EXAMPLE 2 - Wrong operator:
+Code line 5: `if (n % 2 == 0) {{ cout << "Odd"; }}`
+Response: [{{"line_start": 5, "line_end": 5, "snippet": "n % 2 == 0", "message": "Condition checks for even but prints 'Odd'", "explanation": "n % 2 == 0 is true when n is EVEN, but the code prints 'Odd'. For n=4: 4%2=0, prints 'Odd' incorrectly.", "severity": "error", "confidence": 0.95, "fix_snippet": "n % 2 != 0", "category": "wrong_operator"}}]
+
+EXAMPLE 3 - Integer overflow risk:
+Code: `int factorial(int n) {{ int result = 1; for(int i=1; i<=n; i++) result *= i; return result; }}`
+Response: [{{"line_start": 1, "line_end": 1, "snippet": "int result = 1;", "message": "Integer overflow for n > 12", "explanation": "13! = 6,227,020,800 exceeds INT_MAX (2,147,483,647). factorial(13) overflows.", "severity": "warning", "confidence": 0.9, "fix_snippet": "long long result = 1;", "category": "boundary_error"}}]
 
 RULES:
-- Only report bugs that cause INCORRECT BEHAVIOR (not style issues)
-- Be specific - vague issues waste developer time
+- ALWAYS provide fix_snippet - this is required for the quick fix feature
+- snippet must match the code EXACTLY (copy-paste precision)
+- Only report bugs that cause INCORRECT BEHAVIOR
 - If no bugs found, return: []
-- JSON only, no markdown fences or explanation outside the array
+- JSON only, no markdown
 
 CODE TO ANALYZE:
 ```{language}
@@ -106,6 +104,12 @@ CATEGORY_MAP = {
     "unused_code": DiagnosticCategory.UNUSED_CODE,
     "style": DiagnosticCategory.STYLE,
     "syntax": DiagnosticCategory.SYNTAX,
+    # Additional categories for precise diagnostics
+    "off_by_one": DiagnosticCategory.LOGIC_ERROR,
+    "wrong_operator": DiagnosticCategory.LOGIC_ERROR,
+    "wrong_condition": DiagnosticCategory.LOGIC_ERROR,
+    "boundary_error": DiagnosticCategory.LOGIC_ERROR,
+    "missing_check": DiagnosticCategory.LOGIC_ERROR,
 }
 
 SEVERITY_MAP = {
@@ -358,12 +362,16 @@ class AIErrorPredictor:
             confidence=confidence,
         )
         
-        # Add fix if we have both snippet and fix_snippet
-        if snippet and fix_snippet and snippet_found:
-            # Truncate description if too long
-            desc = fix_snippet if len(fix_snippet) < 50 else f"{fix_snippet[:47]}..."
+        # Add fix if we have fix_snippet - be lenient about adding fixes
+        if fix_snippet:
+            # Create a meaningful description
+            if len(fix_snippet) < 60:
+                desc = f"Apply fix: {fix_snippet}"
+            else:
+                desc = f"Apply suggested fix ({len(fix_snippet)} chars)"
+            
             diagnostic.fixes.append(CodeFix(
-                description=f"Apply fix: {desc}",
+                description=desc,
                 replacement_text=fix_snippet,
                 location=DiagnosticLocation(
                     line=line_num,
@@ -372,6 +380,20 @@ class AIErrorPredictor:
                     end_column=end_column,
                 ),
                 is_preferred=True,
+            ))
+        elif snippet_found and snippet:
+            # Even without fix_snippet, create a placeholder fix that shows the issue
+            # This helps users at least see what code needs to change
+            diagnostic.fixes.append(CodeFix(
+                description=f"Review and fix: {message[:50]}..." if len(message) > 50 else f"Review and fix: {message}",
+                replacement_text=f"/* TODO: {message} */\n{snippet}",
+                location=DiagnosticLocation(
+                    line=line_num,
+                    column=column,
+                    end_line=end_line_num,
+                    end_column=end_column,
+                ),
+                is_preferred=False,
             ))
         
         return diagnostic

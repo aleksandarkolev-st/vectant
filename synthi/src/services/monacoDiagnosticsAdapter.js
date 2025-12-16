@@ -305,11 +305,23 @@ function findDiagnosticForMarker(marker, getDiagnosticsForRange) {
     marker.endColumn - 1,
   );
   
-  // Return first matching diagnostic
+  // Return first matching diagnostic with fixes
+  // Prioritize diagnostics that have fixes available
+  const withFixes = diagnostics.filter(d => d.fixes?.length > 0);
+  if (withFixes.length > 0) {
+    // Try to match by message content
+    const messageMatch = withFixes.find(d => 
+      marker.message.includes(d.message) ||
+      d.message.includes(marker.message.split(']').pop()?.trim() || '')
+    );
+    return messageMatch || withFixes[0];
+  }
+  
+  // Fallback to any matching diagnostic
   return diagnostics.find(d => 
     d.message === marker.message.split(']')[1]?.trim() ||
     marker.message.includes(d.message)
-  );
+  ) || diagnostics[0];
 }
 
 /**
