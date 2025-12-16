@@ -19,6 +19,8 @@ export const useEditorProviders = ({
     const inlineCompletionProviderRef = useRef(null);
     const completionProviderRef = useRef(null);
     const codeActionProviderRef = useRef(null);
+    const fixPreviewDecorationsRef = useRef([]);
+    const fixPreviewWidgetRef = useRef(null);
     const diagnosticsRef = useRef(diagnostics);
 
     // Use refs for complex objects to avoid useEffect dependency crashes
@@ -38,6 +40,84 @@ export const useEditorProviders = ({
     useEffect(() => {
         completionProviderRef.current?.dispose();
     }, [editorInstance, monacoInstance]);
+
+    // Helper: Show inline fix preview
+    const showFixPreview = (fix, range) => {
+        if (!editorInstance || !monacoInstance) return;
+        
+        // Clear existing preview
+        hideFixPreview();
+        
+        const model = editorInstance.getModel();
+        if (!model) return;
+        
+        // Get original text that would be replaced
+        const originalText = model.getValueInRange(range);
+        const replacementText = fix.replacementText || '';
+        
+        // Skip if same content
+        if (originalText === replacementText) return;
+        
+        // Create a content widget showing the preview
+        const widgetId = 'synthi-fix-preview-widget';
+        const widget = {
+            getId: () => widgetId,
+            getDomNode: () => {
+                const node = document.createElement('div');
+                node.className = 'synthi-fix-preview-container';
+                node.innerHTML = `
+                    <div class="synthi-fix-preview-header">
+                        <span class="synthi-fix-preview-icon">💡</span>
+                        <span>Suggested Fix Preview</span>
+                    </div>
+                    <div class="synthi-fix-preview-content">
+                        <div class="synthi-fix-preview-old">
+                            <span class="synthi-fix-label">Current:</span>
+                            <code>${escapeHtml(originalText.split('\n').slice(0, 5).join('\n'))}</code>
+                        </div>
+                        <div class="synthi-fix-preview-arrow">→</div>
+                        <div class="synthi-fix-preview-new">
+                            <span class="synthi-fix-label">After fix:</span>
+                            <code>${escapeHtml(replacementText.split('\n').slice(0, 5).join('\n'))}</code>
+                        </div>
+                    </div>
+                `;
+                return node;
+            },
+            getPosition: () => ({
+                position: { lineNumber: range.endLineNumber, column: range.endColumn },
+                preference: [monacoInstance.editor.ContentWidgetPositionPreference.BELOW],
+            }),
+        };
+        
+        editorInstance.addContentWidget(widget);
+        fixPreviewWidgetRef.current = widget;
+    };
+    
+    const hideFixPreview = () => {
+        if (fixPreviewWidgetRef.current && editorInstance) {
+            try {
+                editorInstance.removeContentWidget(fixPreviewWidgetRef.current);
+            } catch (e) {
+                // Widget may already be removed
+            }
+            fixPreviewWidgetRef.current = null;
+        }
+        if (fixPreviewDecorationsRef.current.length > 0 && editorInstance) {
+            editorInstance.deltaDecorations(fixPreviewDecorationsRef.current, []);
+            fixPreviewDecorationsRef.current = [];
+        }
+    };
+    
+    // Helper: Escape HTML for safe display
+    const escapeHtml = (str) => {
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    };
 
     // 1. Inline Completion Provider (The "Ghost Text")
     useEffect(() => {
@@ -90,15 +170,21 @@ export const useEditorProviders = ({
         inlineAcceptCommandIdRef.current = commandId;
     }, [editorInstance, applyAiCompletionText, aiCompletionCacheRef, inlineAcceptCommandIdRef]);
 
-    // 3. Hover Provider (Diagnostics)
+    // 3. Hover Provider (Diagnostics with Fix Preview)
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
         hoverProviderRef.current?.dispose();
-        // Keep hover provider only for diagnostics; do not surface AI hunks via hover
+        
+        // Track current hover to show fix preview
+        let hoverTimeout = null;
+        
         hoverProviderRef.current = monacoInstance.languages.registerHoverProvider(activeLanguage, {
             provideHover: (model, position) => {
-                // Only return diagnostics (errors/warnings) in hover. AI hunks are shown
-                // as persistent widgets in the editor and should not appear in hovers.
+                // Clear any pending preview
+                if (hoverTimeout) clearTimeout(hoverTimeout);
+                hideFixPreview();
+                
+                // Find markers at this position
                 const markers = monacoInstance.editor.getModelMarkers({ resource: model.uri });
                 const hits = markers.filter(m =>
                     position.lineNumber >= m.startLineNumber && position.lineNumber <= m.endLineNumber &&
@@ -107,19 +193,77 @@ export const useEditorProviders = ({
                 if (!hits.length) return null;
 
                 const contents = [];
-                hits.forEach(m => contents.push({ value: `**${m.severity === 8 ? 'Error' : 'Warning'}**: ${m.message}` }));
+                const currentDiagnostics = diagnosticsRef.current || [];
+                
+                // Find matching diagnostics with fixes
+                let firstFixDiagnostic = null;
+                let firstFixRange = null;
+                
+                for (const m of hits) {
+                    const severity = m.severity === 8 ? 'Error' : m.severity === 4 ? 'Warning' : 'Info';
+                    contents.push({ value: `**${severity}**: ${m.message}` });
+                    
+                    // Find diagnostic with fixes for this marker
+                    if (!firstFixDiagnostic) {
+                        const matchingDiag = currentDiagnostics.find(d => {
+                            const loc = d.location || {};
+                            return d.fixes?.length > 0 &&
+                                   loc.line === m.startLineNumber - 1 &&
+                                   m.message.includes(d.message);
+                        });
+                        
+                        if (matchingDiag?.fixes?.length > 0) {
+                            firstFixDiagnostic = matchingDiag;
+                            firstFixRange = new monacoInstance.Range(
+                                m.startLineNumber, m.startColumn,
+                                m.endLineNumber, m.endColumn
+                            );
+                        }
+                    }
+                }
+                
+                // Show fix preview after a short delay
+                if (firstFixDiagnostic && firstFixRange) {
+                    const fix = firstFixDiagnostic.fixes[0];
+                    contents.push({ value: '\n---' });
+                    contents.push({ value: `💡 **Quick Fix Available**: ${fix.description || 'Apply fix'}` });
+                    contents.push({ value: '_Click the lightbulb or press Ctrl+. to apply_' });
+                    
+                    // Show inline preview widget after delay
+                    hoverTimeout = setTimeout(() => {
+                        showFixPreview(fix, firstFixRange);
+                    }, 500);
+                }
 
-                const range = new monacoInstance.Range(hits[0].startLineNumber, hits[0].startColumn, hits[0].endLineNumber, hits[0].endColumn);
+                const range = new monacoInstance.Range(
+                    hits[0].startLineNumber, hits[0].startColumn,
+                    hits[0].endLineNumber, hits[0].endColumn
+                );
                 return { range, contents };
             }
         });
-        return () => hoverProviderRef.current?.dispose();
+        
+        // Hide preview when cursor moves away
+        const cursorListener = editorInstance.onDidChangeCursorPosition(() => {
+            if (hoverTimeout) clearTimeout(hoverTimeout);
+            // Delay hiding to allow clicking on the fix
+            setTimeout(() => hideFixPreview(), 300);
+        });
+        
+        return () => {
+            hoverProviderRef.current?.dispose();
+            cursorListener?.dispose();
+            if (hoverTimeout) clearTimeout(hoverTimeout);
+        };
     }, [monacoInstance, editorInstance, activeLanguage]);
 
-    // 4. Code Action Provider (Quick Fixes)
+    // 4. Code Action Provider (Quick Fixes with Preview)
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
         codeActionProviderRef.current?.dispose();
+        
+        // Track seen fixes to avoid duplicates
+        const seenFixes = new Set();
         
         // Helper to find diagnostics for a given range
         const getDiagnosticsForRange = (startLine, startCol, endLine, endCol) => {
@@ -142,6 +286,7 @@ export const useEditorProviders = ({
             provideCodeActions: (model, range, context, token) => {
                 const actions = [];
                 const markers = context.markers || [];
+                seenFixes.clear(); // Reset for each invocation
                 
                 for (const marker of markers) {
                     // Find matching diagnostic with fixes
@@ -156,6 +301,11 @@ export const useEditorProviders = ({
                         if (!diagnostic.fixes?.length) continue;
                         
                         for (const fix of diagnostic.fixes) {
+                            // Create a unique key for this fix to avoid duplicates
+                            const fixKey = `${fix.description}:${fix.replacementText}:${fix.location?.line}`;
+                            if (seenFixes.has(fixKey)) continue;
+                            seenFixes.add(fixKey);
+                            
                             const fixRange = new monacoInstance.Range(
                                 (fix.location?.line ?? (marker.startLineNumber - 1)) + 1,
                                 (fix.location?.column ?? (marker.startColumn - 1)) + 1,
@@ -163,7 +313,6 @@ export const useEditorProviders = ({
                                 (fix.location?.endColumn ?? (marker.endColumn - 1)) + 1
                             );
                             
-                            // Monaco IWorkspaceTextEdit format requires resource, textEdit, and versionId
                             actions.push({
                                 title: fix.description || 'Apply fix',
                                 kind: 'quickfix',
@@ -307,4 +456,11 @@ export const useEditorProviders = ({
 
         return () => provider.dispose();
     }, [editorInstance, monacoInstance, activeLanguage]);
+    
+    // Cleanup fix preview on unmount
+    useEffect(() => {
+        return () => {
+            hideFixPreview();
+        };
+    }, [editorInstance]);
 };

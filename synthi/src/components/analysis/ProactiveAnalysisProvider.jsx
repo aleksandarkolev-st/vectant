@@ -27,7 +27,6 @@ import {
   applyDiagnosticsToModel,
   clearDiagnosticsFromModel,
   createDiagnosticDecorations,
-  createQuickFixProvider,
 } from '@/services/monacoDiagnosticsAdapter';
 
 /**
@@ -134,16 +133,8 @@ export function ProactiveAnalysisProvider({
       decorations: [],
     });
     
-    // Register code action provider for quick fixes
-    const codeActionDisposable = monaco.languages.registerCodeActionProvider(
-      { scheme: 'file' },
-      createQuickFixProvider(monaco, (startLine, startCol, endLine, endCol) => {
-        return diagnostics.filter(d => {
-          const loc = d.location;
-          return loc.line >= startLine && loc.line <= endLine;
-        });
-      })
-    );
+    // NOTE: Code action provider for quick fixes is registered in Editor/providers.js
+    // to avoid duplicate registrations. Do NOT register another one here.
     
     // Listen for content changes to trigger analysis
     const contentChangeDisposable = model.onDidChangeContent(() => {
@@ -160,7 +151,7 @@ export function ProactiveAnalysisProvider({
     // Store disposables for cleanup
     const entry = editorsRef.current.get(modelUri);
     if (entry) {
-      entry.disposables = [codeActionDisposable, contentChangeDisposable];
+      entry.disposables = [contentChangeDisposable];
     }
     
     // Initial analysis
