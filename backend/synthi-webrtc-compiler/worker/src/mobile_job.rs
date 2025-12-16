@@ -68,6 +68,59 @@ async fn send_logcat(log_dc: &Arc<RTCDataChannel>, session_id: &str, entry: &Log
 }
 
 // ============================================================
+// PROJECT DETECTION HELPERS
+// ============================================================
+
+/// Searches up from start_path to find the nearest directory containing
+/// a package.json with react-native as a dependency.
+/// Will not search above workspace_root.
+async fn find_react_native_project_root(start_path: &PathBuf, workspace_root: &PathBuf) -> Result<PathBuf> {
+    let mut current = start_path.clone();
+    
+    // If start_path is a file, get its parent directory
+    if current.is_file() {
+        if let Some(parent) = current.parent() {
+            current = parent.to_path_buf();
+        }
+    }
+    
+    loop {
+        let package_json = current.join("package.json");
+        if package_json.exists() {
+            // Read and check for react-native dependency
+            if let Ok(content) = tokio::fs::read_to_string(&package_json).await {
+                if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
+                    let has_rn = pkg.get("dependencies")
+                        .and_then(|d| d.get("react-native"))
+                        .is_some()
+                        || pkg.get("devDependencies")
+                            .and_then(|d| d.get("react-native"))
+                            .is_some();
+                    
+                    if has_rn {
+                        return Ok(current);
+                    }
+                }
+            }
+        }
+        
+        // Don't search above workspace root
+        if current == *workspace_root || current.parent().is_none() {
+            break;
+        }
+        
+        // Move up one directory
+        if let Some(parent) = current.parent() {
+            current = parent.to_path_buf();
+        } else {
+            break;
+        }
+    }
+    
+    bail!("No React Native project found. Searched from {} up to {}", start_path.display(), workspace_root.display())
+}
+
+// ============================================================
 // MAIN JOB HANDLER
 // ============================================================
 
@@ -86,17 +139,26 @@ pub async fn handle_react_native_emulator_job(
     project_root: Option<String>,
     is_release: bool,
 ) -> Result<()> {
-    // Determine project root
-    let project_path = if let Some(root) = project_root {
-        workspace_path.join(root)
+    // Determine starting path for project detection
+    let start_path = if let Some(root) = &project_root {
+        let cleaned = root.trim_start_matches('/');
+        if cleaned.is_empty() {
+            workspace_path.clone()
+        } else {
+            workspace_path.join(cleaned)
+        }
     } else {
         workspace_path.clone()
     };
     
     send_status(&log_dc, &session_id, "starting", "Starting React Native emulator job...", None).await;
     
-    // Step 1: Detect React Native project
+    // Step 1: Detect React Native project by searching up from start_path
     send_status(&log_dc, &session_id, "detecting", "Detecting React Native project...", None).await;
+    
+    // Search for package.json with react-native starting from start_path and going up
+    let project_path = find_react_native_project_root(&start_path, &workspace_path).await
+        .context("Failed to find React Native project")?;
     
     let project_info = detect_react_native_project(&project_path).await
         .context("Failed to detect React Native project")?;
@@ -117,13 +179,14 @@ pub async fn handle_react_native_emulator_job(
     // Step 2: Check Android SDK health
     send_status(&log_dc, &session_id, "checking-sdk", "Checking Android SDK...", None).await;
     
-    let sdk_root = std::env::var("ANDROID_SDK_ROOT")
-        .or_else(|_| std::env::var("ANDROID_HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/opt/android-sdk"));
-    
     let sdk_health = check_android_sdk().await
         .context("Failed to check Android SDK")?;
+
+    let sdk_root = sdk_health
+        .sdk_path
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/opt/android-sdk"));
     
     if !sdk_health.is_ready() {
         let issues: Vec<String> = [
@@ -134,7 +197,9 @@ pub async fn handle_react_native_emulator_job(
         ].into_iter().flatten().collect();
         
         send_status(&log_dc, &session_id, "error", "Android SDK not ready", Some(json!({
+            "sdk_path": sdk_health.sdk_path,
             "issues": issues,
+            "details": sdk_health.issues,
         }))).await;
         bail!("Android SDK not ready: {:?}", issues);
     }

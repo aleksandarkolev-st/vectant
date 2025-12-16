@@ -76,7 +76,23 @@ export class CompilerClient {
         if (['cpp', 'cc', 'cxx', 'hpp', 'h'].includes(ext)) return 'cpp';
         if (ext === 'rs') return 'rust';
         if (ext === 'ts' || ext === 'tsx') return 'ts';
+        // Note: js/jsx are intentionally not mapped here - they need special handling
+        // for React Native vs browser environments
         return null;
+    }
+
+    // Detect if source code contains React Native imports
+    _detectReactNativeInSource(source = '') {
+        if (!source) return false;
+        // Check for common React Native imports
+        const rnPatterns = [
+            /from\s+['"]react-native['"]/,
+            /require\s*\(['"]react-native['"]\)/,
+            /from\s+['"]@react-native/,
+            /from\s+['"]expo/,
+            /import.*from\s+['"]react-native-/
+        ];
+        return rnPatterns.some(pattern => pattern.test(source));
     }
 
     _notifyLog(msg) {
@@ -389,10 +405,20 @@ export class CompilerClient {
         return channel;
     }
 
-    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false, target = null, projectRoot = null } = {}) {
+    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false, target = null, projectRoot = null, slug = null } = {}) {
+        // Auto-detect React Native from source if no target specified and file is JS/JSX/TSX
+        const ext = (filename || '').split('.').pop().toLowerCase();
+        const isJsxFile = ['js', 'jsx', 'tsx', 'ts'].includes(ext);
+        
+        let effectiveTarget = target;
+        if (!effectiveTarget && isJsxFile && this._detectReactNativeInSource(source)) {
+            effectiveTarget = 'react-native-emulator';
+            console.log('[CompilerClient] Auto-detected React Native project from source imports');
+        }
+        
         // For mobile targets, language detection is optional
-        const lang = target === 'react-native-emulator' ? (language || 'javascript') : (language || this._mapLanguage(filename));
-        if (!target && !lang) throw new SynthiException('Unsupported language for compilation', 'The file extension is not supported by the compiler.');
+        const lang = effectiveTarget === 'react-native-emulator' ? (language || 'javascript') : (language || this._mapLanguage(filename));
+        if (!effectiveTarget && !lang) throw new SynthiException('Unsupported language for compilation', 'The file extension is not supported by the compiler.');
         await this.connect();
 
         if (onLog) this.logHandlers.add(onLog);
@@ -473,8 +499,9 @@ export class CompilerClient {
                     height: height,
                     supports_h265: this.supportsH265,
                     use_ai_split: useAiSplit,
-                    target: target,
-                    project_root: projectRoot
+                    target: effectiveTarget,
+                    project_root: projectRoot,
+                    slug: slug || this.slug
                 }));
             } catch (e) {
                 this.logHandlers.delete(handleLog);

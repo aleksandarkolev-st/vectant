@@ -23,6 +23,7 @@ mod mobile_routing;
 mod react_native_builder;
 mod android_emulator;
 mod mobile_job;
+mod env_setup;
 
 use builder::{RebuildScope, ModuleHashes, hash_content, WidgetDetector, WidgetCompiler};
 use fast_refresh::{BoundaryChecker, RefreshAction, BoundaryViolationEvent};
@@ -119,6 +120,9 @@ struct CompileRequest {
     /// Project root path for mobile builds (relative to workspace)
     #[serde(default)]
     project_root: Option<String>,
+    /// Workspace slug for mobile builds (to download synced files)
+    #[serde(default)]
+    slug: Option<String>,
 }
 
 struct RunnerState {
@@ -217,6 +221,23 @@ fn make_chunks(data: &[u8], msg_id: u32) -> Vec<Vec<u8>> {
 async fn main() -> Result<()> {
     println!("Worker starting...");
     println!("Operating System: {}", std::env::consts::OS);
+    println!("=== WORKER ENV DIAGNOSTIC ===");
+    println!("CARGO_MANIFEST_DIR = {:?}", std::env::var("CARGO_MANIFEST_DIR"));
+    println!("HOME = {:?}", std::env::var("HOME"));
+    println!("PATH = {:?}", std::env::var("PATH"));
+    println!("ANDROID_SDK_ROOT = {:?}", std::env::var("ANDROID_SDK_ROOT"));
+    println!("ANDROID_HOME = {:?}", std::env::var("ANDROID_HOME"));
+    println!("============================");
+
+    // TEMP: hard exit
+    std::process::exit(0);
+
+
+    // Cargo does not source shell rc files, so ensure Android SDK tools are visible
+    // to this process deterministically before any SDK checks or emulator logic.
+    env_setup::ensure_android_sdk_env();
+    env_setup::log_android_env_diagnostics("startup");
+
     gst::init()?;
     verify_tooling().await?;
     let (ws_stream, _) = connect_async("ws://localhost:9000").await?;
@@ -481,13 +502,53 @@ async fn main() -> Result<()> {
                                                 let session_id = req.session_id.clone().unwrap_or_else(|| {
                                                     format!("sess-{}-{}", chrono::Utc::now().timestamp_millis(), uuid::Uuid::new_v4().as_u128() % 100000)
                                                 });
-                                                let wp = workspace_path_for_compile.clone();
                                                 let project_root = req.project_root.clone();
+                                                let slug = req.slug.clone();
+                                                let log_clone = log.clone();
                                                 tokio::spawn(async move {
+                                                    // Download the workspace if slug is provided. Force re-download to avoid stale state.
+                                                    let workspace_path = if let Some(s) = &slug {
+                                                        let local_dir = std::path::PathBuf::from("/synthi").join(s);
+                                                        if local_dir.exists() {
+                                                            // Remove stale directory to force fresh download
+                                                            if let Err(e) = std::fs::remove_dir_all(&local_dir) {
+                                                                eprintln!("[Mobile] Failed to clear existing workspace {}: {}", local_dir.display(), e);
+                                                            }
+                                                        }
+
+                                                        match storage::download(&s, None).await {
+                                                            Ok(path) => {
+                                                                eprintln!("[Mobile] Downloaded workspace to: {}", path.display());
+                                                                path
+                                                            },
+                                                            Err(e) => {
+                                                                eprintln!("[Mobile] Failed to download workspace: {}", e);
+                                                                let payload = serde_json::json!({
+                                                                    "sessionId": session_id,
+                                                                    "type": "mobile-status",
+                                                                    "status": "error",
+                                                                    "message": format!("Failed to download workspace: {}", e),
+                                                                });
+                                                                let _ = log_clone.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                                                return;
+                                                            }
+                                                        }
+                                                    } else {
+                                                        eprintln!("[Mobile] No slug provided, cannot download workspace");
+                                                        let payload = serde_json::json!({
+                                                            "sessionId": session_id,
+                                                            "type": "mobile-status",
+                                                            "status": "error",
+                                                            "message": "No workspace slug provided for mobile build",
+                                                        });
+                                                        let _ = log_clone.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                                        return;
+                                                    };
+                                                    
                                                     if let Err(e) = mobile_job::handle_react_native_emulator_job(
-                                                        log,
-                                                        session_id,
-                                                        wp.to_path_buf(),
+                                                        log_clone,
+                                                        session_id.clone(),
+                                                        workspace_path,
                                                         project_root,
                                                         false, // debug build by default
                                                     ).await {

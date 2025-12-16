@@ -232,11 +232,27 @@ export default function EditorPage({ params }) {
         setBuildLogs((prev) => [...prev, line].slice(-200));
     }, []);
 
-    // Helper to detect if workspace is a React Native project
+    // Helper to detect if source code contains React Native imports
+    const detectReactNativeInSource = useCallback((source) => {
+        if (!source) return false;
+        const rnPatterns = [
+            /from\s+['"]react-native['"]/,
+            /require\s*\(['"]react-native['"]\)/,
+            /from\s+['"]@react-native/,
+            /from\s+['"]expo/,
+            /import.*from\s+['"]react-native-/
+        ];
+        return rnPatterns.some(pattern => pattern.test(source));
+    }, []);
+
+    // Helper to detect if workspace is a React Native project (checks package.json)
     const detectReactNativeProject = useCallback(async () => {
         try {
-            // Look for package.json in the workspace
-            const packageJsonFile = rawFiles?.find(f => f.name === 'package.json' && (!f.path || f.path === 'package.json'));
+            // Look for package.json in the workspace (handle various path formats)
+            const packageJsonFile = rawFiles?.find(f => 
+                f.name === 'package.json' && 
+                (!f.path || f.path === 'package.json' || f.path === '/package.json')
+            );
             if (!packageJsonFile) return false;
             
             // Fetch content
@@ -249,9 +265,9 @@ export default function EditorPage({ params }) {
             
             const pkg = JSON.parse(content);
             const deps = { ...pkg.dependencies, ...pkg.devDependencies };
-            return !!deps['react-native'];
+            return !!(deps['react-native'] || deps['expo']);
         } catch (e) {
-            console.debug('Failed to detect React Native project', e);
+            console.debug('Failed to detect React Native project from package.json', e);
             return false;
         }
     }, [rawFiles, slug]);
@@ -304,11 +320,23 @@ export default function EditorPage({ params }) {
         }
 
         // Detect if this is a React Native project for mobile emulator target
-        const isReactNative = await detectReactNativeProject();
+        // Check both package.json dependencies AND source code imports
+        const ext = (filename || '').split('.').pop().toLowerCase();
+        const isJsxFile = ['js', 'jsx', 'tsx', 'ts'].includes(ext);
+        const hasRnImports = isJsxFile && detectReactNativeInSource(source);
+        const hasRnPackage = await detectReactNativeProject();
+        const isReactNative = hasRnImports || hasRnPackage;
         const target = isReactNative ? 'react-native-emulator' : null;
         
-        if (isReactNative) {
-            appendBuildLog('Detected React Native project - launching mobile emulator...');
+        // Derive project root from active file's directory path
+        // e.g., "mobile/app.tsx" -> "mobile", "src/screens/Home.tsx" -> "src/screens"
+        let projectRoot = null;
+        if (isReactNative && filename) {
+            const fileParts = filename.replace(/\\/g, '/').split('/');
+            // Remove the filename to get directory
+            fileParts.pop();
+            projectRoot = fileParts.join('/') || '/';
+            appendBuildLog(`Detected React Native project at: ${projectRoot}`);
         }
 
         try {
@@ -318,7 +346,8 @@ export default function EditorPage({ params }) {
                 files: additionalFiles,
                 useAiSplit,
                 target,
-                projectRoot: isReactNative ? '/' : null, // Root of workspace
+                projectRoot,
+                slug, // Pass workspace slug for mobile builds to download synced files
                 onLog: (line) => {
                     appendBuildLog(line);
                     console.log('[build]', line);
@@ -329,7 +358,7 @@ export default function EditorPage({ params }) {
             console.error('Compile failed', err);
             appendBuildLog(`error: ${err?.message || err}`);
         }
-    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, useAiSplit]);
+    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, useAiSplit]);
 
     const handleSave = useCallback(async () => {
         if (!activeFile) return;
