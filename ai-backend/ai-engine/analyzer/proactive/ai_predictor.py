@@ -66,10 +66,12 @@ RESPONSE FORMAT - JSON array only:
 
 CRITICAL RULES FOR FIXES:
 - "snippet" = EXACT copy of buggy code from the source
-- "fix_snippet" = corrected version, OR "" (empty) to DELETE the code
-- To ADD code: snippet = existing line, fix_snippet = existing line + new code
-- To REMOVE code: snippet = code to remove, fix_snippet = ""
-- To CHANGE code: snippet = old, fix_snippet = new
+- "fix_snippet" = the CORRECTED version that should replace snippet
+- To ADD missing code: snippet = line missing something, fix_snippet = line WITH the addition
+  Example: Missing endl → snippet = "cout << x;", fix_snippet = "cout << x << endl;"
+- To CHANGE code: snippet = buggy code, fix_snippet = corrected code
+- To REMOVE code (RARE - only for truly dead code): snippet = code to remove, fix_snippet = ""
+- NEVER use empty fix_snippet unless the code should literally be deleted
 
 EXAMPLES:
 
@@ -81,9 +83,9 @@ EXAMPLES:
    Code: `int pow(int b, int e) {{ if(e==0)return 1; return b*pow(b,e-1); }}`
    Response: [{{"line_start":1, "line_end":1, "snippet":"if(e==0)return 1;", "message":"Infinite recursion for negative exponents", "explanation":"pow(2,-1) calls pow(2,-2), pow(2,-3)... forever", "severity":"error", "confidence":0.95, "fix_snippet":"if(e<0)return 0; if(e==0)return 1;", "category":"missing_check"}}]
 
-3. REMOVING DEAD/WRONG CODE:
-   Code line 5: `x = x;  // useless`
-   Response: [{{"line_start":5, "line_end":5, "snippet":"x = x;  // useless", "message":"Self-assignment has no effect", "explanation":"Assigning x to itself does nothing", "severity":"warning", "confidence":1.0, "fix_snippet":"", "category":"logic_error"}}]
+3. ADDING MISSING OUTPUT:
+   Code line 5: `cout << result;`  // missing endl
+   Response: [{{"line_start":5, "line_end":5, "snippet":"cout << result;", "message":"Missing newline at end of output", "explanation":"Output won't have newline, next output appears on same line", "severity":"warning", "confidence":0.9, "fix_snippet":"cout << result << endl;", "category":"logic_error"}}]
 
 4. DUPLICATE CHECK (THIS IS WRONG - the checks are different):
    Code: `if (x < 0) return -1; if (x == 0) return 0;`
@@ -356,6 +358,29 @@ class AIErrorPredictor:
         if end_line_num == line_num and end_column <= column:
             end_column = column + 1  # At least 1 character
         
+        # Extract the original text at the diagnostic location for staleness checking
+        original_text = None
+        if snippet_found and snippet:
+            original_text = snippet
+        else:
+            # Try to get the text from the location
+            try:
+                if line_num == end_line_num:
+                    original_text = lines[line_num][column:end_column] if line_num < len(lines) else ""
+                else:
+                    # Multi-line: get the text spanning the range
+                    text_parts = []
+                    for i in range(line_num, min(end_line_num + 1, len(lines))):
+                        if i == line_num:
+                            text_parts.append(lines[i][column:])
+                        elif i == end_line_num:
+                            text_parts.append(lines[i][:end_column])
+                        else:
+                            text_parts.append(lines[i])
+                    original_text = '\n'.join(text_parts)
+            except Exception:
+                original_text = None
+        
         # Build diagnostic
         diagnostic = Diagnostic(
             message=message,
@@ -372,6 +397,7 @@ class AIErrorPredictor:
             source="synthi-ai",
             explanation=item.get("explanation", ""),
             confidence=confidence,
+            originalText=original_text,
         )
         
         # Add fix - support both replacement and deletion (empty fix_snippet)
@@ -381,11 +407,15 @@ class AIErrorPredictor:
         if has_fix:
             # Empty fix_snippet means DELETE the code
             if not fix_snippet:
-                desc = f"Remove: {snippet[:40]}..." if len(snippet) > 40 else f"Remove: {snippet}"
-            elif len(fix_snippet) < 60:
-                desc = f"Apply fix: {fix_snippet}"
+                desc = f"Remove: {snippet[:60]}..." if len(snippet) > 60 else f"Remove: {snippet}"
             else:
-                desc = f"Apply suggested fix ({len(fix_snippet)} chars)"
+                # Show the full replacement for better context in the UI
+                # Format multi-line for readability
+                preview = fix_snippet.replace('\n', ' ↵ ')
+                if len(preview) > 100:
+                    desc = f"Replace with: {preview[:100]}..."
+                else:
+                    desc = f"Replace with: {preview}"
             
             diagnostic.fixes.append(CodeFix(
                 description=desc,
