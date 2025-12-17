@@ -22,6 +22,10 @@ export const useEditorProviders = ({
     const fixPreviewDecorationsRef = useRef([]);
     const fixPreviewWidgetRef = useRef(null);
     const diagnosticsRef = useRef(diagnostics);
+    
+    // Track pending fix for keyboard shortcuts
+    const pendingFixRef = useRef(null); // { fix, range, diagnostic }
+    const isPreviewingRef = useRef(false);
 
     // Use refs for complex objects to avoid useEffect dependency crashes
     const fileCacheRef = useRef(fileCacheEntries);
@@ -41,7 +45,27 @@ export const useEditorProviders = ({
         completionProviderRef.current?.dispose();
     }, [editorInstance, monacoInstance]);
 
-    // Helper: Show inline fix preview
+    // Helper: Apply a fix to the editor
+    const applyFix = (fix, range) => {
+        if (!editorInstance || !monacoInstance || !fix) return;
+        
+        const model = editorInstance.getModel();
+        if (!model) return;
+        
+        // Apply the fix as an edit
+        editorInstance.executeEdits('synthi-quick-fix', [{
+            range: range,
+            text: fix.replacementText || '',
+            forceMoveMarkers: true,
+        }]);
+        
+        // Clear pending fix state
+        pendingFixRef.current = null;
+        isPreviewingRef.current = false;
+        hideFixPreview();
+    };
+    
+    // Helper: Show inline fix preview using decorations (ghost text style)
     const showFixPreview = (fix, range) => {
         if (!editorInstance || !monacoInstance) return;
         
@@ -58,42 +82,40 @@ export const useEditorProviders = ({
         // Skip if same content or empty replacement
         if (originalText === replacementText || !replacementText) return;
         
-        // Create DOM node once (must be cached for Monaco content widgets)
-        const domNode = document.createElement('div');
-        domNode.className = 'synthi-fix-preview-container';
-        domNode.style.zIndex = '9999';
-        domNode.style.position = 'relative';
-        domNode.innerHTML = `
-            <div class="synthi-fix-preview-header">
-                <span class="synthi-fix-preview-icon">💡</span>
-                <span>Suggested Fix Preview</span>
-            </div>
-            <div class="synthi-fix-preview-content">
-                <div class="synthi-fix-preview-old">
-                    <span class="synthi-fix-label">Current:</span>
-                    <code>${escapeHtml(originalText.split('\n').slice(0, 5).join('\n'))}</code>
-                </div>
-                <div class="synthi-fix-preview-arrow">→</div>
-                <div class="synthi-fix-preview-new">
-                    <span class="synthi-fix-label">After fix:</span>
-                    <code>${escapeHtml(replacementText.split('\n').slice(0, 5).join('\n'))}</code>
-                </div>
-            </div>
-        `;
-
-        // Create content widget with cached DOM node
-        const widgetId = 'synthi-fix-preview-widget';
+        isPreviewingRef.current = true;
+        
+        // Create decorations to show the diff inline
+        const decorations = [];
+        
+        // Strike through the old text
+        decorations.push({
+            range: range,
+            options: {
+                inlineClassName: 'synthi-fix-preview-strikethrough',
+                hoverMessage: { value: '**Will be replaced**' },
+            },
+        });
+        
+        // Add inline widget showing the new text after the range
+        const domNode = document.createElement('span');
+        domNode.className = 'synthi-fix-inline-preview';
+        domNode.textContent = ` → ${replacementText.split('\n')[0]}${replacementText.includes('\n') ? '...' : ''}`;
+        
+        const widgetId = 'synthi-fix-inline-widget';
         const widget = {
             getId: () => widgetId,
-            getDomNode: () => domNode, // Return cached node
+            getDomNode: () => domNode,
             getPosition: () => ({
-                position: { lineNumber: range.endLineNumber + 1, column: 1 },
-                preference: [
-                    monacoInstance.editor.ContentWidgetPositionPreference.BELOW,
-                    monacoInstance.editor.ContentWidgetPositionPreference.ABOVE,
-                ],
+                position: { lineNumber: range.endLineNumber, column: range.endColumn },
+                preference: [monacoInstance.editor.ContentWidgetPositionPreference.EXACT],
             }),
         };
+        
+        // Apply decorations
+        fixPreviewDecorationsRef.current = editorInstance.deltaDecorations(
+            fixPreviewDecorationsRef.current,
+            decorations
+        );
         
         editorInstance.addContentWidget(widget);
         fixPreviewWidgetRef.current = widget;
@@ -180,14 +202,11 @@ export const useEditorProviders = ({
         if (!editorInstance || !monacoInstance) return;
         hoverProviderRef.current?.dispose();
         
-        // Track current hover to show fix preview
-        let hoverTimeout = null;
-        
         hoverProviderRef.current = monacoInstance.languages.registerHoverProvider(activeLanguage, {
             provideHover: (model, position) => {
-                // Clear any pending preview
-                if (hoverTimeout) clearTimeout(hoverTimeout);
+                // Clear any existing preview when hovering new position
                 hideFixPreview();
+                isPreviewingRef.current = false;
                 
                 // Find markers at this position
                 const markers = monacoInstance.editor.getModelMarkers({ resource: model.uri });
@@ -195,7 +214,10 @@ export const useEditorProviders = ({
                     position.lineNumber >= m.startLineNumber && position.lineNumber <= m.endLineNumber &&
                     position.column >= m.startColumn && position.column <= m.endColumn
                 );
-                if (!hits.length) return null;
+                if (!hits.length) {
+                    pendingFixRef.current = null;
+                    return null;
+                }
 
                 const contents = [];
                 const currentDiagnostics = diagnosticsRef.current || [];
@@ -231,17 +253,16 @@ export const useEditorProviders = ({
                     }
                 }
                 
-                // Show fix preview after a short delay
+                // Show fix info with keyboard shortcuts
                 if (firstFixDiagnostic && firstFixRange) {
                     const fix = firstFixDiagnostic.fixes[0];
-                    contents.push({ value: '\n---' });
-                    contents.push({ value: `💡 **Quick Fix Available**: ${fix.description || 'Apply fix'}` });
-                    contents.push({ value: '_Click the lightbulb or press Ctrl+. to apply_' });
                     
-                    // Show inline preview widget after delay
-                    hoverTimeout = setTimeout(() => {
-                        showFixPreview(fix, firstFixRange);
-                    }, 500);
+                    // Store pending fix for keyboard shortcuts
+                    pendingFixRef.current = { fix, range: firstFixRange, diagnostic: firstFixDiagnostic };
+                    
+                    contents.push({ value: '\n---' });
+                    contents.push({ value: `💡 **Quick Fix**: ${fix.description || 'Apply fix'}` });
+                    contents.push({ value: '`Ctrl+.` Apply fix  •  `Ctrl+Shift+.` Preview' });
                 }
 
                 const range = new monacoInstance.Range(
@@ -252,27 +273,59 @@ export const useEditorProviders = ({
             }
         });
         
-        // Hide preview when cursor moves significantly away
-        let hideTimeout = null;
+        // Add keyboard shortcut for applying fix (Ctrl+. already handled by Monaco code actions)
+        // Add Ctrl+Shift+. for preview toggle
+        const keyDownDisposable = editorInstance.onKeyDown((e) => {
+            const pending = pendingFixRef.current;
+            if (!pending) return;
+            
+            // Ctrl+Shift+. = Toggle preview
+            if (e.ctrlKey && e.shiftKey && e.code === 'Period') {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                if (isPreviewingRef.current) {
+                    hideFixPreview();
+                    isPreviewingRef.current = false;
+                } else {
+                    showFixPreview(pending.fix, pending.range);
+                }
+                return;
+            }
+        });
+        
+        // Hide preview when cursor moves to a different line
+        let lastLine = null;
         const cursorListener = editorInstance.onDidChangeCursorPosition((e) => {
-            if (hoverTimeout) clearTimeout(hoverTimeout);
-            // Only hide if cursor moves to a different line
-            if (hideTimeout) clearTimeout(hideTimeout);
-            hideTimeout = setTimeout(() => hideFixPreview(), 500);
+            const newLine = e.position.lineNumber;
+            if (lastLine !== null && newLine !== lastLine) {
+                // Clear pending fix when moving away
+                pendingFixRef.current = null;
+                hideFixPreview();
+                isPreviewingRef.current = false;
+            }
+            lastLine = newLine;
         });
         
         // Also hide on scroll
         const scrollListener = editorInstance.onDidScrollChange(() => {
-            if (hoverTimeout) clearTimeout(hoverTimeout);
             hideFixPreview();
+            isPreviewingRef.current = false;
+        });
+        
+        // Clear pending fix when typing
+        const contentListener = editorInstance.onDidChangeModelContent(() => {
+            pendingFixRef.current = null;
+            hideFixPreview();
+            isPreviewingRef.current = false;
         });
         
         return () => {
             hoverProviderRef.current?.dispose();
+            keyDownDisposable?.dispose();
             cursorListener?.dispose();
             scrollListener?.dispose();
-            if (hoverTimeout) clearTimeout(hoverTimeout);
-            if (hideTimeout) clearTimeout(hideTimeout);
+            contentListener?.dispose();
         };
     }, [monacoInstance, editorInstance, activeLanguage]);
 
