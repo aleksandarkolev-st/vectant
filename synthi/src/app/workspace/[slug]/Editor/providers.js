@@ -97,9 +97,18 @@ export const useEditorProviders = ({
         
         // Show the new code as a view zone (block inserted below the line)
         if (!isDelete) {
-            // Calculate height - at least 1 line
-            const lines = replacementText.split('\n');
-            const heightInLines = Math.max(1, lines.length);
+            // Get the indentation from the original line to match alignment
+            const originalLine = model.getLineContent(range.startLineNumber);
+            const indentMatch = originalLine.match(/^(\s*)/);
+            const indent = indentMatch ? indentMatch[1] : '';
+            
+            // Convert indent to spaces for display (tabs to spaces for consistency)
+            const tabSize = model.getOptions().tabSize || 4;
+            const indentSpaces = indent.replace(/\t/g, ' '.repeat(tabSize));
+            
+            // Calculate height - 1 line for single-line replacement
+            const replacementLines = replacementText.split('\n');
+            const heightInLines = replacementLines.length;
             
             // Create a view zone to show the replacement code below
             const viewZone = {
@@ -108,10 +117,17 @@ export const useEditorProviders = ({
                 domNode: document.createElement('div'),
             };
             
-            // Style the preview zone - inline layout
+            // Style the preview zone
             viewZone.domNode.className = 'synthi-fix-preview-zone';
-            const escapedCode = replacementText.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            viewZone.domNode.innerHTML = `<span class="synthi-fix-preview-label">+</span><code class="synthi-fix-preview-code">${escapedCode}</code>`;
+            
+            // Escape HTML and build preview with proper indentation
+            const escapedCode = replacementText
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+            
+            // Build the content: + label, then indentation spaces, then the code
+            viewZone.domNode.innerHTML = `<span class="synthi-fix-preview-label">+</span><span class="synthi-fix-preview-indent">${indentSpaces}</span><span class="synthi-fix-preview-code">${escapedCode}</span>`;
             
             editorInstance.changeViewZones((accessor) => {
                 const zoneId = accessor.addZone(viewZone);
