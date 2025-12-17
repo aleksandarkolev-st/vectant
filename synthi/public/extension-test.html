@@ -153,6 +153,8 @@
     let messageId = 0;
     let stepIndex = 0;
     let extensionStates = [];
+    const extensionCatalog = new Map();
+    const permanentlyFailed = new Set();
 
     // ============================================================================
     // Logging
@@ -184,8 +186,20 @@
     function sendRequest(method, args = [], timeout = 5000) {
       return new Promise((resolve, reject) => {
         const id = ++messageId;
-        const timer = setTimeout(() => {
+        const timer = setTimeout(async () => {
           pendingRequests.delete(id);
+
+          // Hard-stop path: if activation hangs, kill and restart the worker (Option A)
+          if (method === 'activateExtension') {
+            const failedId = args?.[0];
+            log(`⚠ Hard timeout during activateExtension(${failedId || 'unknown'}) - restarting worker`, 'warning');
+            try {
+              await restartWorkerDueToTimeout(failedId || 'unknown', 'activation timeout');
+            } catch (restartErr) {
+              log(`✗ Worker restart failed: ${restartErr.message}`, 'error');
+            }
+          }
+
           reject(new Error(`Timeout: ${method}`));
         }, timeout);
 
@@ -193,6 +207,48 @@
         log(`→ ${method}(${args.map(a => typeof a === 'string' ? a.substring(0, 30) : JSON.stringify(a).substring(0, 30)).join(', ')})`, 'dim');
         worker.postMessage({ id, type: 'request', method, args });
       });
+    }
+
+    async function restartWorkerDueToTimeout(badExtensionId, reason) {
+      log(`⚠ Hard timeout: ${reason || 'unknown reason'}. Terminating worker and reloading healthy extensions...`, 'warning');
+
+      if (badExtensionId) {
+        permanentlyFailed.add(badExtensionId);
+      }
+
+      if (worker) {
+        worker.terminate();
+        worker = null;
+      }
+      pendingRequests.clear();
+      messageId = 0;
+
+      await step1_initWorker();
+
+      for (const [id, info] of extensionCatalog) {
+        if (permanentlyFailed.has(id)) {
+          log(`Skipping disabled extension ${id}`, 'dim');
+          continue;
+        }
+
+        try {
+          await sendRequest('loadExtension', [id, info.code, info.manifest]);
+          log(`Reloaded ${id}`, 'dim');
+
+          if (info.state === 'active') {
+            try {
+              await sendRequest('activateExtension', [id], 3000);
+              log(`Reactivated ${id}`, 'dim');
+            } catch (err) {
+              log(`?o- Failed to reactivate ${id}: ${err.message}`, 'error');
+              permanentlyFailed.add(id);
+            }
+          }
+        } catch (err) {
+          log(`?o- Failed to reload ${id}: ${err.message}`, 'error');
+          permanentlyFailed.add(id);
+        }
+      }
     }
 
     // ============================================================================
@@ -358,6 +414,7 @@ module.exports = { activate, deactivate };
       try {
         const result = await sendRequest('loadExtension', ['hello.ext', GOOD_EXTENSION_CODE, GOOD_MANIFEST]);
         log(`✓ Extension loaded: ${result.extensionId}`, 'success');
+        extensionCatalog.set('hello.ext', { code: GOOD_EXTENSION_CODE, manifest: GOOD_MANIFEST, state: 'loaded' });
         setBadge(2, 'pass');
         await updateExtensionList();
         return result;
@@ -383,6 +440,7 @@ module.exports = { activate, deactivate };
         if (result.success) {
           document.getElementById('activationTime').textContent = result.activationTime?.toFixed(0) || totalTime.toFixed(0);
           log(`✓ Extension ACTIVATED in ${result.activationTime?.toFixed(0) || totalTime.toFixed(0)}ms`, 'success');
+          extensionCatalog.set('hello.ext', { code: GOOD_EXTENSION_CODE, manifest: GOOD_MANIFEST, state: 'active' });
           setBadge(3, 'pass');
         } else {
           throw new Error(result.error || 'Activation failed');
@@ -453,6 +511,7 @@ module.exports = { activate, deactivate };
         // Load bad extension
         await sendRequest('loadExtension', ['bad.ext', BAD_EXTENSION_CODE, BAD_MANIFEST]);
         log('Bad extension loaded', 'dim');
+        extensionCatalog.set('bad.ext', { code: BAD_EXTENSION_CODE, manifest: BAD_MANIFEST, state: 'loaded' });
         
         // Try to activate - this should timeout
         log('Activating (expect timeout in ~1000ms)...', 'warning');
@@ -479,7 +538,11 @@ module.exports = { activate, deactivate };
           setBadge(6, 'pass');
         }
         
-        // Check that extension is marked as killed
+        // Hard timeout should kill the worker and disable the bad extension
+        await restartWorkerDueToTimeout('bad.ext', 'activation timeout');
+        log('Worker restarted after killing bad.ext', 'warning');
+
+        // Update extension list from recovered worker
         await updateExtensionList();
         
       } catch (err) {
@@ -596,6 +659,8 @@ module.exports = { activate, deactivate };
       pendingRequests.clear();
       messageId = 0;
       extensionStates = [];
+      extensionCatalog.clear();
+      permanentlyFailed.clear();
       
       for (let i = 1; i <= 7; i++) setBadge(i, 'pending');
       document.getElementById('activationTime').textContent = '-';

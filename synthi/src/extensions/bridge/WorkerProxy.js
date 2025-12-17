@@ -24,6 +24,15 @@ export class WorkerProxy {
     /** @type {Worker|null} */
     this.worker = null;
     
+    /** @type {number} */
+    this.generation = 0;
+    
+    /** @type {'uninitialized'|'initializing'|'running'|'restarting'|'terminated'} */
+    this.state = 'uninitialized';
+    
+    /** @type {string|null} */
+    this.workerUrl = null;
+    
     /** @type {Map<number, PendingRequest>} */
     this.pendingRequests = new Map();
     
@@ -56,6 +65,12 @@ export class WorkerProxy {
       throw new Error('Worker already initialized');
     }
 
+    this.ready = false;
+    this.state = 'initializing';
+    this.generation += 1;
+    const currentGeneration = this.generation;
+    this.workerUrl = workerUrl;
+
     return new Promise((resolve, reject) => {
       try {
         this.worker = new Worker(workerUrl, { type: 'module' });
@@ -66,6 +81,9 @@ export class WorkerProxy {
         
         this.worker.onerror = (error) => {
           console.error('[WorkerProxy] Worker error:', error);
+          this._rejectAllPending('Worker error');
+          this.state = 'terminated';
+          this.ready = false;
           this._emit('error', error);
         };
 
@@ -76,6 +94,10 @@ export class WorkerProxy {
 
         this.readyCallbacks.push(() => {
           clearTimeout(readyTimeout);
+          if (this.generation === currentGeneration) {
+            this.state = 'running';
+            this.ready = true;
+          }
           resolve();
         });
       } catch (err) {
@@ -89,6 +111,11 @@ export class WorkerProxy {
    * @param {any} data
    */
   _handleMessage(data) {
+    if (typeof data?.generation === 'number' && data.generation !== this.generation) {
+      // Drop stale replies from older worker generations
+      return;
+    }
+
     if (!isValidMessage(data)) {
       console.warn('[WorkerProxy] Invalid message received:', data);
       return;
@@ -115,6 +142,7 @@ export class WorkerProxy {
       // Handle worker ready signal
       if (data.method === 'workerReady') {
         this.ready = true;
+        this.state = 'running';
         this.readyCallbacks.forEach(cb => cb());
         this.readyCallbacks = [];
       }
@@ -135,7 +163,12 @@ export class WorkerProxy {
       throw new Error('Worker not initialized');
     }
 
+    if (this.state !== 'running') {
+      throw new Error(`Worker not ready (state: ${this.state})`);
+    }
+
     const msg = createRequest(method, args);
+    msg.generation = this.generation;
 
     return new Promise((resolve, reject) => {
       const timeoutId = setTimeout(() => {
@@ -166,6 +199,7 @@ export class WorkerProxy {
     }
 
     const msg = createEvent(method, args);
+    msg.generation = this.generation;
     this.worker.postMessage(msg);
   }
 
@@ -213,17 +247,35 @@ export class WorkerProxy {
    */
   terminate() {
     if (this.worker) {
-      // Reject all pending requests
-      this.pendingRequests.forEach((pending, id) => {
-        clearTimeout(pending.timeout);
-        pending.reject(new Error('Worker terminated'));
-      });
-      this.pendingRequests.clear();
+      this._rejectAllPending('Worker terminated');
 
       this.worker.terminate();
       this.worker = null;
       this.ready = false;
+      this.state = 'terminated';
     }
+  }
+
+  /**
+   * Begin a restart cycle so new requests are rejected until init completes
+   */
+  beginRestart() {
+    this.state = 'restarting';
+    this.ready = false;
+    this._rejectAllPending('Worker restarting');
+  }
+
+  /**
+   * Reject and clear all pending requests
+   * @param {string} reason
+   * @private
+   */
+  _rejectAllPending(reason) {
+    this.pendingRequests.forEach((pending) => {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error(reason));
+    });
+    this.pendingRequests.clear();
   }
 
   /**
@@ -244,7 +296,14 @@ export class WorkerProxy {
    * @returns {Promise<{ success: boolean, activationTime: number, error?: string }>}
    */
   activateExtension(extensionId) {
-    return this.request(MainToWorkerMethods.ACTIVATE_EXTENSION, [extensionId], 2000);
+    return this.request(MainToWorkerMethods.ACTIVATE_EXTENSION, [extensionId], 2000)
+      .catch(err => {
+        if (err.message && err.message.startsWith('Request timeout')) {
+          err.code = 'ACTIVATION_TIMEOUT';
+          err.extensionId = extensionId;
+        }
+        throw err;
+      });
   }
 
   /**

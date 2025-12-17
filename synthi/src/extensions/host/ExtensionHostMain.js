@@ -70,7 +70,7 @@ export class ExtensionHostMain {
    * @param {object} msg
    */
   async _handleRequest(msg) {
-    const { id, method, args = [] } = msg;
+    const { id, method, args = [], generation } = msg;
 
     try {
       let result;
@@ -112,9 +112,9 @@ export class ExtensionHostMain {
           throw new Error(`Unknown method: ${method}`);
       }
 
-      self.postMessage(createResponse(id, result));
+      self.postMessage(createResponse(id, result, null, generation));
     } catch (err) {
-      self.postMessage(createResponse(id, null, err));
+      self.postMessage(createResponse(id, null, err, generation));
     }
   }
 

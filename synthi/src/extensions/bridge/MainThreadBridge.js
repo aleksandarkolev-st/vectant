@@ -12,13 +12,20 @@ import { WorkerToMainMethods } from './MessageProtocol.js';
  * @property {string} name
  * @property {string} version
  * @property {boolean} isActive
+ * @property {boolean} failed
+ * @property {string|null} failedReason
  * @property {string[]} activationEvents
+ * @property {object} manifest
+ * @property {string} code
  */
 
 export class MainThreadBridge {
   constructor() {
     /** @type {WorkerProxy} */
     this.workerProxy = getWorkerProxy();
+
+    /** @type {string|null} */
+    this.workerUrl = null;
     
     /** @type {Map<string, ExtensionInfo>} */
     this.extensions = new Map();
@@ -46,6 +53,12 @@ export class MainThreadBridge {
     
     /** @type {Map<string, object>} */
     this.pendingActivations = new Map();
+
+    /** @type {boolean} */
+    this.handlersRegistered = false;
+
+    /** @type {Promise<void>|null} */
+    this.restartPromise = null;
   }
 
   /**
@@ -58,6 +71,8 @@ export class MainThreadBridge {
       console.warn('[MainThreadBridge] Already initialized');
       return;
     }
+
+    this.workerUrl = workerUrl;
 
     // Set up event handlers before initializing worker
     this._setupEventHandlers();
@@ -73,6 +88,10 @@ export class MainThreadBridge {
    * Set up handlers for events from worker
    */
   _setupEventHandlers() {
+    if (this.handlersRegistered) {
+      return;
+    }
+
     const proxy = this.workerProxy;
 
     // Command registration
@@ -146,6 +165,8 @@ export class MainThreadBridge {
     proxy.on(WorkerToMainMethods.REPORT_METRICS, (metrics) => {
       this._handleMetrics(metrics);
     });
+
+    this.handlersRegistered = true;
   }
 
   /**
@@ -190,8 +211,12 @@ export class MainThreadBridge {
       displayName: manifest.displayName || manifest.name,
       version: manifest.version,
       isActive: false,
+      failed: false,
+      failedReason: null,
       activationEvents: manifest.activationEvents || [],
-      violationCount: 0
+      violationCount: 0,
+      manifest,
+      code
     });
 
     // Load into worker
@@ -211,11 +236,25 @@ export class MainThreadBridge {
       throw new Error(`Extension ${extensionId} not registered`);
     }
 
+    if (info.failed) {
+      throw new Error(info.failedReason || `Extension ${extensionId} is permanently disabled after a hard failure`);
+    }
+
     if (info.isActive) {
       return { success: true, activationTime: 0 };
     }
 
-    return this.workerProxy.activateExtension(extensionId);
+    try {
+      return await this.workerProxy.activateExtension(extensionId);
+    } catch (err) {
+      if (err.code === 'ACTIVATION_TIMEOUT') {
+        await this._handleActivationTimeout(extensionId, err);
+        throw new Error(
+          `Activation hard-timeout for ${extensionId}. Worker was restarted and the extension has been disabled.`
+        );
+      }
+      throw err;
+    }
   }
 
   /**
@@ -273,6 +312,7 @@ export class MainThreadBridge {
 
     for (const [id, info] of this.extensions) {
       if (info.isActive) continue;
+      if (info.failed) continue;
 
       for (const activationEvent of info.activationEvents) {
         if (this._matchesActivationEvent(activationEvent, event)) {
@@ -357,6 +397,38 @@ export class MainThreadBridge {
   }
 
   /**
+   * Get extension states without hitting the worker (main thread authoritative)
+   * @returns {Array<{ extensionId: string, state: string, manifest: object, commands: string[], failedReason: string|null }>}
+   */
+  getExtensionStates() {
+    const states = [];
+
+    for (const [id, info] of this.extensions) {
+      const state = info.failed ? 'failed' : (info.isActive ? 'active' : 'loaded');
+      const commands = [];
+
+      // Collect contributed commands if present in manifest
+      const manifestCommands = info.manifest?.contributes?.commands || [];
+      for (const cmd of manifestCommands) {
+        if (cmd?.command) {
+          commands.push(cmd.command);
+        }
+      }
+
+      states.push({
+        extensionId: id,
+        manifest: info.manifest,
+        state,
+        activationEvents: info.activationEvents,
+        commands,
+        failedReason: info.failedReason || null
+      });
+    }
+
+    return states;
+  }
+
+  /**
    * Get extension info
    * @param {string} extensionId
    * @returns {ExtensionInfo|undefined}
@@ -384,7 +456,111 @@ export class MainThreadBridge {
     this.workerProxy.terminate();
     this.extensions.clear();
     this.extensionCommands.clear();
+    this.pendingActivations.clear();
     this.initialized = false;
+    this.workerUrl = null;
+  }
+
+  /**
+   * Handle an activation timeout by marking the extension as failed and restarting the worker
+   * @param {string} extensionId
+   * @param {Error} err
+   */
+  async _handleActivationTimeout(extensionId, err) {
+    console.error(
+      `[MainThreadBridge] Activation timeout for ${extensionId}: ${err?.message || 'unknown error'}. ` +
+      'Restarting extension host worker.'
+    );
+
+    this._markExtensionFailed(extensionId, 'Activation hard timeout');
+    await this._restartWorker(extensionId, 'activation_timeout');
+  }
+
+  /**
+   * Mark an extension as permanently failed
+   * @param {string} extensionId
+   * @param {string} reason
+   */
+  _markExtensionFailed(extensionId, reason) {
+    const info = this.extensions.get(extensionId);
+    if (!info) return;
+
+    info.failed = true;
+    info.failedReason = reason;
+    info.isActive = false;
+  }
+
+  /**
+   * Restart the extension host worker and reload healthy extensions
+   * @param {string|null} failedExtensionId
+   * @param {string} reason
+   */
+  async _restartWorker(failedExtensionId, reason) {
+    if (!this.workerUrl) {
+      console.warn('[MainThreadBridge] Cannot restart worker before initialization');
+      return;
+    }
+
+    if (this.restartPromise) {
+      return this.restartPromise;
+    }
+
+    const doRestart = async () => {
+      this.workerProxy.beginRestart();
+      // Clear any pending activation waiters
+      this.pendingActivations.clear();
+      this.extensionCommands.clear();
+
+      // Terminate poisoned worker
+      this.workerProxy.terminate();
+
+      console.warn(
+        `[MainThreadBridge] Restarting extension host worker due to ${reason}` +
+        (failedExtensionId ? ` (failed: ${failedExtensionId})` : '')
+      );
+
+      // Spin up fresh worker
+      await this.workerProxy.init(this.workerUrl);
+
+      // Reload healthy extensions
+      for (const [id, info] of this.extensions) {
+        if (info.failed || id === failedExtensionId) {
+          info.isActive = false;
+          continue;
+        }
+
+        try {
+          await this.workerProxy.loadExtension(id, info.code, info.manifest);
+          if (info.isActive) {
+            try {
+              const result = await this.workerProxy.activateExtension(id);
+              info.isActive = !!result?.success;
+            } catch (activateErr) {
+              console.error(
+                `[MainThreadBridge] Failed to reactivate ${id} after restart:`,
+                activateErr
+              );
+              this._markExtensionFailed(
+                id,
+                `Reactivation failed after worker restart: ${activateErr.message}`
+              );
+            }
+          }
+        } catch (err) {
+          console.error(`[MainThreadBridge] Failed to reload ${id} after restart:`, err);
+          this._markExtensionFailed(
+            id,
+            `Reload failed after worker restart: ${err.message}`
+          );
+        }
+      }
+    };
+
+    this.restartPromise = doRestart().finally(() => {
+      this.restartPromise = null;
+    });
+
+    return this.restartPromise;
   }
 }
 

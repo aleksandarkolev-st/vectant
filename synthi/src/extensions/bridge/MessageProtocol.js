@@ -33,10 +33,14 @@ export function createRequest(method, args = []) {
  * @param {number} id - Request ID
  * @param {any} result - Result value
  * @param {{ message: string, stack?: string }|null} error - Error if any
- * @returns {{ id: number, type: 'response', result?: any, error?: object }}
+ * @param {number} [generation] - Optional worker generation for stale reply fencing
+ * @returns {{ id: number, type: 'response', result?: any, error?: object, generation?: number }}
  */
-export function createResponse(id, result, error = null) {
+export function createResponse(id, result, error = null, generation) {
   const msg = { id, type: 'response' };
+  if (typeof generation === 'number') {
+    msg.generation = generation;
+  }
   if (error) {
     msg.error = { message: error.message, stack: error.stack };
   } else {

@@ -179,6 +179,11 @@ export async function initializeExtensionSystem(options) {
     getExtensions: () => {
       return bridge.getExtensions();
     },
+
+    // Get extension states (main-thread authoritative)
+    getExtensionStates: () => {
+      return bridge.getExtensionStates();
+    },
     
     getExtension: (extensionId) => {
       return bridge.getExtension(extensionId);
