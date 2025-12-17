@@ -1,0 +1,22 @@
+{
+  "name": "bad-extension",
+  "displayName": "Bad Extension",
+  "description": "Intentionally bad extension for testing kill functionality",
+  "version": "1.0.0",
+  "publisher": "synthi",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "activationEvents": [
+    "onCommand:badExtension.freeze"
+  ],
+  "main": "./bad-extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "badExtension.freeze",
+        "title": "Bad Extension: Freeze"
+      }
+    ]
+  }
+}
