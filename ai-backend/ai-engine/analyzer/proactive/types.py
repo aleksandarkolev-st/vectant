@@ -88,6 +88,7 @@ class Diagnostic:
     fixes: List[CodeFix] = field(default_factory=list)
     explanation: Optional[str] = None            # Detailed explanation for AI diagnostics
     confidence: float = 1.0                      # Confidence score (0-1) for AI diagnostics
+    originalText: Optional[str] = None           # Original code that caused the diagnostic
     
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -108,6 +109,8 @@ class Diagnostic:
             result["explanation"] = self.explanation
         if self.confidence < 1.0:
             result["confidence"] = self.confidence
+        if self.originalText:
+            result["originalText"] = self.originalText
             
         return result
 
