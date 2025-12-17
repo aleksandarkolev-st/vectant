@@ -236,9 +236,17 @@ export const useEditorProviders = ({
                             const loc = d.location || {};
                             // Check if line matches (loc.line is 0-indexed, m.startLineNumber is 1-indexed)
                             const lineMatches = loc.line === m.startLineNumber - 1;
+                            
                             // Check if message matches (flexible matching)
-                            const msgMatches = m.message.includes(d.message) || d.message.includes(m.message) || 
-                                               m.message.toLowerCase() === d.message.toLowerCase();
+                            // Monaco marker message has format: "[AI] actual message" or "actual message"
+                            // Diagnostic message is just: "actual message"
+                            const diagMsg = (d.message || '').toLowerCase();
+                            const markerMsg = (m.message || '').toLowerCase();
+                            // Strip tier prefix like [AI], [STATIC], etc from marker message
+                            const cleanMarkerMsg = markerMsg.replace(/^\[[^\]]+\]\s*/i, '');
+                            const msgMatches = cleanMarkerMsg.includes(diagMsg) || 
+                                               diagMsg.includes(cleanMarkerMsg) || 
+                                               cleanMarkerMsg === diagMsg;
                             // Must have fixes
                             return d.fixes?.length > 0 && lineMatches && msgMatches;
                         });

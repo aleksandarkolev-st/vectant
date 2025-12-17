@@ -280,8 +280,12 @@ export default function EditorPage({ params }) {
                     setIsAnalyzingProactive(false);
                     
                     // STEP 2: Run AI analysis in background for logic error detection
-                    // Track both cancellation flag and the content hash at analysis time
-                    const aiTracker = { cancelled: false, contentHash };
+                    // Track the exact content that was analyzed for freshness verification
+                    const aiTracker = { 
+                        cancelled: false, 
+                        contentHash,
+                        analyzedContent: contentToAnalyze  // Store actual content for verification
+                    };
                     aiAnalysisRef.current = aiTracker;
                     
                     analyzeProactive({
@@ -291,11 +295,13 @@ export default function EditorPage({ params }) {
                         includeAi: true, // AI tier for logic errors
                     })
                         .then((aiResult) => {
-                            // Only update if not cancelled AND content hasn't changed
-                            // (double-check using ref to catch race conditions)
-                            if (!aiTracker.cancelled && aiAnalysisRef.current === aiTracker) {
+                            // Only update if:
+                            // 1. Not cancelled
+                            // 2. This is still the current tracker
+                            // 3. The content hasn't changed since we started
+                            const isStillCurrent = !aiTracker.cancelled && aiAnalysisRef.current === aiTracker;
+                            if (isStillCurrent) {
                                 const aiDiags = aiResult?.diagnostics || aiResult?.data?.diagnostics || [];
-                                // Merge AI diagnostics with existing (AI tier adds more, doesn't replace)
                                 setDiagnostics(aiDiags);
                             }
                         })
