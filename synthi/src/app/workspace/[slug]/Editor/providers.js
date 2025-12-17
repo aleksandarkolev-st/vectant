@@ -20,6 +20,7 @@ export const useEditorProviders = ({
     const completionProviderRef = useRef(null);
     const codeActionProviderRef = useRef(null);
     const fixPreviewDecorationsRef = useRef([]);
+    const fixPreviewZoneIdRef = useRef(null);
     const diagnosticsRef = useRef(diagnostics);
     
     // Track pending fix for keyboard shortcuts
@@ -86,7 +87,7 @@ export const useEditorProviders = ({
         const decorations = [];
         const isDelete = replacementText === '';
         
-        // Strike through the old text
+        // Strike through the old text (mark what will be replaced)
         decorations.push({
             range: range,
             options: {
@@ -94,35 +95,30 @@ export const useEditorProviders = ({
             },
         });
         
-        // For the new text, show it as ghost text after the range
+        // Show the new code as a view zone (block inserted below the line)
         if (!isDelete) {
-            // Show full replacement text - replace newlines with visual separator for inline display
-            const displayText = replacementText.includes('\n')
-                ? replacementText.split('\n').map(l => l.trim()).filter(l => l).join(' ↵ ')
-                : replacementText;
+            // Calculate height - at least 1 line
+            const lines = replacementText.split('\n');
+            const heightInLines = Math.max(1, lines.length);
             
-            // Truncate if too long for display
-            const maxLen = 150;
-            const previewText = displayText.length > maxLen 
-                ? ` → ${displayText.substring(0, maxLen)}...`
-                : ` → ${displayText}`;
+            // Create a view zone to show the replacement code below
+            const viewZone = {
+                afterLineNumber: range.endLineNumber,
+                heightInLines: heightInLines,
+                domNode: document.createElement('div'),
+            };
             
-            decorations.push({
-                range: new monacoInstance.Range(
-                    range.endLineNumber, 
-                    range.endColumn, 
-                    range.endLineNumber, 
-                    range.endColumn
-                ),
-                options: {
-                    after: {
-                        content: previewText,
-                        inlineClassName: 'synthi-fix-ghost-text',
-                    },
-                },
+            // Style the preview zone - inline layout
+            viewZone.domNode.className = 'synthi-fix-preview-zone';
+            const escapedCode = replacementText.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            viewZone.domNode.innerHTML = `<span class="synthi-fix-preview-label">+</span><code class="synthi-fix-preview-code">${escapedCode}</code>`;
+            
+            editorInstance.changeViewZones((accessor) => {
+                const zoneId = accessor.addZone(viewZone);
+                fixPreviewZoneIdRef.current = zoneId;
             });
         } else {
-            // For deletion, show indicator
+            // For deletion, show indicator inline
             decorations.push({
                 range: new monacoInstance.Range(
                     range.endLineNumber, 
@@ -132,7 +128,7 @@ export const useEditorProviders = ({
                 ),
                 options: {
                     after: {
-                        content: ' ✕ (delete)',
+                        content: ' ✕ (will be deleted)',
                         inlineClassName: 'synthi-fix-delete-text',
                     },
                 },
@@ -150,6 +146,12 @@ export const useEditorProviders = ({
         if (fixPreviewDecorationsRef.current.length > 0 && editorInstance) {
             editorInstance.deltaDecorations(fixPreviewDecorationsRef.current, []);
             fixPreviewDecorationsRef.current = [];
+        }
+        if (fixPreviewZoneIdRef.current !== null && editorInstance) {
+            editorInstance.changeViewZones((accessor) => {
+                accessor.removeZone(fixPreviewZoneIdRef.current);
+            });
+            fixPreviewZoneIdRef.current = null;
         }
         isPreviewingRef.current = false;
     };
@@ -432,19 +434,6 @@ export const useEditorProviders = ({
                                             text: fix.replacementText ?? '',
                                         },
                                     }],
-                                },
-                            });
-                            
-                            // Add a "Preview fix" action that shows the preview
-                            actions.push({
-                                title: `👁 Preview: ${(fix.description || 'fix').slice(0, 50)}...`,
-                                kind: 'quickfix.preview',
-                                diagnostics: [marker],
-                                isPreferred: false,
-                                command: {
-                                    id: 'synthi.showFixPreview',
-                                    title: 'Show Fix Preview',
-                                    arguments: [fixInfo],
                                 },
                             });
                         }
