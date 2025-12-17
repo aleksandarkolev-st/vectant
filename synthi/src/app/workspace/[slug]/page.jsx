@@ -247,6 +247,10 @@ export default function EditorPage({ params }) {
             aiAnalysisRef.current.cancelled = true;
         }
 
+        // Capture the content we're analyzing (for freshness checks)
+        const contentToAnalyze = typeof currentContent === 'string' ? currentContent : '';
+        const contentHash = contentToAnalyze.length + ':' + contentToAnalyze.slice(0, 100);
+
         // Debounce proactive analysis to avoid overwhelming the backend
         proactiveTimeoutRef.current = setTimeout(() => {
             const langSource =
@@ -254,7 +258,7 @@ export default function EditorPage({ params }) {
                 (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
                 'plaintext';
             const normalizedLang = langSource.toLowerCase();
-            const signature = `proactive::${activeFile?.path || activeFile?.name || ''}::${currentContent}`;
+            const signature = `proactive::${activeFile?.path || activeFile?.name || ''}::${contentToAnalyze}`;
 
             if (lastProactiveSignatureRef.current === signature) {
                 return;
@@ -264,7 +268,7 @@ export default function EditorPage({ params }) {
             
             // STEP 1: Run fast static+semantic analysis first for immediate feedback
             analyzeProactive({
-                code: typeof currentContent === 'string' ? currentContent : '',
+                code: contentToAnalyze,
                 lang: normalizedLang,
                 filePath: activeFile?.path || activeFile?.name || 'untitled',
                 includeAi: false, // Fast tier first
@@ -276,18 +280,20 @@ export default function EditorPage({ params }) {
                     setIsAnalyzingProactive(false);
                     
                     // STEP 2: Run AI analysis in background for logic error detection
-                    const aiTracker = { cancelled: false };
+                    // Track both cancellation flag and the content hash at analysis time
+                    const aiTracker = { cancelled: false, contentHash };
                     aiAnalysisRef.current = aiTracker;
                     
                     analyzeProactive({
-                        code: typeof currentContent === 'string' ? currentContent : '',
+                        code: contentToAnalyze,
                         lang: normalizedLang,
                         filePath: activeFile?.path || activeFile?.name || 'untitled',
                         includeAi: true, // AI tier for logic errors
                     })
                         .then((aiResult) => {
-                            // Only update if not cancelled
-                            if (!aiTracker.cancelled) {
+                            // Only update if not cancelled AND content hasn't changed
+                            // (double-check using ref to catch race conditions)
+                            if (!aiTracker.cancelled && aiAnalysisRef.current === aiTracker) {
                                 const aiDiags = aiResult?.diagnostics || aiResult?.data?.diagnostics || [];
                                 // Merge AI diagnostics with existing (AI tier adds more, doesn't replace)
                                 setDiagnostics(aiDiags);
@@ -329,6 +335,46 @@ export default function EditorPage({ params }) {
     const appendBuildLog = useCallback((line) => {
         setBuildLogs((prev) => [...prev, line].slice(-200));
     }, []);
+
+    // Helper to detect if source code contains React Native imports
+    const detectReactNativeInSource = useCallback((source) => {
+        if (!source) return false;
+        const rnPatterns = [
+            /from\s+['"]react-native['"]/,
+            /require\s*\(['"]react-native['"]\)/,
+            /from\s+['"]@react-native/,
+            /from\s+['"]expo/,
+            /import.*from\s+['"]react-native-/
+        ];
+        return rnPatterns.some(pattern => pattern.test(source));
+    }, []);
+
+    // Helper to detect if workspace is a React Native project (checks package.json)
+    const detectReactNativeProject = useCallback(async () => {
+        try {
+            // Look for package.json in the workspace (handle various path formats)
+            const packageJsonFile = rawFiles?.find(f => 
+                f.name === 'package.json' && 
+                (!f.path || f.path === 'package.json' || f.path === '/package.json')
+            );
+            if (!packageJsonFile) return false;
+            
+            // Fetch content
+            const cached = fileCache.get('package.json');
+            let content = cached;
+            if (content === undefined) {
+                content = await api.fetchFileContent(slug, 'package.json');
+            }
+            if (!content) return false;
+            
+            const pkg = JSON.parse(content);
+            const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+            return !!(deps['react-native'] || deps['expo']);
+        } catch (e) {
+            console.debug('Failed to detect React Native project from package.json', e);
+            return false;
+        }
+    }, [rawFiles, slug]);
 
     const handleRun = useCallback(async () => {
         if (!activeFile) {
@@ -377,12 +423,35 @@ export default function EditorPage({ params }) {
             appendBuildLog(`Warning: Dependency resolution failed: ${e.message}`);
         }
 
+        // Detect if this is a React Native project for mobile emulator target
+        // Check both package.json dependencies AND source code imports
+        const ext = (filename || '').split('.').pop().toLowerCase();
+        const isJsxFile = ['js', 'jsx', 'tsx', 'ts'].includes(ext);
+        const hasRnImports = isJsxFile && detectReactNativeInSource(source);
+        const hasRnPackage = await detectReactNativeProject();
+        const isReactNative = hasRnImports || hasRnPackage;
+        const target = isReactNative ? 'react-native-emulator' : null;
+        
+        // Derive project root from active file's directory path
+        // e.g., "mobile/app.tsx" -> "mobile", "src/screens/Home.tsx" -> "src/screens"
+        let projectRoot = null;
+        if (isReactNative && filename) {
+            const fileParts = filename.replace(/\\/g, '/').split('/');
+            // Remove the filename to get directory
+            fileParts.pop();
+            projectRoot = fileParts.join('/') || '/';
+            appendBuildLog(`Detected React Native project at: ${projectRoot}`);
+        }
+
         try {
             await compile({
                 filename,
                 source,
                 files: additionalFiles,
                 useAiSplit,
+                target,
+                projectRoot,
+                slug, // Pass workspace slug for mobile builds to download synced files
                 onLog: (line) => {
                     appendBuildLog(line);
                     console.log('[build]', line);
@@ -393,7 +462,7 @@ export default function EditorPage({ params }) {
             console.error('Compile failed', err);
             appendBuildLog(`error: ${err?.message || err}`);
         }
-    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile]);
+    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, useAiSplit]);
 
     const handleSave = useCallback(async () => {
         if (!activeFile) return;

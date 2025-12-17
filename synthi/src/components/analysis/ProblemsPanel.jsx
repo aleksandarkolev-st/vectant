@@ -126,10 +126,17 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected }) {
         
         {/* Meta info */}
         <div className="flex items-center gap-2 mt-1 text-xs text-gray-500">
-          {/* Location */}
+          {/* Location - show range for multi-line diagnostics */}
           <span className="flex items-center gap-1">
             <FileCode className="h-3 w-3" />
-            Ln {(diagnostic.location?.line ?? 0) + 1}, Col {(diagnostic.location?.column ?? 0) + 1}
+            {diagnostic.location?.endLine !== undefined && 
+             diagnostic.location.endLine !== diagnostic.location.line ? (
+              // Multi-line span
+              <>Ln {(diagnostic.location?.line ?? 0) + 1}-{(diagnostic.location.endLine ?? 0) + 1}</>
+            ) : (
+              // Single line
+              <>Ln {(diagnostic.location?.line ?? 0) + 1}, Col {(diagnostic.location?.column ?? 0) + 1}</>
+            )}
           </span>
           
           {/* Code */}

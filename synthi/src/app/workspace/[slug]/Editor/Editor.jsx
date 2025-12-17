@@ -879,27 +879,41 @@ const EditorPanel = ({
         const proactiveDiagnostics = diagnostics || [];
         
         // Convert static analysis format to markers
-        const staticMarkers = staticIssues.map(issue => ({
-            startLineNumber: issue.line === 0 ? 1 : issue.line + 1,
-            startColumn: Math.max(1, (issue.column || 0) + 1),
-            endLineNumber: issue.end_line ? issue.end_line + 1 : (issue.line === 0 ? 1 : issue.line + 1),
-            endColumn: issue.end_column ? issue.end_column + 1 : 100,
-            message: issue.message,
-            severity: issue.severity === 'error' ? monacoInstance.MarkerSeverity.Error : 
-                     issue.severity === 'warning' ? monacoInstance.MarkerSeverity.Warning :
-                     monacoInstance.MarkerSeverity.Info,
-            source: 'synthi-static',
-            code: issue.code,
-        }));
+        const staticMarkers = staticIssues.map(issue => {
+            const column = issue.column || 0;
+            const endColumn = issue.end_column ?? column;
+            const startCol = Math.max(1, column + 1);
+            // Ensure at least 1 character width for the marker
+            const endCol = Math.max(endColumn + 1, startCol + 1);
+            
+            return {
+                startLineNumber: issue.line === 0 ? 1 : issue.line + 1,
+                startColumn: startCol,
+                endLineNumber: issue.end_line ? issue.end_line + 1 : (issue.line === 0 ? 1 : issue.line + 1),
+                endColumn: endCol,
+                message: issue.message,
+                severity: issue.severity === 'error' ? monacoInstance.MarkerSeverity.Error : 
+                         issue.severity === 'warning' ? monacoInstance.MarkerSeverity.Warning :
+                         monacoInstance.MarkerSeverity.Info,
+                source: 'synthi-static',
+                code: issue.code,
+            };
+        });
         
         // Convert proactive diagnostics format to markers
         const proactiveMarkers = proactiveDiagnostics.map(diag => {
             const location = diag.location || {};
+            const column = location.column ?? 0;
+            const endColumn = location.endColumn ?? column;
+            const startCol = Math.max(1, column + 1);
+            // Ensure at least 1 character width for the marker
+            const endCol = Math.max(endColumn + 1, startCol + 1);
+            
             return {
                 startLineNumber: (location.line ?? 0) + 1,
-                startColumn: Math.max(1, (location.column ?? 0) + 1),
+                startColumn: startCol,
                 endLineNumber: (location.endLine ?? location.line ?? 0) + 1,
-                endColumn: Math.max(1, (location.endColumn ?? location.column ?? 0) + 1),
+                endColumn: endCol,
                 message: `[${(diag.tier || 'analysis').toUpperCase()}] ${diag.message}`,
                 severity: diag.severity === 'error' ? monacoInstance.MarkerSeverity.Error :
                          diag.severity === 'warning' ? monacoInstance.MarkerSeverity.Warning :
