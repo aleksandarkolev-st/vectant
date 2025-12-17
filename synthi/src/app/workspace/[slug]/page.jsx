@@ -247,6 +247,10 @@ export default function EditorPage({ params }) {
             aiAnalysisRef.current.cancelled = true;
         }
 
+        // Capture the content we're analyzing (for freshness checks)
+        const contentToAnalyze = typeof currentContent === 'string' ? currentContent : '';
+        const contentHash = contentToAnalyze.length + ':' + contentToAnalyze.slice(0, 100);
+
         // Debounce proactive analysis to avoid overwhelming the backend
         proactiveTimeoutRef.current = setTimeout(() => {
             const langSource =
@@ -254,7 +258,7 @@ export default function EditorPage({ params }) {
                 (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
                 'plaintext';
             const normalizedLang = langSource.toLowerCase();
-            const signature = `proactive::${activeFile?.path || activeFile?.name || ''}::${currentContent}`;
+            const signature = `proactive::${activeFile?.path || activeFile?.name || ''}::${contentToAnalyze}`;
 
             if (lastProactiveSignatureRef.current === signature) {
                 return;
@@ -264,7 +268,7 @@ export default function EditorPage({ params }) {
             
             // STEP 1: Run fast static+semantic analysis first for immediate feedback
             analyzeProactive({
-                code: typeof currentContent === 'string' ? currentContent : '',
+                code: contentToAnalyze,
                 lang: normalizedLang,
                 filePath: activeFile?.path || activeFile?.name || 'untitled',
                 includeAi: false, // Fast tier first
@@ -276,18 +280,20 @@ export default function EditorPage({ params }) {
                     setIsAnalyzingProactive(false);
                     
                     // STEP 2: Run AI analysis in background for logic error detection
-                    const aiTracker = { cancelled: false };
+                    // Track both cancellation flag and the content hash at analysis time
+                    const aiTracker = { cancelled: false, contentHash };
                     aiAnalysisRef.current = aiTracker;
                     
                     analyzeProactive({
-                        code: typeof currentContent === 'string' ? currentContent : '',
+                        code: contentToAnalyze,
                         lang: normalizedLang,
                         filePath: activeFile?.path || activeFile?.name || 'untitled',
                         includeAi: true, // AI tier for logic errors
                     })
                         .then((aiResult) => {
-                            // Only update if not cancelled
-                            if (!aiTracker.cancelled) {
+                            // Only update if not cancelled AND content hasn't changed
+                            // (double-check using ref to catch race conditions)
+                            if (!aiTracker.cancelled && aiAnalysisRef.current === aiTracker) {
                                 const aiDiags = aiResult?.diagnostics || aiResult?.data?.diagnostics || [];
                                 // Merge AI diagnostics with existing (AI tier adds more, doesn't replace)
                                 setDiagnostics(aiDiags);

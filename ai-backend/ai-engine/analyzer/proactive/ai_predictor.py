@@ -33,47 +33,62 @@ from .types import (
 )
 
 
-# Prompt template for AI error prediction
-AI_ERROR_PREDICTION_PROMPT = """You are an expert code reviewer with deep knowledge of software engineering best practices, security vulnerabilities, and common bugs. Analyze the following code for potential issues that might not be caught by a compiler or linter.
+# Prompt template for AI error prediction - PRECISE SENIOR DEV LEVEL
+AI_ERROR_PREDICTION_PROMPT = """You are a senior software engineer conducting a thorough code review. Analyze this {language} code for bugs that would cause incorrect runtime behavior.
 
-Focus on:
-1. **Logic Errors**: Off-by-one errors, incorrect conditions, wrong operators
-2. **Security Issues**: SQL injection, XSS, insecure defaults, hardcoded secrets
-3. **Race Conditions**: Data races, deadlocks, TOCTOU vulnerabilities
-4. **Resource Leaks**: Unclosed files, database connections, memory leaks
-5. **API Misuse**: Incorrect function usage, wrong parameter types, deprecated APIs
-6. **Edge Cases**: Null/undefined handling, empty collections, boundary conditions
-7. **Performance Issues**: N+1 queries, unnecessary allocations, blocking operations
+ANALYSIS APPROACH:
+1. Trace through the code mentally - what happens for different inputs?
+2. Check boundary conditions and edge cases
+3. Verify logic operators (&&, ||, !, ==, !=, <, >, <=, >=)
+4. Check off-by-one errors in loops and array access
+5. Verify function return values and early returns
+6. Check for swapped conditions or inverted logic
 
-For each issue found, respond with a JSON array of objects with these fields:
-- "line": 1-indexed line number where the issue starts
-- "endLine": 1-indexed line number where the issue ends (same as line if single line)
-- "column": 0-indexed column where the issue starts
-- "endColumn": 0-indexed column where the issue ends
-- "severity": "error" | "warning" | "info" | "hint"
-- "category": one of "logic_error", "security", "concurrency", "resource_leak", "type_error", "performance", "best_practice"
-- "message": Brief description of the issue (1 sentence)
-- "explanation": Detailed explanation of why this is a problem and how to fix it (2-3 sentences)
-- "confidence": 0.0 to 1.0 confidence score
-- "fix": (optional) suggested code replacement
+RESPOND WITH A JSON ARRAY. Each issue must have these EXACT fields:
 
-If no issues are found, respond with an empty array: []
+{{
+  "line_start": <number>,        // First line of the problematic code (1-indexed)
+  "line_end": <number>,          // Last line of the problematic code (1-indexed)  
+  "snippet": "<string>",         // EXACT code to highlight - copy CHARACTER BY CHARACTER from source
+  "message": "<string>",         // Clear, actionable description (like a PR comment)
+  "explanation": "<string>",     // WHY this is wrong - trace through with example values
+  "severity": "error"|"warning", // error = will definitely fail, warning = likely bug
+  "confidence": <0.0-1.0>,       // Your confidence this is a real bug
+  "fix_snippet": "<string>",     // REQUIRED: The corrected code (drop-in replacement for snippet)
+  "category": "<string>"         // One of: logic_error, off_by_one, wrong_operator, wrong_condition, boundary_error, missing_check
+}}
 
-IMPORTANT: 
-- Only report issues you're reasonably confident about (confidence >= 0.6)
-- Don't report obvious syntax errors (the compiler will catch those)
-- Don't repeat issues already caught by static analysis
-- Be specific about line numbers and locations
-- Keep explanations concise but actionable
+CRITICAL - EVERY ISSUE MUST HAVE A FIX:
+- "snippet" MUST be copied exactly from the code (preserve spaces, operators, etc.)
+- "fix_snippet" MUST be provided - show how to fix the issue
+- For missing validation: snippet = the function/if line, fix_snippet = add the check
+- For wrong logic: snippet = the wrong expression, fix_snippet = corrected expression
 
-Language: {language}
-File: {file_path}
+EXAMPLE 1 - Missing negative check:
+Code: `int power(int base, int exp) {{ if (exp == 0) return 1; return base * power(base, exp - 1); }}`
+Response: [{{"line_start": 1, "line_end": 1, "snippet": "if (exp == 0) return 1;", "message": "Missing check for negative exponents causes infinite recursion", "explanation": "When exp is negative, exp-1 goes to -2, -3, etc. forever. power(2, -1) will stack overflow.", "severity": "error", "confidence": 0.95, "fix_snippet": "if (exp < 0) return 0; if (exp == 0) return 1;", "category": "missing_check"}}]
 
+EXAMPLE 2 - Wrong operator:
+Code line 5: `if (n % 2 == 0) {{ cout << "Odd"; }}`
+Response: [{{"line_start": 5, "line_end": 5, "snippet": "n % 2 == 0", "message": "Condition checks for even but prints 'Odd'", "explanation": "n % 2 == 0 is true when n is EVEN, but the code prints 'Odd'. For n=4: 4%2=0, prints 'Odd' incorrectly.", "severity": "error", "confidence": 0.95, "fix_snippet": "n % 2 != 0", "category": "wrong_operator"}}]
+
+EXAMPLE 3 - Integer overflow risk:
+Code: `int factorial(int n) {{ int result = 1; for(int i=1; i<=n; i++) result *= i; return result; }}`
+Response: [{{"line_start": 1, "line_end": 1, "snippet": "int result = 1;", "message": "Integer overflow for n > 12", "explanation": "13! = 6,227,020,800 exceeds INT_MAX (2,147,483,647). factorial(13) overflows.", "severity": "warning", "confidence": 0.9, "fix_snippet": "long long result = 1;", "category": "boundary_error"}}]
+
+RULES:
+- ALWAYS provide fix_snippet - this is required for the quick fix feature
+- snippet must match the code EXACTLY (copy-paste precision)
+- Only report bugs that cause INCORRECT BEHAVIOR
+- If no bugs found, return: []
+- JSON only, no markdown
+
+CODE TO ANALYZE:
 ```{language}
 {code}
 ```
 
-Respond ONLY with a valid JSON array, no markdown, no explanation outside the JSON:"""
+JSON:"""
 
 
 CATEGORY_MAP = {
@@ -89,6 +104,12 @@ CATEGORY_MAP = {
     "unused_code": DiagnosticCategory.UNUSED_CODE,
     "style": DiagnosticCategory.STYLE,
     "syntax": DiagnosticCategory.SYNTAX,
+    # Additional categories for precise diagnostics
+    "off_by_one": DiagnosticCategory.LOGIC_ERROR,
+    "wrong_operator": DiagnosticCategory.LOGIC_ERROR,
+    "wrong_condition": DiagnosticCategory.LOGIC_ERROR,
+    "boundary_error": DiagnosticCategory.LOGIC_ERROR,
+    "missing_check": DiagnosticCategory.LOGIC_ERROR,
 }
 
 SEVERITY_MAP = {
@@ -151,7 +172,9 @@ class AIErrorPredictor:
         except Exception as e:
             # Don't crash on AI errors, just return empty
             diagnostics = []
+            import traceback
             print(f"[AIErrorPredictor] Analysis failed: {e}")
+            print(f"[AIErrorPredictor] Traceback: {traceback.format_exc()}")
         
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         
@@ -169,21 +192,9 @@ class AIErrorPredictor:
     ) -> List[Diagnostic]:
         """Run the actual AI analysis."""
         
-        # Build the prompt
-        prompt = AI_ERROR_PREDICTION_PROMPT.format(
-            language=file.language,
-            file_path=file.path,
-            code=file.content,
-        )
-        
-        # Add context about related files if available
-        if related_files:
-            context_parts = []
-            for rf in related_files[:5]:  # Limit context
-                context_parts.append(f"--- {rf.path} ---\n{rf.content[:2000]}")
-            
-            if context_parts:
-                prompt += f"\n\nRelated files for context:\n" + "\n".join(context_parts)
+        # Build the prompt - simple string replacement
+        prompt = AI_ERROR_PREDICTION_PROMPT.replace("{language}", file.language) \
+                                           .replace("{code}", file.content)
         
         # Call the LLM
         response = await self._provider.ask_llm(
@@ -223,10 +234,11 @@ class AIErrorPredictor:
         
         lines = file.content.splitlines()
         max_line = len(lines) - 1
+        full_code = file.content
         
         for item in items:
             try:
-                diagnostic = self._parse_diagnostic_item(item, lines, max_line)
+                diagnostic = self._parse_diagnostic_item(item, lines, max_line, full_code)
                 if diagnostic:
                     diagnostics.append(diagnostic)
             except Exception:
@@ -239,6 +251,7 @@ class AIErrorPredictor:
         item: Dict[str, Any],
         lines: List[str],
         max_line: int,
+        full_code: str,
     ) -> Optional[Diagnostic]:
         """Parse a single diagnostic item from the LLM response."""
         if not isinstance(item, dict):
@@ -250,25 +263,86 @@ class AIErrorPredictor:
             return None
         
         # Parse line numbers (1-indexed in response, convert to 0-indexed)
-        line = max(0, min(item.get("line", 1) - 1, max_line))
-        end_line = max(line, min(item.get("endLine", line + 1) - 1, max_line))
+        # Support both old format (line) and new format (line_start, line_end)
+        line_start = item.get("line_start") or item.get("line", 1)
+        line_end = item.get("line_end") or line_start
         
-        # Parse columns
-        line_length = len(lines[line]) if line < len(lines) else 0
-        column = max(0, min(item.get("column", 0), line_length))
-        end_column = max(column, min(item.get("endColumn", line_length), line_length))
+        line_num = max(0, min(int(line_start) - 1, max_line))
+        end_line_num = max(line_num, min(int(line_end) - 1, max_line))
         
         # Parse severity
-        severity_str = item.get("severity", "warning").lower()
+        severity_str = str(item.get("severity", "warning")).lower()
         severity = SEVERITY_MAP.get(severity_str, Severity.WARNING)
         
+        # Parse confidence
+        try:
+            confidence = float(item.get("confidence", 0.7))
+            confidence = max(0.0, min(1.0, confidence))
+        except (ValueError, TypeError):
+            confidence = 0.7
+        
         # Parse category
-        category_str = item.get("category", "logic_error").lower().replace(" ", "_")
+        category_str = item.get("category", "logic_error").lower().replace("-", "_").replace(" ", "_")
         category = CATEGORY_MAP.get(category_str, DiagnosticCategory.LOGIC_ERROR)
         
-        # Parse confidence
-        confidence = float(item.get("confidence", 0.7))
-        confidence = max(0.0, min(1.0, confidence))
+        # Get snippet - the exact code to highlight
+        snippet = item.get("snippet", "") or item.get("wrong", "")
+        fix_snippet = item.get("fix_snippet", "") or item.get("correct", "")
+        
+        # Normalize snippet (handle escaped newlines from JSON)
+        snippet = snippet.replace("\\n", "\n").replace("\\t", "\t")
+        fix_snippet = fix_snippet.replace("\\n", "\n").replace("\\t", "\t")
+        
+        # Try to find the exact position of the snippet in the code
+        column = 0
+        end_column = 0
+        snippet_found = False
+        
+        if snippet:
+            # First, try to find in the full code
+            snippet_idx = full_code.find(snippet)
+            if snippet_idx != -1:
+                # Found exact match - calculate line and column
+                lines_before = full_code[:snippet_idx].splitlines()
+                if lines_before:
+                    line_num = len(lines_before) - 1
+                    column = len(lines_before[-1]) if lines_before else 0
+                else:
+                    line_num = 0
+                    column = snippet_idx
+                
+                # Calculate end position
+                snippet_lines = snippet.splitlines()
+                if len(snippet_lines) > 1:
+                    end_line_num = line_num + len(snippet_lines) - 1
+                    end_column = len(snippet_lines[-1])
+                else:
+                    end_line_num = line_num
+                    end_column = column + len(snippet)
+                
+                snippet_found = True
+            else:
+                # Try case-insensitive or normalized whitespace search
+                normalized_code = " ".join(full_code.split())
+                normalized_snippet = " ".join(snippet.split())
+                
+                if normalized_snippet in normalized_code:
+                    # Found with normalized whitespace - fall back to line-based
+                    snippet_found = False  # Will use line-based highlighting
+        
+        # If snippet not found exactly, highlight the full line range
+        if not snippet_found:
+            start_line_content = lines[line_num] if line_num < len(lines) else ""
+            end_line_content = lines[end_line_num] if end_line_num < len(lines) else ""
+            
+            # Start at first non-whitespace character
+            column = len(start_line_content) - len(start_line_content.lstrip())
+            # End at line length
+            end_column = len(end_line_content)
+        
+        # Ensure valid range
+        if end_line_num == line_num and end_column <= column:
+            end_column = column + 1  # At least 1 character
         
         # Build diagnostic
         diagnostic = Diagnostic(
@@ -276,25 +350,50 @@ class AIErrorPredictor:
             severity=severity,
             tier=AnalysisTier.AI,
             location=DiagnosticLocation(
-                line=line,
+                line=line_num,
                 column=column,
-                end_line=end_line,
+                end_line=end_line_num,
                 end_column=end_column,
             ),
-            code=f"AI{category_str[:3].upper()}{hash(message) % 100:02d}",
+            code=f"AI{category_str[:3].upper()}",
             category=category,
             source="synthi-ai",
             explanation=item.get("explanation", ""),
             confidence=confidence,
         )
         
-        # Add fix if provided
-        if "fix" in item and item["fix"]:
+        # Add fix if we have fix_snippet - be lenient about adding fixes
+        if fix_snippet:
+            # Create a meaningful description
+            if len(fix_snippet) < 60:
+                desc = f"Apply fix: {fix_snippet}"
+            else:
+                desc = f"Apply suggested fix ({len(fix_snippet)} chars)"
+            
             diagnostic.fixes.append(CodeFix(
-                description="AI-suggested fix",
-                replacement_text=str(item["fix"]),
-                location=diagnostic.location,
+                description=desc,
+                replacement_text=fix_snippet,
+                location=DiagnosticLocation(
+                    line=line_num,
+                    column=column,
+                    end_line=end_line_num,
+                    end_column=end_column,
+                ),
                 is_preferred=True,
+            ))
+        elif snippet_found and snippet:
+            # Even without fix_snippet, create a placeholder fix that shows the issue
+            # This helps users at least see what code needs to change
+            diagnostic.fixes.append(CodeFix(
+                description=f"Review and fix: {message[:50]}..." if len(message) > 50 else f"Review and fix: {message}",
+                replacement_text=f"/* TODO: {message} */\n{snippet}",
+                location=DiagnosticLocation(
+                    line=line_num,
+                    column=column,
+                    end_line=end_line_num,
+                    end_column=end_column,
+                ),
+                is_preferred=False,
             ))
         
         return diagnostic
