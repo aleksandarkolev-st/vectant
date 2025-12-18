@@ -668,7 +668,7 @@ export default function EditorPage({ params }) {
 
     return (
     <div className="flex flex-col h-screen overflow-hidden bg-[#09090b] text-[#D7DAE0]">
-        <div className="flex flex-col h-screen bg-[#1e1e1e] text-gray-200">
+        <div className="flex flex-col flex-1 bg-[#1e1e1e] text-gray-200">
             {/* Hydrate workspace-specific tabs from localStorage */}
             <WorkspaceHydrator slug={slug} />
 
@@ -758,7 +758,7 @@ export default function EditorPage({ params }) {
                 )}
             </ResizablePanelGroup>
 
-            {/* Problems Panel - Shows diagnostics from proactive analysis */}
+            {/* Problems Panel */}
             {showProblemsPanel && (
                 <div className="h-48 max-h-48 flex-shrink-0 border-t border-[#1a1b24]">
                     <ProblemsPanel
@@ -783,20 +783,17 @@ export default function EditorPage({ params }) {
                 </div>
             )}
         </div>
+
+        {/* Status Bar */}
+        <StatusBar
+            slug={slug}
+            diagnosticSummary={diagnosticSummary}
+            isAnalyzing={isAnalyzingProactive}
+            onProblemsClick={() => setShowProblemsPanel(prev => !prev)}
+        />
+
+        {/* Error Overlay */}
+        <ErrorOverlay />
     </div>
-                )}
-
-                {/* Status Bar - VS Code style bottom bar with branch selector */}
-                <StatusBar
-                    slug={slug}
-                    diagnosticSummary={diagnosticSummary}
-                    isAnalyzing={isAnalyzingProactive}
-                    onProblemsClick={() => setShowProblemsPanel(prev => !prev)}
-                />
-
-                {/* Error Overlay for compile/runtime errors */}
-                <ErrorOverlay />
-            </div>
-        </div>
-    );
+);
 }
