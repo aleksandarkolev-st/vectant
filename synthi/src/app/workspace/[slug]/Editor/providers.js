@@ -384,6 +384,24 @@ export const useEditorProviders = ({
         // Track seen fixes to avoid duplicates
         const seenFixes = new Set();
         
+        // Register command to apply fix
+        const applyFixCommandId = editorInstance.addCommand(0, (ctx, fix, range) => {
+            if (!fix || !range) return;
+            const model = editorInstance.getModel();
+            if (!model) return;
+            
+            editorInstance.executeEdits('synthi-quick-fix', [{
+                range: range,
+                text: fix.replacementText || '',
+                forceMoveMarkers: true,
+            }]);
+            
+            // Clear pending fix state
+            pendingFixRef.current = null;
+            isPreviewingRef.current = false;
+            hideFixPreview();
+        });
+        
         // Helper to find diagnostics for a given range
         const getDiagnosticsForRange = (startLine, startCol, endLine, endCol) => {
             const currentDiagnostics = diagnosticsRef.current || [];
@@ -435,21 +453,17 @@ export const useEditorProviders = ({
                             // Store the fix info for preview triggering
                             const fixInfo = { fix, range: fixRange, diagnostic };
                             
-                            // Add the apply fix action
+                            // Add the apply fix action using command instead of edit
+                            // (Monaco's WorkspaceEdit format has compatibility issues)
                             actions.push({
                                 title: fix.description || 'Apply fix',
                                 kind: 'quickfix',
                                 diagnostics: [marker],
                                 isPreferred: fix.isPreferred || false,
-                                edit: {
-                                    edits: [{
-                                        resource: model.uri,
-                                        versionId: undefined,
-                                        textEdit: {
-                                            range: fixRange,
-                                            text: fix.replacementText ?? '',
-                                        },
-                                    }],
+                                command: {
+                                    id: applyFixCommandId,
+                                    title: fix.description || 'Apply fix',
+                                    arguments: [fix, fixRange],
                                 },
                             });
                         }
