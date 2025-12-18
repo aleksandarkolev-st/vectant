@@ -279,34 +279,35 @@
 }
 
 /* ============================================
-   Inline Fix Preview Styles (Ghost text style)
+   Inline Fix Preview Styles
    ============================================ */
 
 .synthi-fix-preview-strikethrough {
     text-decoration: line-through;
     text-decoration-color: #f87171;
-    opacity: 0.6;
-    background-color: rgba(248, 113, 113, 0.15);
+    opacity: 0.5;
+    background-color: rgba(248, 113, 113, 0.1);
 }
 
-.synthi-fix-ghost-text {
-    color: #4ade80 !important;
-    font-style: italic;
-    opacity: 0.85;
-    background: rgba(74, 222, 128, 0.12);
-    padding: 1px 4px;
-    border-radius: 3px;
-    margin-left: 4px;
+/* Fix preview - just the code, shown ABOVE the error line */
+.synthi-fix-preview-code-above {
+    display: flex;
+    align-items: center;
+    background: rgba(34, 197, 94, 0.08);
+    border-left: 2px solid #22c55e;
+    font-family: var(--monaco-monospace-font, 'Consolas', 'Courier New', monospace);
+    font-size: inherit;
+    line-height: inherit;
+    white-space: pre;
+    color: #4ade80;
 }
 
-.synthi-fix-delete-text {
-    color: #f87171 !important;
-    font-style: italic;
-    opacity: 0.85;
-    background: rgba(248, 113, 113, 0.12);
-    padding: 1px 4px;
-    border-radius: 3px;
-    margin-left: 4px;
+.synthi-fix-preview-code-above .synthi-fix-indent {
+    /* Preserve indentation */
+}
+
+.synthi-fix-preview-code-above .synthi-fix-code {
+    color: #4ade80;
 }
 
 /* Preview zone - shows full replacement code below the line */

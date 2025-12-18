@@ -66,7 +66,7 @@ export const useEditorProviders = ({
         hideFixPreview();
     };
     
-    // Helper: Show inline fix preview using ghost text style decorations
+    // Helper: Show fix preview ABOVE the error line - just the code, clean and simple
     const showFixPreview = (fix, range) => {
         if (!editorInstance || !monacoInstance) return;
         
@@ -76,86 +76,50 @@ export const useEditorProviders = ({
         const model = editorInstance.getModel();
         if (!model) return;
         
-        // Get original text that would be replaced
-        const originalText = model.getValueInRange(range);
         const replacementText = fix.replacementText ?? '';
+        const isDelete = replacementText === '';
         
-        // Skip if same content
-        if (originalText === replacementText) return;
+        if (isDelete) return; // Don't show preview for deletions
         
         isPreviewingRef.current = true;
         
-        const decorations = [];
-        const isDelete = replacementText === '';
+        // Get indentation from the original line
+        const originalLine = model.getLineContent(range.startLineNumber);
+        const indentMatch = originalLine.match(/^(\s*)/);
+        const indent = indentMatch ? indentMatch[1] : '';
         
-        // Strike through the old text (mark what will be replaced)
-        decorations.push({
-            range: range,
-            options: {
-                inlineClassName: 'synthi-fix-preview-strikethrough',
-            },
+        // Show the replacement code ABOVE the line - just the code
+        const viewZone = {
+            afterLineNumber: range.startLineNumber - 1,
+            heightInLines: replacementText.split('\n').length,
+            domNode: document.createElement('div'),
+            suppressMouseDown: true,
+        };
+        
+        viewZone.domNode.className = 'synthi-fix-preview-code-above';
+        
+        // Just show the code with proper indentation
+        const escapedCode = replacementText
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+        
+        viewZone.domNode.innerHTML = `<span class="synthi-fix-indent">${indent}</span><span class="synthi-fix-code">${escapedCode}</span>`;
+        
+        editorInstance.changeViewZones((accessor) => {
+            const zoneId = accessor.addZone(viewZone);
+            fixPreviewZoneIdRef.current = zoneId;
         });
         
-        // Show the new code as a view zone (block inserted below the line)
-        if (!isDelete) {
-            // Get the indentation from the original line to match alignment
-            const originalLine = model.getLineContent(range.startLineNumber);
-            const indentMatch = originalLine.match(/^(\s*)/);
-            const indent = indentMatch ? indentMatch[1] : '';
-            
-            // Convert indent to spaces for display (tabs to spaces for consistency)
-            const tabSize = model.getOptions().tabSize || 4;
-            const indentSpaces = indent.replace(/\t/g, ' '.repeat(tabSize));
-            
-            // Calculate height - 1 line for single-line replacement
-            const replacementLines = replacementText.split('\n');
-            const heightInLines = replacementLines.length;
-            
-            // Create a view zone to show the replacement code below
-            const viewZone = {
-                afterLineNumber: range.endLineNumber,
-                heightInLines: heightInLines,
-                domNode: document.createElement('div'),
-            };
-            
-            // Style the preview zone
-            viewZone.domNode.className = 'synthi-fix-preview-zone';
-            
-            // Escape HTML and build preview with proper indentation
-            const escapedCode = replacementText
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;');
-            
-            // Build the content: + label, then indentation spaces, then the code
-            viewZone.domNode.innerHTML = `<span class="synthi-fix-preview-label">+</span><span class="synthi-fix-preview-indent">${indentSpaces}</span><span class="synthi-fix-preview-code">${escapedCode}</span>`;
-            
-            editorInstance.changeViewZones((accessor) => {
-                const zoneId = accessor.addZone(viewZone);
-                fixPreviewZoneIdRef.current = zoneId;
-            });
-        } else {
-            // For deletion, show indicator inline
-            decorations.push({
-                range: new monacoInstance.Range(
-                    range.endLineNumber, 
-                    range.endColumn, 
-                    range.endLineNumber, 
-                    range.endColumn
-                ),
-                options: {
-                    after: {
-                        content: ' ✕ (will be deleted)',
-                        inlineClassName: 'synthi-fix-delete-text',
-                    },
-                },
-            });
-        }
-        
-        // Apply all decorations
+        // Strikethrough the old code
         fixPreviewDecorationsRef.current = editorInstance.deltaDecorations(
             fixPreviewDecorationsRef.current,
-            decorations
+            [{
+                range: range,
+                options: {
+                    inlineClassName: 'synthi-fix-preview-strikethrough',
+                },
+            }]
         );
     };
     
@@ -228,6 +192,14 @@ export const useEditorProviders = ({
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
         hoverProviderRef.current?.dispose();
+        
+        // Configure editor to show hover BELOW the line
+        editorInstance.updateOptions({
+            hover: {
+                above: false, // Force hover to appear below
+                delay: 300,
+            }
+        });
         
         hoverProviderRef.current = monacoInstance.languages.registerHoverProvider(activeLanguage, {
             provideHover: (model, position) => {
