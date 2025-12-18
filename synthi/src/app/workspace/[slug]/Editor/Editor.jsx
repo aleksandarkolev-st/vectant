@@ -126,6 +126,7 @@ const EditorPanel = ({
     onEditorMount,
     analysisResult,
     diagnostics = [],
+    removeDiagnosticByLocation = null,
     latestCompletion,
     aiBusy = false,
     onClearCompletion = null,
@@ -720,7 +721,8 @@ const EditorPanel = ({
         fileCacheEntries,
         activeFile,
         lspReady: lspStatus.startsWith('Ready'),
-        diagnostics // Pass proactive analysis diagnostics for quick fixes
+        diagnostics, // Pass proactive analysis diagnostics for quick fixes
+        removeDiagnosticByLocation, // Callback to remove diagnostic after fix applied
     });
 
     // --- Event Handlers ---
@@ -1329,7 +1331,6 @@ const EditorPanel = ({
                                                 beforeMount={(monaco) => {
                                                     monaco.editor.defineTheme('synthi-theme', SYNTHI_THEME);
                                                 }}
-                                                onChange={handleCodeChange}
                                                 onMount={(editor, monaco) => {
                                                     // Verify editor has a valid model before storing reference
                                                     const model = editor.getModel?.();
@@ -1348,6 +1349,14 @@ const EditorPanel = ({
                                                             dispatch(setCursorPosition({ lineNumber: nextPos.lineNumber, column: nextPos.column }));
                                                             pendingPositionFrameRef.current = null;
                                                         });
+                                                    });
+                                                    
+                                                    // Subscribe directly to Monaco's content change event
+                                                    // This ensures ALL changes are captured, including whitespace/enter
+                                                    // that @monaco-editor/react's onChange might skip
+                                                    editor.onDidChangeModelContent(() => {
+                                                        const newCode = editor.getModel()?.getValue() ?? '';
+                                                        handleCodeChange(newCode);
                                                     });
 
                                                     // Ensure layout refreshes on mount

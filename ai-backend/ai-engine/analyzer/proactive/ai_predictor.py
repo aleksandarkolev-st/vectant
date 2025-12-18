@@ -34,70 +34,82 @@ from .types import (
 
 
 # Prompt template for AI error prediction - PRECISE SENIOR DEV LEVEL
-AI_ERROR_PREDICTION_PROMPT = """You are a senior software engineer doing a code review. Your job is to find REAL bugs in the code below.
+AI_ERROR_PREDICTION_PROMPT = """You are an expert code reviewer finding REAL bugs that cause incorrect behavior.
 
-CRITICAL INSTRUCTIONS:
-1. READ THE CODE CAREFULLY - every character matters
-2. Only report issues that will cause INCORRECT RUNTIME BEHAVIOR
-3. Do NOT report style issues, naming, or missing comments
-4. Do NOT report issues that are already handled in the code
-5. If a check exists (like `if (x < 0)`), don't say it's missing
+## YOUR TASK
+Find bugs in the code below. Only report issues that:
+1. Will cause WRONG OUTPUT or RUNTIME ERROR with specific inputs
+2. You can PROVE with a concrete example (e.g., "input X gives Y, but should give Z")
 
-ANALYSIS PROCESS:
-1. Read each line and understand what it does
-2. For each function: What inputs could break it?
-3. Check: loops, conditions, operators, return values
-4. Only report if you can prove the bug with a specific input
+## WHAT TO LOOK FOR
+- Wrong operators: `<` vs `<=`, `==` vs `!=`, `&&` vs `||`
+- Off-by-one errors in loops or array access
+- Missing edge cases: null, 0, negative, empty, boundary values
+- Incorrect return values or missing returns
+- Infinite loops or recursion without termination
+- Logic that contradicts the function's purpose
 
-RESPONSE FORMAT - JSON array only:
+## WHAT TO IGNORE (NOT BUGS)
+- Style, formatting, naming conventions
+- Missing comments or documentation  
+- Performance suggestions (unless causes timeout)
+- Best practices that don't affect correctness
+- Code that handles edge cases correctly (don't suggest adding checks that exist)
+
+## CRITICAL RULES
+1. READ THE ACTUAL CODE - don't assume what it does
+2. If a check exists (like `if (x < 0)`), don't report it as missing
+3. `if (x < 0)` and `if (x == 0)` are DIFFERENT checks - one tests negative, one tests zero
+4. Only report bugs you can PROVE with input → expected → actual
+
+## RESPONSE FORMAT
+Return ONLY a JSON array (no markdown, no explanation outside JSON):
+```json
 [
   {{
-    "line_start": <1-indexed line number>,
-    "line_end": <1-indexed line number>,
-    "snippet": "<exact code to highlight - COPY FROM SOURCE>",
-    "message": "<brief description of the bug>",
-    "explanation": "<prove the bug with example: 'When x=5, this returns 10 but should return 15'>",
-    "severity": "error" | "warning",
-    "confidence": <0.0 to 1.0>,
-    "fix_snippet": "<the corrected code, or EMPTY STRING to delete the snippet>",
-    "category": "logic_error" | "off_by_one" | "wrong_operator" | "boundary_error" | "missing_check"
+    "line_start": 5,
+    "line_end": 5,
+    "snippet": "exact code from source to highlight",
+    "message": "Brief bug description",
+    "explanation": "PROOF: When input=X, this returns Y but should return Z because...",
+    "severity": "error",
+    "confidence": 0.9,
+    "fix_snippet": "corrected code to replace snippet",
+    "category": "logic_error"
   }}
 ]
+```
 
-CRITICAL RULES FOR FIXES:
-- "snippet" = EXACT copy of buggy code from the source
-- "fix_snippet" = the CORRECTED version that should replace snippet
-- To ADD missing code: snippet = line missing something, fix_snippet = line WITH the addition
-  Example: Missing endl → snippet = "cout << x;", fix_snippet = "cout << x << endl;"
-- To CHANGE code: snippet = buggy code, fix_snippet = corrected code
-- To REMOVE code (RARE - only for truly dead code): snippet = code to remove, fix_snippet = ""
-- NEVER use empty fix_snippet unless the code should literally be deleted
+## FIELD RULES
+- `snippet`: Copy EXACT code from source (what to replace)
+- `fix_snippet`: The CORRECTED code (replacement). Use "" only to DELETE code.
+- `confidence`: 0.0-1.0. Use 0.9+ only if you can prove the bug.
+- `category`: logic_error | off_by_one | wrong_operator | boundary_error | missing_check
+- `severity`: "error" for bugs causing wrong results, "warning" for potential issues
 
-EXAMPLES:
+## EXAMPLES
 
-1. WRONG OPERATOR - "even" printed for odd numbers:
-   Code: `if (n % 2 == 0) cout << "odd";`
-   Response: [{{"line_start":1, "line_end":1, "snippet":"n % 2 == 0", "message":"Prints 'odd' when number is even", "explanation":"n=4: 4%2=0 is true, prints 'odd'. Should use n%2!=0", "severity":"error", "confidence":0.95, "fix_snippet":"n % 2 != 0", "category":"wrong_operator"}}]
+### Example 1: Wrong operator
+Code: `if (n % 2 == 0) print("odd")`
+Bug: Prints "odd" when n is even (wrong operator)
+```json
+[{{"line_start":1,"line_end":1,"snippet":"n % 2 == 0","message":"Condition is true for even numbers but prints 'odd'","explanation":"PROOF: n=4 → 4%2=0 → true → prints 'odd'. Should use n%2!=0","severity":"error","confidence":0.95,"fix_snippet":"n % 2 != 0","category":"wrong_operator"}}]
+```
 
-2. ADDING A MISSING CHECK:
-   Code: `int pow(int b, int e) {{ if(e==0)return 1; return b*pow(b,e-1); }}`
-   Response: [{{"line_start":1, "line_end":1, "snippet":"if(e==0)return 1;", "message":"Infinite recursion for negative exponents", "explanation":"pow(2,-1) calls pow(2,-2), pow(2,-3)... forever", "severity":"error", "confidence":0.95, "fix_snippet":"if(e<0)return 0; if(e==0)return 1;", "category":"missing_check"}}]
+### Example 2: Missing base case
+Code: `int f(int n) {{ return n * f(n-1); }}`
+Bug: No base case causes infinite recursion
+```json
+[{{"line_start":1,"line_end":1,"snippet":"return n * f(n-1);","message":"Missing base case causes infinite recursion","explanation":"PROOF: f(1) calls f(0) calls f(-1)... never stops. Need base case for n<=1","severity":"error","confidence":0.95,"fix_snippet":"if (n <= 1) return 1; return n * f(n-1);","category":"missing_check"}}]
+```
 
-3. ADDING MISSING OUTPUT:
-   Code line 5: `cout << result;`  // missing endl
-   Response: [{{"line_start":5, "line_end":5, "snippet":"cout << result;", "message":"Missing newline at end of output", "explanation":"Output won't have newline, next output appears on same line", "severity":"warning", "confidence":0.9, "fix_snippet":"cout << result << endl;", "category":"logic_error"}}]
+### Example 3: NOT a bug (edge case handled)
+Code: `int abs(int x) {{ if (x < 0) return -x; return x; }}`
+Response: `[]`  ← Empty because the negative case IS handled
 
-4. DUPLICATE CHECK (THIS IS WRONG - the checks are different):
-   Code: `if (x < 0) return -1; if (x == 0) return 0;`
-   Response: []  // These are DIFFERENT checks (< vs ==), NOT duplicates!
+If no bugs found or uncertain, return: `[]`
 
-IMPORTANT:
-- If unsure, return []
-- Don't invent bugs that aren't there
-- Read the ACTUAL code, not what you assume it says
-- "if (x < 0)" and "if (x == 0)" are DIFFERENT - one checks negative, one checks zero
-
-CODE TO REVIEW:
+## CODE TO REVIEW
 ```{language}
 {code}
 ```

@@ -73,6 +73,22 @@ export default function EditorPage({ params }) {
     const [isAnalyzingProactive, setIsAnalyzingProactive] = useState(false);
     const proactiveTimeoutRef = useRef(null);
     const lastProactiveSignatureRef = useRef('');
+    
+    // Remove a specific diagnostic by location (called when a fix is applied)
+    const removeDiagnosticByLocation = useCallback((location) => {
+        if (!location) return;
+        
+        setDiagnostics(prev => prev.filter(d => {
+            const loc = d.location || {};
+            // Remove if exact location match
+            const sameStart = loc.line === location.line && loc.column === location.column;
+            const sameEnd = loc.endLine === location.endLine && loc.endColumn === location.endColumn;
+            return !(sameStart && sameEnd);
+        }));
+        
+        // Also invalidate the signature so next analysis runs fresh
+        lastProactiveSignatureRef.current = '';
+    }, []);
 
     useEffect(() => {
         const handleGuiStart = (e) => {
@@ -241,6 +257,18 @@ export default function EditorPage({ params }) {
     // Track pending AI analysis
     const aiAnalysisRef = useRef(null);
     const lastContentHashRef = useRef('');
+    
+    // Simple but effective hash function for content comparison
+    const computeContentHash = useCallback((content) => {
+        if (!content) return '';
+        let hash = 0;
+        for (let i = 0; i < content.length; i++) {
+            const char = content.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash; // Convert to 32bit integer
+        }
+        return hash.toString(16);
+    }, []);
 
     useEffect(() => {
         if (!activeFile || !currentContent || !hasLoadedInitialFile) return;
@@ -256,10 +284,9 @@ export default function EditorPage({ params }) {
 
         // Capture the content we're analyzing (for freshness checks)
         const contentToAnalyze = typeof currentContent === 'string' ? currentContent : '';
-        const contentHash = contentToAnalyze.length + ':' + contentToAnalyze.slice(0, 100);
+        const contentHash = computeContentHash(contentToAnalyze);
         
-        // When content changes, immediately invalidate diagnostics that point to
-        // code that no longer exists (e.g., after applying a fix)
+        // When content changes, immediately invalidate stale diagnostics
         if (lastContentHashRef.current && lastContentHashRef.current !== contentHash) {
             // Filter diagnostics to only keep ones where the text at the location matches
             setDiagnostics(prev => prev.filter(d => {
@@ -605,6 +632,7 @@ export default function EditorPage({ params }) {
             onEditorMount={handleEditorMount}
             analysisResult={lastResult}
             diagnostics={diagnostics}
+            removeDiagnosticByLocation={removeDiagnosticByLocation}
             latestCompletion={latestCompletion}
             aiBusy={aiBusy}
             onClearCompletion={handleClearLatestCompletion}

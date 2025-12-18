@@ -97,6 +97,8 @@ export function ProactiveAnalysisProvider({
     analyzeQuick,
     analyzeFull,
     clearDiagnostics,
+    removeDiagnosticByLocation,
+    removeStaleDignostics,
     connectionStatus,
     clientReady,
   } = useProactiveAnalysis({
@@ -318,6 +320,8 @@ export function ProactiveAnalysisProvider({
     analyzeQuick,
     analyzeFull: runFullAnalysis,
     clearDiagnostics,
+    removeDiagnosticByLocation,
+    removeStaleDignostics,
     navigateToDiagnostic,
     
     // Editor integration
@@ -342,6 +346,8 @@ export function ProactiveAnalysisProvider({
     analyzeQuick,
     runFullAnalysis,
     clearDiagnostics,
+    removeDiagnosticByLocation,
+    removeStaleDignostics,
     navigateToDiagnostic,
     registerEditor,
     unregisterEditor,
