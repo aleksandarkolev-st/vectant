@@ -658,7 +658,11 @@ export default function EditorPage({ params }) {
     // via command palette / toolbar (stub only per requirements).
     const EmulatorPreviewPanel = (
         <ResizablePanel defaultSize={24} minSize={18} maxSize={55} className="border-l border-[#545454] bg-[#0c0c0e] min-w-0">
-            <EmulatorPanel key={emulatorRunNonce} defaultState={EMULATOR_STATES.BOOTING} />
+            <EmulatorPanel
+                key={emulatorRunNonce}
+                defaultState={EMULATOR_STATES.BOOTING}
+                onClose={() => dispatch(setEmulatorPreviewVisible(false))}
+            />
         </ResizablePanel>
     );
 

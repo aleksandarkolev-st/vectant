@@ -23,7 +23,13 @@ export function loadUiPrefs() {
   try {
     const raw = localStorage.getItem(UI_STORAGE_KEY);
     if (!raw) return undefined;
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    // The emulator preview panel must be hidden by default and only opened
+    // when the user clicks Run and a mobile build is detected.
+    if (parsed && typeof parsed === 'object') {
+      delete parsed.showEmulatorPreview;
+    }
+    return parsed;
   } catch (e) {
     console.warn('Failed to load UI prefs from localStorage', e);
     return undefined;
@@ -81,7 +87,6 @@ function saveUiPrefs(uiState) {
       autoSaveEnabled: !!uiState.autoSaveEnabled,
       treeOnRight: !!uiState.treeOnRight,
       showTerminal: !!uiState.showTerminal,
-      showEmulatorPreview: !!uiState.showEmulatorPreview,
     };
     localStorage.setItem(UI_STORAGE_KEY, JSON.stringify(toSave));
   } catch (e) {
@@ -144,7 +149,7 @@ if (typeof window !== 'undefined') {
   // Initialize with default state values to prevent overwriting localStorage on startup
   // before hydration has occurred.
   const ui = initialUiState;
-  let lastUi = `${ui.autoCompletionEnabled}|${ui.autoSaveEnabled}|${ui.treeOnRight}|${ui.showTerminal}|${ui.showEmulatorPreview}`;
+  let lastUi = `${ui.autoCompletionEnabled}|${ui.autoSaveEnabled}|${ui.treeOnRight}|${ui.showTerminal}`;
   
   let lastExpandedFolders = (ui.expandedFolders || []).join('|');
   
@@ -158,7 +163,7 @@ if (typeof window !== 'undefined') {
       const state = store.getState();
       const ui = state?.ui || {};
       // Simple shallow compare to avoid excessive writes
-      const snapshot = `${ui.autoCompletionEnabled}|${ui.autoSaveEnabled}|${ui.treeOnRight}|${ui.showTerminal}|${ui.showEmulatorPreview}`;
+      const snapshot = `${ui.autoCompletionEnabled}|${ui.autoSaveEnabled}|${ui.treeOnRight}|${ui.showTerminal}`;
       if (snapshot !== lastUi) {
         lastUi = snapshot;
         saveUiPrefs(ui);
