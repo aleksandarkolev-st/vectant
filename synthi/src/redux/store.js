@@ -12,9 +12,11 @@ enableMapSet();
 // page reloads. We guard access to `localStorage` for SSR (Next.js server
 // environment).
 const UI_STORAGE_KEY = 'synthi:ui';
-const OPEN_TABS_KEY = 'synthi:openTabs';
-const ACTIVE_TAB_KEY = 'synthi:activeTab';
 const EXPANDED_FOLDERS_KEY = 'synthi:expandedFolders';
+
+// Workspace-specific storage key helpers
+const getOpenTabsKey = (slug) => `synthi:openTabs:${slug}`;
+const getActiveTabKey = (slug) => `synthi:activeTab:${slug}`;
 
 export function loadUiPrefs() {
   if (typeof window === 'undefined' || !window.localStorage) return undefined;
@@ -40,10 +42,11 @@ export function loadExpandedFolders() {
   }
 }
 
-export function loadOpenTabs() {
+export function loadOpenTabs(slug) {
   if (typeof window === 'undefined' || !window.localStorage) return undefined;
+  if (!slug) return undefined;
   try {
-    const raw = localStorage.getItem(OPEN_TABS_KEY);
+    const raw = localStorage.getItem(getOpenTabsKey(slug));
     if (!raw) return undefined;
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return undefined;
@@ -56,10 +59,11 @@ export function loadOpenTabs() {
   }
 }
 
-export function loadActiveTab() {
+export function loadActiveTab(slug) {
   if (typeof window === 'undefined' || !window.localStorage) return undefined;
+  if (!slug) return undefined;
   try {
-    const raw = localStorage.getItem(ACTIVE_TAB_KEY);
+    const raw = localStorage.getItem(getActiveTabKey(slug));
     if (!raw) return undefined;
     return JSON.parse(raw);
   } catch (e) {
@@ -94,22 +98,25 @@ function saveExpandedFolders(expandedFolders) {
   }
 }
 
-function saveOpenTabs(openFiles) {
+function saveOpenTabs(slug, openFiles) {
   if (typeof window === 'undefined' || !window.localStorage) return;
+  if (!slug) return; // Don't save tabs without a workspace slug
   try {
     // Persist minimal info to restore tabs: path, name, language, isUnsaved
     const toSave = (openFiles || []).map(f => ({ path: f.path, name: f.name, language: f.language, isUnsaved: !!f.isUnsaved }));
-    localStorage.setItem(OPEN_TABS_KEY, JSON.stringify(toSave));
+    localStorage.setItem(getOpenTabsKey(slug), JSON.stringify(toSave));
   } catch (e) {
     console.warn('Failed to save open tabs to localStorage', e);
   }
 }
 
-function saveActiveTab(activeFile) {
+function saveActiveTab(slug, activeFile) {
   if (typeof window === 'undefined' || !window.localStorage) return;
+  if (!slug) return; // Don't save active tab without a workspace slug
   try {
+    const key = getActiveTabKey(slug);
     const toSave = activeFile && activeFile.path ? { path: activeFile.path, name: activeFile.name, language: activeFile.language } : null;
-    if (toSave) localStorage.setItem(ACTIVE_TAB_KEY, JSON.stringify(toSave)); else localStorage.removeItem(ACTIVE_TAB_KEY);
+    if (toSave) localStorage.setItem(key, JSON.stringify(toSave)); else localStorage.removeItem(key);
   } catch (e) {
     console.warn('Failed to save active tab to localStorage', e);
   }
@@ -141,10 +148,10 @@ if (typeof window !== 'undefined') {
   
   let lastExpandedFolders = (ui.expandedFolders || []).join('|');
   
-  const ws = initialWorkspaceState;
-  let lastOpenTabs = (ws.openFiles || []).map(f => f.path).join('|');
-  
-  let lastActiveTabPath = ws.activeFile && ws.activeFile.path ? ws.activeFile.path : null;
+  // Track workspace-specific tab state per slug
+  let lastSlug = null;
+  let lastOpenTabs = '';
+  let lastActiveTabPath = null;
 
   store.subscribe(() => {
     try {
@@ -165,24 +172,39 @@ if (typeof window !== 'undefined') {
           saveExpandedFolders(expanded);
         }
       } catch (_) {}
-      // Persist open tabs when changed (store minimal snapshot)
-      try {
-        const openFiles = state?.workspace?.openFiles || [];
-        const openSnapshot = openFiles.map(f => f.path).join('|');
-        if (openSnapshot !== lastOpenTabs) {
-          lastOpenTabs = openSnapshot;
-          saveOpenTabs(openFiles);
-        }
-      } catch (_) {}
-      // Persist active tab when it changes
-      try {
-        const active = state?.workspace?.activeFile || null;
-        const activePath = active && active.path ? active.path : null;
-        if (activePath !== (lastActiveTabPath || null)) {
-          lastActiveTabPath = activePath;
-          saveActiveTab(active);
-        }
-      } catch (_) {}
+      
+      // Workspace-specific tab persistence
+      const currentSlug = state?.workspace?.slug || null;
+      
+      // When slug changes, reset our tracking state for the new workspace
+      if (currentSlug !== lastSlug) {
+        lastSlug = currentSlug;
+        // Reset tracking for the new workspace
+        lastOpenTabs = '';
+        lastActiveTabPath = null;
+      }
+      
+      // Only persist tabs if we have a valid workspace slug
+      if (currentSlug) {
+        // Persist open tabs when changed (store minimal snapshot)
+        try {
+          const openFiles = state?.workspace?.openFiles || [];
+          const openSnapshot = openFiles.map(f => f.path).join('|');
+          if (openSnapshot !== lastOpenTabs) {
+            lastOpenTabs = openSnapshot;
+            saveOpenTabs(currentSlug, openFiles);
+          }
+        } catch (_) {}
+        // Persist active tab when it changes
+        try {
+          const active = state?.workspace?.activeFile || null;
+          const activePath = active && active.path ? active.path : null;
+          if (activePath !== (lastActiveTabPath || null)) {
+            lastActiveTabPath = activePath;
+            saveActiveTab(currentSlug, active);
+          }
+        } catch (_) {}
+      }
     } catch (e) {
       // ignore subscription errors
     }

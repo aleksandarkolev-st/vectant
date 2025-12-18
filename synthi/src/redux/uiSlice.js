@@ -18,6 +18,8 @@ export const initialUiState = {
     // Collaboration presence settings
     showAnonymousPresence: true,
     presenceGranularity: 'line', // options: 'line' | 'file' | 'workspace'
+    // Cursor position for status bar
+    cursorPosition: { lineNumber: 1, column: 1 },
 };
 
 const uiSlice = createSlice({
@@ -64,6 +66,9 @@ const uiSlice = createSlice({
         setPresenceGranularity: (state, action) => {
             state.presenceGranularity = action.payload;
         },
+        setCursorPosition: (state, action) => {
+            state.cursorPosition = action.payload;
+        },
         
         // UI Action State Machine Reducers
         startCreate: (state, action) => {
@@ -104,6 +109,7 @@ export const {
     cancelUiAction,
     toggleShowAnonymousPresence,
     setPresenceGranularity,
+    setCursorPosition,
     hydrateUi,
     toggleFolderExpansion,
     setExpandedFolders,
@@ -119,5 +125,6 @@ export const selectUiActionState = (state) => state.ui.uiActionState;
 export const selectExpandedFolders = (state) => state.ui.expandedFolders || [];
 export const selectShowAnonymousPresence = (state) => state.ui.showAnonymousPresence;
 export const selectPresenceGranularity = (state) => state.ui.presenceGranularity;
+export const selectCursorPosition = (state) => state.ui.cursorPosition;
 
 export default uiSlice.reducer;

@@ -12,11 +12,20 @@ export const useEditorProviders = ({
     rawFiles = [],
     fileCacheEntries = new Map(),
     activeFile,
-    lspReady = false
+    lspReady = false,
+    diagnostics = [] // Proactive analysis diagnostics for quick fixes
 }) => {
     const hoverProviderRef = useRef(null);
     const inlineCompletionProviderRef = useRef(null);
     const completionProviderRef = useRef(null);
+    const codeActionProviderRef = useRef(null);
+    const fixPreviewDecorationsRef = useRef([]);
+    const fixPreviewZoneIdRef = useRef(null);
+    const diagnosticsRef = useRef(diagnostics);
+    
+    // Track pending fix for keyboard shortcuts
+    const pendingFixRef = useRef(null); // { fix, range, diagnostic }
+    const isPreviewingRef = useRef(false);
 
     // Use refs for complex objects to avoid useEffect dependency crashes
     const fileCacheRef = useRef(fileCacheEntries);
@@ -27,13 +36,141 @@ export const useEditorProviders = ({
         fileCacheRef.current = fileCacheEntries;
         rawFilesRef.current = rawFiles;
         activeFileRef.current = activeFile;
-    }, [fileCacheEntries, rawFiles, activeFile]);
+        diagnosticsRef.current = diagnostics;
+    }, [fileCacheEntries, rawFiles, activeFile, diagnostics]);
 
     // 0. Standard Library & Workspace IntelliSense (C++) - REMOVED
     // We rely entirely on the LSP server for IntelliSense.
     useEffect(() => {
         completionProviderRef.current?.dispose();
     }, [editorInstance, monacoInstance]);
+
+    // Helper: Apply a fix to the editor
+    const applyFix = (fix, range) => {
+        if (!editorInstance || !monacoInstance || !fix) return;
+        
+        const model = editorInstance.getModel();
+        if (!model) return;
+        
+        // Apply the fix as an edit
+        editorInstance.executeEdits('synthi-quick-fix', [{
+            range: range,
+            text: fix.replacementText || '',
+            forceMoveMarkers: true,
+        }]);
+        
+        // Clear pending fix state
+        pendingFixRef.current = null;
+        isPreviewingRef.current = false;
+        hideFixPreview();
+    };
+    
+    // Helper: Show inline fix preview using ghost text style decorations
+    const showFixPreview = (fix, range) => {
+        if (!editorInstance || !monacoInstance) return;
+        
+        // Clear existing preview
+        hideFixPreview();
+        
+        const model = editorInstance.getModel();
+        if (!model) return;
+        
+        // Get original text that would be replaced
+        const originalText = model.getValueInRange(range);
+        const replacementText = fix.replacementText ?? '';
+        
+        // Skip if same content
+        if (originalText === replacementText) return;
+        
+        isPreviewingRef.current = true;
+        
+        const decorations = [];
+        const isDelete = replacementText === '';
+        
+        // Strike through the old text (mark what will be replaced)
+        decorations.push({
+            range: range,
+            options: {
+                inlineClassName: 'synthi-fix-preview-strikethrough',
+            },
+        });
+        
+        // Show the new code as a view zone (block inserted below the line)
+        if (!isDelete) {
+            // Get the indentation from the original line to match alignment
+            const originalLine = model.getLineContent(range.startLineNumber);
+            const indentMatch = originalLine.match(/^(\s*)/);
+            const indent = indentMatch ? indentMatch[1] : '';
+            
+            // Convert indent to spaces for display (tabs to spaces for consistency)
+            const tabSize = model.getOptions().tabSize || 4;
+            const indentSpaces = indent.replace(/\t/g, ' '.repeat(tabSize));
+            
+            // Calculate height - 1 line for single-line replacement
+            const replacementLines = replacementText.split('\n');
+            const heightInLines = replacementLines.length;
+            
+            // Create a view zone to show the replacement code below
+            const viewZone = {
+                afterLineNumber: range.endLineNumber,
+                heightInLines: heightInLines,
+                domNode: document.createElement('div'),
+            };
+            
+            // Style the preview zone
+            viewZone.domNode.className = 'synthi-fix-preview-zone';
+            
+            // Escape HTML and build preview with proper indentation
+            const escapedCode = replacementText
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+            
+            // Build the content: + label, then indentation spaces, then the code
+            viewZone.domNode.innerHTML = `<span class="synthi-fix-preview-label">+</span><span class="synthi-fix-preview-indent">${indentSpaces}</span><span class="synthi-fix-preview-code">${escapedCode}</span>`;
+            
+            editorInstance.changeViewZones((accessor) => {
+                const zoneId = accessor.addZone(viewZone);
+                fixPreviewZoneIdRef.current = zoneId;
+            });
+        } else {
+            // For deletion, show indicator inline
+            decorations.push({
+                range: new monacoInstance.Range(
+                    range.endLineNumber, 
+                    range.endColumn, 
+                    range.endLineNumber, 
+                    range.endColumn
+                ),
+                options: {
+                    after: {
+                        content: ' ✕ (will be deleted)',
+                        inlineClassName: 'synthi-fix-delete-text',
+                    },
+                },
+            });
+        }
+        
+        // Apply all decorations
+        fixPreviewDecorationsRef.current = editorInstance.deltaDecorations(
+            fixPreviewDecorationsRef.current,
+            decorations
+        );
+    };
+    
+    const hideFixPreview = () => {
+        if (fixPreviewDecorationsRef.current.length > 0 && editorInstance) {
+            editorInstance.deltaDecorations(fixPreviewDecorationsRef.current, []);
+            fixPreviewDecorationsRef.current = [];
+        }
+        if (fixPreviewZoneIdRef.current !== null && editorInstance) {
+            editorInstance.changeViewZones((accessor) => {
+                accessor.removeZone(fixPreviewZoneIdRef.current);
+            });
+            fixPreviewZoneIdRef.current = null;
+        }
+        isPreviewingRef.current = false;
+    };
 
     // 1. Inline Completion Provider (The "Ghost Text")
     useEffect(() => {
@@ -86,33 +223,257 @@ export const useEditorProviders = ({
         inlineAcceptCommandIdRef.current = commandId;
     }, [editorInstance, applyAiCompletionText, aiCompletionCacheRef, inlineAcceptCommandIdRef]);
 
-    // 3. Hover Provider (Diagnostics)
+    // 3. Hover Provider (Diagnostics with Fix Preview)
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
         hoverProviderRef.current?.dispose();
-        // Keep hover provider only for diagnostics; do not surface AI hunks via hover
+        
         hoverProviderRef.current = monacoInstance.languages.registerHoverProvider(activeLanguage, {
             provideHover: (model, position) => {
-                // Only return diagnostics (errors/warnings) in hover. AI hunks are shown
-                // as persistent widgets in the editor and should not appear in hovers.
+                // Find markers at this position
                 const markers = monacoInstance.editor.getModelMarkers({ resource: model.uri });
                 const hits = markers.filter(m =>
                     position.lineNumber >= m.startLineNumber && position.lineNumber <= m.endLineNumber &&
                     position.column >= m.startColumn && position.column <= m.endColumn
                 );
-                if (!hits.length) return null;
+                
+                // Always clear preview when hover position changes
+                hideFixPreview();
+                isPreviewingRef.current = false;
+                
+                if (!hits.length) {
+                    pendingFixRef.current = null;
+                    return null;
+                }
 
                 const contents = [];
-                hits.forEach(m => contents.push({ value: `**${m.severity === 8 ? 'Error' : 'Warning'}**: ${m.message}` }));
+                const currentDiagnostics = diagnosticsRef.current || [];
+                
+                // Find matching diagnostics with fixes
+                let firstFixDiagnostic = null;
+                let firstFixRange = null;
+                
+                for (const m of hits) {
+                    const severity = m.severity === 8 ? 'Error' : m.severity === 4 ? 'Warning' : 'Info';
+                    contents.push({ value: `**${severity}**: ${m.message}` });
+                    
+                    // Find diagnostic with fixes for this marker
+                    if (!firstFixDiagnostic) {
+                        const matchingDiag = currentDiagnostics.find(d => {
+                            const loc = d.location || {};
+                            // Check if line matches (loc.line is 0-indexed, m.startLineNumber is 1-indexed)
+                            const lineMatches = loc.line === m.startLineNumber - 1;
+                            
+                            // Check if message matches (flexible matching)
+                            // Monaco marker message has format: "[AI] actual message" or "actual message"
+                            // Diagnostic message is just: "actual message"
+                            const diagMsg = (d.message || '').toLowerCase();
+                            const markerMsg = (m.message || '').toLowerCase();
+                            // Strip tier prefix like [AI], [STATIC], etc from marker message
+                            const cleanMarkerMsg = markerMsg.replace(/^\[[^\]]+\]\s*/i, '');
+                            const msgMatches = cleanMarkerMsg.includes(diagMsg) || 
+                                               diagMsg.includes(cleanMarkerMsg) || 
+                                               cleanMarkerMsg === diagMsg;
+                            // Must have fixes
+                            return d.fixes?.length > 0 && lineMatches && msgMatches;
+                        });
+                        
+                        if (matchingDiag?.fixes?.length > 0) {
+                            firstFixDiagnostic = matchingDiag;
+                            firstFixRange = new monacoInstance.Range(
+                                m.startLineNumber, m.startColumn,
+                                m.endLineNumber, m.endColumn
+                            );
+                        }
+                    }
+                }
+                
+                // Show fix info with keyboard shortcuts
+                if (firstFixDiagnostic && firstFixRange) {
+                    const fix = firstFixDiagnostic.fixes[0];
+                    
+                    // Store pending fix for keyboard shortcuts
+                    pendingFixRef.current = { fix, range: firstFixRange, diagnostic: firstFixDiagnostic };
+                    
+                    contents.push({ value: '\n---' });
+                    contents.push({ value: `💡 **Quick Fix Available**` });
+                    contents.push({ value: '`Ctrl+.` Apply  •  `Ctrl+Shift+.` Toggle Preview' });
+                    
+                    // Show preview immediately while hovering
+                    showFixPreview(fix, firstFixRange);
+                }
 
-                const range = new monacoInstance.Range(hits[0].startLineNumber, hits[0].startColumn, hits[0].endLineNumber, hits[0].endColumn);
+                const range = new monacoInstance.Range(
+                    hits[0].startLineNumber, hits[0].startColumn,
+                    hits[0].endLineNumber, hits[0].endColumn
+                );
                 return { range, contents };
             }
         });
-        return () => hoverProviderRef.current?.dispose();
+        
+        // Add keyboard shortcut for applying fix (Ctrl+. already handled by Monaco code actions)
+        // Add Ctrl+Shift+. for preview toggle
+        const keyDownDisposable = editorInstance.onKeyDown((e) => {
+            const pending = pendingFixRef.current;
+            if (!pending) return;
+            
+            // Ctrl+Shift+. = Toggle preview
+            if (e.ctrlKey && e.shiftKey && e.code === 'Period') {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                if (isPreviewingRef.current) {
+                    hideFixPreview();
+                    isPreviewingRef.current = false;
+                } else {
+                    showFixPreview(pending.fix, pending.range);
+                }
+                return;
+            }
+        });
+        
+        // Hide preview when cursor moves away from the diagnostic line
+        const cursorListener = editorInstance.onDidChangeCursorPosition((e) => {
+            const pending = pendingFixRef.current;
+            if (!pending) return;
+            
+            // Clear preview when cursor moves to a different line
+            if (e.position.lineNumber !== pending.range.startLineNumber) {
+                pendingFixRef.current = null;
+                hideFixPreview();
+                isPreviewingRef.current = false;
+            }
+        });
+        
+        // Clear pending fix when typing (content changes)
+        const contentListener = editorInstance.onDidChangeModelContent(() => {
+            pendingFixRef.current = null;
+            hideFixPreview();
+            isPreviewingRef.current = false;
+        });
+        
+        // Hide preview when mouse leaves the editor
+        const editorDomNode = editorInstance.getDomNode();
+        const handleMouseLeave = () => {
+            // Small delay to allow moving to hover widget
+            setTimeout(() => {
+                // Check if hover widget is still visible
+                const hoverWidget = document.querySelector('.monaco-hover');
+                if (!hoverWidget || !hoverWidget.matches(':hover')) {
+                    hideFixPreview();
+                    isPreviewingRef.current = false;
+                }
+            }, 100);
+        };
+        editorDomNode?.addEventListener('mouseleave', handleMouseLeave);
+        
+        return () => {
+            hoverProviderRef.current?.dispose();
+            keyDownDisposable?.dispose();
+            cursorListener?.dispose();
+            contentListener?.dispose();
+            editorDomNode?.removeEventListener('mouseleave', handleMouseLeave);
+        };
     }, [monacoInstance, editorInstance, activeLanguage]);
 
-    // 4. Semantic Tokens (Custom Highlighting for Classes/Types)
+    // 4. Code Action Provider (Quick Fixes with Preview)
+    useEffect(() => {
+        if (!editorInstance || !monacoInstance) return;
+        codeActionProviderRef.current?.dispose();
+        
+        // Track seen fixes to avoid duplicates
+        const seenFixes = new Set();
+        
+        // Helper to find diagnostics for a given range
+        const getDiagnosticsForRange = (startLine, startCol, endLine, endCol) => {
+            const currentDiagnostics = diagnosticsRef.current || [];
+            return currentDiagnostics.filter(d => {
+                const loc = d.location || {};
+                const dLine = loc.line ?? 0;
+                const dCol = loc.column ?? 0;
+                const dEndLine = loc.endLine ?? dLine;
+                const dEndCol = loc.endColumn ?? dCol;
+                
+                // Check if ranges overlap
+                return !(dEndLine < startLine || dLine > endLine || 
+                        (dLine === endLine && dEndCol < startCol) ||
+                        (dEndLine === startLine && dCol > endCol));
+            });
+        };
+        
+        codeActionProviderRef.current = monacoInstance.languages.registerCodeActionProvider(activeLanguage, {
+            provideCodeActions: (model, range, context, token) => {
+                const actions = [];
+                const markers = context.markers || [];
+                seenFixes.clear(); // Reset for each invocation
+                
+                for (const marker of markers) {
+                    // Find matching diagnostic with fixes
+                    const matchingDiagnostics = getDiagnosticsForRange(
+                        marker.startLineNumber - 1,
+                        marker.startColumn - 1,
+                        marker.endLineNumber - 1,
+                        marker.endColumn - 1
+                    );
+                    
+                    for (const diagnostic of matchingDiagnostics) {
+                        if (!diagnostic.fixes?.length) continue;
+                        
+                        for (const fix of diagnostic.fixes) {
+                            // Create a unique key for this fix to avoid duplicates
+                            const fixKey = `${fix.description}:${fix.replacementText}:${fix.location?.line}`;
+                            if (seenFixes.has(fixKey)) continue;
+                            seenFixes.add(fixKey);
+                            
+                            const fixRange = new monacoInstance.Range(
+                                (fix.location?.line ?? (marker.startLineNumber - 1)) + 1,
+                                (fix.location?.column ?? (marker.startColumn - 1)) + 1,
+                                (fix.location?.endLine ?? (marker.endLineNumber - 1)) + 1,
+                                (fix.location?.endColumn ?? (marker.endColumn - 1)) + 1
+                            );
+                            
+                            // Store the fix info for preview triggering
+                            const fixInfo = { fix, range: fixRange, diagnostic };
+                            
+                            // Add the apply fix action
+                            actions.push({
+                                title: fix.description || 'Apply fix',
+                                kind: 'quickfix',
+                                diagnostics: [marker],
+                                isPreferred: fix.isPreferred || false,
+                                edit: {
+                                    edits: [{
+                                        resource: model.uri,
+                                        versionId: undefined,
+                                        textEdit: {
+                                            range: fixRange,
+                                            text: fix.replacementText ?? '',
+                                        },
+                                    }],
+                                },
+                            });
+                        }
+                    }
+                }
+                
+                return { actions, dispose: () => {} };
+            },
+        });
+        
+        // Register command to show fix preview
+        const previewCommandDisposable = editorInstance.addCommand(0, (ctx, fixInfo) => {
+            if (fixInfo?.fix && fixInfo?.range) {
+                pendingFixRef.current = fixInfo;
+                showFixPreview(fixInfo.fix, fixInfo.range);
+            }
+        }, 'synthi.showFixPreview');
+        
+        return () => {
+            codeActionProviderRef.current?.dispose();
+        };
+    }, [monacoInstance, editorInstance, activeLanguage]);
+
+    // 5. Semantic Tokens (Custom Highlighting for Classes/Types)
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
 
@@ -228,4 +589,11 @@ export const useEditorProviders = ({
 
         return () => provider.dispose();
     }, [editorInstance, monacoInstance, activeLanguage]);
+    
+    // Cleanup fix preview on unmount
+    useEffect(() => {
+        return () => {
+            hideFixPreview();
+        };
+    }, [editorInstance]);
 };

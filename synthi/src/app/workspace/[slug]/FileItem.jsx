@@ -342,8 +342,8 @@ useEffect(() => {
         ref={fileContentRef}
         data-node-path={item.path}
         data-node-name={item.name}
-        className={`file-item relative group flex items-center py-1 px-2 rounded hover:bg-[#2a2d2e] cursor-pointer ${
-          isSelected ? 'bg-[#2a2d2e]' : ''
+        className={`file-item relative group flex items-center py-1.5 px-2 rounded-md hover:bg-[#1d2230] cursor-pointer transition-all ${
+          isSelected ? 'bg-[#1f2d4a] border-l-[3px] border-[#7fffe1] shadow-[0_0_0_1px_rgba(127,255,225,0.18)]' : 'border-l-[3px] border-transparent'
         }`}
         style={itemStyle}
         onClick={handleClick}
@@ -361,7 +361,7 @@ useEffect(() => {
             <ChevronIcon isOpen={isOpen} isSelected={isSelected} />
           </div>
         )}
-        <div className="w-4 h-4 mr-2 flex-shrink-0 flex items-center justify-center">
+        <div className={`w-3.5 h-3.5 mr-2.5 flex-shrink-0 flex items-center justify-center text-sm ${isSelected ? 'opacity-98' : 'opacity-95'}`}>
           {currentIcon}
         </div>
         {/* replaced the early return block, stopping files (children from showing during rename) */}
@@ -374,12 +374,12 @@ useEffect(() => {
             onKeyDown={handleKeyDown}
             onBlur={handleBlur}
             placeholder={item.isFolder ? "Rename folder..." : "Rename file..."}
-            className="w-full bg-transparent border-none outline-none text-sm text-white placeholder-gray-500"
+            className="w-full bg-transparent border-none outline-none text-[12px] text-[#ffffff] placeholder-[#c7ccda]"
           />
         ) : (
           <div className="file-content flex items-center gap-2">
             <span
-              className={`text-sm truncate ${isSelected ? "text-white" : "text-gray-200"}`}
+              className={`text-[12px] truncate leading-relaxed ${isSelected ? "text-[#ffffff] font-semibold" : "text-[#eef1f7]"}`}
             >
               {item.name}
             </span>

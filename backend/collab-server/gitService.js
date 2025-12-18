@@ -516,19 +516,42 @@ class GitService {
 
     async pull(slug) {
         return this.withLock(slug, async () => {
+            const git = this.getGit(slug);
             try {
-                const git = this.getGit(slug);
-                await git.pull();
+                const pullResult = await git.pull();
                 const status = await this.getStatus(slug);
                 
-                // Check for merge conflicts after pull
+                // Check for merge conflicts after pull (in case pull succeeded but left conflicts)
                 if (status && status.hasConflicts) {
                     throw new MergeConflictError(status.conflictedFiles);
                 }
                 
-                return status;
+                return {
+                    ...status,
+                    pullSummary: {
+                        changes: pullResult.summary?.changes || 0,
+                        insertions: pullResult.summary?.insertions || 0,
+                        deletions: pullResult.summary?.deletions || 0,
+                    }
+                };
             } catch (e) {
                 if (e instanceof MergeConflictError) throw e;
+                
+                // Check if pull failed due to merge conflict
+                const msg = (e.message || '').toLowerCase();
+                if (msg.includes('conflict') || msg.includes('merge failed') || msg.includes('automatic merge failed')) {
+                    // Get current status to find conflicted files
+                    try {
+                        const status = await this.getStatus(slug);
+                        if (status && status.conflictedFiles && status.conflictedFiles.length > 0) {
+                            throw new MergeConflictError(status.conflictedFiles);
+                        }
+                    } catch (statusErr) {
+                        if (statusErr instanceof MergeConflictError) throw statusErr;
+                    }
+                    throw new MergeConflictError([]);
+                }
+                
                 throw this.mapGitError(e, slug);
             }
         });
@@ -557,6 +580,96 @@ class GitService {
                 throw this.mapGitError(e, slug);
             }
         });
+    }
+
+    // ===== Merge Conflict Resolution =====
+    
+    // Resolve conflict by accepting "ours" (current branch) version
+    async resolveConflictOurs(slug, filePath) {
+        return this.withLock(slug, async () => {
+            try {
+                const git = this.getGit(slug);
+                await git.checkout(['--ours', filePath]);
+                await git.add(filePath);
+                return this.getStatus(slug);
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        });
+    }
+
+    // Resolve conflict by accepting "theirs" (incoming) version
+    async resolveConflictTheirs(slug, filePath) {
+        return this.withLock(slug, async () => {
+            try {
+                const git = this.getGit(slug);
+                await git.checkout(['--theirs', filePath]);
+                await git.add(filePath);
+                return this.getStatus(slug);
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        });
+    }
+
+    // Mark a conflicted file as resolved (after manual edit)
+    async markResolved(slug, filePath) {
+        return this.withLock(slug, async () => {
+            try {
+                const git = this.getGit(slug);
+                await git.add(filePath);
+                return this.getStatus(slug);
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        });
+    }
+
+    // Abort current merge (discard all merge changes)
+    async abortMerge(slug) {
+        return this.withLock(slug, async () => {
+            try {
+                const git = this.getGit(slug);
+                await git.merge(['--abort']);
+                return this.getStatus(slug);
+            } catch (e) {
+                throw this.mapGitError(e, slug);
+            }
+        });
+    }
+
+    // Get the content for each version of a conflicted file
+    async getConflictVersions(slug, filePath) {
+        try {
+            const git = this.getGit(slug);
+            
+            // Get the three versions: base, ours, theirs
+            let base = '', ours = '', theirs = '';
+            
+            try {
+                base = await git.raw(['show', `:1:${filePath}`]); // base (common ancestor)
+            } catch (e) { /* file might not exist in base */ }
+            
+            try {
+                ours = await git.raw(['show', `:2:${filePath}`]); // ours (current branch)
+            } catch (e) { /* file might not exist in ours */ }
+            
+            try {
+                theirs = await git.raw(['show', `:3:${filePath}`]); // theirs (incoming)
+            } catch (e) { /* file might not exist in theirs */ }
+            
+            // Get current working copy (with conflict markers)
+            let current = '';
+            try {
+                const repoPath = this.getRepoPath(slug);
+                const fullPath = path.join(repoPath, filePath);
+                current = fs.readFileSync(fullPath, 'utf-8');
+            } catch (e) { /* ignore */ }
+            
+            return { base, ours, theirs, current };
+        } catch (e) {
+            throw this.mapGitError(e, slug);
+        }
     }
 
     // Get structured diff with parsed hunks for better frontend display
@@ -801,16 +914,102 @@ class GitService {
             }
 
             if (!upstream) {
-                // No upstream; consider last N local commits as 'unpushed candidates'
-                const last = await git.log({ n: Math.min(max, 50) });
-                return last.all;
+                // No upstream configured - we cannot determine unpushed commits
+                return [];
             }
 
-            // Use git.log with range upstream..currentBranch to get commits that are in current but not in upstream
-            const unpushedLog = await git.log({ from: upstream, to: currentBranch, n: Math.min(max, 200) });
-            return unpushedLog.all;
+            // Check if upstream ref actually exists locally (was fetched)
+            try {
+                await git.raw(['rev-parse', '--verify', upstream]);
+            } catch (e) {
+                // Upstream ref doesn't exist locally (never fetched)
+                return [];
+            }
+
+            // Use raw git log with proper two-dot notation: upstream..HEAD
+            // This shows commits reachable from HEAD but NOT from upstream (truly unpushed)
+            try {
+                const logOutput = await git.raw([
+                    'log', 
+                    `${upstream}..${currentBranch}`,  // Two-dot: in currentBranch but NOT in upstream
+                    `--max-count=${Math.min(max, 200)}`,
+                    '--format=%H|%s|%an|%ae|%aI'  // hash|subject|author|email|date
+                ]);
+                
+                if (!logOutput || !logOutput.trim()) return [];
+                
+                return logOutput.trim().split('\n').filter(Boolean).map(line => {
+                    const [hash, message, author_name, author_email, date] = line.split('|');
+                    return { hash, message, author_name, author_email, date };
+                });
+            } catch (e) {
+                console.error('Raw git log for unpushed failed:', e?.message);
+                return [];
+            }
         } catch (e) {
             console.error('Get unpushed commits error:', e?.message || e);
+            return [];
+        }
+    }
+
+    // Get commits that are in upstream but not in local (incoming/behind)
+    async getIncomingCommits(slug, max = 50) {
+        try {
+            if (!this.isRepoExists(slug)) return [];
+            if (!this.isRepoInitialized(slug)) return [];
+            const git = this.getGit(slug);
+            const branchSummary = await git.branchLocal();
+            const currentBranch = branchSummary.current;
+            if (!currentBranch) return [];
+
+            // Try to determine upstream/tracking branch
+            let upstream = null;
+            try {
+                const res = await git.raw(['rev-parse', '--abbrev-ref', '--symbolic-full-name', `${currentBranch}@{u}`]);
+                upstream = res.trim();
+            } catch (e) {
+                try {
+                    const remotes = await git.getRemotes(true);
+                    const hasOrigin = remotes && remotes.some(r => r.name === 'origin');
+                    if (hasOrigin) {
+                        upstream = `origin/${currentBranch}`;
+                    }
+                } catch (inner) {
+                    // ignore
+                }
+            }
+
+            if (!upstream) return [];
+
+            // Check if upstream ref exists locally
+            try {
+                await git.raw(['rev-parse', '--verify', upstream]);
+            } catch (e) {
+                return [];
+            }
+
+            // Use raw git log with proper two-dot notation: HEAD..upstream
+            // This shows commits reachable from upstream but NOT from HEAD (incoming)
+            try {
+                const logOutput = await git.raw([
+                    'log', 
+                    `${currentBranch}..${upstream}`,  // Two-dot: in upstream but NOT in currentBranch
+                    `--max-count=${Math.min(max, 200)}`,
+                    '--format=%H|%s|%an|%ae|%aI'  // hash|subject|author|email|date
+                ]);
+                
+                if (!logOutput || !logOutput.trim()) return [];
+                
+                return logOutput.trim().split('\n').filter(Boolean).map(line => {
+                    const [hash, message, author_name, author_email, date] = line.split('|');
+                    return { hash, message, author_name, author_email, date };
+                });
+            } catch (e) {
+                console.error('Raw git log for incoming failed:', e?.message);
+                return [];
+            }
+        } catch (e) {
+            console.error('Get incoming commits error:', e?.message || e);
             return [];
         }
     }
@@ -911,6 +1110,19 @@ class GitService {
             return await fs.promises.readFile(fullPath, 'utf-8');
         } catch (_) {
             throw new Error('File not found');
+        }
+    }
+
+    async writeFile(slug, filePath, content) {
+        const repoPath = this.getRepoPath(slug);
+        const fullPath = path.join(repoPath, filePath);
+        try {
+            // Ensure directory exists
+            const dirPath = path.dirname(fullPath);
+            await fs.promises.mkdir(dirPath, { recursive: true });
+            await fs.promises.writeFile(fullPath, content, 'utf-8');
+        } catch (e) {
+            throw new Error(`Failed to write file: ${e.message}`);
         }
     }
 

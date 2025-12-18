@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import dynamic from 'next/dynamic';
-import { SplitSquareHorizontal, Plus, Trash2, X } from 'lucide-react';
+import { SplitSquareHorizontal, Plus, X, TerminalSquare } from 'lucide-react';
 
 const TerminalPane = dynamic(() => import('./TerminalPane.jsx'), { ssr: false });
 
@@ -64,26 +64,56 @@ export default function TerminalManager({ visible, onCloseAll }) {
   };
 
   const header = (
-    <div className="h-9 flex items-center justify-between px-2 border-b border-[#2a2a2a] bg-[#252526] select-none" ref={dragRef}>
-      <div className="flex items-center gap-2 overflow-x-auto">
+    <div className="h-10 flex items-center justify-between px-2 border-b border-[#1a1a1e] bg-[#09090b] select-none" ref={dragRef}>
+      {/* Tabs */}
+      <div className="flex items-center gap-1 overflow-x-auto">
         {terminals.map(t => (
-          <div key={t.id} className={`flex items-center gap-1 px-2 py-1 rounded ${t.id === activeId ? 'bg-[#1e1e1e] text-gray-100' : 'text-gray-300 hover:bg-[#2f2f2f]'}`} onClick={() => setActiveId(t.id)}>
-            <span className="text-xs">{t.label}</span>
-            <button className="p-0.5 hover:text-red-400" onClick={(e) => { e.stopPropagation(); closeById(t.id); }}>
-              <Trash2 className="w-3.5 h-3.5" />
+          <div 
+            key={t.id} 
+            className={`group flex items-center gap-2 h-8 px-3 cursor-pointer transition-all duration-150 ${
+              t.id === activeId 
+                ? 'bg-[#0c0c0e] text-[#D7DAE0] border-t-2 border-t-[#327464]' 
+                : 'text-[#a1a1aa] hover:bg-[#111113] hover:text-[#D7DAE0]'
+            }`} 
+            onClick={() => setActiveId(t.id)}
+          >
+            <TerminalSquare className="w-3.5 h-3.5" strokeWidth={2} />
+            <span className="text-xs font-medium">{t.label}</span>
+            {/* Close button - appears on hover, safe position */}
+            <button 
+              className="w-5 h-5 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-[#ef4444]/20 hover:text-[#ef4444] transition-all ml-1"
+              onClick={(e) => { e.stopPropagation(); closeById(t.id); }}
+              title="Close Terminal"
+            >
+              <X className="w-3 h-3" strokeWidth={2} />
             </button>
           </div>
         ))}
-        <button className="ml-1 text-gray-300 hover:text-gray-100" onClick={addTerminal} title="New Terminal">
-          <Plus className="w-4 h-4" />
-        </button>
-        <button className="text-gray-300 hover:text-gray-100" onClick={toggleSplit} title="Split Terminal">
-          <SplitSquareHorizontal className="w-4 h-4" />
-        </button>
       </div>
-      <div className="flex items-center gap-2">
-        <button className="text-gray-300 hover:text-red-400" onClick={handleCloseAll} title="Close All">
-          <X className="w-4 h-4" />
+      
+      {/* Actions - Larger click targets */}
+      <div className="flex items-center gap-1">
+        <button 
+          className="w-8 h-8 flex items-center justify-center rounded text-[#a1a1aa] hover:bg-[#1a1a1e] hover:text-[#D7DAE0] transition-colors" 
+          onClick={addTerminal} 
+          title="New Terminal"
+        >
+          <Plus className="w-4 h-4" strokeWidth={2} />
+        </button>
+        <button 
+          className="w-8 h-8 flex items-center justify-center rounded text-[#a1a1aa] hover:bg-[#1a1a1e] hover:text-[#D7DAE0] transition-colors" 
+          onClick={toggleSplit} 
+          title="Split Terminal"
+        >
+          <SplitSquareHorizontal className="w-4 h-4" strokeWidth={2} />
+        </button>
+        <div className="w-px h-5 bg-[#1a1a1e] mx-1"></div>
+        <button 
+          className="w-8 h-8 flex items-center justify-center rounded text-[#a1a1aa] hover:bg-[#ef4444]/20 hover:text-[#ef4444] transition-colors" 
+          onClick={handleCloseAll} 
+          title="Close Terminal Panel"
+        >
+          <X className="w-4 h-4" strokeWidth={2} />
         </button>
       </div>
     </div>
@@ -91,9 +121,9 @@ export default function TerminalManager({ visible, onCloseAll }) {
   
   if (!visible) return null;
   const body = (
-    <div className="bg-[#1e1e1e] flex-1 overflow-hidden">
+    <div className="bg-[#09090b] flex-1 overflow-hidden p-2">
       {terminals.length === 0 ? (
-        <div className="h-full flex items-center justify-center text-xs text-gray-400">No terminals</div>
+        <div className="h-full flex items-center justify-center text-xs text-[#71717a]">No terminals</div>
       ) : (
         <div className="h-full w-full relative">
           {terminals.map(t => (
@@ -119,7 +149,7 @@ export default function TerminalManager({ visible, onCloseAll }) {
   );
 
   return (
-    <div className="border-t border-[#2a2a2a] bg-[#1e1e1e] h-full flex flex-col">
+    <div className="border-t border-[#1a1a1e] bg-[#09090b] h-full flex flex-col">
       {header}
       {body}
     </div>
