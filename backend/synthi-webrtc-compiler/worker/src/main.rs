@@ -1151,7 +1151,7 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
     });
 
     let backend_url = std::env::var("AI_BACKEND_URL")
-        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
+        .unwrap_or_else(|_| "http://172.19.224.1:8000".to_string());
     let url = format!("{}/refactor/split", backend_url);
 
     let res = client.post(&url)
@@ -1485,10 +1485,17 @@ async fn handle_compile(
             let content = core["content"].as_str().unwrap_or("");
             
             // Required core exports (check for both new and legacy symbol names)
-            let has_on_load = content.contains("extern \"C\" void* core_on_load") || 
-                             content.contains("extern \"C\" void* on_load");
-            let has_on_update = content.contains("extern \"C\" void core_on_update") || 
-                               content.contains("extern \"C\" void on_update");
+            // Support both inline: `extern "C" void* on_load(...)` 
+            // and block: `extern "C" { ... void* on_load(...) ... }`
+            let has_extern_c_block = content.contains("extern \"C\" {");
+            let has_on_load_fn = content.contains("void* core_on_load") || content.contains("void* on_load");
+            let has_on_update_fn = content.contains("void core_on_update") || content.contains("void on_update");
+            let has_inline_on_load = content.contains("extern \"C\" void* core_on_load") || 
+                                     content.contains("extern \"C\" void* on_load");
+            let has_inline_on_update = content.contains("extern \"C\" void core_on_update") || 
+                                       content.contains("extern \"C\" void on_update");
+            let has_on_load = has_inline_on_load || (has_extern_c_block && has_on_load_fn);
+            let has_on_update = has_inline_on_update || (has_extern_c_block && has_on_update_fn);
             
             if !has_on_load {
                 validation_errors.push("core.cpp missing required export: on_load or core_on_load".to_string());
@@ -1497,8 +1504,14 @@ async fn handle_compile(
                 validation_warnings.push("core.cpp missing on_update/core_on_update - app will be blocking".to_string());
             }
             
-            // Check for ABI version constant (warning if missing)
-            if !content.contains("SYNTHI_CORE_ABI_VERSION") && !content.contains("abi_version") {
+            // Check for ABI version constant (check in core.cpp content and shared.h)
+            let shared_content = split_data.get("shared")
+                .and_then(|s| s["content"].as_str())
+                .unwrap_or("");
+            let has_abi_version = content.contains("SYNTHI_CORE_ABI_VERSION") || 
+                                  content.contains("abi_version") ||
+                                  shared_content.contains("abi_version");
+            if !has_abi_version {
                 validation_warnings.push("core.cpp should define abi_version field in state struct".to_string());
             }
             
@@ -1513,8 +1526,13 @@ async fn handle_compile(
             let content = gui["content"].as_str().unwrap_or("");
             
             // Required GUI exports (check for both new and legacy symbol names)
-            let has_gui_render = content.contains("extern \"C\" void gui_on_render") ||
-                                content.contains("extern \"C\" void gui_render");
+            // Support both inline: `extern "C" void gui_render(...)` 
+            // and block: `extern "C" { ... void gui_render(...) ... }`
+            let has_extern_c_block = content.contains("extern \"C\" {");
+            let has_gui_render_fn = content.contains("void gui_on_render") || content.contains("void gui_render");
+            let has_inline_extern = content.contains("extern \"C\" void gui_on_render") ||
+                                    content.contains("extern \"C\" void gui_render");
+            let has_gui_render = has_inline_extern || (has_extern_c_block && has_gui_render_fn);
             
             if !has_gui_render {
                 validation_errors.push("gui.cpp missing required export: gui_render or gui_on_render".to_string());
@@ -1610,6 +1628,16 @@ async fn handle_compile(
                 }
             }
 
+            // FIX: gui_on_load declaration MUST have 3 parameters to match implementation
+            if content.contains("gui_on_load(void* prev_state, void* window_ptr)") && 
+               !content.contains("gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)") {
+                content = content.replace(
+                    "gui_on_load(void* prev_state, void* window_ptr)",
+                    "gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)"
+                );
+                eprintln!("[Guardrail] Fixed gui_on_load declaration in shared.h: added missing core_api_ptr parameter");
+            }
+
             println!("Writing shared library file: {}", fname);
             tokio::fs::write(dir_path.join(fname), content).await?;
         }
@@ -1623,6 +1651,67 @@ async fn handle_compile(
             // Fix common AI mistakes in core.cpp before compilation.
             if content.contains("is_running") {
                 content = content.replace("is_running", "running");
+            }
+
+            // CRITICAL: Strip X11-related functions that the AI incorrectly preserved from the input.
+            // The AI sometimes keeps functions like `Display* initialize_display()` or `void cleanup_display(Display* d)`
+            // which reference X11 types that don't exist in our SDL2-only environment.
+            // We strip entire lines containing these patterns.
+            let x11_type_patterns = [
+                "Display*",      // X11 display type
+                "Display *",     // with space
+                "Window*",       // X11 window type (not to be confused with SDL)
+                "XIM",           // X11 input method
+                "XIC",           // X11 input context
+                "Atom",          // X11 atom type
+                "Colormap",      // X11 colormap
+                "Pixmap",        // X11 pixmap
+                "GC ",           // X11 graphics context (with space to avoid "GCC")
+                "XEvent",        // X11 event type
+                "XOpenDisplay",  // X11 function calls
+                "XCloseDisplay",
+                "XCreateWindow",
+                "XDestroyWindow",
+                "XOpenIM",
+                "XCreateIC",
+                "XCreateGC",
+                "XFreeGC",
+                "XCreatePixmap",
+                "XFreePixmap",
+            ];
+            
+            // Strip lines with X11 function declarations/definitions
+            let mut cleaned_lines = Vec::new();
+            for line in content.lines() {
+                let has_x11 = x11_type_patterns.iter().any(|pat| line.contains(pat));
+                // Don't strip lines that are inside comment blocks or are includes (already handled)
+                let is_comment = line.trim_start().starts_with("//") || line.trim_start().starts_with("/*");
+                let is_include = line.trim_start().starts_with("#include");
+                
+                if has_x11 && !is_comment && !is_include {
+                    cleaned_lines.push(format!("// [X11-stripped] {}", line));
+                } else {
+                    cleaned_lines.push(line.to_string());
+                }
+            }
+            content = cleaned_lines.join("\n");
+
+            // CRITICAL FIX: Replace malloc pattern with static variable for HMR
+            // AI frequently generates malloc which breaks state preservation
+            if content.contains("malloc(sizeof(AppState))") {
+                eprintln!("[Guardrail] CRITICAL: Detected malloc pattern in core.cpp - this breaks HMR!");
+                eprintln!("[Guardrail] The AI must use static variables, not malloc.");
+                eprintln!("[Guardrail] This code will compile but HMR will reset state on every reload.");
+                // We could attempt to fix it, but it's complex. Better to fail fast.
+                // For now, just warn loudly.
+            }
+
+            // FIX: Detect and warn about free(state) which causes crashes on reload
+            if content.contains("free(state)") {
+                eprintln!("[Guardrail] WARNING: Detected free(state) in core.cpp");
+                eprintln!("[Guardrail] This will cause crashes on hot reload - runner manages state lifecycle");
+                // Comment out free(state) calls
+                content = content.replace("free(state);", "// free(state); // Commented - runner manages state");
             }
 
             // Drop writes/reads to non-existent XWindowAttributes fields that break the build.
@@ -1795,8 +1884,9 @@ async fn handle_compile(
                  content.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
             }
 
-            // Inject JSON Serialization Helpers
-            if content.contains("struct AppState") {
+            // Inject JSON Serialization Helpers for Full HMR
+            // Check for AppState definition (either 'struct AppState' or 'typedef struct')
+            if content.contains("AppState") && (content.contains("struct AppState") || content.contains("typedef struct")) {
                 let json_helpers = r#"
 #include <stdio.h>
 #include <stdlib.h>
@@ -1841,6 +1931,7 @@ extern "C" void* on_load_from_json(const char* json) {
 }
 "#;
                 content.push_str(json_helpers);
+                eprintln!("[Guardrail] Injected JSON serialization helpers for Full HMR support");
             }
 
             let content_hash = calculate_hash(&content);
@@ -2058,15 +2149,103 @@ extern "C" void* on_load_from_json(const char* json) {
             let fname = gui["filename"].as_str().unwrap_or("gui.cpp");
             let mut content = gui["content"].as_str().unwrap_or("").to_string();
 
+            // CRITICAL: Strip X11-related functions that the AI incorrectly preserved from the input.
+            let x11_type_patterns = [
+                "Display*", "Display *", "XIM", "XIC", "Atom", "Colormap", "Pixmap", "GC ",
+                "XEvent", "XOpenDisplay", "XCloseDisplay", "XCreateWindow", "XDestroyWindow",
+                "XOpenIM", "XCreateIC", "XCreateGC", "XFreeGC", "XCreatePixmap", "XFreePixmap",
+            ];
+            let mut cleaned_lines = Vec::new();
+            for line in content.lines() {
+                let has_x11 = x11_type_patterns.iter().any(|pat| line.contains(pat));
+                let is_comment = line.trim_start().starts_with("//") || line.trim_start().starts_with("/*");
+                let is_include = line.trim_start().starts_with("#include");
+                if has_x11 && !is_comment && !is_include {
+                    cleaned_lines.push(format!("// [X11-stripped] {}", line));
+                } else {
+                    cleaned_lines.push(line.to_string());
+                }
+            }
+            content = cleaned_lines.join("\n");
+
+            // FIX: GUI module should use GUI_STATE_MAGIC, not CORE_STATE_MAGIC
+            // AI sometimes copies core.cpp pattern without changing the magic constant
+            if content.contains("CORE_STATE_MAGIC") && !content.contains("#define CORE_STATE_MAGIC") {
+                content = content.replace("CORE_STATE_MAGIC", "GUI_STATE_MAGIC");
+                eprintln!("[Guardrail] Fixed magic constant: replaced CORE_STATE_MAGIC with GUI_STATE_MAGIC in gui.cpp");
+            }
+
+            // FIX: gui_on_load MUST have 3 parameters. AI sometimes generates 2-param version.
+            // The runner expects: gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)
+            if content.contains("gui_on_load(void* prev_state, void* window_ptr)") && 
+               !content.contains("gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)") {
+                content = content.replace(
+                    "gui_on_load(void* prev_state, void* window_ptr)",
+                    "gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)"
+                );
+                eprintln!("[Guardrail] Fixed gui_on_load signature: added missing core_api_ptr parameter");
+            }
+
             // FIX: Comment out SDL_RenderPresent to prevent deadlock
             // The runner handles SDL_RenderPresent after calling gui_render
             let re_present = regex::Regex::new(r"SDL_RenderPresent\s*\([^)]*\)\s*;").unwrap();
             content = re_present.replace_all(&content, "/* SDL_RenderPresent removed - runner handles this */").to_string();
 
+            // CRITICAL FIX: Detect malloc pattern in GUI which breaks HMR
+            if content.contains("malloc(sizeof(AppState))") {
+                eprintln!("[Guardrail] CRITICAL: Detected malloc pattern in gui.cpp - this breaks HMR!");
+                eprintln!("[Guardrail] The AI must use static variables, not malloc.");
+                eprintln!("[Guardrail] This code will compile but HMR will reset state on every reload.");
+            }
+
+            // FIX: Detect and warn about free(state) which causes crashes
+            if content.contains("free(state)") {
+                eprintln!("[Guardrail] WARNING: Detected free(state) in gui.cpp");
+                eprintln!("[Guardrail] This will cause crashes on hot reload - runner manages state lifecycle");
+                // Comment out free(state) calls
+                content = content.replace("free(state);", "// free(state); // Commented - runner manages state");
+            }
+
 
 
             if content.contains("main(") && !content.contains("extern \"C\" void* entrypoint") {
                  content.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
+            }
+            
+            // Inject JSON Serialization Helpers for Full HMR in GUI module
+            if content.contains("AppState") && !content.contains("gui_on_save_state") {
+                let json_helpers = r#"
+extern "C" char* gui_on_save_state(void* state_ptr) {
+    AppState* state = (AppState*)state_ptr;
+    if (!state) return NULL;
+    char* buffer = (char*)malloc(1024);
+    snprintf(buffer, 1024, "{\"x\": %d, \"y\": %d, \"dx\": %d, \"paused\": %d}", 
+             state->x, state->y, state->dx, state->paused);
+    return buffer;
+}
+
+extern "C" void* gui_on_load_from_json(const char* json) {
+    AppState* state = (AppState*)malloc(sizeof(AppState));
+    memset(state, 0, sizeof(AppState));
+    state->magic = 0x60108EEF;
+    state->struct_size = sizeof(AppState);
+    state->abi_version = 1;
+    state->running = 1;
+    
+    const char* p = strstr(json, "\"x\":");
+    if (p) state->x = atoi(p + 4);
+    p = strstr(json, "\"y\":");
+    if (p) state->y = atoi(p + 4);
+    p = strstr(json, "\"dx\":");
+    if (p) state->dx = atoi(p + 5);
+    p = strstr(json, "\"paused\":");
+    if (p) state->paused = atoi(p + 9);
+    
+    return state;
+}
+"#;
+                content.push_str(json_helpers);
+                eprintln!("[Guardrail] Injected GUI JSON serialization helpers for Full HMR support");
             }
             
             // Hash content + core_lib_path dependency

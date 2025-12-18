@@ -132,6 +132,16 @@ If instructions conflict, follow this precedence order:
 - Your OUTPUT MUST NOT contain X11 headers, X11 types, or X11 function calls.
 - Treat X11 only as a semantic description of what to draw / how to react to input.
 
+### STRIP ALL X11 HELPER FUNCTIONS (CRITICAL)
+If the user's input contains X11 helper functions like:
+- `Display* initialize_display(void)` - DO NOT OUTPUT THIS
+- `void cleanup_display(Display* d)` - DO NOT OUTPUT THIS
+- `Window create_window(Display* d, ...)` - DO NOT OUTPUT THIS
+- Any function with X11 types in its signature (Display, Window, Atom, GC, Pixmap, XIM, XIC, Colormap, etc.)
+
+You MUST completely remove these functions from your output. They are X11-specific and incompatible with the SDL2 runtime.
+The runner handles window creation and cleanup - plugins must not contain these functions.
+
 ### Module compile/link contract (must satisfy all)
 - shared.h:
     - Must be self-contained.
@@ -140,8 +150,9 @@ If instructions conflict, follow this precedence order:
     - Must avoid OS-specific handle types; prefer plain C types and `void*` for opaque handles.
 - core.cpp:
     - Must compile/link WITHOUT `-lX11` and WITHOUT `-lSDL2`.
-    - May use `dlopen`/`dlsym` (`-ldl`) to load GUI symbols.
-    - Must not call any GUI symbols directly; only through `ptr_gui_*` function pointers.
+    - Contains business logic only - NO dynamic loading of gui.so.
+    - The Synthi Runner loads both core.so and gui.so independently.
+    - MUST NOT contain any functions with X11 types in their signature.
 - gui.cpp:
     - Must compile/link with `-lSDL2`.
     - Must not include X11.
@@ -157,7 +168,7 @@ If instructions conflict, follow this precedence order:
 ### State stability (important for HMR)
 - Do NOT invent new `AppState` fields.
 - Keep existing user-visible buffers/fields (e.g. `wbuffer`) exactly as-is (name + size).
-- Only add the mandatory ABI safety fields (`magic`, `struct_size`) and required runtime fields (`renderer`).
+- Only add the mandatory ABI safety fields (`magic`, `struct_size`, `abi_version`) and required runtime fields (`renderer`).
 
 # STRICT PRESERVATION PROTOCOL (SECOND PRIORITY)
 
@@ -219,11 +230,82 @@ Glyph mapping rules (CRITICAL):
 
 MANDATORY FOR THIS PROJECT (override):
 - DO NOT generate a full 95-glyph ASCII font table. Models frequently hallucinate incorrect glyph tables which renders garbage.
-- You MUST generate a minimal font with `glyph8x8_for(char c)` + `switch` covering exactly the characters used by the program's string literals.
-    - Scan the source and collect all string literals passed to XDrawString (or equivalent) and include every distinct character.
-    - You must include both uppercase/lowercase letters that appear (e.g. for this test: `Resume`, `dsadsadsa`, `HUIIII`).
-    - Include space, and a '?' fallback glyph.
-    - Any unsupported character MUST render as '?' (not blank, not random).
+- You MUST use the EXACT reference font implementation provided below. Do not invent glyph data.
+
+### REFERENCE FONT IMPLEMENTATION (COPY THIS EXACTLY INTO gui.cpp)
+```cpp
+#define FONT_W 8
+#define FONT_H 8
+
+// Verified 8x8 bitmap glyphs - DO NOT MODIFY THESE VALUES
+static const uint8_t font_A[8] = {0x18,0x24,0x42,0x42,0x7E,0x42,0x42,0x00};
+static const uint8_t font_D[8] = {0x7C,0x42,0x42,0x42,0x42,0x42,0x7C,0x00};
+static const uint8_t font_E[8] = {0x7E,0x40,0x40,0x7C,0x40,0x40,0x7E,0x00};
+static const uint8_t font_H[8] = {0x42,0x42,0x42,0x7E,0x42,0x42,0x42,0x00};
+static const uint8_t font_I[8] = {0x3E,0x08,0x08,0x08,0x08,0x08,0x3E,0x00};
+static const uint8_t font_P[8] = {0x7C,0x42,0x42,0x7C,0x40,0x40,0x40,0x00};
+static const uint8_t font_R[8] = {0x7C,0x42,0x42,0x7C,0x48,0x44,0x42,0x00};
+static const uint8_t font_S[8] = {0x3C,0x42,0x40,0x3C,0x02,0x42,0x3C,0x00};
+static const uint8_t font_U[8] = {0x42,0x42,0x42,0x42,0x42,0x42,0x3C,0x00};
+static const uint8_t font_a[8] = {0x00,0x00,0x3C,0x02,0x3E,0x42,0x3E,0x00};
+static const uint8_t font_d[8] = {0x02,0x02,0x3E,0x42,0x42,0x42,0x3E,0x00};
+static const uint8_t font_e[8] = {0x00,0x00,0x3C,0x42,0x7E,0x40,0x3C,0x00};
+static const uint8_t font_f[8] = {0x0C,0x12,0x10,0x7C,0x10,0x10,0x10,0x00};
+static const uint8_t font_m[8] = {0x00,0x00,0x76,0x49,0x49,0x49,0x49,0x00};
+static const uint8_t font_s[8] = {0x00,0x00,0x3E,0x40,0x3C,0x02,0x7C,0x00};
+static const uint8_t font_u[8] = {0x00,0x00,0x42,0x42,0x42,0x46,0x3A,0x00};
+static const uint8_t font_space[8] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
+static const uint8_t font_qmark[8] = {0x3C,0x42,0x02,0x0C,0x10,0x00,0x10,0x00};
+
+static const uint8_t* get_glyph(char c) {
+    switch(c) {
+        case 'A': return font_A; case 'D': return font_D; case 'E': return font_E;
+        case 'H': return font_H; case 'I': return font_I; case 'P': return font_P;
+        case 'R': return font_R; case 'S': return font_S; case 'U': return font_U;
+        case 'a': return font_a; case 'd': return font_d; case 'e': return font_e;
+        case 'f': return font_f; case 'm': return font_m; case 's': return font_s;
+        case 'u': return font_u; case ' ': return font_space;
+        default: return font_qmark;
+    }
+}
+
+static void draw_text(SDL_Renderer* r, int x, int y, const char* text, int len) {
+    Uint8 cr, cg, cb, ca;
+    SDL_GetRenderDrawColor(r, &cr, &cg, &cb, &ca);
+    for (int i = 0; i < len; i++) {
+        const uint8_t* g = get_glyph(text[i]);
+        for (int row = 0; row < FONT_H; row++) {
+            for (int col = 0; col < FONT_W; col++) {
+                if ((g[row] >> (7 - col)) & 1) {
+                    // NOTE: Original X11 code used `y` as baseline
+                    // For SDL: if original y was btn_y+25, text renders correctly
+                    // If original y was btn_y+10, add FONT_H to make text visible
+                    SDL_Rect px = {x + i * FONT_W + col, y + row, 1, 1};
+                    SDL_RenderFillRect(r, &px);
+                }
+            }
+        }
+    }
+}
+```
+
+**TEXT POSITION RULE (CRITICAL):**
+- The original X11 code used `XDrawString(dpy, win, gc, btn_x + 40, btn_y + 25, label, len)`
+- In SDL: `draw_text(renderer, btn_x + 40, btn_y + 25 - FONT_H, label, len)` preserves baseline
+- BUT if the original button height is 40 and btn_y is 10, then text at btn_y+10 would be off-screen
+- BETTER: Use `draw_text(renderer, btn_x + 10, btn_y + 15, label, len)` for clarity (no baseline math)
+
+**TEXT COLOR RULE (CRITICAL):**
+- Text on blue button background MUST use BLACK (0,0,0) or WHITE (255,255,255) for contrast
+- NEVER draw white text on white button - it's invisible!
+- Set color BEFORE calling draw_text:
+  ```cpp
+  SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);  // Black text
+  draw_text(renderer, btn_x + 10, btn_y + 15, label, strlen(label));
+  ```
+
+If the program uses characters not in this list, add them using the same 8x8 bitmap format.
+The bit order is MSB-first: bit 7 is the leftmost pixel, bit 0 is the rightmost.
 
 This is the #1 reason button text "disappears" or becomes junk.
 
@@ -285,6 +367,66 @@ If you emit X11 symbols, the build will fail.
 - If any file uses `SDL_Event`, you MUST `#include <SDL2/SDL.h>` in that file (preferably in `shared.h` if `AppState` stores SDL types).
 - If you include `<SDL2/SDL.h>`, do NOT add any forward declarations for SDL types at all.
 
+# EXACT FUNCTION SIGNATURES (CRITICAL - MUST MATCH EXACTLY)
+
+## DO NOT USE malloc FOR STATE! (CRITICAL - BREAKS HMR)
+
+**❌ FORBIDDEN PATTERNS:**
+```cpp
+// WRONG - This breaks hot reload!
+AppState* state = (AppState*)malloc(sizeof(AppState));
+if (!state) { /* error */ }
+memset(state, 0, sizeof(AppState));
+
+// WRONG - This causes crashes on hot reload!
+if (state->running == 0) {
+    free(state);
+}
+```
+
+**✅ CORRECT PATTERN - Use static variables:**
+```cpp
+// RIGHT - State preserved across hot reloads
+static AppState app_state = {0};
+
+extern "C" void* on_load(void* prev_state, void* window_ptr) {
+    if (prev_state) {
+        AppState* old = (AppState*)prev_state;
+        if (old->magic == CORE_STATE_MAGIC && old->struct_size == sizeof(AppState)) {
+            app_state = *old;  // Copy previous state
+        }
+    } else {
+        app_state.magic = CORE_STATE_MAGIC;
+        // Initialize fields...
+    }
+    app_state.renderer = (SDL_Renderer*)window_ptr;
+    return &app_state;  // Return address of static variable
+}
+
+extern "C" void on_unload(void* state_ptr) {
+    // Do NOT free - runner manages state lifecycle
+}
+```
+
+## These are the ONLY valid signatures. shared.h declarations MUST match implementations.
+
+### CORE MODULE (core.cpp):
+```cpp
+extern "C" void* on_load(void* prev_state, void* window_ptr);           // 2 params
+extern "C" void on_update(void* state_ptr, double dt);                  // 2 params
+extern "C" void on_event(void* state_ptr, void* event_ptr);             // 2 params
+extern "C" void on_unload(void* state_ptr);                             // 1 param
+```
+
+### GUI MODULE (gui.cpp):
+```cpp
+extern "C" void* gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr);  // 3 params!
+extern "C" void gui_on_render(void* state_ptr);                         // 1 param (uses AppState*)
+extern "C" void gui_cleanup(void* state_ptr);                           // 1 param
+```
+
+### shared.h MUST declare these EXACTLY as shown above. Do NOT change parameter counts!
+
 # TASK OVERVIEW
 Analyze the provided source code and split it into THREE distinct modules:
 1. CORE module: Business logic, state management, non-GUI computation
@@ -319,70 +461,71 @@ You MUST output ONLY a valid JSON object with this EXACT structure:
 
 Core.cpp is compiled as a standalone shared library (.so). If it contains ANY direct reference to `gui_render`, `gui_initialize`, `gui_on_update`, `gui_cleanup`, or `gui_on_event`, it will FAIL to load with "undefined symbol" error.
 
-### FORBIDDEN CODE IN CORE.CPP (WILL CAUSE LINKER ERROR):
+**THE SYNTHI RUNNER LOADS MODULES INDEPENDENTLY.**
+
+The runner manages both core.so and gui.so:
+1. Runner loads `core.so`, calls `on_load(prev_state, renderer)` → returns CoreState*
+2. Runner loads `gui.so`, calls `on_load(prev_state, renderer)` → returns GuiState*/AppState*
+3. Runner calls `on_update(state, dt)` on core module each frame
+4. Runner calls `gui_on_render(state)` on gui module each frame
+5. Runner calls `SDL_RenderPresent()` after gui_on_render returns
+
+**CORE.CPP MUST NOT LOAD GUI.SO ITSELF.** The runner handles module loading.
+
+### FORBIDDEN CODE IN CORE.CPP (WILL CAUSE ISSUES):
 ```cpp
 // ❌ WRONG - Direct function call causes "undefined symbol: gui_render"
 gui_render(state);
 gui_initialize(state);
-gui_on_update(state, dt);
 
-// ❌ WRONG - Extern declaration still causes linker to look for symbol
-extern void gui_render(AppState* state);
-
-// ❌ WRONG - Even with declaration, direct call fails
-void gui_render(AppState* state);  // forward declaration
-gui_render(state);                 // call - LINKER ERROR!
-```
-
-### REQUIRED CODE IN CORE.CPP (CORRECT):
-```cpp
-// ✅ CORRECT - Function pointer types
-typedef void (*gui_render_fn)(AppState*);
-typedef void (*gui_initialize_fn)(AppState*);
-typedef void (*gui_on_update_fn)(AppState*, float);
-typedef void (*gui_cleanup_fn)(AppState*);
-typedef void (*gui_on_event_fn)(AppState*, void*);
-
-// ✅ CORRECT - Function pointer variables (initialized to NULL)
-gui_render_fn ptr_gui_render = NULL;
-gui_initialize_fn ptr_gui_initialize = NULL;
-gui_on_update_fn ptr_gui_on_update = NULL;
-gui_cleanup_fn ptr_gui_cleanup = NULL;
-gui_on_event_fn ptr_gui_on_event = NULL;
-
-// ✅ CORRECT - Load pointers via dlsym at runtime
+// ❌ WRONG - Core should NOT load gui.so (runner does this)
 void* gui_lib = dlopen("./gui.so", RTLD_NOW);
 ptr_gui_render = (gui_render_fn)dlsym(gui_lib, "gui_render");
-ptr_gui_initialize = (gui_initialize_fn)dlsym(gui_lib, "gui_initialize");
-// ... etc
 
-// ✅ CORRECT - Call through pointer with NULL check
+// ❌ WRONG - Core should NOT call GUI functions at all
 if (ptr_gui_render) ptr_gui_render(state);
-if (ptr_gui_initialize) ptr_gui_initialize(state);
 ```
 
-### VERIFICATION: Before outputting core.cpp, search for these strings:
-- `gui_render(` without `ptr_` prefix → ERROR, must be `ptr_gui_render(`
-- `gui_initialize(` without `ptr_` prefix → ERROR, must be `ptr_gui_initialize(`
-- `gui_on_update(` without `ptr_` prefix → ERROR, must be `ptr_gui_on_update(`
-- `gui_cleanup(` without `ptr_` prefix → ERROR, must be `ptr_gui_cleanup(`
-- `gui_on_event(` without `ptr_` prefix → ERROR, must be `ptr_gui_on_event(`
-- `extern void gui_` → ERROR, remove this line
-- `void gui_render(` in core.cpp → ERROR, this belongs in gui.cpp only
+### CORRECT CORE.CPP PATTERN:
+```cpp
+// Core module ONLY handles business logic
+// It does NOT interact with GUI at all - runner manages rendering
+static AppState app_state = {0};
 
-Additional verification (STRONGLY ENFORCED):
-- In core.cpp, the substring `gui_` must appear ONLY in:
-    - function pointer typedef names (`gui_*_fn`),
-    - pointer variable names (`ptr_gui_*`),
-    - `dlsym(..., "gui_*" )` string literals,
-    - and comments.
-- If core.cpp contains `gui_` used as a call target, a declaration, or a definition → ERROR.
+extern "C" void* on_load(void* prev_state, void* window_ptr) {
+    if (prev_state) {
+        AppState* old = (AppState*)prev_state;
+        if (old->magic == 0xDEADBEEF) app_state = *old;
+    } else {
+        app_state.magic = 0xDEADBEEF;
+        app_state.struct_size = sizeof(AppState);
+        app_state.abi_version = 1;
+        // Initialize state fields...
+    }
+    return &app_state;
+}
+
+extern "C" void on_update(void* state_ptr, double dt) {
+    AppState* state = (AppState*)state_ptr;
+    // Update business logic only - NO rendering here
+    if (!state->paused) {
+        state->x += state->dx;
+        if (state->x > 590 || state->x < 0) state->dx = -state->dx;
+    }
+}
+
+extern "C" void on_event(void* state_ptr, void* event_ptr) {
+    AppState* state = (AppState*)state_ptr;
+    SDL_Event* ev = (SDL_Event*)event_ptr;
+    // Handle events...
+}
+```
 
 ## 0.5 SDL_RENDERPRESENT RULE (CRITICAL - VIOLATION = COMPILATION ERROR)
 
 **YOU MUST NEVER CALL SDL_RenderPresent() IN YOUR GENERATED CODE.**
 
-The host Runner owns the rendering pipeline and calls `SDL_RenderPresent()` automatically after your `gui_render()` function returns.
+The host Runner owns the rendering pipeline and calls `SDL_RenderPresent()` automatically after your `gui_on_render()` function returns.
 
 ### FORBIDDEN CODE (WILL CAUSE ISSUES):
 ```cpp
@@ -393,7 +536,7 @@ SDL_RenderPresent(renderer);
 
 ### CORRECT CODE:
 ```cpp
-void gui_render(AppState* state) {
+void gui_on_render(AppState* state) {
     SDL_SetRenderDrawColor(state->renderer, 0, 0, 0, 255);
     SDL_RenderClear(state->renderer);
     // ... draw your shapes ...
@@ -479,6 +622,7 @@ typedef struct CoreState {
 typedef struct GuiState {
     uint32_t magic;           // 0xGUI0BEEF
     uint32_t struct_size;     // sizeof(GuiState)
+    uint32_t abi_version;     // SYNTHI_GUI_ABI_VERSION
     
     // Rendering handles (owned by runner, stored here)
     SDL_Renderer* renderer;
@@ -506,88 +650,124 @@ typedef struct CoreAPI {
 } CoreAPI;
 ```
 
-**CORE.CPP PATTERN:**
+**CORE.CPP PATTERN (RUNNER-COMPATIBLE):**
 
 ```cpp
-// core.cpp
-static CoreState core_state = {0};
-static CoreAPI core_api = {0};
+// core.cpp - Business logic only, NO GUI interaction
+#include "shared.h"
 
-// Export table for GUI to call core functions
-extern "C" CoreAPI* get_core_api(void) {
-    core_api.version = 1;
-    core_api.get_state = []() { return &core_state; };
-    core_api.pause = []() { core_state.paused = 1; };
-    core_api.resume = []() { core_state.paused = 0; };
-    return &core_api;
-}
+static AppState app_state = {0};
 
 extern "C" void* on_load(void* prev_state, void* window_ptr) {
     if (prev_state) {
-        CoreState* old = (CoreState*)prev_state;
-        if (old->magic == 0xDEADBEEF && old->struct_size == sizeof(CoreState)) {
-            core_state = *old;  // Safe migration
+        AppState* old = (AppState*)prev_state;
+        if (old->magic == 0xDEADBEEF && old->struct_size == sizeof(AppState)) {
+            app_state = *old;  // Safe migration
         }
     } else {
-        core_state.magic = 0xDEADBEEF;
-        core_state.struct_size = sizeof(CoreState);
-        core_state.abi_version = 1;
-        // ... init other fields
+        app_state.magic = 0xDEADBEEF;
+        app_state.struct_size = sizeof(AppState);
+        app_state.abi_version = 1;
+        app_state.running = 1;
+        app_state.paused = 0;
+        // ... init other fields from original code
     }
     
-    // Load GUI module - GUI is independent, doesn't affect core state
-    load_gui_module("./gui.so");
-    if (ptr_gui_initialize) {
-        // Pass renderer to GUI, GUI creates its own GuiState
-        ptr_gui_initialize(&core_state, window_ptr);
-    }
+    // NOTE: Core does NOT load gui.so - the runner handles that
+    return &app_state;
+}
+
+extern "C" void on_update(void* state_ptr, double dt) {
+    AppState* state = (AppState*)state_ptr;
+    if (!state) return;
     
-    return &core_state;
+    // Business logic updates only
+    if (!state->paused) {
+        state->x += state->dx;
+        if (state->x > 590 || state->x < 0) state->dx = -state->dx;
+    }
+}
+
+extern "C" void on_event(void* state_ptr, void* event_ptr) {
+    AppState* state = (AppState*)state_ptr;
+    SDL_Event* ev = (SDL_Event*)event_ptr;
+    
+    if (ev->type == SDL_QUIT) {
+        state->running = 0;
+    } else if (ev->type == SDL_MOUSEBUTTONDOWN) {
+        // Handle clicks...
+    } else if (ev->type == SDL_KEYDOWN) {
+        if (ev->key.keysym.sym == SDLK_ESCAPE) {
+            state->running = 0;
+        }
+    }
+}
+
+extern "C" void on_unload(void* state_ptr) {
+    // Cleanup if needed (but don't free state - runner may reuse it)
 }
 ```
 
-**GUI.CPP PATTERN:**
+**GUI.CPP PATTERN (RUNNER-COMPATIBLE):**
 
 ```cpp
-// gui.cpp
-static GuiState gui_state = {0};
+// gui.cpp - Rendering only, receives state from runner
+#include "shared.h"
+#include <SDL2/SDL.h>
 
-// GUI initializes its OWN state, receives core pointer
-extern "C" void gui_initialize(CoreState* core, void* renderer_ptr) {
-    gui_state.magic = 0xGUI0BEEF;
-    gui_state.struct_size = sizeof(GuiState);
-    gui_state.renderer = (SDL_Renderer*)renderer_ptr;
-    gui_state.core = core;  // Store pointer to read core state
-}
+// CRITICAL: Use STATIC state for Full HMR - do NOT malloc new state!
+static AppState gui_app_state = {0};
 
-extern "C" void gui_render(CoreState* core) {
-    // READ from core state, never modify it
-    int x = core->x;
-    int y = core->y;
-    
-    // Use gui_state for view-specific data
-    SDL_SetRenderDrawColor(gui_state.renderer, 255, 255, 255, 255);
-    // ... render using x, y
-}
-
-// GUI's own on_load for independent hot-reload
-extern "C" void* gui_on_load(void* prev_gui_state, void* renderer_ptr) {
-    if (prev_gui_state) {
-        GuiState* old = (GuiState*)prev_gui_state;
-        if (old->magic == 0xGUI0BEEF) {
-            gui_state = *old;
+// CRITICAL: gui_on_load has 3 PARAMETERS! (prev_state, renderer, core_api)
+extern "C" void* gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr) {
+    if (prev_state) {
+        AppState* old = (AppState*)prev_state;
+        // FULL HMR: Copy previous state to preserve it across reloads
+        if (old->magic == 0x60108EEF && old->struct_size == sizeof(AppState)) {
+            gui_app_state = *old;  // State preserved!
         }
+    } else {
+        // First load - initialize fresh state
+        gui_app_state.magic = 0x60108EEF;  // GUI magic
+        gui_app_state.struct_size = sizeof(AppState);
+        gui_app_state.abi_version = 1;
+        // Initialize default values...
     }
-    gui_state.renderer = (SDL_Renderer*)renderer_ptr;
-    return &gui_state;
+    
+    // CRITICAL: Always store the renderer provided by runner
+    gui_app_state.renderer = (SDL_Renderer*)window_ptr;
+    
+    return &gui_app_state;
+}
+
+extern "C" void gui_on_render(void* state_ptr) {
+    AppState* state = (AppState*)state_ptr;
+    if (!state || !state->renderer) {
+        fprintf(stderr, "GUI Render: Invalid state or renderer.\n");
+        return;
+    }
+    
+    // Clear screen
+    SDL_SetRenderDrawColor(state->renderer, 255, 255, 255, 255);
+    SDL_RenderClear(state->renderer);
+    
+    // Draw based on state
+    SDL_SetRenderDrawColor(state->renderer, 0, 0, 0, 255);
+    SDL_Rect rect = {state->x, state->y, 50, 50};
+    SDL_RenderFillRect(state->renderer, &rect);
+    
+    // DO NOT call SDL_RenderPresent - runner does this
+}
+
+extern "C" void gui_cleanup(void* state_ptr) {
+    // Cleanup textures/resources but NOT the renderer
 }
 ```
 
 ### 3.1 State Definition Location
-- CoreState is defined in shared.h and owned by core.so
-- GuiState is defined in shared.h (or gui.cpp) and owned by gui.so  
-- GUI receives a pointer to CoreState but NEVER modifies it
-- DO NOT duplicate state - each module owns its own state struct
+- AppState is defined in shared.h and shared by both modules
+- Both core.so and gui.so use the same AppState structure
+- The runner passes state between modules
 
 ### 3.2 State Structure Completeness
 CRITICALLY IMPORTANT: Analyze the original code line-by-line. ANY variable that appears in GUI/rendering code MUST be in the shared state structure.
@@ -713,9 +893,7 @@ extern "C" void on_event(void* state_ptr, void* event_ptr) {
     } else if (ev->type == SDL_KEYDOWN) {
         // Handle key
     }
-    
-    // Forward to GUI if needed
-    if (ptr_gui_on_event) ptr_gui_on_event(state, event_ptr);
+    // Events are forwarded to GUI module by the Runner
 }
 ```
 
@@ -799,8 +977,8 @@ extern "C" void* on_load(void* prev_state, void* window_ptr) {
 
 extern "C" void on_update(void* state_ptr, double dt) {
     AppState* state = (AppState*)state_ptr;
-    state->x += state->dx;  // Just update logic
-    if (ptr_gui_render) ptr_gui_render(state);  // Render
+    state->x += state->dx;  // Just update logic - NO rendering calls!
+    // Rendering is handled by the Runner calling gui_on_render on the GUI module
 }
 
 extern "C" void on_event(void* state_ptr, void* event_ptr) {
@@ -816,7 +994,7 @@ extern "C" void on_event(void* state_ptr, void* event_ptr) {
 
     THREAD SAFETY: SDL2 video operations must happen on the main thread.
 
-        The runner ensures gui_render is called on the main thread.
+        The runner ensures gui_on_render is called on the main thread.
 
     WINDOW HANDLING: DO NOT call SDL_Init(SDL_INIT_VIDEO) if already initialized.
 
@@ -924,10 +1102,17 @@ The Synthi runtime supports both LEGACY and PREFIXED symbol names. Prefixed name
 ### GUI module symbols (gui.cpp):
 | Preferred (New)     | Legacy (Still Supported) | Description                              |
 |---------------------|--------------------------|------------------------------------------|
-| gui_on_load         | gui_initialize           | Initialize GUI state                     |
-| gui_on_render       | gui_render               | Render frame                             |
+| gui_on_load         | on_load (2 params)       | Initialize GUI state (3 params!)         |
+| gui_on_render       | (none - REQUIRED!)       | Render frame                             |
 | gui_on_event        | gui_on_event             | Handle SDL_Event                         |
 | gui_on_unload       | gui_cleanup              | Cleanup before unload                    |
+
+**CRITICAL: REQUIRED GUI FUNCTION NAMES:**
+```cpp
+// Runner REQUIRES these EXACT function names in gui.cpp:
+extern "C" void* gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr);
+extern "C" void gui_on_render(void* state_ptr);  // NOT "gui_render" - MUST be "gui_on_render"!
+```
 
 ### ABI Version Constants:
 The runner checks ABI version to ensure compatibility. Include in your state structs:
@@ -935,11 +1120,30 @@ The runner checks ABI version to ensure compatibility. Include in your state str
 #define SYNTHI_ABI_VERSION 1
 #define CORE_STATE_MAGIC 0xDEADBEEF
 #define GUI_STATE_MAGIC  0x60108EEF  // "GUIBEEF" in hex-speak
+
+// REQUIRED when using Host KV API (see section 12):
+#define SYNTHI_KV_OK              0
+#define SYNTHI_KV_NOT_FOUND       1
+#define SYNTHI_KV_INVALID_ARG     2
+#define SYNTHI_KV_QUOTA_EXCEEDED  3
+#define SYNTHI_KV_INTERNAL_ERROR  4
 ```
 
 4. SHARED MODULE REQUIREMENTS (C/C++)
 
 The shared.h file MUST contain:
+
+**CRITICAL: shared.h is a HEADER FILE - it must contain ONLY:**
+- Type definitions (typedef, struct, enum)
+- Macro definitions (#define) - including SYNTHI_KV_OK etc. when using Host KV
+- Function DECLARATIONS (prototypes)
+- Extern variable declarations
+
+**shared.h must NOT contain:**
+- Function implementations/definitions (bodies with { })
+- Variable definitions
+- Executable code
+
 4.1 Include Guards
 C++
 
@@ -977,32 +1181,23 @@ typedef struct {
 
 4.4 GUI Entry Point Declarations (FOR GUI.CPP ONLY)
 
-**IMPORTANT**: These declarations are for gui.cpp to IMPLEMENT. Core.cpp must NOT call these directly!
+**IMPORTANT**: These declarations are for gui.cpp to IMPLEMENT. Core.cpp must NOT call these!
 
-The SHARED module MAY declare the GUI entry points, but core.cpp MUST NOT use them directly.
-Core.cpp must use function pointers loaded via dlsym() instead.
+The Synthi Runner loads core.so and gui.so independently and calls their exported functions directly.
+Core.cpp should NOT interact with gui.cpp at all - the runner handles all module coordination.
 
-If you include these in shared.h, add a comment warning:
+GUI.CPP implements these (declared locally or in gui.cpp itself):
 C++
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-// GUI entry points - IMPLEMENTED in gui.cpp, LOADED via dlsym in core.cpp
-// WARNING: Do NOT call these directly from core.cpp! Use ptr_gui_* pointers instead.
+// In gui.cpp - these are ONLY used within gui.cpp
 void gui_initialize(AppState* state);
 void gui_on_update(AppState* state, float dt);
-void gui_render(AppState* state);
+void gui_on_render(AppState* state);
 void gui_cleanup(AppState* state);
 void gui_on_event(AppState* state, void* event);
 
-#ifdef __cplusplus
-}
-#endif
-
-**ALTERNATIVE (PREFERRED)**: Do NOT declare gui_* functions in shared.h at all. 
-Only declare them in gui.cpp where they are implemented. This prevents accidental direct calls from core.cpp.
+**DO NOT declare gui_* functions in shared.h** - they are internal to the GUI module.
+Core.cpp has NO visibility into GUI functions - this is by design.
 
 4.5 Required System Headers
 
@@ -1018,17 +1213,21 @@ C++
 
 4.6 EXPORTED FUNCTIONS (CRITICAL)
 
-The GUI module MUST export the following function with extern "C" to allow the runner to drive rendering:
+The GUI module (gui.cpp) MUST export the following function with extern "C" to allow the runner to drive rendering.
+**PUT THIS IN gui.cpp, NOT in shared.h:**
 C++
 
+// In gui.cpp - this wrapper allows the runner to call gui_on_render
 extern "C" void on_render(void* state) {
-    gui_render((AppState*)state);
+    gui_on_render((AppState*)state);
 }
 
-The CORE module MUST export on_update but SHOULD NOT call gui_render.
+**DO NOT put function definitions in shared.h** - headers should only contain declarations, not implementations.
 
-CRITICAL: gui_render MUST NOT call SDL_RenderPresent(). The Runner handles SDL_RenderPresent after calling gui_render.
-DO NOT include SDL_RenderPresent in your generated code - it will be called automatically by the host runner after gui_render returns.
+The CORE module MUST export on_update but SHOULD NOT call gui_on_render.
+
+CRITICAL: gui_on_render MUST NOT call SDL_RenderPresent(). The Runner handles SDL_RenderPresent after calling gui_render.
+DO NOT include SDL_RenderPresent in your generated code - it will be called automatically by the host runner after gui_on_render returns.
 5. HEADER INCLUSION REQUIREMENTS
 5.1 Explicit Inclusion Rule
 
@@ -1080,7 +1279,7 @@ Platform-Specific (SDL2):
 
     Texture functions → #include <SDL2/SDL.h>
 
-    dlopen, dlsym, dlclose → #include <dlfcn.h>
+    // Note: dlopen/dlsym NOT needed - Runner handles module loading
 
 Platform-Specific (Windows):
 
@@ -1104,6 +1303,11 @@ For EACH file, go through line by line:
 6.1 Entry Point Implementation
 
 The GUI module MUST implement these functions with extern "C" linkage.
+
+**CRITICAL RULES FOR gui_on_load:**
+1. NEVER return NULL - always return a valid state pointer
+2. ALWAYS store window_ptr as the renderer: `state->renderer = (SDL_Renderer*)window_ptr;`
+3. If prev_state is NULL, use core_api_ptr or initialize a fallback static state
 
 CRITICAL: Implement "Lazy Initialization" for the window. Check if it exists in state before creating it. CRITICAL: Implement "Persistent Cleanup". Do NOT destroy the window on cleanup.
 C++
@@ -1130,7 +1334,7 @@ void gui_initialize(AppState* state) {
     }
     
     // 2. Initialize other resources (fonts, textures)
-    // CRITICAL: Create Textures HERE, not in gui_render.
+    // CRITICAL: Create Textures HERE, not in gui_on_render.
     // if (!state->texture) state->texture = SDL_CreateTexture(state->renderer, ...);
 }
 
@@ -1142,7 +1346,7 @@ void gui_on_update(AppState* state, float dt) {
     // fprintf(stdout, "DEBUG: x=%d, dx=%d\n", state->x, state->dx);
 }
 
-void gui_render(AppState* state) {
+void gui_on_render(AppState* state) {
     // Perform actual rendering using state data
     // Draw based on state->x, state->y, state->color, etc.
     
@@ -1168,10 +1372,34 @@ void gui_on_event(AppState* state, void* event) {
     // if (ev->type == SDL_MOUSEBUTTONDOWN) { ... }
 }
 
-// CRITICAL: The GUI module MUST export on_load to satisfy the runner's validation check.
-// It simply returns the state pointer passed to it.
-void* on_load(void* prev_state, void* window_ptr) {
-    return prev_state;
+// CRITICAL: The GUI module MUST export gui_on_load with 3 PARAMETERS!
+// The runner calls gui_on_load(prev_state, renderer_ptr, core_api_ptr)
+// If prev_state is NULL (first load), use core's state from core_api_ptr.
+// core_api_ptr can be cast to AppState* if needed.
+static AppState gui_state = {0};  // Fallback static state
+
+// CORRECT: 3-parameter signature
+void* gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr) {
+    // GUI typically uses the same state as core (passed via prev_state or core_api)
+    AppState* state = (AppState*)prev_state;
+    
+    if (!state && core_api_ptr) {
+        // Use core's state if no prev_state
+        state = (AppState*)core_api_ptr;
+    }
+    
+    if (!state) {
+        // Fallback: Initialize our own state (standalone GUI mode)
+        state = &gui_state;
+        state->magic = GUI_STATE_MAGIC;
+        state->struct_size = sizeof(AppState);
+        state->abi_version = SYNTHI_ABI_VERSION;
+    }
+    
+    // CRITICAL: Always update renderer from runner - this is REQUIRED!
+    state->renderer = (SDL_Renderer*)window_ptr;
+    
+    return state;  // NEVER return NULL!
 }
 
 } // extern "C"
@@ -1181,7 +1409,7 @@ void* on_load(void* prev_state, void* window_ptr) {
 The GUI module accesses shared state through the pointer:
 C++
 
-void gui_render(AppState* state) {
+void gui_on_render(AppState* state) {
     // CORRECT: Access via state pointer
     draw_rectangle(state->x, state->y, state->width, state->height);
     
@@ -1209,101 +1437,45 @@ To prevent flickering during hot-reloading, the renderer handle MUST persist in 
 7.1 Core Responsibilities
 
     Initialize and manage the AppState structure
-
     Implement business logic (game logic, calculations, state machines)
-
-    Handle dynamic library loading (dlopen/LoadLibrary)
-
-    Call GUI entry points through function pointers ONLY (via dlsym)
-
+    Handle events passed by the runner
+    
     CRITICAL: DO NOT IMPLEMENT main(). You must implement on_load, on_update, and on_unload to be driven by the host runner.
-
-    ⚠️ ABSOLUTE RULE - VIOLATION CAUSES LINKER FAILURE ⚠️
-    NEVER write `gui_render(state)` in core.cpp - this causes "undefined symbol: gui_render"
-    NEVER write `gui_initialize(state)` in core.cpp - this causes "undefined symbol: gui_initialize"  
-    NEVER write `gui_on_update(state, dt)` in core.cpp - this causes "undefined symbol: gui_on_update"
     
-    ALWAYS write `if (ptr_gui_render) ptr_gui_render(state);`
-    ALWAYS write `if (ptr_gui_initialize) ptr_gui_initialize(state);`
-    ALWAYS write `if (ptr_gui_on_update) ptr_gui_on_update(state, dt);`
+    CRITICAL: DO NOT load gui.so yourself. The Synthi runner loads both modules independently.
     
-    The ptr_gui_* variables are function pointers loaded via dlsym() at runtime.
+    CRITICAL: DO NOT call any gui_* functions. Core module handles logic only, runner handles rendering.
 
-7.2 Dynamic Loading Pattern (C/C++ Linux)
-
-CRITICAL: Do NOT name the function pointers the same as the functions declared in shared.h. Use a prefix ptr_ to avoid redeclaration errors.
-C++
-
-#include "shared.h"
-#include <dlfcn.h>
-#include <stdio.h>
-
-// Define function pointer types
-typedef void (*gui_initialize_fn)(AppState*);
-typedef void (*gui_on_update_fn)(AppState*, float);
-typedef void (*gui_render_fn)(AppState*);
-typedef void (*gui_cleanup_fn)(AppState*);
-typedef void (*gui_on_event_fn)(AppState*, void*);
-
-// Define function pointers
-void* gui_lib = NULL;
-gui_initialize_fn ptr_gui_initialize = NULL;
-gui_on_update_fn ptr_gui_on_update = NULL;
-gui_render_fn ptr_gui_render = NULL;
-gui_cleanup_fn ptr_gui_cleanup = NULL;
-gui_on_event_fn ptr_gui_on_event = NULL;
-
-bool load_gui_module(const char* path) {
-    // Safer reload: Load new lib first, then close old one
-    void* new_lib = dlopen(path, RTLD_NOW);
-    if (!new_lib) {
-        fprintf(stderr, "dlopen failed: %s\n", dlerror());
-        return false;
-    }
-    
-    if (gui_lib) dlclose(gui_lib);
-    gui_lib = new_lib;
-    
-    ptr_gui_initialize = (gui_initialize_fn)dlsym(gui_lib, "gui_initialize");
-    ptr_gui_on_update = (gui_on_update_fn)dlsym(gui_lib, "gui_on_update");
-    ptr_gui_render = (gui_render_fn)dlsym(gui_lib, "gui_render");
-    ptr_gui_cleanup = (gui_cleanup_fn)dlsym(gui_lib, "gui_cleanup");
-    ptr_gui_on_event = (gui_on_event_fn)dlsym(gui_lib, "gui_on_event");
-    
-    return ptr_gui_initialize && ptr_gui_on_update && ptr_gui_render;
-}
-
-7.3 Core Entry Points (NO MAIN FUNCTION)
+7.2 Core Entry Points (NO MAIN FUNCTION)
 
 The Core module MUST implement these extern "C" functions to be driven by the runner:
 C++
 
+#include "shared.h"
+
 // Global state instance - CRITICAL: MUST BE DECLARED HERE
-AppState app_state = {0};
+static AppState app_state = {0};
 
 extern "C" void* on_load(void* prev_state, void* window_ptr) {
     if (prev_state) {
         // Migrate state
         AppState* old = (AppState*)prev_state;
-        app_state = *old; // Copy POD state
-        // Ensure window pointer is updated (in case it changed, though unlikely)
-        app_state.window = (SDL_Window*)window_ptr;
+        if (old->magic == 0xDEADBEEF && old->struct_size == sizeof(AppState)) {
+            app_state = *old; // Copy POD state
+        }
     } else {
         // Initialize new state
         app_state.magic = 0xDEADBEEF;
         app_state.struct_size = sizeof(AppState);
+        app_state.abi_version = 1;
         app_state.is_running = true;
         app_state.width = 800;
         app_state.height = 600;
-        // CRITICAL: Use the provided window pointer as renderer
+        // CRITICAL: Store renderer provided by the runner
         app_state.renderer = (SDL_Renderer*)window_ptr;
     }
     
-    // Load GUI module
-    if (load_gui_module("./gui.so")) {
-        if (ptr_gui_initialize) ptr_gui_initialize(&app_state);
-    }
-    
+    // NO dynamic loading - the Runner loads gui.so independently
     return &app_state;
 }
 
@@ -1313,14 +1485,11 @@ extern "C" void on_update(void* state_ptr, double dt) {
     // Events are delivered via on_event(), not polled in on_update().
     
     // Core logic updates ONLY - update positions, velocities, game state
+    AppState* state = (AppState*)state_ptr;
     // Example: state->x += state->dx;
     
-    // Call GUI update for animations
-    if (ptr_gui_on_update) ptr_gui_on_update(&app_state, (float)dt);
-    
-    // Call GUI render - core is responsible for triggering rendering
-    if (ptr_gui_render) ptr_gui_render(&app_state);
-    // NOTE: Do NOT call SDL_RenderPresent - the Runner handles it automatically!
+    // NOTE: Do NOT call gui_on_render or SDL_RenderPresent
+    // The Runner calls gui_render directly on the GUI module
 }
 
 extern "C" void on_event(void* state_ptr, void* event_ptr) {
@@ -1338,16 +1507,13 @@ extern "C" void on_event(void* state_ptr, void* event_ptr) {
             state->running = 0;
         }
     }
-    
-    // Forward to GUI
-    if (ptr_gui_on_event) ptr_gui_on_event(state, event_ptr);
+    // NOTE: Events are forwarded to GUI module by the Runner
 }
 
 extern "C" void on_unload(void* state_ptr) {
-    // ATOMIC-SWAP HMR: If state_ptr is NULL, this is a deferred cleanup after swap
-    // The new module is already active, just cleanup resources (dlclose GUI lib)
-    if (ptr_gui_cleanup && state_ptr) ptr_gui_cleanup(&app_state);
-    if (gui_lib) dlclose(gui_lib);
+    // Core module cleanup - state is managed by the runner
+    // NO dlclose needed - Runner handles module lifecycle
+    (void)state_ptr;
 }
 
 7.4 HMR LIFECYCLE SAFETY (CRITICAL - PREVENT FREEZING)
@@ -1386,26 +1552,19 @@ extern "C" void on_unload(void* state_ptr) {
    REQUIRED CODE PATTERN FOR CORE.CPP:
    
    extern "C" void on_unload(void* state_ptr) {
-       // ATOMIC-SWAP HMR: NULL means deferred cleanup, skip state access
-       if (!state_ptr) {
-           if (gui_lib) { dlclose(gui_lib); gui_lib = NULL; }
-           return;
-       }
+       // Core module: state is managed by runner
+       // NO dynamic library cleanup needed
+       
+       if (!state_ptr) return;
        
        AppState* state = (AppState*)state_ptr;
-       
-       // 1. Unload GUI (always safe)
-       if (gui_lib) { dlclose(gui_lib); gui_lib = NULL; }
 
-       // 2. LIFECYCLE CHECK
+       // 2. LIFECYCLE CHECK - only cleanup on actual exit
        if (state->running == 0) {
-        // ORIGINAL CLEANUP LOGIC GOES HERE
-           // ONLY destroy these if the user actually clicked exit
-           // XDestroyWindow(state->dpy, state->win); 
-           // XCloseDisplay(state->dpy);
+           // ONLY destroy resources if the user actually clicked exit
+           // The runner handles SDL window/renderer cleanup
        }
-       // IF RUNNING == 1, DO NOTHING. RESOURCES MUST LEAK INTENTIONALLY TO THE NEXT MODULE.
-       // The window persists for the next load.
+       // IF RUNNING != 0, this is a hot-reload - preserve state
    }
 
 8. PLATFORM-SPECIFIC CONSIDERATIONS
@@ -1449,7 +1608,7 @@ SDL_Renderer* renderer = state->renderer;// Renderer handle
 
 SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255); // Set color
 SDL_RenderFillRect(renderer, &rect);              // Draw filled rectangle
-// DO NOT call SDL_RenderPresent - the Runner calls it after gui_render returns!
+// DO NOT call SDL_RenderPresent - the Runner calls it after gui_on_render returns!
 
 Store in AppState:
 C++
@@ -1492,7 +1651,7 @@ struct AppState {
 
         Remember: the host passes an SDL renderer via window_ptr; do not treat it as an X11 Display or Window unless the user code explicitly expects that.
 
-        Do not write “simulated” or “placeholder” logic. Assume the code is executed in a real runner with dlopen/dlsym loading separate core/gui shared libraries.
+        Do not write “simulated” or “placeholder” logic. The Synthi Runner loads core.so and gui.so independently and calls their exported functions directly.
 
 8.4 XVFB / HEADLESS ARCHITECTURE (DEPRECATED - SDL2 PREFERRED)
 
@@ -1518,9 +1677,7 @@ struct AppState {
 
     -fPIC: Position-independent code (required for shared libs)
 
-    -ldl: Link dynamic loading library (dlopen, dlsym)
-
-    -lSDL2: Link SDL2 library
+    -lSDL2: Link SDL2 library (for gui.cpp only)
 
 10. VERIFICATION CHECKLIST
 
@@ -1663,10 +1820,9 @@ ANTI-PATTERNS TO AVOID
 
 ✅ DO (IN CORE.CPP):
 
-    Use `if (ptr_gui_render) ptr_gui_render(state);` with function pointers
-    Load gui functions via dlsym(): `ptr_gui_render = (gui_render_fn)dlsym(gui_lib, "gui_render");`
-    Declare function pointer types: `typedef void (*gui_render_fn)(AppState*);`
-    Initialize pointers to NULL: `gui_render_fn ptr_gui_render = NULL;`
+    Focus only on business logic - state updates, calculations
+    NO calls to GUI functions - the Runner handles GUI module independently
+    Export proper lifecycle functions: on_load, on_update, on_event, on_unload
 
 ✅ DO (GENERAL):
 
@@ -1687,14 +1843,16 @@ ANTI-PATTERNS TO AVOID
 ## FINAL VERIFICATION BEFORE OUTPUT
 
 Before outputting your JSON, scan core.cpp content for these patterns:
-1. `gui_render(` without `ptr_` → STOP and fix to `ptr_gui_render(`
-2. `gui_initialize(` without `ptr_` → STOP and fix to `ptr_gui_initialize(`
-3. `gui_on_update(` without `ptr_` → STOP and fix to `ptr_gui_on_update(`
-4. `gui_cleanup(` without `ptr_` → STOP and fix to `ptr_gui_cleanup(`
-5. `gui_on_event(` without `ptr_` → STOP and fix to `ptr_gui_on_event(`
-6. `extern void gui_` → STOP and remove this line
+1. `gui_render(` → STOP - Core should NOT call GUI functions
+2. `gui_initialize(` → STOP - Core should NOT call GUI functions
+3. `gui_on_update(` → STOP - Core should NOT call GUI functions
+4. `gui_cleanup(` → STOP - Core should NOT call GUI functions
+5. `gui_on_event(` → STOP - Core should NOT call GUI functions
+6. `dlopen` or `dlsym` → STOP - Core should NOT load dynamic libraries
+7. `ptr_gui_` → STOP - Core should NOT have GUI function pointers
 
 If ANY of these patterns exist in core.cpp, your output is INVALID.
+Core should ONLY contain business logic and state management.
 
 # ============================================================
 # HOST KV API (PERSISTENT STATE ACROSS HOT RELOADS)
@@ -1786,11 +1944,15 @@ struct SynthiNamespaceSchemaV1 {
 };
 ```
 
+**CRITICAL: When using Host KV API, shared.h MUST include ALL of the above: return codes (#define SYNTHI_KV_OK, etc.), forward declarations, struct definitions. Without these, core.cpp and gui.cpp will fail to compile.**
+
 ### 12.4 CORE MODULE WITH HOST KV
 
 ```cpp
-// shared.h additions for Host KV
-// (Include the structs from 12.3 above)
+// shared.h MUST contain the following when using Host KV:
+// 1. Return codes: #define SYNTHI_KV_OK 0, etc.
+// 2. Forward declarations: typedef struct SynthiHostContextV1...
+// 3. Struct definitions: struct HostKvApiV1, struct SynthiHostContextV1, struct SynthiNamespaceSchemaV1
 
 // core.cpp with Host KV support
 
