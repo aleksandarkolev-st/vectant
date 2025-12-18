@@ -13,7 +13,8 @@ export const useEditorProviders = ({
     fileCacheEntries = new Map(),
     activeFile,
     lspReady = false,
-    diagnostics = [] // Proactive analysis diagnostics for quick fixes
+    diagnostics = [], // Proactive analysis diagnostics for quick fixes
+    removeDiagnosticByLocation = null, // Callback to remove diagnostic after fix applied
 }) => {
     const hoverProviderRef = useRef(null);
     const inlineCompletionProviderRef = useRef(null);
@@ -385,7 +386,7 @@ export const useEditorProviders = ({
         const seenFixes = new Set();
         
         // Register command to apply fix
-        const applyFixCommandId = editorInstance.addCommand(0, (ctx, fix, range) => {
+        const applyFixCommandId = editorInstance.addCommand(0, (ctx, fix, range, diagnosticLocation) => {
             if (!fix || !range) return;
             const model = editorInstance.getModel();
             if (!model) return;
@@ -400,6 +401,25 @@ export const useEditorProviders = ({
             pendingFixRef.current = null;
             isPreviewingRef.current = false;
             hideFixPreview();
+            
+            // IMPORTANT: Remove the diagnostic from state immediately
+            // This prevents the error from persisting after the fix is applied
+            if (removeDiagnosticByLocation && diagnosticLocation) {
+                removeDiagnosticByLocation(diagnosticLocation);
+            }
+            
+            // Also clear Monaco markers for this specific range
+            const currentMarkers = monacoInstance.editor.getModelMarkers({ resource: model.uri });
+            const remainingMarkers = currentMarkers.filter(m => {
+                // Keep markers that don't match the fixed range
+                return !(m.startLineNumber === range.startLineNumber &&
+                         m.startColumn === range.startColumn &&
+                         m.endLineNumber === range.endLineNumber &&
+                         m.endColumn === range.endColumn);
+            });
+            
+            // Re-apply only remaining markers (filtering out the fixed one)
+            monacoInstance.editor.setModelMarkers(model, 'synthi-proactive', remainingMarkers.filter(m => m.owner === 'synthi-proactive'));
         });
         
         // Helper to find diagnostics for a given range
@@ -453,6 +473,9 @@ export const useEditorProviders = ({
                             // Store the fix info for preview triggering
                             const fixInfo = { fix, range: fixRange, diagnostic };
                             
+                            // Store the diagnostic location for clearing after fix
+                            const diagnosticLocation = diagnostic.location;
+                            
                             // Add the apply fix action using command instead of edit
                             // (Monaco's WorkspaceEdit format has compatibility issues)
                             actions.push({
@@ -463,7 +486,7 @@ export const useEditorProviders = ({
                                 command: {
                                     id: applyFixCommandId,
                                     title: fix.description || 'Apply fix',
-                                    arguments: [fix, fixRange],
+                                    arguments: [fix, fixRange, diagnosticLocation],
                                 },
                             });
                         }
@@ -485,7 +508,7 @@ export const useEditorProviders = ({
         return () => {
             codeActionProviderRef.current?.dispose();
         };
-    }, [monacoInstance, editorInstance, activeLanguage]);
+    }, [monacoInstance, editorInstance, activeLanguage, removeDiagnosticByLocation]);
 
     // 5. Semantic Tokens (Custom Highlighting for Classes/Types)
     useEffect(() => {

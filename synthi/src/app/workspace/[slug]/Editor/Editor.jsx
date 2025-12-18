@@ -126,6 +126,7 @@ const EditorPanel = ({
     onEditorMount,
     analysisResult,
     diagnostics = [],
+    removeDiagnosticByLocation = null,
     latestCompletion,
     aiBusy = false,
     onClearCompletion = null,
@@ -720,7 +721,8 @@ const EditorPanel = ({
         fileCacheEntries,
         activeFile,
         lspReady: lspStatus.startsWith('Ready'),
-        diagnostics // Pass proactive analysis diagnostics for quick fixes
+        diagnostics, // Pass proactive analysis diagnostics for quick fixes
+        removeDiagnosticByLocation, // Callback to remove diagnostic after fix applied
     });
 
     // --- Event Handlers ---
