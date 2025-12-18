@@ -109,9 +109,25 @@ fn resolve_android_sdk_root() -> Option<PathBuf> {
         .filter(|h| !h.trim().is_empty())
         .map(PathBuf::from)
     {
+        // Common ad-hoc install location (matches WSL tutorials and our dev setup)
+        candidates.push(home.join("android-sdk"));
         candidates.push(home.join("Android/Sdk"));
         candidates.push(home.join("Android/sdk"));
         candidates.push(home.join("Library/Android/sdk"));
+    }
+
+    // If we're running as root (or HOME is otherwise unhelpful), try scanning /home/*.
+    // This is deterministic and cheap (bounded by number of users).
+    if let Ok(entries) = std::fs::read_dir("/home") {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if !p.is_dir() {
+                continue;
+            }
+            candidates.push(p.join("android-sdk"));
+            candidates.push(p.join("Android/Sdk"));
+            candidates.push(p.join("Android/sdk"));
+        }
     }
 
     candidates.into_iter().find(|p| sdk_root_looks_valid(p))
@@ -152,5 +168,34 @@ fn prepend_to_path(dirs: &[PathBuf]) {
             }
             std::env::set_var("PATH", out);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    fn run_ok(program: &str, args: &[&str]) -> bool {
+        Command::new(program)
+            .args(args)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    /// Integration-style smoke test for local/CI environments that have an Android SDK.
+    ///
+    /// Run explicitly:
+    /// `cargo test -p worker android_sdk_tools_visible -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn android_sdk_tools_visible() {
+        ensure_android_sdk_env();
+        log_android_env_diagnostics("test");
+
+        assert!(run_ok("adb", &["version"]), "adb not runnable");
+        assert!(run_ok("emulator", &["-list-avds"]), "emulator not runnable");
+        assert!(run_ok("avdmanager", &["list", "avd"]), "avdmanager not runnable");
     }
 }

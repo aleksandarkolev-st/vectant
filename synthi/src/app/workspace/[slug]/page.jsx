@@ -3,11 +3,13 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { use } from 'react';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent } from '@/redux/workspaceSlice';
-import {
-    selectShowTerminal,
-    selectTreeOnRight,
-    toggleTerminal,
-    setTreeOrientation
+import { 
+    selectShowTerminal, 
+    selectShowEmulatorPreview,
+    selectTreeOnRight, 
+    toggleTerminal, 
+    setTreeOrientation,
+    setEmulatorPreviewVisible
 } from '@/redux/uiSlice';
 import TopNav from '../TopNav.jsx';
 import {
@@ -41,6 +43,8 @@ import ErrorOverlay from '@/components/ErrorOverlay';
 import { GitStatus } from '@/components/git/GitStatus';
 import ActivityBar from '../ActivityBar.jsx';
 import SearchView from './SearchView.jsx';
+import EmulatorPanel from '@/components/emulator/EmulatorPanel';
+import { EMULATOR_STATES } from '@/components/emulator/emulatorStates';
 import StatusBar from '../StatusBar.jsx';
 import WorkspaceHydrator from '@/components/WorkspaceHydrator';
 import { ProblemsPanel } from '@/components/analysis';
@@ -60,6 +64,7 @@ export default function EditorPage({ params }) {
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
     const [useAiSplit, setUseAiSplit] = useState(false);
+    const [emulatorRunNonce, setEmulatorRunNonce] = useState(0);
     const analysisTimeoutRef = useRef(null);
     const lastAnalyzedSignatureRef = useRef('');
     
@@ -162,6 +167,7 @@ export default function EditorPage({ params }) {
     // 2. Consume global state directly via selectors
     const activeFile = useAppSelector(selectActiveFile);
     const showTerminal = useAppSelector(selectShowTerminal);
+    const showEmulatorPreview = useAppSelector(selectShowEmulatorPreview);
     const treeOnRight = useAppSelector(selectTreeOnRight);
     const currentContent = useAppSelector(selectCurrentContent);
     const rawFiles = useAppSelector(state => state.workspace.rawFiles);
@@ -465,6 +471,13 @@ export default function EditorPage({ params }) {
         const hasRnPackage = await detectReactNativeProject();
         const isReactNative = hasRnImports || hasRnPackage;
         const target = isReactNative ? 'react-native-emulator' : null;
+
+        // Auto-open the UI-only emulator panel when we run a mobile build.
+        // This is intentionally NOT a real emulator: it only shows the preview panel.
+        if (isReactNative) {
+            dispatch(setEmulatorPreviewVisible(true));
+            setEmulatorRunNonce((v) => v + 1); // remount to simulate a fresh boot
+        }
         
         // Derive project root from active file's directory path
         // e.g., "mobile/app.tsx" -> "mobile", "src/screens/Home.tsx" -> "src/screens"
@@ -641,101 +654,136 @@ export default function EditorPage({ params }) {
         </ResizablePanel>
     );
 
+    // UI-only dockable panel (hidden by default). Opening will be hooked up later
+    // via command palette / toolbar (stub only per requirements).
+    const EmulatorPreviewPanel = (
+        <ResizablePanel defaultSize={24} minSize={18} maxSize={55} className="border-l border-[#545454] bg-[#0c0c0e] min-w-0">
+            <EmulatorPanel key={emulatorRunNonce} defaultState={EMULATOR_STATES.BOOTING} />
+        </ResizablePanel>
+    );
+
     if (workspaceMissing) {
         return <WorkspaceNotFoundModal slug={slug} message={workspaceMissingMessage} open={true} />;
     }
 
     return (
-        <div className={`flex flex-col h-screen overflow-hidden bg-[#09090b] text-[#D7DAE0]`}>
-            <div className={`flex flex-col h-screen bg-[#1e1e1e] text-gray-200`}>
-                {/* Hydrate workspace-specific tabs from localStorage */}
-                <WorkspaceHydrator slug={slug} />
-                <TopNav
-                    title={activeFile ? activeFile.name : 'Synthi Workspace'}
-                    onRun={handleRun}
-                    onToggleTerminal={() => dispatch(toggleTerminal())}
-                    onUndo={handleUndo}
-                    onRedo={handleRedo}
-                    onToggleChat={handleToggleChat}
-                    chatVisible={chatVisible}
-                    onCopyLineUp={handleCopyLineUp}
-                    onCopyLineDown={handleCopyLineDown}
-                    onMoveLineUp={handleMoveLineUp}
-                    onMoveLineDown={handleMoveLineDown}
-                    onDuplicateSelection={handleDuplicateSelection}
-                />
-                {buildLogs.length > 0 && (
-                    <div className="border-b border-[#1a1a1e] bg-[#09090b] px-3 py-2 text-xs font-mono text-[#D7DAE0] max-h-28 overflow-auto">
-                        {buildLogs.map((line, idx) => (
-                            <div key={idx} className="leading-5 whitespace-pre-wrap">{line}</div>
-                        ))}
-                    </div>
+    <div className="flex flex-col h-screen overflow-hidden bg-[#09090b] text-[#D7DAE0]">
+        <div className="flex flex-col h-screen bg-[#1e1e1e] text-gray-200">
+            {/* Hydrate workspace-specific tabs from localStorage */}
+            <WorkspaceHydrator slug={slug} />
+
+            <TopNav
+                title={activeFile ? activeFile.name : 'Synthi Workspace'}
+                onRun={handleRun}
+                onToggleTerminal={() => dispatch(toggleTerminal())}
+                onUndo={handleUndo}
+                onRedo={handleRedo}
+                onToggleChat={handleToggleChat}
+                chatVisible={chatVisible}
+                onCopyLineUp={handleCopyLineUp}
+                onCopyLineDown={handleCopyLineDown}
+                onMoveLineUp={handleMoveLineUp}
+                onMoveLineDown={handleMoveLineDown}
+                onDuplicateSelection={handleDuplicateSelection}
+            />
+
+            {buildLogs.length > 0 && (
+                <div className="border-b border-[#1a1a1e] bg-[#09090b] px-3 py-2 text-xs font-mono text-[#D7DAE0] max-h-28 overflow-auto">
+                    {buildLogs.map((line, idx) => (
+                        <div key={idx} className="leading-5 whitespace-pre-wrap">
+                            {line}
+                        </div>
+                    ))}
+                </div>
+            )}
+
+            <DraggableVideoWidget
+                guiConfig={guiConfig}
+                setGuiConfig={setGuiConfig}
+                isGuiRunning={isGuiRunning}
+                setIsGuiRunning={setIsGuiRunning}
+                mediaStream={mediaStream}
+                sendGuiEvent={sendGuiEvent}
+            />
+
+            <ResizablePanelGroup
+                direction="horizontal"
+                className="flex-1 min-h-0"
+                key={panelGroupKey}
+            >
+                {treeOnRight ? (
+                    <>
+                        {EditorPanelComponent}
+
+                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+
+                        {FileTreePanel}
+
+                        {chatVisible && (
+                            <>
+                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                {ChatPanel}
+                            </>
+                        )}
+
+                        {showEmulatorPreview && (
+                            <>
+                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                {EmulatorPreviewPanel}
+                            </>
+                        )}
+                    </>
+                ) : (
+                    <>
+                        {FileTreePanel}
+
+                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+
+                        {EditorPanelComponent}
+
+                        {chatVisible && (
+                            <>
+                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                {ChatPanel}
+                            </>
+                        )}
+
+                        {showEmulatorPreview && (
+                            <>
+                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                {EmulatorPreviewPanel}
+                            </>
+                        )}
+                    </>
                 )}
-                <DraggableVideoWidget
-                    guiConfig={guiConfig}
-                    setGuiConfig={setGuiConfig}
-                    isGuiRunning={isGuiRunning}
-                    setIsGuiRunning={setIsGuiRunning}
-                    mediaStream={mediaStream}
-                    sendGuiEvent={sendGuiEvent}
-                />
-                <ResizablePanelGroup
-                    direction="horizontal"
-                    className="flex-1 min-h-0"
-                    key={panelGroupKey}
-                >
-                    {treeOnRight ? (
-                        <>
-                            {EditorPanelComponent}
-                            <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                            {FileTreePanel}
-                            {chatVisible && (
-                                <>
-                                    <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                                    {ChatPanel}
-                                </>
-                            )}
-                        </>
-                    ) : (
-                        <>
-                            {FileTreePanel}
-                            <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                            {EditorPanelComponent}
-                            {chatVisible && (
-                                <>
-                                    <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                                    {ChatPanel}
-                                </>
-                            )}
-                        </>
-                    )}
-                </ResizablePanelGroup>
+            </ResizablePanelGroup>
 
-                {/* Chat is rendered inside the ResizablePanelGroup when visible (see `ChatPanel`) */}
-
-                {/* Problems Panel - Shows diagnostics from proactive analysis */}
-                {showProblemsPanel && (
-                    <div className="h-48 max-h-48 flex-shrink-0 border-t border-[#1a1b24]">
-                        <ProblemsPanel
-                            diagnostics={diagnostics}
-                            summary={diagnosticSummary}
-                            isAnalyzing={isAnalyzingProactive}
-                            filePath={activeFile?.path || activeFile?.name || 'Current File'}
-                            onClose={() => setShowProblemsPanel(false)}
-                            onNavigate={(location) => {
-                                if (editor) {
-                                    const position = {
-                                        lineNumber: (location.line ?? 0) + 1,
-                                        column: (location.column ?? 0) + 1,
-                                    };
-                                    editor.setPosition(position);
-                                    editor.revealPositionInCenter(position);
-                                    editor.focus();
-                                }
-                            }}
-                            className="h-full rounded-none border-0"
-                        />
-                    </div>
+            {/* Problems Panel - Shows diagnostics from proactive analysis */}
+            {showProblemsPanel && (
+                <div className="h-48 max-h-48 flex-shrink-0 border-t border-[#1a1b24]">
+                    <ProblemsPanel
+                        diagnostics={diagnostics}
+                        summary={diagnosticSummary}
+                        isAnalyzing={isAnalyzingProactive}
+                        filePath={activeFile?.path || activeFile?.name || 'Current File'}
+                        onClose={() => setShowProblemsPanel(false)}
+                        onNavigate={(location) => {
+                            if (editor) {
+                                const position = {
+                                    lineNumber: (location.line ?? 0) + 1,
+                                    column: (location.column ?? 0) + 1,
+                                };
+                                editor.setPosition(position);
+                                editor.revealPositionInCenter(position);
+                                editor.focus();
+                            }
+                        }}
+                        className="h-full rounded-none border-0"
+                    />
+                </div>
+            )}
+        </div>
+    </div>
                 )}
 
                 {/* Status Bar - VS Code style bottom bar with branch selector */}

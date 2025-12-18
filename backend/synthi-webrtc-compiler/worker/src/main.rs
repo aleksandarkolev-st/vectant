@@ -221,22 +221,18 @@ fn make_chunks(data: &[u8], msg_id: u32) -> Vec<Vec<u8>> {
 async fn main() -> Result<()> {
     println!("Worker starting...");
     println!("Operating System: {}", std::env::consts::OS);
-    println!("=== WORKER ENV DIAGNOSTIC ===");
+    // Cargo does not source shell rc files, so ensure Android SDK tools are visible
+    // to this process deterministically before any SDK checks or emulator logic.
+    env_setup::ensure_android_sdk_env();
+    env_setup::log_android_env_diagnostics("startup");
+
+    println!("=== WORKER ENV DIAGNOSTIC (post-bootstrap) ===");
     println!("CARGO_MANIFEST_DIR = {:?}", std::env::var("CARGO_MANIFEST_DIR"));
     println!("HOME = {:?}", std::env::var("HOME"));
     println!("PATH = {:?}", std::env::var("PATH"));
     println!("ANDROID_SDK_ROOT = {:?}", std::env::var("ANDROID_SDK_ROOT"));
     println!("ANDROID_HOME = {:?}", std::env::var("ANDROID_HOME"));
-    println!("============================");
-
-    // TEMP: hard exit
-    std::process::exit(0);
-
-
-    // Cargo does not source shell rc files, so ensure Android SDK tools are visible
-    // to this process deterministically before any SDK checks or emulator logic.
-    env_setup::ensure_android_sdk_env();
-    env_setup::log_android_env_diagnostics("startup");
+    println!("===========================================");
 
     gst::init()?;
     verify_tooling().await?;
