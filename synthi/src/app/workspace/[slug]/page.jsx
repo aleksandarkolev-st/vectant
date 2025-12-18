@@ -5,9 +5,11 @@ import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent } from '@/redux/workspaceSlice';
 import { 
     selectShowTerminal, 
+    selectShowEmulatorPreview,
     selectTreeOnRight, 
     toggleTerminal, 
-    setTreeOrientation 
+    setTreeOrientation,
+    setEmulatorPreviewVisible
 } from '@/redux/uiSlice';
 import TopNav from '../TopNav.jsx';
 import {
@@ -41,6 +43,8 @@ import ErrorOverlay from '@/components/ErrorOverlay';
 import { GitStatus } from '@/components/git/GitStatus';
 import ActivityBar from '../ActivityBar.jsx';
 import SearchView from './SearchView.jsx';
+import EmulatorPanel from '@/components/emulator/EmulatorPanel';
+import { EMULATOR_STATES } from '@/components/emulator/emulatorStates';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -56,6 +60,7 @@ export default function EditorPage({ params }) {
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
     const [useAiSplit, setUseAiSplit] = useState(false);
+    const [emulatorRunNonce, setEmulatorRunNonce] = useState(0);
     const analysisTimeoutRef = useRef(null);
     const lastAnalyzedSignatureRef = useRef('');
 
@@ -152,6 +157,7 @@ export default function EditorPage({ params }) {
     // 2. Consume global state directly via selectors
     const activeFile = useAppSelector(selectActiveFile);
     const showTerminal = useAppSelector(selectShowTerminal);
+    const showEmulatorPreview = useAppSelector(selectShowEmulatorPreview);
     const treeOnRight = useAppSelector(selectTreeOnRight);
     const currentContent = useAppSelector(selectCurrentContent);
     const rawFiles = useAppSelector(state => state.workspace.rawFiles);
@@ -327,6 +333,13 @@ export default function EditorPage({ params }) {
         const hasRnPackage = await detectReactNativeProject();
         const isReactNative = hasRnImports || hasRnPackage;
         const target = isReactNative ? 'react-native-emulator' : null;
+
+        // Auto-open the UI-only emulator panel when we run a mobile build.
+        // This is intentionally NOT a real emulator: it only shows the preview panel.
+        if (isReactNative) {
+            dispatch(setEmulatorPreviewVisible(true));
+            setEmulatorRunNonce((v) => v + 1); // remount to simulate a fresh boot
+        }
         
         // Derive project root from active file's directory path
         // e.g., "mobile/app.tsx" -> "mobile", "src/screens/Home.tsx" -> "src/screens"
@@ -502,6 +515,14 @@ export default function EditorPage({ params }) {
         </ResizablePanel>
     );
 
+    // UI-only dockable panel (hidden by default). Opening will be hooked up later
+    // via command palette / toolbar (stub only per requirements).
+    const EmulatorPreviewPanel = (
+        <ResizablePanel defaultSize={24} minSize={18} maxSize={55} className="border-l border-[#545454] bg-[#0c0c0e] min-w-0">
+            <EmulatorPanel key={emulatorRunNonce} defaultState={EMULATOR_STATES.BOOTING} />
+        </ResizablePanel>
+    );
+
     if (workspaceMissing) {
         return <WorkspaceNotFoundModal slug={slug} message={workspaceMissingMessage} open={true} />;
     }
@@ -553,6 +574,12 @@ export default function EditorPage({ params }) {
                                             {ChatPanel}
                             </>
                         )}
+                        {showEmulatorPreview && (
+                            <>
+                                <ResizableHandle withHandle className="!pointer-events-auto bg-[#545454] hover:bg-emerald-500 w-0.5 z-50" />
+                                {EmulatorPreviewPanel}
+                            </>
+                        )}
                     </>
                 ) : (
                     <>
@@ -563,6 +590,12 @@ export default function EditorPage({ params }) {
                             <>
                                 <ResizableHandle withHandle className="!pointer-events-auto bg-[#545454] hover:bg-emerald-500 w-0.5 z-50" />
                                 {ChatPanel}
+                            </>
+                        )}
+                        {showEmulatorPreview && (
+                            <>
+                                <ResizableHandle withHandle className="!pointer-events-auto bg-[#545454] hover:bg-emerald-500 w-0.5 z-50" />
+                                {EmulatorPreviewPanel}
                             </>
                         )}
                     </>

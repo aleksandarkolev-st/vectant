@@ -77,6 +77,7 @@ function saveUiPrefs(uiState) {
       autoSaveEnabled: !!uiState.autoSaveEnabled,
       treeOnRight: !!uiState.treeOnRight,
       showTerminal: !!uiState.showTerminal,
+      showEmulatorPreview: !!uiState.showEmulatorPreview,
     };
     localStorage.setItem(UI_STORAGE_KEY, JSON.stringify(toSave));
   } catch (e) {
@@ -136,7 +137,7 @@ if (typeof window !== 'undefined') {
   // Initialize with default state values to prevent overwriting localStorage on startup
   // before hydration has occurred.
   const ui = initialUiState;
-  let lastUi = `${ui.autoCompletionEnabled}|${ui.autoSaveEnabled}|${ui.treeOnRight}|${ui.showTerminal}`;
+  let lastUi = `${ui.autoCompletionEnabled}|${ui.autoSaveEnabled}|${ui.treeOnRight}|${ui.showTerminal}|${ui.showEmulatorPreview}`;
   
   let lastExpandedFolders = (ui.expandedFolders || []).join('|');
   
@@ -150,7 +151,7 @@ if (typeof window !== 'undefined') {
       const state = store.getState();
       const ui = state?.ui || {};
       // Simple shallow compare to avoid excessive writes
-      const snapshot = `${ui.autoCompletionEnabled}|${ui.autoSaveEnabled}|${ui.treeOnRight}|${ui.showTerminal}`;
+      const snapshot = `${ui.autoCompletionEnabled}|${ui.autoSaveEnabled}|${ui.treeOnRight}|${ui.showTerminal}|${ui.showEmulatorPreview}`;
       if (snapshot !== lastUi) {
         lastUi = snapshot;
         saveUiPrefs(ui);

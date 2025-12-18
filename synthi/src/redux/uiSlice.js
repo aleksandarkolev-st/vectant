@@ -9,6 +9,7 @@ const initialUiActionState = {
 
 export const initialUiState = {
     showTerminal: false,
+    showEmulatorPreview: false,
     treeOnRight: false,
     autoSaveEnabled: false,
     autoCompletionEnabled: true,
@@ -26,6 +27,12 @@ const uiSlice = createSlice({
         // Layout Reducers
         toggleTerminal: (state) => {
             state.showTerminal = !state.showTerminal;
+        },
+        toggleEmulatorPreview: (state) => {
+            state.showEmulatorPreview = !state.showEmulatorPreview;
+        },
+        setEmulatorPreviewVisible: (state, action) => {
+            state.showEmulatorPreview = !!action.payload;
         },
         setTreeOrientation: (state) => {
             state.treeOnRight = !state.treeOnRight;
@@ -86,6 +93,8 @@ const uiSlice = createSlice({
 
 export const {
     toggleTerminal,
+    toggleEmulatorPreview,
+    setEmulatorPreviewVisible,
     setTreeOrientation,
     toggleAutoSave,
     toggleAutoCompletion,
@@ -102,6 +111,7 @@ export const {
 
 // Selectors
 export const selectShowTerminal = (state) => state.ui.showTerminal;
+export const selectShowEmulatorPreview = (state) => state.ui.showEmulatorPreview;
 export const selectTreeOnRight = (state) => state.ui.treeOnRight;
 export const selectAutoSaveEnabled = (state) => state.ui.autoSaveEnabled;
 export const selectAutoCompletionEnabled = (state) => state.ui.autoCompletionEnabled;
