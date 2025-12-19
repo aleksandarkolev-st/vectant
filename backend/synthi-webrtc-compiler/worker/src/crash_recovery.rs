@@ -22,6 +22,8 @@ use std::sync::Mutex;
 use std::ffi::c_void;
 use std::path::Path;
 
+use crate::source_map;
+
 #[cfg(unix)]
 use libc::{c_int, siginfo_t, sigaction, sigemptyset, SA_SIGINFO, SIGSEGV, SIGABRT, SIGFPE, SIGBUS};
 
@@ -99,7 +101,7 @@ lazy_static::lazy_static! {
     static ref CURRENT_MODULE: Mutex<String> = Mutex::new(String::new());
     static ref CURRENT_LIB_PATH: Mutex<String> = Mutex::new(String::new());
     /// Global source map cache for resolving crash addresses to source locations
-    pub static ref SOURCE_MAP_CACHE: crate::source_map::SourceMapCache = crate::source_map::SourceMapCache::new();
+    pub static ref SOURCE_MAP_CACHE: source_map::SourceMapCache = source_map::SourceMapCache::new();
 }
 
 /// Set the current library path for source map lookup

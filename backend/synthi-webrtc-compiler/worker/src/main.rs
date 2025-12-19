@@ -17,7 +17,7 @@ mod incremental_cache;
 mod state_diff;
 mod crash_recovery;
 mod error_parser;
-mod source_map;
+pub mod source_map;
 mod fast_refresh;
 
 use builder::{RebuildScope, ModuleHashes, hash_content, WidgetDetector, WidgetCompiler};
@@ -1712,14 +1712,39 @@ async fn handle_compile(
             }
             content = cleaned_lines.join("\n");
 
-            // CRITICAL FIX: Replace malloc pattern with static variable for HMR
-            // AI frequently generates malloc which breaks state preservation
-            if content.contains("malloc(sizeof(AppState))") {
-                eprintln!("[Guardrail] CRITICAL: Detected malloc pattern in core.cpp - this breaks HMR!");
-                eprintln!("[Guardrail] The AI must use static variables, not malloc.");
-                eprintln!("[Guardrail] This code will compile but HMR will reset state on every reload.");
-                // We could attempt to fix it, but it's complex. Better to fail fast.
-                // For now, just warn loudly.
+            // CRITICAL FIX: Transform malloc-based on_load to properly check prev_state
+            // AI frequently generates code that always mallocs, ignoring prev_state.
+            // This pattern: if (prev_state) return prev_state; else { malloc... }
+            // is what preserves state across HMR.
+            if content.contains("malloc(sizeof(AppState))") && content.contains("on_load") {
+                eprintln!("[Guardrail] Detected malloc(sizeof(AppState)) pattern in core.cpp");
+                
+                // Check if the code already properly checks prev_state
+                let properly_checks_prev = content.contains("if (prev_state)") || 
+                                          content.contains("if(prev_state)") ||
+                                          content.contains("if (state)") ||
+                                          content.contains("if(state)");
+                
+                if !properly_checks_prev {
+                    eprintln!("[Guardrail] CRITICAL: on_load ignores prev_state - this breaks HMR!");
+                    eprintln!("[Guardrail] Attempting to fix by adding prev_state check...");
+                    
+                    // Try to wrap malloc in a prev_state check
+                    // Pattern: AppState* state = (AppState*)malloc(sizeof(AppState));
+                    // becomes: AppState* state = prev_state ? (AppState*)prev_state : (AppState*)malloc(sizeof(AppState));
+                    content = content.replace(
+                        "AppState* state = (AppState*)malloc(sizeof(AppState));",
+                        "AppState* state = prev_state ? (AppState*)prev_state : (AppState*)malloc(sizeof(AppState));\n    bool is_new_state = (prev_state == NULL);"
+                    );
+                    
+                    // Also handle CoreState pattern
+                    content = content.replace(
+                        "CoreState* state = (CoreState*)malloc(sizeof(CoreState));",
+                        "CoreState* state = prev_state ? (CoreState*)prev_state : (CoreState*)malloc(sizeof(CoreState));\n    bool is_new_state = (prev_state == NULL);"
+                    );
+                    
+                    eprintln!("[Guardrail] Added prev_state check to malloc pattern");
+                }
             }
 
             // FIX: Detect and warn about free(state) which causes crashes on reload
@@ -1728,6 +1753,23 @@ async fn handle_compile(
                 eprintln!("[Guardrail] This will cause crashes on hot reload - runner manages state lifecycle");
                 // Comment out free(state) calls
                 content = content.replace("free(state);", "// free(state); // Commented - runner manages state");
+            }
+
+            // FIX: Detect and warn about memset on state which wipes preserved HMR state
+            if (content.contains("memset(state") || content.contains("memset(&app_state") || 
+                content.contains("memset(&state") || content.contains("memset(&core_state")) &&
+                content.contains("on_load") {
+                eprintln!("[Guardrail] WARNING: Detected memset on state in core.cpp");
+                eprintln!("[Guardrail] memset wipes preserved state from prev_state - this breaks HMR!");
+                // Comment out problematic memset calls
+                content = content.replace("memset(state, 0, sizeof(AppState));", 
+                    "// memset(state, 0, sizeof(AppState)); // Commented - would wipe preserved HMR state");
+                content = content.replace("memset(&app_state, 0, sizeof(AppState));", 
+                    "// memset(&app_state, 0, sizeof(AppState)); // Commented - would wipe preserved HMR state");
+                content = content.replace("memset(state, 0, sizeof(CoreState));",
+                    "// memset(state, 0, sizeof(CoreState)); // Commented - would wipe preserved HMR state");
+                content = content.replace("memset(&core_state, 0, sizeof(CoreState));",
+                    "// memset(&core_state, 0, sizeof(CoreState)); // Commented - would wipe preserved HMR state");
             }
 
             // Drop writes/reads to non-existent XWindowAttributes fields that break the build.
@@ -1777,6 +1819,34 @@ async fn handle_compile(
             if content.contains("#include \"shared.h\"") {
                 content = content.replace("#define CORE_STATE_MAGIC", "// #define CORE_STATE_MAGIC");
                 content = content.replace("#define SYNTHI_ABI_VERSION", "// #define SYNTHI_ABI_VERSION");
+                
+                // CRITICAL FIX: Strip duplicate AppState struct/typedef from core.cpp
+                // The AI often duplicates the AppState definition from shared.h in core.cpp,
+                // causing "conflicting declaration" or "redefinition" errors.
+                // We use regex-like patterns to remove the entire struct block.
+                
+                // Pattern 1: typedef struct AppState { ... } AppState;
+                if let Some(start) = content.find("typedef struct AppState") {
+                    if let Some(end) = content[start..].find("} AppState;") {
+                        let block_end = start + end + "} AppState;".len();
+                        let block = &content[start..block_end];
+                        eprintln!("[Guardrail] Stripping duplicate 'typedef struct AppState' from core.cpp (defined in shared.h)");
+                        content = content.replace(block, "// AppState defined in shared.h");
+                    }
+                }
+                
+                // Pattern 2: struct AppState { ... };
+                if let Some(start) = content.find("struct AppState {") {
+                    if let Some(end) = content[start..].find("};") {
+                        let block_end = start + end + "};".len();
+                        let block = &content[start..block_end];
+                        // Don't strip if this looks like a forward decl only
+                        if block.contains("{") {
+                            eprintln!("[Guardrail] Stripping duplicate 'struct AppState' definition from core.cpp (defined in shared.h)");
+                            content = content.replace(block, "// AppState defined in shared.h");
+                        }
+                    }
+                }
             }
 
             // FIX: cleanup_window not declared
@@ -2214,6 +2284,41 @@ extern "C" void* on_load_from_json(const char* json) {
                 eprintln!("[Guardrail] Fixed magic constant: replaced CORE_STATE_MAGIC with GUI_STATE_MAGIC in gui.cpp");
             }
 
+            // FIX: Ensure shared.h is included in gui.cpp if AppState is used
+            if content.contains("AppState") && !content.contains("#include \"shared.h\"") {
+                if content.contains("struct AppState;") {
+                    content = content.replace("struct AppState;", "#include \"shared.h\"");
+                } else {
+                    content = format!("#include \"shared.h\"\n{}", content);
+                }
+                eprintln!("[Guardrail] Added #include \"shared.h\" to gui.cpp");
+            }
+            
+            // CRITICAL FIX: Strip duplicate AppState struct/typedef from gui.cpp
+            if content.contains("#include \"shared.h\"") {
+                // Pattern 1: typedef struct AppState { ... } AppState;
+                if let Some(start) = content.find("typedef struct AppState") {
+                    if let Some(end) = content[start..].find("} AppState;") {
+                        let block_end = start + end + "} AppState;".len();
+                        let block = &content[start..block_end];
+                        eprintln!("[Guardrail] Stripping duplicate 'typedef struct AppState' from gui.cpp (defined in shared.h)");
+                        content = content.replace(block, "// AppState defined in shared.h");
+                    }
+                }
+                
+                // Pattern 2: struct AppState { ... };
+                if let Some(start) = content.find("struct AppState {") {
+                    if let Some(end) = content[start..].find("};") {
+                        let block_end = start + end + "};".len();
+                        let block = &content[start..block_end];
+                        if block.contains("{") {
+                            eprintln!("[Guardrail] Stripping duplicate 'struct AppState' definition from gui.cpp (defined in shared.h)");
+                            content = content.replace(block, "// AppState defined in shared.h");
+                        }
+                    }
+                }
+            }
+
             // FIX: gui_on_load MUST have 3 parameters. AI sometimes generates 2-param version.
             // The runner expects: gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)
             if content.contains("gui_on_load(void* prev_state, void* window_ptr)") && 
@@ -2230,11 +2335,31 @@ extern "C" void* on_load_from_json(const char* json) {
             let re_present = regex::Regex::new(r"SDL_RenderPresent\s*\([^)]*\)\s*;").unwrap();
             content = re_present.replace_all(&content, "/* SDL_RenderPresent removed - runner handles this */").to_string();
 
-            // CRITICAL FIX: Detect malloc pattern in GUI which breaks HMR
-            if content.contains("malloc(sizeof(AppState))") {
-                eprintln!("[Guardrail] CRITICAL: Detected malloc pattern in gui.cpp - this breaks HMR!");
-                eprintln!("[Guardrail] The AI must use static variables, not malloc.");
-                eprintln!("[Guardrail] This code will compile but HMR will reset state on every reload.");
+            // CRITICAL FIX: Transform malloc-based gui_on_load to properly check prev_state
+            if content.contains("malloc(sizeof(AppState))") && content.contains("on_load") {
+                eprintln!("[Guardrail] Detected malloc(sizeof(AppState)) pattern in gui.cpp");
+                
+                let properly_checks_prev = content.contains("if (prev_state)") || 
+                                          content.contains("if(prev_state)") ||
+                                          content.contains("if (state)") ||
+                                          content.contains("if(state)");
+                
+                if !properly_checks_prev {
+                    eprintln!("[Guardrail] CRITICAL: gui_on_load ignores prev_state - this breaks HMR!");
+                    eprintln!("[Guardrail] Attempting to fix by adding prev_state check...");
+                    
+                    content = content.replace(
+                        "AppState* state = (AppState*)malloc(sizeof(AppState));",
+                        "AppState* state = prev_state ? (AppState*)prev_state : (AppState*)malloc(sizeof(AppState));\n    bool is_new_state = (prev_state == NULL);"
+                    );
+                    
+                    content = content.replace(
+                        "GuiState* state = (GuiState*)malloc(sizeof(GuiState));",
+                        "GuiState* state = prev_state ? (GuiState*)prev_state : (GuiState*)malloc(sizeof(GuiState));\n    bool is_new_state = (prev_state == NULL);"
+                    );
+                    
+                    eprintln!("[Guardrail] Added prev_state check to malloc pattern in gui.cpp");
+                }
             }
 
             // FIX: Detect and warn about free(state) which causes crashes
@@ -2245,6 +2370,22 @@ extern "C" void* on_load_from_json(const char* json) {
                 content = content.replace("free(state);", "// free(state); // Commented - runner manages state");
             }
 
+            // FIX: Detect and warn about memset on state which wipes preserved HMR state
+            if (content.contains("memset(state") || content.contains("memset(&app_state") || 
+                content.contains("memset(&gui_state") || content.contains("memset(&state")) &&
+                content.contains("gui_on_load") {
+                eprintln!("[Guardrail] WARNING: Detected memset on state in gui.cpp");
+                eprintln!("[Guardrail] memset wipes preserved state from prev_state - this breaks HMR!");
+                // Comment out problematic memset calls
+                content = content.replace("memset(state, 0, sizeof(AppState));", 
+                    "// memset(state, 0, sizeof(AppState)); // Commented - would wipe preserved HMR state");
+                content = content.replace("memset(&app_state, 0, sizeof(AppState));", 
+                    "// memset(&app_state, 0, sizeof(AppState)); // Commented - would wipe preserved HMR state");
+                content = content.replace("memset(state, 0, sizeof(GuiState));",
+                    "// memset(state, 0, sizeof(GuiState)); // Commented - would wipe preserved HMR state");
+                content = content.replace("memset(&gui_state, 0, sizeof(GuiState));",
+                    "// memset(&gui_state, 0, sizeof(GuiState)); // Commented - would wipe preserved HMR state");
+            }
 
 
             if content.contains("main(") && !content.contains("extern \"C\" void* entrypoint") {

@@ -21,6 +21,7 @@ mod capability;
 mod host_kv;
 mod state_diff;
 mod crash_recovery;
+mod source_map;
 
 use plugin_contract::{ModuleSlot, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
 use capability::{HmrCapability, detect_capabilities, HmrStatus};
@@ -327,15 +328,23 @@ fn main() {
             unsafe {
                 let mut event: SDL_Event = std::mem::zeroed();
                 while SDL_PollEvent(&mut event) != 0 {
-                    // INDEPENDENT SWAP: Pass events with module-specific state
+                    // SPLIT MODE: Events go to core module with core's state.
+                    // Core handles button clicks, key presses, etc. that affect app state.
+                    // GUI module can also receive events for hover/focus handling.
                     // Pass SDL_Event to all loaded modules that export on_event
                     // The plugin's on_event expects SDL_Event* (not XEvent*)
                     // Plugins MUST be compiled to expect SDL_Event, not XEvent
                     for (name, lib) in modules.iter() {
                         let event_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut SDL_Event)>, _> = lib.get(b"on_event");
                         if let Ok(f) = event_func {
-                            // Use module-specific state for GUI
-                            let state_ptr = if name == "gui" {
+                            // CRITICAL FIX: In split mode, both core and GUI should receive
+                            // core's state for events. Core handles state changes (pause, quit),
+                            // and if GUI has on_event it should also see core's state.
+                            let state_ptr = if modules.contains_key("core") && !app_state.raw.is_null() {
+                                // Split mode: use core's state for all event handlers
+                                app_state.raw
+                            } else if name == "gui" {
+                                // GUI-only mode: use GUI's own state
                                 module_states.get(name).map(|s| s.state_ptr).unwrap_or(app_state.raw)
                             } else {
                                 app_state.raw
@@ -991,6 +1000,21 @@ fn main() {
                                     }
                                 }
                                 
+                                // ============================================================
+                                // VALIDATE on_load RETURN POINTER (CRITICAL FOR HMR)
+                                // ============================================================
+                                // The on_load function MUST return the same pointer when prev_state
+                                // is valid. If it returns a different pointer (e.g., from malloc),
+                                // state won't be preserved properly on next HMR cycle.
+                                // ============================================================
+                                if !module_prev_state.is_null() && !new_state.is_null() && new_state != module_prev_state {
+                                    eprintln!("[Runner] [HMR] WARNING: on_load returned different pointer!");
+                                    eprintln!("[Runner] [HMR]   prev_state: {:p}", module_prev_state);
+                                    eprintln!("[Runner] [HMR]   new_state:  {:p}", new_state);
+                                    eprintln!("[Runner] [HMR]   This suggests module used malloc instead of static variable.");
+                                    eprintln!("[Runner] [HMR]   State preservation may not work correctly on next reload.");
+                                }
+                                
                                 // Validate state header after initialization
                                 if !new_state.is_null() {
                                     let expected_magic = match slot {
@@ -1262,8 +1286,11 @@ fn main() {
         }
         
         // Render pass: 
-        // INDEPENDENT SWAP: For GUI-only updates, call gui's on_render with gui's state.
-        // For split mode (core+gui): Call gui_on_render independently.
+        // SPLIT MODE: GUI renders core's state (app_state.raw) since core owns the
+        // application data (x, y, dx, paused, etc.). GUI only handles presentation.
+        // The GUI's own state (module_states["gui"]) is for GUI-specific data like
+        // cached textures, hover states, etc. - but core state drives the rendering.
+        // 
         // For non-split mode (main): Call main's on_render/gui_render.
         
         // Check if GUI module has an independent on_render
@@ -1275,11 +1302,19 @@ fn main() {
                         .or_else(|| lib.get(b"on_render").ok())
                         .or_else(|| lib.get(b"gui_render").ok());
                 
-                // Get GUI's own state
-                let gui_state = module_states.get("gui").map(|s| s.state_ptr).unwrap_or(app_state.raw);
+                // CRITICAL FIX: In split mode (core+gui), GUI must render core's state
+                // because core owns application data (x, y, dx, paused, etc.).
+                // Only fall back to GUI's own state if core is not loaded.
+                let render_state = if modules.contains_key("core") && !app_state.raw.is_null() {
+                    // Split mode: render core's state (has animation data)
+                    app_state.raw
+                } else {
+                    // GUI-only mode: render GUI's own state
+                    module_states.get("gui").map(|s| s.state_ptr).unwrap_or(app_state.raw)
+                };
                 
                 if let Some(f) = render_func {
-                    f(gui_state);
+                    f(render_state);
                 }
             }
         } else if let Some(lib) = modules.get("core") {

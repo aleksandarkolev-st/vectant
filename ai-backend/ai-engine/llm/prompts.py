@@ -370,44 +370,101 @@ If you emit X11 symbols, the build will fail.
 
 # EXACT FUNCTION SIGNATURES (CRITICAL - MUST MATCH EXACTLY)
 
-## DO NOT USE malloc FOR STATE! (CRITICAL - BREAKS HMR)
+## NEVER DUPLICATE AppState DEFINITION! (CRITICAL - CAUSES REDEFINITION ERROR)
 
-**❌ FORBIDDEN PATTERNS:**
+**❌ ABSOLUTELY FORBIDDEN:**
+- NEVER define `typedef struct AppState { ... } AppState;` in core.cpp or gui.cpp
+- NEVER forward declare `struct AppState;` when shared.h exists  
+- AppState is ONLY defined in shared.h - period!
+
+**✅ CORRECT:** Include shared.h and use AppState directly:
 ```cpp
-// WRONG - This breaks hot reload!
+#include "shared.h"  // This defines AppState - DO NOT redefine it!
+static AppState app_state = {0};  // Use it directly, never redefine
+```
+
+## DO NOT USE malloc/memset FOR STATE! (CRITICAL - BREAKS HMR)
+
+**❌ FORBIDDEN PATTERNS - NEVER USE THESE:**
+```cpp
+// WRONG - malloc breaks hot reload!
 AppState* state = (AppState*)malloc(sizeof(AppState));
 if (!state) { /* error */ }
-memset(state, 0, sizeof(AppState));
 
-// WRONG - This causes crashes on hot reload!
+// WRONG - memset wipes preserved state from prev_state!
+// NEVER CALL memset ON STATE IN on_load - NOT EVEN IN ERROR PATHS!
+memset(state, 0, sizeof(AppState));
+memset(&app_state, 0, sizeof(AppState));
+memset(&core_state, 0, sizeof(CoreState));
+memset(&gui_state, 0, sizeof(GuiState));
+
+// WRONG - Even in ABI mismatch handling!
+if (old_state->magic != EXPECTED_MAGIC) {
+    fprintf(stderr, "ABI mismatch\n");
+    memset(&app_state, 0, sizeof(AppState));  // FORBIDDEN!
+}
+
+// WRONG - free causes crashes, runner manages lifecycle!
 if (state->running == 0) {
     free(state);
 }
 ```
 
-**✅ CORRECT PATTERN - Use static variables:**
+**WHY memset IS FORBIDDEN:**
+- `memset(&app_state, 0, ...)` wipes ALL fields including preserved HMR state
+- HMR works by copying prev_state's fields - memset erases them
+- Even in error paths (ABI mismatch), use field-by-field initialization instead
+
+**✅ CORRECT PATTERN - Static variable WITHOUT memset:**
 ```cpp
 // RIGHT - State preserved across hot reloads
 static AppState app_state = {0};
 
 extern "C" void* on_load(void* prev_state, void* window_ptr) {
     if (prev_state) {
+        // CRITICAL: Always check prev_state FIRST and reuse if valid!
         AppState* old = (AppState*)prev_state;
         if (old->magic == CORE_STATE_MAGIC && old->struct_size == sizeof(AppState)) {
-            app_state = *old;  // Copy previous state
+            app_state = *old;  // Copy previous state - preserves HMR state!
+        } else {
+            // ABI mismatch: Initialize fresh BUT NO memset!
+            // Use field-by-field initialization instead:
+            app_state.magic = CORE_STATE_MAGIC;
+            app_state.struct_size = sizeof(AppState);
+            app_state.abi_version = 1;
+            app_state.running = 1;
+            app_state.paused = 0;
+            app_state.x = 0;
+            app_state.y = 200;
+            app_state.dx = 5;
+            // ... initialize other fields individually
         }
     } else {
+        // First load: Initialize fresh BUT NO memset!
         app_state.magic = CORE_STATE_MAGIC;
-        // Initialize fields...
+        app_state.struct_size = sizeof(AppState);
+        app_state.abi_version = 1;
+        app_state.running = 1;
+        app_state.paused = 0;
+        // ... initialize other fields individually
     }
+    
+    // Always update renderer (may change between reloads)
     app_state.renderer = (SDL_Renderer*)window_ptr;
-    return &app_state;  // Return address of static variable
+    return &app_state;  // MUST return &app_state, NEVER a malloc'd pointer!
 }
 
 extern "C" void on_unload(void* state_ptr) {
     // Do NOT free - runner manages state lifecycle
+    // Do NOT memset - state must be preserved for next on_load
 }
 ```
+
+## on_load RETURN VALUE RULES (CRITICAL)
+- on_load MUST return &app_state (address of static variable)
+- on_load MUST NOT return malloc'd memory  
+- When prev_state is valid, the returned state MUST preserve prev_state data
+- The runner validates that on_load returns a consistent pointer
 
 ## These are the ONLY valid signatures. shared.h declarations MUST match implementations.
 
@@ -712,35 +769,37 @@ extern "C" void on_unload(void* state_ptr) {
 **GUI.CPP PATTERN (RUNNER-COMPATIBLE):**
 
 ```cpp
-// gui.cpp - Rendering only, receives state from runner
+// gui.cpp - Rendering only, receives CORE STATE from runner
+// IMPORTANT: In split mode, the runner passes core's state to gui_on_render.
+// Core owns: x, y, dx, paused, running, renderer (set via on_load)
+// GUI just reads core's state and renders it.
 #include "shared.h"
 #include <SDL2/SDL.h>
 
-// CRITICAL: Use STATIC state for Full HMR - do NOT malloc new state!
+// GUI module state - stores GUI-specific data (preserved across GUI hot-reloads)
 static AppState gui_app_state = {0};
 
 // CRITICAL: gui_on_load has 3 PARAMETERS! (prev_state, renderer, core_api)
 extern "C" void* gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr) {
     if (prev_state) {
         AppState* old = (AppState*)prev_state;
-        // FULL HMR: Copy previous state to preserve it across reloads
         if (old->magic == 0x60108EEF && old->struct_size == sizeof(AppState)) {
-            gui_app_state = *old;  // State preserved!
+            gui_app_state = *old;  // Preserve across GUI hot-reloads
         }
     } else {
-        // First load - initialize fresh state
         gui_app_state.magic = 0x60108EEF;  // GUI magic
         gui_app_state.struct_size = sizeof(AppState);
         gui_app_state.abi_version = 1;
-        // Initialize default values...
     }
     
-    // CRITICAL: Always store the renderer provided by runner
+    // Store renderer in gui_app_state too (for GUI-only mode)
     gui_app_state.renderer = (SDL_Renderer*)window_ptr;
     
     return &gui_app_state;
 }
 
+// IMPORTANT: In split mode (core+gui), state_ptr is CORE's state!
+// Core's state has x, y, dx, paused, AND the renderer pointer.
 extern "C" void gui_on_render(void* state_ptr) {
     AppState* state = (AppState*)state_ptr;
     if (!state || !state->renderer) {
@@ -752,7 +811,8 @@ extern "C" void gui_on_render(void* state_ptr) {
     SDL_SetRenderDrawColor(state->renderer, 255, 255, 255, 255);
     SDL_RenderClear(state->renderer);
     
-    // Draw based on state
+    // Draw based on state - in split mode, this is CORE's state
+    // Core's on_update animates x, y, and gui_on_render just draws it
     SDL_SetRenderDrawColor(state->renderer, 0, 0, 0, 255);
     SDL_Rect rect = {state->x, state->y, 50, 50};
     SDL_RenderFillRect(state->renderer, &rect);
@@ -764,6 +824,18 @@ extern "C" void gui_cleanup(void* state_ptr) {
     // Cleanup textures/resources but NOT the renderer
 }
 ```
+
+### CRITICAL: GUI STATE vs CORE STATE (SPLIT MODE)
+
+In split mode (core.so + gui.so):
+- **Core owns application state**: x, y, dx, paused, running, renderer
+- **Runner passes CORE's state to gui_on_render** so GUI renders core's data
+- **GUI's gui_app_state** is only used in GUI-only mode (no core module)
+
+This design ensures:
+1. GUI-only hot-reload: core continues running, gui.so replaced
+2. Animation state preserved: Core's x, y, dx survive GUI hot-reloads
+3. Renderer always available: Core's on_load stores renderer in state
 
 ### 3.1 State Definition Location
 - AppState is defined in shared.h and shared by both modules
