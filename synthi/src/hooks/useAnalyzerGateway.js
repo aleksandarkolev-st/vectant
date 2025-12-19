@@ -78,7 +78,7 @@ export function useAnalyzerGateway({
     } finally {
       setIsAnalyzing(false);
     }
-  }, []);
+  }, [SUPPORTED_ANALYZER_LANGS]);
 
   const askAi = useCallback(async ({ code, lang, prompt, mode, files, focusPath, onProgress, model, apiKey } = {}) => {
     if (!clientRef.current) {
@@ -126,6 +126,53 @@ export function useAnalyzerGateway({
       setIsAnalyzing(false);
     }
   }, []);
+
+  /**
+   * Run proactive analysis (static + semantic + optional AI)
+   * Returns diagnostics for potential errors before compilation
+   */
+  const analyzeProactive = useCallback(async ({ code, lang, filePath, includeAi = false, onTierComplete } = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet', 'The analyzer gateway client has not been initialized.');
+    }
+    if (typeof code !== 'string') {
+      throw new SynthiException('`code` must be a string', 'The provided code for proactive analysis is invalid.');
+    }
+    if (!lang) {
+      throw new SynthiException('`lang` is required for proactive analysis', 'The programming language must be specified.');
+    }
+    
+    setIsAnalyzing(true);
+    setLastError(null);
+    
+    try {
+      const payload = {
+        code,
+        lang: lang.toLowerCase(),
+        filePath: filePath || 'untitled',
+        includeAi,
+        tiers: includeAi ? ['static', 'semantic', 'ai'] : ['static', 'semantic'],
+      };
+      
+      const options = {};
+      if (typeof onTierComplete === 'function') {
+        options.onTierComplete = onTierComplete;
+      }
+      
+      const response = await clientRef.current.analyzeProactive(payload, options);
+      console.log('[analyzeProactive] Raw response:', response);
+      const result = response?.data ?? response;
+      console.log('[analyzeProactive] Parsed result:', result);
+      setLastResult(result);
+      return result;
+    } catch (error) {
+      console.error('[analyzeProactive] Error:', error);
+      setLastError(error);
+      throw error;
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }, []);
   
 
   const resetResult = useCallback(() => setLastResult(null), []);
@@ -147,6 +194,7 @@ export function useAnalyzerGateway({
     lastError,
     analyzeCode,
     askAi,
+    analyzeProactive,
     resetResult,
     resetError,
     clientReady: Boolean(clientRef.current),

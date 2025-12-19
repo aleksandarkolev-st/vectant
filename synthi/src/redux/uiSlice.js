@@ -9,6 +9,7 @@ const initialUiActionState = {
 
 export const initialUiState = {
     showTerminal: false,
+    showEmulatorPreview: false,
     treeOnRight: false,
     autoSaveEnabled: false,
     autoCompletionEnabled: true,
@@ -17,6 +18,8 @@ export const initialUiState = {
     // Collaboration presence settings
     showAnonymousPresence: true,
     presenceGranularity: 'line', // options: 'line' | 'file' | 'workspace'
+    // Cursor position for status bar
+    cursorPosition: { lineNumber: 1, column: 1 },
 };
 
 const uiSlice = createSlice({
@@ -26,6 +29,12 @@ const uiSlice = createSlice({
         // Layout Reducers
         toggleTerminal: (state) => {
             state.showTerminal = !state.showTerminal;
+        },
+        toggleEmulatorPreview: (state) => {
+            state.showEmulatorPreview = !state.showEmulatorPreview;
+        },
+        setEmulatorPreviewVisible: (state, action) => {
+            state.showEmulatorPreview = !!action.payload;
         },
         setTreeOrientation: (state) => {
             state.treeOnRight = !state.treeOnRight;
@@ -57,6 +66,9 @@ const uiSlice = createSlice({
         setPresenceGranularity: (state, action) => {
             state.presenceGranularity = action.payload;
         },
+        setCursorPosition: (state, action) => {
+            state.cursorPosition = action.payload;
+        },
         
         // UI Action State Machine Reducers
         startCreate: (state, action) => {
@@ -86,6 +98,8 @@ const uiSlice = createSlice({
 
 export const {
     toggleTerminal,
+    toggleEmulatorPreview,
+    setEmulatorPreviewVisible,
     setTreeOrientation,
     toggleAutoSave,
     toggleAutoCompletion,
@@ -95,6 +109,7 @@ export const {
     cancelUiAction,
     toggleShowAnonymousPresence,
     setPresenceGranularity,
+    setCursorPosition,
     hydrateUi,
     toggleFolderExpansion,
     setExpandedFolders,
@@ -102,6 +117,7 @@ export const {
 
 // Selectors
 export const selectShowTerminal = (state) => state.ui.showTerminal;
+export const selectShowEmulatorPreview = (state) => state.ui.showEmulatorPreview;
 export const selectTreeOnRight = (state) => state.ui.treeOnRight;
 export const selectAutoSaveEnabled = (state) => state.ui.autoSaveEnabled;
 export const selectAutoCompletionEnabled = (state) => state.ui.autoCompletionEnabled;
@@ -109,5 +125,6 @@ export const selectUiActionState = (state) => state.ui.uiActionState;
 export const selectExpandedFolders = (state) => state.ui.expandedFolders || [];
 export const selectShowAnonymousPresence = (state) => state.ui.showAnonymousPresence;
 export const selectPresenceGranularity = (state) => state.ui.presenceGranularity;
+export const selectCursorPosition = (state) => state.ui.cursorPosition;
 
 export default uiSlice.reducer;

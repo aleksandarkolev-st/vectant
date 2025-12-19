@@ -12,7 +12,8 @@ export const useDiffManager = ({
     diffChunksRef = null,
     activeFileIdentity = null
 }) => {
-    const aiDiffChunksRef = diffChunksRef || useRef(new Map());
+    const _internalAiDiffChunksRef = useRef(new Map());
+    const aiDiffChunksRef = diffChunksRef || _internalAiDiffChunksRef;
 
     const removeDiffChunkVisuals = useCallback((chunkId) => {
         if (!editorInstance) return;
@@ -30,14 +31,14 @@ export const useDiffManager = ({
                 chunk.viewZoneId = null;
             }
         } catch (e) {}
-    }, [editorInstance]);
+    }, [editorInstance, aiDiffChunksRef]);
 
     const clearAllChunks = useCallback(() => {
         aiDiffChunksRef.current.forEach((_, chunkId) => removeDiffChunkVisuals(chunkId));
         aiDiffChunksRef.current.clear();
         aiCompletionCacheRef.current._decorationIds = [];
         aiCompletionCacheRef.current._diffViewZoneIds = [];
-    }, [removeDiffChunkVisuals, aiCompletionCacheRef]);
+    }, [removeDiffChunkVisuals, aiCompletionCacheRef, aiDiffChunksRef]);
 
     const handleRejectDiffChunk = useCallback((chunkId) => {
         removeDiffChunkVisuals(chunkId);
@@ -45,7 +46,7 @@ export const useDiffManager = ({
         if (aiDiffChunksRef.current.size === 0) {
             notifyCompletionCleared();
         }
-    }, [removeDiffChunkVisuals, notifyCompletionCleared]);
+    }, [removeDiffChunkVisuals, notifyCompletionCleared, aiDiffChunksRef]);
 
     const handleAcceptDiffChunk = useCallback((chunkId) => {
         if (!editorInstance || !monacoInstance) return;
@@ -80,7 +81,7 @@ export const useDiffManager = ({
         if (aiDiffChunksRef.current.size === 0) {
             notifyCompletionCleared();
         }
-    }, [editorInstance, monacoInstance, handleRejectDiffChunk, notifyCompletionCleared]);
+    }, [editorInstance, monacoInstance, handleRejectDiffChunk, notifyCompletionCleared, aiDiffChunksRef]);
 
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
@@ -390,7 +391,7 @@ export const useDiffManager = ({
         return () => {
             clearAllChunks();
         };
-    }, [latestCompletion, editorInstance, monacoInstance, handleAcceptDiffChunk, handleRejectDiffChunk, removeDiffChunkVisuals, activeLanguage, activeFile, clearAllChunks]);
+    }, [latestCompletion, editorInstance, monacoInstance, handleAcceptDiffChunk, handleRejectDiffChunk, removeDiffChunkVisuals, activeLanguage, activeFile, clearAllChunks, aiDiffChunksRef]);
 
     useEffect(() => {
         if (!activeFileIdentity) return;
@@ -398,7 +399,7 @@ export const useDiffManager = ({
         notifyCompletionCleared();
     }, [activeFileIdentity, clearAllChunks, notifyCompletionCleared]);
 
-    const hasActiveDiff = useCallback(() => aiDiffChunksRef.current.size > 0, []);
+    const hasActiveDiff = useCallback(() => aiDiffChunksRef.current.size > 0, [aiDiffChunksRef]);
 
     return {
         aiDiffChunksRef,

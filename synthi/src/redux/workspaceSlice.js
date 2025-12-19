@@ -4,6 +4,7 @@ import { api } from '@/services/api';
 import collabClient from '@/services/collabClient';
 import { getCompilerClient } from '@/services/compilerClient';
 import { cancelUiAction } from './uiSlice'; // Cross-slice dependency
+import { syncFileToGit, fetchGitStatus } from './gitSlice';
 import {
     findFirstFile,
     findFileInTree,
@@ -12,6 +13,9 @@ import {
     getItemPathInBucket,
 } from '@/utils/fileUtils'; 
 import SynthiException from '@/components/SynthiException';
+import { fileCache } from '@/services/fileCache';
+import { loadScheduler } from '@/services/loadScheduler';
+import { perfMeasureToConsole, perfOnce } from '@/services/perfMarkers';
 
 // --- Initial State and Utilities ---
 
@@ -24,7 +28,10 @@ export const initialWorkspaceState = {
     activeFile: null,
     currentContent: '',
     savedContent: '',
-    fileContentCache: new Map(), // Non-serializable object handled by middleware config
+    originalContent: '', // For diff view
+    diffMode: false,     // Toggle diff view
+    fileContentCache: new Map(), // Deprecated (hybrid cache is in services/fileCache)
+    loadingFiles: [],    // Tracks files currently being fetched
     isLoading: false,
     status: 'idle',
     error: null,
@@ -36,6 +43,7 @@ export const initialWorkspaceState = {
 export const fetchFilesThunk = createAsyncThunk(
     'workspace/fetchFiles',
     async (slug, { dispatch, getState }) => {
+        const t0 = typeof performance !== 'undefined' ? performance.now() : 0;
         // Notify compiler client about the active slug
         try {
             getCompilerClient().setSlug(slug);
@@ -44,12 +52,16 @@ export const fetchFilesThunk = createAsyncThunk(
         }
 
         const files = await api.fetchFiles(slug);
+        if (t0) perfMeasureToConsole('startup_metadata_load_time', t0, { slug });
         const state = getState().workspace;
 
         // Determine if auto-selection is needed
-        let fileToSelect = state.activeFile;
+        let fileToSelect = null;
         if (!state.activeFile && files.length > 0) {
-            fileToSelect = findFirstFile(files);
+            const found = findFirstFile(files);
+            if (found) {
+                dispatch(selectFileThunk(found));
+            }
         }
 
         // Return files and potential file to select for the reducer
@@ -64,40 +76,55 @@ export const saveFileContentThunk = createAsyncThunk(
         const state = getState().workspace;
         const { activeFile, currentContent, slug } = state;
 
-        if (!activeFile || currentContent === state.savedContent) {
+        if (!activeFile) {
             return;
         }
 
-        // If collaborative editing is active for this file, prefer the authoritative CRDT text
+        // Determine the authoritative content to save:
+        // 1. If a collab doc exists for this file, use the CRDT content (most up-to-date)
+        // 2. Otherwise fall back to Redux currentContent
+        let contentToSave = currentContent;
+        let usedCrdt = false;
+        
         try {
-            const states = collabClient.getActiveEditors(slug, activeFile.path);
-            // If there are collaborators, extract the Yjs text value
-            if (states && states.length > 0) {
-                const entryKey = `${slug}:${activeFile.path}`; // not used for lookup directly but we'll fetch via collabClient internals
-                // Retrieve the Yjs document content directly if available
-                // collabClient keeps docs in the form workspace:slug:path as key
-                const key = `workspace:${slug}:${activeFile.path.replace(/[^a-zA-Z0-9_.\-\/]/g, '_')}`;
-                const entry = collabClient.docs.get(key);
-                if (entry && entry.ytext) {
-                    const crdtText = entry.ytext.toString();
-                    // Use CRDT-derived content for save
-                    await api.saveFileContent(slug, activeFile.path, crdtText, activeFile.name);
-                } else {
-                    await api.saveFileContent(slug, activeFile.path, currentContent, activeFile.name);
+            // Build the key the same way collabClient does
+            const safePath = activeFile.path.replace(/[^a-zA-Z0-9_.\-\/]/g, '_');
+            const key = `workspace:${slug}:${safePath}`;
+            const entry = collabClient.docs.get(key);
+            
+            if (entry && entry.ytext) {
+                const crdtText = entry.ytext.toString();
+                if (crdtText && crdtText.length > 0) {
+                    contentToSave = crdtText;
+                    usedCrdt = true;
                 }
-            } else {
-                await api.saveFileContent(slug, activeFile.path, currentContent, activeFile.name);
             }
         } catch (e) {
-            // Fallback: if anything goes wrong with collab client, save the current content
-            await api.saveFileContent(slug, activeFile.path, currentContent, activeFile.name);
+            console.warn('[Save] Failed to get CRDT content, using Redux content', e);
+        }
+        
+        // Skip save if content hasn't changed
+        if (contentToSave === state.savedContent) {
+            return contentToSave; // Return content to ensure reducer still marks as saved
+        }
+
+        try {
+            await api.saveFileContent(slug, activeFile.path, contentToSave, activeFile.name);
+            
+            // Sync to Git
+            dispatch(syncFileToGit({ slug, filePath: activeFile.path, content: contentToSave }));
+            dispatch(fetchGitStatus(slug));
+
+        } catch (e) {
+            console.error('[Save] Failed to save file', e);
+            throw e; // Re-throw so the thunk is rejected
         }
         
         // Ensure tree is revalidated silently after save
         dispatch(fetchFilesThunk(slug)); 
 
-        // Return content to update saved state and cache in the fulfilled reducer
-        return currentContent; 
+        // Return the content that was saved to update savedContent state
+        return contentToSave; 
     }
 );
 
@@ -106,19 +133,90 @@ export const selectFileThunk = createAsyncThunk(
     'workspace/selectFile',
     async (file, { getState }) => {
         const state = getState().workspace;
-        const cacheKey = file.path;
-        const cachedContent = state.fileContentCache.get(cacheKey);
-        
-        if (cachedContent!== undefined) {
-            return { file, content: cachedContent, fromCache: true };
-        } 
-        
-        if (file.path) {
-            const content = await api.fetchFileContent(state.slug, file.path);
-            return { file, content, fromCache: false };
+        const gitState = getState().git;
+        const slug = state.slug;
+        const targetPath = file?.path;
+
+        if (!targetPath) {
+            return { file, content: file?.content || '', fromCache: false };
         }
 
-        return { file, content: file.content || '', fromCache: false };
+        // Check if this file has a merge conflict - if so, always read from filesystem
+        const conflictedFiles = gitState?.status?.conflictedFiles || [];
+        const hasConflict = conflictedFiles.includes(targetPath);
+        
+        if (hasConflict) {
+            console.log('[Workspace] File has merge conflict, forcing fresh read:', targetPath);
+            // Invalidate cache for this file
+            fileCache.delete(targetPath);
+            // Destroy collab doc to prevent Yjs from overwriting
+            try {
+                collabClient.destroyDocument(slug, targetPath);
+            } catch (e) {
+                console.warn('[Workspace] Error destroying collab doc:', e);
+            }
+        }
+
+        // Active file must never be evicted.
+        fileCache.setActive(targetPath);
+
+        const cached = hasConflict ? undefined : fileCache.get(targetPath);
+        if (cached !== undefined) {
+            return { file, content: cached, fromCache: true };
+        }
+
+        const t0 = typeof performance !== 'undefined' ? performance.now() : 0;
+        const content = await loadScheduler.requestFileContent(slug, targetPath, { priority: 'high', background: false });
+
+        perfOnce('first-file-open', () => {
+            if (t0) perfMeasureToConsole('first_file_open_latency', t0, { path: targetPath });
+        });
+
+        // Priority-based background prefetch (cancellable, yields to user loads)
+        try {
+            const rawFiles = state.rawFiles || [];
+            const openFiles = state.openFiles || [];
+            const dir = targetPath.includes('/') ? targetPath.slice(0, targetPath.lastIndexOf('/')) : '';
+
+            const stack = Array.isArray(rawFiles) ? [...rawFiles] : [];
+            const all = [];
+            while (stack.length) {
+                const n = stack.pop();
+                if (!n) continue;
+                if (n.isFolder) {
+                    if (Array.isArray(n.children)) stack.push(...n.children);
+                } else if (n.path) {
+                    all.push(n);
+                }
+            }
+
+            const sameDir = all.filter(n => {
+                if (!n?.path || n.path === targetPath) return false;
+                const parent = n.path.includes('/') ? n.path.slice(0, n.path.lastIndexOf('/')) : '';
+                return parent === dir;
+            });
+
+            const recent = openFiles
+                .filter(f => f?.path && f.path !== targetPath)
+                .map(f => {
+                    const meta = all.find(n => n.path === f.path);
+                    return meta ? meta : { path: f.path, size: Infinity };
+                });
+
+            const medium = new Map();
+            for (const n of [...sameDir, ...recent]) {
+                if (n?.path) medium.set(n.path, n);
+            }
+
+            loadScheduler.prefetch(slug, Array.from(medium.values()), { priority: 'medium' });
+
+            // Lowest priority crawl pool (remaining files)
+            loadScheduler.setLowPriorityPool(slug, all.map(n => n.path).filter(p => p && p !== targetPath));
+        } catch (e) {
+            // ignore
+        }
+
+        return { file, content, fromCache: false };
     }
 );
 
@@ -232,6 +330,35 @@ export const deleteItemThunk = createAsyncThunk(
 );
 
 
+import { gitClient } from '@/services/gitClient';
+
+// 7. Open Diff (Read)
+export const openDiffThunk = createAsyncThunk(
+    'workspace/openDiff',
+    async (file, { dispatch, getState }) => {
+        const state = getState().workspace;
+        const slug = state.slug;
+
+        // 1. Fetch current content (working copy)
+        let currentContent = '';
+        const cachedContent = fileCache.get(file.path);
+        if (cachedContent !== undefined) currentContent = cachedContent;
+        else currentContent = await loadScheduler.requestFileContent(slug, file.path, { priority: 'high', background: false });
+
+        // 2. Fetch original content (HEAD)
+        let originalContent = '';
+        try {
+            const originalPath = file.originalPath || file.path;
+            const result = await gitClient.getFileContent(slug, originalPath, 'HEAD');
+            originalContent = result.content;
+        } catch (e) {
+            console.warn('Failed to fetch HEAD content', e);
+        }
+
+        return { file, currentContent, originalContent };
+    }
+);
+
 // --- SLICE DEFINITION ---
 
 const workspaceSlice = createSlice({
@@ -253,6 +380,9 @@ const workspaceSlice = createSlice({
                     }
                 }
             } catch (e) { /* ignore */ }
+        },
+        setDiffMode: (state, action) => {
+            state.diffMode = action.payload;
         },
             // Open a file in the tab bar (keeps order and uniqueness)
             openFile: (state, action) => {
@@ -276,9 +406,16 @@ const workspaceSlice = createSlice({
                     const newIndex = Math.max(0, idx - 1);
                     const newFile = state.openFiles[newIndex] || null;
                     state.activeFile = newFile;
-                    if (newFile && newFile.path && state.fileContentCache.has(newFile.path)) {
-                        state.currentContent = state.fileContentCache.get(newFile.path);
-                        state.savedContent = state.fileContentCache.get(newFile.path);
+                    if (newFile && newFile.path) {
+                        fileCache.setActive(newFile.path);
+                        const cached = fileCache.get(newFile.path);
+                        if (cached !== undefined) {
+                            state.currentContent = cached;
+                            state.savedContent = cached;
+                        } else {
+                            state.currentContent = '';
+                            state.savedContent = '';
+                        }
                     } else {
                         state.currentContent = '';
                         state.savedContent = '';
@@ -325,6 +462,11 @@ const workspaceSlice = createSlice({
         setSlug: (state, action) => {
             state.slug = action.payload;
         },
+        clearFileCache: (state) => {
+            state.fileContentCache = new Map();
+            try { fileCache.clear(); } catch (_) {}
+            try { loadScheduler.cancelBackground(); } catch (_) {}
+        },
         hydrateWorkspace: (state, action) => {
             const { openFiles, activeFile } = action.payload;
             if (openFiles) {
@@ -370,8 +512,42 @@ const workspaceSlice = createSlice({
 
         // --- SELECT FILE ---
         builder
-          .addCase(selectFileThunk.fulfilled, (state, action) => {
+            .addCase(selectFileThunk.pending, (state, action) => {
+                const file = action.meta.arg;
+                if (file && file.path && !state.loadingFiles.includes(file.path)) {
+                    state.loadingFiles.push(file.path);
+                }
+            })
+            .addCase(selectFileThunk.rejected, (state, action) => {
+                const file = action.meta.arg;
+                if (file && file.path) {
+                    state.loadingFiles = state.loadingFiles.filter(p => p !== file.path);
+                }
+            })
+            .addCase(openDiffThunk.fulfilled, (state, action) => {
+                const { file, currentContent, originalContent } = action.payload;
+                state.activeFile = file;
+                state.currentContent = currentContent;
+                state.savedContent = currentContent; // Assuming saved on disk matches current for now
+                state.originalContent = originalContent;
+                state.diffMode = true;
+                
+                // Add to open files if not present
+                const exists = state.openFiles.find(f => f.path === file.path);
+                if (!exists) {
+                    state.openFiles.push({ ...file, isUnsaved: false });
+                }
+                
+                // Update cache
+                try { fileCache.set(file.path, currentContent); } catch (_) {}
+            })
+            .addCase(selectFileThunk.fulfilled, (state, action) => {
                 const { file, content, fromCache } = action.payload;
+                
+                // Remove from loading list
+                if (file && file.path) {
+                    state.loadingFiles = state.loadingFiles.filter(p => p !== file.path);
+                }
                 
                 // Cache unsaved content of OLD active file before switching
                 if (state.activeFile && state.activeFile.path && state.currentContent!== state.savedContent) {
@@ -382,6 +558,7 @@ const workspaceSlice = createSlice({
                 state.activeFile = file;
                 state.currentContent = content;
                 state.savedContent = content;
+                state.diffMode = false; // Disable diff mode
                 
                 // Update cache if content was newly fetched (and not from cache)
                 if (!fromCache) {
@@ -453,11 +630,64 @@ const workspaceSlice = createSlice({
                 (state) => {
                     state.status = 'succeeded';
                 }
+            )
+          // Handle git conflicts - invalidate cache for conflicted files
+          .addMatcher(
+                (action) => action.type === 'git/conflictsDetected',
+                (state, action) => {
+                    // Ensure conflictedFiles is an array
+                    let conflictedFiles = action.payload;
+                    if (!conflictedFiles) {
+                        conflictedFiles = [];
+                    } else if (!Array.isArray(conflictedFiles)) {
+                        // If it's an object with a conflictedFiles or conflicted property, extract it
+                        if (conflictedFiles.conflictedFiles && Array.isArray(conflictedFiles.conflictedFiles)) {
+                            conflictedFiles = conflictedFiles.conflictedFiles;
+                        } else if (conflictedFiles.conflicted && Array.isArray(conflictedFiles.conflicted)) {
+                            conflictedFiles = conflictedFiles.conflicted;
+                        } else {
+                            conflictedFiles = [];
+                        }
+                    }
+                    
+                    const slug = state.slug;
+                    
+                    console.log('[Workspace] Processing conflict invalidation for files:', conflictedFiles, 'slug:', slug);
+                    
+                    // Clear cache and reset collab docs for each conflicted file 
+                    // so they get re-read from filesystem with conflict markers
+                    if (conflictedFiles.length > 0) {
+                        conflictedFiles.forEach(filePath => {
+                            try { 
+                                console.log('[Workspace] Invalidating cache for:', filePath);
+                                fileCache.delete(filePath);
+                                // Also destroy the collab document so it gets recreated fresh
+                                if (slug) {
+                                    collabClient.destroyDocument(slug, filePath);
+                                }
+                            } catch (e) {
+                                console.warn('[Workspace] Error invalidating:', filePath, e);
+                            }
+                        });
+                    }
+                }
             );
     },
 });
 
-export const { updateContent, renameItemStateUpdate, setSlug, setExternalFileContent, openFile, closeFile, reorderOpenFiles, hydrateWorkspace } = workspaceSlice.actions;
+export const { updateContent, renameItemStateUpdate, setSlug, setExternalFileContent, openFile, closeFile, reorderOpenFiles, hydrateWorkspace, clearFileCache } = workspaceSlice.actions;
+
+export const refreshWorkspaceThunk = createAsyncThunk(
+    'workspace/refresh',
+    async (_, { dispatch, getState }) => {
+        const state = getState().workspace;
+        dispatch(clearFileCache());
+        await dispatch(fetchFilesThunk(state.slug));
+        if (state.activeFile) {
+            await dispatch(selectFileThunk(state.activeFile));
+        }
+    }
+);
 
 // --- MEMOIZED SELECTORS ---
 
@@ -467,6 +697,7 @@ export const selectFilesTree = (state) => state.workspace.rawFiles;
 
 export const selectActiveFile = (state) => state.workspace.activeFile;
 export const selectOpenFiles = (state) => state.workspace.openFiles || [];
+export const selectLoadingFiles = (state) => state.workspace.loadingFiles || [];
 export const selectCurrentContent = (state) => state.workspace.currentContent;
 export const selectIsUnsaved = createSelector(
     selectCurrentContent,
