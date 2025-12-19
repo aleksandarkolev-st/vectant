@@ -24,6 +24,7 @@ mod abi_version;
 mod loader;
 mod supervisor;
 mod state_manager;
+mod reload_manager;
 
 use builder::{RebuildScope, ModuleHashes, hash_content, WidgetDetector, WidgetCompiler};
 use fast_refresh::{BoundaryChecker, RefreshAction, BoundaryViolationEvent};

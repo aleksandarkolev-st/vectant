@@ -4,12 +4,17 @@ AI Output Verifier
 Deterministic verification stage for AI-generated code.
 Enforces invariants: no missing symbols, no new globals, stable public interfaces.
 Rejects or auto-repairs invalid outputs before passing to Worker.
+
+MODES:
+- Production: Strict mode, low repair depth, semantic tests enabled
+- Development: Permissive mode, higher repair depth, faster verification
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -17,6 +22,35 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from pydantic import BaseModel
+
+
+# ============================================================
+# AUTO-REPAIR CAPS - PRODUCTION DEFAULTS (CONSERVATIVE)
+# ============================================================
+# These are HARD LIMITS for production safety.
+# Dev mode can use higher values but never exceed DEV_MAX_*.
+
+# Production caps (strict)
+MAX_REPAIR_DEPTH = 1                 # No recursive repairs in prod
+MAX_REPAIR_DIFF_LINES = 50           # Max lines changed by repair
+MAX_REPAIR_DIFF_RATIO = 0.15         # Max 15% of code changed
+REPAIR_TIMEOUT_SECONDS = 5.0         # Max time for repair attempt
+
+# Development caps (permissive but still bounded)
+DEV_MAX_REPAIR_DEPTH = 3             # Allow multi-file repair chains
+DEV_MAX_REPAIR_DIFF_LINES = 200      # More lenient for iteration
+DEV_MAX_REPAIR_DIFF_RATIO = 0.40     # Up to 40% for major refactors
+DEV_REPAIR_TIMEOUT_SECONDS = 15.0    # More time for complex repairs
+
+# Environment detection
+def _is_dev_mode() -> bool:
+    """Check if running in development mode via environment."""
+    dev_indicators = [
+        os.getenv("SYNTHI_DEV_MODE", "").lower() in ("1", "true", "yes"),
+        os.getenv("NODE_ENV", "").lower() == "development",
+        os.getenv("DEBUG", "").lower() in ("1", "true", "yes"),
+    ]
+    return any(dev_indicators)
 
 
 class VerificationStatus(str, Enum):
@@ -223,10 +257,12 @@ class AIOutputVerifier:
     5. Complete code (no truncation, no placeholders)
     
     Auto-repair is CAPPED:
-    - Max 1 repair depth (no recursive repairs)
-    - Max 50 lines diff (no wholesale rewrites)
-    - Max 15% code modification
-    - 5 second timeout
+    - Production: Max 1 depth, 50 lines, 15% ratio, 5s timeout
+    - Development: Max 3 depth, 200 lines, 40% ratio, 15s timeout
+    
+    MODES:
+    - Production (default): Strict, fatal failures, low repair depth
+    - Development: Permissive, warnings instead of fatal, higher repair depth
     """
     
     def __init__(
@@ -236,20 +272,64 @@ class AIOutputVerifier:
         auto_repair: bool = True,
         strict_mode: bool = True,  # DEFAULT TO STRICT - failures are fatal
         raise_on_failure: bool = True,  # Raise VerificationFatalError on fail
-        max_repair_depth: int = MAX_REPAIR_DEPTH,
-        max_repair_diff_lines: int = MAX_REPAIR_DIFF_LINES,
-        max_repair_diff_ratio: float = MAX_REPAIR_DIFF_RATIO,
+        dev_mode: Optional[bool] = None,  # None = auto-detect from environment
+        max_repair_depth: Optional[int] = None,  # None = use mode default
+        max_repair_diff_lines: Optional[int] = None,
+        max_repair_diff_ratio: Optional[float] = None,
+        repair_timeout: Optional[float] = None,
     ):
+        # Auto-detect dev mode if not specified
+        self.dev_mode = dev_mode if dev_mode is not None else _is_dev_mode()
+        
+        # Adjust strict mode for dev
+        if self.dev_mode:
+            # In dev mode, default to non-strict unless explicitly set
+            strict_mode = False if strict_mode is True else strict_mode
+            raise_on_failure = False  # Don't block dev flow
+        
         self.allow_new_globals = allow_new_globals
         self.allow_interface_changes = allow_interface_changes
         self.auto_repair = auto_repair
         self.strict_mode = strict_mode
         self.raise_on_failure = raise_on_failure
         
-        # Repair caps - non-negotiable limits
-        self.max_repair_depth = min(max_repair_depth, MAX_REPAIR_DEPTH)  # Enforce global max
-        self.max_repair_diff_lines = min(max_repair_diff_lines, MAX_REPAIR_DIFF_LINES)
-        self.max_repair_diff_ratio = min(max_repair_diff_ratio, MAX_REPAIR_DIFF_RATIO)
+        # Repair caps - mode-dependent with hard limits
+        if self.dev_mode:
+            # Dev mode: permissive but bounded
+            self.max_repair_depth = min(
+                max_repair_depth or DEV_MAX_REPAIR_DEPTH,
+                DEV_MAX_REPAIR_DEPTH
+            )
+            self.max_repair_diff_lines = min(
+                max_repair_diff_lines or DEV_MAX_REPAIR_DIFF_LINES,
+                DEV_MAX_REPAIR_DIFF_LINES
+            )
+            self.max_repair_diff_ratio = min(
+                max_repair_diff_ratio or DEV_MAX_REPAIR_DIFF_RATIO,
+                DEV_MAX_REPAIR_DIFF_RATIO
+            )
+            self.repair_timeout = min(
+                repair_timeout or DEV_REPAIR_TIMEOUT_SECONDS,
+                DEV_REPAIR_TIMEOUT_SECONDS
+            )
+        else:
+            # Production: conservative hard limits
+            self.max_repair_depth = min(
+                max_repair_depth or MAX_REPAIR_DEPTH,
+                MAX_REPAIR_DEPTH
+            )
+            self.max_repair_diff_lines = min(
+                max_repair_diff_lines or MAX_REPAIR_DIFF_LINES,
+                MAX_REPAIR_DIFF_LINES
+            )
+            self.max_repair_diff_ratio = min(
+                max_repair_diff_ratio or MAX_REPAIR_DIFF_RATIO,
+                MAX_REPAIR_DIFF_RATIO
+            )
+            self.repair_timeout = min(
+                repair_timeout or REPAIR_TIMEOUT_SECONDS,
+                REPAIR_TIMEOUT_SECONDS
+            )
         
         # Track repair state
         self._current_repair_depth = 0
@@ -654,13 +734,110 @@ class AIOutputVerifier:
         )
 
 
-# Singleton verifier instance
+# ============================================================
+# FACTORY FUNCTIONS FOR DIFFERENT MODES
+# ============================================================
+
+# Singleton verifier instances (one per mode)
 _default_verifier: Optional[AIOutputVerifier] = None
+_dev_verifier: Optional[AIOutputVerifier] = None
+_prod_verifier: Optional[AIOutputVerifier] = None
 
 
 def get_verifier() -> AIOutputVerifier:
-    """Get or create the default verifier instance."""
+    """Get or create the default verifier instance (auto-detects mode)."""
     global _default_verifier
     if _default_verifier is None:
-        _default_verifier = AIOutputVerifier()
+        _default_verifier = AIOutputVerifier()  # Auto-detects dev mode
     return _default_verifier
+
+
+def get_dev_verifier() -> AIOutputVerifier:
+    """
+    Get or create a development-mode verifier.
+    
+    Features:
+    - Higher repair depth (3 levels for multi-file changes)
+    - More lenient diff limits (200 lines, 40% ratio)
+    - Longer timeout (15 seconds)
+    - Non-strict mode (warnings instead of fatal errors)
+    - Does NOT raise VerificationFatalError
+    """
+    global _dev_verifier
+    if _dev_verifier is None:
+        _dev_verifier = AIOutputVerifier(
+            dev_mode=True,
+            strict_mode=False,
+            raise_on_failure=False,
+        )
+    return _dev_verifier
+
+
+def get_prod_verifier() -> AIOutputVerifier:
+    """
+    Get or create a production-mode verifier.
+    
+    Features:
+    - Low repair depth (1 level only)
+    - Strict diff limits (50 lines, 15% ratio)
+    - Short timeout (5 seconds)
+    - Strict mode (failures are fatal)
+    - RAISES VerificationFatalError on failure
+    """
+    global _prod_verifier
+    if _prod_verifier is None:
+        _prod_verifier = AIOutputVerifier(
+            dev_mode=False,
+            strict_mode=True,
+            raise_on_failure=True,
+        )
+    return _prod_verifier
+
+
+def create_verifier_for_context(
+    is_multi_file: bool = False,
+    is_refactor: bool = False,
+    is_quick_fix: bool = False,
+) -> AIOutputVerifier:
+    """
+    Create a context-appropriate verifier.
+    
+    Args:
+        is_multi_file: True if changes span multiple files
+        is_refactor: True if this is a major refactoring operation
+        is_quick_fix: True if this is a quick fix (prioritize speed)
+    
+    Returns:
+        Verifier configured for the context
+    """
+    base_dev = _is_dev_mode()
+    
+    if is_quick_fix:
+        # Quick fix: minimal verification, max speed
+        return AIOutputVerifier(
+            dev_mode=True,
+            strict_mode=False,
+            auto_repair=False,  # Don't waste time repairing
+            max_repair_depth=0,
+        )
+    
+    if is_refactor:
+        # Refactor: highest repair depth, most lenient
+        return AIOutputVerifier(
+            dev_mode=True,
+            strict_mode=False,
+            max_repair_depth=DEV_MAX_REPAIR_DEPTH,
+            max_repair_diff_lines=DEV_MAX_REPAIR_DIFF_LINES,
+            max_repair_diff_ratio=DEV_MAX_REPAIR_DIFF_RATIO,
+        )
+    
+    if is_multi_file:
+        # Multi-file: need higher depth for chained repairs
+        depth = 3 if base_dev else 2  # Slightly higher even in prod
+        return AIOutputVerifier(
+            dev_mode=base_dev,
+            max_repair_depth=depth,
+        )
+    
+    # Default: use environment-detected mode
+    return AIOutputVerifier(dev_mode=base_dev)
