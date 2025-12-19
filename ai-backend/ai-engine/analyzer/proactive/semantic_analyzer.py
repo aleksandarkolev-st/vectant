@@ -37,8 +37,14 @@ class BaseSemanticAnalyzer(ABC):
     language: str = "generic"
     
     @abstractmethod
-    def analyze(self, file: FileContext) -> List[Diagnostic]:
-        """Perform semantic analysis and return diagnostics."""
+    def analyze(self, file: FileContext, related_files: Optional[List[FileContext]] = None) -> List[Diagnostic]:
+        """
+        Perform semantic analysis and return diagnostics.
+        
+        Args:
+            file: The primary file to analyze
+            related_files: Related files in the workspace (includes, imports, etc.)
+        """
         raise NotImplementedError
 
 
@@ -118,7 +124,7 @@ class PythonSemanticAnalyzer(BaseSemanticAnalyzer):
         'TypeVar', 'Sequence', 'Mapping', 'Iterable', 'Iterator',
     }
     
-    def analyze(self, file: FileContext) -> List[Diagnostic]:
+    def analyze(self, file: FileContext, related_files: Optional[List[FileContext]] = None) -> List[Diagnostic]:
         diagnostics: List[Diagnostic] = []
         
         try:
@@ -558,7 +564,7 @@ class TypeScriptSemanticAnalyzer(BaseSemanticAnalyzer):
         'useReducer', 'useLayoutEffect', 'useImperativeHandle', 'useDebugValue',
     }
     
-    def analyze(self, file: FileContext) -> List[Diagnostic]:
+    def analyze(self, file: FileContext, related_files: Optional[List[FileContext]] = None) -> List[Diagnostic]:
         diagnostics: List[Diagnostic] = []
         lines = file.content.splitlines()
         
@@ -716,20 +722,213 @@ class TypeScriptSemanticAnalyzer(BaseSemanticAnalyzer):
 
 
 class CppSemanticAnalyzer(BaseSemanticAnalyzer):
-    """Semantic analyzer for C++ code."""
+    """Semantic analyzer for C++ code with cross-file include resolution."""
     
     language = "cpp"
     
-    def analyze(self, file: FileContext) -> List[Diagnostic]:
+    # Standard library headers that provide common symbols
+    STD_LIBRARY_SYMBOLS = {
+        'iostream': {'cout', 'cin', 'cerr', 'clog', 'endl', 'flush', 'ostream', 'istream', 'ios'},
+        'string': {'string', 'wstring', 'basic_string', 'to_string', 'stoi', 'stol', 'stof', 'stod'},
+        'vector': {'vector'},
+        'map': {'map', 'multimap'},
+        'set': {'set', 'multiset'},
+        'unordered_map': {'unordered_map', 'unordered_multimap'},
+        'unordered_set': {'unordered_set', 'unordered_multiset'},
+        'algorithm': {'sort', 'find', 'copy', 'transform', 'for_each', 'count', 'fill'},
+        'memory': {'unique_ptr', 'shared_ptr', 'weak_ptr', 'make_unique', 'make_shared'},
+        'cstdio': {'printf', 'scanf', 'sprintf', 'sscanf', 'fprintf', 'fscanf', 'FILE', 'stdin', 'stdout', 'stderr'},
+        'cstring': {'strlen', 'strcpy', 'strcat', 'strcmp', 'memcpy', 'memset', 'memmove'},
+        'cmath': {'sin', 'cos', 'tan', 'sqrt', 'pow', 'abs', 'floor', 'ceil', 'log', 'exp'},
+        'cstdlib': {'malloc', 'free', 'calloc', 'realloc', 'exit', 'atoi', 'atof', 'rand', 'srand'},
+        'fstream': {'ifstream', 'ofstream', 'fstream'},
+        'sstream': {'stringstream', 'istringstream', 'ostringstream'},
+        'functional': {'function', 'bind', 'placeholders'},
+        'utility': {'pair', 'make_pair', 'move', 'swap', 'forward'},
+        'iterator': {'begin', 'end', 'next', 'prev', 'advance', 'distance'},
+        'stdexcept': {'exception', 'runtime_error', 'logic_error', 'out_of_range', 'invalid_argument'},
+    }
+    
+    def analyze(self, file: FileContext, related_files: Optional[List[FileContext]] = None) -> List[Diagnostic]:
         diagnostics: List[Diagnostic] = []
         lines = file.content.splitlines()
+        
+        # Debug logging
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"[CppSemanticAnalyzer] Analyzing file: {file.path}")
+        logger.info(f"[CppSemanticAnalyzer] Related files: {[f.path for f in (related_files or [])]}")
+        
+        # Build the set of available symbols from includes
+        available_symbols = self._collect_available_symbols(lines, related_files or [])
+        logger.info(f"[CppSemanticAnalyzer] Available symbols: {available_symbols}")
         
         diagnostics.extend(self._check_memory_issues(lines, file))
         diagnostics.extend(self._check_smart_pointer_opportunities(lines, file))
         diagnostics.extend(self._check_const_correctness(lines, file))
         diagnostics.extend(self._check_syntax_issues(lines, file))
         diagnostics.extend(self._check_variable_issues(lines, file))
+        diagnostics.extend(self._check_include_issues(lines, file, available_symbols, related_files or []))
         # Note: Logic error detection is handled by AI tier for better accuracy
+        
+        logger.info(f"[CppSemanticAnalyzer] Total diagnostics: {len(diagnostics)}")
+        for d in diagnostics:
+            logger.info(f"[CppSemanticAnalyzer] Diagnostic: {d.message}, fixes: {len(d.fixes)}")
+        
+        return diagnostics
+    
+    def _collect_available_symbols(self, lines: List[str], related_files: List[FileContext]) -> Set[str]:
+        """
+        Collect all symbols available through includes.
+        This resolves transitive includes (e.g., test.h includes iostream -> iostream symbols available).
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        available = set()
+        
+        # First pass: collect direct includes
+        direct_includes = set()
+        for line in lines:
+            stripped = line.strip()
+            # Match #include <header> or #include "header"
+            match = re.match(r'#include\s*[<"]([^>"]+)[>"]', stripped)
+            if match:
+                header = match.group(1)
+                direct_includes.add(header)
+                # Add symbols from standard library
+                header_base = header.replace('.h', '').replace('.hpp', '')
+                if header_base in self.STD_LIBRARY_SYMBOLS:
+                    available.update(self.STD_LIBRARY_SYMBOLS[header_base])
+        
+        logger.info(f"[_collect_available_symbols] Direct includes: {direct_includes}")
+        logger.info(f"[_collect_available_symbols] Related files: {[f.path for f in related_files]}")
+        
+        # Second pass: resolve includes from related files (transitive)
+        processed_files = set()
+        files_to_process = []
+        
+        # Find related files that match our includes
+        for header in direct_includes:
+            header_lower = header.lower()
+            for related in related_files:
+                rel_path = related.path.lower()
+                # Match by filename (e.g., "test.h" matches "folder/test.h")
+                rel_filename = rel_path.split('/')[-1].split('\\')[-1]
+                logger.info(f"[_collect_available_symbols] Checking: header='{header_lower}' vs rel_filename='{rel_filename}' (full: '{rel_path}')")
+                if rel_filename == header_lower or rel_path.endswith('/' + header_lower) or rel_path.endswith('\\' + header_lower):
+                    logger.info(f"[_collect_available_symbols] MATCH! Adding {related.path} to process")
+                    files_to_process.append(related)
+        
+        # Process related files to get their symbols and transitive includes
+        while files_to_process:
+            related = files_to_process.pop(0)
+            if related.path in processed_files:
+                continue
+            processed_files.add(related.path)
+            logger.info(f"[_collect_available_symbols] Processing related file: {related.path}")
+            
+            related_lines = related.content.splitlines()
+            for rel_line in related_lines:
+                stripped = rel_line.strip()
+                # Check for includes in the related file
+                match = re.match(r'#include\s*[<"]([^>"]+)[>"]', stripped)
+                if match:
+                    header = match.group(1)
+                    header_base = header.replace('.h', '').replace('.hpp', '')
+                    logger.info(f"[_collect_available_symbols] Found include in related file: {header} (base: {header_base})")
+                    if header_base in self.STD_LIBRARY_SYMBOLS:
+                        symbols_to_add = self.STD_LIBRARY_SYMBOLS[header_base]
+                        logger.info(f"[_collect_available_symbols] Adding symbols from {header_base}: {symbols_to_add}")
+                        available.update(symbols_to_add)
+                    # Also check if this is another local header we have
+                    for other_related in related_files:
+                        if other_related.path not in processed_files:
+                            rel_path = other_related.path.lower()
+                            header_lower = header.lower()
+                            if rel_path.endswith(header_lower):
+                                files_to_process.append(other_related)
+        
+        logger.info(f"[_collect_available_symbols] Final available symbols: {available}")
+        return available
+    
+    def _check_include_issues(
+        self, 
+        lines: List[str], 
+        file: FileContext, 
+        available_symbols: Set[str],
+        related_files: List[FileContext]
+    ) -> List[Diagnostic]:
+        """Check for include-related issues with cross-file awareness."""
+        diagnostics = []
+        
+        # Mapping from symbol to required header
+        symbol_to_header = {
+            'cout': 'iostream',
+            'cin': 'iostream',
+            'cerr': 'iostream',
+            'clog': 'iostream',
+            'endl': 'iostream',
+            'flush': 'iostream',
+            'ostream': 'iostream',
+            'istream': 'iostream',
+            'string': 'string',
+            'vector': 'vector',
+            'map': 'map',
+            'set': 'set',
+            'unique_ptr': 'memory',
+            'shared_ptr': 'memory',
+            'make_unique': 'memory',
+            'make_shared': 'memory',
+            'sort': 'algorithm',
+            'find': 'algorithm',
+        }
+        
+        # Check for missing includes based on symbol usage
+        std_usage_patterns = {
+            r'\bstd::cout\b': ('iostream', 'cout'),
+            r'\bstd::cin\b': ('iostream', 'cin'),
+            r'\bstd::cerr\b': ('iostream', 'cerr'),
+            r'\bstd::endl\b': ('iostream', 'endl'),
+            r'\bstd::string\b': ('string', 'string'),
+            r'\bstd::vector\b': ('vector', 'vector'),
+            r'\bstd::map\b': ('map', 'map'),
+            r'\bstd::set\b': ('set', 'set'),
+            r'\bstd::unique_ptr\b': ('memory', 'unique_ptr'),
+            r'\bstd::shared_ptr\b': ('memory', 'shared_ptr'),
+            r'\bstd::make_unique\b': ('memory', 'make_unique'),
+            r'\bstd::make_shared\b': ('memory', 'make_shared'),
+            r'\bstd::sort\b': ('algorithm', 'sort'),
+            r'\bstd::find\b': ('algorithm', 'find'),
+        }
+        
+        # Now check for missing includes using the available_symbols set
+        # which was already computed with transitive includes
+        for i, line in enumerate(lines):
+            for pattern, (required_header, symbol_name) in std_usage_patterns.items():
+                if re.search(pattern, line):
+                    # Check if symbol is available (either directly or transitively)
+                    is_available = symbol_name in available_symbols
+                    if not is_available:
+                        col = line.find('std::')
+                        if col >= 0:
+                            diagnostics.append(Diagnostic(
+                                message=f"Missing `#include <{required_header}>` for {pattern.strip(r'\\b')} usage",
+                                severity=Severity.ERROR,
+                                tier=AnalysisTier.SEMANTIC,
+                                location=DiagnosticLocation(line=i, column=col, end_line=i, end_column=col + len(pattern) - 4),
+                                code="CPP001",
+                                category=DiagnosticCategory.UNDEFINED_VARIABLE,
+                                explanation=f"The symbol requires `#include <{required_header}>` to be available.",
+                                fixes=[
+                                    CodeFix(
+                                        description=f"Add #include <{required_header}>",
+                                        replacement_text=f"#include <{required_header}>\n",
+                                        location=DiagnosticLocation(0, 0, 0, 0),
+                                        is_preferred=True,
+                                    )
+                                ],
+                            ))
         
         return diagnostics
     
@@ -922,6 +1121,7 @@ class CppSemanticAnalyzer(BaseSemanticAnalyzer):
 class SemanticAnalyzer:
     """
     Main semantic analyzer that dispatches to language-specific implementations.
+    Supports cross-file analysis with related files for include/import resolution.
     """
     
     _analyzers: Dict[str, BaseSemanticAnalyzer] = {}
@@ -935,9 +1135,13 @@ class SemanticAnalyzer:
     def _register(self, analyzer: BaseSemanticAnalyzer) -> None:
         self._analyzers[analyzer.language] = analyzer
     
-    def analyze(self, file: FileContext) -> TierResult:
+    def analyze(self, file: FileContext, related_files: Optional[List[FileContext]] = None) -> TierResult:
         """
-        Perform semantic analysis on a file.
+        Perform semantic analysis on a file with cross-file awareness.
+        
+        Args:
+            file: The primary file to analyze
+            related_files: Other files in the workspace for include/import resolution
         
         Returns a TierResult containing all diagnostics.
         """
@@ -955,7 +1159,7 @@ class SemanticAnalyzer:
             )
         
         try:
-            diagnostics = analyzer.analyze(file)
+            diagnostics = analyzer.analyze(file, related_files)
         except Exception as e:
             # Don't crash on analysis errors
             diagnostics = [

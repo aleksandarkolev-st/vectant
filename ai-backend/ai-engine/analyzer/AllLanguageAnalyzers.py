@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Set
 
 from analyzer.baseAnalyzer import BaseAnalyzer
-from analyzer.utils import make_diag
+from analyzer.utils import make_diag, CodeFix
 
 _STRICT_EQUALITY = re.compile(r"(?<![=!])==(?!=)")
 _ANY_TYPE = re.compile(r":\s*any\b")
@@ -388,9 +388,21 @@ class CppAnalyzer(BaseAnalyzer):
                     msg="Missing `#include <iostream>` for cin/cout usage",
                     severity="error",
                     line=0,
+                    column=0,
                     end_line=0,
                     end_column=1,
                     code="CPP001",
+                    fixes=[
+                        CodeFix(
+                            description="Add #include <iostream>",
+                            replacement_text="#include <iostream>\n",
+                            line=0,
+                            column=0,
+                            end_line=0,
+                            end_column=0,
+                            is_preferred=True,
+                        )
+                    ],
                 )
             )
 

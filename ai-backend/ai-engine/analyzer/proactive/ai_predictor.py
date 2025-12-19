@@ -45,81 +45,73 @@ from .types import (
 )
 
 
-# Prompt template for AI error prediction - PRECISE SENIOR DEV LEVEL
-AI_ERROR_PREDICTION_PROMPT = """You are an expert code reviewer finding REAL bugs that cause incorrect behavior.
+# Prompt template for AI error prediction - ARCHITECTURAL + BUG-FOCUSED
+AI_ERROR_PREDICTION_PROMPT = """You are a senior software architect reviewing code for REAL bugs and design issues.
+
+## YOUR MINDSET
+Think like an architect, not a quick-fixer:
+- Find the ROOT CAUSE of issues, not just symptoms
+- Suggest fixes that improve DESIGN, not just patch behavior
+- Consider how this code fits into a larger system
 
 ## YOUR TASK
-Find bugs in the code below. Only report issues that:
-1. Will cause WRONG OUTPUT or RUNTIME ERROR with specific inputs
-2. You can PROVE with a concrete example (e.g., "input X gives Y, but should give Z")
+Find bugs and design issues. Only report:
+1. Bugs that cause WRONG OUTPUT or RUNTIME ERROR (with proof)
+2. Design flaws that will cause problems as code grows
 
 ## WHAT TO LOOK FOR
+
+### Bugs (HIGH CONFIDENCE - prove with examples):
 - Wrong operators: `<` vs `<=`, `==` vs `!=`, `&&` vs `||`
 - Off-by-one errors in loops or array access
 - Missing edge cases: null, 0, negative, empty, boundary values
 - Incorrect return values or missing returns
 - Infinite loops or recursion without termination
-- Logic that contradicts the function's purpose
 
-## WHAT TO IGNORE (NOT BUGS)
-- Style, formatting, naming conventions
-- Missing comments or documentation  
-- Performance suggestions (unless causes timeout)
+### Design Issues (MEDIUM CONFIDENCE):
+- Functions doing too many things (suggest splitting)
+- Missing abstractions that would simplify code
+- Error handling that swallows problems
+- Tight coupling that will cause issues later
+
+## WHAT TO IGNORE
+- Style, formatting, naming (unless they hide bugs)
+- Performance (unless causes timeout/OOM)
 - Best practices that don't affect correctness
-- Code that handles edge cases correctly (don't suggest adding checks that exist)
+- Edge cases that ARE already handled
 
 ## CRITICAL RULES
 1. READ THE ACTUAL CODE - don't assume what it does
 2. If a check exists (like `if (x < 0)`), don't report it as missing
-3. `if (x < 0)` and `if (x == 0)` are DIFFERENT checks - one tests negative, one tests zero
-4. Only report bugs you can PROVE with input → expected → actual
+3. Only report bugs you can PROVE with input → expected → actual
+4. For design issues, explain WHY the current design is problematic
 
 ## RESPONSE FORMAT
-Return ONLY a JSON array (no markdown, no explanation outside JSON):
+Return ONLY a JSON array:
 ```json
 [
   {{
     "line_start": 5,
     "line_end": 5,
     "snippet": "exact code from source to highlight",
-    "message": "Brief bug description",
-    "explanation": "PROOF: When input=X, this returns Y but should return Z because...",
+    "message": "Brief description",
+    "explanation": "PROOF: input X → expected Y → actual Z  OR  DESIGN: Why this pattern causes problems",
     "severity": "error",
     "confidence": 0.9,
-    "fix_snippet": "corrected code to replace snippet",
-    "category": "logic_error"
+    "fix_snippet": "improved code (design fix, not just patch)",
+    "category": "logic_error|design_issue"
   }}
 ]
 ```
 
 ## FIELD RULES
-- `snippet`: Copy EXACT code from source (what to replace)
-- `fix_snippet`: The CORRECTED code (replacement). Use "" only to DELETE code.
-- `confidence`: 0.0-1.0. Use 0.9+ only if you can prove the bug.
-- `category`: logic_error | off_by_one | wrong_operator | boundary_error | missing_check
-- `severity`: "error" for bugs causing wrong results, "warning" for potential issues
+- `snippet`: Copy EXACT code from source
+- `fix_snippet`: Improved code. Prefer DESIGN fixes over quick patches.
+- `confidence`: 0.9+ for provable bugs, 0.7-0.85 for design issues
+- `category`: logic_error | off_by_one | wrong_operator | design_issue | missing_check
+- `severity`: "error" for bugs, "warning" for design issues
 
-## EXAMPLES
-
-### Example 1: Wrong operator
-Code: `if (n % 2 == 0) print("odd")`
-Bug: Prints "odd" when n is even (wrong operator)
-```json
-[{{"line_start":1,"line_end":1,"snippet":"n % 2 == 0","message":"Condition is true for even numbers but prints 'odd'","explanation":"PROOF: n=4 → 4%2=0 → true → prints 'odd'. Should use n%2!=0","severity":"error","confidence":0.95,"fix_snippet":"n % 2 != 0","category":"wrong_operator"}}]
-```
-
-### Example 2: Missing base case
-Code: `int f(int n) {{ return n * f(n-1); }}`
-Bug: No base case causes infinite recursion
-```json
-[{{"line_start":1,"line_end":1,"snippet":"return n * f(n-1);","message":"Missing base case causes infinite recursion","explanation":"PROOF: f(1) calls f(0) calls f(-1)... never stops. Need base case for n<=1","severity":"error","confidence":0.95,"fix_snippet":"if (n <= 1) return 1; return n * f(n-1);","category":"missing_check"}}]
-```
-
-### Example 3: NOT a bug (edge case handled)
-Code: `int abs(int x) {{ if (x < 0) return -x; return x; }}`
-Response: `[]`  ← Empty because the negative case IS handled
-
-If no bugs found or uncertain, return: `[]`
+If no issues found or uncertain, return: `[]`
 
 ## CODE TO REVIEW
 ```{language}
@@ -130,71 +122,100 @@ JSON:"""
 
 
 # ============================================================================
-# Multi-File Analysis Prompt
+# Multi-File Analysis Prompt - Workspace-Wide, Architecture-Focused
 # ============================================================================
 
-AI_MULTI_FILE_ANALYSIS_PROMPT = """You are an expert code reviewer analyzing a workspace with multiple related files.
+AI_MULTI_FILE_ANALYSIS_PROMPT = """You are a senior software architect and code reviewer analyzing an entire workspace.
+
+## YOUR MINDSET
+Think like an architect, not a quick-fixer. When you find issues:
+1. Consider the ROOT CAUSE, not just symptoms
+2. Suggest fixes that improve DESIGN, not just patch behavior
+3. Look at how files interact and depend on each other
+4. Identify patterns that could cause bugs across the codebase
 
 ## YOUR TASK
-Find bugs and cross-file issues in the code. Focus on:
-1. Bugs in the FOCUS FILE that will cause WRONG OUTPUT or RUNTIME ERROR
-2. Cross-file issues: missing imports, type mismatches, unused exports
-3. Integration bugs between files (wrong function signatures, incorrect usage)
+Analyze ALL provided files for:
+1. **Cross-file integration bugs**: Wrong function signatures, incorrect imports, type mismatches
+2. **Architecture issues**: Circular dependencies, tight coupling, missing abstractions
+3. **Logic errors**: Bugs that will cause incorrect behavior
+4. **Design improvements**: Better ways to structure the code
 
-## FILES PROVIDED
+## FILES IN WORKSPACE
 {files_section}
 
 ## FOCUS FILE: {focus_file}
+(Primary file user is editing - prioritize issues here, but analyze all files)
 
-## WHAT TO LOOK FOR
-### Single-file bugs (in focus file):
-- Wrong operators, off-by-one errors, missing edge cases
-- Incorrect return values or missing returns
-- Logic errors and infinite loops
+## WHAT TO ANALYZE
 
-### Cross-file issues:
-- Importing something that doesn't exist in the target file
-- Using wrong function signature (wrong params/return type)
-- Calling a function with incorrect arguments based on its definition
-- Missing imports for used symbols
-- Type mismatches between files
+### Cross-File Issues (HIGH PRIORITY):
+- Function called with wrong arguments (check definitions in other files)
+- Import statements for things that don't exist
+- Type mismatches between expected and actual values across files
+- Missing exports that other files try to import
+- Header file changes that break source files (C/C++)
+
+### Architecture Issues:
+- Circular dependencies between modules
+- Functions doing too much (suggest splitting)
+- Duplicated logic that should be shared
+- Missing error handling patterns
+- Inconsistent API designs
+
+### Single-File Bugs:
+- Logic errors provable with concrete examples
+- Off-by-one errors, wrong operators
+- Missing edge cases, null checks
+- Unreachable code
 
 ## RESPONSE FORMAT
-Return a JSON object with two arrays:
+Return a JSON object with diagnostics for ANY file in the workspace:
 ```json
 {{
   "diagnostics": [
     {{
-      "file": "path/to/file.js",
+      "file": "path/to/file.ext",
       "line_start": 5,
       "line_end": 5,
       "snippet": "exact code from source",
-      "message": "Brief bug description",
-      "explanation": "Why this is a bug",
-      "severity": "error",
+      "message": "Brief description (include file name if cross-file issue)",
+      "explanation": "ARCHITECTURE: Why this design is problematic OR PROOF: input X → expected Y → actual Z",
+      "severity": "error|warning",
       "confidence": 0.9,
-      "fix_snippet": "corrected code",
-      "category": "logic_error",
+      "fix_snippet": "improved code that fixes the ROOT CAUSE",
+      "category": "logic_error|design_issue|cross_file|type_error",
       "related_files": [
-        {{"file": "other/file.js", "line": 10, "message": "Related definition here"}}
+        {{"file": "other/file.ext", "line": 10, "message": "Related definition/usage here"}}
       ]
     }}
   ],
   "suggestions": [
     {{
-      "title": "Short title for suggestion",
-      "description": "Detailed description of improvement",
-      "category": "refactor",
-      "affected_files": ["file1.js", "file2.js"],
+      "title": "Architectural improvement",
+      "description": "Detailed explanation of how to improve the design, not just fix a symptom",
+      "category": "refactor|architecture|cleanup",
+      "affected_files": ["file1.ext", "file2.ext"],
       "confidence": 0.85
     }}
   ]
 }}
 ```
 
-## CATEGORY OPTIONS
-- `logic_error`, `type_error`, `undefined_variable`, `missing_import`
-- `wrong_signature`, `unused_export`, `security`, `performance`
+## CATEGORIES
+- `logic_error`: Provable bug with wrong output
+- `cross_file`: Issue spanning multiple files
+- `type_error`: Type mismatch (especially across files)
+- `design_issue`: Architectural problem
+- `missing_import`: Symbol used but not imported
+- `wrong_signature`: Function called incorrectly
+
+## CRITICAL RULES
+1. **Analyze ALL files**, not just the focus file - bugs often hide in interactions
+2. For cross-file issues, ALWAYS check the actual definitions in other files
+3. Don't suggest adding code that already exists
+4. When suggesting fixes, prefer DESIGN improvements over quick patches
+5. Include `related_files` for any cross-file issue to help navigation
 
 If no issues found, return: {{"diagnostics": [], "suggestions": []}}
 
@@ -218,6 +239,9 @@ CATEGORY_MAP = {
     "unused_code": DiagnosticCategory.UNUSED_CODE,
     "style": DiagnosticCategory.STYLE,
     "syntax": DiagnosticCategory.SYNTAX,
+    "cross_file": DiagnosticCategory.TYPE_ERROR,  # Cross-file issues often manifest as type errors
+    "design_issue": DiagnosticCategory.BEST_PRACTICE,
+    "architecture": DiagnosticCategory.BEST_PRACTICE,
     # Additional categories for precise diagnostics
     "off_by_one": DiagnosticCategory.LOGIC_ERROR,
     "wrong_operator": DiagnosticCategory.LOGIC_ERROR,

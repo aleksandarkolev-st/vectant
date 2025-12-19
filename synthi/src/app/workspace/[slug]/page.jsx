@@ -73,11 +73,14 @@ export default function EditorPage({ params }) {
     const analysisTimeoutRef = useRef(null);
     const lastAnalyzedSignatureRef = useRef('');
     
-    // Proactive analysis state
+    // Proactive analysis state - keyed by file path
     const [diagnostics, setDiagnostics] = useState([]);
     const [isAnalyzingProactive, setIsAnalyzingProactive] = useState(false);
     const proactiveTimeoutRef = useRef(null);
     const lastProactiveSignatureRef = useRef('');
+    const currentAnalysisFileRef = useRef(null); // Track which file diagnostics belong to
+    const aiAnalysisRef = useRef(null);
+    const lastContentHashRef = useRef('');
     
     // Multi-file workspace analysis (cross-file issue detection)
     const {
@@ -96,10 +99,14 @@ export default function EditorPage({ params }) {
     });
     
     // Remove a specific diagnostic by location (called when a fix is applied)
-    const removeDiagnosticByLocation = useCallback((location) => {
+    const removeDiagnosticByLocation = useCallback((location, filePath) => {
         if (!location) return;
+        const targetFile = filePath || activeFile?.path || activeFile?.name;
         
         setDiagnostics(prev => prev.filter(d => {
+            // Only consider diagnostics from the same file
+            if (d.filePath !== targetFile) return true;
+            
             const loc = d.location || {};
             // Remove if exact location match
             const sameStart = loc.line === location.line && loc.column === location.column;
@@ -109,7 +116,7 @@ export default function EditorPage({ params }) {
         
         // Also invalidate the signature so next analysis runs fresh
         lastProactiveSignatureRef.current = '';
-    }, []);
+    }, [activeFile]);
 
     useEffect(() => {
         const handleGuiStart = (e) => {
@@ -224,6 +231,29 @@ export default function EditorPage({ params }) {
         }
     }, [activeFile, hasLoadedInitialFile, dispatch]);
 
+    // 4. Track file changes for analysis - don't clear diagnostics from other files
+    useEffect(() => {
+        const currentFilePath = activeFile?.path || activeFile?.name;
+        const previousFilePath = currentAnalysisFileRef.current;
+        
+        // If we're switching files, reset analysis state but keep diagnostics from other files
+        if (currentFilePath && previousFilePath && currentFilePath !== previousFilePath) {
+            // Reset analysis signature so new file gets analyzed
+            lastProactiveSignatureRef.current = '';
+            lastContentHashRef.current = '';
+            // Cancel any pending analysis for the old file
+            if (proactiveTimeoutRef.current) {
+                clearTimeout(proactiveTimeoutRef.current);
+            }
+            if (aiAnalysisRef.current) {
+                aiAnalysisRef.current.cancelled = true;
+            }
+        }
+        
+        // Update the current file reference
+        currentAnalysisFileRef.current = currentFilePath;
+    }, [activeFile]);
+
     // Local state for layout management (used to force remount of ResizablePanelGroup)
     const [panelGroupKey, setPanelGroupKey] = useState(0);
 
@@ -274,10 +304,6 @@ export default function EditorPage({ params }) {
     }, [currentContent, activeFile, hasLoadedInitialFile, analyzeCode]);
 
     // Run proactive analysis (AI-powered error detection) on content change
-    // Track pending AI analysis
-    const aiAnalysisRef = useRef(null);
-    const lastContentHashRef = useRef('');
-    
     // Simple but effective hash function for content comparison
     const computeContentHash = useCallback((content) => {
         if (!content) return '';
@@ -289,6 +315,40 @@ export default function EditorPage({ params }) {
         }
         return hash.toString(16);
     }, []);
+
+    // Get related files for cross-file analysis (includes, imports)
+    const getRelatedFilesForAnalysis = useCallback(async () => {
+        if (!activeFile || !rawFiles) return [];
+        
+        const getContentForDep = async (path) => {
+            // If it's the active file, use the current editor content
+            if (path === activeFile.path) {
+                return typeof currentContent === 'string' ? currentContent : '';
+            }
+            // Check cache
+            const cached = fileCache.get(path);
+            if (cached !== undefined) return cached;
+            // Fetch
+            try {
+                return await api.fetchFileContent(slug, path);
+            } catch (e) {
+                console.warn(`Could not fetch content for ${path}:`, e);
+                return '';
+            }
+        };
+
+        try {
+            const deps = await resolveDependencies(activeFile, rawFiles, getContentForDep);
+            return deps.map(d => ({
+                path: d.name,
+                content: d.content,
+                language: getFileLanguage(d.name)
+            }));
+        } catch (e) {
+            console.warn('Failed to resolve dependencies for analysis:', e);
+            return [];
+        }
+    }, [activeFile, rawFiles, currentContent, slug]);
 
     useEffect(() => {
         if (!activeFile || !currentContent || !hasLoadedInitialFile) return;
@@ -333,7 +393,7 @@ export default function EditorPage({ params }) {
         lastContentHashRef.current = contentHash;
 
         // Debounce proactive analysis to avoid overwhelming the backend
-        proactiveTimeoutRef.current = setTimeout(() => {
+        proactiveTimeoutRef.current = setTimeout(async () => {
             const langSource =
                 activeFile.language ||
                 (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
@@ -347,16 +407,32 @@ export default function EditorPage({ params }) {
 
             setIsAnalyzingProactive(true);
             
+            // Get related files for cross-file analysis (includes, imports)
+            let relatedFiles = [];
+            try {
+                relatedFiles = await getRelatedFilesForAnalysis();
+            } catch (e) {
+                console.warn('Failed to get related files for analysis:', e);
+            }
+            
             // STEP 1: Run fast static+semantic analysis first for immediate feedback
             analyzeProactive({
                 code: contentToAnalyze,
                 lang: normalizedLang,
                 filePath: activeFile?.path || activeFile?.name || 'untitled',
                 includeAi: false, // Fast tier first
+                relatedFiles, // Pass related files for cross-file include resolution
             })
                 .then((fastResult) => {
                     const fastDiags = fastResult?.diagnostics || fastResult?.data?.diagnostics || [];
-                    setDiagnostics(fastDiags);
+                    const currentFilePath = activeFile?.path || activeFile?.name || 'untitled';
+                    // Add filePath to each diagnostic for proper grouping in ProblemsPanel
+                    const diagsWithPath = fastDiags.map(d => ({ ...d, filePath: d.filePath || currentFilePath }));
+                    // Replace diagnostics for this file only, keep diagnostics from other files
+                    setDiagnostics(prev => {
+                        const otherFileDiags = prev.filter(d => d.filePath !== currentFilePath);
+                        return [...otherFileDiags, ...diagsWithPath];
+                    });
                     lastProactiveSignatureRef.current = signature;
                     setIsAnalyzingProactive(false);
                     
@@ -372,8 +448,9 @@ export default function EditorPage({ params }) {
                     analyzeProactive({
                         code: contentToAnalyze,
                         lang: normalizedLang,
-                        filePath: activeFile?.path || activeFile?.name || 'untitled',
+                        filePath: currentFilePath,
                         includeAi: true, // AI tier for logic errors
+                        relatedFiles, // Pass related files for cross-file analysis
                     })
                         .then((aiResult) => {
                             // Only update if:
@@ -383,7 +460,13 @@ export default function EditorPage({ params }) {
                             const isStillCurrent = !aiTracker.cancelled && aiAnalysisRef.current === aiTracker;
                             if (isStillCurrent) {
                                 const aiDiags = aiResult?.diagnostics || aiResult?.data?.diagnostics || [];
-                                setDiagnostics(aiDiags);
+                                // Add filePath to each diagnostic
+                                const aiDiagsWithPath = aiDiags.map(d => ({ ...d, filePath: d.filePath || currentFilePath }));
+                                // Replace diagnostics for this file only
+                                setDiagnostics(prev => {
+                                    const otherFileDiags = prev.filter(d => d.filePath !== currentFilePath);
+                                    return [...otherFileDiags, ...aiDiagsWithPath];
+                                });
                             }
                         })
                         .catch((err) => {
@@ -403,7 +486,7 @@ export default function EditorPage({ params }) {
                 clearTimeout(proactiveTimeoutRef.current);
             }
         };
-    }, [currentContent, activeFile, hasLoadedInitialFile, analyzeProactive]);
+    }, [currentContent, activeFile, hasLoadedInitialFile, analyzeProactive, getRelatedFilesForAnalysis, computeContentHash]);
 
     // Track focused file and content changes for workspace analysis
     useEffect(() => {
@@ -875,7 +958,42 @@ export default function EditorPage({ params }) {
                         filePath={activeFile?.path || activeFile?.name || 'Current File'}
                         onClose={() => setShowProblemsPanel(false)}
                         onNavigate={(location) => {
-                            if (editor) {
+                            const targetFile = location.filePath;
+                            const currentFile = activeFile?.path || activeFile?.name;
+                            
+                            // If navigating to a different file, select it first
+                            if (targetFile && targetFile !== currentFile) {
+                                // Find the file in rawFiles and select it
+                                const findFile = (files, path) => {
+                                    for (const file of files || []) {
+                                        if (file.isFolder && file.children) {
+                                            const found = findFile(file.children, path);
+                                            if (found) return found;
+                                        } else if (file.path === path || file.name === path) {
+                                            return file;
+                                        }
+                                    }
+                                    return null;
+                                };
+                                
+                                const fileToSelect = findFile(rawFiles, targetFile);
+                                if (fileToSelect) {
+                                    dispatch(selectFileThunk(fileToSelect));
+                                    // Wait a bit for file to load, then navigate
+                                    setTimeout(() => {
+                                        if (editor) {
+                                            const position = {
+                                                lineNumber: (location.line ?? 0) + 1,
+                                                column: (location.column ?? 0) + 1,
+                                            };
+                                            editor.setPosition(position);
+                                            editor.revealPositionInCenter(position);
+                                            editor.focus();
+                                        }
+                                    }, 100);
+                                }
+                            } else if (editor) {
+                                // Same file, just navigate
                                 const position = {
                                     lineNumber: (location.line ?? 0) + 1,
                                     column: (location.column ?? 0) + 1,

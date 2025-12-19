@@ -95,7 +95,8 @@ class ProactiveAnalyzer:
             all_diagnostics.extend(tier_result.diagnostics)
         
         if AnalysisTier.SEMANTIC in request.tiers:
-            tier_result = await self._run_semantic_analysis(request.file)
+            # Pass related files for cross-file include/import resolution
+            tier_result = await self._run_semantic_analysis(request.file, request.related_files)
             result.tiers[AnalysisTier.SEMANTIC] = tier_result
             all_diagnostics.extend(tier_result.diagnostics)
         
@@ -151,7 +152,8 @@ class ProactiveAnalyzer:
             yield ProgressEvent(tier=AnalysisTier.SEMANTIC, status="started")
             
             try:
-                tier_result = await self._run_semantic_analysis(request.file)
+                # Pass related files for cross-file include/import resolution
+                tier_result = await self._run_semantic_analysis(request.file, request.related_files)
                 all_diagnostics.extend(tier_result.diagnostics)
                 yield ProgressEvent(
                     tier=AnalysisTier.SEMANTIC,
@@ -287,14 +289,17 @@ class ProactiveAnalyzer:
             elapsed_ms=elapsed_ms,
         )
     
-    async def _run_semantic_analysis(self, file: FileContext) -> TierResult:
-        """Run semantic AST-based analysis."""
+    async def _run_semantic_analysis(
+        self, 
+        file: FileContext, 
+        related_files: Optional[List[FileContext]] = None
+    ) -> TierResult:
+        """Run semantic AST-based analysis with cross-file awareness."""
         # Run in thread pool to avoid blocking
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
-            self._semantic_analyzer.analyze,
-            file,
+            lambda: self._semantic_analyzer.analyze(file, related_files),
         )
         return result
     
