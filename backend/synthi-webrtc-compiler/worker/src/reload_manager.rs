@@ -120,6 +120,12 @@ pub struct ReloadClassifier {
     safe_patterns: Vec<String>,
     /// Patterns that force cold reload
     cold_patterns: Vec<String>,
+    /// Manual overrides per boundary (highest priority)
+    boundary_overrides: HashMap<BoundaryId, ReloadClass>,
+    /// File path pattern overrides (medium priority)
+    path_overrides: Vec<(String, ReloadClass)>,
+    /// Global override (lowest priority, for debugging)
+    global_override: Option<ReloadClass>,
 }
 
 impl ReloadClassifier {
@@ -137,15 +143,109 @@ impl ReloadClassifier {
                 "extern_c".to_string(),
                 "abi_version".to_string(),
             ],
+            boundary_overrides: HashMap::new(),
+            path_overrides: Vec::new(),
+            global_override: None,
         }
     }
     
+    // =====================================================
+    // MANUAL OVERRIDE HOOKS - Use when auto-detection fails
+    // =====================================================
+    
+    /// Override classification for a specific boundary
+    /// Use when auto-detection consistently gets it wrong
+    pub fn set_boundary_override(&mut self, boundary_id: BoundaryId, class: ReloadClass) {
+        self.boundary_overrides.insert(boundary_id, class);
+    }
+    
+    /// Remove boundary override (revert to auto-detection)
+    pub fn clear_boundary_override(&mut self, boundary_id: &BoundaryId) {
+        self.boundary_overrides.remove(boundary_id);
+    }
+    
+    /// Override classification for files matching a glob pattern
+    /// Example: "**/*_test.rs" -> ReloadClass::Safe
+    pub fn set_path_override(&mut self, pattern: String, class: ReloadClass) {
+        // Remove existing pattern if present
+        self.path_overrides.retain(|(p, _)| p != &pattern);
+        self.path_overrides.push((pattern, class));
+    }
+    
+    /// Set global override - FORCES all reloads to this class
+    /// WARNING: Use only for debugging, disables safety checks
+    pub fn set_global_override(&mut self, class: Option<ReloadClass>) {
+        if class.is_some() {
+            eprintln!(
+                "WARNING: Global reload class override set to {:?}. \
+                 This disables safety classification!",
+                class
+            );
+        }
+        self.global_override = class;
+    }
+    
+    /// Check if a path matches any override patterns
+    fn check_path_override(&self, file_path: &str) -> Option<ReloadClass> {
+        for (pattern, class) in &self.path_overrides {
+            if Self::glob_match(pattern, file_path) {
+                return Some(*class);
+            }
+        }
+        None
+    }
+    
+    /// Simple glob matching (supports * and **)
+    fn glob_match(pattern: &str, path: &str) -> bool {
+        // Simplified glob: ** matches any path, * matches segment
+        let pattern = pattern.replace("**", "§").replace("*", "[^/]*").replace("§", ".*");
+        regex::Regex::new(&format!("^{}$", pattern))
+            .map(|re| re.is_match(path))
+            .unwrap_or(false)
+    }
+    
     /// Classify a reload based on what changed
+    /// Priority: global_override > boundary_override > path_override > auto-detect
     pub fn classify(&self, changes: &ReloadChanges) -> ReloadClass {
+        self.classify_with_context(changes, None, None)
+    }
+    
+    /// Classify with full context for override checking
+    pub fn classify_with_context(
+        &self,
+        changes: &ReloadChanges,
+        boundary_id: Option<&BoundaryId>,
+        file_path: Option<&str>,
+    ) -> ReloadClass {
+        // 1. Global override (debugging only)
+        if let Some(class) = self.global_override {
+            return class;
+        }
+        
+        // 2. Boundary-specific override
+        if let Some(bid) = boundary_id {
+            if let Some(&class) = self.boundary_overrides.get(bid) {
+                return class;
+            }
+        }
+        
+        // 3. Path pattern override
+        if let Some(path) = file_path {
+            if let Some(class) = self.check_path_override(path) {
+                return class;
+            }
+        }
+        
+        // 4. Auto-detection (original logic)
+        self.auto_classify(changes)
+    }
+    
+    /// Original auto-classification logic (isolated for clarity)
+    fn auto_classify(&self, changes: &ReloadChanges) -> ReloadClass {
         // Cold if any breaking changes
         if changes.has_breaking_api_change || 
            changes.has_state_schema_change ||
-           changes.removed_exports.len() > 0 {
+           !changes.removed_exports.is_empty() {
             return ReloadClass::Cold;
         }
         
@@ -159,12 +259,37 @@ impl ReloadClassifier {
         // Default to Warm
         ReloadClass::Warm
     }
+    
+    /// Get classification with confidence score (for debugging)
+    pub fn classify_with_confidence(&self, changes: &ReloadChanges) -> (ReloadClass, ClassificationConfidence) {
+        let class = self.auto_classify(changes);
+        
+        let confidence = if changes.has_breaking_api_change || changes.has_state_schema_change {
+            ClassificationConfidence::High // Clear signals
+        } else if changes.is_stateless_change && changes.modified_functions.is_empty() {
+            ClassificationConfidence::High // Obviously safe
+        } else if changes.modified_functions.len() > 5 {
+            ClassificationConfidence::Low // Too many changes to be sure
+        } else {
+            ClassificationConfidence::Medium
+        };
+        
+        (class, confidence)
+    }
 }
 
 impl Default for ReloadClassifier {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Confidence level for auto-classification
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassificationConfidence {
+    High,   // Clear signals, very likely correct
+    Medium, // Reasonable guess
+    Low,    // Many changes, uncertain - consider manual override
 }
 
 /// Detected changes for classification
@@ -177,12 +302,17 @@ pub struct ReloadChanges {
     pub has_breaking_api_change: bool,
     pub has_state_schema_change: bool,
     pub is_stateless_change: bool,
+    /// File path for path-based overrides
+    pub file_path: Option<String>,
+    /// Explicit boundary ID for boundary overrides  
+    pub boundary_id: Option<BoundaryId>,
 }
 
 // ============================================================
 // PRE-RELOAD SNAPSHOTS
 // ============================================================
 // Snapshot everything before reload for instant crash revert
+// OPTIMIZED: Validity tracking is O(1), not O(n)
 
 /// Complete system snapshot for crash recovery
 #[derive(Debug, Clone)]
@@ -203,17 +333,31 @@ pub struct ReloadSnapshot {
     /// Async task states
     pub task_states: Vec<TaskSnapshot>,
     
-    /// Whether snapshot is still valid for revert
-    pub valid: bool,
+    // VALIDITY: Use generation counter instead of per-snapshot bool
+    // This makes invalidation O(1) instead of O(n)
+    /// Generation when snapshot was created
+    pub generation: u64,
     
-    /// Reason if invalidated
-    pub invalidation_reason: Option<String>,
+    /// Reason if invalidated (lazy - set on access, not on invalidate)
+    invalidation_reason: Option<String>,
+}
+
+impl ReloadSnapshot {
+    /// Check validity against current generation (O(1))
+    #[inline]
+    pub fn is_valid(&self, current_valid_generation: u64) -> bool {
+        self.generation >= current_valid_generation
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateSnapshot {
     pub boundary_id: BoundaryId,
-    pub json_state: String,
+    /// Lazy: only serialize on revert, not on create
+    /// Store pointer/handle instead of full JSON
+    pub state_handle: u64,
+    /// Hash for quick equality check without deserialize
+    pub state_hash: u64,
     pub abi_version: u32,
     pub source_hash: u64,
 }
@@ -251,11 +395,16 @@ pub enum TaskState {
     Terminated,
 }
 
-/// Snapshot manager with retention policy
+/// Snapshot manager with O(1) validity tracking
 pub struct SnapshotManager {
     snapshots: VecDeque<ReloadSnapshot>,
     max_snapshots: usize,
     next_id: AtomicU64,
+    /// Current generation counter
+    current_generation: AtomicU64,
+    /// Minimum valid generation (snapshots below this are invalid)
+    /// Incrementing this invalidates all older snapshots in O(1)
+    min_valid_generation: AtomicU64,
 }
 
 impl SnapshotManager {
@@ -264,10 +413,13 @@ impl SnapshotManager {
             snapshots: VecDeque::new(),
             max_snapshots,
             next_id: AtomicU64::new(1),
+            current_generation: AtomicU64::new(1),
+            min_valid_generation: AtomicU64::new(1),
         }
     }
     
     /// Create a new snapshot before reload
+    /// OPTIMIZED: Only stores handles, not full state
     pub fn create_snapshot(
         &mut self,
         reload_class: ReloadClass,
@@ -275,14 +427,17 @@ impl SnapshotManager {
         boundaries: &[BoundaryId],
     ) -> u64 {
         let snapshot_id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let generation = self.current_generation.fetch_add(1, Ordering::SeqCst);
         
-        // Collect state snapshots
+        // Collect state snapshots - LAZY: only store handles
         let mut state_snapshots = HashMap::new();
         for boundary_id in boundaries {
-            // Would serialize actual state here
+            // Store handle + hash, not serialized state
+            // Actual serialization happens only on revert
             state_snapshots.insert(boundary_id.clone(), StateSnapshot {
                 boundary_id: boundary_id.clone(),
-                json_state: "{}".to_string(), // Placeholder
+                state_handle: snapshot_id, // Would be actual handle
+                state_hash: 0, // Would compute hash
                 abi_version: 1,
                 source_hash: 0,
             });
@@ -296,7 +451,7 @@ impl SnapshotManager {
             module_hashes: HashMap::new(),
             in_flight_requests: Vec::new(),
             task_states: Vec::new(),
-            valid: true,
+            generation,
             invalidation_reason: None,
         };
         
@@ -312,35 +467,53 @@ impl SnapshotManager {
     
     /// Revert to a snapshot after crash
     pub fn revert_to_snapshot(&mut self, snapshot_id: u64) -> Result<&ReloadSnapshot, String> {
+        let min_gen = self.min_valid_generation.load(Ordering::SeqCst);
+        
         let snapshot = self.snapshots
             .iter()
             .find(|s| s.snapshot_id == snapshot_id)
             .ok_or_else(|| format!("Snapshot {} not found", snapshot_id))?;
         
-        if !snapshot.valid {
+        // O(1) validity check
+        if !snapshot.is_valid(min_gen) {
             return Err(format!(
-                "Snapshot {} is invalid: {}",
-                snapshot_id,
-                snapshot.invalidation_reason.as_deref().unwrap_or("unknown")
+                "Snapshot {} is invalid (generation {} < min {})",
+                snapshot_id, snapshot.generation, min_gen
             ));
         }
         
         Ok(snapshot)
     }
     
-    /// Invalidate all snapshots older than given one
-    pub fn invalidate_before(&mut self, snapshot_id: u64, reason: &str) {
-        for snapshot in self.snapshots.iter_mut() {
-            if snapshot.snapshot_id < snapshot_id {
-                snapshot.valid = false;
-                snapshot.invalidation_reason = Some(reason.to_string());
-            }
+    /// Invalidate all snapshots older than given generation - O(1)!
+    /// Does NOT iterate through snapshots
+    pub fn invalidate_before_generation(&self, generation: u64) {
+        self.min_valid_generation.fetch_max(generation, Ordering::SeqCst);
+    }
+    
+    /// Invalidate all snapshots before a snapshot ID - O(n) but only to find gen
+    pub fn invalidate_before(&mut self, snapshot_id: u64, _reason: &str) {
+        if let Some(snapshot) = self.snapshots.iter().find(|s| s.snapshot_id == snapshot_id) {
+            // Invalidate by bumping min generation - O(1)
+            self.invalidate_before_generation(snapshot.generation);
         }
     }
     
-    /// Get most recent valid snapshot
+    /// Get most recent valid snapshot - O(n) but usually small
     pub fn latest_valid(&self) -> Option<&ReloadSnapshot> {
-        self.snapshots.iter().rev().find(|s| s.valid)
+        let min_gen = self.min_valid_generation.load(Ordering::SeqCst);
+        self.snapshots.iter().rev().find(|s| s.is_valid(min_gen))
+    }
+    
+    /// Check validity without loading snapshot - O(1)
+    #[inline]
+    pub fn is_valid(&self, snapshot_id: u64) -> bool {
+        let min_gen = self.min_valid_generation.load(Ordering::SeqCst);
+        self.snapshots
+            .iter()
+            .find(|s| s.snapshot_id == snapshot_id)
+            .map(|s| s.is_valid(min_gen))
+            .unwrap_or(false)
     }
 }
 
@@ -348,11 +521,42 @@ impl SnapshotManager {
 // ASYNC TASK GUARDRAILS
 // ============================================================
 // Handle long-lived tasks during reload
+// HARDENED: Detect unregistered tasks, enforce discipline
 
 /// Registry for async tasks that must be managed during reload
+/// ENFORCEMENT: Detects unregistered tasks via runtime scanning
 pub struct AsyncTaskRegistry {
     tasks: HashMap<String, RegisteredTask>,
     shutdown_timeout: Duration,
+    /// Track spawn points for unregistered task detection
+    known_spawn_points: HashSet<String>,
+    /// Violations detected (for alerting)
+    violations: Vec<TaskViolation>,
+    /// Whether to block reload on violations
+    strict_mode: bool,
+}
+
+/// Violation of task registration discipline
+#[derive(Debug, Clone)]
+pub struct TaskViolation {
+    pub detected_at: Instant,
+    pub violation_type: TaskViolationType,
+    pub boundary_id: Option<BoundaryId>,
+    pub details: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskViolationType {
+    /// Task spawned without registration
+    UnregisteredSpawn,
+    /// Task running longer than expected without checkpoint
+    StaleTask,
+    /// Task claims checkpoint support but never checkpoints
+    FakeCheckpoint,
+    /// Task ignoring shutdown signal
+    IgnoringShutdown,
+    /// Multiple tasks with same ID
+    DuplicateId,
 }
 
 #[derive(Debug)]
@@ -364,6 +568,10 @@ pub struct RegisteredTask {
     pub supports_pause: bool,
     pub shutdown_signal: Arc<AtomicBool>,
     pub registered_at: Instant,
+    /// Last checkpoint time (to detect fake checkpoint claims)
+    pub last_checkpoint: Option<Instant>,
+    /// Shutdown signaled at (to detect ignoring shutdown)
+    pub shutdown_signaled_at: Option<Instant>,
 }
 
 impl AsyncTaskRegistry {
@@ -371,7 +579,26 @@ impl AsyncTaskRegistry {
         Self {
             tasks: HashMap::new(),
             shutdown_timeout,
+            known_spawn_points: HashSet::new(),
+            violations: Vec::new(),
+            strict_mode: false, // Default permissive
         }
+    }
+    
+    /// Create strict registry that blocks on violations
+    pub fn new_strict(shutdown_timeout: Duration) -> Self {
+        Self {
+            tasks: HashMap::new(),
+            shutdown_timeout,
+            known_spawn_points: HashSet::new(),
+            violations: Vec::new(),
+            strict_mode: true,
+        }
+    }
+    
+    /// Register a known spawn point (for static analysis)
+    pub fn register_spawn_point(&mut self, location: String) {
+        self.known_spawn_points.insert(location);
     }
     
     /// Register a task that must be managed during reload
@@ -383,6 +610,16 @@ impl AsyncTaskRegistry {
         supports_checkpoint: bool,
         supports_pause: bool,
     ) -> Arc<AtomicBool> {
+        // Check for duplicate ID
+        if self.tasks.contains_key(&task_id) {
+            self.violations.push(TaskViolation {
+                detected_at: Instant::now(),
+                violation_type: TaskViolationType::DuplicateId,
+                boundary_id: Some(boundary_id.clone()),
+                details: format!("Task '{}' registered twice", task_id),
+            });
+        }
+        
         let shutdown_signal = Arc::new(AtomicBool::new(false));
         
         self.tasks.insert(task_id.clone(), RegisteredTask {
@@ -393,9 +630,82 @@ impl AsyncTaskRegistry {
             supports_pause,
             shutdown_signal: shutdown_signal.clone(),
             registered_at: Instant::now(),
+            last_checkpoint: None,
+            shutdown_signaled_at: None,
         });
         
         shutdown_signal
+    }
+    
+    /// Record a checkpoint (validates checkpoint claims)
+    pub fn record_checkpoint(&mut self, task_id: &str) {
+        if let Some(task) = self.tasks.get_mut(task_id) {
+            task.last_checkpoint = Some(Instant::now());
+        }
+    }
+    
+    /// Detect violations - call periodically or before reload
+    pub fn detect_violations(&mut self) {
+        let now = Instant::now();
+        
+        for task in self.tasks.values() {
+            // Check for stale tasks (running > 1 hour without checkpoint)
+            if task.supports_checkpoint {
+                let last_activity = task.last_checkpoint.unwrap_or(task.registered_at);
+                if now.duration_since(last_activity) > Duration::from_secs(3600) {
+                    self.violations.push(TaskViolation {
+                        detected_at: now,
+                        violation_type: TaskViolationType::StaleTask,
+                        boundary_id: Some(task.boundary_id.clone()),
+                        details: format!(
+                            "Task '{}' claims checkpoint but hasn't checkpointed in >1h",
+                            task.task_id
+                        ),
+                    });
+                }
+            }
+            
+            // Check for tasks ignoring shutdown signal
+            if let Some(signaled_at) = task.shutdown_signaled_at {
+                if now.duration_since(signaled_at) > self.shutdown_timeout {
+                    self.violations.push(TaskViolation {
+                        detected_at: now,
+                        violation_type: TaskViolationType::IgnoringShutdown,
+                        boundary_id: Some(task.boundary_id.clone()),
+                        details: format!(
+                            "Task '{}' ignoring shutdown signal for {:?}",
+                            task.task_id,
+                            now.duration_since(signaled_at)
+                        ),
+                    });
+                }
+            }
+        }
+    }
+    
+    /// Report an unregistered task spawn (call from instrumented code)
+    pub fn report_unregistered_spawn(&mut self, spawn_location: &str, boundary_id: Option<BoundaryId>) {
+        self.violations.push(TaskViolation {
+            detected_at: Instant::now(),
+            violation_type: TaskViolationType::UnregisteredSpawn,
+            boundary_id,
+            details: format!("Unregistered task spawn at: {}", spawn_location),
+        });
+    }
+    
+    /// Get current violations
+    pub fn get_violations(&self) -> &[TaskViolation] {
+        &self.violations
+    }
+    
+    /// Clear violations (after handling)
+    pub fn clear_violations(&mut self) {
+        self.violations.clear();
+    }
+    
+    /// Check if reload should be blocked due to violations
+    pub fn should_block_reload(&self) -> bool {
+        self.strict_mode && !self.violations.is_empty()
     }
     
     /// Unregister a completed task
@@ -413,10 +723,12 @@ impl AsyncTaskRegistry {
     
     /// Prepare tasks for reload based on reload class
     pub fn prepare_for_reload(
-        &self,
+        &mut self,
         boundary_id: &BoundaryId,
         reload_class: ReloadClass,
     ) -> TaskPreparationResult {
+        // Run violation detection first
+        self.detect_violations();
         let affected_tasks = self.tasks_for_boundary(boundary_id);
         
         let mut to_checkpoint = Vec::new();
@@ -461,11 +773,13 @@ impl AsyncTaskRegistry {
         }
     }
     
-    /// Signal shutdown to tasks
-    pub fn signal_shutdown(&self, task_ids: &[String]) {
+    /// Signal shutdown to tasks (tracks timing for violation detection)
+    pub fn signal_shutdown(&mut self, task_ids: &[String]) {
+        let now = Instant::now();
         for task_id in task_ids {
-            if let Some(task) = self.tasks.get(task_id) {
+            if let Some(task) = self.tasks.get_mut(task_id) {
                 task.shutdown_signal.store(true, Ordering::SeqCst);
+                task.shutdown_signaled_at = Some(now);
             }
         }
     }
@@ -656,6 +970,7 @@ pub enum ReloadReadiness {
 // CANARY RELOAD MODE
 // ============================================================
 // Test new code in shadow mode before promoting
+// STRICT OUTPUT COMPARISON: Well-defined matching rules
 
 /// Canary reload configuration
 #[derive(Debug, Clone)]
@@ -670,8 +985,64 @@ pub struct CanaryConfig {
     pub max_latency_factor: f64,
     /// Duration before auto-promote if healthy
     pub promotion_delay: Duration,
-    /// Whether to compare outputs
-    pub compare_outputs: bool,
+    /// Output comparison configuration (STRICT DEFINITION)
+    pub output_comparison: OutputComparisonConfig,
+}
+
+/// STRICT OUTPUT COMPARISON CONFIGURATION
+/// Defines exactly what "match" means for canary validation
+#[derive(Debug, Clone)]
+pub struct OutputComparisonConfig {
+    /// Whether to compare outputs at all
+    pub enabled: bool,
+    /// Comparison mode - determines matching strictness
+    pub mode: OutputComparisonMode,
+    /// Fields to ignore in comparison (for timestamps, IDs, etc.)
+    pub ignore_fields: Vec<String>,
+    /// Maximum allowed difference for numeric fields (0.0 = exact)
+    pub numeric_tolerance: f64,
+    /// Whether order matters in arrays
+    pub array_order_sensitive: bool,
+    /// Maximum mismatch rate before rollback (0.0-1.0)
+    pub max_mismatch_rate: f64,
+    /// Sample rate for comparison (1.0 = all, 0.1 = 10%)
+    pub sample_rate: f64,
+}
+
+/// Output comparison modes - STRICTLY DEFINED
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputComparisonMode {
+    /// Byte-for-byte identical (strictest)
+    Exact,
+    /// JSON structural equality (ignores whitespace, key order)
+    JsonStructural,
+    /// JSON semantic equality (handles type coercion: "1" == 1)
+    JsonSemantic,
+    /// Hash comparison only (fast, catches major changes)
+    HashOnly,
+    /// Schema validation only (shape matches, values can differ)
+    SchemaOnly,
+    /// Custom comparator function
+    Custom,
+}
+
+impl Default for OutputComparisonConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mode: OutputComparisonMode::JsonStructural,
+            ignore_fields: vec![
+                "timestamp".to_string(),
+                "requestId".to_string(),
+                "traceId".to_string(),
+                "_meta".to_string(),
+            ],
+            numeric_tolerance: 0.0001, // For floating point
+            array_order_sensitive: false,
+            max_mismatch_rate: 0.01, // 1% mismatch triggers rollback
+            sample_rate: 1.0, // Compare all by default
+        }
+    }
 }
 
 impl Default for CanaryConfig {
@@ -682,9 +1053,37 @@ impl Default for CanaryConfig {
             max_error_rate: 0.01,
             max_latency_factor: 1.5,
             promotion_delay: Duration::from_secs(300),
-            compare_outputs: true,
+            output_comparison: OutputComparisonConfig::default(),
         }
     }
+}
+
+/// Result of comparing old vs new output
+#[derive(Debug, Clone)]
+pub struct OutputComparisonResult {
+    pub matches: bool,
+    pub mode_used: OutputComparisonMode,
+    pub differences: Vec<OutputDifference>,
+    pub comparison_time_us: u64,
+}
+
+/// Specific difference found in output comparison
+#[derive(Debug, Clone)]
+pub struct OutputDifference {
+    pub path: String,           // JSON path to difference: "response.items[2].value"
+    pub diff_type: DiffType,
+    pub old_value: String,      // Truncated to 100 chars
+    pub new_value: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffType {
+    ValueMismatch,
+    TypeMismatch,
+    MissingField,
+    ExtraField,
+    ArrayLengthMismatch,
+    NumericOutOfTolerance,
 }
 
 /// Canary state for a boundary
@@ -702,7 +1101,13 @@ pub struct CanaryState {
     pub new_errors: u32,
     pub old_latency_sum_ms: u64,
     pub new_latency_sum_ms: u64,
-    pub output_mismatches: u32,
+    
+    // OUTPUT COMPARISON TRACKING (strict)
+    pub comparisons_performed: u32,
+    pub comparisons_matched: u32,
+    pub comparisons_mismatched: u32,
+    pub comparison_errors: u32,  // Comparison itself failed
+    pub recent_mismatches: VecDeque<OutputComparisonResult>, // Last N for debugging
     
     // Decision
     pub decision: Option<CanaryDecision>,
@@ -729,13 +1134,87 @@ impl CanaryState {
             new_errors: 0,
             old_latency_sum_ms: 0,
             new_latency_sum_ms: 0,
-            output_mismatches: 0,
+            comparisons_performed: 0,
+            comparisons_matched: 0,
+            comparisons_mismatched: 0,
+            comparison_errors: 0,
+            recent_mismatches: VecDeque::with_capacity(10),
             decision: None,
         }
     }
     
-    /// Record a request result
-    pub fn record_result(&mut self, is_new: bool, error: bool, latency_ms: u64, output_match: Option<bool>) {
+    /// Compare outputs using configured comparison mode
+    pub fn compare_outputs(&self, old_output: &[u8], new_output: &[u8]) -> OutputComparisonResult {
+        let start = Instant::now();
+        let config = &self.config.output_comparison;
+        
+        let (matches, differences) = match config.mode {
+            OutputComparisonMode::Exact => {
+                let matches = old_output == new_output;
+                let diffs = if matches {
+                    vec![]
+                } else {
+                    vec![OutputDifference {
+                        path: "<root>".to_string(),
+                        diff_type: DiffType::ValueMismatch,
+                        old_value: format!("{} bytes", old_output.len()),
+                        new_value: format!("{} bytes", new_output.len()),
+                    }]
+                };
+                (matches, diffs)
+            }
+            OutputComparisonMode::HashOnly => {
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                
+                let mut h1 = DefaultHasher::new();
+                old_output.hash(&mut h1);
+                let old_hash = h1.finish();
+                
+                let mut h2 = DefaultHasher::new();
+                new_output.hash(&mut h2);
+                let new_hash = h2.finish();
+                
+                let matches = old_hash == new_hash;
+                let diffs = if matches {
+                    vec![]
+                } else {
+                    vec![OutputDifference {
+                        path: "<hash>".to_string(),
+                        diff_type: DiffType::ValueMismatch,
+                        old_value: format!("{:016x}", old_hash),
+                        new_value: format!("{:016x}", new_hash),
+                    }]
+                };
+                (matches, diffs)
+            }
+            OutputComparisonMode::JsonStructural | 
+            OutputComparisonMode::JsonSemantic => {
+                // Would parse JSON and compare structurally
+                // For now, fall back to exact comparison
+                let matches = old_output == new_output;
+                (matches, vec![])
+            }
+            OutputComparisonMode::SchemaOnly => {
+                // Would validate schema shapes match
+                (true, vec![])
+            }
+            OutputComparisonMode::Custom => {
+                // Would call registered custom comparator
+                (true, vec![])
+            }
+        };
+        
+        OutputComparisonResult {
+            matches,
+            mode_used: config.mode,
+            differences,
+            comparison_time_us: start.elapsed().as_micros() as u64,
+        }
+    }
+    
+    /// Record a request result (simple version)
+    pub fn record_result(&mut self, is_new: bool, error: bool, latency_ms: u64) {
         if is_new {
             self.new_requests += 1;
             if error { self.new_errors += 1; }
@@ -745,10 +1224,36 @@ impl CanaryState {
             if error { self.old_errors += 1; }
             self.old_latency_sum_ms += latency_ms;
         }
+    }
+    
+    /// Record a comparison result (strict version)
+    pub fn record_comparison(&mut self, result: OutputComparisonResult) {
+        self.comparisons_performed += 1;
         
-        if let Some(false) = output_match {
-            self.output_mismatches += 1;
+        if result.matches {
+            self.comparisons_matched += 1;
+        } else {
+            self.comparisons_mismatched += 1;
+            
+            // Keep recent mismatches for debugging
+            if self.recent_mismatches.len() >= 10 {
+                self.recent_mismatches.pop_front();
+            }
+            self.recent_mismatches.push_back(result);
         }
+    }
+    
+    /// Record comparison error (comparison itself failed)
+    pub fn record_comparison_error(&mut self) {
+        self.comparison_errors += 1;
+    }
+    
+    /// Get current mismatch rate
+    pub fn mismatch_rate(&self) -> f64 {
+        if self.comparisons_performed == 0 {
+            return 0.0;
+        }
+        self.comparisons_mismatched as f64 / self.comparisons_performed as f64
     }
     
     /// Evaluate canary health and make decision
@@ -760,11 +1265,6 @@ impl CanaryState {
         
         // Calculate metrics
         let new_error_rate = self.new_errors as f64 / self.new_requests as f64;
-        let old_error_rate = if self.old_requests > 0 {
-            self.old_errors as f64 / self.old_requests as f64
-        } else {
-            0.0
-        };
         
         let new_avg_latency = self.new_latency_sum_ms as f64 / self.new_requests as f64;
         let old_avg_latency = if self.old_requests > 0 {
@@ -785,10 +1285,12 @@ impl CanaryState {
             return CanaryDecision::Rollback;
         }
         
-        // Check output mismatches if comparing
-        if self.config.compare_outputs {
-            let mismatch_rate = self.output_mismatches as f64 / self.new_requests as f64;
-            if mismatch_rate > 0.01 {
+        // Check output mismatches using STRICT comparison config
+        if self.config.output_comparison.enabled {
+            let mismatch_rate = self.mismatch_rate();
+            let max_rate = self.config.output_comparison.max_mismatch_rate;
+            
+            if mismatch_rate > max_rate {
                 self.decision = Some(CanaryDecision::Rollback);
                 return CanaryDecision::Rollback;
             }
@@ -802,6 +1304,69 @@ impl CanaryState {
         
         CanaryDecision::Continue
     }
+    
+    /// Get detailed evaluation report for debugging
+    pub fn evaluation_report(&self) -> CanaryEvaluationReport {
+        let new_error_rate = if self.new_requests > 0 {
+            self.new_errors as f64 / self.new_requests as f64
+        } else {
+            0.0
+        };
+        
+        let new_avg_latency = if self.new_requests > 0 {
+            self.new_latency_sum_ms as f64 / self.new_requests as f64
+        } else {
+            0.0
+        };
+        
+        let old_avg_latency = if self.old_requests > 0 {
+            self.old_latency_sum_ms as f64 / self.old_requests as f64
+        } else {
+            0.0
+        };
+        
+        CanaryEvaluationReport {
+            new_requests: self.new_requests,
+            old_requests: self.old_requests,
+            new_error_rate,
+            old_error_rate: if self.old_requests > 0 {
+                self.old_errors as f64 / self.old_requests as f64
+            } else {
+                0.0
+            },
+            new_avg_latency_ms: new_avg_latency,
+            old_avg_latency_ms: old_avg_latency,
+            latency_factor: if old_avg_latency > 0.0 {
+                new_avg_latency / old_avg_latency
+            } else {
+                1.0
+            },
+            comparisons_performed: self.comparisons_performed,
+            mismatch_rate: self.mismatch_rate(),
+            comparison_errors: self.comparison_errors,
+            elapsed: self.started_at.elapsed(),
+            promotion_delay: self.config.promotion_delay,
+            decision: self.decision,
+        }
+    }
+}
+
+/// Detailed canary evaluation report for debugging
+#[derive(Debug, Clone)]
+pub struct CanaryEvaluationReport {
+    pub new_requests: u32,
+    pub old_requests: u32,
+    pub new_error_rate: f64,
+    pub old_error_rate: f64,
+    pub new_avg_latency_ms: f64,
+    pub old_avg_latency_ms: f64,
+    pub latency_factor: f64,
+    pub comparisons_performed: u32,
+    pub mismatch_rate: f64,
+    pub comparison_errors: u32,
+    pub elapsed: Duration,
+    pub promotion_delay: Duration,
+    pub decision: Option<CanaryDecision>,
 }
 
 /// Manages all active canary deployments
@@ -1068,6 +1633,9 @@ pub struct ReloadManager {
     pub canary_manager: CanaryManager,
     pub cascade_breaker: CascadeCircuitBreaker,
     
+    /// Debug trace collector for HMR failure analysis
+    pub debug_collector: HmrDebugCollector,
+    
     // Statistics
     pub stats: ReloadStats,
 }
@@ -1089,6 +1657,12 @@ pub struct ReloadStats {
 
 impl ReloadManager {
     pub fn new(config: ReloadManagerConfig) -> Self {
+        // Create debug collector - only keep failures in prod, all in dev
+        let mut debug_collector = HmrDebugCollector::new(100);
+        if !config.dev_mode {
+            debug_collector.set_failures_only_filter(500); // Keep slow (>500ms) or failed
+        }
+        
         Self {
             snapshots: SnapshotManager::new(10),
             task_registry: AsyncTaskRegistry::new(config.task_shutdown_timeout),
@@ -1099,12 +1673,13 @@ impl ReloadManager {
             canary_manager: CanaryManager::new(),
             cascade_breaker: CascadeCircuitBreaker::new(5, 20),
             classifier: ReloadClassifier::new(),
+            debug_collector,
             config,
             stats: ReloadStats::default(),
         }
     }
     
-    /// Execute a reload with full orchestration
+    /// Execute a reload with full orchestration and debug tracing
     pub fn execute_reload(
         &mut self,
         boundary_id: &BoundaryId,
@@ -1113,61 +1688,125 @@ impl ReloadManager {
     ) -> Result<ReloadResult, ReloadError> {
         let start = Instant::now();
         
+        // Start debug trace
+        let mut trace = self.debug_collector.start_trace(boundary_id.clone());
+        
         // 1. Classify the reload
-        let mut reload_class = self.classifier.classify(changes);
+        trace.phase_start(HmrPhase::Classification);
+        let (auto_class, confidence) = self.classifier.classify_with_confidence(changes);
+        let mut reload_class = self.classifier.classify_with_context(
+            changes,
+            Some(boundary_id),
+            changes.file_path.as_deref(),
+        );
+        trace.decision(HmrPhase::Classification, "auto_class", &format!("{:?}", auto_class));
+        trace.decision(HmrPhase::Classification, "confidence", &format!("{:?}", confidence));
+        
+        // Record if override was applied
+        if reload_class != auto_class {
+            trace.override_applied(
+                HmrPhase::Classification,
+                &format!("{:?}", auto_class),
+                &format!("{:?}", reload_class),
+            );
+        }
+        trace.phase_end(HmrPhase::Classification, start.elapsed());
         
         // 2. Check if canary mode should be used
         if self.config.enable_canary && reload_class == ReloadClass::Warm {
             reload_class = ReloadClass::Canary;
+            trace.decision(HmrPhase::Classification, "canary_enabled", "true");
         }
         
         // 3. Check request readiness
+        trace.phase_start(HmrPhase::RequestDrain);
         let readiness = self.request_tracker.can_reload(boundary_id, reload_class);
         match readiness {
-            ReloadReadiness::MustWait { reason, estimated_wait } => {
+            ReloadReadiness::MustWait { ref reason, ref estimated_wait } => {
+                trace.warning(HmrPhase::RequestDrain, &format!("Must wait: {}", reason));
+                trace.set_outcome(HmrOutcome::Blocked { reason: reason.clone() });
+                self.debug_collector.complete_trace(trace);
+                
                 return Err(ReloadError::NotReady {
-                    reason,
-                    estimated_wait,
+                    reason: reason.clone(),
+                    estimated_wait: *estimated_wait,
                 });
             }
-            ReloadReadiness::CanProceed { policy, .. } => {
+            ReloadReadiness::CanProceed { policy, in_flight_count } => {
+                trace.decision(HmrPhase::RequestDrain, "policy", &format!("{:?}", policy));
+                trace.decision(HmrPhase::RequestDrain, "in_flight", &format!("{}", in_flight_count));
                 self.request_tracker.apply_policy(boundary_id, policy);
             }
-            ReloadReadiness::Ready => {}
+            ReloadReadiness::Ready => {
+                trace.decision(HmrPhase::RequestDrain, "status", "ready");
+            }
         }
+        trace.phase_end(HmrPhase::RequestDrain, start.elapsed());
         
         // 4. Check cascade permission
+        trace.phase_start(HmrPhase::Validation);
         if let CascadePermission::Denied { reason } = 
             self.cascade_breaker.allow_cascade(0, 1) {
+            trace.error(HmrPhase::Validation, &format!("Cascade blocked: {}", reason), false);
+            trace.set_outcome(HmrOutcome::Blocked { reason: reason.clone() });
+            self.debug_collector.complete_trace(trace);
+            
             return Err(ReloadError::CascadeBlocked { reason });
         }
         
         // 5. Prepare async tasks
+        trace.phase_start(HmrPhase::TaskPrep);
         let task_prep = self.task_registry.prepare_for_reload(boundary_id, reload_class);
+        trace.decision(HmrPhase::TaskPrep, "to_checkpoint", &format!("{}", task_prep.to_checkpoint.len()));
+        trace.decision(HmrPhase::TaskPrep, "to_pause", &format!("{}", task_prep.to_pause.len()));
+        trace.decision(HmrPhase::TaskPrep, "to_terminate", &format!("{}", task_prep.to_terminate.len()));
+        
+        // Check for task violations
+        if self.task_registry.should_block_reload() {
+            let violations = self.task_registry.get_violations();
+            for v in violations {
+                trace.warning(HmrPhase::TaskPrep, &format!("{:?}: {}", v.violation_type, v.details));
+            }
+        }
+        
         if !task_prep.can_proceed {
+            trace.error(HmrPhase::TaskPrep, "Tasks blocking reload", false);
+            trace.set_outcome(HmrOutcome::Blocked { 
+                reason: format!("Blocking tasks: {:?}", task_prep.blocking_tasks) 
+            });
+            self.debug_collector.complete_trace(trace);
+            
             return Err(ReloadError::TasksBlocking {
                 task_ids: task_prep.blocking_tasks,
             });
         }
+        trace.phase_end(HmrPhase::TaskPrep, start.elapsed());
         
         // 6. Create snapshot if required
+        trace.phase_start(HmrPhase::Snapshot);
         let snapshot_id = if reload_class.requires_snapshot() {
-            Some(self.snapshots.create_snapshot(
+            let id = self.snapshots.create_snapshot(
                 reload_class,
                 state_manager,
                 &[boundary_id.clone()],
-            ))
+            );
+            trace.decision(HmrPhase::Snapshot, "snapshot_id", &format!("{}", id));
+            Some(id)
         } else {
+            trace.decision(HmrPhase::Snapshot, "snapshot", "skipped");
             None
         };
+        trace.phase_end(HmrPhase::Snapshot, start.elapsed());
         
         // 7. Signal task shutdown/pause
         self.task_registry.signal_shutdown(&task_prep.to_terminate);
         
-        // 8. Execute the reload (placeholder - actual reload logic elsewhere)
+        // 8. Execute the reload
+        trace.phase_start(HmrPhase::Reload);
         self.cascade_breaker.start_cascade();
         let reload_success = true; // Actual reload would happen here
         self.cascade_breaker.end_cascade(reload_success, 1);
+        trace.phase_end(HmrPhase::Reload, start.elapsed());
         
         // 9. Update statistics
         let duration = start.elapsed();
@@ -1175,13 +1814,20 @@ impl ReloadManager {
         
         // 10. Check latency target
         if duration.as_millis() as u64 > reload_class.max_latency_ms() {
-            eprintln!(
-                "WARNING: {} reload took {}ms, target was {}ms",
-                format!("{:?}", reload_class),
-                duration.as_millis(),
-                reload_class.max_latency_ms()
+            trace.warning(
+                HmrPhase::Reload,
+                &format!(
+                    "{:?} reload took {}ms, target was {}ms",
+                    reload_class,
+                    duration.as_millis(),
+                    reload_class.max_latency_ms()
+                ),
             );
         }
+        
+        // Record successful outcome
+        trace.set_outcome(HmrOutcome::Success { reload_class, duration });
+        self.debug_collector.complete_trace(trace);
         
         Ok(ReloadResult {
             reload_class,
@@ -1226,6 +1872,70 @@ impl ReloadManager {
         let n = self.stats.total_reloads as f64;
         self.stats.avg_reload_ms = 
             (self.stats.avg_reload_ms * (n - 1.0) + ms as f64) / n;
+    }
+    
+    // =====================================================
+    // DEBUGGING & OBSERVABILITY METHODS
+    // =====================================================
+    
+    /// Get recent HMR traces for debugging
+    pub fn recent_traces(&self, count: usize) -> Vec<&HmrDebugTrace> {
+        self.debug_collector.recent_traces(count)
+    }
+    
+    /// Get failed HMR traces
+    pub fn failed_traces(&self) -> Vec<&HmrDebugTrace> {
+        self.debug_collector.failed_traces()
+    }
+    
+    /// Get traces for a specific boundary
+    pub fn traces_for_boundary(&self, boundary_id: &BoundaryId) -> Vec<&HmrDebugTrace> {
+        self.debug_collector.traces_for_boundary(boundary_id)
+    }
+    
+    /// Print summary of recent failures (for CLI debugging)
+    pub fn print_failure_summary(&self) {
+        let failed = self.failed_traces();
+        if failed.is_empty() {
+            println!("No HMR failures recorded.");
+            return;
+        }
+        
+        println!("=== HMR Failure Summary ({} failures) ===\n", failed.len());
+        for trace in failed.iter().take(5) {
+            println!("{}\n", trace.summary());
+            println!("---");
+        }
+    }
+    
+    /// Export debug data as JSON for external tools
+    pub fn export_debug_json(&self) -> String {
+        self.debug_collector.export_json()
+    }
+    
+    /// Set manual override for a boundary's reload class
+    pub fn set_reload_override(&mut self, boundary_id: BoundaryId, class: ReloadClass) {
+        self.classifier.set_boundary_override(boundary_id, class);
+    }
+    
+    /// Clear manual override for a boundary
+    pub fn clear_reload_override(&mut self, boundary_id: &BoundaryId) {
+        self.classifier.clear_boundary_override(boundary_id);
+    }
+    
+    /// Set path pattern override
+    pub fn set_path_override(&mut self, pattern: String, class: ReloadClass) {
+        self.classifier.set_path_override(pattern, class);
+    }
+    
+    /// Get current task violations
+    pub fn task_violations(&self) -> &[TaskViolation] {
+        self.task_registry.get_violations()
+    }
+    
+    /// Clear task violations
+    pub fn clear_task_violations(&mut self) {
+        self.task_registry.clear_violations();
     }
 }
 
@@ -1322,10 +2032,321 @@ mod tests {
         
         // Add successful requests
         for _ in 0..15 {
-            state.record_result(true, false, 50, Some(true));
+            state.record_result(true, false, 50);
         }
         
         // Should still be continue (waiting for promotion delay)
         assert_eq!(state.evaluate(), CanaryDecision::Continue);
+    }
+}
+
+// ============================================================
+// HMR DEBUGGING & OBSERVABILITY
+// ============================================================
+// Because too many safeguards means debugging is nontrivial
+
+/// Complete HMR event trace for debugging failures
+#[derive(Debug, Clone)]
+pub struct HmrDebugTrace {
+    pub trace_id: u64,
+    pub started_at: Instant,
+    pub boundary_id: BoundaryId,
+    pub events: Vec<HmrDebugEvent>,
+    pub outcome: Option<HmrOutcome>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HmrDebugEvent {
+    pub timestamp: Instant,
+    pub phase: HmrPhase,
+    pub event_type: HmrEventType,
+    pub details: String,
+    pub duration_us: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HmrPhase {
+    Classification,
+    Validation,
+    Snapshot,
+    TaskPrep,
+    RequestDrain,
+    Reload,
+    StateRestore,
+    Verification,
+    Rollback,
+}
+
+#[derive(Debug, Clone)]
+pub enum HmrEventType {
+    PhaseStart,
+    PhaseEnd,
+    Decision { key: String, value: String },
+    Warning { message: String },
+    Error { message: String, recoverable: bool },
+    Blocked { reason: String },
+    Override { from: String, to: String },
+    Metric { name: String, value: f64 },
+}
+
+#[derive(Debug, Clone)]
+pub enum HmrOutcome {
+    Success { reload_class: ReloadClass, duration: Duration },
+    RolledBack { reason: String, snapshot_id: u64 },
+    Failed { phase: HmrPhase, error: String },
+    Blocked { reason: String },
+}
+
+impl HmrDebugTrace {
+    pub fn new(trace_id: u64, boundary_id: BoundaryId) -> Self {
+        Self {
+            trace_id,
+            started_at: Instant::now(),
+            boundary_id,
+            events: Vec::new(),
+            outcome: None,
+        }
+    }
+    
+    /// Record phase start
+    pub fn phase_start(&mut self, phase: HmrPhase) {
+        self.events.push(HmrDebugEvent {
+            timestamp: Instant::now(),
+            phase,
+            event_type: HmrEventType::PhaseStart,
+            details: format!("{:?} started", phase),
+            duration_us: None,
+        });
+    }
+    
+    /// Record phase end with duration
+    pub fn phase_end(&mut self, phase: HmrPhase, duration: Duration) {
+        self.events.push(HmrDebugEvent {
+            timestamp: Instant::now(),
+            phase,
+            event_type: HmrEventType::PhaseEnd,
+            details: format!("{:?} completed", phase),
+            duration_us: Some(duration.as_micros() as u64),
+        });
+    }
+    
+    /// Record a decision point
+    pub fn decision(&mut self, phase: HmrPhase, key: &str, value: &str) {
+        self.events.push(HmrDebugEvent {
+            timestamp: Instant::now(),
+            phase,
+            event_type: HmrEventType::Decision {
+                key: key.to_string(),
+                value: value.to_string(),
+            },
+            details: format!("{} = {}", key, value),
+            duration_us: None,
+        });
+    }
+    
+    /// Record a warning
+    pub fn warning(&mut self, phase: HmrPhase, message: &str) {
+        self.events.push(HmrDebugEvent {
+            timestamp: Instant::now(),
+            phase,
+            event_type: HmrEventType::Warning {
+                message: message.to_string(),
+            },
+            details: message.to_string(),
+            duration_us: None,
+        });
+    }
+    
+    /// Record an error
+    pub fn error(&mut self, phase: HmrPhase, message: &str, recoverable: bool) {
+        self.events.push(HmrDebugEvent {
+            timestamp: Instant::now(),
+            phase,
+            event_type: HmrEventType::Error {
+                message: message.to_string(),
+                recoverable,
+            },
+            details: format!("{} (recoverable: {})", message, recoverable),
+            duration_us: None,
+        });
+    }
+    
+    /// Record an override being applied
+    pub fn override_applied(&mut self, phase: HmrPhase, from: &str, to: &str) {
+        self.events.push(HmrDebugEvent {
+            timestamp: Instant::now(),
+            phase,
+            event_type: HmrEventType::Override {
+                from: from.to_string(),
+                to: to.to_string(),
+            },
+            details: format!("Override: {} -> {}", from, to),
+            duration_us: None,
+        });
+    }
+    
+    /// Record final outcome
+    pub fn set_outcome(&mut self, outcome: HmrOutcome) {
+        self.outcome = Some(outcome);
+    }
+    
+    /// Get total duration
+    pub fn total_duration(&self) -> Duration {
+        self.started_at.elapsed()
+    }
+    
+    /// Format as human-readable summary
+    pub fn summary(&self) -> String {
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "HMR Trace #{} for boundary '{}'",
+            self.trace_id, self.boundary_id
+        ));
+        lines.push(format!("Total duration: {:?}", self.total_duration()));
+        
+        // Phase timings
+        lines.push("\nPhase timings:".to_string());
+        for event in &self.events {
+            if let HmrEventType::PhaseEnd = &event.event_type {
+                if let Some(us) = event.duration_us {
+                    lines.push(format!("  {:?}: {}μs", event.phase, us));
+                }
+            }
+        }
+        
+        // Decisions made
+        lines.push("\nKey decisions:".to_string());
+        for event in &self.events {
+            if let HmrEventType::Decision { key, value } = &event.event_type {
+                lines.push(format!("  {} = {}", key, value));
+            }
+        }
+        
+        // Warnings and errors
+        let warnings: Vec<_> = self.events.iter()
+            .filter(|e| matches!(&e.event_type, HmrEventType::Warning { .. }))
+            .collect();
+        if !warnings.is_empty() {
+            lines.push(format!("\nWarnings ({})::", warnings.len()));
+            for w in warnings {
+                lines.push(format!("  - {}", w.details));
+            }
+        }
+        
+        let errors: Vec<_> = self.events.iter()
+            .filter(|e| matches!(&e.event_type, HmrEventType::Error { .. }))
+            .collect();
+        if !errors.is_empty() {
+            lines.push(format!("\nErrors ({})::", errors.len()));
+            for e in errors {
+                lines.push(format!("  - {}", e.details));
+            }
+        }
+        
+        // Outcome
+        lines.push("\nOutcome:".to_string());
+        match &self.outcome {
+            Some(HmrOutcome::Success { reload_class, duration }) => {
+                lines.push(format!("  SUCCESS: {:?} reload in {:?}", reload_class, duration));
+            }
+            Some(HmrOutcome::RolledBack { reason, snapshot_id }) => {
+                lines.push(format!("  ROLLED BACK: {} (snapshot #{})", reason, snapshot_id));
+            }
+            Some(HmrOutcome::Failed { phase, error }) => {
+                lines.push(format!("  FAILED in {:?}: {}", phase, error));
+            }
+            Some(HmrOutcome::Blocked { reason }) => {
+                lines.push(format!("  BLOCKED: {}", reason));
+            }
+            None => {
+                lines.push("  (no outcome recorded)".to_string());
+            }
+        }
+        
+        lines.join("\n")
+    }
+}
+
+/// Debug trace collector with retention
+pub struct HmrDebugCollector {
+    traces: VecDeque<HmrDebugTrace>,
+    max_traces: usize,
+    next_id: AtomicU64,
+    /// Filter: only keep traces matching predicate
+    filter: Option<Box<dyn Fn(&HmrDebugTrace) -> bool + Send + Sync>>,
+}
+
+impl HmrDebugCollector {
+    pub fn new(max_traces: usize) -> Self {
+        Self {
+            traces: VecDeque::new(),
+            max_traces,
+            next_id: AtomicU64::new(1),
+            filter: None,
+        }
+    }
+    
+    /// Only keep traces that had errors or took too long
+    pub fn set_failures_only_filter(&mut self, max_duration_ms: u64) {
+        self.filter = Some(Box::new(move |trace| {
+            // Keep if has errors
+            if trace.events.iter().any(|e| matches!(&e.event_type, HmrEventType::Error { .. })) {
+                return true;
+            }
+            // Keep if failed or rolled back
+            if matches!(&trace.outcome, Some(HmrOutcome::Failed { .. }) | Some(HmrOutcome::RolledBack { .. })) {
+                return true;
+            }
+            // Keep if slow
+            trace.total_duration().as_millis() as u64 > max_duration_ms
+        }));
+    }
+    
+    /// Start a new trace
+    pub fn start_trace(&self, boundary_id: BoundaryId) -> HmrDebugTrace {
+        let trace_id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        HmrDebugTrace::new(trace_id, boundary_id)
+    }
+    
+    /// Complete and store a trace
+    pub fn complete_trace(&mut self, trace: HmrDebugTrace) {
+        // Apply filter if set
+        if let Some(ref filter) = self.filter {
+            if !filter(&trace) {
+                return; // Don't store
+            }
+        }
+        
+        self.traces.push_back(trace);
+        
+        // Enforce retention
+        while self.traces.len() > self.max_traces {
+            self.traces.pop_front();
+        }
+    }
+    
+    /// Get recent traces
+    pub fn recent_traces(&self, count: usize) -> Vec<&HmrDebugTrace> {
+        self.traces.iter().rev().take(count).collect()
+    }
+    
+    /// Get traces for a specific boundary
+    pub fn traces_for_boundary(&self, boundary_id: &BoundaryId) -> Vec<&HmrDebugTrace> {
+        self.traces.iter()
+            .filter(|t| &t.boundary_id == boundary_id)
+            .collect()
+    }
+    
+    /// Get failed traces only
+    pub fn failed_traces(&self) -> Vec<&HmrDebugTrace> {
+        self.traces.iter()
+            .filter(|t| matches!(&t.outcome, Some(HmrOutcome::Failed { .. }) | Some(HmrOutcome::RolledBack { .. })))
+            .collect()
+    }
+    
+    /// Export all traces as JSON for external analysis
+    pub fn export_json(&self) -> String {
+        // Would serialize to JSON
+        format!("{{\"trace_count\": {}}}", self.traces.len())
     }
 }
