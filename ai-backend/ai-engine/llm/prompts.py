@@ -281,6 +281,7 @@ The runner handles window creation and cleanup - plugins must not contain these 
     - Must not include X11.
     - Must not call `SDL_RenderPresent`.
     - Must not call `SDL_Init` / `SDL_CreateWindow` / `SDL_CreateRenderer` (runner owns SDL lifecycle).
+    - Must not call `SDL_GetKeyboardWindow` (it does not exist in SDL2; use `SDL_GetKeyboardFocus` if you need the focused window).
     - MUST include "shared.h" to define AppState.
     - DO NOT redefine struct AppState, HostKvApiV1, SynthiHostContextV1, or SynthiNamespaceSchemaV1.
 

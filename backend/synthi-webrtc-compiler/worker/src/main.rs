@@ -2426,6 +2426,12 @@ extern "C" int on_load_from_json(void* state_ptr, const char* json) {
             let re_present = regex::Regex::new(r"SDL_RenderPresent\s*\([^)]*\)\s*;").unwrap();
             content = re_present.replace_all(&content, "/* SDL_RenderPresent removed - runner handles this */").to_string();
 
+            // FIX: Replace SDL_GetKeyboardWindow with SDL_GetKeyboardFocus (AI hallucination fix)
+            if content.contains("SDL_GetKeyboardWindow") {
+                content = content.replace("SDL_GetKeyboardWindow", "SDL_GetKeyboardFocus");
+                eprintln!("[Guardrail] Replaced SDL_GetKeyboardWindow with SDL_GetKeyboardFocus");
+            }
+
             // CRITICAL FIX: Convert malloc-based gui_on_load to static storage for reliable HMR
             if content.contains("malloc(sizeof(AppState))") && content.contains("gui_on_load") {
                 eprintln!("[Guardrail] Detected malloc(sizeof(AppState)) pattern in gui.cpp");
