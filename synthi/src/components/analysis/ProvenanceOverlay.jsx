@@ -1,0 +1,274 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+
+/**
+ * AI Change Provenance Overlay
+ * 
+ * Displays provenance information for AI-generated changes including:
+ * - Prompt used
+ * - Model information
+ * - Verification status
+ * - Change history
+ */
+
+export function ProvenanceOverlay({
+  recordId,
+  filePath,
+  isOpen,
+  onClose,
+  apiBaseUrl = 'http://localhost:8000',
+}) {
+  const [records, setRecords] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [selectedRecord, setSelectedRecord] = useState(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const fetchRecords = async () => {
+      setLoading(true);
+      setError(null);
+
+      try {
+        let url;
+        if (recordId) {
+          url = `${apiBaseUrl}/provenance/${recordId}`;
+          const response = await fetch(url);
+          if (!response.ok) throw new Error('Failed to fetch provenance');
+          const data = await response.json();
+          setRecords([data]);
+          setSelectedRecord(data);
+        } else if (filePath) {
+          url = `${apiBaseUrl}/provenance/file/${encodeURIComponent(filePath)}`;
+          const response = await fetch(url);
+          if (!response.ok) throw new Error('Failed to fetch provenance');
+          const data = await response.json();
+          setRecords(data);
+          if (data.length > 0) setSelectedRecord(data[0]);
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Unknown error');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchRecords();
+  }, [isOpen, recordId, filePath, apiBaseUrl]);
+
+  if (!isOpen) return null;
+
+  const formatTime = (timestamp) => {
+    return new Date(timestamp * 1000).toLocaleString();
+  };
+
+  const getStatusColor = (status) => {
+    switch (status) {
+      case 'passed':
+        return 'text-green-600 bg-green-100';
+      case 'warned':
+        return 'text-yellow-600 bg-yellow-100';
+      case 'failed':
+        return 'text-red-600 bg-red-100';
+      case 'repaired':
+        return 'text-blue-600 bg-blue-100';
+      default:
+        return 'text-gray-600 bg-gray-100';
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+      <div className="bg-white dark:bg-gray-900 rounded-lg shadow-xl max-w-4xl w-full max-h-[80vh] overflow-hidden flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between p-4 border-b dark:border-gray-700">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            AI Change Provenance
+          </h2>
+          <button
+            onClick={onClose}
+            className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-auto p-4">
+          {loading && (
+            <div className="flex items-center justify-center py-8">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
+            </div>
+          )}
+
+          {error && (
+            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
+              <p className="text-red-600 dark:text-red-400">{error}</p>
+            </div>
+          )}
+
+          {!loading && !error && records.length === 0 && (
+            <div className="text-center py-8 text-gray-500">
+              No provenance records found
+            </div>
+          )}
+
+          {!loading && !error && selectedRecord && (
+            <div className="space-y-4">
+              {/* Record selector if multiple */}
+              {records.length > 1 && (
+                <div className="flex gap-2 overflow-x-auto pb-2">
+                  {records.map((record) => (
+                    <button
+                      key={record.record_id}
+                      onClick={() => setSelectedRecord(record)}
+                      className={`px-3 py-1 rounded-full text-sm whitespace-nowrap ${
+                        selectedRecord.record_id === record.record_id
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300'
+                      }`}
+                    >
+                      {record.change_type} - {record.record_id.slice(0, 8)}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Basic Info */}
+              <div className="grid grid-cols-2 gap-4">
+                <InfoCard title="Change Type" value={selectedRecord.change_type} />
+                <InfoCard title="Language" value={selectedRecord.target_language} />
+                <InfoCard title="Target File" value={selectedRecord.target_file || 'N/A'} />
+                <InfoCard title="Timestamp" value={selectedRecord.timestamp_iso} />
+              </div>
+
+              {/* Model Info */}
+              {selectedRecord.model_info && (
+                <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4">
+                  <h3 className="font-medium mb-2 text-gray-900 dark:text-gray-100">Model Information</h3>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                    <div>
+                      <span className="text-gray-500 dark:text-gray-400">Provider:</span>
+                      <span className="ml-2 font-mono">{selectedRecord.model_info.provider}</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-500 dark:text-gray-400">Model:</span>
+                      <span className="ml-2 font-mono">{selectedRecord.model_info.model_name}</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-500 dark:text-gray-400">Tokens:</span>
+                      <span className="ml-2 font-mono">{selectedRecord.model_info.actual_tokens_used}</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-500 dark:text-gray-400">Latency:</span>
+                      <span className="ml-2 font-mono">{selectedRecord.model_info.latency_ms.toFixed(0)}ms</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Verification Info */}
+              {selectedRecord.verifier_info && (
+                <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4">
+                  <h3 className="font-medium mb-2 text-gray-900 dark:text-gray-100">Verification Result</h3>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className={`px-2 py-1 rounded text-sm font-medium ${getStatusColor(selectedRecord.verifier_info.status)}`}>
+                      {selectedRecord.verifier_info.status.toUpperCase()}
+                    </span>
+                    {selectedRecord.verifier_info.auto_repaired && (
+                      <span className="px-2 py-1 rounded text-sm bg-blue-100 text-blue-600">
+                        Auto-repaired
+                      </span>
+                    )}
+                    <span className="text-sm text-gray-500">
+                      ({selectedRecord.verifier_info.duration_ms.toFixed(1)}ms)
+                    </span>
+                  </div>
+                  
+                  {selectedRecord.verifier_info.violations.length > 0 && (
+                    <div className="mt-2">
+                      <p className="text-sm text-gray-500 dark:text-gray-400 mb-1">Violations:</p>
+                      <ul className="list-disc list-inside text-sm text-red-600 dark:text-red-400">
+                        {selectedRecord.verifier_info.violations.map((v, i) => (
+                          <li key={i}>{v}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  <div className="mt-2 text-xs font-mono text-gray-500 dark:text-gray-400">
+                    <div>Original: {selectedRecord.verifier_info.original_hash}</div>
+                    <div>Verified: {selectedRecord.verifier_info.verified_hash}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Prompt Info */}
+              {selectedRecord.prompt_info && (
+                <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4">
+                  <h3 className="font-medium mb-2 text-gray-900 dark:text-gray-100">Prompt Information</h3>
+                  {selectedRecord.prompt_info.user_prompt_preview && (
+                    <div className="mb-2">
+                      <p className="text-sm text-gray-500 dark:text-gray-400">User prompt preview:</p>
+                      <p className="text-sm font-mono bg-gray-100 dark:bg-gray-700 p-2 rounded mt-1">
+                        {selectedRecord.prompt_info.user_prompt_preview}...
+                      </p>
+                    </div>
+                  )}
+                  <div className="text-sm text-gray-500 dark:text-gray-400">
+                    <div>Context files: {selectedRecord.prompt_info.context_files.length}</div>
+                    <div>Context size: {(selectedRecord.prompt_info.context_size_bytes / 1024).toFixed(1)} KB</div>
+                    {selectedRecord.prompt_info.focus_file && (
+                      <div>Focus: {selectedRecord.prompt_info.focus_file}</div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Status */}
+              <div className="flex items-center gap-4 pt-2 border-t dark:border-gray-700">
+                {selectedRecord.accepted ? (
+                  <span className="flex items-center gap-1 text-green-600">
+                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                    Accepted
+                    {selectedRecord.applied_at && (
+                      <span className="text-sm text-gray-500 ml-2">
+                        at {formatTime(selectedRecord.applied_at)}
+                      </span>
+                    )}
+                  </span>
+                ) : selectedRecord.rejected_reason ? (
+                  <span className="flex items-center gap-1 text-red-600">
+                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                    </svg>
+                    Rejected: {selectedRecord.rejected_reason}
+                  </span>
+                ) : (
+                  <span className="text-gray-500">Pending</span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InfoCard({ title, value }) {
+  return (
+    <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3">
+      <p className="text-xs text-gray-500 dark:text-gray-400">{title}</p>
+      <p className="font-medium text-gray-900 dark:text-gray-100 truncate">{value}</p>
+    </div>
+  );
+}
+
+export default ProvenanceOverlay;

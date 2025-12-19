@@ -6,14 +6,32 @@ import requests
 import json
 import sys
 import os
+import asyncio
+import time
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from analyzer import get_analyzer
 from analyzer import supported_languages
 
 from llm.providers import get_provider
 from llm.prompts import SPLIT_GUI_PROMPT
+
+# New imports for enhanced architecture
+from job_queue import (
+    PriorityJobQueue, JobType, JobPriority, JobBudget, 
+    JobWorker, get_queue
+)
+from verifier import AIOutputVerifier, get_verifier, VerificationStatus
+from streaming import (
+    StreamingManager, get_streaming_manager, 
+    OpenAIStreamer, GeminiStreamer, StreamingStatus
+)
+from provenance import (
+    ProvenanceTracker, get_provenance_tracker,
+    ChangeType, VerificationStatus as ProvVerificationStatus, track_ai_call
+)
 
 app = FastAPI()
 
@@ -188,11 +206,367 @@ def split_file(file_path: str, api_url: str = "http://localhost:8000/refactor/sp
         print(f"Error: {e}")
 
 
+# ============================================================
+# ENHANCED API ENDPOINTS
+# ============================================================
+
+class VerifiedAiRequest(AnalyzeAiRequest):
+    """Request with verification options."""
+    verify: bool = True
+    auto_repair: bool = True
+    session_id: Optional[str] = None
+
+
+@app.post("/analyze/ai/verified")
+async def analyze_code_ai_verified(req: VerifiedAiRequest):
+    """
+    AI analysis with verification and provenance tracking.
+    
+    This endpoint:
+    1. Tracks provenance of the request
+    2. Calls AI provider for analysis
+    3. Verifies output for invariants
+    4. Auto-repairs if possible
+    5. Returns verified result with provenance
+    """
+    start_time = time.time()
+    tracker = get_provenance_tracker()
+    verifier = get_verifier()
+    
+    # Create provenance record
+    provenance_id = track_ai_call(
+        change_type=ChangeType.ANALYSIS if req.mode != "refactor" else ChangeType.REFACTOR,
+        original_code=req.code,
+        prompt=req.prompt or "",
+        target_file=req.focus,
+        target_language=req.lang,
+        session_id=req.session_id,
+    )
+    
+    def select_provider_name() -> str | None:
+        if req.api_key:
+            model_name = (req.model or '').lower()
+            if 'gemini' in model_name:
+                return 'gemini'
+            return 'chatgpt'
+        return None
+
+    provider = get_provider(provider_name=select_provider_name(), use_custom=bool(req.api_key))
+    
+    try:
+        ai_suggestion = await provider.ask_llm(
+            req.code,
+            req.lang,
+            req.prompt,
+            mode=req.mode,
+            files=req.files,
+            focus=req.focus,
+            model=req.model,
+            api_key=req.api_key,
+        )
+        
+        # Update provenance with model info
+        latency_ms = (time.time() - start_time) * 1000
+        tracker.update_model_info(
+            provenance_id,
+            provider=select_provider_name() or "default",
+            model_name=req.model or "default",
+            temperature=0.2,
+            max_tokens=4096,
+            latency_ms=latency_ms,
+        )
+        tracker.update_output(provenance_id, ai_suggestion)
+        
+    except Exception as e:
+        tracker.mark_rejected(provenance_id, f"AI error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Verify output
+    verification_result = None
+    if req.verify:
+        verification_result = verifier.verify(
+            ai_suggestion,
+            original_code=req.code,
+            lang=req.lang,
+        )
+        
+        # Update provenance with verification
+        tracker.update_verification(
+            provenance_id,
+            status=ProvVerificationStatus(verification_result.status.value),
+            violations=[v.message for v in verification_result.violations],
+            original_hash=verification_result.original_hash,
+            verified_hash=verification_result.verified_hash,
+            auto_repaired=verification_result.repaired_output is not None,
+            duration_ms=verification_result.duration_ms,
+        )
+        
+        # Use repaired output if available
+        if verification_result.repaired_output:
+            ai_suggestion = verification_result.repaired_output
+        
+        # Reject if verification failed
+        if not verification_result.passed:
+            tracker.mark_rejected(provenance_id, "Verification failed")
+            return {
+                "ai_suggestion": None,
+                "lang": req.lang,
+                "verification": verification_result.to_dict(),
+                "provenance_id": provenance_id,
+                "error": "Output failed verification",
+            }
+    
+    tracker.mark_accepted(provenance_id)
+    
+    return {
+        "ai_suggestion": ai_suggestion,
+        "lang": req.lang,
+        "verification": verification_result.to_dict() if verification_result else None,
+        "provenance_id": provenance_id,
+    }
+
+
+@app.post("/refactor/split/verified")
+async def refactor_split_verified(req: VerifiedAiRequest):
+    """
+    Split refactoring with verification.
+    
+    Verifies that:
+    1. All modules have valid structure
+    2. Combined exports match original
+    3. Each file is syntactically valid
+    """
+    start_time = time.time()
+    tracker = get_provenance_tracker()
+    verifier = get_verifier()
+    
+    provenance_id = track_ai_call(
+        change_type=ChangeType.SPLIT,
+        original_code=req.code,
+        prompt=req.prompt or "",
+        target_file=req.focus,
+        target_language=req.lang,
+        session_id=req.session_id,
+    )
+    
+    def select_provider_name() -> str | None:
+        if req.api_key:
+            model_name = (req.model or '').lower()
+            if 'gemini' in model_name:
+                return 'gemini'
+            return 'chatgpt'
+        return None
+
+    provider = get_provider(provider_name=select_provider_name(), use_custom=bool(req.api_key))
+    
+    prompt = SPLIT_GUI_PROMPT
+    if req.prompt:
+        prompt += "\nUser Instructions: " + req.prompt
+        
+    try:
+        ai_suggestion = await provider.ask_llm(
+            req.code,
+            req.lang,
+            prompt,
+            mode="split",
+            files=req.files,
+            focus=req.focus,
+            model=req.model,
+            api_key=req.api_key,
+        )
+        
+        latency_ms = (time.time() - start_time) * 1000
+        tracker.update_model_info(
+            provenance_id,
+            provider=select_provider_name() or "default",
+            model_name=req.model or "default",
+            temperature=0.2,
+            max_tokens=8192,
+            latency_ms=latency_ms,
+        )
+        tracker.update_output(provenance_id, ai_suggestion)
+        
+    except Exception as e:
+        tracker.mark_rejected(provenance_id, f"AI error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Parse and verify split result
+    try:
+        # Clean up markdown if present
+        result_str = ai_suggestion
+        if "```json" in result_str:
+            result_str = result_str.split("```json")[1].split("```")[0].strip()
+        elif "```" in result_str:
+            result_str = result_str.split("```")[1].split("```")[0].strip()
+        
+        split_result = json.loads(result_str)
+        
+        if req.verify:
+            verification_result = verifier.verify_split_result(
+                split_result,
+                original_code=req.code,
+                lang=req.lang,
+            )
+            
+            tracker.update_verification(
+                provenance_id,
+                status=ProvVerificationStatus(verification_result.status.value),
+                violations=[v.message for v in verification_result.violations],
+                original_hash=verification_result.original_hash,
+                verified_hash=verification_result.verified_hash,
+                duration_ms=verification_result.duration_ms,
+            )
+            
+            if not verification_result.passed:
+                tracker.mark_rejected(provenance_id, "Split verification failed")
+                return {
+                    "result": None,
+                    "lang": req.lang,
+                    "verification": verification_result.to_dict(),
+                    "provenance_id": provenance_id,
+                    "error": "Split output failed verification",
+                }
+        
+        tracker.mark_accepted(provenance_id)
+        
+        return {
+            "result": split_result,
+            "lang": req.lang,
+            "verification": verification_result.to_dict() if req.verify else None,
+            "provenance_id": provenance_id,
+        }
+        
+    except json.JSONDecodeError as e:
+        tracker.mark_rejected(provenance_id, f"Invalid JSON: {e}")
+        return {
+            "result": None,
+            "raw_output": ai_suggestion,
+            "lang": req.lang,
+            "provenance_id": provenance_id,
+            "error": f"Failed to parse split result: {e}",
+        }
+
+
+class JobSubmitRequest(BaseModel):
+    """Request to submit a job to the queue."""
+    job_type: str  # static, ai_analyze, ai_refactor, ai_generate
+    payload: dict
+    priority: str = "normal"  # critical, high, normal, low, bulk
+    budget_time_seconds: Optional[float] = None
+    budget_tokens: Optional[int] = None
+
+
+@app.post("/queue/submit")
+async def submit_job(req: JobSubmitRequest):
+    """Submit a job to the priority queue."""
+    queue = get_queue()
+    
+    # Map string to enum
+    job_type_map = {
+        "static": JobType.STATIC,
+        "ai_analyze": JobType.AI_ANALYZE,
+        "ai_refactor": JobType.AI_REFACTOR,
+        "ai_generate": JobType.AI_GENERATE,
+    }
+    
+    priority_map = {
+        "critical": JobPriority.CRITICAL,
+        "high": JobPriority.HIGH,
+        "normal": JobPriority.NORMAL,
+        "low": JobPriority.LOW,
+        "bulk": JobPriority.BULK,
+    }
+    
+    job_type = job_type_map.get(req.job_type, JobType.AI_ANALYZE)
+    priority = priority_map.get(req.priority, JobPriority.NORMAL)
+    
+    budget = None
+    if req.budget_time_seconds or req.budget_tokens:
+        budget = JobBudget(
+            max_time_seconds=req.budget_time_seconds or 30.0,
+            max_tokens=req.budget_tokens or 4096,
+        )
+    
+    job_id = await queue.submit(job_type, req.payload, priority, budget)
+    
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/queue/status/{job_id}")
+async def get_job_status(job_id: str):
+    """Get status of a queued job."""
+    queue = get_queue()
+    job = await queue.get_job(job_id)
+    
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    return {
+        "job_id": job.job_id,
+        "status": "running" if job.started_at else "queued",
+        "created_at": job.created_at,
+        "started_at": job.started_at,
+        "completed_at": job.completed_at,
+        "result": job.result,
+        "error": job.error,
+    }
+
+
+@app.post("/queue/cancel/{job_id}")
+async def cancel_job(job_id: str):
+    """Cancel a queued job."""
+    queue = get_queue()
+    cancelled = await queue.cancel(job_id)
+    
+    return {"cancelled": cancelled}
+
+
+@app.get("/queue/stats")
+async def get_queue_stats():
+    """Get queue statistics."""
+    queue = get_queue()
+    stats = await queue.get_stats()
+    return stats.model_dump()
+
+
+@app.get("/provenance/{record_id}")
+async def get_provenance(record_id: str):
+    """Get provenance record for an AI change."""
+    tracker = get_provenance_tracker()
+    record = tracker.get_record(record_id)
+    
+    if not record:
+        raise HTTPException(status_code=404, detail="Provenance record not found")
+    
+    return record.to_dict()
+
+
+@app.get("/provenance/file/{file_path:path}")
+async def get_file_provenance(file_path: str):
+    """Get all provenance records for a file."""
+    tracker = get_provenance_tracker()
+    records = tracker.get_records_for_file(file_path)
+    return [r.to_dict() for r in records]
+
+
+@app.get("/provenance/stats")
+async def get_provenance_stats():
+    """Get provenance statistics."""
+    tracker = get_provenance_tracker()
+    return tracker.get_statistics()
+
+
 @app.get("/")
 def root():
     return {
         "status": "ai-engine-online",
         "supported_languages": list(supported_languages()),
+        "features": [
+            "job_queue",
+            "verification",
+            "streaming",
+            "provenance_tracking",
+        ],
     }
 
 

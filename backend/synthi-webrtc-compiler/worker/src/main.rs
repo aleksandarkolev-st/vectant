@@ -19,6 +19,11 @@ mod crash_recovery;
 mod error_parser;
 pub mod source_map;
 mod fast_refresh;
+mod boundary;
+mod abi_version;
+mod loader;
+mod supervisor;
+mod state_manager;
 
 use builder::{RebuildScope, ModuleHashes, hash_content, WidgetDetector, WidgetCompiler};
 use fast_refresh::{BoundaryChecker, RefreshAction, BoundaryViolationEvent};
