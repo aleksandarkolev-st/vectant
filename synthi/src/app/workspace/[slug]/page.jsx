@@ -52,6 +52,10 @@ import { ProblemsPanel } from '@/components/analysis';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
+    
+    // 1. Consume the slug parameter first (needed by hooks below)
+    const { slug } = use(params);
+    
     const [chatVisible, setChatVisible] = useState(false);
     const [sidebarView, setSidebarView] = useState('explorer');
     const [showProblemsPanel, setShowProblemsPanel] = useState(false);
@@ -76,7 +80,6 @@ export default function EditorPage({ params }) {
     const lastProactiveSignatureRef = useRef('');
     
     // Multi-file workspace analysis (cross-file issue detection)
-    // Only enable workspace analysis when a slug is available
     const {
         trackFileChange,
         trackFileDeletion,
@@ -158,8 +161,7 @@ export default function EditorPage({ params }) {
     }, []);
     const [aiBusy, setAiBusy] = useState(false);
 
-    // 1. Consume the slug parameter and initiate fetch
-    const { slug } = use(params);
+    // Workspace state
     const [workspaceMissing, setWorkspaceMissing] = useState(false);
     const [workspaceMissingMessage, setWorkspaceMissingMessage] = useState('');
 
