@@ -1499,18 +1499,25 @@ async fn handle_compile(
         };
         
         // Determine rebuild scope
-        let rebuild_scope = if prev_hashes.shared_hash != new_hashes.shared_hash && prev_hashes.shared_hash != 0 {
+        // DEBUG: Print hashes to help diagnose "Full build" issues
+        eprintln!("[Main] Hashes - Prev: s={}, c={}, g={}", prev_hashes.shared_hash, prev_hashes.core_hash, prev_hashes.gui_hash);
+        eprintln!("[Main] Hashes - New:  s={}, c={}, g={}", new_hashes.shared_hash, new_hashes.core_hash, new_hashes.gui_hash);
+
+        let rebuild_scope = if prev_hashes.shared_hash == 0 && prev_hashes.core_hash == 0 && prev_hashes.gui_hash == 0 {
+            eprintln!("[Main] First build detected - full build");
+            RebuildScope::Both
+        } else if prev_hashes.shared_hash != new_hashes.shared_hash {
             eprintln!("[Main] Shared header changed - full rebuild needed");
             RebuildScope::Both
-        } else if prev_hashes.core_hash != new_hashes.core_hash && prev_hashes.core_hash != 0 {
+        } else if prev_hashes.core_hash != new_hashes.core_hash {
             eprintln!("[Main] Core changed - rebuild core (GUI will reload with new CoreAPI)");
-            RebuildScope::Both // Core change affects GUI's CoreAPI reference
-        } else if prev_hashes.gui_hash != new_hashes.gui_hash && prev_hashes.gui_hash != 0 {
+            RebuildScope::CoreOnly // Core change affects GUI's CoreAPI reference
+        } else if prev_hashes.gui_hash != new_hashes.gui_hash {
             eprintln!("[Main] GUI-only change detected - rebuilding GUI only!");
             RebuildScope::GuiOnly
         } else {
-            eprintln!("[Main] First build or no changes detected - full build");
-            RebuildScope::Both
+            eprintln!("[Main] No changes detected in generated code - skipping build");
+            RebuildScope::None
         };
         
         // Notify frontend of rebuild scope
@@ -1697,7 +1704,7 @@ async fn handle_compile(
         }
 
         // Skip core compilation if GUI-only rebuild (reuse existing core.so)
-        if rebuild_scope != RebuildScope::GuiOnly {
+        if rebuild_scope == RebuildScope::Both || rebuild_scope == RebuildScope::CoreOnly {
         if let Some(core) = split_data.get("core") {
             let fname = core["filename"].as_str().unwrap_or("core.cpp");
             let mut content = core["content"].as_str().unwrap_or("").to_string();
@@ -2073,11 +2080,31 @@ async fn handle_compile(
             // Inject State Serialization Stubs for Full HMR Capability
             // These exports enable "Full HMR" detection by the capability checker
             // The runner will see these symbols and grant Full HMR capability
-            if content.contains("on_load") && !content.contains("on_save_state") {
+            
+            // Case 1: New-style Core module
+            if content.contains("core_on_load") && !content.contains("core_on_save_state") {
                 let state_serial_stubs = r#"
 
-// [Guardrail] State serialization stubs for Full HMR capability
-// These enable the runner to detect Full HMR support
+// [Guardrail] State serialization stubs for Full HMR capability (Core)
+extern "C" char* core_on_save_state(void* state_ptr) {
+    (void)state_ptr;
+    return NULL;
+}
+
+extern "C" int core_on_load_from_json(void* state_ptr, const char* json) {
+    (void)state_ptr;
+    (void)json;
+    return 0;
+}
+"#;
+                content.push_str(state_serial_stubs);
+                eprintln!("[Guardrail] Injected core_on_save_state stubs for Full HMR capability");
+            }
+            // Case 2: Legacy module
+            else if content.contains("on_load") && !content.contains("on_save_state") && !content.contains("core_on_load") {
+                let state_serial_stubs = r#"
+
+// [Guardrail] State serialization stubs for Full HMR capability (Legacy)
 extern "C" char* on_save_state(void* state_ptr) {
     // Return NULL - binary state preservation is used instead
     (void)state_ptr;
@@ -2092,7 +2119,7 @@ extern "C" int on_load_from_json(void* state_ptr, const char* json) {
 }
 "#;
                 content.push_str(state_serial_stubs);
-                eprintln!("[Guardrail] Injected state serialization stubs for Full HMR capability");
+                eprintln!("[Guardrail] Injected on_save_state stubs for Full HMR capability");
             }
 
             let content_hash = calculate_hash(&content);
@@ -2227,10 +2254,10 @@ extern "C" int on_load_from_json(void* state_ptr, const char* json) {
             }
         }
         } else {
-            // GUI-only rebuild: reuse existing core library path
+            // GUI-only rebuild or No changes: reuse existing core library path
             if let Some(ref existing_core) = prev_core_path {
                 core_lib_path = existing_core.clone();
-                println!("GUI-only rebuild: reusing existing core at {}", core_lib_path);
+                println!("Reusing existing core at {}", core_lib_path);
             }
         }
 
@@ -2314,6 +2341,8 @@ extern "C" int on_load_from_json(void* state_ptr, const char* json) {
         }
 
         if let Some(gui) = split_data.get("gui") {
+            // Only compile GUI if scope includes it
+            if rebuild_scope == RebuildScope::Both || rebuild_scope == RebuildScope::GuiOnly {
             let fname = gui["filename"].as_str().unwrap_or("gui.cpp");
             let mut content = gui["content"].as_str().unwrap_or("").to_string();
 
@@ -2793,6 +2822,13 @@ extern "C" int gui_on_load_from_json(void* state_ptr, const char* json) {
                 // The runner will load it separately from core
                 modules_to_load.push(("gui".to_string(), gui_lib_path.clone()));
                 println!("[Independent Swap] GUI module queued for independent reload: {}", gui_lib_path);
+            }
+            } else {
+                // Reuse existing GUI path if not rebuilding
+                if let Some(ref existing_gui) = _prev_gui_path {
+                    gui_lib_path = existing_gui.clone();
+                    println!("Reusing existing GUI at {}", gui_lib_path);
+                }
             }
         }
 

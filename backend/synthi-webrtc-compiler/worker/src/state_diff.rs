@@ -46,6 +46,9 @@ pub struct DiffConfig {
     
     /// Maximum depth for nested object diffing
     pub max_depth: usize,
+    
+    /// Maximum number of visited nodes to prevent infinite loops with circular refs
+    pub max_visited_nodes: usize,
 }
 
 impl DiffConfig {
@@ -55,6 +58,7 @@ impl DiffConfig {
             always_preserve: HashSet::new(),
             preserve_arrays: true,
             max_depth: 10,
+            max_visited_nodes: 10000, // Prevent runaway recursion on large/circular structures
         }
     }
     
@@ -134,8 +138,17 @@ fn diff_value(
     new_fields: &mut Vec<String>,
     removed: &mut Vec<String>,
 ) -> Value {
-    if depth > config.max_depth {
-        // Too deep, just use new value
+    // SAFETY: Check depth BEFORE any recursive operations to prevent stack overflow
+    if depth >= config.max_depth {
+        // Too deep, just use new value without further recursion
+        eprintln!("[state_diff] Warning: max depth {} reached at path '{}', using new value", config.max_depth, path);
+        return new.clone();
+    }
+    
+    // SAFETY: Check total visited nodes to catch circular references
+    let total_visited = preserved.len() + reset.len() + new_fields.len() + removed.len();
+    if total_visited >= config.max_visited_nodes {
+        eprintln!("[state_diff] Warning: max visited nodes {} reached, possible circular reference at '{}'", config.max_visited_nodes, path);
         return new.clone();
     }
     
