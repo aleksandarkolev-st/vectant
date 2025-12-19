@@ -562,9 +562,9 @@ where
 #[cfg(unix)]
 pub fn execute_with_protection<F, R>(module_name: &str, f: F) -> Result<R, CrashInfo>
 where
-    F: FnOnce() -> R,
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
 {
-    use std::sync::mpsc;
     use std::thread;
     
     // Set current module name
@@ -575,9 +575,6 @@ where
     // Reset abort flag
     ABORT_REQUESTED.store(false, Ordering::SeqCst);
     IN_PLUGIN_CONTEXT.store(true, Ordering::SeqCst);
-    
-    // Create channel for result
-    let (tx, rx) = mpsc::channel();
     
     // Spawn thread for plugin execution (allows timeout)
     let module_name_clone = module_name.to_string();

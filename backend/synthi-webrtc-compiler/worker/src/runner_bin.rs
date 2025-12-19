@@ -6,6 +6,13 @@ use std::time::{Duration, Instant};
 use std::ffi::{c_void, c_int, c_uint, CString};
 use std::ptr;
 use std::collections::HashMap;
+
+// Wrapper types to make raw pointers thread-safe to move across threads
+#[derive(Clone, Copy)]
+struct SendVoidPtr(pub usize);
+unsafe impl Send for SendVoidPtr {}
+unsafe impl Sync for SendVoidPtr {}
+
 #[cfg(target_os = "linux")]
 use std::process::Command;
 
@@ -1255,8 +1262,12 @@ fn main() {
                             if let Some(lib_path) = loaded_paths.get(name) {
                                 set_current_lib_path(lib_path);
                             }
-                            let result = execute_with_protection(&module_name, || {
-                                f(state_ptr, dt);
+                            
+                            let state_ptr_wrapper = SendVoidPtr(state_ptr as usize);
+                            let func_ptr = *f;
+                            let result = execute_with_protection(&module_name, move || {
+                                let state_ptr = state_ptr_wrapper.0 as *mut std::ffi::c_void;
+                                func_ptr(state_ptr, dt);
                             });
                             
                             if let Err(crash_info) = result {

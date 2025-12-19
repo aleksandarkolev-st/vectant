@@ -1170,9 +1170,115 @@ fn calculate_hash<T: Hash>(t: &T) -> u64 {
     s.finish()
 }
 
+/// Extract structural signature from C/C++ code for smart caching.
+/// This ignores string literals, comments, and numeric constants so that
+/// simple text changes don't cause AI cache misses (Next.js-like HMR behavior).
+fn extract_structural_signature(source: &str) -> String {
+    let mut result = String::with_capacity(source.len());
+    let mut chars = source.chars().peekable();
+    let mut in_string = false;
+    let mut in_char = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut escape_next = false;
+    
+    while let Some(c) = chars.next() {
+        // Handle escape sequences in strings/chars
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        
+        // Handle line comments
+        if in_line_comment {
+            if c == '\n' {
+                in_line_comment = false;
+                result.push('\n'); // Preserve line structure
+            }
+            continue;
+        }
+        
+        // Handle block comments
+        if in_block_comment {
+            if c == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                in_block_comment = false;
+            }
+            continue;
+        }
+        
+        // Handle strings - replace content with placeholder
+        if in_string {
+            if c == '\\' {
+                escape_next = true;
+            } else if c == '"' {
+                in_string = false;
+                result.push_str("\"__STR__\""); // Placeholder for any string
+            }
+            continue;
+        }
+        
+        // Handle char literals
+        if in_char {
+            if c == '\\' {
+                escape_next = true;
+            } else if c == '\'' {
+                in_char = false;
+                result.push_str("'_'"); // Placeholder for any char
+            }
+            continue;
+        }
+        
+        // Detect start of comments
+        if c == '/' {
+            if chars.peek() == Some(&'/') {
+                chars.next();
+                in_line_comment = true;
+                continue;
+            } else if chars.peek() == Some(&'*') {
+                chars.next();
+                in_block_comment = true;
+                continue;
+            }
+        }
+        
+        // Detect start of string
+        if c == '"' {
+            in_string = true;
+            continue;
+        }
+        
+        // Detect start of char literal
+        if c == '\'' {
+            in_char = true;
+            continue;
+        }
+        
+        // Skip numeric literals (but keep the structure)
+        if c.is_ascii_digit() {
+            // Consume the entire number
+            while chars.peek().map(|ch| ch.is_ascii_digit() || *ch == '.' || *ch == 'x' || *ch == 'X' 
+                || *ch == 'a' || *ch == 'b' || *ch == 'c' || *ch == 'd' || *ch == 'e' || *ch == 'f'
+                || *ch == 'A' || *ch == 'B' || *ch == 'C' || *ch == 'D' || *ch == 'E' || *ch == 'F'
+                || *ch == 'u' || *ch == 'U' || *ch == 'l' || *ch == 'L').unwrap_or(false) {
+                chars.next();
+            }
+            result.push_str("0"); // Placeholder for any number
+            continue;
+        }
+        
+        // Keep everything else (identifiers, keywords, operators, braces, etc.)
+        result.push(c);
+    }
+    
+    result
+}
+
 async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
-    // Check cache first - hash the source code
-    let source_hash = calculate_hash(&req.source);
+    // Use STRUCTURAL hash for cache - ignores string literals, comments, numbers
+    // This gives Next.js-like HMR behavior: changing "Paused" to "Resume" won't trigger AI
+    let structural_sig = extract_structural_signature(&req.source);
+    let source_hash = calculate_hash(&structural_sig);
     
     {
         let cache = get_ai_split_cache().lock().await;
