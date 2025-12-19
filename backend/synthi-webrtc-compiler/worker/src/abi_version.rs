@@ -829,3 +829,409 @@ mod tests {
         assert!(!suite.tests.is_empty());
     }
 }
+
+// ============================================================
+// STRUCTURAL ABI VALIDATION
+// ============================================================
+// Magic numbers alone are weak. This provides explicit structural
+// validation: size, alignment, calling convention, symbol layout.
+// ============================================================
+
+/// Structural ABI descriptor - machine-checked, not magic-number-based
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[repr(C)]
+pub struct StructuralAbiDescriptor {
+    /// ABI version (semver)
+    pub version: AbiVersion,
+    /// Expected struct size in bytes
+    pub struct_size: u32,
+    /// Required struct alignment
+    pub struct_alignment: u32,
+    /// Hash of field layout (names + offsets + types)
+    pub layout_hash: u64,
+    /// Calling convention identifier
+    pub calling_convention: CallingConvention,
+    /// Pointer size (4 or 8)
+    pub pointer_size: u8,
+    /// Endianness
+    pub endianness: Endianness,
+    /// Field descriptors
+    pub fields: Vec<AbiFieldDescriptor>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum CallingConvention {
+    /// C calling convention (cdecl on x86)
+    C = 0,
+    /// System calling convention
+    System = 1,
+    /// Fast call (MS)
+    Fastcall = 2,
+    /// This call (MS)
+    Thiscall = 3,
+    /// Unknown/other
+    Unknown = 255,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum Endianness {
+    Little = 0,
+    Big = 1,
+}
+
+/// Field descriptor for structural validation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AbiFieldDescriptor {
+    /// Field name
+    pub name: String,
+    /// Offset from struct start
+    pub offset: u32,
+    /// Field size in bytes
+    pub size: u32,
+    /// Required alignment
+    pub alignment: u32,
+    /// Type name (for debugging)
+    pub type_name: String,
+    /// Whether this is a pointer type
+    pub is_pointer: bool,
+}
+
+impl StructuralAbiDescriptor {
+    /// Create a new descriptor with platform defaults
+    pub fn new(version: AbiVersion) -> Self {
+        Self {
+            version,
+            struct_size: 0,
+            struct_alignment: 8,
+            layout_hash: 0,
+            calling_convention: CallingConvention::C,
+            pointer_size: std::mem::size_of::<*const ()>() as u8,
+            endianness: if cfg!(target_endian = "little") {
+                Endianness::Little
+            } else {
+                Endianness::Big
+            },
+            fields: Vec::new(),
+        }
+    }
+    
+    /// Add a field descriptor
+    pub fn with_field(mut self, field: AbiFieldDescriptor) -> Self {
+        self.fields.push(field);
+        self
+    }
+    
+    /// Set struct size
+    pub fn with_size(mut self, size: u32) -> Self {
+        self.struct_size = size;
+        self
+    }
+    
+    /// Set struct alignment
+    pub fn with_alignment(mut self, alignment: u32) -> Self {
+        self.struct_alignment = alignment;
+        self
+    }
+    
+    /// Compute layout hash
+    pub fn compute_layout_hash(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        
+        let mut hasher = DefaultHasher::new();
+        self.struct_size.hash(&mut hasher);
+        self.struct_alignment.hash(&mut hasher);
+        self.pointer_size.hash(&mut hasher);
+        
+        for field in &self.fields {
+            field.name.hash(&mut hasher);
+            field.offset.hash(&mut hasher);
+            field.size.hash(&mut hasher);
+            field.alignment.hash(&mut hasher);
+        }
+        
+        hasher.finish()
+    }
+    
+    /// Finalize the descriptor (compute hash)
+    pub fn finalize(mut self) -> Self {
+        self.layout_hash = self.compute_layout_hash();
+        self
+    }
+    
+    /// Validate compatibility with another descriptor
+    pub fn validate_against(&self, other: &StructuralAbiDescriptor) -> AbiValidationResult {
+        let mut result = AbiValidationResult {
+            compatible: true,
+            errors: Vec::new(),
+            warnings: Vec::new(),
+        };
+        
+        // Check version compatibility
+        if !self.version.is_compatible_with(&other.version) {
+            result.compatible = false;
+            result.errors.push(format!(
+                "ABI version mismatch: {} vs {}",
+                self.version, other.version
+            ));
+        }
+        
+        // Check struct size
+        if self.struct_size != other.struct_size {
+            result.compatible = false;
+            result.errors.push(format!(
+                "Struct size mismatch: {} vs {} bytes",
+                self.struct_size, other.struct_size
+            ));
+        }
+        
+        // Check alignment
+        if self.struct_alignment != other.struct_alignment {
+            result.compatible = false;
+            result.errors.push(format!(
+                "Struct alignment mismatch: {} vs {}",
+                self.struct_alignment, other.struct_alignment
+            ));
+        }
+        
+        // Check pointer size
+        if self.pointer_size != other.pointer_size {
+            result.compatible = false;
+            result.errors.push(format!(
+                "Pointer size mismatch: {} vs {} bytes",
+                self.pointer_size, other.pointer_size
+            ));
+        }
+        
+        // Check endianness
+        if self.endianness != other.endianness {
+            result.compatible = false;
+            result.errors.push("Endianness mismatch".to_string());
+        }
+        
+        // Check calling convention
+        if self.calling_convention != other.calling_convention {
+            result.compatible = false;
+            result.errors.push(format!(
+                "Calling convention mismatch: {:?} vs {:?}",
+                self.calling_convention, other.calling_convention
+            ));
+        }
+        
+        // Check layout hash (quick structural check)
+        if self.layout_hash != other.layout_hash {
+            // Detailed field comparison
+            let self_fields: std::collections::HashMap<_, _> = self.fields.iter()
+                .map(|f| (f.name.as_str(), f))
+                .collect();
+            let other_fields: std::collections::HashMap<_, _> = other.fields.iter()
+                .map(|f| (f.name.as_str(), f))
+                .collect();
+            
+            for (name, field) in &self_fields {
+                if let Some(other_field) = other_fields.get(name) {
+                    if field.offset != other_field.offset {
+                        result.compatible = false;
+                        result.errors.push(format!(
+                            "Field '{}' offset mismatch: {} vs {}",
+                            name, field.offset, other_field.offset
+                        ));
+                    }
+                    if field.size != other_field.size {
+                        result.compatible = false;
+                        result.errors.push(format!(
+                            "Field '{}' size mismatch: {} vs {}",
+                            name, field.size, other_field.size
+                        ));
+                    }
+                    if field.alignment != other_field.alignment {
+                        result.warnings.push(format!(
+                            "Field '{}' alignment differs: {} vs {}",
+                            name, field.alignment, other_field.alignment
+                        ));
+                    }
+                } else {
+                    result.warnings.push(format!("Field '{}' not in other descriptor", name));
+                }
+            }
+        }
+        
+        result
+    }
+}
+
+/// Result of ABI validation
+#[derive(Debug, Clone)]
+pub struct AbiValidationResult {
+    pub compatible: bool,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl AbiValidationResult {
+    pub fn ok() -> Self {
+        Self {
+            compatible: true,
+            errors: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+}
+
+/// Standard structural descriptors for Synthi state structs
+pub mod structural_descriptors {
+    use super::*;
+    
+    /// AppState structural descriptor (must match shared.h)
+    pub fn app_state_v1() -> StructuralAbiDescriptor {
+        StructuralAbiDescriptor::new(AbiVersion::new(1, 0, 0))
+            .with_size(128)
+            .with_alignment(8)
+            .with_field(AbiFieldDescriptor {
+                name: "magic".to_string(),
+                offset: 0,
+                size: 8,
+                alignment: 8,
+                type_name: "uint64_t".to_string(),
+                is_pointer: false,
+            })
+            .with_field(AbiFieldDescriptor {
+                name: "struct_size".to_string(),
+                offset: 8,
+                size: 4,
+                alignment: 4,
+                type_name: "uint32_t".to_string(),
+                is_pointer: false,
+            })
+            .with_field(AbiFieldDescriptor {
+                name: "abi_version".to_string(),
+                offset: 12,
+                size: 4,
+                alignment: 4,
+                type_name: "uint32_t".to_string(),
+                is_pointer: false,
+            })
+            .with_field(AbiFieldDescriptor {
+                name: "window".to_string(),
+                offset: 16,
+                size: 8,
+                alignment: 8,
+                type_name: "SDL_Window*".to_string(),
+                is_pointer: true,
+            })
+            .with_field(AbiFieldDescriptor {
+                name: "renderer".to_string(),
+                offset: 24,
+                size: 8,
+                alignment: 8,
+                type_name: "SDL_Renderer*".to_string(),
+                is_pointer: true,
+            })
+            .with_field(AbiFieldDescriptor {
+                name: "running".to_string(),
+                offset: 32,
+                size: 4,
+                alignment: 4,
+                type_name: "int".to_string(),
+                is_pointer: false,
+            })
+            .with_field(AbiFieldDescriptor {
+                name: "paused".to_string(),
+                offset: 36,
+                size: 4,
+                alignment: 4,
+                type_name: "int".to_string(),
+                is_pointer: false,
+            })
+            .with_field(AbiFieldDescriptor {
+                name: "x".to_string(),
+                offset: 40,
+                size: 4,
+                alignment: 4,
+                type_name: "int".to_string(),
+                is_pointer: false,
+            })
+            .with_field(AbiFieldDescriptor {
+                name: "y".to_string(),
+                offset: 44,
+                size: 4,
+                alignment: 4,
+                type_name: "int".to_string(),
+                is_pointer: false,
+            })
+            .with_field(AbiFieldDescriptor {
+                name: "dx".to_string(),
+                offset: 48,
+                size: 4,
+                alignment: 4,
+                type_name: "int".to_string(),
+                is_pointer: false,
+            })
+            .with_field(AbiFieldDescriptor {
+                name: "dy".to_string(),
+                offset: 52,
+                size: 4,
+                alignment: 4,
+                type_name: "int".to_string(),
+                is_pointer: false,
+            })
+            .finalize()
+    }
+    
+    /// Validate runtime state against expected descriptor
+    pub unsafe fn validate_runtime_state(
+        state_ptr: *const u8,
+        expected: &StructuralAbiDescriptor,
+    ) -> AbiValidationResult {
+        if state_ptr.is_null() {
+            return AbiValidationResult {
+                compatible: false,
+                errors: vec!["State pointer is null".to_string()],
+                warnings: Vec::new(),
+            };
+        }
+        
+        let mut result = AbiValidationResult::ok();
+        
+        // Read magic number (first 8 bytes)
+        let magic_ptr = state_ptr as *const u64;
+        let magic = std::ptr::read_unaligned(magic_ptr);
+        
+        // Expected magic from our schema
+        const EXPECTED_MAGIC: u64 = 0xDEADBEEF_CAFEBABE;
+        if magic != EXPECTED_MAGIC {
+            result.compatible = false;
+            result.errors.push(format!(
+                "Magic number mismatch: expected {:016x}, got {:016x}",
+                EXPECTED_MAGIC, magic
+            ));
+        }
+        
+        // Read struct_size field (offset 8)
+        let size_ptr = state_ptr.add(8) as *const u32;
+        let runtime_size = std::ptr::read_unaligned(size_ptr);
+        
+        if runtime_size != expected.struct_size {
+            result.compatible = false;
+            result.errors.push(format!(
+                "Runtime struct size {} != expected {}",
+                runtime_size, expected.struct_size
+            ));
+        }
+        
+        // Read abi_version field (offset 12)
+        let version_ptr = state_ptr.add(12) as *const u32;
+        let runtime_version = std::ptr::read_unaligned(version_ptr);
+        
+        if runtime_version != expected.version.major {
+            result.warnings.push(format!(
+                "ABI version field {} != expected major version {}",
+                runtime_version, expected.version.major
+            ));
+        }
+        
+        result
+    }
+}

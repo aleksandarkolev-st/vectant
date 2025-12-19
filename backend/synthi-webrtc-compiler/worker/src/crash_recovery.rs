@@ -17,12 +17,42 @@
 //   (longjmp from signal handlers is undefined behavior in Rust)
 // - Plugin code runs in a "sandbox" that can be safely aborted
 //
-// SAFETY NOTE:
-// The previous implementation used setjmp/longjmp which is technically
-// undefined behavior when called from signal handlers. This version uses:
-// 1. Process fork isolation (safest, but has IPC overhead)
-// 2. Timeout-based watchdog for hung plugins
-// 3. Structured signal handling with proper cleanup
+// ============================================================
+// CRITICAL SAFETY DOCUMENTATION
+// ============================================================
+// 
+// SIGNAL RECOVERY LIMITATIONS - READ CAREFULLY
+// 
+// After SIGSEGV, SIGABRT, or any signal indicating memory corruption:
+// - Heap state is UNKNOWN and potentially corrupted
+// - Mutex/lock state is UNKNOWN and potentially deadlocked
+// - Stack frames may be unwound incorrectly
+// - Global state may be inconsistent
+// 
+// WHAT WE CAN SAFELY DO:
+// 1. Log the crash (if logging doesn't allocate)
+// 2. Store minimal crash info in pre-allocated buffers
+// 3. Exit the process (in fork mode: child only)
+// 4. RESTART from a clean state
+//
+// WHAT WE CANNOT SAFELY DO:
+// 1. Resume execution in the same process after SIGSEGV
+// 2. Call malloc/free after heap corruption
+// 3. Acquire locks after potential deadlock
+// 4. Assume any data structure is valid
+//
+// THE ONLY SAFE RECOVERY IS RESTART WITH ROLLBACK
+// 
+// This module provides:
+// - Fork isolation: crash in child, parent continues cleanly
+// - Crash reporting: capture info for debugging
+// - Rollback support: restore to pre-crash snapshot
+// - Restart orchestration: clean restart of plugin subsystem
+//
+// It does NOT provide:
+// - In-process recovery after SIGSEGV (undefined behavior)
+// - Continuation after allocator corruption
+// - Magic healing of corrupted state
 // ============================================================
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};

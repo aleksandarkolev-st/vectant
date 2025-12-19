@@ -16,6 +16,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use rand; // For deterministic replay seeding
 
 // Import boundary types
 pub use crate::boundary::BoundaryId;
@@ -2350,3 +2351,623 @@ impl HmrDebugCollector {
         format!("{{\"trace_count\": {}}}", self.traces.len())
     }
 }
+
+// ============================================================
+// ASYNC TASK DETERMINISTIC REPLAY
+// ============================================================
+// Warm reload correctness requires deterministic replay of async
+// tasks. Without it, warm reload is probabilistic.
+// ============================================================
+
+/// Recorded async operation for replay
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AsyncOperation {
+    pub op_id: u64,
+    pub task_id: String,
+    pub op_type: AsyncOpType,
+    pub timestamp_us: u64,
+    pub input_hash: u64,
+    pub output_hash: Option<u64>,
+    pub duration_us: u64,
+    /// Serialized input for replay
+    pub input_data: Option<Vec<u8>>,
+    /// Serialized output for verification
+    pub output_data: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AsyncOpType {
+    /// Timer/delay operation
+    Timer,
+    /// I/O operation (file, network)
+    Io,
+    /// Message send/receive
+    Message,
+    /// State mutation
+    StateMutation,
+    /// External call (API, etc.)
+    ExternalCall,
+    /// Random number generation (needs seed replay)
+    Random,
+}
+
+/// Replay log for a task
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskReplayLog {
+    pub task_id: String,
+    pub boundary_id: BoundaryId,
+    pub created_at: u64,
+    pub operations: Vec<AsyncOperation>,
+    /// Random seed used (for deterministic replay of random ops)
+    pub random_seed: u64,
+    /// Checkpoint intervals (for partial replay)
+    pub checkpoints: Vec<TaskCheckpoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskCheckpoint {
+    pub checkpoint_id: u64,
+    pub op_index: usize,
+    pub timestamp_us: u64,
+    pub state_hash: u64,
+    /// Serialized state at checkpoint
+    pub state_data: Option<Vec<u8>>,
+}
+
+/// Replay mode for async tasks
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayMode {
+    /// Full replay from start
+    Full,
+    /// Replay from nearest checkpoint
+    FromCheckpoint,
+    /// Skip replay, just restore state
+    StateOnly,
+    /// Verify replay matches log (for testing)
+    VerifyOnly,
+}
+
+/// Async task replay engine
+pub struct TaskReplayEngine {
+    /// Recorded logs per task
+    logs: HashMap<String, TaskReplayLog>,
+    /// Max operations to record per task
+    max_ops_per_task: usize,
+    /// Checkpoint interval (operations)
+    checkpoint_interval: usize,
+    /// Whether to record input/output data (expensive)
+    record_data: bool,
+    /// Replay statistics
+    stats: ReplayStats,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ReplayStats {
+    pub total_replays: u64,
+    pub successful_replays: u64,
+    pub failed_replays: u64,
+    pub checkpoint_restores: u64,
+    pub full_replays: u64,
+    pub average_replay_time_us: u64,
+    pub divergence_count: u64,
+}
+
+impl TaskReplayEngine {
+    pub fn new() -> Self {
+        Self {
+            logs: HashMap::new(),
+            max_ops_per_task: 10000,
+            checkpoint_interval: 100,
+            record_data: false,  // Default: hash only for performance
+            stats: ReplayStats::default(),
+        }
+    }
+    
+    /// Enable full data recording (expensive but enables exact replay)
+    pub fn with_data_recording(mut self) -> Self {
+        self.record_data = true;
+        self
+    }
+    
+    /// Start recording for a task
+    pub fn start_recording(&mut self, task_id: String, boundary_id: BoundaryId) {
+        let log = TaskReplayLog {
+            task_id: task_id.clone(),
+            boundary_id,
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros() as u64,
+            operations: Vec::new(),
+            random_seed: rand::random(),
+            checkpoints: Vec::new(),
+        };
+        self.logs.insert(task_id, log);
+    }
+    
+    /// Record an async operation
+    pub fn record_operation(
+        &mut self,
+        task_id: &str,
+        op_type: AsyncOpType,
+        input: &impl serde::Serialize,
+        output: Option<&impl serde::Serialize>,
+        duration_us: u64,
+    ) {
+        let Some(log) = self.logs.get_mut(task_id) else {
+            return;
+        };
+        
+        // Check limit
+        if log.operations.len() >= self.max_ops_per_task {
+            // Could either stop recording or evict old ops
+            return;
+        }
+        
+        let op_id = log.operations.len() as u64;
+        
+        // Compute hashes
+        let input_hash = Self::hash_value(input);
+        let output_hash = output.map(Self::hash_value);
+        
+        // Optionally record full data
+        let input_data = if self.record_data {
+            serde_json::to_vec(input).ok()
+        } else {
+            None
+        };
+        let output_data = if self.record_data && output.is_some() {
+            output.and_then(|o| serde_json::to_vec(o).ok())
+        } else {
+            None
+        };
+        
+        let timestamp_us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64;
+        
+        log.operations.push(AsyncOperation {
+            op_id,
+            task_id: task_id.to_string(),
+            op_type,
+            timestamp_us,
+            input_hash,
+            output_hash,
+            duration_us,
+            input_data,
+            output_data,
+        });
+        
+        // Create checkpoint if needed
+        if log.operations.len() % self.checkpoint_interval == 0 {
+            log.checkpoints.push(TaskCheckpoint {
+                checkpoint_id: log.checkpoints.len() as u64,
+                op_index: log.operations.len(),
+                timestamp_us,
+                state_hash: 0,  // Would be computed from actual state
+                state_data: None,
+            });
+        }
+    }
+    
+    fn hash_value<T: serde::Serialize>(value: &T) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        
+        let mut hasher = DefaultHasher::new();
+        if let Ok(json) = serde_json::to_string(value) {
+            json.hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+    
+    /// Get replay log for a task
+    pub fn get_log(&self, task_id: &str) -> Option<&TaskReplayLog> {
+        self.logs.get(task_id)
+    }
+    
+    /// Prepare replay plan for warm reload
+    pub fn prepare_replay(
+        &self,
+        task_id: &str,
+        mode: ReplayMode,
+    ) -> Option<ReplayPlan> {
+        let log = self.logs.get(task_id)?;
+        
+        match mode {
+            ReplayMode::Full => {
+                Some(ReplayPlan {
+                    task_id: task_id.to_string(),
+                    start_op_index: 0,
+                    ops_to_replay: log.operations.len(),
+                    checkpoint: None,
+                    random_seed: log.random_seed,
+                })
+            }
+            ReplayMode::FromCheckpoint => {
+                let checkpoint = log.checkpoints.last()?;
+                Some(ReplayPlan {
+                    task_id: task_id.to_string(),
+                    start_op_index: checkpoint.op_index,
+                    ops_to_replay: log.operations.len() - checkpoint.op_index,
+                    checkpoint: Some(checkpoint.clone()),
+                    random_seed: log.random_seed,
+                })
+            }
+            ReplayMode::StateOnly => {
+                Some(ReplayPlan {
+                    task_id: task_id.to_string(),
+                    start_op_index: log.operations.len(),
+                    ops_to_replay: 0,
+                    checkpoint: log.checkpoints.last().cloned(),
+                    random_seed: log.random_seed,
+                })
+            }
+            ReplayMode::VerifyOnly => {
+                Some(ReplayPlan {
+                    task_id: task_id.to_string(),
+                    start_op_index: 0,
+                    ops_to_replay: log.operations.len(),
+                    checkpoint: None,
+                    random_seed: log.random_seed,
+                })
+            }
+        }
+    }
+    
+    /// Get replay statistics
+    pub fn stats(&self) -> &ReplayStats {
+        &self.stats
+    }
+    
+    /// Clear logs for a task
+    pub fn clear_task(&mut self, task_id: &str) {
+        self.logs.remove(task_id);
+    }
+    
+    /// Clear logs for all tasks in a boundary
+    pub fn clear_boundary(&mut self, boundary_id: &BoundaryId) {
+        self.logs.retain(|_, log| &log.boundary_id != boundary_id);
+    }
+}
+
+impl Default for TaskReplayEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Plan for replaying a task
+#[derive(Debug, Clone)]
+pub struct ReplayPlan {
+    pub task_id: String,
+    pub start_op_index: usize,
+    pub ops_to_replay: usize,
+    pub checkpoint: Option<TaskCheckpoint>,
+    pub random_seed: u64,
+}
+
+// ============================================================
+// RELOAD CLASSIFICATION METRICS
+// ============================================================
+// Track misclassified reloads to tune ReloadClassifier confidence.
+// Without metrics, classifier confidence is meaningless.
+// ============================================================
+
+/// Metrics for reload classification accuracy
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ClassificationMetrics {
+    /// Total classifications made
+    pub total_classifications: u64,
+    /// Classifications by class
+    pub by_class: HashMap<String, ClassStats>,
+    /// Misclassifications (predicted != actual)
+    pub misclassifications: Vec<Misclassification>,
+    /// Rolling accuracy (last N classifications)
+    pub rolling_accuracy: f64,
+    /// Confidence calibration data
+    pub calibration: CalibrationData,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ClassStats {
+    pub predicted_count: u64,
+    pub actual_count: u64,
+    pub correct_count: u64,
+    pub false_positive_count: u64,
+    pub false_negative_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Misclassification {
+    pub timestamp: u64,
+    pub boundary_id: String,
+    pub predicted: String,
+    pub actual: String,
+    pub confidence: f64,
+    pub reason: String,
+    /// Changes that caused the misclassification
+    pub changes: ReloadChanges,
+}
+
+/// Calibration data for confidence scores
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CalibrationData {
+    /// Binned accuracy by confidence level
+    /// Key: confidence bucket (0.0-0.1, 0.1-0.2, etc.)
+    /// Value: (correct, total) in that bucket
+    pub buckets: HashMap<u8, (u64, u64)>,
+}
+
+impl CalibrationData {
+    /// Record a prediction outcome
+    pub fn record(&mut self, confidence: f64, correct: bool) {
+        let bucket = (confidence * 10.0).floor() as u8;
+        let bucket = bucket.min(9);  // Cap at 0.9-1.0 bucket
+        
+        let entry = self.buckets.entry(bucket).or_insert((0, 0));
+        if correct {
+            entry.0 += 1;
+        }
+        entry.1 += 1;
+    }
+    
+    /// Get calibration error (how far confidence is from actual accuracy)
+    pub fn calibration_error(&self) -> f64 {
+        let mut total_error = 0.0;
+        let mut total_samples = 0u64;
+        
+        for (bucket, (correct, total)) in &self.buckets {
+            if *total == 0 {
+                continue;
+            }
+            
+            let expected_accuracy = (*bucket as f64 + 0.5) / 10.0;
+            let actual_accuracy = *correct as f64 / *total as f64;
+            
+            total_error += (*total as f64) * (expected_accuracy - actual_accuracy).abs();
+            total_samples += total;
+        }
+        
+        if total_samples == 0 {
+            0.0
+        } else {
+            total_error / total_samples as f64
+        }
+    }
+}
+
+/// Classification metrics tracker
+pub struct ClassificationTracker {
+    metrics: ClassificationMetrics,
+    /// Window for rolling accuracy
+    recent_predictions: VecDeque<bool>,
+    window_size: usize,
+    /// Max misclassifications to keep
+    max_misclassifications: usize,
+}
+
+impl ClassificationTracker {
+    pub fn new() -> Self {
+        Self {
+            metrics: ClassificationMetrics::default(),
+            recent_predictions: VecDeque::new(),
+            window_size: 100,
+            max_misclassifications: 1000,
+        }
+    }
+    
+    /// Record a classification prediction
+    pub fn record_prediction(
+        &mut self,
+        boundary_id: &BoundaryId,
+        predicted: ReloadClass,
+        confidence: ClassificationConfidence,
+        changes: &ReloadChanges,
+    ) -> u64 {
+        self.metrics.total_classifications += 1;
+        
+        let class_key = format!("{:?}", predicted);
+        let stats = self.metrics.by_class.entry(class_key).or_default();
+        stats.predicted_count += 1;
+        
+        self.metrics.total_classifications
+    }
+    
+    /// Record actual outcome after reload
+    pub fn record_outcome(
+        &mut self,
+        prediction_id: u64,
+        boundary_id: &BoundaryId,
+        predicted: ReloadClass,
+        actual: ReloadClass,
+        confidence: ClassificationConfidence,
+        changes: &ReloadChanges,
+    ) {
+        let correct = predicted == actual;
+        
+        // Update class stats
+        let predicted_key = format!("{:?}", predicted);
+        let actual_key = format!("{:?}", actual);
+        
+        if let Some(stats) = self.metrics.by_class.get_mut(&predicted_key) {
+            if correct {
+                stats.correct_count += 1;
+            } else {
+                stats.false_positive_count += 1;
+            }
+        }
+        
+        let actual_stats = self.metrics.by_class.entry(actual_key.clone()).or_default();
+        actual_stats.actual_count += 1;
+        if !correct {
+            actual_stats.false_negative_count += 1;
+        }
+        
+        // Record misclassification
+        if !correct {
+            let confidence_value = match confidence {
+                ClassificationConfidence::High => 0.9,
+                ClassificationConfidence::Medium => 0.6,
+                ClassificationConfidence::Low => 0.3,
+            };
+            
+            self.metrics.misclassifications.push(Misclassification {
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+                boundary_id: format!("{:?}", boundary_id),
+                predicted: predicted_key,
+                actual: actual_key,
+                confidence: confidence_value,
+                reason: Self::analyze_misclassification(&predicted, &actual, changes),
+                changes: changes.clone(),
+            });
+            
+            // Enforce retention
+            while self.metrics.misclassifications.len() > self.max_misclassifications {
+                self.metrics.misclassifications.remove(0);
+            }
+        }
+        
+        // Update rolling accuracy
+        self.recent_predictions.push_back(correct);
+        while self.recent_predictions.len() > self.window_size {
+            self.recent_predictions.pop_front();
+        }
+        
+        let correct_count = self.recent_predictions.iter().filter(|&&c| c).count();
+        self.metrics.rolling_accuracy = correct_count as f64 / self.recent_predictions.len() as f64;
+        
+        // Update calibration
+        let confidence_value = match confidence {
+            ClassificationConfidence::High => 0.9,
+            ClassificationConfidence::Medium => 0.6,
+            ClassificationConfidence::Low => 0.3,
+        };
+        self.metrics.calibration.record(confidence_value, correct);
+    }
+    
+    fn analyze_misclassification(
+        predicted: &ReloadClass,
+        actual: &ReloadClass,
+        changes: &ReloadChanges,
+    ) -> String {
+        match (predicted, actual) {
+            (ReloadClass::Safe, ReloadClass::Warm) => {
+                "Predicted safe but state migration was needed".to_string()
+            }
+            (ReloadClass::Safe, ReloadClass::Cold) => {
+                "Predicted safe but breaking changes detected at runtime".to_string()
+            }
+            (ReloadClass::Warm, ReloadClass::Cold) => {
+                format!(
+                    "Predicted warm but cold required. Breaking changes: API={}, State={}",
+                    changes.has_breaking_api_change,
+                    changes.has_state_schema_change
+                )
+            }
+            (ReloadClass::Warm, ReloadClass::Safe) => {
+                "Over-classified as warm when safe would suffice".to_string()
+            }
+            (ReloadClass::Cold, ReloadClass::Warm) => {
+                "Over-classified as cold when warm would suffice".to_string()
+            }
+            _ => format!("Predicted {:?}, actual {:?}", predicted, actual),
+        }
+    }
+    
+    /// Get current metrics
+    pub fn metrics(&self) -> &ClassificationMetrics {
+        &self.metrics
+    }
+    
+    /// Get accuracy for a specific class
+    pub fn class_accuracy(&self, class: ReloadClass) -> Option<f64> {
+        let key = format!("{:?}", class);
+        self.metrics.by_class.get(&key).map(|stats| {
+            if stats.predicted_count == 0 {
+                1.0  // No predictions = perfect (vacuously true)
+            } else {
+                stats.correct_count as f64 / stats.predicted_count as f64
+            }
+        })
+    }
+    
+    /// Get precision for a class (correct / predicted)
+    pub fn class_precision(&self, class: ReloadClass) -> Option<f64> {
+        self.class_accuracy(class)  // Same as accuracy for our use case
+    }
+    
+    /// Get recall for a class (correct / actual)
+    pub fn class_recall(&self, class: ReloadClass) -> Option<f64> {
+        let key = format!("{:?}", class);
+        self.metrics.by_class.get(&key).map(|stats| {
+            if stats.actual_count == 0 {
+                1.0
+            } else {
+                stats.correct_count as f64 / stats.actual_count as f64
+            }
+        })
+    }
+    
+    /// Export metrics as JSON
+    pub fn export_json(&self) -> String {
+        serde_json::to_string_pretty(&self.metrics).unwrap_or_default()
+    }
+    
+    /// Get suggestions for improving classifier based on misclassifications
+    pub fn get_improvement_suggestions(&self) -> Vec<String> {
+        let mut suggestions = Vec::new();
+        
+        // Check calibration error
+        let cal_error = self.metrics.calibration.calibration_error();
+        if cal_error > 0.1 {
+            suggestions.push(format!(
+                "High calibration error ({:.2}). Confidence scores don't match actual accuracy.",
+                cal_error
+            ));
+        }
+        
+        // Check for systematic misclassifications
+        for (class, stats) in &self.metrics.by_class {
+            if stats.predicted_count > 10 {
+                let precision = stats.correct_count as f64 / stats.predicted_count as f64;
+                if precision < 0.8 {
+                    suggestions.push(format!(
+                        "Class {} has low precision ({:.2}). Consider stricter classification rules.",
+                        class, precision
+                    ));
+                }
+            }
+        }
+        
+        // Analyze recent misclassifications
+        let recent_misses: Vec<_> = self.metrics.misclassifications.iter()
+            .rev()
+            .take(20)
+            .collect();
+        
+        // Check for patterns
+        let safe_to_warm = recent_misses.iter()
+            .filter(|m| m.predicted == "Safe" && m.actual == "Warm")
+            .count();
+        
+        if safe_to_warm > 5 {
+            suggestions.push(
+                "Frequent Safe->Warm misclassifications. State changes may not be detected properly.".to_string()
+            );
+        }
+        
+        suggestions
+    }
+}
+
+impl Default for ClassificationTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
