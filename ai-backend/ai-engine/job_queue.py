@@ -3,6 +3,11 @@ Priority Job Queue for AI Engine
 ================================
 Implements a multi-lane job queue with priority handling for different request types.
 Provides horizontal scaling support with stateless API and shared cache.
+
+FAIRNESS:
+- Queue aging prevents starvation of lower priority tiers
+- Jobs age up in priority after configurable wait time
+- Maximum age caps prevent indefinite promotion
 """
 
 from __future__ import annotations
@@ -17,6 +22,17 @@ from enum import IntEnum
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 from pydantic import BaseModel
+
+
+# =============================================================================
+# QUEUE AGING CONFIGURATION
+# =============================================================================
+# Prevents starvation by promoting jobs that have waited too long
+
+AGE_PROMOTION_INTERVAL_SECONDS = 30.0  # Check for aging every N seconds
+AGE_THRESHOLD_SECONDS = 60.0           # Promote after waiting this long
+MAX_PROMOTIONS = 2                      # Max priority levels a job can be promoted
+STARVATION_ALERT_THRESHOLD = 300.0     # Alert if job waits longer than this
 
 
 class JobPriority(IntEnum):
@@ -90,6 +106,34 @@ class Job:
     # Cancellation support
     cancelled: bool = field(compare=False, default=False)
     cancel_event: asyncio.Event = field(compare=False, default_factory=asyncio.Event)
+    
+    # AGING SUPPORT - Prevents starvation
+    original_priority: int = field(compare=False, default=-1)  # -1 means not set
+    promotions: int = field(compare=False, default=0)          # Times promoted
+    last_promotion_at: Optional[float] = field(compare=False, default=None)
+    
+    def __post_init__(self):
+        if self.original_priority == -1:
+            self.original_priority = self.priority
+    
+    @property
+    def wait_time_seconds(self) -> float:
+        """Time since job was created."""
+        return time.time() - self.created_at
+    
+    @property
+    def can_promote(self) -> bool:
+        """Check if job can be promoted."""
+        return self.promotions < MAX_PROMOTIONS and self.priority > JobPriority.CRITICAL.value
+    
+    def promote(self) -> bool:
+        """Promote job to higher priority. Returns True if promoted."""
+        if not self.can_promote:
+            return False
+        self.priority -= 1
+        self.promotions += 1
+        self.last_promotion_at = time.time()
+        return True
 
 
 class JobQueueStats(BaseModel):
@@ -104,6 +148,11 @@ class JobQueueStats(BaseModel):
     avg_processing_time_ms: float = 0.0
     jobs_by_type: Dict[str, int] = {}
     jobs_by_priority: Dict[str, int] = {}
+    # AGING STATS
+    total_promotions: int = 0
+    starvation_alerts: int = 0
+    max_wait_time_ms: float = 0.0
+    jobs_promoted: int = 0
 
 
 class PriorityJobQueue:
@@ -117,12 +166,16 @@ class PriorityJobQueue:
     - Cancellation support
     - Statistics tracking
     - Horizontal scaling ready (stateless)
+    - QUEUE AGING to prevent starvation
     """
     
     def __init__(
         self,
         max_concurrent_per_type: Optional[Dict[JobType, int]] = None,
         global_max_concurrent: int = 10,
+        enable_aging: bool = True,  # Enable starvation prevention
+        age_threshold_seconds: float = AGE_THRESHOLD_SECONDS,
+        age_check_interval: float = AGE_PROMOTION_INTERVAL_SECONDS,
     ):
         # Separate queues per job type (lane)
         self._queues: Dict[JobType, asyncio.PriorityQueue] = {
@@ -150,11 +203,78 @@ class PriorityJobQueue:
         self._completed: List[Job] = []
         self._stats = JobQueueStats()
         
+        # AGING CONFIGURATION
+        self._enable_aging = enable_aging
+        self._age_threshold = age_threshold_seconds
+        self._age_check_interval = age_check_interval
+        self._aging_task: Optional[asyncio.Task] = None
+        
         # Lock for thread-safe operations
         self._lock = asyncio.Lock()
         
         # Shutdown flag
         self._shutdown = False
+    
+    async def start_aging(self) -> None:
+        """Start the aging task to prevent starvation."""
+        if self._enable_aging and self._aging_task is None:
+            self._aging_task = asyncio.create_task(self._aging_loop())
+    
+    async def stop_aging(self) -> None:
+        """Stop the aging task."""
+        if self._aging_task:
+            self._aging_task.cancel()
+            try:
+                await self._aging_task
+            except asyncio.CancelledError:
+                pass
+            self._aging_task = None
+    
+    async def _aging_loop(self) -> None:
+        """Background task that promotes starving jobs."""
+        while not self._shutdown:
+            await asyncio.sleep(self._age_check_interval)
+            await self._promote_starving_jobs()
+    
+    async def _promote_starving_jobs(self) -> None:
+        """Check for and promote jobs that have waited too long."""
+        now = time.time()
+        promoted_count = 0
+        
+        async with self._lock:
+            for job in self._jobs.values():
+                # Skip jobs that are running, completed, or cancelled
+                if job.started_at is not None or job.cancelled:
+                    continue
+                
+                wait_time = now - job.created_at
+                
+                # Update max wait time stat
+                wait_ms = wait_time * 1000
+                if wait_ms > self._stats.max_wait_time_ms:
+                    self._stats.max_wait_time_ms = wait_ms
+                
+                # Check for starvation alert
+                if wait_time > STARVATION_ALERT_THRESHOLD:
+                    self._stats.starvation_alerts += 1
+                
+                # Check if job should be promoted
+                time_since_last = wait_time
+                if job.last_promotion_at:
+                    time_since_last = now - job.last_promotion_at
+                
+                if time_since_last >= self._age_threshold and job.can_promote:
+                    old_priority = job.priority
+                    if job.promote():
+                        promoted_count += 1
+                        self._stats.total_promotions += 1
+                        # Log promotion for debugging
+                        print(f"[AGING] Job {job.job_id[:8]} promoted: "
+                              f"priority {old_priority} -> {job.priority} "
+                              f"(waited {wait_time:.1f}s)")
+        
+        if promoted_count > 0:
+            self._stats.jobs_promoted += promoted_count
     
     async def submit(
         self,
@@ -285,6 +405,9 @@ class PriorityJobQueue:
         """Gracefully shutdown the queue."""
         self._shutdown = True
         
+        # Stop aging task
+        await self.stop_aging()
+        
         # Wait for running jobs to complete
         start = time.time()
         while self._running and (time.time() - start) < timeout:
@@ -293,6 +416,39 @@ class PriorityJobQueue:
         # Cancel remaining jobs
         for job_id in list(self._running.keys()):
             await self.cancel(job_id)
+    
+    async def get_aging_stats(self) -> Dict[str, Any]:
+        """Get aging-specific statistics."""
+        async with self._lock:
+            pending_by_priority = {}
+            starving_jobs = []
+            now = time.time()
+            
+            for job in self._jobs.values():
+                if job.started_at is None and not job.cancelled:
+                    # Count by priority
+                    p = str(job.priority)
+                    pending_by_priority[p] = pending_by_priority.get(p, 0) + 1
+                    
+                    # Track starving jobs
+                    wait_time = now - job.created_at
+                    if wait_time > self._age_threshold:
+                        starving_jobs.append({
+                            "job_id": job.job_id[:8],
+                            "original_priority": job.original_priority,
+                            "current_priority": job.priority,
+                            "promotions": job.promotions,
+                            "wait_seconds": wait_time,
+                        })
+            
+            return {
+                "aging_enabled": self._enable_aging,
+                "age_threshold_seconds": self._age_threshold,
+                "pending_by_priority": pending_by_priority,
+                "starving_jobs": starving_jobs,
+                "total_promotions": self._stats.total_promotions,
+                "starvation_alerts": self._stats.starvation_alerts,
+            }
 
 
 class JobWorker:

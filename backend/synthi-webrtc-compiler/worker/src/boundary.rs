@@ -551,50 +551,111 @@ pub struct BoundaryStats {
     pub total_boundaries: usize,
     pub reload_count: u64,
     pub boundaries_by_type: HashMap<String, usize>,
+    pub manifest_validated_count: usize,
+    pub unvalidated_count: usize,
 }
 
-/// Pre-defined boundary configurations for common module structures
+/// Pre-defined MANIFEST configurations for common module structures
+/// These replace the old name-based presets
 pub mod presets {
     use super::*;
 
-    /// Create standard core module boundaries
+    /// Create core module manifest with explicit declarations
+    pub fn core_manifest() -> BoundaryManifest {
+        BoundaryManifest::new("core")
+            .with_boundary(BoundaryDeclaration {
+                id: "core_state".to_string(),
+                boundary_type: BoundaryType::CoreLogic,
+                required_exports: vec!["CoreState".to_string()],
+                allowed_dependencies: vec![],
+                owned_file_patterns: vec!["src/core/state/**".to_string()],
+            })
+            .with_boundary(BoundaryDeclaration {
+                id: "core_api".to_string(),
+                boundary_type: BoundaryType::CoreApi,
+                required_exports: vec![
+                    "core_get_api".to_string(),
+                    "core_on_load".to_string(),
+                    "core_on_update".to_string(),
+                ],
+                allowed_dependencies: vec!["core_state".to_string()],
+                owned_file_patterns: vec!["src/core/api/**".to_string()],
+            })
+            .with_boundary(BoundaryDeclaration {
+                id: "core_events".to_string(),
+                boundary_type: BoundaryType::CoreLogic,
+                required_exports: vec!["core_on_event".to_string()],
+                allowed_dependencies: vec!["core_state".to_string()],
+                owned_file_patterns: vec!["src/core/events/**".to_string()],
+            })
+            .with_boundary(BoundaryDeclaration {
+                id: "core_utils".to_string(),
+                boundary_type: BoundaryType::Utils,
+                required_exports: vec![],
+                allowed_dependencies: vec![],
+                owned_file_patterns: vec!["src/core/utils/**".to_string()],
+            })
+            .with_ownership(OwnershipRule {
+                pattern: "src/core/**".to_string(),
+                owner_boundary: "core_state".to_string(),
+                exclusive: false,
+            })
+    }
+
+    /// Create gui module manifest with explicit declarations
+    pub fn gui_manifest() -> BoundaryManifest {
+        BoundaryManifest::new("gui")
+            .with_boundary(BoundaryDeclaration {
+                id: "gui_state".to_string(),
+                boundary_type: BoundaryType::GuiState,
+                required_exports: vec!["GuiState".to_string()],
+                allowed_dependencies: vec![],
+                owned_file_patterns: vec!["src/gui/state/**".to_string()],
+            })
+            .with_boundary(BoundaryDeclaration {
+                id: "gui_render".to_string(),
+                boundary_type: BoundaryType::GuiRender,
+                required_exports: vec!["gui_on_render".to_string()],
+                allowed_dependencies: vec!["gui_state".to_string()],
+                owned_file_patterns: vec!["src/gui/render/**".to_string()],
+            })
+            .with_boundary(BoundaryDeclaration {
+                id: "gui_events".to_string(),
+                boundary_type: BoundaryType::GuiEvents,
+                required_exports: vec!["gui_on_event".to_string()],
+                allowed_dependencies: vec!["gui_state".to_string()],
+                owned_file_patterns: vec!["src/gui/events/**".to_string()],
+            })
+            .with_boundary(BoundaryDeclaration {
+                id: "gui_widgets".to_string(),
+                boundary_type: BoundaryType::Widget,
+                required_exports: vec![],
+                allowed_dependencies: vec!["gui_state".to_string(), "gui_render".to_string()],
+                owned_file_patterns: vec!["src/gui/widgets/**".to_string()],
+            })
+    }
+
+    /// Create a widget-specific boundary declaration
+    pub fn widget_declaration(widget_id: &str) -> BoundaryDeclaration {
+        BoundaryDeclaration {
+            id: format!("widget_{}", widget_id),
+            boundary_type: BoundaryType::Widget,
+            required_exports: vec![],
+            allowed_dependencies: vec!["gui_state".to_string()],
+            owned_file_patterns: vec![format!("src/gui/widgets/{}/**", widget_id)],
+        }
+    }
+    
+    /// DEPRECATED: Old boundary creation - use manifests instead
+    #[deprecated(note = "Use core_manifest() and load_manifest() instead")]
     pub fn core_boundaries() -> Vec<Boundary> {
-        vec![
-            Boundary::new("core_state", BoundaryType::CoreLogic, "core")
-                .with_export("CoreState"),
-            Boundary::new("core_api", BoundaryType::CoreApi, "core")
-                .with_dependency("core_state")
-                .with_export("core_get_api")
-                .with_export("core_on_load")
-                .with_export("core_on_update"),
-            Boundary::new("core_events", BoundaryType::CoreLogic, "core")
-                .with_dependency("core_state")
-                .with_export("core_on_event"),
-            Boundary::new("core_utils", BoundaryType::Utils, "core"),
-        ]
+        vec![]
     }
 
-    /// Create standard gui module boundaries
+    /// DEPRECATED: Old boundary creation - use manifests instead
+    #[deprecated(note = "Use gui_manifest() and load_manifest() instead")]
     pub fn gui_boundaries() -> Vec<Boundary> {
-        vec![
-            Boundary::new("gui_state", BoundaryType::GuiState, "gui")
-                .with_export("GuiState"),
-            Boundary::new("gui_render", BoundaryType::GuiRender, "gui")
-                .with_dependency("gui_state")
-                .with_export("gui_on_render"),
-            Boundary::new("gui_events", BoundaryType::GuiEvents, "gui")
-                .with_dependency("gui_state")
-                .with_export("gui_on_event"),
-            Boundary::new("gui_widgets", BoundaryType::Widget, "gui")
-                .with_dependency("gui_state")
-                .with_dependency("gui_render"),
-        ]
-    }
-
-    /// Create a widget-specific boundary
-    pub fn widget_boundary(widget_id: &str, parent_module: &str) -> Boundary {
-        Boundary::new(format!("widget_{}", widget_id), BoundaryType::Widget, parent_module)
-            .with_dependency("gui_state")
+        vec![]
     }
 }
 

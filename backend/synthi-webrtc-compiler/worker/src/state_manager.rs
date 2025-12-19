@@ -77,8 +77,11 @@ impl StateHandle {
 }
 
 /// Migration schema for state transitions
+/// NOW WITH EXPLICIT VERSIONING AND DOWNGRADE PATHS
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MigrationSchema {
+    /// Schema version identifier
+    pub schema_version: SchemaVersion,
     /// Source ABI version
     pub from_version: u32,
     /// Target ABI version
@@ -91,18 +94,136 @@ pub struct MigrationSchema {
     pub renames: HashMap<String, String>,
     /// Default values for new fields
     pub defaults: HashMap<String, serde_json::Value>,
+    /// DOWNGRADE path - how to revert to previous version
+    pub downgrade: Option<DowngradePath>,
+    /// Whether this migration is reversible
+    pub reversible: bool,
+}
+
+/// Explicit schema version with semantic versioning
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SchemaVersion {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+impl SchemaVersion {
+    pub const fn new(major: u32, minor: u32, patch: u32) -> Self {
+        Self { major, minor, patch }
+    }
+    
+    /// Check if this version can upgrade to target
+    pub fn can_upgrade_to(&self, target: &SchemaVersion) -> bool {
+        // Can upgrade within same major version, or to next major
+        target.major >= self.major && 
+        (target.major == self.major || target.major == self.major + 1)
+    }
+    
+    /// Check if this version can downgrade to target
+    pub fn can_downgrade_to(&self, target: &SchemaVersion) -> bool {
+        // Can only downgrade within same major version
+        target.major == self.major && target.minor <= self.minor
+    }
+}
+
+impl std::fmt::Display for SchemaVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+impl Default for SchemaVersion {
+    fn default() -> Self {
+        Self::new(1, 0, 0)
+    }
+}
+
+/// Downgrade path specification
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DowngradePath {
+    /// Target version after downgrade
+    pub target_version: SchemaVersion,
+    /// Fields that will be lost in downgrade
+    pub lost_fields: Vec<String>,
+    /// Fields that need transformation
+    pub transformations: HashMap<String, FieldTransformation>,
+    /// Pre-downgrade validation
+    pub pre_validation: Vec<String>,
+    /// Whether data loss is acceptable
+    pub allows_data_loss: bool,
+}
+
+/// Field transformation for migration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FieldTransformation {
+    /// Remove the field
+    Remove,
+    /// Rename to another field
+    Rename(String),
+    /// Transform value using expression
+    Transform(String),
+    /// Set to default value
+    Default(serde_json::Value),
+    /// Merge into another field
+    MergeInto(String),
 }
 
 impl MigrationSchema {
     pub fn identity(version: u32) -> Self {
         Self {
+            schema_version: SchemaVersion::new(version, 0, 0),
             from_version: version,
             to_version: version,
             preserve_fields: vec![],
             reset_fields: vec![],
             renames: HashMap::new(),
             defaults: HashMap::new(),
+            downgrade: None,
+            reversible: true,
         }
+    }
+    
+    /// Create a new migration schema with explicit versioning
+    pub fn new(from: SchemaVersion, to: SchemaVersion) -> Self {
+        Self {
+            schema_version: to,
+            from_version: from.major * 1000 + from.minor,
+            to_version: to.major * 1000 + to.minor,
+            preserve_fields: vec![],
+            reset_fields: vec![],
+            renames: HashMap::new(),
+            defaults: HashMap::new(),
+            downgrade: None,
+            reversible: false,
+        }
+    }
+    
+    /// Add a downgrade path - REQUIRED for forward compatibility
+    pub fn with_downgrade(mut self, path: DowngradePath) -> Self {
+        self.downgrade = Some(path);
+        self.reversible = true;
+        self
+    }
+    
+    /// Check if this schema can be safely applied
+    pub fn validate(&self) -> Result<(), String> {
+        // Must have downgrade path for non-identity migrations
+        if self.from_version != self.to_version && self.downgrade.is_none() {
+            return Err(format!(
+                "Migration from {} to {} requires a downgrade path",
+                self.from_version, self.to_version
+            ));
+        }
+        
+        // Check that renames don't conflict with preserve/reset
+        for old_name in self.renames.keys() {
+            if self.reset_fields.contains(old_name) {
+                return Err(format!("Field '{}' cannot be both renamed and reset", old_name));
+            }
+        }
+        
+        Ok(())
     }
 }
 
@@ -213,6 +334,7 @@ impl StateInvariant for MagicNumberInvariant {
 }
 
 /// State manager coordinates all state operations
+/// REQUIRES EXPLICIT VERSIONING AND DOWNGRADE PATHS
 pub struct StateManager {
     /// Current state handles per module
     states: HashMap<ModuleSlot, StateHandle>,
@@ -226,6 +348,10 @@ pub struct StateManager {
     state_history: HashMap<ModuleSlot, Vec<StateHandle>>,
     /// Maximum history depth
     max_history: usize,
+    /// Registered schema versions per module
+    schema_versions: HashMap<ModuleSlot, SchemaVersion>,
+    /// Whether to enforce downgrade path requirements
+    require_downgrade_paths: bool,
 }
 
 impl StateManager {
@@ -237,7 +363,27 @@ impl StateManager {
             invariants: HashMap::new(),
             state_history: HashMap::new(),
             max_history: 5,
+            schema_versions: HashMap::new(),
+            require_downgrade_paths: true,  // ENFORCE BY DEFAULT
         }
+    }
+    
+    /// Create without downgrade enforcement (for testing only)
+    #[cfg(test)]
+    pub fn new_without_downgrade_enforcement() -> Self {
+        let mut mgr = Self::new();
+        mgr.require_downgrade_paths = false;
+        mgr
+    }
+    
+    /// Register current schema version for a module
+    pub fn register_schema_version(&mut self, module: ModuleSlot, version: SchemaVersion) {
+        self.schema_versions.insert(module, version);
+    }
+    
+    /// Get current schema version for a module
+    pub fn get_schema_version(&self, module: ModuleSlot) -> Option<&SchemaVersion> {
+        self.schema_versions.get(&module)
     }
 
     /// Register a state handle for a module
@@ -279,8 +425,32 @@ impl StateManager {
         })
     }
 
-    /// Register a migration schema
-    pub fn register_migration(&mut self, schema: MigrationSchema) {
+    /// Register a migration schema - VALIDATES DOWNGRADE PATH REQUIREMENT
+    pub fn register_migration(&mut self, schema: MigrationSchema) -> Result<(), String> {
+        // Validate schema
+        schema.validate()?;
+        
+        // Enforce downgrade path requirement
+        if self.require_downgrade_paths && 
+           schema.from_version != schema.to_version && 
+           schema.downgrade.is_none() 
+        {
+            return Err(format!(
+                "Migration from v{} to v{} rejected: downgrade path required",
+                schema.from_version, schema.to_version
+            ));
+        }
+        
+        self.migration_schemas.insert(
+            (schema.from_version, schema.to_version),
+            schema,
+        );
+        Ok(())
+    }
+    
+    /// Register migration without downgrade validation (legacy support)
+    #[deprecated(note = "Use register_migration() with downgrade path")]
+    pub fn register_migration_unchecked(&mut self, schema: MigrationSchema) {
         self.migration_schemas.insert(
             (schema.from_version, schema.to_version),
             schema,
@@ -322,6 +492,18 @@ impl StateManager {
             .get(&(from_version, to_version))
             .cloned()
             .unwrap_or_else(|| MigrationSchema::identity(to_version));
+        
+        // 2.5 ENFORCE: Non-identity migrations must have been registered with downgrade path
+        if self.require_downgrade_paths && 
+           from_version != to_version && 
+           schema.downgrade.is_none() 
+        {
+            return MigrationResult::failure(format!(
+                "Cannot migrate from v{} to v{}: no downgrade path registered. \
+                Register migration schema with downgrade path first.",
+                from_version, to_version
+            ));
+        }
 
         // 3. Apply field renames
         let mut old_renamed = old_state.clone();

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 
 /**
  * AI Change Provenance Overlay
@@ -10,6 +10,11 @@ import React, { useState, useEffect } from 'react';
  * - Model information
  * - Verification status
  * - Change history
+ * 
+ * NOW WITH ACTION HOOKS:
+ * - One-click rollback to previous state
+ * - Pin known-good outputs
+ * - Revert to specific versions
  */
 
 export function ProvenanceOverlay({
@@ -18,11 +23,130 @@ export function ProvenanceOverlay({
   isOpen,
   onClose,
   apiBaseUrl = 'http://localhost:8000',
+  onRollback,      // Callback when rollback is requested
+  onPin,           // Callback when output is pinned
+  onRevert,        // Callback when specific version revert is requested
 }) {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [selectedRecord, setSelectedRecord] = useState(null);
+  const [actionLoading, setActionLoading] = useState(null);  // Track which action is loading
+  const [actionError, setActionError] = useState(null);
+  const [pinnedRecords, setPinnedRecords] = useState(new Set());
+
+  // ==========================================================================
+  // ACTION HANDLERS - One-click rollback, pin, revert
+  // ==========================================================================
+  
+  const handleRollback = useCallback(async (record) => {
+    if (!record || actionLoading) return;
+    
+    setActionLoading('rollback');
+    setActionError(null);
+    
+    try {
+      // Call API to rollback
+      const response = await fetch(`${apiBaseUrl}/provenance/${record.record_id}/rollback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.detail || 'Rollback failed');
+      }
+      
+      const result = await response.json();
+      
+      // Call parent callback if provided
+      if (onRollback) {
+        onRollback(record, result);
+      }
+      
+      // Refresh records
+      setRecords(prev => prev.map(r => 
+        r.record_id === record.record_id 
+          ? { ...r, rolled_back: true, rolled_back_at: Date.now() / 1000 }
+          : r
+      ));
+      
+    } catch (e) {
+      setActionError(e.message);
+    } finally {
+      setActionLoading(null);
+    }
+  }, [apiBaseUrl, actionLoading, onRollback]);
+
+  const handlePin = useCallback(async (record) => {
+    if (!record || actionLoading) return;
+    
+    setActionLoading('pin');
+    setActionError(null);
+    
+    try {
+      const response = await fetch(`${apiBaseUrl}/provenance/${record.record_id}/pin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.detail || 'Pin failed');
+      }
+      
+      setPinnedRecords(prev => new Set([...prev, record.record_id]));
+      
+      if (onPin) {
+        onPin(record);
+      }
+      
+    } catch (e) {
+      setActionError(e.message);
+    } finally {
+      setActionLoading(null);
+    }
+  }, [apiBaseUrl, actionLoading, onPin]);
+
+  const handleRevert = useCallback(async (record) => {
+    if (!record || actionLoading) return;
+    
+    // Confirm before reverting
+    const confirmed = window.confirm(
+      `Revert to this version?\n\n` +
+      `This will restore the code to the state from:\n` +
+      `${record.timestamp_iso}\n\n` +
+      `Change type: ${record.change_type}`
+    );
+    
+    if (!confirmed) return;
+    
+    setActionLoading('revert');
+    setActionError(null);
+    
+    try {
+      const response = await fetch(`${apiBaseUrl}/provenance/${record.record_id}/revert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.detail || 'Revert failed');
+      }
+      
+      const result = await response.json();
+      
+      if (onRevert) {
+        onRevert(record, result);
+      }
+      
+    } catch (e) {
+      setActionError(e.message);
+    } finally {
+      setActionLoading(null);
+    }
+  }, [apiBaseUrl, actionLoading, onRevert]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -78,6 +202,8 @@ export function ProvenanceOverlay({
         return 'text-gray-600 bg-gray-100';
     }
   };
+  
+  const isPinned = (record) => pinnedRecords.has(record?.record_id);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
@@ -254,6 +380,76 @@ export function ProvenanceOverlay({
                   <span className="text-gray-500">Pending</span>
                 )}
               </div>
+              
+              {/* ============================================================ */}
+              {/* ACTION BUTTONS - Rollback, Pin, Revert */}
+              {/* ============================================================ */}
+              <div className="flex flex-wrap items-center gap-2 pt-4 border-t dark:border-gray-700">
+                {/* Rollback Button - One-click undo */}
+                <button
+                  onClick={() => handleRollback(selectedRecord)}
+                  disabled={actionLoading !== null || selectedRecord.rolled_back}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
+                    selectedRecord.rolled_back
+                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                      : 'bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-400 dark:hover:bg-red-900/50'
+                  }`}
+                >
+                  {actionLoading === 'rollback' ? (
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-red-600" />
+                  ) : (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                    </svg>
+                  )}
+                  {selectedRecord.rolled_back ? 'Rolled Back' : 'Rollback'}
+                </button>
+
+                {/* Pin Button - Mark as known-good */}
+                <button
+                  onClick={() => handlePin(selectedRecord)}
+                  disabled={actionLoading !== null || isPinned(selectedRecord)}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
+                    isPinned(selectedRecord)
+                      ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                  }`}
+                >
+                  {actionLoading === 'pin' ? (
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600" />
+                  ) : (
+                    <svg className="w-4 h-4" fill={isPinned(selectedRecord) ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                    </svg>
+                  )}
+                  {isPinned(selectedRecord) ? 'Pinned' : 'Pin as Good'}
+                </button>
+
+                {/* Revert Button - Restore to this specific version */}
+                <button
+                  onClick={() => handleRevert(selectedRecord)}
+                  disabled={actionLoading !== null}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:hover:bg-blue-900/50 transition-colors"
+                >
+                  {actionLoading === 'revert' ? (
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600" />
+                  ) : (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                  )}
+                  Revert to This
+                </button>
+              </div>
+
+              {/* Action Error Display */}
+              {actionError && (
+                <div className="mt-2 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+                  <p className="text-sm text-red-600 dark:text-red-400">
+                    <strong>Action failed:</strong> {actionError}
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </div>

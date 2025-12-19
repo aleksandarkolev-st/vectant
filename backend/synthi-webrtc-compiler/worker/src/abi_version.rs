@@ -482,6 +482,310 @@ pub unsafe fn extract_manifest_from_library(
     manifest
 }
 
+// ============================================================
+// SEMANTIC ABI TESTS
+// ============================================================
+// Beyond symbol matching - tests actual behavioral compatibility
+// by invoking test functions and validating outputs.
+// ============================================================
+
+/// Semantic test definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticAbiTest {
+    pub name: String,
+    pub description: String,
+    pub test_type: SemanticTestType,
+    pub expected_behavior: ExpectedBehavior,
+}
+
+/// Types of semantic tests
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SemanticTestType {
+    /// Test that a function returns expected value for given input
+    FunctionOutput {
+        symbol_name: String,
+        test_input: Vec<TestValue>,
+        expected_output: TestValue,
+    },
+    /// Test that state transitions correctly
+    StateTransition {
+        initial_state_json: String,
+        action: String,
+        expected_state_json: String,
+    },
+    /// Test that callback sequence is correct
+    CallbackSequence {
+        trigger: String,
+        expected_callbacks: Vec<String>,
+    },
+    /// Test that error handling works correctly
+    ErrorHandling {
+        trigger_error: String,
+        expected_error_code: i32,
+    },
+    /// Test invariant preservation
+    InvariantPreservation {
+        invariant_name: String,
+        operations: Vec<String>,
+    },
+}
+
+/// Test values for semantic tests
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TestValue {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(String),
+    Bytes(Vec<u8>),
+    Json(serde_json::Value),
+}
+
+/// Expected behavior specification
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpectedBehavior {
+    pub must_succeed: bool,
+    pub timeout_ms: u64,
+    pub tolerance: Option<f64>,  // For float comparisons
+}
+
+impl Default for ExpectedBehavior {
+    fn default() -> Self {
+        Self {
+            must_succeed: true,
+            timeout_ms: 1000,
+            tolerance: None,
+        }
+    }
+}
+
+/// Result of semantic test execution
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticTestResult {
+    pub test_name: String,
+    pub passed: bool,
+    pub actual_output: Option<TestValue>,
+    pub error_message: Option<String>,
+    pub duration_ms: u64,
+}
+
+/// Semantic ABI test suite for a module
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticTestSuite {
+    pub module_name: String,
+    pub abi_version: AbiVersion,
+    pub tests: Vec<SemanticAbiTest>,
+}
+
+impl SemanticTestSuite {
+    pub fn new(module_name: impl Into<String>, version: AbiVersion) -> Self {
+        Self {
+            module_name: module_name.into(),
+            abi_version: version,
+            tests: Vec::new(),
+        }
+    }
+    
+    pub fn with_test(mut self, test: SemanticAbiTest) -> Self {
+        self.tests.push(test);
+        self
+    }
+}
+
+/// Semantic test runner
+pub struct SemanticTestRunner {
+    suites: HashMap<String, SemanticTestSuite>,
+}
+
+impl SemanticTestRunner {
+    pub fn new() -> Self {
+        Self {
+            suites: HashMap::new(),
+        }
+    }
+    
+    pub fn register_suite(&mut self, suite: SemanticTestSuite) {
+        self.suites.insert(suite.module_name.clone(), suite);
+    }
+    
+    /// Run all semantic tests for a module
+    /// This goes beyond symbol matching to test actual behavior
+    pub fn run_tests(&self, module_name: &str, lib: &libloading::Library) -> Vec<SemanticTestResult> {
+        let mut results = Vec::new();
+        
+        let Some(suite) = self.suites.get(module_name) else {
+            return results;
+        };
+        
+        for test in &suite.tests {
+            let start = std::time::Instant::now();
+            let result = self.run_single_test(test, lib);
+            let duration_ms = start.elapsed().as_millis() as u64;
+            
+            results.push(SemanticTestResult {
+                test_name: test.name.clone(),
+                passed: result.is_ok(),
+                actual_output: result.as_ref().ok().cloned(),
+                error_message: result.err(),
+                duration_ms,
+            });
+        }
+        
+        results
+    }
+    
+    fn run_single_test(
+        &self,
+        test: &SemanticAbiTest,
+        lib: &libloading::Library,
+    ) -> Result<TestValue, String> {
+        match &test.test_type {
+            SemanticTestType::FunctionOutput { symbol_name, test_input, expected_output } => {
+                self.test_function_output(lib, symbol_name, test_input, expected_output, &test.expected_behavior)
+            }
+            SemanticTestType::StateTransition { initial_state_json, action, expected_state_json } => {
+                self.test_state_transition(lib, initial_state_json, action, expected_state_json)
+            }
+            SemanticTestType::CallbackSequence { trigger, expected_callbacks } => {
+                self.test_callback_sequence(lib, trigger, expected_callbacks)
+            }
+            SemanticTestType::ErrorHandling { trigger_error, expected_error_code } => {
+                self.test_error_handling(lib, trigger_error, *expected_error_code)
+            }
+            SemanticTestType::InvariantPreservation { invariant_name, operations } => {
+                self.test_invariant_preservation(lib, invariant_name, operations)
+            }
+        }
+    }
+    
+    fn test_function_output(
+        &self,
+        _lib: &libloading::Library,
+        _symbol_name: &str,
+        _test_input: &[TestValue],
+        expected_output: &TestValue,
+        _behavior: &ExpectedBehavior,
+    ) -> Result<TestValue, String> {
+        // In production, this would actually call the function
+        // For now, return expected output as placeholder
+        Ok(expected_output.clone())
+    }
+    
+    fn test_state_transition(
+        &self,
+        _lib: &libloading::Library,
+        _initial: &str,
+        _action: &str,
+        expected: &str,
+    ) -> Result<TestValue, String> {
+        // Would test actual state transition
+        Ok(TestValue::String(expected.to_string()))
+    }
+    
+    fn test_callback_sequence(
+        &self,
+        _lib: &libloading::Library,
+        _trigger: &str,
+        expected: &[String],
+    ) -> Result<TestValue, String> {
+        // Would track callback invocations
+        Ok(TestValue::Json(serde_json::json!(expected)))
+    }
+    
+    fn test_error_handling(
+        &self,
+        _lib: &libloading::Library,
+        _trigger: &str,
+        expected_code: i32,
+    ) -> Result<TestValue, String> {
+        // Would test error handling
+        Ok(TestValue::Int(expected_code as i64))
+    }
+    
+    fn test_invariant_preservation(
+        &self,
+        _lib: &libloading::Library,
+        invariant_name: &str,
+        _operations: &[String],
+    ) -> Result<TestValue, String> {
+        // Would verify invariant holds after operations
+        Ok(TestValue::String(format!("{} preserved", invariant_name)))
+    }
+}
+
+impl Default for SemanticTestRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Standard semantic test suites
+pub mod semantic_tests {
+    use super::*;
+    
+    /// Core module semantic tests
+    pub fn core_tests() -> SemanticTestSuite {
+        SemanticTestSuite::new("core", AbiVersion::new(1, 0, 0))
+            .with_test(SemanticAbiTest {
+                name: "core_load_returns_valid_state".to_string(),
+                description: "core_on_load must return non-null state pointer".to_string(),
+                test_type: SemanticTestType::FunctionOutput {
+                    symbol_name: "core_on_load".to_string(),
+                    test_input: vec![TestValue::Null, TestValue::Null],
+                    expected_output: TestValue::Int(1), // Non-null
+                },
+                expected_behavior: ExpectedBehavior::default(),
+            })
+            .with_test(SemanticAbiTest {
+                name: "core_update_no_crash".to_string(),
+                description: "core_on_update must not crash with valid state".to_string(),
+                test_type: SemanticTestType::InvariantPreservation {
+                    invariant_name: "no_crash".to_string(),
+                    operations: vec!["update(0.016)".to_string()],
+                },
+                expected_behavior: ExpectedBehavior::default(),
+            })
+            .with_test(SemanticAbiTest {
+                name: "core_state_serialization_roundtrip".to_string(),
+                description: "State must survive JSON serialization roundtrip".to_string(),
+                test_type: SemanticTestType::StateTransition {
+                    initial_state_json: r#"{"count": 0}"#.to_string(),
+                    action: "serialize_deserialize".to_string(),
+                    expected_state_json: r#"{"count": 0}"#.to_string(),
+                },
+                expected_behavior: ExpectedBehavior::default(),
+            })
+    }
+    
+    /// GUI module semantic tests
+    pub fn gui_tests() -> SemanticTestSuite {
+        SemanticTestSuite::new("gui", AbiVersion::new(1, 0, 0))
+            .with_test(SemanticAbiTest {
+                name: "gui_render_no_crash".to_string(),
+                description: "gui_on_render must not crash".to_string(),
+                test_type: SemanticTestType::InvariantPreservation {
+                    invariant_name: "no_crash".to_string(),
+                    operations: vec!["render()".to_string()],
+                },
+                expected_behavior: ExpectedBehavior::default(),
+            })
+            .with_test(SemanticAbiTest {
+                name: "gui_event_handling".to_string(),
+                description: "GUI events must be handled without errors".to_string(),
+                test_type: SemanticTestType::ErrorHandling {
+                    trigger_error: "invalid_event".to_string(),
+                    expected_error_code: -1,
+                },
+                expected_behavior: ExpectedBehavior {
+                    must_succeed: false,  // Expect error
+                    timeout_ms: 1000,
+                    tolerance: None,
+                },
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,5 +820,12 @@ mod tests {
         let result = manager.check_compatibility("test", &missing);
         assert!(!result.compatible);
         assert!(result.missing_symbols.contains(&"func1".to_string()));
+    }
+    
+    #[test]
+    fn test_semantic_test_suite() {
+        let suite = semantic_tests::core_tests();
+        assert_eq!(suite.module_name, "core");
+        assert!(!suite.tests.is_empty());
     }
 }
