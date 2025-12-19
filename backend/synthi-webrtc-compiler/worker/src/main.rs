@@ -1156,7 +1156,35 @@ async fn create_peer(signal_tx: mpsc::UnboundedSender<SignalMessage>) -> Result<
     Ok(pc)
 }
 
+// Cache for AI split results to avoid redundant API calls
+use std::sync::OnceLock;
+static AI_SPLIT_CACHE: OnceLock<tokio::sync::Mutex<std::collections::HashMap<u64, serde_json::Value>>> = OnceLock::new();
+
+fn get_ai_split_cache() -> &'static tokio::sync::Mutex<std::collections::HashMap<u64, serde_json::Value>> {
+    AI_SPLIT_CACHE.get_or_init(|| tokio::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn calculate_hash<T: Hash>(t: &T) -> u64 {
+    let mut s = DefaultHasher::new();
+    t.hash(&mut s);
+    s.finish()
+}
+
 async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
+    // Check cache first - hash the source code
+    let source_hash = calculate_hash(&req.source);
+    
+    {
+        let cache = get_ai_split_cache().lock().await;
+        if let Some(cached) = cache.get(&source_hash) {
+            eprintln!("[AI Split] Cache HIT - using cached split result");
+            return Ok(cached.clone());
+        }
+    }
+    
+    eprintln!("[AI Split] Cache MISS - calling AI backend...");
+    let start_time = std::time::Instant::now();
+    
     let client = reqwest::Client::new();
     let payload = serde_json::json!({
         "code": req.source,
@@ -1228,6 +1256,22 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
             }
         }
     };
+    
+    // Cache the result for future requests with same source
+    let elapsed = start_time.elapsed();
+    eprintln!("[AI Split] Completed in {:?}", elapsed);
+    {
+        let mut cache = get_ai_split_cache().lock().await;
+        cache.insert(source_hash, split_data.clone());
+        // Limit cache size to 100 entries
+        if cache.len() > 100 {
+            // Remove oldest (first) entry
+            if let Some(oldest_key) = cache.keys().next().cloned() {
+                cache.remove(&oldest_key);
+            }
+        }
+    }
+    
     Ok(split_data)
 }
 
@@ -1378,12 +1422,6 @@ async fn handle_compile(
     let mut new_hashes = ModuleHashes::new();
     let mut core_lib_path = String::new();
     let mut gui_lib_path = String::new();
-
-    fn calculate_hash<T: Hash>(t: &T) -> u64 {
-        let mut s = DefaultHasher::new();
-        t.hash(&mut s);
-        s.finish()
-    }
 
     if use_ai_split {
         let split_data = match perform_ai_split(&req).await {
@@ -1712,10 +1750,23 @@ async fn handle_compile(
             }
             content = cleaned_lines.join("\n");
 
-            // CRITICAL FIX: Transform malloc-based on_load to properly check prev_state
-            // AI frequently generates code that always mallocs, ignoring prev_state.
-            // This pattern: if (prev_state) return prev_state; else { malloc... }
-            // is what preserves state across HMR.
+            // CRITICAL: Ensure shared.h is included FIRST
+            if !content.contains("#include \"shared.h\"") {
+                // Add shared.h include at the top, after any standard includes
+                if let Some(pos) = content.find("#include <") {
+                    // Find end of first include line
+                    if let Some(newline) = content[pos..].find('\n') {
+                        let insert_pos = pos + newline + 1;
+                        content.insert_str(insert_pos, "#include \"shared.h\"  // [Guardrail] Added\n");
+                        eprintln!("[Guardrail] Added #include \"shared.h\" to core.cpp");
+                    }
+                } else {
+                    content = format!("#include \"shared.h\"  // [Guardrail] Added\n{}", content);
+                    eprintln!("[Guardrail] Added #include \"shared.h\" to core.cpp");
+                }
+            }
+
+            // CRITICAL FIX: Transform malloc-based on_load to static storage
             if content.contains("malloc(sizeof(AppState))") && content.contains("on_load") {
                 eprintln!("[Guardrail] Detected malloc(sizeof(AppState)) pattern in core.cpp");
                 eprintln!("[Guardrail] CONVERTING malloc to static storage pattern for reliable HMR");

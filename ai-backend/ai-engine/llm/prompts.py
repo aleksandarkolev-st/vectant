@@ -190,6 +190,55 @@ app_state.dx = 5;
 // ... other fields explicitly set ...
 ```
 
+## INCLUDE SHARED.H - DO NOT REDEFINE STRUCTS (CRITICAL)
+**core.cpp and gui.cpp MUST include shared.h and MUST NOT redefine AppState.**
+
+The AppState struct is defined ONLY in shared.h. If you redefine it in core.cpp or gui.cpp:
+1. You get "conflicting declaration" compiler errors
+2. Changes to shared.h don't propagate
+3. State layout mismatches cause crashes
+
+**FORBIDDEN PATTERNS in core.cpp and gui.cpp:**
+```cpp
+// ❌ WRONG - Do NOT redefine AppState in implementation files!
+typedef struct AppState {
+    uint32_t magic;
+    // ... fields ...
+} AppState;
+
+// ❌ WRONG - Do NOT redefine struct either!
+struct AppState {
+    uint32_t magic;
+    // ...
+};
+```
+
+**REQUIRED PATTERN - Include shared.h:**
+```cpp
+// ✅ CORRECT - core.cpp
+#include "shared.h"  // AppState is defined here, DO NOT REDEFINE!
+
+static AppState app_state = {0};
+
+extern "C" void* on_load(void* prev_state, void* window_ptr) {
+    // Use AppState from shared.h
+    // ...
+}
+```
+
+```cpp
+// ✅ CORRECT - gui.cpp  
+#include "shared.h"  // AppState is defined here, DO NOT REDEFINE!
+#include <SDL2/SDL.h>
+
+static AppState gui_app_state = {0};
+
+extern "C" void* gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr) {
+    // Use AppState from shared.h
+    // ...
+}
+```
+
 # SPLIT CONTRACT (AUTHORITATIVE; OVERRIDES OTHER SECTIONS)
 
 If instructions conflict, follow this precedence order:
@@ -621,31 +670,32 @@ if (ptr_gui_render) ptr_gui_render(state);
 
 ### CORRECT CORE.CPP PATTERN:
 ```cpp
-// Core module ONLY handles business logic
-// It does NOT interact with GUI at all - runner manages rendering
-#include "shared.h"  // DO NOT redefine AppState - it's in shared.h!
+// core.cpp - MUST include shared.h, MUST NOT redefine AppState!
+#include "shared.h"  // AppState defined here - DO NOT REDEFINE IT!
+#include <SDL2/SDL.h>
 
+// CRITICAL: Use STATIC storage - NEVER use malloc!
 static AppState app_state = {0};
 
 // STATE SERIALIZATION EXPORTS (Required for Full HMR capability)
 extern "C" char* on_save_state(void* state_ptr) {
-    // Return NULL - runner handles binary state preservation
-    return NULL;
+    (void)state_ptr;
+    return NULL;  // Binary state preservation used
 }
 
 extern "C" int on_load_from_json(void* state_ptr, const char* json) {
-    // Return 0 - runner handles binary state preservation
-    return 0;
+    (void)state_ptr; (void)json;
+    return 0;  // Binary state preservation used
 }
 
 extern "C" void* on_load(void* prev_state, void* window_ptr) {
     if (prev_state) {
         AppState* old = (AppState*)prev_state;
         if (old->magic == 0xDEADBEEF && old->struct_size == sizeof(AppState)) {
-            app_state = *old;  // Copy preserved state - NO malloc, NO memset
+            app_state = *old;  // Copy preserved state - NO malloc, NO memset!
         }
     } else {
-        // First load only - initialize fields individually (NO memset!)
+        // First load - initialize fields individually (NO memset!)
         app_state.magic = 0xDEADBEEF;
         app_state.struct_size = sizeof(AppState);
         app_state.abi_version = 1;
@@ -654,16 +704,14 @@ extern "C" void* on_load(void* prev_state, void* window_ptr) {
         app_state.x = 0;
         app_state.y = 200;
         app_state.dx = 5;
-        // Initialize other fields from user's code...
     }
     app_state.renderer = (SDL_Renderer*)window_ptr;
-    return &app_state;
+    return &app_state;  // Return STATIC address, NOT malloc!
 }
 
 extern "C" void on_update(void* state_ptr, double dt) {
     AppState* state = (AppState*)state_ptr;
     if (!state) return;
-    // Update business logic only - NO rendering here
     if (!state->paused) {
         state->x += state->dx;
         if (state->x > 590 || state->x < 0) state->dx = -state->dx;
@@ -677,8 +725,42 @@ extern "C" void on_event(void* state_ptr, void* event_ptr) {
 }
 
 extern "C" void on_unload(void* state_ptr) {
-    // Nothing to clean up - runner manages state lifetime
-    (void)state_ptr;
+    (void)state_ptr;  // Runner manages state lifetime
+}
+```
+
+### CORRECT GUI.CPP PATTERN:
+```cpp
+// gui.cpp - MUST include shared.h, MUST NOT redefine AppState!
+#include "shared.h"  // AppState defined here - DO NOT REDEFINE IT!
+#include <SDL2/SDL.h>
+#include <string.h>
+
+// Static storage for GUI-only mode fallback
+static AppState gui_app_state = {0};
+
+extern "C" void* gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr) {
+    AppState* state = (AppState*)prev_state;
+    if (!state) {
+        state = &gui_app_state;  // Use static, NOT malloc!
+        state->magic = 0x60108EEF;
+        state->struct_size = sizeof(AppState);
+        state->abi_version = 1;
+        state->running = 1;
+    }
+    state->renderer = (SDL_Renderer*)window_ptr;
+    return state;
+}
+
+extern "C" void gui_on_render(void* state_ptr) {
+    AppState* state = (AppState*)state_ptr;
+    if (!state || !state->renderer) return;
+    // Render using state->renderer...
+    // DO NOT call SDL_RenderPresent!
+}
+
+extern "C" void gui_cleanup(void* state_ptr) {
+    (void)state_ptr;  // Runner manages renderer
 }
 ```
 
