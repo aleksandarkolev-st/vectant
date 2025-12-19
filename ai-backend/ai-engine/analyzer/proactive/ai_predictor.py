@@ -9,9 +9,15 @@ that static and semantic analysis might miss, including:
 - API misuse
 - Algorithm bugs
 - Edge cases
+- Cross-file issues (imports, type mismatches, etc.)
 
 The AI analyzer runs after static and semantic analysis complete,
 providing deeper insights with explanations.
+
+NEW: Multi-file analysis mode that:
+- Analyzes relationships between files
+- Detects cross-file issues (missing exports, type mismatches)
+- Generates multi-file suggestions
 """
 
 from __future__ import annotations
@@ -19,17 +25,23 @@ from __future__ import annotations
 import json
 import re
 import time
+import traceback
 from typing import Any, Dict, List, Optional
 
 from .types import (
     AnalysisTier,
     CodeFix,
+    CrossFileReference,
     Diagnostic,
     DiagnosticCategory,
     DiagnosticLocation,
     FileContext,
+    FileEdit,
+    MultiFileDiagnostic,
+    MultiFileFix,
     Severity,
     TierResult,
+    WorkspaceSuggestion,
 )
 
 
@@ -117,6 +129,82 @@ If no bugs found or uncertain, return: `[]`
 JSON:"""
 
 
+# ============================================================================
+# Multi-File Analysis Prompt
+# ============================================================================
+
+AI_MULTI_FILE_ANALYSIS_PROMPT = """You are an expert code reviewer analyzing a workspace with multiple related files.
+
+## YOUR TASK
+Find bugs and cross-file issues in the code. Focus on:
+1. Bugs in the FOCUS FILE that will cause WRONG OUTPUT or RUNTIME ERROR
+2. Cross-file issues: missing imports, type mismatches, unused exports
+3. Integration bugs between files (wrong function signatures, incorrect usage)
+
+## FILES PROVIDED
+{files_section}
+
+## FOCUS FILE: {focus_file}
+
+## WHAT TO LOOK FOR
+### Single-file bugs (in focus file):
+- Wrong operators, off-by-one errors, missing edge cases
+- Incorrect return values or missing returns
+- Logic errors and infinite loops
+
+### Cross-file issues:
+- Importing something that doesn't exist in the target file
+- Using wrong function signature (wrong params/return type)
+- Calling a function with incorrect arguments based on its definition
+- Missing imports for used symbols
+- Type mismatches between files
+
+## RESPONSE FORMAT
+Return a JSON object with two arrays:
+```json
+{{
+  "diagnostics": [
+    {{
+      "file": "path/to/file.js",
+      "line_start": 5,
+      "line_end": 5,
+      "snippet": "exact code from source",
+      "message": "Brief bug description",
+      "explanation": "Why this is a bug",
+      "severity": "error",
+      "confidence": 0.9,
+      "fix_snippet": "corrected code",
+      "category": "logic_error",
+      "related_files": [
+        {{"file": "other/file.js", "line": 10, "message": "Related definition here"}}
+      ]
+    }}
+  ],
+  "suggestions": [
+    {{
+      "title": "Short title for suggestion",
+      "description": "Detailed description of improvement",
+      "category": "refactor",
+      "affected_files": ["file1.js", "file2.js"],
+      "confidence": 0.85
+    }}
+  ]
+}}
+```
+
+## CATEGORY OPTIONS
+- `logic_error`, `type_error`, `undefined_variable`, `missing_import`
+- `wrong_signature`, `unused_export`, `security`, `performance`
+
+If no issues found, return: {{"diagnostics": [], "suggestions": []}}
+
+JSON:"""
+
+
+# ============================================================================
+# Category and Severity Mappings
+# ============================================================================
+
 CATEGORY_MAP = {
     "logic_error": DiagnosticCategory.LOGIC_ERROR,
     "security": DiagnosticCategory.SECURITY,
@@ -136,6 +224,10 @@ CATEGORY_MAP = {
     "wrong_condition": DiagnosticCategory.LOGIC_ERROR,
     "boundary_error": DiagnosticCategory.LOGIC_ERROR,
     "missing_check": DiagnosticCategory.LOGIC_ERROR,
+    # Cross-file categories
+    "missing_import": DiagnosticCategory.UNDEFINED_VARIABLE,
+    "wrong_signature": DiagnosticCategory.TYPE_ERROR,
+    "unused_export": DiagnosticCategory.UNUSED_CODE,
 }
 
 SEVERITY_MAP = {
@@ -520,3 +612,336 @@ class AIErrorPredictor:
         smaller = min(len(words1), len(words2))
         
         return len(intersection) / smaller > 0.7
+
+    # ========================================================================
+    # Multi-File Analysis Methods
+    # ========================================================================
+    
+    async def analyze_multi_file(
+        self,
+        focus_file: FileContext,
+        related_files: List[FileContext],
+        existing_diagnostics: Optional[List[Diagnostic]] = None,
+    ) -> tuple[List[MultiFileDiagnostic], List[WorkspaceSuggestion]]:
+        """
+        Analyze multiple files together for cross-file issues.
+        
+        Args:
+            focus_file: The main file being edited (highest priority)
+            related_files: Related files for context (imports, dependents)
+            existing_diagnostics: Previous diagnostics to avoid duplicates
+        
+        Returns:
+            Tuple of (diagnostics, suggestions)
+        """
+        if self._provider is None:
+            return [], []
+        
+        try:
+            return await self._run_multi_file_analysis(
+                focus_file,
+                related_files,
+                existing_diagnostics,
+            )
+        except Exception as e:
+            print(f"[AIErrorPredictor] Multi-file analysis failed: {e}")
+            print(f"[AIErrorPredictor] Traceback: {traceback.format_exc()}")
+            return [], []
+    
+    async def _run_multi_file_analysis(
+        self,
+        focus_file: FileContext,
+        related_files: List[FileContext],
+        existing_diagnostics: Optional[List[Diagnostic]],
+    ) -> tuple[List[MultiFileDiagnostic], List[WorkspaceSuggestion]]:
+        """Run the actual multi-file AI analysis."""
+        
+        # Build the files section for the prompt
+        all_files = [focus_file] + related_files
+        files_section = self._build_files_section(all_files)
+        
+        # Build the prompt
+        prompt = AI_MULTI_FILE_ANALYSIS_PROMPT.replace(
+            "{files_section}", files_section
+        ).replace(
+            "{focus_file}", focus_file.path
+        )
+        
+        # Call the LLM
+        response = await self._provider.ask_llm(
+            code=focus_file.content,  # Primary code for context
+            lang=focus_file.language,
+            prompt=prompt,
+            mode="analyze",
+        )
+        
+        # Parse the response
+        diagnostics, suggestions = self._parse_multi_file_response(
+            response,
+            all_files,
+        )
+        
+        # Filter by confidence
+        diagnostics = [d for d in diagnostics if d.confidence >= self._min_confidence]
+        
+        return diagnostics, suggestions
+    
+    def _build_files_section(self, files: List[FileContext]) -> str:
+        """Build the files section for the multi-file prompt."""
+        sections = []
+        
+        for i, file in enumerate(files):
+            # Mark which file is the focus
+            marker = " [FOCUS]" if i == 0 else ""
+            
+            # Truncate large files
+            content = file.content
+            if len(content) > 10000:
+                # Keep first 4000 and last 2000 chars
+                content = (
+                    content[:4000] +
+                    "\n\n// ... middle truncated ...\n\n" +
+                    content[-2000:]
+                )
+            
+            section = f"""
+==== FILE{marker}: {file.path} ({file.language}) ====
+```{file.language}
+{content}
+```
+==== END FILE: {file.path} ====
+"""
+            sections.append(section)
+        
+        return "\n".join(sections)
+    
+    def _parse_multi_file_response(
+        self,
+        response: str,
+        files: List[FileContext],
+    ) -> tuple[List[MultiFileDiagnostic], List[WorkspaceSuggestion]]:
+        """Parse the multi-file LLM response."""
+        diagnostics = []
+        suggestions = []
+        
+        # Try to extract JSON object from the response
+        json_str = self._extract_json_object(response)
+        if not json_str:
+            return diagnostics, suggestions
+        
+        try:
+            data = json.loads(json_str)
+            if not isinstance(data, dict):
+                return diagnostics, suggestions
+        except json.JSONDecodeError:
+            return diagnostics, suggestions
+        
+        # Build file lookup
+        file_map = {f.path: f for f in files}
+        
+        # Parse diagnostics
+        raw_diags = data.get("diagnostics", [])
+        if isinstance(raw_diags, list):
+            for item in raw_diags:
+                try:
+                    diag = self._parse_multi_file_diagnostic(item, file_map)
+                    if diag:
+                        diagnostics.append(diag)
+                except Exception:
+                    continue
+        
+        # Parse suggestions
+        raw_suggestions = data.get("suggestions", [])
+        if isinstance(raw_suggestions, list):
+            for item in raw_suggestions:
+                try:
+                    sugg = self._parse_suggestion(item)
+                    if sugg:
+                        suggestions.append(sugg)
+                except Exception:
+                    continue
+        
+        return diagnostics, suggestions
+    
+    def _parse_multi_file_diagnostic(
+        self,
+        item: Dict[str, Any],
+        file_map: Dict[str, FileContext],
+    ) -> Optional[MultiFileDiagnostic]:
+        """Parse a single multi-file diagnostic item."""
+        if not isinstance(item, dict):
+            return None
+        
+        # Get the file path
+        file_path = item.get("file", "")
+        if not file_path:
+            # Default to first file if not specified
+            file_path = list(file_map.keys())[0] if file_map else ""
+        
+        # Get file context
+        file = file_map.get(file_path)
+        lines = file.content.splitlines() if file else []
+        max_line = len(lines) - 1 if lines else 0
+        
+        # Extract basic fields
+        message = item.get("message", "").strip()
+        if not message:
+            return None
+        
+        # Parse line numbers
+        line_start = item.get("line_start") or item.get("line", 1)
+        line_end = item.get("line_end") or line_start
+        line_num = max(0, min(int(line_start) - 1, max_line))
+        end_line_num = max(line_num, min(int(line_end) - 1, max_line))
+        
+        # Parse severity and category
+        severity_str = str(item.get("severity", "warning")).lower()
+        severity = SEVERITY_MAP.get(severity_str, Severity.WARNING)
+        
+        category_str = item.get("category", "logic_error").lower().replace("-", "_")
+        category = CATEGORY_MAP.get(category_str, DiagnosticCategory.LOGIC_ERROR)
+        
+        # Parse confidence
+        try:
+            confidence = float(item.get("confidence", 0.7))
+            confidence = max(0.0, min(1.0, confidence))
+        except (ValueError, TypeError):
+            confidence = 0.7
+        
+        # Get snippet and fix
+        snippet = item.get("snippet", "")
+        fix_snippet = item.get("fix_snippet", "")
+        
+        # Calculate column positions
+        column = 0
+        end_column = len(lines[end_line_num]) if end_line_num < len(lines) else 0
+        
+        if snippet and file:
+            # Try to find exact position
+            full_code = file.content
+            snippet_idx = full_code.find(snippet)
+            if snippet_idx != -1:
+                lines_before = full_code[:snippet_idx].splitlines()
+                if lines_before:
+                    line_num = len(lines_before) - 1
+                    column = len(lines_before[-1]) if lines_before else 0
+                snippet_lines = snippet.splitlines()
+                if len(snippet_lines) > 1:
+                    end_line_num = line_num + len(snippet_lines) - 1
+                    end_column = len(snippet_lines[-1])
+                else:
+                    end_line_num = line_num
+                    end_column = column + len(snippet)
+        
+        # Build location
+        location = DiagnosticLocation(
+            line=line_num,
+            column=column,
+            end_line=end_line_num,
+            end_column=end_column,
+        )
+        
+        # Parse cross-file references
+        cross_file_refs = []
+        related = item.get("related_files", [])
+        if isinstance(related, list):
+            for ref in related:
+                if isinstance(ref, dict):
+                    ref_path = ref.get("file", "")
+                    ref_line = ref.get("line", 0)
+                    ref_msg = ref.get("message", "Related code")
+                    
+                    cross_file_refs.append(CrossFileReference(
+                        file_path=ref_path,
+                        location=DiagnosticLocation(
+                            line=max(0, int(ref_line) - 1),
+                            column=0,
+                            end_line=max(0, int(ref_line) - 1),
+                            end_column=0,
+                        ),
+                        message=ref_msg,
+                    ))
+        
+        # Build fixes
+        fixes = []
+        if fix_snippet or "fix_snippet" in item:
+            fixes.append(MultiFileFix(
+                description=f"Fix: {message[:50]}..." if len(message) > 50 else f"Fix: {message}",
+                edits=[FileEdit(
+                    file_path=file_path,
+                    location=location,
+                    new_text=fix_snippet,
+                )],
+                is_preferred=True,
+            ))
+        
+        return MultiFileDiagnostic(
+            primary_file=file_path,
+            message=message,
+            severity=severity,
+            tier=AnalysisTier.AI,
+            location=location,
+            code=f"AI{category_str[:3].upper()}",
+            category=category,
+            source="synthi-ai",
+            cross_file_refs=cross_file_refs,
+            fixes=fixes,
+            explanation=item.get("explanation", ""),
+            confidence=confidence,
+            originalText=snippet or None,
+        )
+    
+    def _parse_suggestion(self, item: Dict[str, Any]) -> Optional[WorkspaceSuggestion]:
+        """Parse a workspace suggestion from the LLM response."""
+        if not isinstance(item, dict):
+            return None
+        
+        title = item.get("title", "").strip()
+        description = item.get("description", "").strip()
+        
+        if not title or not description:
+            return None
+        
+        category = item.get("category", "improvement")
+        affected_files = item.get("affected_files", [])
+        
+        try:
+            confidence = float(item.get("confidence", 0.7))
+            confidence = max(0.0, min(1.0, confidence))
+        except (ValueError, TypeError):
+            confidence = 0.7
+        
+        # Generate a simple ID
+        import hashlib
+        id_str = f"{title}:{':'.join(affected_files)}"
+        suggestion_id = f"ai-{hashlib.md5(id_str.encode()).hexdigest()[:8]}"
+        
+        return WorkspaceSuggestion(
+            id=suggestion_id,
+            title=title,
+            description=description,
+            category=category,
+            severity=Severity.HINT,
+            affected_files=affected_files if isinstance(affected_files, list) else [],
+            confidence=confidence,
+        )
+    
+    def _extract_json_object(self, text: str) -> Optional[str]:
+        """Extract JSON object from LLM response."""
+        text = text.strip()
+        
+        # If it's already valid JSON object, return it
+        if text.startswith('{') and text.endswith('}'):
+            return text
+        
+        # Try to find JSON object in the text
+        match = re.search(r'\{[\s\S]*\}', text)
+        if match:
+            return match.group(0)
+        
+        # Try to find JSON in code blocks
+        match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text)
+        if match:
+            return match.group(1)
+        
+        return None

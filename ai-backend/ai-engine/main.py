@@ -22,6 +22,12 @@ from analyzer.proactive import (
     ProactiveAnalyzer,
     AnalysisResult,
     AnalysisTier,
+    # Workspace analysis
+    WorkspaceAnalyzer,
+    get_workspace_analyzer,
+    WorkspaceAnalysisRequest,
+    WorkspaceAnalysisResult,
+    FileChange,
 )
 from analyzer.proactive.types import AnalysisRequest, FileContext
 from analyzer.proactive.cache import AnalysisCache
@@ -222,6 +228,172 @@ async def clear_cache():
     analyzer = get_proactive_analyzer()
     await analyzer.clear_cache()
     return {"status": "ok", "message": "Cache cleared"}
+
+
+# ============================================================================
+# Workspace Analysis Models
+# ============================================================================
+
+class FileChangeModel(BaseModel):
+    """Represents a file change for incremental analysis."""
+    path: str
+    content_hash: str
+    change_type: str  # "added", "modified", "deleted"
+    content: Optional[str] = None
+    language: Optional[str] = None
+
+
+class WorkspaceFileModel(BaseModel):
+    """A file in the workspace."""
+    path: str
+    content: str
+    language: str
+
+
+class WorkspaceAnalysisRequestModel(BaseModel):
+    """Request for workspace-level analysis."""
+    workspace_id: str
+    # Files that changed since last analysis (for incremental mode)
+    changed_files: Optional[List[FileChangeModel]] = None
+    # All files to analyze (for full analysis or context)
+    all_files: Optional[List[WorkspaceFileModel]] = None
+    # Currently focused/edited file
+    focus_file: Optional[str] = None
+    # Analysis configuration
+    tiers: Optional[List[str]] = None  # "static", "semantic", "ai"
+    include_ai: Optional[bool] = False
+    max_diagnostics_per_file: Optional[int] = 30
+    max_total_diagnostics: Optional[int] = 200
+    # Optimization flags
+    incremental: Optional[bool] = True
+    analyze_dependents: Optional[bool] = True
+    # Custom model/API key
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+
+
+# ============================================================================
+# Workspace Analysis Endpoints
+# ============================================================================
+
+@app.post("/analyze/workspace")
+async def analyze_workspace(req: WorkspaceAnalysisRequestModel):
+    """
+    Workspace-level analysis endpoint.
+    
+    Analyzes multiple files with:
+    - Incremental analysis (only changed files + dependents)
+    - Cross-file issue detection
+    - Multi-file suggestions
+    - Smart AI batching to avoid excessive API calls
+    
+    Returns:
+        WorkspaceAnalysisResult with per-file diagnostics,
+        cross-file issues, and suggestions.
+    """
+    def select_provider():
+        if req.api_key:
+            model_name = (req.model or '').lower()
+            if 'gemini' in model_name:
+                return get_provider(provider_name='gemini', use_custom=True)
+            return get_provider(provider_name='chatgpt', use_custom=True)
+        return get_provider()
+    
+    # Determine tiers
+    tiers = []
+    if req.tiers:
+        tier_map = {
+            'static': AnalysisTier.STATIC,
+            'semantic': AnalysisTier.SEMANTIC,
+            'ai': AnalysisTier.AI,
+        }
+        tiers = [tier_map[t.lower()] for t in req.tiers if t.lower() in tier_map]
+    else:
+        tiers = [AnalysisTier.STATIC, AnalysisTier.SEMANTIC]
+        if req.include_ai:
+            tiers.append(AnalysisTier.AI)
+    
+    # Build file changes
+    changed_files = []
+    if req.changed_files:
+        for cf in req.changed_files:
+            changed_files.append(FileChange(
+                path=cf.path,
+                content_hash=cf.content_hash,
+                change_type=cf.change_type,
+                content=cf.content,
+                language=cf.language,
+            ))
+    
+    # Build all files context
+    all_files = []
+    if req.all_files:
+        for f in req.all_files:
+            all_files.append(FileContext(
+                path=f.path,
+                content=f.content,
+                language=f.language,
+            ))
+    
+    # Build request
+    analysis_request = WorkspaceAnalysisRequest(
+        workspace_id=req.workspace_id,
+        changed_files=changed_files,
+        all_files=all_files,
+        focus_file=req.focus_file,
+        tiers=tiers,
+        include_ai=req.include_ai or False,
+        max_diagnostics_per_file=req.max_diagnostics_per_file or 30,
+        max_total_diagnostics=req.max_total_diagnostics or 200,
+        incremental=req.incremental if req.incremental is not None else True,
+        analyze_dependents=req.analyze_dependents if req.analyze_dependents is not None else True,
+    )
+    
+    # Get analyzer with provider for AI
+    provider = select_provider() if req.include_ai else None
+    analyzer = get_workspace_analyzer(llm_provider=provider, enable_ai=req.include_ai or False)
+    
+    try:
+        if req.incremental and req.changed_files:
+            result = await analyzer.analyze_incremental(analysis_request)
+        else:
+            result = await analyzer.analyze(analysis_request)
+        return result.to_dict()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Workspace analysis failed: {str(e)}")
+
+
+@app.post("/analyze/workspace/incremental")
+async def analyze_workspace_incremental(req: WorkspaceAnalysisRequestModel):
+    """
+    Incremental workspace analysis endpoint.
+    
+    Optimized for use during editing - only analyzes:
+    1. Files that changed
+    2. Files that depend on changed files
+    
+    Much faster than full workspace analysis.
+    """
+    # Force incremental mode
+    req.incremental = True
+    return await analyze_workspace(req)
+
+
+@app.get("/analyze/workspace/{workspace_id}/stats")
+async def get_workspace_stats(workspace_id: str):
+    """Get statistics for a workspace's analysis state."""
+    analyzer = get_workspace_analyzer()
+    return analyzer.get_workspace_stats(workspace_id)
+
+
+@app.post("/analyze/workspace/{workspace_id}/clear")
+async def clear_workspace(workspace_id: str):
+    """Clear cached analysis state for a workspace."""
+    analyzer = get_workspace_analyzer()
+    analyzer.clear_workspace(workspace_id)
+    return {"status": "ok", "message": f"Workspace {workspace_id} cleared"}
 
 
 @app.post("/analyze/ai")

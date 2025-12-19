@@ -31,6 +31,7 @@ const EditorPanel = dynamic(() => import('./Editor/Editor.jsx'), {
 
 import { getFileLanguage } from '@/utils/fileUtils';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
+import { useWorkspaceAnalysis } from '@/hooks/useWorkspaceAnalysis';
 import { useCompiler } from '@/hooks/useCompiler';
 import AIChatWindow from '@/components/chat/AIChatWindow';
 import { api } from '@/services/api';
@@ -73,6 +74,23 @@ export default function EditorPage({ params }) {
     const [isAnalyzingProactive, setIsAnalyzingProactive] = useState(false);
     const proactiveTimeoutRef = useRef(null);
     const lastProactiveSignatureRef = useRef('');
+    
+    // Multi-file workspace analysis (cross-file issue detection)
+    // Only enable workspace analysis when a slug is available
+    const {
+        trackFileChange,
+        trackFileDeletion,
+        setFocusFile: setWorkspaceFocusFile,
+        triggerAnalysis: triggerWorkspaceAnalysis,
+        allDiagnostics: workspaceDiagnostics,
+        summary: workspaceSummary,
+        isAnalyzing: isWorkspaceAnalyzing,
+        clientReady: workspaceClientReady,
+    } = useWorkspaceAnalysis({
+        workspaceId: slug || '',
+        debounceMs: 1200,  // Slightly longer debounce for workspace-level analysis
+        includeAi: false,  // Disabled by default, can be enabled via settings
+    });
     
     // Remove a specific diagnostic by location (called when a fix is applied)
     const removeDiagnosticByLocation = useCallback((location) => {
@@ -385,12 +403,67 @@ export default function EditorPage({ params }) {
         };
     }, [currentContent, activeFile, hasLoadedInitialFile, analyzeProactive]);
 
-    // Compute diagnostic summary
+    // Track focused file and content changes for workspace analysis
+    useEffect(() => {
+        if (!activeFile || !hasLoadedInitialFile) return;
+        
+        const filePath = activeFile?.path || activeFile?.name;
+        if (filePath) {
+            setWorkspaceFocusFile(filePath);
+        }
+    }, [activeFile, hasLoadedInitialFile, setWorkspaceFocusFile]);
+    
+    // Notify workspace analyzer when file content changes
+    useEffect(() => {
+        if (!activeFile || !currentContent || !hasLoadedInitialFile || !workspaceClientReady) return;
+        
+        const filePath = activeFile?.path || activeFile?.name;
+        const language = activeFile.language || (activeFile.name ? getFileLanguage(activeFile.name) : 'plaintext');
+        
+        if (filePath && typeof currentContent === 'string') {
+            // Track the file change
+            const didChange = trackFileChange(filePath, currentContent, language);
+            if (didChange) {
+                // Trigger workspace analysis (debounced internally)
+                triggerWorkspaceAnalysis();
+            }
+        }
+    }, [currentContent, activeFile, hasLoadedInitialFile, workspaceClientReady, trackFileChange, triggerWorkspaceAnalysis]);
+
+    // Merge single-file diagnostics with workspace-level cross-file diagnostics
+    const mergedDiagnostics = useMemo(() => {
+        // Start with single-file diagnostics (these are more immediate/responsive)
+        const merged = [...diagnostics];
+        
+        // Add cross-file diagnostics from workspace analysis
+        // Filter to avoid duplicates by comparing message + location
+        const existingKeys = new Set(
+            diagnostics.map(d => `${d.message}::${d.location?.line}::${d.location?.column}`)
+        );
+        
+        for (const d of workspaceDiagnostics) {
+            const key = `${d.message}::${d.location?.line}::${d.location?.column}`;
+            if (!existingKeys.has(key)) {
+                merged.push(d);
+                existingKeys.add(key);
+            }
+        }
+        
+        return merged;
+    }, [diagnostics, workspaceDiagnostics]);
+
+    // Compute diagnostic summary from merged diagnostics
     const diagnosticSummary = useMemo(() => {
-        const errors = diagnostics.filter(d => d.severity === 'error').length;
-        const warnings = diagnostics.filter(d => d.severity === 'warning').length;
-        return { errors, warnings, total: diagnostics.length };
-    }, [diagnostics]);
+        const errors = mergedDiagnostics.filter(d => d.severity === 'error').length;
+        const warnings = mergedDiagnostics.filter(d => d.severity === 'warning').length;
+        return { 
+            errors, 
+            warnings, 
+            total: mergedDiagnostics.length,
+            workspaceErrors: workspaceSummary.errors,
+            workspaceWarnings: workspaceSummary.warnings,
+        };
+    }, [mergedDiagnostics, workspaceSummary]);
 
     // NOTE: Completion requests are handled centrally by the Editor component
     // to avoid duplicate requests, races, and abort-related errors. If you need
@@ -631,7 +704,7 @@ export default function EditorPage({ params }) {
             onToggleTerminal={() => dispatch(toggleTerminal())}
             onEditorMount={handleEditorMount}
             analysisResult={lastResult}
-            diagnostics={diagnostics}
+            diagnostics={mergedDiagnostics}
             removeDiagnosticByLocation={removeDiagnosticByLocation}
             latestCompletion={latestCompletion}
             aiBusy={aiBusy}
@@ -794,9 +867,9 @@ export default function EditorPage({ params }) {
             {showProblemsPanel && (
                 <div className="h-48 max-h-48 flex-shrink-0 border-t border-[#1a1b24]">
                     <ProblemsPanel
-                        diagnostics={diagnostics}
+                        diagnostics={mergedDiagnostics}
                         summary={diagnosticSummary}
-                        isAnalyzing={isAnalyzingProactive}
+                        isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
                         filePath={activeFile?.path || activeFile?.name || 'Current File'}
                         onClose={() => setShowProblemsPanel(false)}
                         onNavigate={(location) => {
@@ -820,7 +893,7 @@ export default function EditorPage({ params }) {
         <StatusBar
             slug={slug}
             diagnosticSummary={diagnosticSummary}
-            isAnalyzing={isAnalyzingProactive}
+            isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
             onProblemsClick={() => setShowProblemsPanel(prev => !prev)}
         />
 
