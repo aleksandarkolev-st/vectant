@@ -540,7 +540,7 @@ impl BuildSession {
         self.graph.rebuild_parents();
     }
 
-    fn parse_imports(&self, content: &str, current_file: &str) -> Vec<String> {
+    fn parse_imports(&self, content: &str, _current_file: &str) -> Vec<String> {
         let mut imports = Vec::new();
         // Very basic parser
         for line in content.lines() {
@@ -967,7 +967,7 @@ impl WidgetDetector {
     /// Extract class name from a line
     fn extract_class_name(&self, line: &str) -> Option<String> {
         // Match: class ClassName ... or struct StructName ...
-        let patterns = [
+        let _patterns = [
             (r"class\s+(\w+)", 6),  // "class " prefix
             (r"struct\s+(\w+)", 7), // "struct " prefix
         ];
@@ -1048,7 +1048,7 @@ impl WidgetDetector {
         
         // Look for state->varname or state.varname patterns
         for pattern in &self.patterns.state_patterns {
-            let base = pattern.trim_end_matches(|c| c == '-' || c == '>' || c == '.');
+            let _base = pattern.trim_end_matches(|c| c == '-' || c == '>' || c == '.');
             
             // Find all occurrences
             let mut search_start = 0;
@@ -1073,7 +1073,7 @@ impl WidgetDetector {
     }
     
     /// Infer variable type from usage (simplified)
-    fn infer_state_type(&self, var_name: &str, code: &str) -> String {
+    fn infer_state_type(&self, var_name: &str, _code: &str) -> String {
         // Very simplified type inference
         let var_lower = var_name.to_lowercase();
         
@@ -1153,7 +1153,7 @@ impl WidgetDetector {
         class_name: &str,
         original_code: &str,
         entry_point: &str,
-        state_vars: &[String],
+        _state_vars: &[String],
         is_class_based: bool,
         original_function: Option<&str>,
     ) -> String {

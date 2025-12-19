@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Debounce delay in milliseconds (for actual compilation trigger)
 const DEBOUNCE_MS: u64 = 300;

@@ -20,13 +20,13 @@ mod error_parser;
 mod source_map;
 mod fast_refresh;
 
-use builder::{RebuildScope, ModuleHashes, hash_content, WidgetDetector, WidgetCompiler, WidgetAnalysis};
-use fast_refresh::{BoundaryChecker, BoundaryCheckResult, RefreshAction, BoundaryViolationEvent};
-use watcher::{PreemptiveConfig, PreemptiveMessage, SpeculativeCache, SpeculativeCacheEntry};
-use error_parser::{parse_compiler_output, CompilerType, DiagnosticEvent, DiagnosticReport};
-use source_map::debug_compile_flags;
-use capability::{detect_capabilities, HmrCapability, HmrStatus, CapabilityReport};
+use builder::{RebuildScope, ModuleHashes, hash_content, WidgetDetector, WidgetCompiler};
+use fast_refresh::{BoundaryChecker, RefreshAction, BoundaryViolationEvent};
+use watcher::{PreemptiveConfig, PreemptiveMessage, SpeculativeCache};
+use error_parser::{parse_compiler_output, CompilerType, DiagnosticEvent};
+use capability::{detect_capabilities, HmrCapability, HmrStatus};
 use shim::{auto_shim, ShimMode, detect_shim_mode};
+use incremental_cache::{IncrementalCache, compile_with_cache, link_objects};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
@@ -36,7 +36,7 @@ use futures::{FutureExt, StreamExt, SinkExt};
 use serde::{Deserialize, Serialize};
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader, AsyncWriteExt};
-use chrono::{Utc, SecondsFormat};
+use chrono::Utc;
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -244,8 +244,19 @@ async fn main() -> Result<()> {
     let sdl_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> = Arc::new(Mutex::new(HashMap::new()));
     // Store for persistent runner process
     let runner_store: Arc<Mutex<Option<RunnerState>>> = Arc::new(Mutex::new(None));
-    // Cache for incremental compilation: hash -> (hash_val, lib_path)
+    // Simple in-memory cache for tracking compiled lib paths (legacy, used alongside IncrementalCache)
     let compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>> = Arc::new(Mutex::new(HashMap::new()));
+    
+    // Content-addressable incremental compilation cache (persists across sessions)
+    // Uses /dev/shm on Linux for fast RAM-based caching
+    let cache_dir = if cfg!(target_os = "linux") {
+        std::path::PathBuf::from("/dev/shm/synthi_compile_cache")
+    } else {
+        std::env::temp_dir().join("synthi_compile_cache")
+    };
+    let incremental_cache = Arc::new(IncrementalCache::new(cache_dir).await
+        .expect("Failed to initialize incremental compile cache"));
+    eprintln!("[Cache] Initialized content-addressable compile cache");
     
     // Speculative compilation cache for preemptive builds
     let speculative_cache: Arc<Mutex<SpeculativeCache>> = Arc::new(Mutex::new(SpeculativeCache::new(32)));
@@ -284,7 +295,7 @@ async fn main() -> Result<()> {
     let session_hash = build_session.session_hash.clone();
     
     // Speculative cache for build loop
-    let build_speculative_cache = speculative_cache.clone();
+    let _build_speculative_cache = speculative_cache.clone();
     let build_cancel_flag = cancel_flag.clone();
     
     // Start WebSocket Server
@@ -314,7 +325,7 @@ async fn main() -> Result<()> {
         loop {
             if let Ok(message) = preemptive_rx.recv() {
                 match message {
-                    PreemptiveMessage::StartSpeculative { paths, scope, timestamp } => {
+                    PreemptiveMessage::StartSpeculative { paths, scope, timestamp: _timestamp } => {
                         eprintln!("[Build] Starting speculative compile for scope '{}': {:?}", scope, paths);
                         
                         // Check cancellation flag periodically during compile
@@ -340,9 +351,9 @@ async fn main() -> Result<()> {
                             }
                             
                             // Do incremental compile but don't send update yet
-                            if let Some(payload) = build_session.incremental_compile(vec![relative_path.clone()]) {
+                            if let Some(_payload) = build_session.incremental_compile(vec![relative_path.clone()]) {
                                 // Cache the speculative result
-                                let content_hash = {
+                                let _content_hash = {
                                     let mut hasher = std::collections::hash_map::DefaultHasher::new();
                                     relative_path.hash(&mut hasher);
                                     hasher.finish()
@@ -434,6 +445,7 @@ async fn main() -> Result<()> {
     let runner_store_for_callback = runner_store.clone();
     let compile_cache_for_callback = compile_cache.clone();
     let boundary_checker_for_callback = boundary_checker.clone();
+    let incremental_cache_for_callback = incremental_cache.clone();
     pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
         let store = compile_store.clone();
         let term_store = term_store.clone();
@@ -443,6 +455,7 @@ async fn main() -> Result<()> {
         let runner_store_outer = runner_store_for_callback.clone();
         let compile_cache_outer = compile_cache_for_callback.clone();
         let boundary_checker_outer = boundary_checker_for_callback.clone();
+        let incremental_cache_outer = incremental_cache_for_callback.clone();
         async move {
             let label = dc.label();
                 if label == "compile" {
@@ -458,6 +471,7 @@ async fn main() -> Result<()> {
                         let runner_store = runner_store_outer.clone();
                         let compile_cache = compile_cache_outer.clone();
                         let boundary_checker = boundary_checker_outer.clone();
+                        let incremental_cache = incremental_cache_outer.clone();
                         async move {
                             if msg.is_string {
                                 // Try to parse as a CompileRequest
@@ -473,7 +487,8 @@ async fn main() -> Result<()> {
                                         let wp = workspace_path_for_compile.clone();
                                         let cc = compile_cache.clone();
                                         let bc = boundary_checker.clone();
-                                        tokio::spawn(handle_compile(req, log, ts, sdls, rs, pc_clone, wp.to_path_buf(), cc, bc));
+                                        let ic = incremental_cache.clone();
+                                        tokio::spawn(handle_compile(req, log, ts, sdls, rs, pc_clone, wp.to_path_buf(), cc, bc, ic));
                                     }
                                     return;
                                 }
@@ -496,7 +511,7 @@ async fn main() -> Result<()> {
                         async move {
                             if msg.is_string {
                                 // diagnostic log
-                                if let Ok(s) = String::from_utf8(msg.data.to_vec()) {
+                                if let Ok(_s) = String::from_utf8(msg.data.to_vec()) {
                                     // println!("[worker] terminal msg: {}", s);
                                 }
                                 if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&msg.data) {
@@ -1226,6 +1241,7 @@ async fn handle_compile(
     workspace_path: std::path::PathBuf,
     compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>>,
     boundary_checker: Arc<Mutex<BoundaryChecker>>,
+    incremental_cache: Arc<IncrementalCache>,
 ) -> Result<()> {
     // Use the shared workspace path instead of creating a new temp dir
     let dir_path = workspace_path;
@@ -1435,7 +1451,7 @@ async fn handle_compile(
         }
         
         // Get previous hashes from runner state (if exists)
-        let (prev_hashes, prev_core_path, prev_gui_path) = {
+        let (prev_hashes, prev_core_path, _prev_gui_path) = {
             let guard = runner_store.lock().await;
             if let Some(state) = guard.as_ref() {
                 (state.module_hashes.clone(), state.loaded_core_path.clone(), state.loaded_gui_path.clone())
@@ -1737,7 +1753,7 @@ async fn handle_compile(
             if content.contains("setlocale") && !content.contains("#include <locale.h>") {
                 content = format!("#include <locale.h>\n{}", content);
             }
-            if (content.contains("SDL_") && !content.contains("#include <SDL2/SDL.h>")) {
+            if content.contains("SDL_") && !content.contains("#include <SDL2/SDL.h>") {
                 content = format!("#include <SDL2/SDL.h>\n{}", content);
             }
             if (content.contains("XLookupString") || content.contains("XK_Escape")) && !content.contains("#include <X11/Xutil.h>") {
@@ -1745,6 +1761,22 @@ async fn handle_compile(
             }
             if (content.contains("dlopen") || content.contains("dlsym")) && !content.contains("#include <dlfcn.h>") {
                 content = format!("#include <dlfcn.h>\n{}", content);
+            }
+
+            // FIX: Ensure shared.h is included in core.cpp if AppState is used
+            // The AI often forward declares AppState but then tries to instantiate it, causing incomplete type errors.
+            if content.contains("AppState") && !content.contains("#include \"shared.h\"") {
+                if content.contains("struct AppState;") {
+                    content = content.replace("struct AppState;", "#include \"shared.h\"");
+                } else {
+                    content = format!("#include \"shared.h\"\n{}", content);
+                }
+            }
+
+            // FIX: Remove duplicate defines that are already in shared.h to prevent warnings
+            if content.contains("#include \"shared.h\"") {
+                content = content.replace("#define CORE_STATE_MAGIC", "// #define CORE_STATE_MAGIC");
+                content = content.replace("#define SYNTHI_ABI_VERSION", "// #define SYNTHI_ABI_VERSION");
             }
 
             // FIX: cleanup_window not declared
@@ -1936,20 +1968,14 @@ extern "C" void* on_load_from_json(const char* json) {
 
             let content_hash = calculate_hash(&content);
             
-            let mut cached_path = None;
-            {
-                let cache = compile_cache.lock().await;
-                if let Some((h, p)) = cache.get("core") {
-                    if *h == content_hash {
-                        cached_path = Some(p.clone());
-                    }
-                }
-            }
-
-            if let Some(p) = cached_path {
-                core_lib_path = p;
+            // Try content-addressable cache first (persists across sessions)
+            let cache_key = IncrementalCache::cache_key(&content, &["-shared", "-fPIC"], &[]);
+            if let Some(cached_so) = incremental_cache.get(&cache_key).await {
+                core_lib_path = cached_so.to_string_lossy().to_string();
+                eprintln!("[Cache] HIT for core module (persistent cache)");
                 println!("Using cached core library: {}", core_lib_path);
             } else {
+                // Cache miss - need to compile
                 tokio::fs::write(dir_path.join(fname), &content).await?;
                 
                 let core_out = output_dir.join(format!("libcore_{}.{}", timestamp, ext));
@@ -2034,6 +2060,19 @@ extern "C" void* on_load_from_json(const char* json) {
                     let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
                 }
                 
+                // Store in persistent content-addressable cache
+                if let Ok(so_data) = tokio::fs::read(&core_lib_path).await {
+                    let source_hash = content_hash;
+                    let flags_hash = calculate_hash(&"-shared-fPIC");
+                    let headers_hash = 0u64;
+                    if let Err(e) = incremental_cache.put(cache_key.clone(), source_hash, flags_hash, headers_hash, &so_data).await {
+                        eprintln!("[Cache] Failed to store core in persistent cache: {}", e);
+                    } else {
+                        eprintln!("[Cache] Stored core module in persistent cache");
+                    }
+                }
+                
+                // Also update legacy in-memory cache for fast path
                 let mut cache = compile_cache.lock().await;
                 cache.insert("core".to_string(), (content_hash, core_lib_path.clone()));
             }
@@ -2251,20 +2290,14 @@ extern "C" void* gui_on_load_from_json(const char* json) {
             // Hash content + core_lib_path dependency
             let combined_hash = calculate_hash(&(content.clone(), &core_lib_path));
             
-            let mut cached_path = None;
-            {
-                let cache = compile_cache.lock().await;
-                if let Some((h, p)) = cache.get("gui") {
-                    if *h == combined_hash {
-                        cached_path = Some(p.clone());
-                    }
-                }
-            }
-
-            if let Some(p) = cached_path {
-                gui_lib_path = p;
+            // Try content-addressable cache first (persists across sessions)
+            let gui_cache_key = IncrementalCache::cache_key(&content, &["-shared", "-fPIC", "-lSDL2"], &[]);
+            if let Some(cached_so) = incremental_cache.get(&gui_cache_key).await {
+                gui_lib_path = cached_so.to_string_lossy().to_string();
+                eprintln!("[Cache] HIT for gui module (persistent cache)");
                 println!("Using cached gui library: {}", gui_lib_path);
             } else {
+                // Cache miss - need to compile
                 tokio::fs::write(dir_path.join(fname), &content).await?;
                 
                 let gui_out = output_dir.join(format!("libgui_{}.{}", timestamp, ext));
@@ -2360,6 +2393,19 @@ extern "C" void* gui_on_load_from_json(const char* json) {
                     let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
                 }
                 
+                // Store in persistent content-addressable cache
+                if let Ok(so_data) = tokio::fs::read(&gui_lib_path).await {
+                    let source_hash = combined_hash;
+                    let flags_hash = calculate_hash(&"-shared-fPIC-lSDL2");
+                    let headers_hash = 0u64;
+                    if let Err(e) = incremental_cache.put(gui_cache_key.clone(), source_hash, flags_hash, headers_hash, &so_data).await {
+                        eprintln!("[Cache] Failed to store gui in persistent cache: {}", e);
+                    } else {
+                        eprintln!("[Cache] Stored gui module in persistent cache");
+                    }
+                }
+                
+                // Also update legacy in-memory cache for fast path
                 let mut cache = compile_cache.lock().await;
                 cache.insert("gui".to_string(), (combined_hash, gui_lib_path.clone()));
                 
@@ -2593,7 +2639,7 @@ extern "C" void* gui_on_load_from_json(const char* json) {
         // This is the key to "Next.js-like" HMR that works without users
         // needing to structure their code in a specific way.
         // ============================================================
-        let mut shimmed_source = source_code.clone();
+        let shimmed_source = source_code.clone();
         let mut shimmed_filename = req.filename.clone();
         let mut shim_applied = false;
         
@@ -2604,7 +2650,7 @@ extern "C" void* gui_on_load_from_json(const char* json) {
                 eprintln!("[Shim] Applying auto-shim mode: {:?} (has_gui: {})", shim_config.mode, shim_config.has_gui);
                 
                 let shim_result = auto_shim(&source_code);
-                shimmed_source = shim_result.source;
+                let shimmed_source = shim_result.source;
                 
                 // Write additional shim files (e.g., headers)
                 for (fname, content) in &shim_result.additional_files {
@@ -2823,7 +2869,7 @@ extern "C" void* gui_on_load_from_json(const char* json) {
         // Make "HMR vs full reload" a hard policy, not best-effort.
         // If blocking or ABI mismatch → explicitly emit "full reload required"
         // ============================================================
-        let require_full_reload = if let Some(ref report) = capability_report {
+        let _require_full_reload = if let Some(ref report) = capability_report {
             match report.hmr_capability {
                 HmrCapability::Blocking => {
                     eprintln!("[Policy] Blocking app detected - full reload required");
@@ -2860,7 +2906,7 @@ extern "C" void* gui_on_load_from_json(const char* json) {
         };
         
         // Check ABI version mismatch with existing runner
-        let abi_mismatch = if let Some(ref report) = capability_report {
+        let _abi_mismatch = if let Some(ref report) = capability_report {
             let guard_check = runner_store.lock().await;
             if let Some(state) = guard_check.as_ref() {
                 if let Some(existing_cap) = &state.hmr_capability {
@@ -2962,7 +3008,7 @@ extern "C" void* gui_on_load_from_json(const char* json) {
         // If resolution matches and is_gui matches, we can reuse Xvfb/GStreamer
         let can_reuse = state.is_gui == req.is_gui && state.width == req_width && state.height == req_height;
         
-        let mut state = guard.take().unwrap();
+        let state = guard.take().unwrap();
         if let Some(mut child) = state.process { 
             println!("Killing old runner process...");
             let _ = child.kill().await; 
@@ -2992,7 +3038,7 @@ extern "C" void* gui_on_load_from_json(const char* json) {
         
         let mut wsl_display_str = reused_wsl_display;
         let mut gst_display_str = reused_gst_display;
-        let mut xvfb_process: Option<tokio::process::Child> = reused_xvfb;
+        let xvfb_process: Option<tokio::process::Child> = reused_xvfb;
         let mut gst_pipeline: Option<gst::Pipeline> = reused_pipeline;
         let mut sdl_tx_opt: Option<mpsc::UnboundedSender<String>> = reused_sdl_tx;
         let mut video_src_opt: Option<gst_app::AppSrc> = None;
@@ -3015,7 +3061,7 @@ extern "C" void* gui_on_load_from_json(const char* json) {
                     }
                 }
 
-                let resolution = format!("{}x{}x24", width, height);
+                let _resolution = format!("{}x{}x24", width, height);
 
                 // Xvfb removed - using SDL2 offscreen rendering
                 wsl_display_str = "".to_string();
@@ -3126,7 +3172,7 @@ extern "C" void* gui_on_load_from_json(const char* json) {
                                 while let Some(msg) = bus.timed_pop(gst::ClockTime::from_mseconds(100)) {
                                     match msg.view() {
                                         gst::MessageView::Error(err) => {
-                                            let (src, msg, dbg) = (err.src().map(|s| s.path_string()).unwrap_or_default(), err.error(), err.debug());
+                                            let (src, _msg, dbg) = (err.src().map(|s| s.path_string()).unwrap_or_default(), err.error(), err.debug());
                                             if src.contains("pulsesrc") || (dbg.as_ref().map(|d| d.contains("Connection refused")).unwrap_or(false)) {
                                                 pulse_error = true;
                                             }

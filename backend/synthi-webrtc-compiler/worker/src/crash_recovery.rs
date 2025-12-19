@@ -18,8 +18,9 @@
 // ============================================================
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::ffi::c_void;
+use std::path::Path;
 
 #[cfg(unix)]
 use libc::{c_int, siginfo_t, sigaction, sigemptyset, SA_SIGINFO, SIGSEGV, SIGABRT, SIGFPE, SIGBUS};
@@ -92,11 +93,13 @@ impl CrashInfo {
     }
 }
 
-/// Global crash info storage
+// Global crash info storage
 lazy_static::lazy_static! {
     static ref LAST_CRASH: Mutex<Option<CrashInfo>> = Mutex::new(None);
     static ref CURRENT_MODULE: Mutex<String> = Mutex::new(String::new());
     static ref CURRENT_LIB_PATH: Mutex<String> = Mutex::new(String::new());
+    /// Global source map cache for resolving crash addresses to source locations
+    pub static ref SOURCE_MAP_CACHE: crate::source_map::SourceMapCache = crate::source_map::SourceMapCache::new();
 }
 
 /// Set the current library path for source map lookup
@@ -104,6 +107,40 @@ pub fn set_current_lib_path(path: &str) {
     if let Ok(mut guard) = CURRENT_LIB_PATH.lock() {
         *guard = path.to_string();
     }
+}
+
+/// Resolve source locations in a CrashInfo using the global source map cache
+pub fn resolve_crash_source_locations(crash_info: &mut CrashInfo) {
+    // Get the library path to resolve
+    let lib_path = match &crash_info.lib_path {
+        Some(path) => path.clone(),
+        None => {
+            // Try the current lib path if not in crash info
+            CURRENT_LIB_PATH.lock().ok().map(|g| g.clone()).unwrap_or_default()
+        }
+    };
+    
+    if lib_path.is_empty() {
+        return;
+    }
+    
+    let path = Path::new(&lib_path);
+    
+    // Resolve primary address if available
+    if let Some(addr) = crash_info.address {
+        if let Some(loc) = SOURCE_MAP_CACHE.resolve(path, addr) {
+            crash_info.source_location = Some(CrashSourceLocation {
+                file: loc.file,
+                line: loc.line,
+                column: loc.column,
+                function: loc.function,
+            });
+        }
+    }
+    
+    // Note: For full stack frame resolution, the backtrace would need to be
+    // parsed to extract addresses, which requires backtrace parsing logic.
+    // For now, we resolve just the primary crash address.
 }
 
 #[cfg(unix)]
@@ -295,7 +332,7 @@ where
             });
             
             // Get crash info
-            let crash_info = LAST_CRASH.lock()
+            let mut crash_info = LAST_CRASH.lock()
                 .ok()
                 .and_then(|guard| guard.clone())
                 .unwrap_or_else(|| CrashInfo {
@@ -309,6 +346,9 @@ where
                     source_frames: Vec::new(),
                     lib_path: None,
                 });
+            
+            // Resolve source locations using debug info (DWARF)
+            resolve_crash_source_locations(&mut crash_info);
             
             Err(crash_info)
         }

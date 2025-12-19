@@ -3,7 +3,7 @@ use std::io::{self, BufRead, Write};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
-use std::ffi::{c_void, c_int, c_uint, c_ulong, c_long, CString};
+use std::ffi::{c_void, c_int, c_uint, CString};
 use std::ptr;
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
@@ -14,7 +14,7 @@ use x11rb::connection::Connection;
 #[cfg(target_os = "linux")]
 use x11rb::protocol::xproto::*;
 #[cfg(target_os = "linux")]
-use x11rb::protocol::shm::{self, ConnectionExt as ShmConnectionExt};
+use x11rb::protocol::shm::ConnectionExt as ShmConnectionExt;
 
 mod plugin_contract;
 mod capability;
@@ -22,15 +22,15 @@ mod host_kv;
 mod state_diff;
 mod crash_recovery;
 
-use plugin_contract::{ModuleSlot, ModuleInfo, RebuildScope, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
+use plugin_contract::{ModuleSlot, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
 use capability::{HmrCapability, detect_capabilities, HmrStatus};
 use host_kv::{
-    KV_STORE, SynthiHostContextV1, HostKvApiV1, HostKvSchemaEvent,
+    KV_STORE, SynthiHostContextV1, HostKvSchemaEvent,
     create_kv_api, read_schema_table, module_slot_to_u32,
 };
 use state_diff::{migrate_state, generate_migration_report};
 use crash_recovery::{install_crash_handlers, execute_with_protection, should_force_restart, 
-                     reset_crash_count, get_last_crash, HmrCrashStatus, generate_crash_report};
+                     reset_crash_count, HmrCrashStatus, generate_crash_report, set_current_lib_path};
 
 // SDL2 Definitions
 #[cfg(target_os = "linux")]
@@ -735,22 +735,103 @@ fn main() {
                                     if let Ok(f) = load_json_new.or(load_json_legacy) {
                                         let old_json_str = json.to_str().unwrap_or("{}");
                                         
-                                        // Try to get a "default" state from the new module to use as template
-                                        // This allows field-level diffing
+                                        // ============================================================
+                                        // FIELD-LEVEL STATE DIFFING
+                                        // ============================================================
+                                        // Try to get a "default" state from the new module to use as template.
+                                        // This allows field-level diffing like Next.js Fast Refresh.
+                                        // ============================================================
                                         let mut use_field_diff = false;
-                                        let mut migrated_json = old_json_str.to_string();
+                                        let mut migrated_json_cstring: Option<CString> = None;
                                         
-                                        // For now, load with old state directly
-                                        // TODO: Get template state from new module for true field-level diff
-                                        // The migrate_state function is available if we can get the template
+                                        // Get on_load symbol to create a fresh template state
+                                        let load_new: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = 
+                                            if name == "core" { new_lib.get(b"core_on_load") }
+                                            else if name == "gui" { new_lib.get(b"gui_on_load") }
+                                            else { new_lib.get(b"on_load") };
+                                        let load_legacy: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = 
+                                            new_lib.get(b"on_load");
                                         
-                                        eprintln!("[Runner] [HMR] Restoring state from JSON into new module '{}'...", name);
-                                        new_state = f(json.as_ptr());
+                                        // Get on_save_to_json to serialize template state
+                                        let save_json_new: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut i8>, _> = 
+                                            if name == "core" { new_lib.get(b"core_on_save_to_json") }
+                                            else if name == "gui" { new_lib.get(b"gui_on_save_to_json") }
+                                            else { new_lib.get(b"on_save_to_json") };
+                                        let save_json_legacy: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut i8>, _> = 
+                                            new_lib.get(b"on_save_to_json");
                                         
-                                        // Log migration report if we did field-level diffing
-                                        if use_field_diff {
-                                            eprintln!("[Runner] [HMR] Field-level state migration applied");
+                                        // If both symbols exist, we can do field-level diffing
+                                        if let (Ok(load_fn), Ok(save_fn)) = (load_new.or(load_legacy), save_json_new.or(save_json_legacy)) {
+                                            // Create a fresh state with default values (the "template")
+                                            let template_state = load_fn(std::ptr::null_mut(), std::ptr::null_mut());
+                                            
+                                            if !template_state.is_null() {
+                                                // Serialize template state to JSON
+                                                let template_json_ptr = save_fn(template_state);
+                                                
+                                                if !template_json_ptr.is_null() {
+                                                    let template_json_cstr = std::ffi::CStr::from_ptr(template_json_ptr);
+                                                    if let Ok(template_json_str) = template_json_cstr.to_str() {
+                                                        // Perform field-level state migration
+                                                        let module_type = if name == "core" { "core" } else if name == "gui" { "gui" } else { "main" };
+                                                        
+                                                        match migrate_state(old_json_str, template_json_str, module_type) {
+                                                            Ok((merged_json, diff_result)) => {
+                                                                // Log migration report
+                                                                let report = generate_migration_report(&diff_result);
+                                                                eprintln!("[Runner] [HMR] Field-level state migration for '{}':", name);
+                                                                eprintln!("{}", report);
+                                                                
+                                                                // Emit HMR status with migration details
+                                                                let status = HmrStatus::state_migrated(
+                                                                    name, 
+                                                                    diff_result.preserved_fields.len(), 
+                                                                    diff_result.reset_fields.len(),
+                                                                    diff_result.new_fields.len()
+                                                                );
+                                                                eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                                                                
+                                                                // Prepare the migrated JSON for loading
+                                                                migrated_json_cstring = CString::new(merged_json).ok();
+                                                                use_field_diff = true;
+                                                            }
+                                                            Err(e) => {
+                                                                eprintln!("[Runner] [HMR] Field-level diff failed for '{}': {}", name, e);
+                                                            }
+                                                        }
+                                                    }
+                                                    
+                                                    // Free the template JSON (if the module provides a free function)
+                                                    let free_json: Result<Symbol<unsafe extern "C" fn(*mut i8)>, _> = new_lib.get(b"synthi_free_json");
+                                                    if let Ok(free_fn) = free_json {
+                                                        free_fn(template_json_ptr);
+                                                    }
+                                                }
+                                                
+                                                // Free the template state (if the module provides an unload function)
+                                                let unload: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = 
+                                                    if name == "core" { new_lib.get(b"core_on_unload") }
+                                                    else if name == "gui" { new_lib.get(b"gui_on_unload") }
+                                                    else { new_lib.get(b"on_unload") };
+                                                if let Ok(unload_fn) = unload {
+                                                    unload_fn(template_state);
+                                                }
+                                            }
                                         }
+                                        
+                                        // Load state (either migrated or original)
+                                        let final_json_ptr = if use_field_diff {
+                                            if let Some(ref migrated) = migrated_json_cstring {
+                                                migrated.as_ptr()
+                                            } else {
+                                                json.as_ptr()
+                                            }
+                                        } else {
+                                            json.as_ptr()
+                                        };
+                                        
+                                        eprintln!("[Runner] [HMR] Restoring state from JSON into new module '{}' (field_diff={})...", name, use_field_diff);
+                                        new_state = f(final_json_ptr);
                                     }
                                 }
                                 
@@ -1043,7 +1124,7 @@ fn main() {
                                 // ============================================================
                                 // Send detailed HMR status to stdout for the main process
                                 // ============================================================
-                                if let Ok(ref report) = capability_report {
+                                if let Ok(ref _report) = capability_report {
                                     let status = HmrStatus::Applied {
                                         module: name.to_string(),
                                         capability: hmr_capability.description().to_string(),
@@ -1146,6 +1227,10 @@ fn main() {
                         #[cfg(unix)]
                         {
                             let module_name = name.clone();
+                            // Set current library path for source map lookup on crash
+                            if let Some(lib_path) = loaded_paths.get(name) {
+                                set_current_lib_path(lib_path);
+                            }
                             let result = execute_with_protection(&module_name, || {
                                 f(state_ptr, dt);
                             });

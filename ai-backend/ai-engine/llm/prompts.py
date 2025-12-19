@@ -153,6 +153,7 @@ The runner handles window creation and cleanup - plugins must not contain these 
     - Contains business logic only - NO dynamic loading of gui.so.
     - The Synthi Runner loads both core.so and gui.so independently.
     - MUST NOT contain any functions with X11 types in their signature.
+    - MUST include "shared.h" to define AppState (DO NOT forward declare struct AppState).
 - gui.cpp:
     - Must compile/link with `-lSDL2`.
     - Must not include X11.
