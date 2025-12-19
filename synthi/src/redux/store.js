@@ -23,7 +23,13 @@ export function loadUiPrefs() {
   try {
     const raw = localStorage.getItem(UI_STORAGE_KEY);
     if (!raw) return undefined;
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    // The emulator preview panel must be hidden by default and only opened
+    // when the user clicks Run and a mobile build is detected.
+    if (parsed && typeof parsed === 'object') {
+      delete parsed.showEmulatorPreview;
+    }
+    return parsed;
   } catch (e) {
     console.warn('Failed to load UI prefs from localStorage', e);
     return undefined;

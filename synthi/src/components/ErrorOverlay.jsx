@@ -2,14 +2,32 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { cn } from '@/lib/utils';
-import { X, ChevronDown, ChevronRight, AlertCircle, AlertTriangle, Info, Lightbulb, Copy, Check } from 'lucide-react';
+import { X, ChevronDown, ChevronRight, AlertCircle, AlertTriangle, Info, Lightbulb, Copy, Check, RefreshCw, FileCode, Keyboard, Wand2 } from 'lucide-react';
 
 /**
  * Error Overlay Component
  * 
  * Displays compile/runtime errors in a Next.js-style full-screen overlay.
  * Shows source code snippets, file:line info, suggestions, and allows dismiss.
+ * 
+ * Keyboard shortcuts:
+ * - Escape: Dismiss overlay
+ * - Enter: Go to first error location
+ * - N / Arrow Down: Next error
+ * - P / Arrow Up: Previous error
+ * - F: Apply first fix (if available)
+ * - R: Retry compilation
  */
+
+// Quick fix action types
+const QUICK_FIX_TYPES = {
+    ADD_INCLUDE: 'add-include',
+    ADD_SEMICOLON: 'add-semicolon', 
+    FIX_TYPO: 'fix-typo',
+    REMOVE_UNUSED: 'remove-unused',
+    ADD_DECLARATION: 'add-declaration',
+    CHANGE_TYPE: 'change-type',
+};
 
 const SEVERITY_CONFIGS = {
     error: {
@@ -48,6 +66,79 @@ const SEVERITY_CONFIGS = {
         label: 'Info',
     },
 };
+
+// Analyze error message and generate quick fix suggestions
+function generateQuickFixes(diagnostic) {
+    const fixes = [];
+    const msg = (diagnostic.message || '').toLowerCase();
+    const code = diagnostic.code || '';
+    
+    // Missing include
+    if (msg.includes('undeclared identifier') || msg.includes('unknown type') || 
+        msg.includes('was not declared') || msg.includes('no type named')) {
+        const typeMatch = diagnostic.message.match(/'([^']+)'/);
+        if (typeMatch) {
+            const typeName = typeMatch[1];
+            // Common type -> header mappings
+            const headerMap = {
+                'uint32_t': 'stdint.h',
+                'uint64_t': 'stdint.h',
+                'int32_t': 'stdint.h',
+                'size_t': 'stddef.h',
+                'string': 'string',
+                'vector': 'vector',
+                'map': 'map',
+                'printf': 'stdio.h',
+                'malloc': 'stdlib.h',
+                'SDL_Renderer': 'SDL2/SDL.h',
+                'SDL_Window': 'SDL2/SDL.h',
+            };
+            const header = headerMap[typeName];
+            if (header) {
+                fixes.push({
+                    type: QUICK_FIX_TYPES.ADD_INCLUDE,
+                    label: `Add #include <${header}>`,
+                    action: { type: 'insert', line: 1, content: `#include <${header}>\n` }
+                });
+            }
+        }
+    }
+    
+    // Missing semicolon
+    if (msg.includes('expected \';\'' ) || msg.includes('missing semicolon')) {
+        fixes.push({
+            type: QUICK_FIX_TYPES.ADD_SEMICOLON,
+            label: 'Add missing semicolon',
+            action: { type: 'insert-char', char: ';' }
+        });
+    }
+    
+    // Typo suggestions from compiler
+    if (msg.includes('did you mean')) {
+        const suggestionMatch = diagnostic.message.match(/did you mean ['"]?([^'"?\s]+)/i);
+        if (suggestionMatch) {
+            fixes.push({
+                type: QUICK_FIX_TYPES.FIX_TYPO,
+                label: `Change to '${suggestionMatch[1]}'`,
+                action: { type: 'replace', replacement: suggestionMatch[1] }
+            });
+        }
+    }
+    
+    // Unused variable
+    if (msg.includes('unused variable') || msg.includes('unused parameter')) {
+        const varMatch = diagnostic.message.match(/'([^']+)'/);
+        if (varMatch) {
+            fixes.push({
+                type: QUICK_FIX_TYPES.REMOVE_UNUSED,
+                label: `Add (void)${varMatch[1]} to suppress`,
+                action: { type: 'insert', content: `(void)${varMatch[1]}; // suppress unused warning\n` }
+            });
+        }
+    }
+    
+    return fixes;
+}
 
 // Code snippet component with line highlighting
 function CodeSnippet({ code, highlightLine, startLine = 1, language = 'cpp' }) {
@@ -91,12 +182,28 @@ function CodeSnippet({ code, highlightLine, startLine = 1, language = 'cpp' }) {
     );
 }
 
+// Quick fix button component
+function QuickFixButton({ fix, onApply }) {
+    return (
+        <button
+            onClick={() => onApply(fix)}
+            className="flex items-center gap-2 px-3 py-1.5 bg-blue-500/20 hover:bg-blue-500/30 
+                       border border-blue-500/30 rounded text-sm text-blue-300 hover:text-blue-200 
+                       transition-colors"
+        >
+            <Wand2 size={14} />
+            {fix.label}
+        </button>
+    );
+}
+
 // Single diagnostic display
-function DiagnosticCard({ diagnostic, isExpanded, onToggle, onGoToFile }) {
+function DiagnosticCard({ diagnostic, isExpanded, onToggle, onGoToFile, onApplyFix, isSelected }) {
     const [copied, setCopied] = useState(false);
     const severity = diagnostic.severity?.toLowerCase() || 'error';
     const config = SEVERITY_CONFIGS[severity] || SEVERITY_CONFIGS.error;
     const Icon = config.icon;
+    const quickFixes = generateQuickFixes(diagnostic);
     
     const location = diagnostic.location;
     const locationString = location 
@@ -118,9 +225,10 @@ function DiagnosticCard({ diagnostic, isExpanded, onToggle, onGoToFile }) {
     
     return (
         <div className={cn(
-            "rounded-lg border",
+            "rounded-lg border transition-all",
             config.bgColor,
-            config.borderColor
+            config.borderColor,
+            isSelected && "ring-2 ring-blue-500/50 ring-offset-2 ring-offset-gray-950"
         )}>
             {/* Header */}
             <div 
@@ -145,6 +253,15 @@ function DiagnosticCard({ diagnostic, isExpanded, onToggle, onGoToFile }) {
                     <p className="text-white mt-1 break-words">{diagnostic.message}</p>
                 </div>
                 <div className="flex items-center gap-2">
+                    {location && (
+                        <button
+                            onClick={(e) => { e.stopPropagation(); handleGoToFile(); }}
+                            className="p-1.5 rounded hover:bg-white/10 text-gray-400 hover:text-blue-400"
+                            title="Go to file"
+                        >
+                            <FileCode size={14} />
+                        </button>
+                    )}
                     <button 
                         onClick={(e) => { e.stopPropagation(); handleCopy(); }}
                         className="p-1.5 rounded hover:bg-white/10 text-gray-400 hover:text-white"
@@ -194,6 +311,52 @@ function DiagnosticCard({ diagnostic, isExpanded, onToggle, onGoToFile }) {
                                 </div>
                             ))}
                         </div>
+                    )}
+                    
+                    {/* Quick fixes (auto-generated) */}
+                    {quickFixes.length > 0 && (
+                        <div className="space-y-2">
+                            <p className="text-sm text-gray-400">Quick fixes:</p>
+                            <div className="flex flex-wrap gap-2">
+                                {quickFixes.map((fix, idx) => (
+                                    <QuickFixButton 
+                                        key={idx} 
+                                        fix={fix} 
+                                        onApply={onApplyFix} 
+                                    />
+                                ))}
+                                <button
+                                    onClick={() => {
+                                        window.dispatchEvent(new CustomEvent('synthi:request-ai-fix', {
+                                            detail: { diagnostic }
+                                        }));
+                                    }}
+                                    className="flex items-center gap-2 px-3 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 
+                                               border border-purple-500/30 rounded text-sm text-purple-300 hover:text-purple-200 
+                                               transition-colors"
+                                >
+                                    <Wand2 size={14} />
+                                    Fix with AI
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                    
+                    {/* AI fix button when no quick fixes available */}
+                    {quickFixes.length === 0 && (
+                        <button
+                            onClick={() => {
+                                window.dispatchEvent(new CustomEvent('synthi:request-ai-fix', {
+                                    detail: { diagnostic }
+                                }));
+                            }}
+                            className="flex items-center gap-2 px-3 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 
+                                       border border-purple-500/30 rounded text-sm text-purple-300 hover:text-purple-200 
+                                       transition-colors"
+                        >
+                            <Wand2 size={14} />
+                            Fix with AI
+                        </button>
                     )}
                     
                     {/* Related diagnostics */}
@@ -302,6 +465,8 @@ export function ErrorOverlay({ className }) {
     const [crashInfo, setCrashInfo] = useState(null);
     const [module, setModule] = useState('');
     const [expandedIds, setExpandedIds] = useState(new Set([0])); // First error expanded by default
+    const [selectedIndex, setSelectedIndex] = useState(0); // Currently selected error for keyboard nav
+    const [isRetrying, setIsRetrying] = useState(false);
     const overlayRef = useRef(null);
     
     // Handle compile diagnostics
@@ -386,13 +551,77 @@ export function ErrorOverlay({ className }) {
     // Handle escape key to dismiss
     useEffect(() => {
         const handleKeyDown = (e) => {
-            if (e.key === 'Escape' && visible) {
-                setVisible(false);
+            if (!visible) return;
+            
+            switch (e.key) {
+                case 'Escape':
+                    setVisible(false);
+                    break;
+                case 'ArrowDown':
+                case 'n':
+                case 'j':
+                    // Next error
+                    e.preventDefault();
+                    setSelectedIndex(prev => {
+                        const next = Math.min(prev + 1, diagnostics.length - 1);
+                        setExpandedIds(new Set([next]));
+                        return next;
+                    });
+                    break;
+                case 'ArrowUp':
+                case 'p':
+                case 'k':
+                    // Previous error
+                    e.preventDefault();
+                    setSelectedIndex(prev => {
+                        const next = Math.max(prev - 1, 0);
+                        setExpandedIds(new Set([next]));
+                        return next;
+                    });
+                    break;
+                case 'Enter':
+                    // Go to selected error location
+                    e.preventDefault();
+                    if (diagnostics[selectedIndex]?.location) {
+                        const loc = diagnostics[selectedIndex].location;
+                        handleGoToFile(loc.file, loc.line, loc.column);
+                    }
+                    break;
+                case 'f':
+                    // Apply first quick fix if available
+                    if (!e.ctrlKey && !e.metaKey) {
+                        e.preventDefault();
+                        const diag = diagnostics[selectedIndex];
+                        if (diag) {
+                            const fixes = generateQuickFixes(diag);
+                            if (fixes.length > 0) {
+                                handleApplyFix(fixes[0], diag);
+                            }
+                        }
+                    }
+                    break;
+                case 'r':
+                    // Retry compilation
+                    if (!e.ctrlKey && !e.metaKey) {
+                        e.preventDefault();
+                        handleRetryCompilation();
+                    }
+                    break;
+                case 'a':
+                    // AI fix request
+                    if (!e.ctrlKey && !e.metaKey) {
+                        e.preventDefault();
+                        const diag = diagnostics[selectedIndex];
+                        if (diag) {
+                            handleRequestAIFix(diag);
+                        }
+                    }
+                    break;
             }
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [visible]);
+    }, [visible, diagnostics, selectedIndex]);
     
     const toggleExpanded = useCallback((idx) => {
         setExpandedIds(prev => {
@@ -413,6 +642,39 @@ export function ErrorOverlay({ className }) {
         }));
         setVisible(false);
     }, []);
+    
+    const handleApplyFix = useCallback((fix, diagnostic) => {
+        // Dispatch event for editor to apply the quick fix
+        window.dispatchEvent(new CustomEvent('synthi:apply-fix', {
+            detail: { 
+                fix, 
+                diagnostic,
+                location: diagnostic?.location 
+            }
+        }));
+        console.log('[ErrorOverlay] Applying fix:', fix.label);
+    }, []);
+    
+    const handleRetryCompilation = useCallback(() => {
+        setIsRetrying(true);
+        window.dispatchEvent(new CustomEvent('synthi:retry-compile', {
+            detail: { module }
+        }));
+        // Reset retry state after a short delay
+        setTimeout(() => setIsRetrying(false), 2000);
+    }, [module]);
+    
+    const handleRequestAIFix = useCallback((diagnostic) => {
+        // Dispatch event for AI system to analyze and fix
+        window.dispatchEvent(new CustomEvent('synthi:request-ai-fix', {
+            detail: {
+                diagnostic,
+                module,
+                allDiagnostics: diagnostics
+            }
+        }));
+        console.log('[ErrorOverlay] Requesting AI fix for:', diagnostic.message);
+    }, [module, diagnostics]);
     
     const handleDismiss = useCallback(() => {
         setVisible(false);
@@ -485,8 +747,10 @@ export function ErrorOverlay({ className }) {
                             key={idx}
                             diagnostic={diag}
                             isExpanded={expandedIds.has(idx)}
+                            isSelected={selectedIndex === idx}
                             onToggle={() => toggleExpanded(idx)}
                             onGoToFile={handleGoToFile}
+                            onApplyFix={(fix) => handleApplyFix(fix, diag)}
                         />
                     ))}
                 </div>
@@ -495,8 +759,44 @@ export function ErrorOverlay({ className }) {
             {/* Footer */}
             <div className="px-6 py-3 border-t border-gray-800 bg-gray-900/50">
                 <div className="flex items-center justify-between text-sm text-gray-400">
-                    <span>Press <kbd className="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono text-xs">Esc</kbd> to dismiss</span>
-                    <span>The previous working version continues running</span>
+                    <div className="flex items-center gap-4">
+                        <span className="flex items-center gap-1.5">
+                            <Keyboard size={14} />
+                            Shortcuts:
+                        </span>
+                        <span>
+                            <kbd className="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono text-xs">Esc</kbd> dismiss
+                        </span>
+                        <span>
+                            <kbd className="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono text-xs">↑↓</kbd> navigate
+                        </span>
+                        <span>
+                            <kbd className="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono text-xs">Enter</kbd> go to file
+                        </span>
+                        <span>
+                            <kbd className="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono text-xs">f</kbd> quick fix
+                        </span>
+                        <span>
+                            <kbd className="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono text-xs">a</kbd> AI fix
+                        </span>
+                        <span>
+                            <kbd className="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono text-xs">r</kbd> retry
+                        </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <button
+                            onClick={handleRetryCompilation}
+                            disabled={isRetrying}
+                            className={cn(
+                                "flex items-center gap-1.5 px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 transition-colors",
+                                isRetrying && "opacity-50 cursor-not-allowed"
+                            )}
+                        >
+                            <RefreshCw size={14} className={cn(isRetrying && "animate-spin")} />
+                            {isRetrying ? 'Retrying...' : 'Retry'}
+                        </button>
+                        <span className="text-gray-500">Previous version still running</span>
+                    </div>
                 </div>
             </div>
         </div>

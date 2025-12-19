@@ -3,11 +3,13 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { use } from 'react';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent } from '@/redux/workspaceSlice';
-import {
-    selectShowTerminal,
-    selectTreeOnRight,
-    toggleTerminal,
-    setTreeOrientation
+import { 
+    selectShowTerminal, 
+    selectShowEmulatorPreview,
+    selectTreeOnRight, 
+    toggleTerminal, 
+    setTreeOrientation,
+    setEmulatorPreviewVisible
 } from '@/redux/uiSlice';
 import TopNav from '../TopNav.jsx';
 import {
@@ -41,6 +43,8 @@ import ErrorOverlay from '@/components/ErrorOverlay';
 import { GitStatus } from '@/components/git/GitStatus';
 import ActivityBar from '../ActivityBar.jsx';
 import SearchView from './SearchView.jsx';
+import EmulatorPanel from '@/components/emulator/EmulatorPanel';
+import { EMULATOR_STATES } from '@/components/emulator/emulatorStates';
 import StatusBar from '../StatusBar.jsx';
 import WorkspaceHydrator from '@/components/WorkspaceHydrator';
 import { ProblemsPanel } from '@/components/analysis';
@@ -60,6 +64,7 @@ export default function EditorPage({ params }) {
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
     const [useAiSplit, setUseAiSplit] = useState(false);
+    const [emulatorRunNonce, setEmulatorRunNonce] = useState(0);
     const analysisTimeoutRef = useRef(null);
     const lastAnalyzedSignatureRef = useRef('');
     
@@ -68,6 +73,22 @@ export default function EditorPage({ params }) {
     const [isAnalyzingProactive, setIsAnalyzingProactive] = useState(false);
     const proactiveTimeoutRef = useRef(null);
     const lastProactiveSignatureRef = useRef('');
+    
+    // Remove a specific diagnostic by location (called when a fix is applied)
+    const removeDiagnosticByLocation = useCallback((location) => {
+        if (!location) return;
+        
+        setDiagnostics(prev => prev.filter(d => {
+            const loc = d.location || {};
+            // Remove if exact location match
+            const sameStart = loc.line === location.line && loc.column === location.column;
+            const sameEnd = loc.endLine === location.endLine && loc.endColumn === location.endColumn;
+            return !(sameStart && sameEnd);
+        }));
+        
+        // Also invalidate the signature so next analysis runs fresh
+        lastProactiveSignatureRef.current = '';
+    }, []);
 
     useEffect(() => {
         const handleGuiStart = (e) => {
@@ -162,6 +183,7 @@ export default function EditorPage({ params }) {
     // 2. Consume global state directly via selectors
     const activeFile = useAppSelector(selectActiveFile);
     const showTerminal = useAppSelector(selectShowTerminal);
+    const showEmulatorPreview = useAppSelector(selectShowEmulatorPreview);
     const treeOnRight = useAppSelector(selectTreeOnRight);
     const currentContent = useAppSelector(selectCurrentContent);
     const rawFiles = useAppSelector(state => state.workspace.rawFiles);
@@ -234,6 +256,19 @@ export default function EditorPage({ params }) {
     // Run proactive analysis (AI-powered error detection) on content change
     // Track pending AI analysis
     const aiAnalysisRef = useRef(null);
+    const lastContentHashRef = useRef('');
+    
+    // Simple but effective hash function for content comparison
+    const computeContentHash = useCallback((content) => {
+        if (!content) return '';
+        let hash = 0;
+        for (let i = 0; i < content.length; i++) {
+            const char = content.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash; // Convert to 32bit integer
+        }
+        return hash.toString(16);
+    }, []);
 
     useEffect(() => {
         if (!activeFile || !currentContent || !hasLoadedInitialFile) return;
@@ -249,7 +284,33 @@ export default function EditorPage({ params }) {
 
         // Capture the content we're analyzing (for freshness checks)
         const contentToAnalyze = typeof currentContent === 'string' ? currentContent : '';
-        const contentHash = contentToAnalyze.length + ':' + contentToAnalyze.slice(0, 100);
+        const contentHash = computeContentHash(contentToAnalyze);
+        
+        // When content changes, immediately invalidate stale diagnostics
+        if (lastContentHashRef.current && lastContentHashRef.current !== contentHash) {
+            // Filter diagnostics to only keep ones where the text at the location matches
+            setDiagnostics(prev => prev.filter(d => {
+                if (!d.location) return true; // Keep diagnostics without location info
+                const lines = contentToAnalyze.split('\n');
+                const lineIdx = d.location.line ?? 0;
+                if (lineIdx >= lines.length) return false; // Line no longer exists
+                
+                // If the diagnostic has originalText, check if it still exists at that location
+                if (d.originalText) {
+                    const line = lines[lineIdx] || '';
+                    const col = d.location.column ?? 0;
+                    const endCol = d.location.endColumn ?? (col + d.originalText.length);
+                    const textAtLocation = line.slice(col, endCol);
+                    // If the text at the location doesn't match, the diagnostic is stale
+                    if (textAtLocation !== d.originalText) {
+                        return false;
+                    }
+                }
+                
+                return true;
+            }));
+        }
+        lastContentHashRef.current = contentHash;
 
         // Debounce proactive analysis to avoid overwhelming the backend
         proactiveTimeoutRef.current = setTimeout(() => {
@@ -280,8 +341,12 @@ export default function EditorPage({ params }) {
                     setIsAnalyzingProactive(false);
                     
                     // STEP 2: Run AI analysis in background for logic error detection
-                    // Track both cancellation flag and the content hash at analysis time
-                    const aiTracker = { cancelled: false, contentHash };
+                    // Track the exact content that was analyzed for freshness verification
+                    const aiTracker = { 
+                        cancelled: false, 
+                        contentHash,
+                        analyzedContent: contentToAnalyze  // Store actual content for verification
+                    };
                     aiAnalysisRef.current = aiTracker;
                     
                     analyzeProactive({
@@ -291,11 +356,13 @@ export default function EditorPage({ params }) {
                         includeAi: true, // AI tier for logic errors
                     })
                         .then((aiResult) => {
-                            // Only update if not cancelled AND content hasn't changed
-                            // (double-check using ref to catch race conditions)
-                            if (!aiTracker.cancelled && aiAnalysisRef.current === aiTracker) {
+                            // Only update if:
+                            // 1. Not cancelled
+                            // 2. This is still the current tracker
+                            // 3. The content hasn't changed since we started
+                            const isStillCurrent = !aiTracker.cancelled && aiAnalysisRef.current === aiTracker;
+                            if (isStillCurrent) {
                                 const aiDiags = aiResult?.diagnostics || aiResult?.data?.diagnostics || [];
-                                // Merge AI diagnostics with existing (AI tier adds more, doesn't replace)
                                 setDiagnostics(aiDiags);
                             }
                         })
@@ -431,6 +498,13 @@ export default function EditorPage({ params }) {
         const hasRnPackage = await detectReactNativeProject();
         const isReactNative = hasRnImports || hasRnPackage;
         const target = isReactNative ? 'react-native-emulator' : null;
+
+        // Auto-open the UI-only emulator panel when we run a mobile build.
+        // This is intentionally NOT a real emulator: it only shows the preview panel.
+        if (isReactNative) {
+            dispatch(setEmulatorPreviewVisible(true));
+            setEmulatorRunNonce((v) => v + 1); // remount to simulate a fresh boot
+        }
         
         // Derive project root from active file's directory path
         // e.g., "mobile/app.tsx" -> "mobile", "src/screens/Home.tsx" -> "src/screens"
@@ -558,6 +632,7 @@ export default function EditorPage({ params }) {
             onEditorMount={handleEditorMount}
             analysisResult={lastResult}
             diagnostics={diagnostics}
+            removeDiagnosticByLocation={removeDiagnosticByLocation}
             latestCompletion={latestCompletion}
             aiBusy={aiBusy}
             onClearCompletion={handleClearLatestCompletion}
@@ -607,114 +682,150 @@ export default function EditorPage({ params }) {
         </ResizablePanel>
     );
 
+    // UI-only dockable panel (hidden by default). Opening will be hooked up later
+    // via command palette / toolbar (stub only per requirements).
+    const EmulatorPreviewPanel = (
+        <ResizablePanel defaultSize={24} minSize={18} maxSize={55} className="border-l border-[#545454] bg-[#0c0c0e] min-w-0">
+            <EmulatorPanel
+                key={emulatorRunNonce}
+                defaultState={EMULATOR_STATES.BOOTING}
+                onClose={() => dispatch(setEmulatorPreviewVisible(false))}
+            />
+        </ResizablePanel>
+    );
+
     if (workspaceMissing) {
         return <WorkspaceNotFoundModal slug={slug} message={workspaceMissingMessage} open={true} />;
     }
 
     return (
-        <div className={`flex flex-col h-screen overflow-hidden bg-[#09090b] text-[#D7DAE0]`}>
-            <div className={`flex flex-col h-screen bg-[#1e1e1e] text-gray-200`}>
-                {/* Hydrate workspace-specific tabs from localStorage */}
-                <WorkspaceHydrator slug={slug} />
-                <TopNav
-                    title={activeFile ? activeFile.name : 'Synthi Workspace'}
-                    onRun={handleRun}
-                    onToggleTerminal={() => dispatch(toggleTerminal())}
-                    onUndo={handleUndo}
-                    onRedo={handleRedo}
-                    onToggleChat={handleToggleChat}
-                    chatVisible={chatVisible}
-                    onCopyLineUp={handleCopyLineUp}
-                    onCopyLineDown={handleCopyLineDown}
-                    onMoveLineUp={handleMoveLineUp}
-                    onMoveLineDown={handleMoveLineDown}
-                    onDuplicateSelection={handleDuplicateSelection}
-                />
-                {buildLogs.length > 0 && (
-                    <div className="border-b border-[#1a1a1e] bg-[#09090b] px-3 py-2 text-xs font-mono text-[#D7DAE0] max-h-28 overflow-auto">
-                        {buildLogs.map((line, idx) => (
-                            <div key={idx} className="leading-5 whitespace-pre-wrap">{line}</div>
-                        ))}
-                    </div>
+    <div className="flex flex-col h-screen overflow-hidden bg-[#09090b] text-[#D7DAE0]">
+        <div className="flex flex-col flex-1 bg-[#1e1e1e] text-gray-200">
+            {/* Hydrate workspace-specific tabs from localStorage */}
+            <WorkspaceHydrator slug={slug} />
+
+            <TopNav
+                title={activeFile ? activeFile.name : 'Synthi Workspace'}
+                onRun={handleRun}
+                onToggleTerminal={() => dispatch(toggleTerminal())}
+                onUndo={handleUndo}
+                onRedo={handleRedo}
+                onToggleChat={handleToggleChat}
+                chatVisible={chatVisible}
+                onCopyLineUp={handleCopyLineUp}
+                onCopyLineDown={handleCopyLineDown}
+                onMoveLineUp={handleMoveLineUp}
+                onMoveLineDown={handleMoveLineDown}
+                onDuplicateSelection={handleDuplicateSelection}
+            />
+
+            {buildLogs.length > 0 && (
+                <div className="border-b border-[#1a1a1e] bg-[#09090b] px-3 py-2 text-xs font-mono text-[#D7DAE0] max-h-28 overflow-auto">
+                    {buildLogs.map((line, idx) => (
+                        <div key={idx} className="leading-5 whitespace-pre-wrap">
+                            {line}
+                        </div>
+                    ))}
+                </div>
+            )}
+
+            <DraggableVideoWidget
+                guiConfig={guiConfig}
+                setGuiConfig={setGuiConfig}
+                isGuiRunning={isGuiRunning}
+                setIsGuiRunning={setIsGuiRunning}
+                mediaStream={mediaStream}
+                sendGuiEvent={sendGuiEvent}
+            />
+
+            <ResizablePanelGroup
+                direction="horizontal"
+                className="flex-1 min-h-0"
+                key={panelGroupKey}
+            >
+                {treeOnRight ? (
+                    <>
+                        {EditorPanelComponent}
+
+                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+
+                        {FileTreePanel}
+
+                        {chatVisible && (
+                            <>
+                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                {ChatPanel}
+                            </>
+                        )}
+
+                        {showEmulatorPreview && (
+                            <>
+                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                {EmulatorPreviewPanel}
+                            </>
+                        )}
+                    </>
+                ) : (
+                    <>
+                        {FileTreePanel}
+
+                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+
+                        {EditorPanelComponent}
+
+                        {chatVisible && (
+                            <>
+                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                {ChatPanel}
+                            </>
+                        )}
+
+                        {showEmulatorPreview && (
+                            <>
+                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                {EmulatorPreviewPanel}
+                            </>
+                        )}
+                    </>
                 )}
-                <DraggableVideoWidget
-                    guiConfig={guiConfig}
-                    setGuiConfig={setGuiConfig}
-                    isGuiRunning={isGuiRunning}
-                    setIsGuiRunning={setIsGuiRunning}
-                    mediaStream={mediaStream}
-                    sendGuiEvent={sendGuiEvent}
-                />
-                <ResizablePanelGroup
-                    direction="horizontal"
-                    className="flex-1 min-h-0"
-                    key={panelGroupKey}
-                >
-                    {treeOnRight ? (
-                        <>
-                            {EditorPanelComponent}
-                            <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                            {FileTreePanel}
-                            {chatVisible && (
-                                <>
-                                    <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                                    {ChatPanel}
-                                </>
-                            )}
-                        </>
-                    ) : (
-                        <>
-                            {FileTreePanel}
-                            <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                            {EditorPanelComponent}
-                            {chatVisible && (
-                                <>
-                                    <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                                    {ChatPanel}
-                                </>
-                            )}
-                        </>
-                    )}
-                </ResizablePanelGroup>
+            </ResizablePanelGroup>
 
-                {/* Chat is rendered inside the ResizablePanelGroup when visible (see `ChatPanel`) */}
-
-                {/* Problems Panel - Shows diagnostics from proactive analysis */}
-                {showProblemsPanel && (
-                    <div className="h-48 max-h-48 flex-shrink-0 border-t border-[#1a1b24]">
-                        <ProblemsPanel
-                            diagnostics={diagnostics}
-                            summary={diagnosticSummary}
-                            isAnalyzing={isAnalyzingProactive}
-                            filePath={activeFile?.path || activeFile?.name || 'Current File'}
-                            onClose={() => setShowProblemsPanel(false)}
-                            onNavigate={(location) => {
-                                if (editor) {
-                                    const position = {
-                                        lineNumber: (location.line ?? 0) + 1,
-                                        column: (location.column ?? 0) + 1,
-                                    };
-                                    editor.setPosition(position);
-                                    editor.revealPositionInCenter(position);
-                                    editor.focus();
-                                }
-                            }}
-                            className="h-full rounded-none border-0"
-                        />
-                    </div>
-                )}
-
-                {/* Status Bar - VS Code style bottom bar with branch selector */}
-                <StatusBar
-                    slug={slug}
-                    diagnosticSummary={diagnosticSummary}
-                    isAnalyzing={isAnalyzingProactive}
-                    onProblemsClick={() => setShowProblemsPanel(prev => !prev)}
-                />
-
-                {/* Error Overlay for compile/runtime errors */}
-                <ErrorOverlay />
-            </div>
+            {/* Problems Panel */}
+            {showProblemsPanel && (
+                <div className="h-48 max-h-48 flex-shrink-0 border-t border-[#1a1b24]">
+                    <ProblemsPanel
+                        diagnostics={diagnostics}
+                        summary={diagnosticSummary}
+                        isAnalyzing={isAnalyzingProactive}
+                        filePath={activeFile?.path || activeFile?.name || 'Current File'}
+                        onClose={() => setShowProblemsPanel(false)}
+                        onNavigate={(location) => {
+                            if (editor) {
+                                const position = {
+                                    lineNumber: (location.line ?? 0) + 1,
+                                    column: (location.column ?? 0) + 1,
+                                };
+                                editor.setPosition(position);
+                                editor.revealPositionInCenter(position);
+                                editor.focus();
+                            }
+                        }}
+                        className="h-full rounded-none border-0"
+                    />
+                </div>
+            )}
         </div>
-    );
+
+        {/* Status Bar */}
+        <StatusBar
+            slug={slug}
+            diagnosticSummary={diagnosticSummary}
+            isAnalyzing={isAnalyzingProactive}
+            onProblemsClick={() => setShowProblemsPanel(prev => !prev)}
+        />
+
+        {/* Error Overlay */}
+        <ErrorOverlay />
+    </div>
+);
 }

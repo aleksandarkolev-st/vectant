@@ -279,14 +279,59 @@
 }
 
 /* ============================================
-   Inline Fix Preview Styles (Ghost text style)
+   Inline Fix Preview Styles
    ============================================ */
 
 .synthi-fix-preview-strikethrough {
     text-decoration: line-through;
     text-decoration-color: #f87171;
-    opacity: 0.6;
+    opacity: 0.5;
     background-color: rgba(248, 113, 113, 0.1);
+}
+
+/* Fix preview - just the code, shown ABOVE the error line */
+.synthi-fix-preview-code-above {
+    display: flex;
+    align-items: center;
+    background: rgba(34, 197, 94, 0.08);
+    border-left: 2px solid #22c55e;
+    font-family: var(--monaco-monospace-font, 'Consolas', 'Courier New', monospace);
+    font-size: inherit;
+    line-height: inherit;
+    white-space: pre;
+    color: #4ade80;
+}
+
+.synthi-fix-preview-code-above .synthi-fix-indent {
+    /* Preserve indentation */
+}
+
+.synthi-fix-preview-code-above .synthi-fix-code {
+    color: #4ade80;
+}
+
+/* Preview zone - shows full replacement code below the line */
+.synthi-fix-preview-zone {
+    background: rgba(34, 197, 94, 0.1);
+    height: 100%;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    white-space: pre;
+    font-family: var(--monaco-monospace-font, 'Consolas', 'Courier New', monospace);
+}
+
+.synthi-fix-preview-label {
+    color: #22c55e;
+    font-weight: 700;
+}
+
+.synthi-fix-preview-indent {
+    /* This holds the indentation spaces */
+}
+
+.synthi-fix-preview-code {
+    color: #86efac;
 }
 
 .synthi-fix-inline-preview {
@@ -300,4 +345,106 @@
     font-size: inherit;
     pointer-events: none;
     white-space: pre;
+}
+
+/* Full Fix Preview Widget */
+.synthi-fix-preview-widget {
+    background: #1e1e2e;
+    border: 1px solid rgba(147, 51, 234, 0.5);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    max-width: 600px;
+    min-width: 300px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 12px;
+    z-index: 10000;
+    overflow: hidden;
+}
+
+.synthi-fix-preview-widget .synthi-fix-preview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: linear-gradient(90deg, rgba(147, 51, 234, 0.2), rgba(79, 70, 229, 0.15));
+    border-bottom: 1px solid rgba(147, 51, 234, 0.3);
+    font-weight: 500;
+    color: #e0e0e0;
+}
+
+.synthi-fix-preview-widget .synthi-fix-preview-hint {
+    font-size: 10px;
+    color: #888;
+    background: rgba(100, 100, 100, 0.3);
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+.synthi-fix-preview-widget .synthi-fix-preview-body {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+}
+
+.synthi-fix-preview-widget .synthi-fix-preview-section {
+    flex: 1;
+    padding: 8px 12px;
+    min-width: 0;
+}
+
+.synthi-fix-preview-widget .synthi-fix-preview-old {
+    background: rgba(255, 80, 80, 0.08);
+    border-right: 1px solid rgba(100, 100, 100, 0.2);
+}
+
+.synthi-fix-preview-widget .synthi-fix-preview-new {
+    background: rgba(80, 200, 80, 0.08);
+}
+
+.synthi-fix-preview-widget .synthi-fix-preview-delete {
+    background: rgba(255, 80, 80, 0.15);
+}
+
+.synthi-fix-preview-widget .synthi-fix-preview-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+    color: #888;
+}
+
+.synthi-fix-preview-widget .synthi-fix-preview-old .synthi-fix-preview-label {
+    color: #f87171;
+}
+
+.synthi-fix-preview-widget .synthi-fix-preview-new .synthi-fix-preview-label {
+    color: #4ade80;
+}
+
+.synthi-fix-preview-widget .synthi-fix-preview-code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: #d4d4d4;
+    margin: 0;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.synthi-fix-preview-widget .synthi-fix-preview-old .synthi-fix-preview-code {
+    text-decoration: line-through;
+    opacity: 0.7;
+}
+
+.synthi-fix-preview-widget .synthi-fix-preview-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 8px;
+    color: #888;
+    font-size: 16px;
+    background: rgba(100, 100, 100, 0.1);
 }

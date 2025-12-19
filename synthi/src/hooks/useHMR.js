@@ -13,24 +13,37 @@ import { HMRRuntime } from '@/lib/hmr-runtime';
  * - full-reload-required: Module requires full page reload
  * - fail: HMR system error
  */
+
+// Maximum number of history entries to keep (prevents memory leaks)
+const MAX_HMR_HISTORY_SIZE = 50;
+
 export function useHMR() {
     const runtimeRef = useRef(null);
     const [status, setStatus] = useState('idle');
     const [lastUpdate, setLastUpdate] = useState(null);
     const [hmrHistory, setHmrHistory] = useState([]);
+    // Track mounted state to prevent updates after unmount
+    const isMountedRef = useRef(true);
 
     // Dispatch HMR status event for UI components
     const dispatchHMRStatus = useCallback((statusData) => {
-        window.dispatchEvent(new CustomEvent('synthi:hmr-status', {
-            detail: statusData
-        }));
+        if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('synthi:hmr-status', {
+                detail: statusData
+            }));
+        }
     }, []);
 
     useEffect(() => {
+        isMountedRef.current = true;
+        
         // Initialize runtime
         if (!runtimeRef.current) {
             runtimeRef.current = new HMRRuntime({
                 onStatusChange: (newStatus) => {
+                    // SAFETY: Check if still mounted before state updates
+                    if (!isMountedRef.current) return;
+                    
                     setStatus(newStatus);
                     console.log(`[HMR] Status: ${newStatus}`);
                     
@@ -52,24 +65,34 @@ export function useHMR() {
             });
             
             // Expose runtime globally for debugging or direct access if needed
-            window.__SYNTHI_HMR_RUNTIME__ = runtimeRef.current;
+            if (typeof window !== 'undefined') {
+                window.__SYNTHI_HMR_RUNTIME__ = runtimeRef.current;
+            }
         }
 
         const handleHMRMessage = (event) => {
+            // SAFETY: Check if still mounted
+            if (!isMountedRef.current) return;
+            
             const message = event.detail;
             if (runtimeRef.current) {
                 console.log('[HMR] Received message:', message);
                 
-                // Track HMR updates in history
+                // Track HMR updates in history with bounded size
                 if (message.type === 'update' || message.type === 'hmr-status') {
-                    setLastUpdate({
+                    const newEntry = {
                         timestamp: Date.now(),
                         ...message
+                    };
+                    setLastUpdate(newEntry);
+                    // SAFETY: Bound history size to prevent memory leaks
+                    setHmrHistory(prev => {
+                        const updated = [...prev, newEntry];
+                        // Keep only the most recent entries
+                        return updated.length > MAX_HMR_HISTORY_SIZE 
+                            ? updated.slice(-MAX_HMR_HISTORY_SIZE) 
+                            : updated;
                     });
-                    setHmrHistory(prev => [...prev.slice(-9), {
-                        timestamp: Date.now(),
-                        ...message
-                    }]);
                 }
                 
                 // Handle hmr-status messages specially for UI feedback
@@ -173,6 +196,8 @@ export function useHMR() {
         window.addEventListener('synthi:hmr-update', handleHMRMessage);
 
         return () => {
+            // SAFETY: Mark as unmounted to prevent state updates after cleanup
+            isMountedRef.current = false;
             window.removeEventListener('synthi:hmr-update', handleHMRMessage);
         };
     }, [dispatchHMRStatus]);

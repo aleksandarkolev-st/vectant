@@ -34,56 +34,82 @@ from .types import (
 
 
 # Prompt template for AI error prediction - PRECISE SENIOR DEV LEVEL
-AI_ERROR_PREDICTION_PROMPT = """You are a senior software engineer conducting a thorough code review. Analyze this {language} code for bugs that would cause incorrect runtime behavior.
+AI_ERROR_PREDICTION_PROMPT = """You are an expert code reviewer finding REAL bugs that cause incorrect behavior.
 
-ANALYSIS APPROACH:
-1. Trace through the code mentally - what happens for different inputs?
-2. Check boundary conditions and edge cases
-3. Verify logic operators (&&, ||, !, ==, !=, <, >, <=, >=)
-4. Check off-by-one errors in loops and array access
-5. Verify function return values and early returns
-6. Check for swapped conditions or inverted logic
+## YOUR TASK
+Find bugs in the code below. Only report issues that:
+1. Will cause WRONG OUTPUT or RUNTIME ERROR with specific inputs
+2. You can PROVE with a concrete example (e.g., "input X gives Y, but should give Z")
 
-RESPOND WITH A JSON ARRAY. Each issue must have these EXACT fields:
+## WHAT TO LOOK FOR
+- Wrong operators: `<` vs `<=`, `==` vs `!=`, `&&` vs `||`
+- Off-by-one errors in loops or array access
+- Missing edge cases: null, 0, negative, empty, boundary values
+- Incorrect return values or missing returns
+- Infinite loops or recursion without termination
+- Logic that contradicts the function's purpose
 
-{{
-  "line_start": <number>,        // First line of the problematic code (1-indexed)
-  "line_end": <number>,          // Last line of the problematic code (1-indexed)  
-  "snippet": "<string>",         // EXACT code to highlight - copy CHARACTER BY CHARACTER from source
-  "message": "<string>",         // Clear, actionable description (like a PR comment)
-  "explanation": "<string>",     // WHY this is wrong - trace through with example values
-  "severity": "error"|"warning", // error = will definitely fail, warning = likely bug
-  "confidence": <0.0-1.0>,       // Your confidence this is a real bug
-  "fix_snippet": "<string>",     // REQUIRED: The corrected code (drop-in replacement for snippet)
-  "category": "<string>"         // One of: logic_error, off_by_one, wrong_operator, wrong_condition, boundary_error, missing_check
-}}
+## WHAT TO IGNORE (NOT BUGS)
+- Style, formatting, naming conventions
+- Missing comments or documentation  
+- Performance suggestions (unless causes timeout)
+- Best practices that don't affect correctness
+- Code that handles edge cases correctly (don't suggest adding checks that exist)
 
-CRITICAL - EVERY ISSUE MUST HAVE A FIX:
-- "snippet" MUST be copied exactly from the code (preserve spaces, operators, etc.)
-- "fix_snippet" MUST be provided - show how to fix the issue
-- For missing validation: snippet = the function/if line, fix_snippet = add the check
-- For wrong logic: snippet = the wrong expression, fix_snippet = corrected expression
+## CRITICAL RULES
+1. READ THE ACTUAL CODE - don't assume what it does
+2. If a check exists (like `if (x < 0)`), don't report it as missing
+3. `if (x < 0)` and `if (x == 0)` are DIFFERENT checks - one tests negative, one tests zero
+4. Only report bugs you can PROVE with input → expected → actual
 
-EXAMPLE 1 - Missing negative check:
-Code: `int power(int base, int exp) {{ if (exp == 0) return 1; return base * power(base, exp - 1); }}`
-Response: [{{"line_start": 1, "line_end": 1, "snippet": "if (exp == 0) return 1;", "message": "Missing check for negative exponents causes infinite recursion", "explanation": "When exp is negative, exp-1 goes to -2, -3, etc. forever. power(2, -1) will stack overflow.", "severity": "error", "confidence": 0.95, "fix_snippet": "if (exp < 0) return 0; if (exp == 0) return 1;", "category": "missing_check"}}]
+## RESPONSE FORMAT
+Return ONLY a JSON array (no markdown, no explanation outside JSON):
+```json
+[
+  {{
+    "line_start": 5,
+    "line_end": 5,
+    "snippet": "exact code from source to highlight",
+    "message": "Brief bug description",
+    "explanation": "PROOF: When input=X, this returns Y but should return Z because...",
+    "severity": "error",
+    "confidence": 0.9,
+    "fix_snippet": "corrected code to replace snippet",
+    "category": "logic_error"
+  }}
+]
+```
 
-EXAMPLE 2 - Wrong operator:
-Code line 5: `if (n % 2 == 0) {{ cout << "Odd"; }}`
-Response: [{{"line_start": 5, "line_end": 5, "snippet": "n % 2 == 0", "message": "Condition checks for even but prints 'Odd'", "explanation": "n % 2 == 0 is true when n is EVEN, but the code prints 'Odd'. For n=4: 4%2=0, prints 'Odd' incorrectly.", "severity": "error", "confidence": 0.95, "fix_snippet": "n % 2 != 0", "category": "wrong_operator"}}]
+## FIELD RULES
+- `snippet`: Copy EXACT code from source (what to replace)
+- `fix_snippet`: The CORRECTED code (replacement). Use "" only to DELETE code.
+- `confidence`: 0.0-1.0. Use 0.9+ only if you can prove the bug.
+- `category`: logic_error | off_by_one | wrong_operator | boundary_error | missing_check
+- `severity`: "error" for bugs causing wrong results, "warning" for potential issues
 
-EXAMPLE 3 - Integer overflow risk:
-Code: `int factorial(int n) {{ int result = 1; for(int i=1; i<=n; i++) result *= i; return result; }}`
-Response: [{{"line_start": 1, "line_end": 1, "snippet": "int result = 1;", "message": "Integer overflow for n > 12", "explanation": "13! = 6,227,020,800 exceeds INT_MAX (2,147,483,647). factorial(13) overflows.", "severity": "warning", "confidence": 0.9, "fix_snippet": "long long result = 1;", "category": "boundary_error"}}]
+## EXAMPLES
 
-RULES:
-- ALWAYS provide fix_snippet - this is required for the quick fix feature
-- snippet must match the code EXACTLY (copy-paste precision)
-- Only report bugs that cause INCORRECT BEHAVIOR
-- If no bugs found, return: []
-- JSON only, no markdown
+### Example 1: Wrong operator
+Code: `if (n % 2 == 0) print("odd")`
+Bug: Prints "odd" when n is even (wrong operator)
+```json
+[{{"line_start":1,"line_end":1,"snippet":"n % 2 == 0","message":"Condition is true for even numbers but prints 'odd'","explanation":"PROOF: n=4 → 4%2=0 → true → prints 'odd'. Should use n%2!=0","severity":"error","confidence":0.95,"fix_snippet":"n % 2 != 0","category":"wrong_operator"}}]
+```
 
-CODE TO ANALYZE:
+### Example 2: Missing base case
+Code: `int f(int n) {{ return n * f(n-1); }}`
+Bug: No base case causes infinite recursion
+```json
+[{{"line_start":1,"line_end":1,"snippet":"return n * f(n-1);","message":"Missing base case causes infinite recursion","explanation":"PROOF: f(1) calls f(0) calls f(-1)... never stops. Need base case for n<=1","severity":"error","confidence":0.95,"fix_snippet":"if (n <= 1) return 1; return n * f(n-1);","category":"missing_check"}}]
+```
+
+### Example 3: NOT a bug (edge case handled)
+Code: `int abs(int x) {{ if (x < 0) return -x; return x; }}`
+Response: `[]`  ← Empty because the negative case IS handled
+
+If no bugs found or uncertain, return: `[]`
+
+## CODE TO REVIEW
 ```{language}
 {code}
 ```
@@ -344,6 +370,29 @@ class AIErrorPredictor:
         if end_line_num == line_num and end_column <= column:
             end_column = column + 1  # At least 1 character
         
+        # Extract the original text at the diagnostic location for staleness checking
+        original_text = None
+        if snippet_found and snippet:
+            original_text = snippet
+        else:
+            # Try to get the text from the location
+            try:
+                if line_num == end_line_num:
+                    original_text = lines[line_num][column:end_column] if line_num < len(lines) else ""
+                else:
+                    # Multi-line: get the text spanning the range
+                    text_parts = []
+                    for i in range(line_num, min(end_line_num + 1, len(lines))):
+                        if i == line_num:
+                            text_parts.append(lines[i][column:])
+                        elif i == end_line_num:
+                            text_parts.append(lines[i][:end_column])
+                        else:
+                            text_parts.append(lines[i])
+                    original_text = '\n'.join(text_parts)
+            except Exception:
+                original_text = None
+        
         # Build diagnostic
         diagnostic = Diagnostic(
             message=message,
@@ -360,19 +409,29 @@ class AIErrorPredictor:
             source="synthi-ai",
             explanation=item.get("explanation", ""),
             confidence=confidence,
+            originalText=original_text,
         )
         
-        # Add fix if we have fix_snippet - be lenient about adding fixes
-        if fix_snippet:
-            # Create a meaningful description
-            if len(fix_snippet) < 60:
-                desc = f"Apply fix: {fix_snippet}"
+        # Add fix - support both replacement and deletion (empty fix_snippet)
+        # Check if fix_snippet was explicitly provided (even if empty for deletion)
+        has_fix = "fix_snippet" in item or "correct" in item
+        
+        if has_fix:
+            # Empty fix_snippet means DELETE the code
+            if not fix_snippet:
+                desc = f"Remove: {snippet[:60]}..." if len(snippet) > 60 else f"Remove: {snippet}"
             else:
-                desc = f"Apply suggested fix ({len(fix_snippet)} chars)"
+                # Show the full replacement for better context in the UI
+                # Format multi-line for readability
+                preview = fix_snippet.replace('\n', ' ↵ ')
+                if len(preview) > 100:
+                    desc = f"Replace with: {preview[:100]}..."
+                else:
+                    desc = f"Replace with: {preview}"
             
             diagnostic.fixes.append(CodeFix(
                 description=desc,
-                replacement_text=fix_snippet,
+                replacement_text=fix_snippet,  # Empty string = deletion
                 location=DiagnosticLocation(
                     line=line_num,
                     column=column,
@@ -382,10 +441,9 @@ class AIErrorPredictor:
                 is_preferred=True,
             ))
         elif snippet_found and snippet:
-            # Even without fix_snippet, create a placeholder fix that shows the issue
-            # This helps users at least see what code needs to change
+            # No fix provided - create a placeholder
             diagnostic.fixes.append(CodeFix(
-                description=f"Review and fix: {message[:50]}..." if len(message) > 50 else f"Review and fix: {message}",
+                description=f"Review: {message[:50]}..." if len(message) > 50 else f"Review: {message}",
                 replacement_text=f"/* TODO: {message} */\n{snippet}",
                 location=DiagnosticLocation(
                     line=line_num,

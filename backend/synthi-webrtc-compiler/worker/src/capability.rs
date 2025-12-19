@@ -485,6 +485,16 @@ pub enum HmrStatus {
         key: String,
         reason: String,
     },
+    // ============================================================
+    // STATE MIGRATION STATUS EVENTS
+    // ============================================================
+    /// Field-level state migration applied (like Next.js Fast Refresh)
+    StateMigrated {
+        module: String,
+        preserved_count: usize,
+        reset_count: usize,
+        new_count: usize,
+    },
 }
 
 impl HmrStatus {
@@ -576,6 +586,16 @@ impl HmrStatus {
             namespace: namespace.to_string(),
             key: key.to_string(),
             reason: reason.to_string(),
+        }
+    }
+    
+    /// Create state migrated status (field-level diffing applied)
+    pub fn state_migrated(module: &str, preserved_count: usize, reset_count: usize, new_count: usize) -> Self {
+        HmrStatus::StateMigrated {
+            module: module.to_string(),
+            preserved_count,
+            reset_count,
+            new_count,
         }
     }
 }

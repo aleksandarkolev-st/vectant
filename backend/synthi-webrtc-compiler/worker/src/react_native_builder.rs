@@ -465,6 +465,14 @@ pub async fn build_apk_for_emulator(
     } else {
         android_dir.join("gradlew")
     };
+
+    if !gradlew.exists() {
+        bail!(
+            "Gradle wrapper not found at {} (expected Android project at {}). Ensure the React Native project contains android/gradlew.",
+            gradlew.display(),
+            android_dir.display()
+        );
+    }
     
     // Ensure gradlew is executable (Unix only)
     #[cfg(unix)]
@@ -478,10 +486,17 @@ pub async fn build_apk_for_emulator(
     }
     
     if let Some(ref callback) = log_callback {
-        callback(format!("Running: ./gradlew {}", gradle_task));
+        callback(format!(
+            "Running Gradle wrapper: {} {} (cwd={})",
+            gradlew.display(),
+            gradle_task,
+            android_dir.display()
+        ));
     }
-    
-    // Construct Gradle command
+
+    // Construct Gradle command (direct exec) with a fallback via bash/sh.
+    // In some environments, the wrapper can fail to exec with ENOENT due to
+    // shebang/line-ending issues; bash/sh invocation is more robust.
     let mut cmd = Command::new(&gradlew);
     cmd.current_dir(&android_dir)
         .arg(gradle_task)
@@ -489,9 +504,75 @@ pub async fn build_apk_for_emulator(
         .envs(&config.env)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    
-    // Spawn and stream output
-    let mut child = cmd.spawn().context("Failed to spawn gradle build")?;
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            // Only try fallbacks for "not found" (os error 2).
+            // Other errors (like permission denied) should be surfaced as-is.
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return Err(anyhow::Error::new(e))
+                    .context("Failed to spawn gradle build")
+                    .context(format!("gradlew={} cwd={}", gradlew.display(), android_dir.display()));
+            }
+
+            let mut tried: Vec<&'static str> = vec![];
+            let mut last_fallback_err: Option<std::io::Error> = None;
+            let mut spawned: Option<tokio::process::Child> = None;
+
+            for shell in ["bash", "sh"] {
+                tried.push(shell);
+                let mut alt = Command::new(shell);
+                alt.current_dir(&android_dir)
+                    .arg(gradlew.as_os_str())
+                    .arg(gradle_task)
+                    .args(&config.extra_gradle_args)
+                    .envs(&config.env)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+
+                match alt.spawn() {
+                    Ok(c) => {
+                        if let Some(ref callback) = log_callback {
+                            callback(format!("Gradle wrapper fallback via {} succeeded", shell));
+                        }
+                        spawned = Some(c);
+                        break;
+                    }
+                    Err(e2) => {
+                        last_fallback_err = Some(e2);
+                        if let Some(ref callback) = log_callback {
+                            callback(format!(
+                                "Gradle wrapper fallback via {} failed: {}",
+                                shell,
+                                last_fallback_err.as_ref().unwrap()
+                            ));
+                        }
+                        // try next
+                    }
+                }
+            }
+
+            if let Some(c) = spawned {
+                c
+            } else {
+                let fallback_context = last_fallback_err
+                    .as_ref()
+                    .map(|err| format!(" last_fallback_error={}", err))
+                    .unwrap_or_default();
+
+                return Err(anyhow::Error::new(e))
+                    .context("Failed to spawn gradle build (direct exec and bash/sh fallback)")
+                    .context(format!(
+                        "gradlew={} cwd={} tried={:?}{}",
+                        gradlew.display(),
+                        android_dir.display(),
+                        tried,
+                        fallback_context
+                    ));
+            }
+        }
+    };
     
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
@@ -504,17 +585,17 @@ pub async fn build_apk_for_emulator(
     // Stream output lines
     loop {
         tokio::select! {
-            line = stdout_reader.next_line() => {
-                match line {
-                    Ok(Some(l)) => {
+            stdout_res = stdout_reader.next_line() => {
+                match stdout_res {
+                    Ok(Some(line_text)) => {
                         if let Some(ref callback) = log_callback {
-                            callback(l.clone());
+                            callback(line_text.clone());
                         }
                         // Parse for diagnostics
-                        if let Some(diag) = parse_gradle_diagnostic(&l) {
+                        if let Some(diag) = parse_gradle_diagnostic(&line_text) {
                             diagnostics.push(diag);
                         }
-                        if let Some(diag) = parse_metro_diagnostic(&l) {
+                        if let Some(diag) = parse_metro_diagnostic(&line_text) {
                             diagnostics.push(diag);
                         }
                     }
@@ -525,13 +606,13 @@ pub async fn build_apk_for_emulator(
                     }
                 }
             }
-            line = stderr_reader.next_line() => {
-                match line {
-                    Ok(Some(l)) => {
+            stderr_res = stderr_reader.next_line() => {
+                match stderr_res {
+                    Ok(Some(line_text)) => {
                         if let Some(ref callback) = log_callback {
-                            callback(format!("[stderr] {}", l));
+                            callback(format!("[stderr] {}", line_text));
                         }
-                        if let Some(diag) = parse_gradle_diagnostic(&l) {
+                        if let Some(diag) = parse_gradle_diagnostic(&line_text) {
                             diagnostics.push(diag);
                         }
                     }

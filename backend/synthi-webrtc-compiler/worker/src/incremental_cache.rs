@@ -10,11 +10,11 @@
 // - Separate tracking for compile vs link steps
 // - Automatic cleanup of stale entries
 // - Thread-safe async access
+// - CRC32 integrity validation for cached files
 // ============================================================
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
 use tokio::sync::RwLock;
@@ -24,6 +24,36 @@ use serde::{Serialize, Deserialize};
 /// Maximum cache size in bytes (100 MB default)
 const MAX_CACHE_SIZE_BYTES: u64 = 100 * 1024 * 1024;
 
+/// Calculate CRC32 checksum for integrity validation
+fn calculate_crc32(data: &[u8]) -> u32 {
+    // Simple CRC32 implementation (IEEE polynomial)
+    const CRC32_TABLE: [u32; 256] = {
+        let mut table = [0u32; 256];
+        let mut i = 0;
+        while i < 256 {
+            let mut crc = i as u32;
+            let mut j = 0;
+            while j < 8 {
+                if crc & 1 != 0 {
+                    crc = (crc >> 1) ^ 0xEDB88320;
+                } else {
+                    crc >>= 1;
+                }
+                j += 1;
+            }
+            table[i] = crc;
+            i += 1;
+        }
+        table
+    };
+    
+    let mut crc = 0xFFFFFFFF_u32;
+    for byte in data {
+        let index = ((crc ^ (*byte as u32)) & 0xFF) as usize;
+        crc = (crc >> 8) ^ CRC32_TABLE[index];
+    }
+    !crc
+}
 /// Maximum age for cache entries (1 hour)
 const MAX_CACHE_AGE_SECS: u64 = 3600;
 
@@ -44,6 +74,9 @@ pub struct CacheEntry {
     pub created_at: u64,
     /// Last access timestamp
     pub last_accessed: u64,
+    /// CRC32 checksum of the object file for integrity validation
+    #[serde(default)]
+    pub checksum: u32,
 }
 
 /// Compilation unit identifier
@@ -129,6 +162,34 @@ impl IncrementalCache {
                     .as_secs();
                 
                 if now - entry.created_at < MAX_CACHE_AGE_SECS {
+                    // SAFETY: Validate integrity with checksum before returning
+                    if entry.checksum != 0 {
+                        match std::fs::read(&entry.object_path) {
+                            Ok(data) => {
+                                let actual_checksum = calculate_crc32(&data);
+                                if actual_checksum != entry.checksum {
+                                    eprintln!("[Cache] CORRUPTED: {} (expected CRC32 {:08X}, got {:08X})", 
+                                              entry.object_path.display(), entry.checksum, actual_checksum);
+                                    // Remove corrupted entry
+                                    let size = entry.size_bytes;
+                                    let path = entry.object_path.clone();
+                                    index.remove(key);
+                                    *self.total_size.write().await -= size;
+                                    let _ = std::fs::remove_file(&path);
+                                    return None;
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("[Cache] Failed to read for integrity check: {}", e);
+                                // File unreadable, remove entry
+                                let size = entry.size_bytes;
+                                index.remove(key);
+                                *self.total_size.write().await -= size;
+                                return None;
+                            }
+                        }
+                    }
+                    
                     // Update last accessed
                     entry.last_accessed = now;
                     return Some(entry.object_path.clone());
@@ -157,6 +218,9 @@ impl IncrementalCache {
         let size = object_data.len() as u64;
         self.maybe_evict(size).await;
         
+        // Calculate checksum for integrity validation
+        let checksum = calculate_crc32(object_data);
+        
         // Write object file
         let object_path = self.cache_dir.join(format!("{}.o", key));
         fs::write(&object_path, object_data).await?;
@@ -174,6 +238,7 @@ impl IncrementalCache {
             size_bytes: size,
             created_at: now,
             last_accessed: now,
+            checksum,
         };
         
         // Update index
