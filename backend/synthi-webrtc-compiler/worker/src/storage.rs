@@ -9,7 +9,6 @@ use object_store::{
     ObjectStore, path::Path,
 };
 use std::sync::Arc;
-use std::collections::HashSet;
 
 // Helper function to send progress updates
 async fn send_progress_update(
