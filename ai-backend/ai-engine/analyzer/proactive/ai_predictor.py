@@ -59,6 +59,8 @@ Find bugs and design issues. Only report:
 1. Bugs that cause WRONG OUTPUT or RUNTIME ERROR (with proof)
 2. Design flaws that will cause problems as code grows
 
+{include_context}
+
 ## WHAT TO LOOK FOR
 
 ### Bugs (HIGH CONFIDENCE - prove with examples):
@@ -79,12 +81,14 @@ Find bugs and design issues. Only report:
 - Performance (unless causes timeout/OOM)
 - Best practices that don't affect correctness
 - Edge cases that ARE already handled
+- **IMPORTANT: Do NOT report missing includes/imports if the symbol is listed as AVAILABLE in the include context above**
 
 ## CRITICAL RULES
 1. READ THE ACTUAL CODE - don't assume what it does
 2. If a check exists (like `if (x < 0)`), don't report it as missing
 3. Only report bugs you can PROVE with input → expected → actual
 4. For design issues, explain WHY the current design is problematic
+5. **Do NOT suggest adding #include when the symbol is already available via transitive includes**
 
 ## RESPONSE FORMAT
 Return ONLY a JSON array:
@@ -141,6 +145,8 @@ Analyze ALL provided files for:
 3. **Logic errors**: Bugs that will cause incorrect behavior
 4. **Design improvements**: Better ways to structure the code
 
+{include_context}
+
 ## FILES IN WORKSPACE
 {files_section}
 
@@ -155,6 +161,7 @@ Analyze ALL provided files for:
 - Type mismatches between expected and actual values across files
 - Missing exports that other files try to import
 - Header file changes that break source files (C/C++)
+- **BUT: Do NOT report missing includes if the symbol is available via transitive includes (check AVAILABLE SYMBOLS above)**
 
 ### Architecture Issues:
 - Circular dependencies between modules
@@ -207,15 +214,16 @@ Return a JSON object with diagnostics for ANY file in the workspace:
 - `cross_file`: Issue spanning multiple files
 - `type_error`: Type mismatch (especially across files)
 - `design_issue`: Architectural problem
-- `missing_import`: Symbol used but not imported
+- `missing_import`: Symbol used but not imported (ONLY if symbol is NOT in available symbols list)
 - `wrong_signature`: Function called incorrectly
 
 ## CRITICAL RULES
 1. **Analyze ALL files**, not just the focus file - bugs often hide in interactions
 2. For cross-file issues, ALWAYS check the actual definitions in other files
-3. Don't suggest adding code that already exists
-4. When suggesting fixes, prefer DESIGN improvements over quick patches
-5. Include `related_files` for any cross-file issue to help navigation
+3. **IMPORTANT: Do NOT suggest adding includes/imports for symbols that are already AVAILABLE via transitive includes**
+4. Don't suggest adding code that already exists
+5. When suggesting fixes, prefer DESIGN improvements over quick patches
+6. Include `related_files` for any cross-file issue to help navigation
 
 If no issues found, return: {{"diagnostics": [], "suggestions": []}}
 
@@ -326,6 +334,104 @@ class AIErrorPredictor:
             elapsed_ms=elapsed_ms,
         )
     
+    # Standard library headers and their symbols (for C/C++)
+    STD_LIBRARY_SYMBOLS = {
+        'iostream': {'cout', 'cin', 'cerr', 'clog', 'endl', 'flush', 'ostream', 'istream', 'ios'},
+        'string': {'string', 'wstring', 'basic_string', 'to_string', 'stoi', 'stol', 'stof', 'stod'},
+        'vector': {'vector'},
+        'map': {'map', 'multimap'},
+        'set': {'set', 'multiset'},
+        'unordered_map': {'unordered_map', 'unordered_multimap'},
+        'unordered_set': {'unordered_set', 'unordered_multiset'},
+        'algorithm': {'sort', 'find', 'copy', 'transform', 'for_each', 'count', 'fill'},
+        'memory': {'unique_ptr', 'shared_ptr', 'weak_ptr', 'make_unique', 'make_shared'},
+        'cstdio': {'printf', 'scanf', 'sprintf', 'sscanf', 'fprintf', 'fscanf', 'FILE', 'stdin', 'stdout', 'stderr'},
+        'cstring': {'strlen', 'strcpy', 'strcat', 'strcmp', 'memcpy', 'memset', 'memmove'},
+        'cmath': {'sin', 'cos', 'tan', 'sqrt', 'pow', 'abs', 'floor', 'ceil', 'log', 'exp'},
+        'cstdlib': {'malloc', 'free', 'calloc', 'realloc', 'exit', 'atoi', 'atof', 'rand', 'srand'},
+        'fstream': {'ifstream', 'ofstream', 'fstream'},
+        'sstream': {'stringstream', 'istringstream', 'ostringstream'},
+        'functional': {'function', 'bind', 'placeholders'},
+        'utility': {'pair', 'make_pair', 'move', 'swap', 'forward'},
+    }
+    
+    def _build_include_context(
+        self,
+        file: FileContext,
+        related_files: Optional[List[FileContext]],
+    ) -> str:
+        """
+        Build context about available symbols from includes.
+        
+        This helps the AI understand what symbols are already available
+        via direct or transitive includes.
+        """
+        if file.language.lower() not in ('cpp', 'c++', 'c', 'h', 'hpp'):
+            return ""
+        
+        lines = file.content.splitlines()
+        available_symbols = set()
+        include_chain = []  # Track include chain for context
+        
+        # Find direct includes
+        direct_includes = set()
+        for line in lines:
+            stripped = line.strip()
+            match = re.match(r'#include\s*[<"]([^>"]+)[>"]', stripped)
+            if match:
+                header = match.group(1)
+                direct_includes.add(header)
+                header_base = header.replace('.h', '').replace('.hpp', '')
+                if header_base in self.STD_LIBRARY_SYMBOLS:
+                    symbols = self.STD_LIBRARY_SYMBOLS[header_base]
+                    available_symbols.update(symbols)
+                    include_chain.append(f"  - <{header}> provides: {', '.join(sorted(symbols))}")
+        
+        # Process related files (transitive includes)
+        if related_files:
+            processed = set()
+            files_to_check = []
+            
+            # Match direct includes to related files
+            for header in direct_includes:
+                header_lower = header.lower()
+                for rf in related_files:
+                    rf_name = rf.path.lower().split('/')[-1].split('\\')[-1]
+                    if rf_name == header_lower:
+                        files_to_check.append((rf, header))
+            
+            # Process matched files
+            while files_to_check:
+                rf, via_header = files_to_check.pop(0)
+                if rf.path in processed:
+                    continue
+                processed.add(rf.path)
+                
+                # Check includes in this file
+                for line in rf.content.splitlines():
+                    stripped = line.strip()
+                    match = re.match(r'#include\s*[<"]([^>"]+)[>"]', stripped)
+                    if match:
+                        nested_header = match.group(1)
+                        header_base = nested_header.replace('.h', '').replace('.hpp', '')
+                        if header_base in self.STD_LIBRARY_SYMBOLS:
+                            symbols = self.STD_LIBRARY_SYMBOLS[header_base]
+                            available_symbols.update(symbols)
+                            include_chain.append(f"  - <{nested_header}> (via {via_header}) provides: {', '.join(sorted(symbols))}")
+        
+        if not available_symbols:
+            return ""
+        
+        context = """## AVAILABLE SYMBOLS (from includes)
+The following symbols are ALREADY AVAILABLE in this code via direct or transitive includes.
+Do NOT report missing includes for these symbols:
+
+"""
+        context += "\n".join(include_chain) if include_chain else ""
+        context += f"\n\n**All available symbols**: {', '.join(sorted(available_symbols))}\n"
+        
+        return context
+    
     async def _run_analysis(
         self,
         file: FileContext,
@@ -334,9 +440,13 @@ class AIErrorPredictor:
     ) -> List[Diagnostic]:
         """Run the actual AI analysis."""
         
+        # Build include context for the prompt
+        include_context = self._build_include_context(file, related_files)
+        
         # Build the prompt - simple string replacement
         prompt = AI_ERROR_PREDICTION_PROMPT.replace("{language}", file.language) \
-                                           .replace("{code}", file.content)
+                                           .replace("{code}", file.content) \
+                                           .replace("{include_context}", include_context)
         
         # Call the LLM
         response = await self._provider.ask_llm(
@@ -592,21 +702,40 @@ class AIErrorPredictor:
         
         return None
     
+    # Keywords that indicate the same type of issue
+    DUPLICATE_KEYWORDS = {
+        'iostream': {'iostream', 'cout', 'cin', 'cerr', 'clog', 'endl'},
+        'include': {'include', 'import', 'missing'},
+        'undefined': {'undefined', 'undeclared', 'not defined', 'unknown'},
+        'unused': {'unused', 'never used', 'not used'},
+        'uninitialized': {'uninitialized', 'not initialized', 'garbage'},
+        'memory': {'memory', 'leak', 'malloc', 'free', 'delete'},
+        'null': {'null', 'nullptr', 'nil', 'none', 'nullpointer'},
+        'type': {'type', 'mismatch', 'incompatible'},
+    }
+    
     def _filter_duplicates(
         self,
         new_diagnostics: List[Diagnostic],
         existing: List[Diagnostic],
     ) -> List[Diagnostic]:
-        """Filter out diagnostics that overlap with existing ones."""
+        """Filter out diagnostics that overlap with existing ones from static/semantic analysis."""
         filtered = []
         
         for new_diag in new_diagnostics:
             is_duplicate = False
             
             for existing_diag in existing:
-                # Check if they're on the same line and similar message
-                if (abs(new_diag.location.line - existing_diag.location.line) <= 1 and
-                    self._similar_message(new_diag.message, existing_diag.message)):
+                # Check if they're on same/nearby line
+                line_match = abs(new_diag.location.line - existing_diag.location.line) <= 2
+                
+                # Check for similar message content
+                msg_similar = self._similar_message(new_diag.message, existing_diag.message)
+                
+                # Check for same category of issue (e.g., both about includes)
+                category_match = self._same_issue_category(new_diag.message, existing_diag.message)
+                
+                if line_match and (msg_similar or category_match):
                     is_duplicate = True
                     break
             
@@ -614,6 +743,19 @@ class AIErrorPredictor:
                 filtered.append(new_diag)
         
         return filtered
+    
+    def _same_issue_category(self, msg1: str, msg2: str) -> bool:
+        """Check if two messages are about the same category of issue."""
+        msg1_lower = msg1.lower()
+        msg2_lower = msg2.lower()
+        
+        for category, keywords in self.DUPLICATE_KEYWORDS.items():
+            msg1_has = any(kw in msg1_lower for kw in keywords)
+            msg2_has = any(kw in msg2_lower for kw in keywords)
+            if msg1_has and msg2_has:
+                return True
+        
+        return False
     
     def _similar_message(self, msg1: str, msg2: str) -> bool:
         """Check if two messages are similar enough to be duplicates."""
@@ -623,6 +765,10 @@ class AIErrorPredictor:
         
         # Exact match
         if msg1 == msg2:
+            return True
+        
+        # One contains the other
+        if msg1 in msg2 or msg2 in msg1:
             return True
         
         # Check for significant word overlap
@@ -635,7 +781,8 @@ class AIErrorPredictor:
         intersection = words1 & words2
         smaller = min(len(words1), len(words2))
         
-        return len(intersection) / smaller > 0.7
+        # Lower threshold from 0.7 to 0.5 for more aggressive filtering
+        return len(intersection) / smaller > 0.5
 
     # ========================================================================
     # Multi-File Analysis Methods
@@ -684,11 +831,16 @@ class AIErrorPredictor:
         all_files = [focus_file] + related_files
         files_section = self._build_files_section(all_files)
         
+        # Build include context for the focus file
+        include_context = self._build_include_context(focus_file, related_files)
+        
         # Build the prompt
         prompt = AI_MULTI_FILE_ANALYSIS_PROMPT.replace(
             "{files_section}", files_section
         ).replace(
             "{focus_file}", focus_file.path
+        ).replace(
+            "{include_context}", include_context
         )
         
         # Call the LLM

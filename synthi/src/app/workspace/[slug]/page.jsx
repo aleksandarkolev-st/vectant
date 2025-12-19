@@ -263,7 +263,9 @@ export default function EditorPage({ params }) {
         setPanelGroupKey(prev => prev + 1); // Force remount
     };
 
-    // Run static analysis whenever current file content changes
+    // Static analysis is now handled by proactive analysis (which includes static tier)
+    // Keeping this disabled to avoid duplicate/stale diagnostics
+    /*
     useEffect(() => {
         if (!activeFile || !currentContent || !hasLoadedInitialFile) return;
 
@@ -302,6 +304,7 @@ export default function EditorPage({ params }) {
             }
         };
     }, [currentContent, activeFile, hasLoadedInitialFile, analyzeCode]);
+    */
 
     // Run proactive analysis (AI-powered error detection) on content change
     // Simple but effective hash function for content comparison
@@ -366,29 +369,12 @@ export default function EditorPage({ params }) {
         const contentToAnalyze = typeof currentContent === 'string' ? currentContent : '';
         const contentHash = computeContentHash(contentToAnalyze);
         
-        // When content changes, immediately invalidate stale diagnostics
+        // When content changes, IMMEDIATELY clear all diagnostics for this file
+        // New analysis will provide fresh diagnostics
+        const currentFilePath = activeFile?.path || activeFile?.name || 'untitled';
         if (lastContentHashRef.current && lastContentHashRef.current !== contentHash) {
-            // Filter diagnostics to only keep ones where the text at the location matches
-            setDiagnostics(prev => prev.filter(d => {
-                if (!d.location) return true; // Keep diagnostics without location info
-                const lines = contentToAnalyze.split('\n');
-                const lineIdx = d.location.line ?? 0;
-                if (lineIdx >= lines.length) return false; // Line no longer exists
-                
-                // If the diagnostic has originalText, check if it still exists at that location
-                if (d.originalText) {
-                    const line = lines[lineIdx] || '';
-                    const col = d.location.column ?? 0;
-                    const endCol = d.location.endColumn ?? (col + d.originalText.length);
-                    const textAtLocation = line.slice(col, endCol);
-                    // If the text at the location doesn't match, the diagnostic is stale
-                    if (textAtLocation !== d.originalText) {
-                        return false;
-                    }
-                }
-                
-                return true;
-            }));
+            // Clear diagnostics for this file - fresh analysis will repopulate
+            setDiagnostics(prev => prev.filter(d => d.filePath !== currentFilePath));
         }
         lastContentHashRef.current = contentHash;
 
@@ -456,8 +442,11 @@ export default function EditorPage({ params }) {
                             // Only update if:
                             // 1. Not cancelled
                             // 2. This is still the current tracker
-                            // 3. The content hasn't changed since we started
-                            const isStillCurrent = !aiTracker.cancelled && aiAnalysisRef.current === aiTracker;
+                            // 3. The content hash hasn't changed since we started
+                            const currentHash = lastContentHashRef.current;
+                            const isStillCurrent = !aiTracker.cancelled && 
+                                                   aiAnalysisRef.current === aiTracker &&
+                                                   currentHash === contentHash;
                             if (isStillCurrent) {
                                 const aiDiags = aiResult?.diagnostics || aiResult?.data?.diagnostics || [];
                                 // Add filePath to each diagnostic
