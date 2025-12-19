@@ -97,26 +97,6 @@ export default function EditorPage({ params }) {
         debounceMs: 1200,  // Slightly longer debounce for workspace-level analysis
         includeAi: false,  // Disabled by default, can be enabled via settings
     });
-    
-    // Remove a specific diagnostic by location (called when a fix is applied)
-    const removeDiagnosticByLocation = useCallback((location, filePath) => {
-        if (!location) return;
-        const targetFile = filePath || activeFile?.path || activeFile?.name;
-        
-        setDiagnostics(prev => prev.filter(d => {
-            // Only consider diagnostics from the same file
-            if (d.filePath !== targetFile) return true;
-            
-            const loc = d.location || {};
-            // Remove if exact location match
-            const sameStart = loc.line === location.line && loc.column === location.column;
-            const sameEnd = loc.endLine === location.endLine && loc.endColumn === location.endColumn;
-            return !(sameStart && sameEnd);
-        }));
-        
-        // Also invalidate the signature so next analysis runs fresh
-        lastProactiveSignatureRef.current = '';
-    }, [activeFile]);
 
     useEffect(() => {
         const handleGuiStart = (e) => {
@@ -215,6 +195,26 @@ export default function EditorPage({ params }) {
     const currentContent = useAppSelector(selectCurrentContent);
     const rawFiles = useAppSelector(state => state.workspace.rawFiles);
     // File contents are cached via an in-memory LRU cache service (not Redux)
+
+    // Remove a specific diagnostic by location (called when a fix is applied)
+    const removeDiagnosticByLocation = useCallback((location, filePath) => {
+        if (!location) return;
+        const targetFile = filePath || activeFile?.path || activeFile?.name;
+        
+        setDiagnostics(prev => prev.filter(d => {
+            // Only consider diagnostics from the same file
+            if (d.filePath !== targetFile) return true;
+            
+            const loc = d.location || {};
+            // Remove if exact location match
+            const sameStart = loc.line === location.line && loc.column === location.column;
+            const sameEnd = loc.endLine === location.endLine && loc.endColumn === location.endColumn;
+            return !(sameStart && sameEnd);
+        }));
+        
+        // Also invalidate the signature so next analysis runs fresh
+        lastProactiveSignatureRef.current = '';
+    }, [activeFile]);
 
     const [initialContent, setInitialContent] = useState('');
     const [hasInitialSnapshot, setHasInitialSnapshot] = useState(false);
