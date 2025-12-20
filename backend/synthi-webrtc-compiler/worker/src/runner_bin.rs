@@ -30,6 +30,8 @@ mod state_diff;
 mod crash_recovery;
 mod source_map;
 mod binary_state;
+mod abi_version;
+mod loader;
 
 use plugin_contract::{ModuleSlot, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
 use capability::{HmrCapability, detect_capabilities, HmrStatus};
@@ -40,6 +42,7 @@ use host_kv::{
 use state_diff::{migrate_state, generate_migration_report};
 use crash_recovery::{install_crash_handlers, execute_with_protection, should_force_restart, 
                      HmrCrashStatus, generate_crash_report, set_current_lib_path};
+use loader::{ModuleLoader, LoadResult};
 
 // SDL2 Definitions
 #[cfg(target_os = "linux")]
@@ -313,6 +316,24 @@ fn main() {
     let mut loaded_paths: HashMap<String, String> = HashMap::new();
     // Independent swap: Track state per module
     let mut module_states: HashMap<String, ModuleState> = HashMap::new();
+    
+    // ============================================================
+    // MODULE LOADER WITH ABI VALIDATION
+    // ============================================================
+    // ModuleLoader provides:
+    // - ABI compatibility checking before load
+    // - Symbol manifest validation
+    // - Rollback support to previous versions
+    // - Load history for debugging
+    // Note: We still use the modules HashMap for actual library storage
+    // because ModuleLoader integration is gradual - it validates but
+    // the existing loading code handles state transfer and lifecycle.
+    let mut module_loader = ModuleLoader::new();
+    let loader_enabled = std::env::var("SYNTHI_LOADER_VALIDATION").is_ok();
+    if loader_enabled {
+        eprintln!("[Runner] ModuleLoader ABI validation ENABLED");
+    }
+    
     #[cfg(not(target_os = "linux"))]
     let (window, renderer) = (ptr::null_mut(), ptr::null_mut());
     let mut app_state = AppState { raw: std::ptr::null_mut(), renderer };
@@ -535,12 +556,49 @@ fn main() {
                         // ATOMIC-SWAP HMR: Zero-flicker hot module replacement
                         // ============================================================
                         // Strategy:
-                        // 1. Load NEW library while OLD is still active (old keeps rendering)
-                        // 2. Save state from OLD module
-                        // 3. Pre-initialize NEW module with saved state + graphics
-                        // 4. ATOMIC SWAP: Replace module reference in single operation
-                        // 5. Defer OLD module cleanup (on_unload + drop) until after swap
+                        // 1. Validate ABI compatibility (if loader enabled)
+                        // 2. Load NEW library while OLD is still active (old keeps rendering)
+                        // 3. Save state from OLD module
+                        // 4. Pre-initialize NEW module with saved state + graphics
+                        // 5. ATOMIC SWAP: Replace module reference in single operation
+                        // 6. Defer OLD module cleanup (on_unload + drop) until after swap
                         // ============================================================
+                        
+                        // ============================================================
+                        // PRE-LOAD ABI VALIDATION (Optional, enabled via env var)
+                        // ============================================================
+                        // Use ModuleLoader to check ABI compatibility before loading.
+                        // This catches symbol mismatches and ABI version errors early.
+                        if loader_enabled {
+                            let slot = ModuleSlot::from_str(name);
+                            if let Some(slot) = slot {
+                                // Generate a simple hash for tracking (real hash from file)
+                                let content_hash = std::fs::metadata(path)
+                                    .map(|m| m.len())
+                                    .unwrap_or(0);
+                                
+                                match module_loader.load(std::path::Path::new(path), slot, content_hash) {
+                                    LoadResult::Success { module_id, abi_version } => {
+                                        eprintln!("[Runner] [Loader] ABI validation passed: {} v{}", module_id, abi_version);
+                                    }
+                                    LoadResult::AbiMismatch { expected, found, details } => {
+                                        eprintln!("[Runner] [Loader] ABI MISMATCH: expected v{}, found v{}. {}", 
+                                            expected, found, details);
+                                        eprintln!("[Runner] [Loader] Continuing with legacy loading...");
+                                    }
+                                    LoadResult::MissingSymbols { symbols } => {
+                                        eprintln!("[Runner] [Loader] WARNING: Missing symbols: {:?}", symbols);
+                                        eprintln!("[Runner] [Loader] Continuing with legacy loading...");
+                                    }
+                                    LoadResult::LoadError { reason } => {
+                                        eprintln!("[Runner] [Loader] Load validation error: {}", reason);
+                                        // Don't fail - let legacy loader try
+                                    }
+                                }
+                                // Unload from module_loader since we'll use legacy loading
+                                module_loader.unload(slot);
+                            }
+                        }
                         
                         eprintln!("[Runner] [HMR] Phase 1: Loading new library (old still active): {}", path);
                         #[cfg(unix)]

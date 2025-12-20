@@ -1146,28 +1146,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_boundary_registration() {
+    fn test_boundary_registration_with_manifest() {
         let mut tracker = BoundaryTracker::new();
-
-        tracker.register(Boundary::new("b1", BoundaryType::CoreLogic, "core"));
-        tracker.register(
-            Boundary::new("b2", BoundaryType::CoreApi, "core").with_dependency("b1"),
-        );
-
-        assert_eq!(tracker.boundaries.len(), 2);
-        assert!(tracker.dependents.get("b1").unwrap().contains("b2"));
+        let manifest = presets::core_manifest();
+        
+        // Should succeed with manifest
+        assert!(tracker.load_manifest(manifest).is_ok());
+        assert!(tracker.boundaries.len() > 0);
+    }
+    
+    #[test]
+    fn test_boundary_registration_without_manifest_fails() {
+        let mut tracker = BoundaryTracker::new();
+        let boundary = Boundary::new("b1", BoundaryType::CoreLogic, "core");
+        
+        // Should fail without manifest validation
+        assert!(tracker.register(boundary).is_err());
     }
 
     #[test]
     fn test_reload_plan_partial() {
         let mut tracker = BoundaryTracker::new();
-
-        tracker.register(Boundary::new("render", BoundaryType::GuiRender, "gui").with_hash(100));
-        tracker.register(
-            Boundary::new("events", BoundaryType::GuiEvents, "gui")
-                .with_hash(200)
-                .with_dependency("render"),
-        );
+        
+        // Create validated boundaries
+        let mut render = Boundary::new("render", BoundaryType::GuiRender, "gui").with_hash(100);
+        render.manifest_validated = true;
+        
+        let mut events = Boundary::new("events", BoundaryType::GuiEvents, "gui")
+            .with_hash(200)
+            .with_dependency("render");
+        events.manifest_validated = true;
+        
+        tracker.register_internal(render).unwrap();
+        tracker.register_internal(events).unwrap();
 
         let mut changes = HashMap::new();
         changes.insert("render".to_string(), 101u64); // Changed
@@ -1183,7 +1194,9 @@ mod tests {
     fn test_reload_plan_full() {
         let mut tracker = BoundaryTracker::new();
 
-        tracker.register(Boundary::new("core_api", BoundaryType::CoreApi, "core").with_hash(100));
+        let mut core_api = Boundary::new("core_api", BoundaryType::CoreApi, "core").with_hash(100);
+        core_api.manifest_validated = true;
+        tracker.register_internal(core_api).unwrap();
 
         let mut changes = HashMap::new();
         changes.insert("core_api".to_string(), 101u64); // Changed
@@ -1191,5 +1204,74 @@ mod tests {
         let plan = tracker.analyze_changes(&changes);
 
         assert!(plan.requires_full_reload);
+    }
+    
+    #[test]
+    fn test_widget_detection() {
+        let detector = WidgetBoundaryDetector::new();
+        let source = r#"
+            class ButtonWidget : public BaseWidget {
+            public:
+                void render(SDL_Renderer* renderer);
+                bool handle_event(const SDL_Event* event);
+            };
+        "#;
+        
+        let widgets = detector.detect_all_widgets(source, std::path::Path::new("button.cpp"));
+        assert!(!widgets.is_empty());
+        assert!(widgets.iter().any(|w| w.name == "ButtonWidget"));
+    }
+    
+    #[test]
+    fn test_hmr_boundary_marker() {
+        let detector = WidgetBoundaryDetector::new();
+        let source = r#"
+            // @hmr-boundary: CustomPanel
+            struct CustomPanel {
+                int x, y, width, height;
+            };
+        "#;
+        
+        let widgets = detector.detect_all_widgets(source, std::path::Path::new("panel.cpp"));
+        assert!(!widgets.is_empty());
+        assert!(widgets.iter().any(|w| w.name == "CustomPanel" && w.confidence == 1.0));
+    }
+    
+    #[test]
+    fn test_ownership_validation() {
+        let manifest = BoundaryManifest::new("gui")
+            .with_boundary(BoundaryDeclaration {
+                id: "gui_render".to_string(),
+                boundary_type: BoundaryType::GuiRender,
+                required_exports: vec![],
+                allowed_dependencies: vec![],
+                owned_file_patterns: vec!["src/gui/render/**".to_string()],
+            })
+            .with_ownership(OwnershipRule {
+                pattern: "src/gui/render/**".to_string(),
+                owner_boundary: "gui_render".to_string(),
+                exclusive: true,
+            });
+        
+        let validator = OwnershipValidator::from_manifest(&manifest).unwrap();
+        let files = vec![
+            "src/gui/render/main.cpp".to_string(),
+            "src/gui/render/utils.cpp".to_string(),
+            "src/gui/state/state.cpp".to_string(),  // No owner
+        ];
+        
+        let result = validator.validate(&files);
+        assert!(!result.warnings.is_empty()); // Should warn about state.cpp
+        assert!(result.file_owners.get("src/gui/render/main.cpp").unwrap().contains(&"gui_render".to_string()));
+    }
+    
+    #[test]
+    fn test_glob_to_regex() {
+        let pattern = glob_to_regex("src/**/*.cpp").unwrap();
+        let re = regex::Regex::new(&pattern).unwrap();
+        
+        assert!(re.is_match("src/gui/render.cpp"));
+        assert!(re.is_match("src/core/state/manager.cpp"));
+        assert!(!re.is_match("src/gui/render.h"));
     }
 }
