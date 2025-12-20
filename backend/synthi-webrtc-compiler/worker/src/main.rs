@@ -2993,6 +2993,103 @@ async fn handle_compile(
                          eprintln!("[Guardrail] Keeping 'struct {}' definition in core.cpp (shared.h has forward decl only)", struct_name);
                      }
                 }
+                
+                // FIX: If AI uses Host KV types but shared.h doesn't define them, inject definitions
+                // This happens when AI generates g_core_schemas[] or uses SynthiHostContextV1
+                let uses_hostkv_types = content.contains("SynthiHostContextV1") || 
+                                        content.contains("SynthiNamespaceSchemaV1") ||
+                                        content.contains("HostKvApiV1") ||
+                                        content.contains("g_core_schemas") ||
+                                        content.contains("host_kv_schemas");
+                
+                if uses_hostkv_types && !shared_has_full_hostkv {
+                    // Need to inject Host KV C header definitions
+                    let hostkv_header = r#"
+// ============================================================
+// [Guardrail] HOST KV TYPE DEFINITIONS (auto-injected)
+// ============================================================
+
+#ifndef SYNTHI_HOST_KV_TYPES_DEFINED
+#define SYNTHI_HOST_KV_TYPES_DEFINED
+
+#include <stdint.h>
+
+// Forward declarations
+struct SynthiHostContextV1;
+struct HostKvApiV1;
+
+// Namespace schema entry
+typedef struct SynthiNamespaceSchemaV1 {
+    const char* ns;       // NUL-terminated namespace name
+    uint64_t schema_id;   // Schema version/hash
+} SynthiNamespaceSchemaV1;
+
+// Host context (passed to *_on_load_host)
+typedef struct SynthiHostContextV1 {
+    uint32_t host_api_version;
+    const struct HostKvApiV1* kv;
+    const char* session_id;
+    uint32_t session_id_len;
+    uint32_t module_slot;
+    void* window;
+    void* renderer;
+    void* reserved[8];
+} SynthiHostContextV1;
+
+// KV API vtable
+typedef struct HostKvApiV1 {
+    uint32_t version;
+    int (*set_bytes)(const SynthiHostContextV1* ctx, const char* ns, const char* key, const uint8_t* data, uint32_t len);
+    int (*get_bytes)(const SynthiHostContextV1* ctx, const char* ns, const char* key, uint8_t** out, uint32_t* out_len);
+    int (*delete_key)(const SynthiHostContextV1* ctx, const char* ns, const char* key);
+    int (*clear_namespace)(const SynthiHostContextV1* ctx, const char* ns);
+    int (*get_schema)(const SynthiHostContextV1* ctx, const char* ns, uint64_t* out_schema);
+    int (*set_schema)(const SynthiHostContextV1* ctx, const char* ns, uint64_t schema);
+    void* (*host_alloc)(uint32_t size);
+    void (*host_free)(void* ptr);
+    const char* (*last_error)(void);
+} HostKvApiV1;
+
+#endif // SYNTHI_HOST_KV_TYPES_DEFINED
+"#;
+                    // Prepend to content after includes
+                    if let Some(include_end) = content.rfind("#include") {
+                        if let Some(newline_pos) = content[include_end..].find('\n') {
+                            let insert_pos = include_end + newline_pos + 1;
+                            content.insert_str(insert_pos, hostkv_header);
+                            eprintln!("[Guardrail] Injected Host KV type definitions (AI uses Host KV but shared.h lacks definitions)");
+                        }
+                    } else {
+                        // No includes found, prepend at start
+                        content = format!("{}{}", hostkv_header, content);
+                        eprintln!("[Guardrail] Injected Host KV type definitions at start (no includes found)");
+                    }
+                }
+            }
+
+            // FIX: AI sometimes references AppState fields that don't exist
+            // Common hallucinated fields: wbuffer, write_buffer, rbuffer, read_buffer
+            // Strip lines that reference these if they're not in shared.h
+            {
+                let hallucinated_fields = ["wbuffer", "write_buffer", "rbuffer", "read_buffer", "buffer_ptr"];
+                for field in &hallucinated_fields {
+                    if !shared_content.contains(field) && (content.contains(&format!("->{}", field)) || content.contains(&format!(".{}", field))) {
+                        // Strip lines referencing this non-existent field
+                        let pattern1 = format!("->{}", field);
+                        let pattern2 = format!(".{}", field);
+                        
+                        let mut cleaned = Vec::new();
+                        for line in content.lines() {
+                            if line.contains(&pattern1) || line.contains(&pattern2) {
+                                cleaned.push(format!("// [Guardrail] Removed: {} (field not in AppState)", line.trim()));
+                                eprintln!("[Guardrail] Stripped line referencing non-existent field '{}': {}", field, line.trim());
+                            } else {
+                                cleaned.push(line.to_string());
+                            }
+                        }
+                        content = cleaned.join("\n");
+                    }
+                }
             }
 
             // FIX: AI often forgets to initialize button state fields in core.cpp
@@ -3187,7 +3284,10 @@ async fn handle_compile(
             // The runner will see these symbols and grant Full HMR capability
             
             // Case 1: New-style Core module - generate DYNAMIC JSON serialization based on shared.h
-            if content.contains("core_on_load") && !content.contains("core_on_save_state") {
+            // Skip if AI already generated these functions to avoid redefinition errors
+            if content.contains("core_on_load") && 
+               !content.contains("core_on_save_state") && 
+               !content.contains("core_get_state_schema_hash") {
                 // Parse actual fields from shared.h WITH DEFAULT VALUES for proper schema migration
                 let fields = parse_appstate_int_fields_with_defaults(shared_content);
                 eprintln!("[Guardrail] Parsed {} fields from shared.h for serialization: {:?}", 
@@ -3200,7 +3300,11 @@ async fn handle_compile(
                 eprintln!("[Guardrail] Injected DYNAMIC state serialization for Full HMR (core) with declared defaults");
             }
             // Case 2: Legacy module - also use dynamic serialization
-            else if content.contains("on_load") && !content.contains("on_save_state") && !content.contains("core_on_load") {
+            // Skip if AI already generated these functions to avoid redefinition errors
+            else if content.contains("on_load") && 
+                    !content.contains("on_save_state") && 
+                    !content.contains("core_on_load") &&
+                    !content.contains("get_state_schema_hash") {
                 // Parse actual fields from shared.h WITH DEFAULT VALUES for proper schema migration
                 let fields = parse_appstate_int_fields_with_defaults(shared_content);
                 eprintln!("[Guardrail] Parsed {} fields from shared.h for legacy serialization: {:?}", 
@@ -3545,6 +3649,70 @@ async fn handle_compile(
                          eprintln!("[Guardrail] Keeping 'struct {}' definition in gui.cpp (shared.h has forward decl only)", struct_name);
                      }
                 }
+                
+                // FIX: If AI uses Host KV types but shared.h doesn't define them, inject definitions
+                let uses_hostkv_types = content.contains("SynthiHostContextV1") || 
+                                        content.contains("SynthiNamespaceSchemaV1") ||
+                                        content.contains("HostKvApiV1") ||
+                                        content.contains("g_gui_schemas") ||
+                                        content.contains("host_kv_schemas");
+                
+                if uses_hostkv_types && !shared_has_full_hostkv {
+                    let hostkv_header = r#"
+// ============================================================
+// [Guardrail] HOST KV TYPE DEFINITIONS (auto-injected)
+// ============================================================
+
+#ifndef SYNTHI_HOST_KV_TYPES_DEFINED
+#define SYNTHI_HOST_KV_TYPES_DEFINED
+
+#include <stdint.h>
+
+struct SynthiHostContextV1;
+struct HostKvApiV1;
+
+typedef struct SynthiNamespaceSchemaV1 {
+    const char* ns;
+    uint64_t schema_id;
+} SynthiNamespaceSchemaV1;
+
+typedef struct SynthiHostContextV1 {
+    uint32_t host_api_version;
+    const struct HostKvApiV1* kv;
+    const char* session_id;
+    uint32_t session_id_len;
+    uint32_t module_slot;
+    void* window;
+    void* renderer;
+    void* reserved[8];
+} SynthiHostContextV1;
+
+typedef struct HostKvApiV1 {
+    uint32_t version;
+    int (*set_bytes)(const SynthiHostContextV1* ctx, const char* ns, const char* key, const uint8_t* data, uint32_t len);
+    int (*get_bytes)(const SynthiHostContextV1* ctx, const char* ns, const char* key, uint8_t** out, uint32_t* out_len);
+    int (*delete_key)(const SynthiHostContextV1* ctx, const char* ns, const char* key);
+    int (*clear_namespace)(const SynthiHostContextV1* ctx, const char* ns);
+    int (*get_schema)(const SynthiHostContextV1* ctx, const char* ns, uint64_t* out_schema);
+    int (*set_schema)(const SynthiHostContextV1* ctx, const char* ns, uint64_t schema);
+    void* (*host_alloc)(uint32_t size);
+    void (*host_free)(void* ptr);
+    const char* (*last_error)(void);
+} HostKvApiV1;
+
+#endif // SYNTHI_HOST_KV_TYPES_DEFINED
+"#;
+                    if let Some(include_end) = content.rfind("#include") {
+                        if let Some(newline_pos) = content[include_end..].find('\n') {
+                            let insert_pos = include_end + newline_pos + 1;
+                            content.insert_str(insert_pos, hostkv_header);
+                            eprintln!("[Guardrail] Injected Host KV type definitions into gui.cpp");
+                        }
+                    } else {
+                        content = format!("{}{}", hostkv_header, content);
+                        eprintln!("[Guardrail] Injected Host KV type definitions at start of gui.cpp");
+                    }
+                }
             }
 
             // FIX: gui_on_load MUST have 3 parameters. AI sometimes generates 2-param version.
@@ -3701,7 +3869,10 @@ async fn handle_compile(
             // Inject State Serialization Stubs for Full HMR Capability in GUI module
             // GUI typically doesn't need state preservation as it renders Core's state,
             // but we provide stubs for completeness
-            if content.contains("gui_on_load") && !content.contains("gui_on_save_state") {
+            // Skip if AI already generated these functions to avoid redefinition errors
+            if content.contains("gui_on_load") && 
+               !content.contains("gui_on_save_state") &&
+               !content.contains("gui_get_state_schema_hash") {
                 let gui_serial_stubs = r#"
 
 // [Guardrail] State serialization stubs for Full HMR capability (GUI)
