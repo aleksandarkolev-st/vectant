@@ -218,6 +218,14 @@ export function useWorkspaceAnalysis({
     } else {
       workspaceFilesRef.current.push({ path, content, language: lang });
     }
+
+    // Clear diagnostics for this file immediately as they are likely stale
+    setDiagnosticsByFile(prev => {
+      if (!prev[path]) return prev;
+      const newDiagnostics = { ...prev };
+      delete newDiagnostics[path];
+      return newDiagnostics;
+    });
     
     return true; // Change detected
   }, []);
