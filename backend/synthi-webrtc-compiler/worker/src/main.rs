@@ -15,6 +15,7 @@ mod host_kv;
 mod plugin_contract;
 mod incremental_cache;
 mod state_diff;
+mod binary_state;
 mod crash_recovery;
 mod error_parser;
 pub mod source_map;
@@ -25,6 +26,13 @@ mod loader;
 mod supervisor;
 mod state_manager;
 mod reload_manager;
+mod hmr_orchestrator;
+
+// Re-export orchestrator for external use
+pub use hmr_orchestrator::{
+    HmrOrchestrator, HmrResult, HmrStatus, OrchestratorConfig,
+    SavedState, LoadedState, MigrationSummary, SchemaCompatibility,
+};
 mod mobile_routing;
 mod react_native_builder;
 mod android_emulator;
@@ -37,6 +45,7 @@ use watcher::{PreemptiveConfig, PreemptiveMessage, SpeculativeCache};
 use error_parser::{parse_compiler_output, CompilerType, DiagnosticEvent};
 use capability::{detect_capabilities, HmrCapability, HmrStatus};
 use shim::{auto_shim, ShimMode, detect_shim_mode};
+#[allow(unused_imports)]
 use incremental_cache::{IncrementalCache, compile_with_cache, link_objects};
 use serde::{Serialize, Deserialize};
 use gstreamer as gst;
@@ -134,6 +143,10 @@ struct CompileRequest {
     slug: Option<String>,
 }
 
+// RunnerState tracks the state of a running plugin process
+// This is used by the worker to manage HMR, video streaming, and process lifecycle
+// Currently the runner uses individual fields directly, but this struct provides
+// the complete state model for future HMR orchestration integration
 struct RunnerState {
     process: Option<tokio::process::Child>, // Option to allow taking it if needed, or just drop
     stdin: tokio::process::ChildStdin,
@@ -158,6 +171,122 @@ struct RunnerState {
     // Widget-level compilation state
     loaded_widget_paths: HashMap<String, String>, // widget_id -> so_path
     widget_hashes: HashMap<String, u64>,          // widget_id -> content_hash
+}
+
+/// RunnerState builder methods for fluent configuration
+impl RunnerState {
+    /// Create a new RunnerState with required fields
+    pub fn new(
+        process: Option<tokio::process::Child>,
+        stdin: tokio::process::ChildStdin,
+        output_tx: tokio::sync::broadcast::Sender<String>,
+    ) -> Self {
+        Self {
+            process,
+            stdin,
+            output_tx,
+            is_gui: false,
+            is_hmr_capable: false,
+            hmr_capability: None,
+            xvfb_process: None,
+            gst_pipeline: None,
+            sdl_tx: None,
+            video_track: None,
+            audio_track: None,
+            width: 800,
+            height: 600,
+            wsl_display_str: String::new(),
+            gst_display_str: String::new(),
+            module_hashes: ModuleHashes::default(),
+            loaded_core_path: None,
+            loaded_gui_path: None,
+            loaded_widget_paths: HashMap::new(),
+            widget_hashes: HashMap::new(),
+        }
+    }
+
+    /// Configure GUI mode settings
+    pub fn with_gui(mut self, is_gui: bool, width: u32, height: u32) -> Self {
+        self.is_gui = is_gui;
+        self.width = width;
+        self.height = height;
+        self
+    }
+
+    /// Set HMR capability information
+    pub fn with_hmr_capability(mut self, is_capable: bool, capability: Option<HmrCapability>) -> Self {
+        self.is_hmr_capable = is_capable;
+        self.hmr_capability = capability;
+        self
+    }
+
+    /// Set Xvfb process for headless GUI rendering
+    pub fn with_xvfb(mut self, xvfb: Option<tokio::process::Child>, display_str: String, gst_display: String) -> Self {
+        self.xvfb_process = xvfb;
+        self.wsl_display_str = display_str;
+        self.gst_display_str = gst_display;
+        self
+    }
+
+    /// Set GStreamer pipeline for video streaming
+    pub fn with_gst_pipeline(mut self, pipeline: Option<gst::Pipeline>) -> Self {
+        self.gst_pipeline = pipeline;
+        self
+    }
+
+    /// Set SDL event channel for GUI interaction
+    pub fn with_sdl_tx(mut self, sdl_tx: Option<mpsc::UnboundedSender<String>>) -> Self {
+        self.sdl_tx = sdl_tx;
+        self
+    }
+
+    /// Set WebRTC media tracks for streaming
+    pub fn with_media_tracks(
+        mut self, 
+        video: Option<Arc<TrackLocalStaticRTP>>, 
+        audio: Option<Arc<TrackLocalStaticRTP>>
+    ) -> Self {
+        self.video_track = video;
+        self.audio_track = audio;
+        self
+    }
+
+    /// Update module hashes for differential rebuild tracking
+    pub fn update_module_hashes(&mut self, hashes: ModuleHashes) {
+        self.module_hashes = hashes;
+    }
+
+    /// Set loaded core module path
+    pub fn set_core_path(&mut self, path: Option<String>) {
+        self.loaded_core_path = path;
+    }
+
+    /// Set loaded GUI module path
+    pub fn set_gui_path(&mut self, path: Option<String>) {
+        self.loaded_gui_path = path;
+    }
+
+    /// Register a loaded widget module
+    pub fn register_widget(&mut self, widget_id: String, so_path: String, content_hash: u64) {
+        self.loaded_widget_paths.insert(widget_id.clone(), so_path);
+        self.widget_hashes.insert(widget_id, content_hash);
+    }
+
+    /// Unregister a widget module
+    pub fn unregister_widget(&mut self, widget_id: &str) {
+        self.loaded_widget_paths.remove(widget_id);
+        self.widget_hashes.remove(widget_id);
+    }
+
+    /// Check if a widget needs rebuild based on content hash
+    pub fn widget_needs_rebuild(&self, widget_id: &str, new_hash: u64) -> bool {
+        self.widget_hashes.get(widget_id).map(|&h| h != new_hash).unwrap_or(true)
+    }
+
+    /// Get all loaded widget paths
+    pub fn get_widget_paths(&self) -> &HashMap<String, String> {
+        &self.loaded_widget_paths
+    }
 }
 
 struct LspSessionState {
@@ -355,7 +484,7 @@ async fn main() -> Result<()> {
     // Build Loop Task with Preemptive/Speculative Compilation
     tokio::task::spawn_blocking(move || {
         use std::sync::atomic::Ordering;
-        use std::time::{Instant, Duration};
+        use std::time::Instant;
         
         loop {
             if let Ok(message) = preemptive_rx.recv() {
@@ -1256,11 +1385,27 @@ async fn create_peer(signal_tx: mpsc::UnboundedSender<SignalMessage>) -> Result<
 }
 
 // Cache for AI split results to avoid redundant API calls
+// Two-level cache: 
+//   1. Full source hash -> instant hit (no patching needed)
+//   2. Structural hash -> hit with string patching (fast, no AI call)
 use std::sync::OnceLock;
-static AI_SPLIT_CACHE: OnceLock<tokio::sync::Mutex<std::collections::HashMap<u64, serde_json::Value>>> = OnceLock::new();
 
-fn get_ai_split_cache() -> &'static tokio::sync::Mutex<std::collections::HashMap<u64, serde_json::Value>> {
+#[derive(Clone)]
+struct CachedSplit {
+    result: serde_json::Value,
+    original_source: String,  // Store original source for string extraction
+}
+
+static AI_SPLIT_CACHE: OnceLock<tokio::sync::Mutex<std::collections::HashMap<u64, CachedSplit>>> = OnceLock::new();
+// Secondary cache keyed by structural hash for string-patching hits
+static AI_SPLIT_STRUCTURAL_CACHE: OnceLock<tokio::sync::Mutex<std::collections::HashMap<u64, CachedSplit>>> = OnceLock::new();
+
+fn get_ai_split_cache() -> &'static tokio::sync::Mutex<std::collections::HashMap<u64, CachedSplit>> {
     AI_SPLIT_CACHE.get_or_init(|| tokio::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn get_ai_split_structural_cache() -> &'static tokio::sync::Mutex<std::collections::HashMap<u64, CachedSplit>> {
+    AI_SPLIT_STRUCTURAL_CACHE.get_or_init(|| tokio::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
 fn calculate_hash<T: Hash>(t: &T) -> u64 {
@@ -1268,6 +1413,708 @@ fn calculate_hash<T: Hash>(t: &T) -> u64 {
     t.hash(&mut s);
     s.finish()
 }
+
+/// Extract all string literals from C/C++ source in order
+fn extract_string_literals(source: &str) -> Vec<String> {
+    let mut strings = Vec::new();
+    let mut chars = source.chars().peekable();
+    let mut in_string = false;
+    let mut in_char = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut escape_next = false;
+    let mut current_string = String::new();
+    
+    while let Some(c) = chars.next() {
+        if escape_next {
+            if in_string {
+                current_string.push('\\');
+                current_string.push(c);
+            }
+            escape_next = false;
+            continue;
+        }
+        
+        if in_line_comment {
+            if c == '\n' { in_line_comment = false; }
+            continue;
+        }
+        
+        if in_block_comment {
+            if c == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                in_block_comment = false;
+            }
+            continue;
+        }
+        
+        if in_string {
+            if c == '\\' {
+                escape_next = true;
+            } else if c == '"' {
+                strings.push(current_string.clone());
+                current_string.clear();
+                in_string = false;
+            } else {
+                current_string.push(c);
+            }
+            continue;
+        }
+        
+        if in_char {
+            if c == '\\' { escape_next = true; }
+            else if c == '\'' { in_char = false; }
+            continue;
+        }
+        
+        // Detect start of constructs
+        if c == '/' {
+            if chars.peek() == Some(&'/') { chars.next(); in_line_comment = true; continue; }
+            if chars.peek() == Some(&'*') { chars.next(); in_block_comment = true; continue; }
+        }
+        if c == '"' { in_string = true; continue; }
+        if c == '\'' { in_char = true; continue; }
+    }
+    
+    strings
+}
+
+/// Patch string literals in cached JSON result with new strings from source
+/// Returns (patched_result, did_patch_anything)
+fn patch_strings_in_cached_result(
+    cached: &serde_json::Value,
+    old_strings: &[String],
+    new_strings: &[String],
+) -> (serde_json::Value, bool) {
+    // Only patch if we have a reasonable mapping
+    if old_strings.is_empty() || new_strings.is_empty() {
+        return (cached.clone(), false);
+    }
+    
+    let mut result = cached.clone();
+    let mut any_patches_applied = false;
+    
+    // Patch each file's content in the split result
+    for key in &["core", "gui", "shared"] {
+        if let Some(file_obj) = result.get_mut(key) {
+            if let Some(content) = file_obj.get_mut("content") {
+                if let Some(content_str) = content.as_str() {
+                    let mut patched = content_str.to_string();
+                    
+                    // Replace old strings with new strings where they differ
+                    // Match by position in the string list (assuming order is preserved)
+                    for (old, new) in old_strings.iter().zip(new_strings.iter()) {
+                        if old != new && !old.is_empty() {
+                            // Use format with quotes to avoid partial matches
+                            let old_quoted = format!("\"{}\"", old);
+                            let new_quoted = format!("\"{}\"", new);
+                            if patched.contains(&old_quoted) {
+                                patched = patched.replace(&old_quoted, &new_quoted);
+                                any_patches_applied = true;
+                            }
+                        }
+                    }
+                    
+                    *content = serde_json::Value::String(patched);
+                }
+            }
+        }
+    }
+    
+    (result, any_patches_applied)
+}
+
+/// Check if a string looks like a semantic value that AI transforms (not just copies)
+/// These include: color names, font names, file paths, etc.
+fn is_semantic_string(s: &str) -> bool {
+    // X11/CSS color names
+    let color_names = [
+        "black", "white", "red", "green", "blue", "yellow", "cyan", "magenta",
+        "orange", "purple", "pink", "brown", "gray", "grey", "navy", "teal",
+        "lime", "aqua", "maroon", "olive", "silver", "fuchsia",
+    ];
+    
+    let lower = s.to_lowercase();
+    color_names.iter().any(|c| lower == *c)
+}
+
+/// Check if any changed strings are semantic (would need AI re-processing)
+fn has_semantic_string_changes(old_strings: &[String], new_strings: &[String]) -> bool {
+    for (old, new) in old_strings.iter().zip(new_strings.iter()) {
+        if old != new {
+            // If either old or new is a semantic string, we need AI
+            if is_semantic_string(old) || is_semantic_string(new) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Collect the specific string changes for incremental AI update
+fn collect_string_changes(old_strings: &[String], new_strings: &[String]) -> Vec<(String, String)> {
+    let mut changes = Vec::new();
+    for (old, new) in old_strings.iter().zip(new_strings.iter()) {
+        if old != new {
+            changes.push((old.clone(), new.clone()));
+        }
+    }
+    changes
+}
+
+/// Parse AppState struct fields from shared.h content
+/// Returns a list of (field_name, field_type, default_value) tuples for int fields
+/// Default value is extracted from declarations like "int btn_x = 200;"
+fn parse_appstate_int_fields_with_defaults(shared_content: &str) -> Vec<(String, String, Option<i64>)> {
+    let mut fields = Vec::new();
+    
+    // Find AppState struct definition
+    let struct_re = regex::Regex::new(r"struct\s+AppState\s*\{([^}]*)\}").ok();
+    
+    if let Some(re) = struct_re {
+        if let Some(captures) = re.captures(shared_content) {
+            if let Some(body) = captures.get(1) {
+                let body_str = body.as_str();
+                
+                // Parse individual field declarations WITH default values
+                // Match patterns like: int x; or int x = 10; or int btn_x = 330, btn_y = 10;
+                // Also handle inline declarations like: int x = 0, y = 0, dx = 5, dy = 5;
+                
+                // First, handle comma-separated declarations on single lines
+                // Pattern: int field1 = val1, field2 = val2, ...;
+                let multi_decl_re = regex::Regex::new(r"\b(int|unsigned|char|short|long)\s+([^;]+);").ok();
+                
+                if let Some(mre) = multi_decl_re {
+                    for cap in mre.captures_iter(body_str) {
+                        if let (Some(type_match), Some(decls_match)) = (cap.get(1), cap.get(2)) {
+                            let field_type = type_match.as_str().to_string();
+                            let decls_str = decls_match.as_str();
+                            
+                            // Split by comma and parse each field
+                            for decl in decls_str.split(',') {
+                                let decl = decl.trim();
+                                if decl.is_empty() { continue; }
+                                
+                                // Parse "name = value" or just "name"
+                                let parts: Vec<&str> = decl.splitn(2, '=').collect();
+                                let field_name = parts[0].trim().to_string();
+                                
+                                // Skip internal fields
+                                if field_name.starts_with("_") || 
+                                   field_name == "magic" || 
+                                   field_name == "struct_size" ||
+                                   field_name == "abi_version" ||
+                                   field_name.is_empty() {
+                                    continue;
+                                }
+                                
+                                // Parse default value if present
+                                let default_value = if parts.len() > 1 {
+                                    let val_str = parts[1].trim();
+                                    // Try to parse as integer
+                                    val_str.parse::<i64>().ok()
+                                } else {
+                                    None
+                                };
+                                
+                                fields.push((field_name, field_type.clone(), default_value));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // If no fields found, use common defaults
+    if fields.is_empty() {
+        fields = vec![
+            ("x".to_string(), "int".to_string(), Some(0)),
+            ("y".to_string(), "int".to_string(), Some(0)),
+            ("dx".to_string(), "int".to_string(), Some(5)),
+            ("dy".to_string(), "int".to_string(), Some(5)),
+            ("running".to_string(), "int".to_string(), Some(1)),
+            ("paused".to_string(), "int".to_string(), Some(0)),
+        ];
+    }
+    
+    fields
+}
+
+/// Generate state serialization code with explicit default values from shared.h
+fn generate_state_serialization_code_with_defaults(
+    fields: &[(String, String, Option<i64>)], 
+    prefix: &str
+) -> String {
+    crate::binary_state::generate_msgpack_serialization_code_with_defaults(fields, prefix)
+}
+
+/// Detect structural DELETIONS between old and new source code
+/// Returns lines that were removed
+fn detect_structural_deletions(old_source: &str, new_source: &str) -> Vec<String> {
+    let old_lines: Vec<&str> = old_source.lines().collect();
+    let new_lines: Vec<&str> = new_source.lines().collect();
+    
+    let mut deletions = Vec::new();
+    
+    for old_line in &old_lines {
+        let trimmed = old_line.trim();
+        if trimmed.is_empty() { continue; }
+        
+        let exists_in_new = new_lines.iter().any(|new_line| {
+            new_line.trim() == trimmed
+        });
+        
+        if !exists_in_new {
+            deletions.push(trimmed.to_string());
+        }
+    }
+    
+    deletions
+}
+
+/// Try to apply deletions locally without calling AI
+/// Returns Some(updated_result) if successful, None if AI is needed
+fn try_local_deletion_patch(
+    cached_result: &serde_json::Value,
+    deletions: &[String],
+) -> Option<serde_json::Value> {
+    if deletions.is_empty() {
+        return None;
+    }
+    
+    // Get current code
+    let core_content = cached_result.get("core")
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let gui_content = cached_result.get("gui")
+        .and_then(|g| g.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let shared_content = cached_result.get("shared")
+        .and_then(|s| s.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    
+    let mut new_core = core_content.to_string();
+    let mut new_gui = gui_content.to_string();
+    let mut new_shared = shared_content.to_string();
+    let mut any_changes = false;
+    
+    for deletion in deletions {
+        // Try to find and remove related code in the split files
+        // Look for patterns that match the deleted line
+        
+        // Skip empty or very short lines
+        if deletion.len() < 3 { continue; }
+        
+        // For button deletions, look for btn_ variables
+        if deletion.contains("btn_") || deletion.contains("button") || deletion.contains("Button") {
+            // Extract button variable names like btn2_x, reset_btn_x, etc.
+            let btn_pattern = regex::Regex::new(r"(\w+_btn_\w+|btn\d*_\w+)").unwrap();
+            for cap in btn_pattern.captures_iter(deletion) {
+                let var_name = &cap[1];
+                let base_name = var_name.split('_').take(2).collect::<Vec<_>>().join("_");
+                
+                // Remove from shared.h (state struct fields)
+                let field_pattern = format!("int {};", var_name);
+                if new_shared.contains(&field_pattern) {
+                    new_shared = new_shared.replace(&field_pattern, &format!("// REMOVED: {}", field_pattern));
+                    any_changes = true;
+                    eprintln!("[LocalPatch] Removed field {} from shared.h", var_name);
+                }
+                
+                // Comment out references in core.cpp - collect lines to replace first
+                let core_lines: Vec<String> = new_core.lines().map(|s| s.to_string()).collect();
+                for line in &core_lines {
+                    if line.contains(&base_name) && !line.trim().starts_with("//") {
+                        new_core = new_core.replace(line, &format!("// REMOVED: {}", line));
+                        any_changes = true;
+                    }
+                }
+                
+                // Comment out references in gui.cpp - collect lines to replace first
+                let gui_lines: Vec<String> = new_gui.lines().map(|s| s.to_string()).collect();
+                for line in &gui_lines {
+                    if line.contains(&base_name) && !line.trim().starts_with("//") {
+                        new_gui = new_gui.replace(line, &format!("// REMOVED: {}", line));
+                        any_changes = true;
+                    }
+                }
+            }
+        }
+        
+        // For XFillRectangle/XDrawRectangle deletions (drawing code)
+        if deletion.contains("XFillRectangle") || deletion.contains("XDrawRectangle") ||
+           deletion.contains("SDL_RenderFillRect") || deletion.contains("SDL_RenderDrawRect") {
+            // Find and comment out the SDL equivalent in gui.cpp
+            // This is trickier - we need to match the geometry
+            // For now, just mark as needing AI help if we can't do simple match
+        }
+    }
+    
+    if !any_changes {
+        return None;
+    }
+    
+    // Build updated result
+    let mut result = cached_result.clone();
+    if let Some(core) = result.get_mut("core") {
+        core["content"] = serde_json::Value::String(new_core);
+    }
+    if let Some(gui) = result.get_mut("gui") {
+        gui["content"] = serde_json::Value::String(new_gui);
+    }
+    if let Some(shared) = result.get_mut("shared") {
+        shared["content"] = serde_json::Value::String(new_shared);
+    }
+    
+    eprintln!("[LocalPatch] Applied local deletion patch - no AI call needed");
+    Some(result)
+}
+
+/// Detect structural additions between old and new source code
+/// Returns a description of what was added (new buttons, new elements, etc.)
+fn detect_structural_additions(old_source: &str, new_source: &str) -> Option<String> {
+    // Split into lines for diff analysis
+    let old_lines: Vec<&str> = old_source.lines().collect();
+    let new_lines: Vec<&str> = new_source.lines().collect();
+    
+    // Find added lines (simple diff - lines in new but not in old)
+    let mut additions = Vec::new();
+    
+    for new_line in &new_lines {
+        let trimmed = new_line.trim();
+        if trimmed.is_empty() { continue; }
+        
+        // Check if this line exists in old (with some fuzzy matching for whitespace)
+        let exists_in_old = old_lines.iter().any(|old_line| {
+            old_line.trim() == trimmed
+        });
+        
+        if !exists_in_old {
+            additions.push(trimmed.to_string());
+        }
+    }
+    
+    // Also check for deletions - if more deletions than additions, this is primarily a deletion
+    let deletions = detect_structural_deletions(old_source, new_source);
+    if deletions.len() > additions.len() && additions.len() < 3 {
+        // This is primarily a deletion, not an addition
+        return None;
+    }
+    
+    if additions.is_empty() {
+        return None;
+    }
+    
+    // Analyze what was added
+    let mut description_parts = Vec::new();
+    
+    // Detect button additions
+    let button_keywords = ["button", "Button", "btn", "Btn", "click", "Click"];
+    let has_button = additions.iter().any(|line| {
+        button_keywords.iter().any(|kw| line.contains(kw))
+    });
+    if has_button {
+        description_parts.push("new button/clickable element");
+    }
+    
+    // Detect draw calls (rectangles, shapes)
+    let draw_keywords = ["draw", "Draw", "rect", "Rect", "fill", "Fill", "XFillRectangle", "XDrawRectangle"];
+    let has_draw = additions.iter().any(|line| {
+        draw_keywords.iter().any(|kw| line.contains(kw))
+    });
+    if has_draw && !has_button {
+        description_parts.push("new shape/rectangle");
+    }
+    
+    // Detect text additions
+    let text_keywords = ["text", "Text", "string", "String", "XDrawString", "printf", "print"];
+    let has_text = additions.iter().any(|line| {
+        text_keywords.iter().any(|kw| line.contains(kw))
+    });
+    if has_text {
+        description_parts.push("new text element");
+    }
+    
+    // Detect event handling additions
+    let event_keywords = ["event", "Event", "handler", "Handler", "motion", "Motion", "expose", "Expose"];
+    let has_event = additions.iter().any(|line| {
+        event_keywords.iter().any(|kw| line.contains(kw))
+    });
+    if has_event {
+        description_parts.push("new event handler");
+    }
+    
+    // Detect variable/struct additions
+    let var_keywords = ["int ", "float ", "double ", "char ", "bool ", "struct ", "void "];
+    let has_var = additions.iter().any(|line| {
+        var_keywords.iter().any(|kw| line.starts_with(kw) || line.contains(&format!(" {}", kw)))
+    });
+    if has_var && description_parts.is_empty() {
+        description_parts.push("new variable/definition");
+    }
+    
+    if description_parts.is_empty() {
+        // Generic structural change
+        description_parts.push("code structure change");
+    }
+    
+    // Return ONLY the raw X11 code for translation to SDL2
+    // The AI will translate this X11 code directly to SDL2
+    let raw_code = additions.iter().take(50).cloned().collect::<Vec<_>>().join("\n");
+    
+    Some(raw_code)
+}
+
+/// Perform incremental structural AI update - tell AI what was added, not regenerate everything
+/// NOW USES the fast /refactor/delta endpoint (~2-3s vs ~18s)
+/// - Keeps existing working code (with guardrails applied)
+/// - Only asks AI to generate the delta (new button code snippet)
+/// - Injects that delta into the existing code
+async fn perform_structural_ai_update(
+    cached_result: &serde_json::Value,
+    _original_source: &str,
+    _new_source: &str,
+    structural_changes: &str,
+    _language: &str,
+) -> Result<serde_json::Value> {
+    let start_time = std::time::Instant::now();
+    
+    // Extract current code from cached result
+    let core_content = cached_result.get("core")
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let gui_content = cached_result.get("gui")
+        .and_then(|g| g.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let shared_content = cached_result.get("shared")
+        .and_then(|s| s.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    
+    // Use the NEW fast delta endpoint - sends cached_result so AI only generates delta snippets
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "update_type": "addition",
+        "changes_description": structural_changes,
+        "core_content": core_content,
+        "gui_content": gui_content,
+        "shared_content": shared_content,
+        "cached_result": cached_result  // CRITICAL: Include cached result for delta injection
+    });
+
+    let backend_url = std::env::var("AI_BACKEND_URL")
+        .unwrap_or_else(|_| "http://172.19.224.1:8000".to_string());
+    let url = format!("{}/refactor/delta", backend_url);
+
+    eprintln!("[AI Split] Calling fast delta endpoint: {}", url);
+    
+    let res = client.post(&url)
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(30)) // Shorter timeout for fast endpoint
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    // Delta endpoint returns {"result": {...}, "delta": {...}}
+    // The "result" is already the updated code with delta injected
+    if let Some(result) = res.get("result") {
+        if result.is_object() && result.get("core").is_some() {
+            let elapsed = start_time.elapsed();
+            eprintln!("[AI Split] Delta injection completed in {:?}", elapsed);
+            return Ok(result.clone());
+        }
+    }
+    
+    // Fallback: try to parse as string (old behavior)
+    let result_str = res["result"].as_str().ok_or(anyhow::anyhow!("No result from AI delta endpoint"))?;
+    
+    // Clean markdown
+    let clean_json = if let Some(start) = result_str.find("```json") {
+        let s = &result_str[start+7..];
+        if let Some(end) = s.find("```") { &s[..end] } else { s }
+    } else if let Some(start) = result_str.find("```") {
+        let s = &result_str[start+3..];
+        if let Some(end) = s.find("```") { &s[..end] } else { s }
+    } else {
+        result_str
+    }.trim();
+
+    // Try to find just the JSON object (AI sometimes adds extra text after)
+    let json_only = if let Some(start) = clean_json.find('{') {
+        // Find the matching closing brace by counting braces
+        let chars: Vec<char> = clean_json[start..].chars().collect();
+        let mut depth = 0;
+        let mut end_idx = chars.len();
+        for (i, c) in chars.iter().enumerate() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end_idx = i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        &clean_json[start..start + end_idx]
+    } else {
+        clean_json
+    };
+
+    let updated_data: serde_json::Value = match serde_json::from_str(json_only) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[AI Split] JSON parse error in structural update: {}", e);
+            eprintln!("[AI Split] Attempted to parse: {}...", &json_only.chars().take(500).collect::<String>());
+            return Err(anyhow::anyhow!("JSON parse error: {}", e));
+        }
+    };
+    
+    let elapsed = start_time.elapsed();
+    eprintln!("[AI Split] Structural update completed in {:?}", elapsed);
+    
+    Ok(updated_data)
+}
+
+/// Perform delta deletion - ask AI to identify what to remove, then apply locally
+/// Uses /refactor/delta endpoint with update_type="deletion"
+async fn perform_delta_deletion(
+    cached_result: &serde_json::Value,
+    deletion_description: &str,
+) -> Result<serde_json::Value> {
+    let start_time = std::time::Instant::now();
+    
+    let core_content = cached_result.get("core")
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let gui_content = cached_result.get("gui")
+        .and_then(|g| g.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let shared_content = cached_result.get("shared")
+        .and_then(|s| s.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "update_type": "deletion",
+        "changes_description": deletion_description,
+        "core_content": core_content,
+        "gui_content": gui_content,
+        "shared_content": shared_content,
+        "cached_result": cached_result
+    });
+
+    let backend_url = std::env::var("AI_BACKEND_URL")
+        .unwrap_or_else(|_| "http://172.19.224.1:8000".to_string());
+    let url = format!("{}/refactor/delta", backend_url);
+
+    eprintln!("[AI Split] Calling delta deletion endpoint: {}", url);
+    
+    let res = client.post(&url)
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    // Delta endpoint returns {"result": {...}, "delta": {...}}
+    if let Some(result) = res.get("result") {
+        if result.is_object() && result.get("core").is_some() {
+            let elapsed = start_time.elapsed();
+            eprintln!("[AI Split] Delta deletion completed in {:?}", elapsed);
+            return Ok(result.clone());
+        }
+    }
+    
+    Err(anyhow::anyhow!("No valid result from delta deletion endpoint"))
+}
+
+/// Perform incremental AI update - ask AI to apply specific changes to existing code
+/// NOW USES the fast /refactor/structural endpoint (~2-3s vs ~10s)
+async fn perform_incremental_ai_update(
+    cached_result: &serde_json::Value,
+    changes: &[(String, String)],
+    _language: &str,
+) -> Result<serde_json::Value> {
+    let start_time = std::time::Instant::now();
+    
+    // Extract current code from cached result
+    let core_content = cached_result.get("core")
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let gui_content = cached_result.get("gui")
+        .and_then(|g| g.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let shared_content = cached_result.get("shared")
+        .and_then(|s| s.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    
+    // Convert changes to JSON array format
+    let changes_json: Vec<serde_json::Value> = changes.iter()
+        .map(|(old, new)| serde_json::json!([old, new]))
+        .collect();
+    
+    // Use the NEW fast structural endpoint
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "update_type": "incremental",
+        "changes": changes_json,
+        "core_content": core_content,
+        "gui_content": gui_content,
+        "shared_content": shared_content
+    });
+
+    let backend_url = std::env::var("AI_BACKEND_URL")
+        .unwrap_or_else(|_| "http://172.19.224.1:8000".to_string());
+    let url = format!("{}/refactor/structural", backend_url);
+
+    eprintln!("[AI Split] Calling fast incremental endpoint: {}", url);
+    
+    let res = client.post(&url)
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(20)) // Short timeout for incremental
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    let result_str = res["result"].as_str().ok_or(anyhow::anyhow!("No result from AI"))?;
+    
+    // Clean markdown
+    let clean_json = if let Some(start) = result_str.find("```json") {
+        let s = &result_str[start+7..];
+        if let Some(end) = s.find("```") { &s[..end] } else { s }
+    } else if let Some(start) = result_str.find("```") {
+        let s = &result_str[start+3..];
+        if let Some(end) = s.find("```") { &s[..end] } else { s }
+    } else {
+        result_str
+    }.trim();
+
+    let updated_data: serde_json::Value = serde_json::from_str(clean_json)?;
+    
+    let elapsed = start_time.elapsed();
+    eprintln!("[AI Split] Incremental update completed in {:?}", elapsed);
+    
+    Ok(updated_data)
+}
+
 
 /// Extract structural signature from C/C++ code for smart caching.
 /// This ignores string literals, comments, and numeric constants so that
@@ -1374,20 +2221,208 @@ fn extract_structural_signature(source: &str) -> String {
 }
 
 async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
-    // Use STRUCTURAL hash for cache - ignores string literals, comments, numbers
-    // This gives Next.js-like HMR behavior: changing "Paused" to "Resume" won't trigger AI
-    let structural_sig = extract_structural_signature(&req.source);
-    let source_hash = calculate_hash(&structural_sig);
+    // FOUR-LEVEL CACHE for fast HMR (like Next.js):
+    // Level 1: Full source hash -> instant cache hit (exact match) - 0ms
+    // Level 2: Structural hash -> cache hit with string patching (text-only changes) - ~1ms
+    // Level 2.5: Semantic changes (colors/numbers) -> incremental AI update - ~2-5s
+    // Level 2.75: Structural additions (new button) -> incremental AI update - ~5-10s
+    // Level 3: Full cache miss -> call AI backend for full split - ~15-25s
     
+    let source_hash = calculate_hash(&req.source);
+    let structural_sig = extract_structural_signature(&req.source);
+    let structural_hash = calculate_hash(&structural_sig);
+    
+    // Level 1: Check exact source match (instant, no work)
     {
         let cache = get_ai_split_cache().lock().await;
         if let Some(cached) = cache.get(&source_hash) {
-            eprintln!("[AI Split] Cache HIT - using cached split result");
-            return Ok(cached.clone());
+            eprintln!("[AI Split] Cache HIT (exact match) - instant return");
+            return Ok(cached.result.clone());
         }
     }
     
-    eprintln!("[AI Split] Cache MISS - calling AI backend...");
+    // Level 2: Check structural match (fast patching, no AI call)
+    // Only works for simple text changes, NOT semantic changes like colors
+    let structural_cache_result = {
+        let structural_cache = get_ai_split_structural_cache().lock().await;
+        structural_cache.get(&structural_hash).cloned()
+    };
+    
+    if let Some(cached) = structural_cache_result {
+        // Extract strings from old and new source
+        let old_strings = extract_string_literals(&cached.original_source);
+        let new_strings = extract_string_literals(&req.source);
+        
+        // Check if any changes are semantic (colors, etc.) that need AI re-processing
+        if has_semantic_string_changes(&old_strings, &new_strings) {
+            eprintln!("[AI Split] Structural match but SEMANTIC change detected - using incremental AI update");
+            
+            // Level 2.5: Incremental AI update (faster than full regen)
+            // Ask AI to just update the specific changes, not regenerate everything
+            let changes = collect_string_changes(&old_strings, &new_strings);
+            if !changes.is_empty() {
+                match perform_incremental_ai_update(&cached.result, &changes, &req.language).await {
+                    Ok(updated_result) => {
+                        // Store updated result in both caches
+                        let cached_entry = CachedSplit {
+                            result: updated_result.clone(),
+                            original_source: req.source.clone(),
+                        };
+                        {
+                            let mut cache = get_ai_split_cache().lock().await;
+                            cache.insert(source_hash, cached_entry.clone());
+                        }
+                        {
+                            let mut structural_cache = get_ai_split_structural_cache().lock().await;
+                            structural_cache.insert(structural_hash, cached_entry);
+                        }
+                        eprintln!("[AI Split] Incremental update complete - fast semantic HMR!");
+                        return Ok(updated_result);
+                    }
+                    Err(e) => {
+                        eprintln!("[AI Split] Incremental update failed: {} - falling back to full regen", e);
+                        // Fall through to Level 3 (full AI call)
+                    }
+                }
+            }
+        } else {
+            eprintln!("[AI Split] Cache HIT (structural match) - patching strings...");
+            
+            // Patch the cached result with new strings
+            let (patched_result, did_patch) = patch_strings_in_cached_result(&cached.result, &old_strings, &new_strings);
+            
+            // If patching didn't actually change anything, and strings differ, something's wrong
+            // Fall back to AI call
+            let strings_differ = old_strings != new_strings;
+            if strings_differ && !did_patch {
+                eprintln!("[AI Split] String patching FAILED (strings not found in output) - calling AI");
+                // Fall through to Level 3 (AI call)
+            } else {
+                // Store patched result in exact-match cache for future
+                {
+                    let mut cache = get_ai_split_cache().lock().await;
+                    cache.insert(source_hash, CachedSplit {
+                        result: patched_result.clone(),
+                        original_source: req.source.clone(),
+                    });
+                }
+                
+                eprintln!("[AI Split] String patching complete - fast HMR!");
+                return Ok(patched_result);
+            }
+        }
+    }
+    
+    // Level 2.6: Try LOCAL deletion patching (no AI call needed!)
+    // If user deleted code (button, etc.), we can often patch locally
+    let any_cached_for_deletion = {
+        let structural_cache = get_ai_split_structural_cache().lock().await;
+        structural_cache.values().next().cloned()
+    };
+    
+    if let Some(cached) = any_cached_for_deletion {
+        let deletions = detect_structural_deletions(&cached.original_source, &req.source);
+        if !deletions.is_empty() {
+            eprintln!("[AI Split] Detected {} deleted lines - attempting local patch", deletions.len());
+            
+            if let Some(patched_result) = try_local_deletion_patch(&cached.result, &deletions) {
+                // Store patched result in caches
+                let cached_entry = CachedSplit {
+                    result: patched_result.clone(),
+                    original_source: req.source.clone(),
+                };
+                {
+                    let mut cache = get_ai_split_cache().lock().await;
+                    cache.insert(source_hash, cached_entry.clone());
+                }
+                {
+                    let mut structural_cache = get_ai_split_structural_cache().lock().await;
+                    structural_cache.insert(structural_hash, cached_entry);
+                }
+                eprintln!("[AI Split] Local deletion patch applied - instant HMR!");
+                return Ok(patched_result);
+            } else {
+                eprintln!("[AI Split] Local deletion patch failed - will try AI delta deletion");
+                
+                // Try AI delta deletion endpoint
+                let deletion_description = deletions.iter()
+                    .take(10)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                
+                match perform_delta_deletion(&cached.result, &deletion_description).await {
+                    Ok(updated_result) => {
+                        let cached_entry = CachedSplit {
+                            result: updated_result.clone(),
+                            original_source: req.source.clone(),
+                        };
+                        {
+                            let mut cache = get_ai_split_cache().lock().await;
+                            cache.insert(source_hash, cached_entry.clone());
+                        }
+                        {
+                            let mut structural_cache = get_ai_split_structural_cache().lock().await;
+                            structural_cache.insert(structural_hash, cached_entry);
+                        }
+                        eprintln!("[AI Split] Delta deletion complete - fast HMR!");
+                        return Ok(updated_result);
+                    }
+                    Err(e) => {
+                        eprintln!("[AI Split] Delta deletion failed: {} - will try other paths", e);
+                        // Fall through to next level
+                    }
+                }
+            }
+        }
+    }
+    
+    // Level 2.75: Try incremental structural update if we have ANY cached result
+    // This is like Next.js - detect what changed and tell AI to just add that
+    let any_cached_result = {
+        let structural_cache = get_ai_split_structural_cache().lock().await;
+        // Find the most recent cached entry (any entry will do for structural diff)
+        structural_cache.values().next().cloned()
+    };
+    
+    if let Some(cached) = any_cached_result {
+        // Check if this looks like a structural addition (new button, new element)
+        if let Some(structural_changes) = detect_structural_additions(&cached.original_source, &req.source) {
+            eprintln!("[AI Split] ╔═══════════════════════════════════════════════════════════╗");
+            eprintln!("[AI Split] ║  DELTA CHANGE DETECTED - Using fast incremental path     ║");
+            eprintln!("[AI Split] ╚═══════════════════════════════════════════════════════════╝");
+            eprintln!("[AI Split] Delta type: Structural ADDITION (new element/button)");
+            eprintln!("[AI Split] X11 code to translate:\n{}", structural_changes.lines().take(5).collect::<Vec<_>>().join("\n"));
+            eprintln!("[AI Split] NOTE: Runner will NOT restart - HMR will hot-reload the modules");
+            
+            match perform_structural_ai_update(&cached.result, &cached.original_source, &req.source, &structural_changes, &req.language).await {
+                Ok(updated_result) => {
+                    // Store updated result in both caches
+                    let cached_entry = CachedSplit {
+                        result: updated_result.clone(),
+                        original_source: req.source.clone(),
+                    };
+                    {
+                        let mut cache = get_ai_split_cache().lock().await;
+                        cache.insert(source_hash, cached_entry.clone());
+                    }
+                    {
+                        let mut structural_cache = get_ai_split_structural_cache().lock().await;
+                        structural_cache.insert(structural_hash, cached_entry);
+                    }
+                    eprintln!("[AI Split] ✓ Delta injection complete - fast HMR for new elements!");
+                    return Ok(updated_result);
+                }
+                Err(e) => {
+                    eprintln!("[AI Split] ✗ Structural update failed: {} - falling back to full regen", e);
+                    // Fall through to Level 3 (full AI call)
+                }
+            }
+        }
+    }
+    
+    // Level 3: Cache miss - call AI backend (full regeneration)
+    eprintln!("[AI Split] Cache MISS (no incremental path) - calling AI backend for full split...");
     let start_time = std::time::Instant::now();
     
     let client = reqwest::Client::new();
@@ -1462,17 +2497,34 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
         }
     };
     
-    // Cache the result for future requests with same source
+    // Cache the result for future requests
     let elapsed = start_time.elapsed();
     eprintln!("[AI Split] Completed in {:?}", elapsed);
+    
+    let cached_entry = CachedSplit {
+        result: split_data.clone(),
+        original_source: req.source.clone(),
+    };
+    
+    // Store in both caches
     {
         let mut cache = get_ai_split_cache().lock().await;
-        cache.insert(source_hash, split_data.clone());
+        cache.insert(source_hash, cached_entry.clone());
         // Limit cache size to 100 entries
         if cache.len() > 100 {
-            // Remove oldest (first) entry
             if let Some(oldest_key) = cache.keys().next().cloned() {
                 cache.remove(&oldest_key);
+            }
+        }
+    }
+    
+    {
+        let mut structural_cache = get_ai_split_structural_cache().lock().await;
+        structural_cache.insert(structural_hash, cached_entry);
+        // Limit structural cache size to 50 entries
+        if structural_cache.len() > 50 {
+            if let Some(oldest_key) = structural_cache.keys().next().cloned() {
+                structural_cache.remove(&oldest_key);
             }
         }
     }
@@ -1955,6 +3007,16 @@ async fn handle_compile(
             let fname = core["filename"].as_str().unwrap_or("core.cpp");
             let mut content = core["content"].as_str().unwrap_or("").to_string();
 
+            // Read shared.h content to check what's defined there
+            let shared_content = split_data.get("shared")
+                .and_then(|s| s["content"].as_str())
+                .unwrap_or("");
+            
+            // Detect if shared.h has full struct definitions or just forward declarations
+            let shared_has_full_hostkv = shared_content.contains("struct HostKvApiV1 {") ||
+                                          shared_content.contains("struct SynthiHostContextV1 {") ||
+                                          shared_content.contains("struct SynthiNamespaceSchemaV1 {");
+
             // Fix common AI mistakes in core.cpp before compilation.
             if content.contains("is_running") {
                 content = content.replace("is_running", "running");
@@ -2166,23 +3228,177 @@ async fn handle_compile(
                 }
 
                 // Pattern 3: Host KV structs (HostKvApiV1, SynthiHostContextV1, SynthiNamespaceSchemaV1)
+                // Intelligently handle these based on what's in shared.h
                 for struct_name in &["HostKvApiV1", "SynthiHostContextV1", "SynthiNamespaceSchemaV1"] {
-                     // typedef struct Name Name;
+                     // Always strip typedef forward declarations if they exist
                      let typedef_pattern = format!("typedef struct {} {};", struct_name, struct_name);
                      if content.contains(&typedef_pattern) {
-                         content = content.replace(&typedef_pattern, &format!("// {} defined in shared.h", struct_name));
+                         content = content.replace(&typedef_pattern, &format!("// {} forward-declared in shared.h", struct_name));
+                         eprintln!("[Guardrail] Stripped typedef forward decl for '{}' from core.cpp", struct_name);
                      }
                      
-                     // struct Name { ... };
-                     let struct_decl = format!("struct {} {{", struct_name);
-                     if let Some(start) = content.find(&struct_decl) {
-                         if let Some(end) = content[start..].find("};") {
-                             let block_end = start + end + "};".len();
-                             let block = &content[start..block_end];
-                             eprintln!("[Guardrail] Stripping duplicate 'struct {}' from core.cpp", struct_name);
-                             content = content.replace(block, &format!("// {} defined in shared.h", struct_name));
+                     // Strip full struct definitions ONLY if shared.h has them
+                     if shared_has_full_hostkv {
+                         let struct_decl = format!("struct {} {{", struct_name);
+                         if let Some(start) = content.find(&struct_decl) {
+                             if let Some(end) = content[start..].find("};") {
+                                 let block_end = start + end + "};".len();
+                                 let block = &content[start..block_end];
+                                 eprintln!("[Guardrail] Stripping duplicate 'struct {}' from core.cpp (full definition in shared.h)", struct_name);
+                                 content = content.replace(block, &format!("// {} fully defined in shared.h", struct_name));
+                             }
                          }
+                     } else {
+                         // shared.h only has forward declarations, keep full definitions here
+                         eprintln!("[Guardrail] Keeping 'struct {}' definition in core.cpp (shared.h has forward decl only)", struct_name);
                      }
+                }
+                
+                // FIX: If AI uses Host KV types but shared.h doesn't define them, inject definitions
+                // This happens when AI generates g_core_schemas[] or uses SynthiHostContextV1
+                let uses_hostkv_types = content.contains("SynthiHostContextV1") || 
+                                        content.contains("SynthiNamespaceSchemaV1") ||
+                                        content.contains("HostKvApiV1") ||
+                                        content.contains("g_core_schemas") ||
+                                        content.contains("host_kv_schemas");
+                
+                if uses_hostkv_types && !shared_has_full_hostkv {
+                    // Need to inject Host KV C header definitions
+                    let hostkv_header = r#"
+// ============================================================
+// [Guardrail] HOST KV TYPE DEFINITIONS (auto-injected)
+// ============================================================
+
+#ifndef SYNTHI_HOST_KV_TYPES_DEFINED
+#define SYNTHI_HOST_KV_TYPES_DEFINED
+
+#include <stdint.h>
+
+// Forward declarations
+struct SynthiHostContextV1;
+struct HostKvApiV1;
+
+// Namespace schema entry
+typedef struct SynthiNamespaceSchemaV1 {
+    const char* ns;       // NUL-terminated namespace name
+    uint64_t schema_id;   // Schema version/hash
+} SynthiNamespaceSchemaV1;
+
+// Host context (passed to *_on_load_host)
+typedef struct SynthiHostContextV1 {
+    uint32_t host_api_version;
+    const struct HostKvApiV1* kv;
+    const char* session_id;
+    uint32_t session_id_len;
+    uint32_t module_slot;
+    void* window;
+    void* renderer;
+    void* reserved[8];
+} SynthiHostContextV1;
+
+// KV API vtable
+typedef struct HostKvApiV1 {
+    uint32_t version;
+    int (*set_bytes)(const SynthiHostContextV1* ctx, const char* ns, const char* key, const uint8_t* data, uint32_t len);
+    int (*get_bytes)(const SynthiHostContextV1* ctx, const char* ns, const char* key, uint8_t** out, uint32_t* out_len);
+    int (*delete_key)(const SynthiHostContextV1* ctx, const char* ns, const char* key);
+    int (*clear_namespace)(const SynthiHostContextV1* ctx, const char* ns);
+    int (*get_schema)(const SynthiHostContextV1* ctx, const char* ns, uint64_t* out_schema);
+    int (*set_schema)(const SynthiHostContextV1* ctx, const char* ns, uint64_t schema);
+    void* (*host_alloc)(uint32_t size);
+    void (*host_free)(void* ptr);
+    const char* (*last_error)(void);
+} HostKvApiV1;
+
+#endif // SYNTHI_HOST_KV_TYPES_DEFINED
+"#;
+                    // Prepend to content after includes
+                    if let Some(include_end) = content.rfind("#include") {
+                        if let Some(newline_pos) = content[include_end..].find('\n') {
+                            let insert_pos = include_end + newline_pos + 1;
+                            content.insert_str(insert_pos, hostkv_header);
+                            eprintln!("[Guardrail] Injected Host KV type definitions (AI uses Host KV but shared.h lacks definitions)");
+                        }
+                    } else {
+                        // No includes found, prepend at start
+                        content = format!("{}{}", hostkv_header, content);
+                        eprintln!("[Guardrail] Injected Host KV type definitions at start (no includes found)");
+                    }
+                }
+            }
+
+            // FIX: AI sometimes references AppState fields that don't exist
+            // Common hallucinated fields: wbuffer, write_buffer, rbuffer, read_buffer
+            // Strip lines that reference these if they're not in shared.h
+            {
+                let hallucinated_fields = ["wbuffer", "write_buffer", "rbuffer", "read_buffer", "buffer_ptr"];
+                for field in &hallucinated_fields {
+                    if !shared_content.contains(field) && (content.contains(&format!("->{}", field)) || content.contains(&format!(".{}", field))) {
+                        // Strip lines referencing this non-existent field
+                        let pattern1 = format!("->{}", field);
+                        let pattern2 = format!(".{}", field);
+                        
+                        let mut cleaned = Vec::new();
+                        for line in content.lines() {
+                            if line.contains(&pattern1) || line.contains(&pattern2) {
+                                cleaned.push(format!("// [Guardrail] Removed: {} (field not in AppState)", line.trim()));
+                                eprintln!("[Guardrail] Stripped line referencing non-existent field '{}': {}", field, line.trim());
+                            } else {
+                                cleaned.push(line.to_string());
+                            }
+                        }
+                        content = cleaned.join("\n");
+                    }
+                }
+            }
+
+            // FIX: AI often forgets to initialize button state fields in core.cpp
+            // If the AppState has btn_x/btn_y/btn_w/btn_h but core doesn't initialize them,
+            // the button won't be visible. Inject default values if missing.
+            if shared_content.contains("btn_x") && shared_content.contains("btn_y") {
+                // Check if core.cpp initializes any btn_ fields
+                let has_btn_init = content.contains("btn_x =") || 
+                                   content.contains("btn_x=") ||
+                                   content.contains("->btn_x =") ||
+                                   content.contains(".btn_x =");
+                
+                if !has_btn_init {
+                    // Find ALL state initialization blocks and inject button init after dx = 5
+                    // The AI typically generates: app_state.dx = 5; without btn_ fields
+                    let btn_init_code = "\n        app_state.btn_x = 200;\n        app_state.btn_y = 10;\n        app_state.btn_w = 120;\n        app_state.btn_h = 40;";
+                    
+                    // Replace ALL occurrences of dx = 5 initialization
+                    if content.contains("app_state.dx = 5;") {
+                        content = content.replace(
+                            "app_state.dx = 5;",
+                            &format!("app_state.dx = 5;{}", btn_init_code)
+                        );
+                        eprintln!("[Guardrail] Injected button state initialization (btn_x/y/w/h) in core.cpp");
+                    }
+                }
+            }
+
+            // CRITICAL FIX: Delta injection sometimes uses 'state->' in core.cpp init blocks
+            // but 'state' is a local variable inside on_load(). Must use 'app_state.' instead.
+            // This fixes AI-generated code like: state->btn2_x = 330; -> app_state.btn2_x = 330;
+            if content.contains("state->btn") && content.contains("static AppState app_state") {
+                // Find state->btn patterns that should be app_state.btn
+                let patterns = [
+                    ("state->btn2_", "app_state.btn2_"),
+                    ("state->btn3_", "app_state.btn3_"),
+                    ("state->btn4_", "app_state.btn4_"),
+                    ("state->new_btn_", "app_state.new_btn_"),
+                    ("state->reset_btn_", "app_state.reset_btn_"),
+                ];
+                let mut fixed = false;
+                for (wrong, correct) in &patterns {
+                    if content.contains(*wrong) {
+                        content = content.replace(*wrong, *correct);
+                        fixed = true;
+                    }
+                }
+                if fixed {
+                    eprintln!("[Guardrail] Fixed state->btn* -> app_state.btn* in core.cpp init code");
                 }
             }
 
@@ -2327,45 +3543,38 @@ async fn handle_compile(
             // These exports enable "Full HMR" detection by the capability checker
             // The runner will see these symbols and grant Full HMR capability
             
-            // Case 1: New-style Core module
-            if content.contains("core_on_load") && !content.contains("core_on_save_state") {
-                let state_serial_stubs = r#"
-
-// [Guardrail] State serialization stubs for Full HMR capability (Core)
-extern "C" char* core_on_save_state(void* state_ptr) {
-    (void)state_ptr;
-    return NULL;
-}
-
-extern "C" int core_on_load_from_json(void* state_ptr, const char* json) {
-    (void)state_ptr;
-    (void)json;
-    return 0;
-}
-"#;
-                content.push_str(state_serial_stubs);
-                eprintln!("[Guardrail] Injected core_on_save_state stubs for Full HMR capability");
+            // Case 1: New-style Core module - generate DYNAMIC JSON serialization based on shared.h
+            // Skip if AI already generated these functions to avoid redefinition errors
+            if content.contains("core_on_load") && 
+               !content.contains("core_on_save_state") && 
+               !content.contains("core_get_state_schema_hash") {
+                // Parse actual fields from shared.h WITH DEFAULT VALUES for proper schema migration
+                let fields = parse_appstate_int_fields_with_defaults(shared_content);
+                eprintln!("[Guardrail] Parsed {} fields from shared.h for serialization: {:?}", 
+                    fields.len(), 
+                    fields.iter().map(|(n,_,d)| format!("{}={:?}", n, d)).collect::<Vec<_>>());
+                
+                // Generate serialization code that handles ALL fields with declared defaults
+                let state_serial_stubs = generate_state_serialization_code_with_defaults(&fields, "core");
+                content.push_str(&state_serial_stubs);
+                eprintln!("[Guardrail] Injected DYNAMIC state serialization for Full HMR (core) with declared defaults");
             }
-            // Case 2: Legacy module
-            else if content.contains("on_load") && !content.contains("on_save_state") && !content.contains("core_on_load") {
-                let state_serial_stubs = r#"
-
-// [Guardrail] State serialization stubs for Full HMR capability (Legacy)
-extern "C" char* on_save_state(void* state_ptr) {
-    // Return NULL - binary state preservation is used instead
-    (void)state_ptr;
-    return NULL;
-}
-
-extern "C" int on_load_from_json(void* state_ptr, const char* json) {
-    // Return 0 - binary state preservation is used instead
-    (void)state_ptr;
-    (void)json;
-    return 0;
-}
-"#;
-                content.push_str(state_serial_stubs);
-                eprintln!("[Guardrail] Injected on_save_state stubs for Full HMR capability");
+            // Case 2: Legacy module - also use dynamic serialization
+            // Skip if AI already generated these functions to avoid redefinition errors
+            else if content.contains("on_load") && 
+                    !content.contains("on_save_state") && 
+                    !content.contains("core_on_load") &&
+                    !content.contains("get_state_schema_hash") {
+                // Parse actual fields from shared.h WITH DEFAULT VALUES for proper schema migration
+                let fields = parse_appstate_int_fields_with_defaults(shared_content);
+                eprintln!("[Guardrail] Parsed {} fields from shared.h for legacy serialization: {:?}", 
+                    fields.len(), 
+                    fields.iter().map(|(n,_,d)| format!("{}={:?}", n, d)).collect::<Vec<_>>());
+                
+                // Generate serialization code that handles ALL fields (legacy prefix)
+                let state_serial_stubs = generate_state_serialization_code_with_defaults(&fields, "legacy");
+                content.push_str(&state_serial_stubs);
+                eprintln!("[Guardrail] Injected DYNAMIC state serialization for Full HMR (legacy) with declared defaults");
             }
 
             let content_hash = calculate_hash(&content);
@@ -2625,6 +3834,16 @@ extern "C" int on_load_from_json(void* state_ptr, const char* json) {
             let fname = gui["filename"].as_str().unwrap_or("gui.cpp");
             let mut content = gui["content"].as_str().unwrap_or("").to_string();
 
+            // Read shared.h content to check what's defined there (reuse from core processing)
+            let shared_content = split_data.get("shared")
+                .and_then(|s| s["content"].as_str())
+                .unwrap_or("");
+            
+            // Detect if shared.h has full struct definitions or just forward declarations
+            let shared_has_full_hostkv = shared_content.contains("struct HostKvApiV1 {") ||
+                                          shared_content.contains("struct SynthiHostContextV1 {") ||
+                                          shared_content.contains("struct SynthiNamespaceSchemaV1 {");
+
             // CRITICAL: Strip X11-related functions that the AI incorrectly preserved from the input.
             let x11_type_patterns = [
                 "Display*", "Display *", "XIM", "XIC", "Atom", "Colormap", "Pixmap", "GC ",
@@ -2698,23 +3917,94 @@ extern "C" int on_load_from_json(void* state_ptr, const char* json) {
                 }
 
                 // Pattern 3: Host KV structs (HostKvApiV1, SynthiHostContextV1, SynthiNamespaceSchemaV1)
+                // Intelligently handle these based on what's in shared.h
                 for struct_name in &["HostKvApiV1", "SynthiHostContextV1", "SynthiNamespaceSchemaV1"] {
-                     // typedef struct Name Name;
+                     // Always strip typedef forward declarations if they exist
                      let typedef_pattern = format!("typedef struct {} {};", struct_name, struct_name);
                      if content.contains(&typedef_pattern) {
-                         content = content.replace(&typedef_pattern, &format!("// {} defined in shared.h", struct_name));
+                         content = content.replace(&typedef_pattern, &format!("// {} forward-declared in shared.h", struct_name));
+                         eprintln!("[Guardrail] Stripped typedef forward decl for '{}' from gui.cpp", struct_name);
                      }
                      
-                     // struct Name { ... };
-                     let struct_decl = format!("struct {} {{", struct_name);
-                     if let Some(start) = content.find(&struct_decl) {
-                         if let Some(end) = content[start..].find("};") {
-                             let block_end = start + end + "};".len();
-                             let block = &content[start..block_end];
-                             eprintln!("[Guardrail] Stripping duplicate 'struct {}' from gui.cpp", struct_name);
-                             content = content.replace(block, &format!("// {} defined in shared.h", struct_name));
+                     // Strip full struct definitions ONLY if shared.h has them
+                     if shared_has_full_hostkv {
+                         let struct_decl = format!("struct {} {{", struct_name);
+                         if let Some(start) = content.find(&struct_decl) {
+                             if let Some(end) = content[start..].find("};") {
+                                 let block_end = start + end + "};".len();
+                                 let block = &content[start..block_end];
+                                 eprintln!("[Guardrail] Stripping duplicate 'struct {}' from gui.cpp (full definition in shared.h)", struct_name);
+                                 content = content.replace(block, &format!("// {} fully defined in shared.h", struct_name));
+                             }
                          }
+                     } else {
+                         // shared.h only has forward declarations, keep full definitions here
+                         eprintln!("[Guardrail] Keeping 'struct {}' definition in gui.cpp (shared.h has forward decl only)", struct_name);
                      }
+                }
+                
+                // FIX: If AI uses Host KV types but shared.h doesn't define them, inject definitions
+                let uses_hostkv_types = content.contains("SynthiHostContextV1") || 
+                                        content.contains("SynthiNamespaceSchemaV1") ||
+                                        content.contains("HostKvApiV1") ||
+                                        content.contains("g_gui_schemas") ||
+                                        content.contains("host_kv_schemas");
+                
+                if uses_hostkv_types && !shared_has_full_hostkv {
+                    let hostkv_header = r#"
+// ============================================================
+// [Guardrail] HOST KV TYPE DEFINITIONS (auto-injected)
+// ============================================================
+
+#ifndef SYNTHI_HOST_KV_TYPES_DEFINED
+#define SYNTHI_HOST_KV_TYPES_DEFINED
+
+#include <stdint.h>
+
+struct SynthiHostContextV1;
+struct HostKvApiV1;
+
+typedef struct SynthiNamespaceSchemaV1 {
+    const char* ns;
+    uint64_t schema_id;
+} SynthiNamespaceSchemaV1;
+
+typedef struct SynthiHostContextV1 {
+    uint32_t host_api_version;
+    const struct HostKvApiV1* kv;
+    const char* session_id;
+    uint32_t session_id_len;
+    uint32_t module_slot;
+    void* window;
+    void* renderer;
+    void* reserved[8];
+} SynthiHostContextV1;
+
+typedef struct HostKvApiV1 {
+    uint32_t version;
+    int (*set_bytes)(const SynthiHostContextV1* ctx, const char* ns, const char* key, const uint8_t* data, uint32_t len);
+    int (*get_bytes)(const SynthiHostContextV1* ctx, const char* ns, const char* key, uint8_t** out, uint32_t* out_len);
+    int (*delete_key)(const SynthiHostContextV1* ctx, const char* ns, const char* key);
+    int (*clear_namespace)(const SynthiHostContextV1* ctx, const char* ns);
+    int (*get_schema)(const SynthiHostContextV1* ctx, const char* ns, uint64_t* out_schema);
+    int (*set_schema)(const SynthiHostContextV1* ctx, const char* ns, uint64_t schema);
+    void* (*host_alloc)(uint32_t size);
+    void (*host_free)(void* ptr);
+    const char* (*last_error)(void);
+} HostKvApiV1;
+
+#endif // SYNTHI_HOST_KV_TYPES_DEFINED
+"#;
+                    if let Some(include_end) = content.rfind("#include") {
+                        if let Some(newline_pos) = content[include_end..].find('\n') {
+                            let insert_pos = include_end + newline_pos + 1;
+                            content.insert_str(insert_pos, hostkv_header);
+                            eprintln!("[Guardrail] Injected Host KV type definitions into gui.cpp");
+                        }
+                    } else {
+                        content = format!("{}{}", hostkv_header, content);
+                        eprintln!("[Guardrail] Injected Host KV type definitions at start of gui.cpp");
+                    }
                 }
             }
 
@@ -2785,25 +4075,118 @@ extern "C" int on_load_from_json(void* state_ptr, const char* json) {
                 content = re_memset.replace_all(&content, "// [Guardrail] memset REMOVED to preserve HMR state").to_string();
             }
 
+            // CRITICAL FIX: AI sometimes uses 'app_state' in gui.cpp instead of 'gui_app_state'
+            // This happens during structural updates when AI copies patterns from core.cpp
+            // The variable in gui.cpp MUST be 'gui_app_state' (injected by guardrail) not 'app_state'
+            if content.contains("static AppState gui_app_state") || content.contains("&gui_app_state") {
+                // gui.cpp uses gui_app_state, so fix any bare 'app_state' references
+                // But be careful not to replace 'gui_app_state' with 'gui_gui_app_state'
+                
+                // Pattern: &app_state that should be &gui_app_state
+                if content.contains("&app_state") && !content.contains("&gui_app_state") {
+                    content = content.replace("&app_state", "&gui_app_state");
+                    eprintln!("[Guardrail] Fixed &app_state -> &gui_app_state in gui.cpp");
+                }
+                
+                // Pattern: bare 'app_state' that should be 'gui_app_state'
+                // Use word boundary \b to match whole word only
+                // But we need to avoid replacing 'gui_app_state' with 'gui_gui_app_state'
+                if content.contains("gui_app_state") {
+                    // Only replace standalone app_state (not gui_app_state)
+                    // Simple approach: temporarily replace gui_app_state, then replace app_state, then restore
+                    let placeholder = "__GUI_APP_STATE_PLACEHOLDER__";
+                    let temp_content = content.replace("gui_app_state", placeholder);
+                    if temp_content.contains("app_state") {
+                        let fixed_content = temp_content.replace("app_state", "gui_app_state");
+                        content = fixed_content.replace(placeholder, "gui_app_state");
+                        eprintln!("[Guardrail] Fixed app_state -> gui_app_state references in gui.cpp");
+                    } else {
+                        // No standalone app_state found, nothing to do
+                    }
+                }
+            }
 
             if content.contains("main(") && !content.contains("extern \"C\" void* entrypoint") {
                  content.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
             }
+
+            // CRITICAL FIX: Delta injection sometimes uses 'renderer' instead of 'state->renderer'
+            // Fix any bare 'renderer' that should be 'state->renderer' in SDL calls
+            if content.contains("SDL_Render") || content.contains("SDL_SetRenderDrawColor") || content.contains("draw_text") {
+                // Match patterns like SDL_RenderFillRect(renderer, but NOT state->renderer
+                // Use simple string replacement for common patterns
+                let fixes = [
+                    ("SDL_RenderFillRect(renderer,", "SDL_RenderFillRect(state->renderer,"),
+                    ("SDL_RenderDrawRect(renderer,", "SDL_RenderDrawRect(state->renderer,"),
+                    ("SDL_SetRenderDrawColor(renderer,", "SDL_SetRenderDrawColor(state->renderer,"),
+                    ("SDL_RenderClear(renderer)", "SDL_RenderClear(state->renderer)"),
+                    ("draw_text(renderer,", "draw_text(state->renderer,"),
+                ];
+                let mut fixed_any = false;
+                for (wrong, correct) in &fixes {
+                    if content.contains(*wrong) {
+                        content = content.replace(*wrong, *correct);
+                        fixed_any = true;
+                    }
+                }
+                if fixed_any {
+                    eprintln!("[Guardrail] Fixed renderer -> state->renderer in gui.cpp SDL calls");
+                }
+            }
+
+            // CRITICAL FIX: Delta injection click handlers use 'x'/'y' but should use 'mx'/'my'
+            // The event handler declares: int mx = ev->button.x; int my = ev->button.y;
+            if content.contains("SDL_MOUSEBUTTONDOWN") {
+                // Fix click checks that use wrong variable names
+                // Pattern: "if (x >= state->" should be "if (mx >= state->"
+                let click_fixes = [
+                    ("if (x >= state->", "if (mx >= state->"),
+                    ("if (y >= state->", "if (my >= state->"),
+                    ("&& x <", "&& mx <"),
+                    ("&& y <", "&& my <"),
+                    ("&& x <=", "&& mx <="),
+                    ("&& y <=", "&& my <="),
+                ];
+                let mut fixed_click = false;
+                for (wrong, correct) in &click_fixes {
+                    if content.contains(*wrong) {
+                        content = content.replace(*wrong, *correct);
+                        fixed_click = true;
+                    }
+                }
+                if fixed_click {
+                    eprintln!("[Guardrail] Fixed x/y -> mx/my in gui.cpp click handlers");
+                }
+            }
             
             // Inject State Serialization Stubs for Full HMR Capability in GUI module
-            if content.contains("gui_on_load") && !content.contains("gui_on_save_state") {
+            // GUI typically doesn't need state preservation as it renders Core's state,
+            // but we provide stubs for completeness
+            // Skip if AI already generated these functions to avoid redefinition errors
+            if content.contains("gui_on_load") && 
+               !content.contains("gui_on_save_state") &&
+               !content.contains("gui_get_state_schema_hash") {
                 let gui_serial_stubs = r#"
 
-// [Guardrail] State serialization stubs for Full HMR capability
+// [Guardrail] State serialization stubs for Full HMR capability (GUI)
+// GUI module typically renders Core's state, so GUI state preservation is minimal
 extern "C" char* gui_on_save_state(void* state_ptr) {
     (void)state_ptr;
+    // GUI state is usually transient (textures, hover states)
+    // Return empty JSON - GUI will reinitialize from Core state
+    char* json = (char*)malloc(3);
+    if (json) strcpy(json, "{}");
+    return json;
+}
+
+extern "C" void* gui_on_load_from_json(const char* json) {
+    (void)json;
+    // GUI state is reinitialized from Core state during gui_on_load
     return NULL;
 }
 
-extern "C" int gui_on_load_from_json(void* state_ptr, const char* json) {
-    (void)state_ptr;
-    (void)json;
-    return 0;
+extern "C" void synthi_free_json(char* json) {
+    if (json) free(json);
 }
 "#;
                 content.push_str(gui_serial_stubs);
@@ -3169,7 +4552,6 @@ extern "C" int gui_on_load_from_json(void* state_ptr, const char* json) {
         // This is the key to "Next.js-like" HMR that works without users
         // needing to structure their code in a specific way.
         // ============================================================
-        let shimmed_source = source_code.clone();
         let mut shimmed_filename = req.filename.clone();
         let mut shim_applied = false;
         
@@ -3529,7 +4911,10 @@ extern "C" int gui_on_load_from_json(void* state_ptr, const char* json) {
 
     // If we can do HMR, skip all the restart/initialization logic and just send load commands
     if existing_runner_can_hmr {
-        eprintln!("[Main] HMR mode: Reusing existing runner, skipping initialization");
+        eprintln!("[Main] ╔═══════════════════════════════════════════════════════════╗");
+        eprintln!("[Main] ║  HMR MODE: Reusing existing runner - NO RESTART          ║");
+        eprintln!("[Main] ╚═══════════════════════════════════════════════════════════╝");
+        eprintln!("[Main] HMR mode: Skipping track attachment and output subscription (already set up)");
     } else if let Some(state) = guard.as_mut() {
         // We have an existing runner but can't do HMR - need to restart
         let gui_mode_changed = state.is_gui != req.is_gui;

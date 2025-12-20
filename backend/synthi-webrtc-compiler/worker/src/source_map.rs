@@ -1,3 +1,6 @@
+// Source map is actively used by crash_recovery for source-mapped stack traces
+// #![allow(dead_code)] - REMOVED: This module is now wired up
+
 // ============================================================
 // SOURCE MAP MODULE
 // ============================================================

@@ -1,3 +1,7 @@
+// Crash recovery is actively used by HmrOrchestrator and runner_bin.rs
+// #![allow(dead_code)] - REMOVED: This module is now wired up
+#![allow(function_casts_as_integer)]
+
 // ============================================================
 // RUNTIME ERROR RECOVERY MODULE
 // ============================================================
@@ -494,7 +498,7 @@ where
         unsafe { libc::close(write_fd); }
         
         let mut status: c_int = 0;
-        let timeout_ms = timeout.as_millis() as i32;
+        let _timeout_ms = timeout.as_millis() as i32;
         
         // Poll for child completion with timeout
         loop {

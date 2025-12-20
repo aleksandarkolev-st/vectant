@@ -5,6 +5,7 @@ import collabClient from '@/services/collabClient';
 import { getCompilerClient } from '@/services/compilerClient';
 import { cancelUiAction } from './uiSlice'; // Cross-slice dependency
 import { syncFileToGit, fetchGitStatus } from './gitSlice';
+import { gitClient } from '@/services/gitClient';
 import {
     findFirstFile,
     findFileInTree,
@@ -258,6 +259,19 @@ export const handleCreateItemThunk = createAsyncThunk(
 
         await api.createItem(slug, fullPath, isFolder);
         
+        // Also write the file to collab-server (local disk) so it appears immediately in the file tree
+        // The file tree reads from collab-server's listFilesMeta which uses local disk
+        try {
+            if (!isFolder) {
+                await gitClient.writeFile(slug, fullPath, '');
+            } else {
+                await gitClient.createDirectory(slug, fullPath);
+            }
+        } catch (e) {
+            console.warn('[Workspace] Failed to write item to collab-server:', e);
+            // Don't throw - item was still created in GCS, just may not appear until refresh
+        }
+        
         // Dispatch cleanup and revalidation
         dispatch(cancelUiAction());
         await dispatch(fetchFilesThunk(slug));
@@ -330,8 +344,6 @@ export const deleteItemThunk = createAsyncThunk(
 );
 
 
-import { gitClient } from '@/services/gitClient';
-
 // 7. Open Diff (Read)
 export const openDiffThunk = createAsyncThunk(
     'workspace/openDiff',
@@ -369,11 +381,15 @@ const workspaceSlice = createSlice({
         updateContent: (state, action) => {
             const newContent = action.payload || '';
             state.currentContent = newContent;
-            // Mark active file's tab as unsaved when content differs from savedContent
+            // ALWAYS update cache on edit to ensure related file analysis has fresh content
             try {
                 if (state.activeFile && state.activeFile.path) {
+                    state.fileContentCache.set(state.activeFile.path, newContent);
                     const activePath = state.activeFile.path;
-                    const isUnsaved = newContent !== state.savedContent;
+                    // Normalize trailing newlines for comparison to prevent false unsaved states from Yjs sync
+                    // Only strip newlines, not spaces/tabs, so whitespace changes are still detected
+                    const normalizeTrailing = (s) => s ? s.replace(/[\r\n]+$/, '') : '';
+                    const isUnsaved = normalizeTrailing(newContent) !== normalizeTrailing(state.savedContent);
                     const idx = state.openFiles.findIndex(f => f.path === activePath);
                     if (idx !== -1) {
                         state.openFiles[idx] = { ...state.openFiles[idx], isUnsaved };
@@ -550,7 +566,10 @@ const workspaceSlice = createSlice({
                 }
                 
                 // Cache unsaved content of OLD active file before switching
-                if (state.activeFile && state.activeFile.path && state.currentContent!== state.savedContent) {
+                // Use normalized comparison to handle trailing newline differences from Yjs sync
+                // Only strip newlines, not spaces/tabs, so whitespace changes are still detected
+                const normalizeTrailing = (s) => s ? s.replace(/[\r\n]+$/, '') : '';
+                if (state.activeFile && state.activeFile.path && normalizeTrailing(state.currentContent) !== normalizeTrailing(state.savedContent)) {
                     state.fileContentCache.set(state.activeFile.path, state.currentContent);
                 }
 
@@ -699,10 +718,21 @@ export const selectActiveFile = (state) => state.workspace.activeFile;
 export const selectOpenFiles = (state) => state.workspace.openFiles || [];
 export const selectLoadingFiles = (state) => state.workspace.loadingFiles || [];
 export const selectCurrentContent = (state) => state.workspace.currentContent;
+
+// Normalize content for comparison - only trim trailing newlines (not all whitespace)
+// This prevents false "unsaved" states when Yjs syncs content with 
+// slightly different trailing newlines than the file cache, while still
+// detecting intentional whitespace changes like added spaces
+const normalizeForComparison = (content) => {
+    if (!content) return '';
+    // Only strip trailing newlines (\r\n or \n), not spaces/tabs
+    return content.replace(/[\r\n]+$/, '');
+};
+
 export const selectIsUnsaved = createSelector(
     selectCurrentContent,
     (state) => state.workspace.savedContent,
-    (current, saved) => current!== saved
+    (current, saved) => normalizeForComparison(current) !== normalizeForComparison(saved)
 );
 export const selectBreadcrumb = createSelector(
     selectActiveFile,

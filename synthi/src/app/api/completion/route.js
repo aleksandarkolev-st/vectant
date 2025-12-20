@@ -151,18 +151,39 @@ const suppressEcho = (suggestion = '', context = '') => {
 
 const extractText = (resp) => {
   if (!resp) return '';
-  // Newer @google/genai returns the candidate wrapper under `response`.
-  const direct = resp.text || resp.output_text || resp.outputText;
-  if (direct) return direct;
-  const nested = resp.response;
-  const nestedText = nested?.text || nested?.output_text || nested?.outputText;
-  if (nestedText) return nestedText;
+  
+  // First try to extract from candidates/parts (safest approach)
   const parts =
-    nested?.candidates?.[0]?.content?.parts ||
-    resp.candidates?.[0]?.content?.parts;
+    resp?.response?.candidates?.[0]?.content?.parts ||
+    resp?.candidates?.[0]?.content?.parts;
   if (Array.isArray(parts) && parts.length) {
     return parts.map((p) => p?.text || '').join('');
   }
+  
+  // Check finish_reason - if it's 1 (STOP) with no parts, return empty
+  const finishReason = 
+    resp?.response?.candidates?.[0]?.finishReason ||
+    resp?.candidates?.[0]?.finishReason;
+  if (finishReason && !parts?.length) {
+    return '';
+  }
+  
+  // Try .text accessor with try-catch (throws if no valid parts)
+  try {
+    const direct = resp.text || resp.output_text || resp.outputText;
+    if (direct) return direct;
+  } catch (e) {
+    // .text accessor threw - response has no valid parts
+  }
+  
+  try {
+    const nested = resp.response;
+    const nestedText = nested?.text || nested?.output_text || nested?.outputText;
+    if (nestedText) return nestedText;
+  } catch (e) {
+    // nested .text accessor threw - response has no valid parts
+  }
+  
   return '';
 };
 

@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { use } from 'react';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
-import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent } from '@/redux/workspaceSlice';
+import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent, selectFileCacheEntries } from '@/redux/workspaceSlice';
 import { 
     selectShowTerminal, 
     selectShowEmulatorPreview,
@@ -73,11 +73,14 @@ export default function EditorPage({ params }) {
     const analysisTimeoutRef = useRef(null);
     const lastAnalyzedSignatureRef = useRef('');
     
-    // Proactive analysis state
+    // Proactive analysis state - keyed by file path
     const [diagnostics, setDiagnostics] = useState([]);
     const [isAnalyzingProactive, setIsAnalyzingProactive] = useState(false);
     const proactiveTimeoutRef = useRef(null);
     const lastProactiveSignatureRef = useRef('');
+    const currentAnalysisFileRef = useRef(null); // Track which file diagnostics belong to
+    const aiAnalysisRef = useRef(null);
+    const lastContentHashRef = useRef('');
     
     // Multi-file workspace analysis (cross-file issue detection)
     const {
@@ -85,6 +88,8 @@ export default function EditorPage({ params }) {
         trackFileDeletion,
         setFocusFile: setWorkspaceFocusFile,
         triggerAnalysis: triggerWorkspaceAnalysis,
+        runFullAnalysis,
+        trackFiles,
         allDiagnostics: workspaceDiagnostics,
         summary: workspaceSummary,
         isAnalyzing: isWorkspaceAnalyzing,
@@ -94,22 +99,6 @@ export default function EditorPage({ params }) {
         debounceMs: 1200,  // Slightly longer debounce for workspace-level analysis
         includeAi: false,  // Disabled by default, can be enabled via settings
     });
-    
-    // Remove a specific diagnostic by location (called when a fix is applied)
-    const removeDiagnosticByLocation = useCallback((location) => {
-        if (!location) return;
-        
-        setDiagnostics(prev => prev.filter(d => {
-            const loc = d.location || {};
-            // Remove if exact location match
-            const sameStart = loc.line === location.line && loc.column === location.column;
-            const sameEnd = loc.endLine === location.endLine && loc.endColumn === location.endColumn;
-            return !(sameStart && sameEnd);
-        }));
-        
-        // Also invalidate the signature so next analysis runs fresh
-        lastProactiveSignatureRef.current = '';
-    }, []);
 
     useEffect(() => {
         const handleGuiStart = (e) => {
@@ -184,6 +173,52 @@ export default function EditorPage({ params }) {
                         // Successful
                         setWorkspaceMissing(false);
                         setWorkspaceMissingMessage('');
+
+                        // Trigger full workspace analysis on initialization
+                        const { files } = result.payload;
+                        if (files && files.length > 0) {
+                            (async () => {
+                                try {
+                                    // Helper to flatten tree
+                                    const flatten = (nodes) => {
+                                        let flat = [];
+                                        for (const node of nodes) {
+                                            if (node.isFolder) {
+                                                if (node.children) flat = flat.concat(flatten(node.children));
+                                            } else {
+                                                flat.push(node);
+                                            }
+                                        }
+                                        return flat;
+                                    };
+                                    
+                                    const flatFiles = flatten(files);
+                                    // Limit to reasonable number of files to avoid overwhelming the browser/network
+                                    const MAX_INIT_FILES = 50;
+                                    const filesToAnalyze = flatFiles.slice(0, MAX_INIT_FILES);
+                                    
+                                    // Fetch content for analysis
+                                    const filesWithContent = await Promise.all(filesToAnalyze.map(async (f) => {
+                                        try {
+                                            const content = await api.fetchFileContent(slug, f.path);
+                                            return { ...f, content };
+                                        } catch (e) {
+                                            return null;
+                                        }
+                                    }));
+                                    
+                                    const validFiles = filesWithContent.filter(f => f && f.content);
+                                    
+                                    if (validFiles.length > 0) {
+                                        trackFiles(validFiles);
+                                        // Trigger full analysis (AI + Semantic + Static)
+                                        await runFullAnalysis({ includeAi: true });
+                                    }
+                                } catch (err) {
+                                    console.error('Failed to trigger initial workspace analysis', err);
+                                }
+                            })();
+                        }
                     }
                 } catch (e) {
                     const msg = e?.message || String(e);
@@ -207,7 +242,28 @@ export default function EditorPage({ params }) {
     const treeOnRight = useAppSelector(selectTreeOnRight);
     const currentContent = useAppSelector(selectCurrentContent);
     const rawFiles = useAppSelector(state => state.workspace.rawFiles);
-    // File contents are cached via an in-memory LRU cache service (not Redux)
+    // Redux file content cache - contains edited content of open files
+    const fileCacheEntries = useAppSelector(selectFileCacheEntries);
+
+    // Remove a specific diagnostic by location (called when a fix is applied)
+    const removeDiagnosticByLocation = useCallback((location, filePath) => {
+        if (!location) return;
+        const targetFile = filePath || activeFile?.path || activeFile?.name;
+        
+        setDiagnostics(prev => prev.filter(d => {
+            // Only consider diagnostics from the same file
+            if (d.filePath !== targetFile) return true;
+            
+            const loc = d.location || {};
+            // Remove if exact location match
+            const sameStart = loc.line === location.line && loc.column === location.column;
+            const sameEnd = loc.endLine === location.endLine && loc.endColumn === location.endColumn;
+            return !(sameStart && sameEnd);
+        }));
+        
+        // Also invalidate the signature so next analysis runs fresh
+        lastProactiveSignatureRef.current = '';
+    }, [activeFile]);
 
     const [initialContent, setInitialContent] = useState('');
     const [hasInitialSnapshot, setHasInitialSnapshot] = useState(false);
@@ -224,6 +280,29 @@ export default function EditorPage({ params }) {
         }
     }, [activeFile, hasLoadedInitialFile, dispatch]);
 
+    // 4. Track file changes for analysis - don't clear diagnostics from other files
+    useEffect(() => {
+        const currentFilePath = activeFile?.path || activeFile?.name;
+        const previousFilePath = currentAnalysisFileRef.current;
+        
+        // If we're switching files, reset analysis state but keep diagnostics from other files
+        if (currentFilePath && previousFilePath && currentFilePath !== previousFilePath) {
+            // Reset analysis signature so new file gets analyzed
+            lastProactiveSignatureRef.current = '';
+            lastContentHashRef.current = '';
+            // Cancel any pending analysis for the old file
+            if (proactiveTimeoutRef.current) {
+                clearTimeout(proactiveTimeoutRef.current);
+            }
+            if (aiAnalysisRef.current) {
+                aiAnalysisRef.current.cancelled = true;
+            }
+        }
+        
+        // Update the current file reference
+        currentAnalysisFileRef.current = currentFilePath;
+    }, [activeFile]);
+
     // Local state for layout management (used to force remount of ResizablePanelGroup)
     const [panelGroupKey, setPanelGroupKey] = useState(0);
 
@@ -233,7 +312,9 @@ export default function EditorPage({ params }) {
         setPanelGroupKey(prev => prev + 1); // Force remount
     };
 
-    // Run static analysis whenever current file content changes
+    // Static analysis is now handled by proactive analysis (which includes static tier)
+    // Keeping this disabled to avoid duplicate/stale diagnostics
+    /*
     useEffect(() => {
         if (!activeFile || !currentContent || !hasLoadedInitialFile) return;
 
@@ -272,12 +353,9 @@ export default function EditorPage({ params }) {
             }
         };
     }, [currentContent, activeFile, hasLoadedInitialFile, analyzeCode]);
+    */
 
     // Run proactive analysis (AI-powered error detection) on content change
-    // Track pending AI analysis
-    const aiAnalysisRef = useRef(null);
-    const lastContentHashRef = useRef('');
-    
     // Simple but effective hash function for content comparison
     const computeContentHash = useCallback((content) => {
         if (!content) return '';
@@ -290,9 +368,64 @@ export default function EditorPage({ params }) {
         return hash.toString(16);
     }, []);
 
-    useEffect(() => {
-        if (!activeFile || !currentContent || !hasLoadedInitialFile) return;
+    // Get related files for cross-file analysis (includes, imports)
+    const getRelatedFilesForAnalysis = useCallback(async () => {
+        if (!activeFile || !rawFiles) return [];
+        
+        // Build a map from fileCacheEntries for fast lookup
+        // This contains the LATEST edited content of open files
+        const reduxCacheMap = new Map(fileCacheEntries);
+        
+        const getContentForDep = async (path) => {
+            // If it's the active file, use the current editor content
+            if (path === activeFile.path) {
+                return typeof currentContent === 'string' ? currentContent : '';
+            }
+            
+            // PRIORITY 1: Check Redux cache (has edited content of open files)
+            const reduxCached = reduxCacheMap.get(path);
+            if (reduxCached !== undefined) {
+                console.log(`[RELATED FILES] Using Redux cache for ${path}: ${reduxCached?.length || 0} chars`);
+                return reduxCached;
+            }
+            
+            // PRIORITY 2: Check fileCache service (LRU cache)
+            const cached = fileCache.get(path);
+            if (cached !== undefined) {
+                console.log(`[RELATED FILES] Using fileCache for ${path}: ${cached?.length || 0} chars`);
+                return cached;
+            }
+            
+            // PRIORITY 3: Fetch from server
+            try {
+                const fetched = await api.fetchFileContent(slug, path);
+                console.log(`[RELATED FILES] Fetched ${path}: ${fetched?.length || 0} chars`);
+                return fetched;
+            } catch (e) {
+                console.warn(`Could not fetch content for ${path}:`, e);
+                return '';
+            }
+        };
 
+        try {
+            const deps = await resolveDependencies(activeFile, rawFiles, getContentForDep);
+            return deps.map(d => ({
+                path: d.name,
+                content: d.content,
+                language: getFileLanguage(d.name)
+            }));
+        } catch (e) {
+            console.warn('Failed to resolve dependencies for analysis:', e);
+            return [];
+        }
+    }, [activeFile, rawFiles, currentContent, slug, fileCacheEntries]);
+
+    useEffect(() => {
+        if (!activeFile || !hasLoadedInitialFile) return;
+        
+        // Ensure content is available (might be empty string, that's fine)
+        const contentToAnalyze = typeof currentContent === 'string' ? currentContent : '';
+        
         if (proactiveTimeoutRef.current) {
             clearTimeout(proactiveTimeoutRef.current);
         }
@@ -303,37 +436,19 @@ export default function EditorPage({ params }) {
         }
 
         // Capture the content we're analyzing (for freshness checks)
-        const contentToAnalyze = typeof currentContent === 'string' ? currentContent : '';
         const contentHash = computeContentHash(contentToAnalyze);
         
-        // When content changes, immediately invalidate stale diagnostics
+        // When content changes, IMMEDIATELY clear all diagnostics for this file
+        // New analysis will provide fresh diagnostics
+        const currentFilePath = activeFile?.path || activeFile?.name || 'untitled';
         if (lastContentHashRef.current && lastContentHashRef.current !== contentHash) {
-            // Filter diagnostics to only keep ones where the text at the location matches
-            setDiagnostics(prev => prev.filter(d => {
-                if (!d.location) return true; // Keep diagnostics without location info
-                const lines = contentToAnalyze.split('\n');
-                const lineIdx = d.location.line ?? 0;
-                if (lineIdx >= lines.length) return false; // Line no longer exists
-                
-                // If the diagnostic has originalText, check if it still exists at that location
-                if (d.originalText) {
-                    const line = lines[lineIdx] || '';
-                    const col = d.location.column ?? 0;
-                    const endCol = d.location.endColumn ?? (col + d.originalText.length);
-                    const textAtLocation = line.slice(col, endCol);
-                    // If the text at the location doesn't match, the diagnostic is stale
-                    if (textAtLocation !== d.originalText) {
-                        return false;
-                    }
-                }
-                
-                return true;
-            }));
+            // Clear diagnostics for this file - fresh analysis will repopulate
+            setDiagnostics(prev => prev.filter(d => d.filePath !== currentFilePath));
         }
         lastContentHashRef.current = contentHash;
 
         // Debounce proactive analysis to avoid overwhelming the backend
-        proactiveTimeoutRef.current = setTimeout(() => {
+        proactiveTimeoutRef.current = setTimeout(async () => {
             const langSource =
                 activeFile.language ||
                 (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
@@ -347,16 +462,87 @@ export default function EditorPage({ params }) {
 
             setIsAnalyzingProactive(true);
             
+            // Get related files for cross-file analysis (includes, imports)
+            let relatedFiles = [];
+            try {
+                relatedFiles = await getRelatedFilesForAnalysis();
+            } catch (e) {
+                console.warn('[page.jsx] Failed to get related files for analysis:', e);
+            }
+            
+            // console.log('[page.jsx] === PROACTIVE ANALYSIS START ===');
+            // console.log('[page.jsx] File:', activeFile?.path || activeFile?.name || 'untitled');
+            // console.log('[page.jsx] Language:', normalizedLang);
+            // console.log('[page.jsx] Code length:', contentToAnalyze.length);
+            // console.log('[page.jsx] Code preview:', contentToAnalyze.substring(0, 150));
+            // console.log('[page.jsx] Related files count:', relatedFiles.length);
+            relatedFiles.forEach((rf, i) => {
+                // console.log(`[page.jsx]   Related[${i}]: ${rf.path} (${rf.content?.length || 0} chars)`);
+                // console.log(`[page.jsx]     Content: ${rf.content?.substring(0, 80)}...`);
+            });
+            
             // STEP 1: Run fast static+semantic analysis first for immediate feedback
             analyzeProactive({
                 code: contentToAnalyze,
                 lang: normalizedLang,
                 filePath: activeFile?.path || activeFile?.name || 'untitled',
                 includeAi: false, // Fast tier first
+                relatedFiles, // Pass related files for cross-file include resolution
             })
                 .then((fastResult) => {
+                    // console.log('[page.jsx] === FAST ANALYSIS RESULT ===');
+                    // console.log('[page.jsx] Raw result:', fastResult);
+                    
                     const fastDiags = fastResult?.diagnostics || fastResult?.data?.diagnostics || [];
-                    setDiagnostics(fastDiags);
+                    // console.log('[page.jsx] Fast diagnostics count:', fastDiags.length);
+                    fastDiags.forEach((d, i) => {
+                        console.log(`[page.jsx]   Fast[${i}]: [${d.tier}] ${d.message} @ line ${d.location?.line}`);
+                    });
+                    
+                    const currentFilePath = activeFile?.path || activeFile?.name || 'untitled';
+                    
+                    // Filter out stale diagnostics that reference code not in the current content
+                    // This handles cases where cached results return diagnostics for old code
+                    const validDiags = fastDiags.filter(d => {
+                        // If diagnostic has originalText, verify it exists in current content
+                        if (d.originalText && typeof d.originalText === 'string') {
+                            const exists = contentToAnalyze.includes(d.originalText);
+                            if (!exists) console.log(`[page.jsx] Filtering: originalText not found - "${d.message}"`);
+                            return exists;
+                        }
+                        // For diagnostics about specific symbols, check if symbol is used in code
+                        const msg = d.message?.toLowerCase() || '';
+                        if (msg.includes('iostream') || msg.includes('cout') || msg.includes('cin') || msg.includes('endl')) {
+                            // Check if the code actually uses iostream symbols
+                            const usesIostream = /\b(std::)?(cout|cin|cerr|clog|endl)\b/.test(contentToAnalyze);
+                            if (!usesIostream) {
+                                console.log(`[page.jsx] Filtering stale diagnostic: "${d.message}" - no iostream usage found`);
+                                return false;
+                            }
+                        }
+                        return true;
+                    });
+                    
+                    console.log('[page.jsx] Valid diagnostics after filter:', validDiags.length);
+                    
+                    // Add filePath to each diagnostic for proper grouping in ProblemsPanel
+                    const diagsWithPath = validDiags.map(d => ({ ...d, filePath: d.filePath || currentFilePath }));
+                    // Replace diagnostics for this file only, keep diagnostics from other files
+                    setDiagnostics(prev => {
+                        console.log('[page.jsx] === DIAGNOSTIC STATE UPDATE ===');
+                        console.log('[page.jsx] Current file path:', currentFilePath);
+                        console.log('[page.jsx] Previous diagnostics:', prev.length);
+                        prev.forEach((d, i) => {
+                            console.log(`[page.jsx]   Prev[${i}]: filePath="${d.filePath}" msg="${d.message?.substring(0, 50)}"`);
+                        });
+                        const otherFileDiags = prev.filter(d => d.filePath !== currentFilePath);
+                        console.log('[page.jsx] Keeping', otherFileDiags.length, 'diagnostics from other files');
+                        console.log('[page.jsx] Setting', diagsWithPath.length, 'new diagnostics for', currentFilePath);
+                        diagsWithPath.forEach((d, i) => {
+                            console.log(`[page.jsx]   New[${i}]: [${d.tier}] "${d.message?.substring(0, 50)}" @ line ${d.location?.line}`);
+                        });
+                        return [...otherFileDiags, ...diagsWithPath];
+                    });
                     lastProactiveSignatureRef.current = signature;
                     setIsAnalyzingProactive(false);
                     
@@ -372,18 +558,47 @@ export default function EditorPage({ params }) {
                     analyzeProactive({
                         code: contentToAnalyze,
                         lang: normalizedLang,
-                        filePath: activeFile?.path || activeFile?.name || 'untitled',
+                        filePath: currentFilePath,
                         includeAi: true, // AI tier for logic errors
+                        relatedFiles, // Pass related files for cross-file analysis
                     })
                         .then((aiResult) => {
                             // Only update if:
                             // 1. Not cancelled
                             // 2. This is still the current tracker
-                            // 3. The content hasn't changed since we started
-                            const isStillCurrent = !aiTracker.cancelled && aiAnalysisRef.current === aiTracker;
+                            // 3. The content hash hasn't changed since we started
+                            const currentHash = lastContentHashRef.current;
+                            const isStillCurrent = !aiTracker.cancelled && 
+                                                   aiAnalysisRef.current === aiTracker &&
+                                                   currentHash === contentHash;
                             if (isStillCurrent) {
                                 const aiDiags = aiResult?.diagnostics || aiResult?.data?.diagnostics || [];
-                                setDiagnostics(aiDiags);
+                                
+                                // Filter out stale diagnostics that reference code not in the current content
+                                const validAiDiags = aiDiags.filter(d => {
+                                    // If diagnostic has originalText, verify it exists in current content
+                                    if (d.originalText && typeof d.originalText === 'string') {
+                                        return contentToAnalyze.includes(d.originalText);
+                                    }
+                                    // For diagnostics about specific symbols, check if symbol is used in code
+                                    const msg = d.message?.toLowerCase() || '';
+                                    if (msg.includes('iostream') || msg.includes('cout') || msg.includes('cin') || msg.includes('endl')) {
+                                        const usesIostream = /\b(std::)?(cout|cin|cerr|clog|endl)\b/.test(contentToAnalyze);
+                                        if (!usesIostream) {
+                                            console.log(`[proactive] Filtering stale AI diagnostic: "${d.message}"`);
+                                            return false;
+                                        }
+                                    }
+                                    return true;
+                                });
+                                
+                                // Add filePath to each diagnostic
+                                const aiDiagsWithPath = validAiDiags.map(d => ({ ...d, filePath: d.filePath || currentFilePath }));
+                                // Replace diagnostics for this file only
+                                setDiagnostics(prev => {
+                                    const otherFileDiags = prev.filter(d => d.filePath !== currentFilePath);
+                                    return [...otherFileDiags, ...aiDiagsWithPath];
+                                });
                             }
                         })
                         .catch((err) => {
@@ -403,7 +618,7 @@ export default function EditorPage({ params }) {
                 clearTimeout(proactiveTimeoutRef.current);
             }
         };
-    }, [currentContent, activeFile, hasLoadedInitialFile, analyzeProactive]);
+    }, [currentContent, activeFile, hasLoadedInitialFile, analyzeProactive, getRelatedFilesForAnalysis, computeContentHash]);
 
     // Track focused file and content changes for workspace analysis
     useEffect(() => {
@@ -415,6 +630,11 @@ export default function EditorPage({ params }) {
         }
     }, [activeFile, hasLoadedInitialFile, setWorkspaceFocusFile]);
     
+    // NOTE: Workspace analysis is DISABLED because it runs without related files context,
+    // causing false positives (e.g., "test228 is not defined" when it IS defined in a header).
+    // The proactive analysis (above) already handles single-file analysis with related files.
+    // TODO: Re-enable workspace analysis once it properly includes related files.
+    /*
     // Notify workspace analyzer when file content changes
     useEffect(() => {
         if (!activeFile || !currentContent || !hasLoadedInitialFile || !workspaceClientReady) return;
@@ -431,6 +651,7 @@ export default function EditorPage({ params }) {
             }
         }
     }, [currentContent, activeFile, hasLoadedInitialFile, workspaceClientReady, trackFileChange, triggerWorkspaceAnalysis]);
+    */
 
     // Merge single-file diagnostics with workspace-level cross-file diagnostics
     const mergedDiagnostics = useMemo(() => {
@@ -813,82 +1034,123 @@ export default function EditorPage({ params }) {
                 sendGuiEvent={sendGuiEvent}
             />
 
-            <ResizablePanelGroup
-                direction="horizontal"
-                className="flex-1 min-h-0"
-                key={panelGroupKey}
-            >
-                {treeOnRight ? (
+            <ResizablePanelGroup direction="vertical" className="flex-1 min-h-0">
+                <ResizablePanel defaultSize={showProblemsPanel ? 75 : 100} minSize={20}>
+                    <ResizablePanelGroup
+                        direction="horizontal"
+                        className="h-full w-full"
+                        key={panelGroupKey}
+                    >
+                        {treeOnRight ? (
+                            <>
+                                {EditorPanelComponent}
+
+                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+
+                                {FileTreePanel}
+
+                                {chatVisible && (
+                                    <>
+                                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                        {ChatPanel}
+                                    </>
+                                )}
+
+                                {showEmulatorPreview && (
+                                    <>
+                                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                        {EmulatorPreviewPanel}
+                                    </>
+                                )}
+                            </>
+                        ) : (
+                            <>
+                                {FileTreePanel}
+
+                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+
+                                {EditorPanelComponent}
+
+                                {chatVisible && (
+                                    <>
+                                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                        {ChatPanel}
+                                    </>
+                                )}
+
+                                {showEmulatorPreview && (
+                                    <>
+                                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                        {EmulatorPreviewPanel}
+                                    </>
+                                )}
+                            </>
+                        )}
+                    </ResizablePanelGroup>
+                </ResizablePanel>
+
+                {showProblemsPanel && (
                     <>
-                        {EditorPanelComponent}
-
-                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-
-                        {FileTreePanel}
-
-                        {chatVisible && (
-                            <>
-                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                                {ChatPanel}
-                            </>
-                        )}
-
-                        {showEmulatorPreview && (
-                            <>
-                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                                {EmulatorPreviewPanel}
-                            </>
-                        )}
-                    </>
-                ) : (
-                    <>
-                        {FileTreePanel}
-
-                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-
-                        {EditorPanelComponent}
-
-                        {chatVisible && (
-                            <>
-                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                                {ChatPanel}
-                            </>
-                        )}
-
-                        {showEmulatorPreview && (
-                            <>
-                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                                {EmulatorPreviewPanel}
-                            </>
-                        )}
+                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] h-px z-50" />
+                        <ResizablePanel defaultSize={25} minSize={10}>
+                            <ProblemsPanel
+                                diagnostics={mergedDiagnostics}
+                                summary={diagnosticSummary}
+                                isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
+                                filePath={activeFile?.path || activeFile?.name || 'Current File'}
+                                onClose={() => setShowProblemsPanel(false)}
+                                onNavigate={(location) => {
+                                    const targetFile = location.filePath;
+                                    const currentFile = activeFile?.path || activeFile?.name;
+                                    
+                                    // If navigating to a different file, select it first
+                                    if (targetFile && targetFile !== currentFile) {
+                                        // Find the file in rawFiles and select it
+                                        const findFile = (files, path) => {
+                                            for (const file of files || []) {
+                                                if (file.isFolder && file.children) {
+                                                    const found = findFile(file.children, path);
+                                                    if (found) return found;
+                                                } else if (file.path === path || file.name === path) {
+                                                    return file;
+                                                }
+                                            }
+                                            return null;
+                                        };
+                                        
+                                        const fileToSelect = findFile(rawFiles, targetFile);
+                                        if (fileToSelect) {
+                                            dispatch(selectFileThunk(fileToSelect));
+                                            // Wait a bit for file to load, then navigate
+                                            setTimeout(() => {
+                                                if (editor) {
+                                                    const position = {
+                                                        lineNumber: (location.line ?? 0) + 1,
+                                                        column: (location.column ?? 0) + 1,
+                                                    };
+                                                    editor.setPosition(position);
+                                                    editor.revealPositionInCenter(position);
+                                                    editor.focus();
+                                                }
+                                            }, 100);
+                                        }
+                                    } else if (editor) {
+                                        // Same file, just navigate
+                                        const position = {
+                                            lineNumber: (location.line ?? 0) + 1,
+                                            column: (location.column ?? 0) + 1,
+                                        };
+                                        editor.setPosition(position);
+                                        editor.revealPositionInCenter(position);
+                                        editor.focus();
+                                    }
+                                }}
+                                className="h-full rounded-none border-0"
+                            />
+                        </ResizablePanel>
                     </>
                 )}
             </ResizablePanelGroup>
-
-            {/* Problems Panel */}
-            {showProblemsPanel && (
-                <div className="h-48 max-h-48 flex-shrink-0 border-t border-[#1a1b24]">
-                    <ProblemsPanel
-                        diagnostics={mergedDiagnostics}
-                        summary={diagnosticSummary}
-                        isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
-                        filePath={activeFile?.path || activeFile?.name || 'Current File'}
-                        onClose={() => setShowProblemsPanel(false)}
-                        onNavigate={(location) => {
-                            if (editor) {
-                                const position = {
-                                    lineNumber: (location.line ?? 0) + 1,
-                                    column: (location.column ?? 0) + 1,
-                                };
-                                editor.setPosition(position);
-                                editor.revealPositionInCenter(position);
-                                editor.focus();
-                            }
-                        }}
-                        className="h-full rounded-none border-0"
-                    />
-                </div>
-            )}
         </div>
 
         {/* Status Bar */}

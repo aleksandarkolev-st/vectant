@@ -95,7 +95,8 @@ class ProactiveAnalyzer:
             all_diagnostics.extend(tier_result.diagnostics)
         
         if AnalysisTier.SEMANTIC in request.tiers:
-            tier_result = await self._run_semantic_analysis(request.file)
+            # Pass related files for cross-file include/import resolution
+            tier_result = await self._run_semantic_analysis(request.file, request.related_files)
             result.tiers[AnalysisTier.SEMANTIC] = tier_result
             all_diagnostics.extend(tier_result.diagnostics)
         
@@ -151,7 +152,8 @@ class ProactiveAnalyzer:
             yield ProgressEvent(tier=AnalysisTier.SEMANTIC, status="started")
             
             try:
-                tier_result = await self._run_semantic_analysis(request.file)
+                # Pass related files for cross-file include/import resolution
+                tier_result = await self._run_semantic_analysis(request.file, request.related_files)
                 all_diagnostics.extend(tier_result.diagnostics)
                 yield ProgressEvent(
                     tier=AnalysisTier.SEMANTIC,
@@ -195,23 +197,14 @@ class ProactiveAnalyzer:
         Run only fast analysis (static + semantic) for real-time feedback.
         
         This is optimized for low latency during typing.
+        
+        NOTE: Cache is disabled to prevent stale results. The analysis is
+        fast enough that caching provides minimal benefit but causes
+        significant issues with stale diagnostics.
         """
-        # Check cache first
-        content_hash = AnalysisCache.compute_hash(file.content, file.language)
-        
-        # Try to get cached results
-        cached_static = await self._cache.get(content_hash, AnalysisTier.STATIC)
-        cached_semantic = await self._cache.get(content_hash, AnalysisTier.SEMANTIC)
-        
-        if cached_static and cached_semantic:
-            # Merge cached results
-            all_diagnostics = cached_static.diagnostics + cached_semantic.diagnostics
-            return TierResult(
-                tier=AnalysisTier.STATIC,  # Primary tier
-                diagnostics=all_diagnostics,
-                elapsed_ms=cached_static.elapsed_ms + cached_semantic.elapsed_ms,
-                from_cache=True,
-            )
+        # CACHE DISABLED - was causing stale diagnostic issues
+        # Always run fresh analysis to ensure results match current code
+        # content_hash = AnalysisCache.compute_hash(file.content, file.language)
         
         # Run analysis in parallel
         static_task = asyncio.create_task(self._run_static_analysis(file))
@@ -230,14 +223,10 @@ class ProactiveAnalyzer:
         if isinstance(static_result, TierResult):
             diagnostics.extend(static_result.diagnostics)
             total_elapsed += static_result.elapsed_ms
-            # Cache result
-            await self._cache.put(content_hash, AnalysisTier.STATIC, static_result)
         
         if isinstance(semantic_result, TierResult):
             diagnostics.extend(semantic_result.diagnostics)
             total_elapsed += semantic_result.elapsed_ms
-            # Cache result
-            await self._cache.put(content_hash, AnalysisTier.SEMANTIC, semantic_result)
         
         return TierResult(
             tier=AnalysisTier.STATIC,
@@ -287,14 +276,17 @@ class ProactiveAnalyzer:
             elapsed_ms=elapsed_ms,
         )
     
-    async def _run_semantic_analysis(self, file: FileContext) -> TierResult:
-        """Run semantic AST-based analysis."""
+    async def _run_semantic_analysis(
+        self, 
+        file: FileContext, 
+        related_files: Optional[List[FileContext]] = None
+    ) -> TierResult:
+        """Run semantic AST-based analysis with cross-file awareness."""
         # Run in thread pool to avoid blocking
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
-            self._semantic_analyzer.analyze,
-            file,
+            lambda: self._semantic_analyzer.analyze(file, related_files),
         )
         return result
     

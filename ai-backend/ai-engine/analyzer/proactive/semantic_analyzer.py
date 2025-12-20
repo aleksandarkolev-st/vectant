@@ -37,8 +37,14 @@ class BaseSemanticAnalyzer(ABC):
     language: str = "generic"
     
     @abstractmethod
-    def analyze(self, file: FileContext) -> List[Diagnostic]:
-        """Perform semantic analysis and return diagnostics."""
+    def analyze(self, file: FileContext, related_files: Optional[List[FileContext]] = None) -> List[Diagnostic]:
+        """
+        Perform semantic analysis and return diagnostics.
+        
+        Args:
+            file: The primary file to analyze
+            related_files: Related files in the workspace (includes, imports, etc.)
+        """
         raise NotImplementedError
 
 
@@ -118,7 +124,7 @@ class PythonSemanticAnalyzer(BaseSemanticAnalyzer):
         'TypeVar', 'Sequence', 'Mapping', 'Iterable', 'Iterator',
     }
     
-    def analyze(self, file: FileContext) -> List[Diagnostic]:
+    def analyze(self, file: FileContext, related_files: Optional[List[FileContext]] = None) -> List[Diagnostic]:
         diagnostics: List[Diagnostic] = []
         
         try:
@@ -558,7 +564,7 @@ class TypeScriptSemanticAnalyzer(BaseSemanticAnalyzer):
         'useReducer', 'useLayoutEffect', 'useImperativeHandle', 'useDebugValue',
     }
     
-    def analyze(self, file: FileContext) -> List[Diagnostic]:
+    def analyze(self, file: FileContext, related_files: Optional[List[FileContext]] = None) -> List[Diagnostic]:
         diagnostics: List[Diagnostic] = []
         lines = file.content.splitlines()
         
@@ -716,28 +722,486 @@ class TypeScriptSemanticAnalyzer(BaseSemanticAnalyzer):
 
 
 class CppSemanticAnalyzer(BaseSemanticAnalyzer):
-    """Semantic analyzer for C++ code."""
+    """Semantic analyzer for C++ code with cross-file include resolution."""
     
     language = "cpp"
     
-    def analyze(self, file: FileContext) -> List[Diagnostic]:
+    # Standard library headers that provide common symbols
+    STD_LIBRARY_SYMBOLS = {
+        'iostream': {'cout', 'cin', 'cerr', 'clog', 'endl', 'flush', 'ostream', 'istream', 'ios'},
+        'string': {'string', 'wstring', 'basic_string', 'to_string', 'stoi', 'stol', 'stof', 'stod'},
+        'vector': {'vector'},
+        'map': {'map', 'multimap'},
+        'set': {'set', 'multiset'},
+        'unordered_map': {'unordered_map', 'unordered_multimap'},
+        'unordered_set': {'unordered_set', 'unordered_multiset'},
+        'algorithm': {'sort', 'find', 'copy', 'transform', 'for_each', 'count', 'fill'},
+        'memory': {'unique_ptr', 'shared_ptr', 'weak_ptr', 'make_unique', 'make_shared'},
+        'cstdio': {'printf', 'scanf', 'sprintf', 'sscanf', 'fprintf', 'fscanf', 'FILE', 'stdin', 'stdout', 'stderr'},
+        'cstring': {'strlen', 'strcpy', 'strcat', 'strcmp', 'memcpy', 'memset', 'memmove'},
+        'cmath': {'sin', 'cos', 'tan', 'sqrt', 'pow', 'abs', 'floor', 'ceil', 'log', 'exp'},
+        'cstdlib': {'malloc', 'free', 'calloc', 'realloc', 'exit', 'atoi', 'atof', 'rand', 'srand'},
+        'fstream': {'ifstream', 'ofstream', 'fstream'},
+        'sstream': {'stringstream', 'istringstream', 'ostringstream'},
+        'functional': {'function', 'bind', 'placeholders'},
+        'utility': {'pair', 'make_pair', 'move', 'swap', 'forward'},
+        'iterator': {'begin', 'end', 'next', 'prev', 'advance', 'distance'},
+        'stdexcept': {'exception', 'runtime_error', 'logic_error', 'out_of_range', 'invalid_argument'},
+    }
+    
+    def analyze(self, file: FileContext, related_files: Optional[List[FileContext]] = None) -> List[Diagnostic]:
         diagnostics: List[Diagnostic] = []
         lines = file.content.splitlines()
+        
+        # Debug logging
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"[CppSemanticAnalyzer] Analyzing file: {file.path}")
+        logger.info(f"[CppSemanticAnalyzer] Related files: {[f.path for f in (related_files or [])]}")
+        
+        # Build the set of available symbols from includes
+        available_symbols = self._collect_available_symbols(lines, related_files or [])
+        logger.info(f"[CppSemanticAnalyzer] Available symbols: {available_symbols}")
         
         diagnostics.extend(self._check_memory_issues(lines, file))
         diagnostics.extend(self._check_smart_pointer_opportunities(lines, file))
         diagnostics.extend(self._check_const_correctness(lines, file))
         diagnostics.extend(self._check_syntax_issues(lines, file))
         diagnostics.extend(self._check_variable_issues(lines, file))
+        diagnostics.extend(self._check_undefined_functions(lines, file, available_symbols))
         # Note: Logic error detection is handled by AI tier for better accuracy
+        # Note: Include checking disabled - too many false positives, let compiler handle it
+        
+        logger.info(f"[CppSemanticAnalyzer] Total diagnostics: {len(diagnostics)}")
+        for d in diagnostics:
+            logger.info(f"[CppSemanticAnalyzer] Diagnostic: {d.message}, fixes: {len(d.fixes)}")
+        
+        return diagnostics
+    
+    def _collect_available_symbols(self, lines: List[str], related_files: List[FileContext]) -> Set[str]:
+        """
+        Collect all symbols available through includes.
+        This resolves transitive includes (e.g., test.h includes iostream -> iostream symbols available).
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        available = set()
+        
+        # First pass: collect direct includes
+        direct_includes = set()
+        for line in lines:
+            stripped = line.strip()
+            # Match #include <header> or #include "header"
+            match = re.match(r'#include\s*[<"]([^>"]+)[>"]', stripped)
+            if match:
+                header = match.group(1)
+                direct_includes.add(header)
+                # Add symbols from standard library
+                header_base = header.replace('.h', '').replace('.hpp', '')
+                if header_base in self.STD_LIBRARY_SYMBOLS:
+                    available.update(self.STD_LIBRARY_SYMBOLS[header_base])
+        
+        logger.info(f"[_collect_available_symbols] Direct includes: {direct_includes}")
+        logger.info(f"[_collect_available_symbols] Related files: {[f.path for f in related_files]}")
+        
+        # Second pass: resolve includes from related files (transitive)
+        processed_files = set()
+        files_to_process = []
+        
+        # Find related files that match our includes
+        for header in direct_includes:
+            header_lower = header.lower()
+            for related in related_files:
+                rel_path = related.path.lower()
+                # Match by filename (e.g., "test.h" matches "folder/test.h")
+                rel_filename = rel_path.split('/')[-1].split('\\')[-1]
+                logger.info(f"[_collect_available_symbols] Checking: header='{header_lower}' vs rel_filename='{rel_filename}' (full: '{rel_path}')")
+                if rel_filename == header_lower or rel_path.endswith('/' + header_lower) or rel_path.endswith('\\' + header_lower):
+                    logger.info(f"[_collect_available_symbols] MATCH! Adding {related.path} to process")
+                    files_to_process.append(related)
+        
+        # Process related files to get their symbols and transitive includes
+        while files_to_process:
+            related = files_to_process.pop(0)
+            if related.path in processed_files:
+                continue
+            processed_files.add(related.path)
+            logger.info(f"[_collect_available_symbols] Processing related file: {related.path}")
+            
+            related_lines = related.content.splitlines()
+            for rel_line in related_lines:
+                stripped = rel_line.strip()
+                # Check for includes in the related file
+                match = re.match(r'#include\s*[<"]([^>"]+)[>"]', stripped)
+                if match:
+                    header = match.group(1)
+                    header_base = header.replace('.h', '').replace('.hpp', '')
+                    logger.info(f"[_collect_available_symbols] Found include in related file: {header} (base: {header_base})")
+                    if header_base in self.STD_LIBRARY_SYMBOLS:
+                        symbols_to_add = self.STD_LIBRARY_SYMBOLS[header_base]
+                        logger.info(f"[_collect_available_symbols] Adding symbols from {header_base}: {symbols_to_add}")
+                        available.update(symbols_to_add)
+                    # Also check if this is another local header we have
+                    for other_related in related_files:
+                        if other_related.path not in processed_files:
+                            rel_path = other_related.path.lower()
+                            header_lower = header.lower()
+                            if rel_path.endswith(header_lower):
+                                files_to_process.append(other_related)
+                
+                # Extract user-defined symbols (functions, classes, variables) from header files
+                # Function declarations: return_type function_name(...)
+                func_match = re.match(r'^(?:static\s+|inline\s+|extern\s+)?(?:const\s+)?(?:unsigned\s+|signed\s+)?(?:[\w:]+(?:<[^>]+>)?)(?:[\s\*&]+)(\w+)\s*\(', stripped)
+                if func_match and not stripped.startswith('#') and not stripped.startswith('//'):
+                    func_name = func_match.group(1)
+                    # Skip if it's a type keyword
+                    if func_name not in {'if', 'for', 'while', 'switch', 'return', 'sizeof', 'typedef', 'struct', 'class', 'enum', 'union'}:
+                        logger.info(f"[_collect_available_symbols] Found user-defined function: {func_name}")
+                        available.add(func_name)
+                
+                # Class/struct declarations
+                class_match = re.match(r'^(?:class|struct)\s+(\w+)', stripped)
+                if class_match:
+                    class_name = class_match.group(1)
+                    logger.info(f"[_collect_available_symbols] Found user-defined class/struct: {class_name}")
+                    available.add(class_name)
+                
+                # Constant/variable declarations  
+                var_match = re.match(r'^(?:const\s+|static\s+|extern\s+)?(?:unsigned\s+|signed\s+)?(?:int|float|double|char|bool|long|short|auto)\s+(\w+)\s*[=;]', stripped)
+                if var_match and not stripped.startswith('#'):
+                    var_name = var_match.group(1)
+                    logger.info(f"[_collect_available_symbols] Found user-defined variable: {var_name}")
+                    available.add(var_name)
+        
+        logger.info(f"[_collect_available_symbols] Final available symbols: {available}")
+        return available
+    
+    def _check_include_issues(
+        self, 
+        lines: List[str], 
+        file: FileContext, 
+        available_symbols: Set[str],
+        related_files: List[FileContext]
+    ) -> List[Diagnostic]:
+        """Check for include-related issues with cross-file awareness.
+        
+        DISABLED: This check was producing too many false positives.
+        The include checking is now handled properly by the compiler.
+        Semantic analysis should focus on logic errors, not include errors.
+        """
+        # Return empty - don't check for missing includes in semantic tier
+        # This was causing false positives when:
+        # 1. Cache returned stale results
+        # 2. Include was actually present but symbol detection failed
+        # Let the compiler handle include errors - it's more accurate
+        return []
+    
+    def _check_undefined_functions(
+        self,
+        lines: List[str],
+        file: FileContext,
+        available_symbols: Set[str],
+    ) -> List[Diagnostic]:
+        """Check for undefined function calls.
+        
+        This detects when a function is called but not defined in:
+        1. The current file
+        2. Any included header files (via available_symbols)
+        3. Standard library
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        diagnostics = []
+        
+        # Standard library functions that are commonly used without explicit include check
+        std_functions = {
+            'main', 'printf', 'scanf', 'strlen', 'strcpy', 'strcmp', 'memcpy', 'memset',
+            'malloc', 'free', 'calloc', 'realloc', 'exit', 'abort',
+            'sin', 'cos', 'tan', 'sqrt', 'pow', 'abs', 'floor', 'ceil',
+            'rand', 'srand', 'time', 'clock',
+            'assert', 'static_assert',
+            # Common STL methods
+            'begin', 'end', 'size', 'empty', 'push_back', 'pop_back',
+            'insert', 'erase', 'find', 'sort', 'swap', 'move',
+        }
+        
+        # Collect functions defined in current file
+        local_functions = set()
+        for line in lines:
+            stripped = line.strip()
+            # Function definition: return_type name(args) { or return_type name(args);
+            func_def = re.match(r'^(?:static\s+|inline\s+|extern\s+|virtual\s+)?(?:const\s+)?(?:unsigned\s+|signed\s+)?(?:[\w:]+(?:<[^>]+>)?)(?:[\s\*&]+)(\w+)\s*\([^)]*\)\s*(?:const)?\s*[{;]?', stripped)
+            if func_def and not stripped.startswith('#') and not stripped.startswith('//'):
+                func_name = func_def.group(1)
+                if func_name not in {'if', 'for', 'while', 'switch', 'return', 'sizeof', 'typedef', 'struct', 'class', 'enum', 'union', 'namespace'}:
+                    local_functions.add(func_name)
+                    logger.info(f"[_check_undefined_functions] Found local function: {func_name}")
+        
+        # All available functions = local + from includes + standard
+        all_available = local_functions | available_symbols | std_functions
+        logger.info(f"[_check_undefined_functions] All available functions: {all_available}")
+        
+        # Check for function calls that aren't available
+        inside_function = False
+        brace_depth = 0
+        
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            brace_depth += stripped.count('{') - stripped.count('}')
+            
+            # Skip preprocessor, comments
+            if stripped.startswith('#') or stripped.startswith('//') or stripped.startswith('/*'):
+                continue
+            
+            # Skip function definitions (we're looking for calls, not definitions)
+            # Standard function: Type name(...)
+            if re.match(r'^(?:static\s+|inline\s+)?(?:const\s+)?(?:[\w:]+(?:<[^>]+>)?)(?:[\s\*&]+)\w+\s*\([^)]*\)\s*\{?$', stripped):
+                continue
+            # Constructor/Destructor definition: ClassName(...) or ~ClassName(...)
+            # Heuristic: Starts with word, has parens, no return type, might have init list
+            if re.match(r'^(?:~)?\w+\s*\([^)]*\)\s*(?::.*)?\{?$', stripped):
+                continue
+            
+            # Look for function calls: name(
+            # But not: type name( which is a declaration
+            calls = re.finditer(r'\b(\w+)\s*\(', line)
+            for match in calls:
+                func_name = match.group(1)
+                
+                # Skip keywords and types
+                if func_name in {'if', 'for', 'while', 'switch', 'return', 'sizeof', 'typeof', 'decltype',
+                                 'int', 'float', 'double', 'char', 'bool', 'void', 'long', 'short',
+                                 'unsigned', 'signed', 'auto', 'const', 'static', 'extern', 'inline',
+                                 'class', 'struct', 'enum', 'union', 'namespace', 'template',
+                                 'new', 'delete', 'throw', 'catch', 'try'}:
+                    continue
+                
+                # Skip method calls (obj.method() or obj->method())
+                col = match.start()
+                if col > 0:
+                    before = line[:col].rstrip()
+                    if before.endswith('.') or before.endswith('->') or before.endswith('::'):
+                        continue
+                
+                # Skip constructor initialization lists
+                # Heuristic: : member(val)
+                colon_pos = line.find(':')
+                if colon_pos != -1 and colon_pos < col:
+                    # Check for ternary
+                    if '?' in line[:colon_pos]:
+                        pass # Ternary, don't skip
+                    # Check for range-based for
+                    elif line.strip().startswith('for'):
+                        pass # For loop, don't skip
+                    # Check for access modifiers
+                    elif re.search(r'\b(public|private|protected)\s*:', line[:colon_pos+1]):
+                        pass # Access modifier, don't skip
+                    # Check for switch case
+                    elif re.search(r'\bcase\s+.*:', line[:colon_pos+1]):
+                        pass # Case label, don't skip
+                    else:
+                        # Check if there's a block start or end between colon and call
+                        between = line[colon_pos+1:col]
+                        if '{' not in between and ';' not in between:
+                            # Likely constructor initialization list
+                            continue
+
+                # Check if function is available
+                if func_name not in all_available:
+                    logger.info(f"[_check_undefined_functions] Undefined function call: {func_name}")
+                    diagnostics.append(Diagnostic(
+                        message=f"Function '{func_name}' is not defined. Did you mean a different function name?",
+                        severity=Severity.ERROR,
+                        tier=AnalysisTier.SEMANTIC,
+                        location=DiagnosticLocation(
+                            line=i,
+                            column=col,
+                            end_line=i,
+                            end_column=col + len(func_name),
+                        ),
+                        code="SEM301",
+                        category=DiagnosticCategory.UNDEFINED_VARIABLE,
+                        explanation=f"The function '{func_name}' is called but not defined in the current file or any included headers.",
+                    ))
         
         return diagnostics
     
     def _check_syntax_issues(self, lines: List[str], file: FileContext) -> List[Diagnostic]:
-        """Check for basic syntax issues like missing semicolons."""
+        """Check for basic syntax issues like missing semicolons, malformed includes, unbalanced braces."""
         diagnostics = []
         brace_depth = 0
+        paren_depth = 0
+        full_content = '\n'.join(lines)
         
+        # Check for malformed #include directives
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            
+            # Check for malformed includes - missing closing > or "
+            include_match = re.match(r'#\s*include\s*<([^>]*)$', stripped)
+            if include_match:
+                # Line ends without closing >
+                diagnostics.append(Diagnostic(
+                    message="Malformed #include directive: missing closing '>'",
+                    severity=Severity.ERROR,
+                    tier=AnalysisTier.SEMANTIC,
+                    location=DiagnosticLocation(
+                        line=i,
+                        column=len(stripped),
+                        end_line=i,
+                        end_column=len(stripped) + 1,
+                    ),
+                    code="SEM220",
+                    category=DiagnosticCategory.SYNTAX,
+                    fixes=[
+                        CodeFix(
+                            description="Add missing '>'",
+                            replacement_text=stripped + ">",
+                            location=DiagnosticLocation(i, 0, i, len(line.rstrip())),
+                            is_preferred=True,
+                        )
+                    ],
+                ))
+            
+            include_match_quote = re.match(r'#\s*include\s*"([^"]*)$', stripped)
+            if include_match_quote:
+                diagnostics.append(Diagnostic(
+                    message="Malformed #include directive: missing closing '\"'",
+                    severity=Severity.ERROR,
+                    tier=AnalysisTier.SEMANTIC,
+                    location=DiagnosticLocation(
+                        line=i,
+                        column=len(stripped),
+                        end_line=i,
+                        end_column=len(stripped) + 1,
+                    ),
+                    code="SEM220",
+                    category=DiagnosticCategory.SYNTAX,
+                    fixes=[
+                        CodeFix(
+                            description='Add missing \'"\'',
+                            replacement_text=stripped + '"',
+                            location=DiagnosticLocation(i, 0, i, len(line.rstrip())),
+                            is_preferred=True,
+                        )
+                    ],
+                ))
+        
+        # Check for missing function return type (e.g., main() instead of int main())
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            
+            # Skip comments and preprocessor
+            if stripped.startswith('//') or stripped.startswith('#') or stripped.startswith('/*'):
+                continue
+            
+            # Pattern: function definition without return type - starts with identifier followed by (
+            # But skip keywords that look like functions
+            if re.match(r'^(\w+)\s*\([^)]*\)\s*\{?\s*$', stripped):
+                func_name = re.match(r'^(\w+)', stripped).group(1)
+                # Skip if it's a keyword or looks like a type
+                keywords = {'if', 'for', 'while', 'switch', 'catch', 'return', 'delete', 'sizeof', 'typeof', 'alignof'}
+                type_keywords = {'int', 'float', 'double', 'char', 'void', 'bool', 'long', 'short', 'unsigned', 'signed', 'auto', 'const', 'static', 'extern', 'inline', 'virtual', 'explicit', 'class', 'struct', 'enum', 'namespace', 'template', 'typename'}
+                
+                if func_name not in keywords and func_name not in type_keywords:
+                    # Check if previous non-empty line has a return type
+                    prev_line_has_type = False
+                    for j in range(i - 1, -1, -1):
+                        prev_stripped = lines[j].strip()
+                        if prev_stripped and not prev_stripped.startswith('//'):
+                            # Check if it looks like a return type (ends with type keyword or *)
+                            if re.search(r'(int|float|double|char|void|bool|long|short|unsigned|auto|\*|&)\s*$', prev_stripped):
+                                prev_line_has_type = True
+                            break
+                    
+                    if not prev_line_has_type:
+                        col = line.find(func_name)
+                        diagnostics.append(Diagnostic(
+                            message=f"Function '{func_name}' is missing a return type",
+                            severity=Severity.ERROR,
+                            tier=AnalysisTier.SEMANTIC,
+                            location=DiagnosticLocation(
+                                line=i,
+                                column=col,
+                                end_line=i,
+                                end_column=col + len(func_name),
+                            ),
+                            code="SEM221",
+                            category=DiagnosticCategory.SYNTAX,
+                            explanation="In C++, all functions must have an explicit return type. Use 'int' for main() or 'void' for functions that don't return a value.",
+                            fixes=[
+                                CodeFix(
+                                    description=f"Add 'int' return type",
+                                    replacement_text=line[:col] + f"int {func_name}" + line[col + len(func_name):].rstrip(),
+                                    location=DiagnosticLocation(i, 0, i, len(line.rstrip())),
+                                    is_preferred=func_name == 'main',
+                                ),
+                                CodeFix(
+                                    description=f"Add 'void' return type",
+                                    replacement_text=line[:col] + f"void {func_name}" + line[col + len(func_name):].rstrip(),
+                                    location=DiagnosticLocation(i, 0, i, len(line.rstrip())),
+                                    is_preferred=func_name != 'main',
+                                ),
+                            ],
+                        ))
+        
+        # Track brace depth for unbalanced brace detection
+        brace_stack = []  # Stack of (line, column) for opening braces
+        
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            
+            # Skip string literals and comments for brace counting
+            in_string = False
+            in_char = False
+            for j, ch in enumerate(line):
+                if ch == '"' and (j == 0 or line[j-1] != '\\'):
+                    in_string = not in_string
+                elif ch == "'" and (j == 0 or line[j-1] != '\\'):
+                    in_char = not in_char
+                elif not in_string and not in_char:
+                    if ch == '{':
+                        brace_stack.append((i, j))
+                    elif ch == '}':
+                        if brace_stack:
+                            brace_stack.pop()
+                        else:
+                            # Unmatched closing brace
+                            diagnostics.append(Diagnostic(
+                                message="Unmatched closing brace '}'",
+                                severity=Severity.ERROR,
+                                tier=AnalysisTier.SEMANTIC,
+                                location=DiagnosticLocation(
+                                    line=i,
+                                    column=j,
+                                    end_line=i,
+                                    end_column=j + 1,
+                                ),
+                                code="SEM222",
+                                category=DiagnosticCategory.SYNTAX,
+                            ))
+        
+        # Check for unclosed braces at end of file
+        for open_line, open_col in brace_stack:
+            diagnostics.append(Diagnostic(
+                message="Unclosed brace '{' - missing closing '}'",
+                severity=Severity.ERROR,
+                tier=AnalysisTier.SEMANTIC,
+                location=DiagnosticLocation(
+                    line=open_line,
+                    column=open_col,
+                    end_line=open_line,
+                    end_column=open_col + 1,
+                ),
+                code="SEM223",
+                category=DiagnosticCategory.SYNTAX,
+                explanation="Every opening brace '{' must have a matching closing brace '}'",
+            ))
+        
+        # Original semicolon checking
+        brace_depth = 0
         for i, line in enumerate(lines):
             stripped = line.strip()
             
@@ -922,6 +1386,7 @@ class CppSemanticAnalyzer(BaseSemanticAnalyzer):
 class SemanticAnalyzer:
     """
     Main semantic analyzer that dispatches to language-specific implementations.
+    Supports cross-file analysis with related files for include/import resolution.
     """
     
     _analyzers: Dict[str, BaseSemanticAnalyzer] = {}
@@ -935,9 +1400,13 @@ class SemanticAnalyzer:
     def _register(self, analyzer: BaseSemanticAnalyzer) -> None:
         self._analyzers[analyzer.language] = analyzer
     
-    def analyze(self, file: FileContext) -> TierResult:
+    def analyze(self, file: FileContext, related_files: Optional[List[FileContext]] = None) -> TierResult:
         """
-        Perform semantic analysis on a file.
+        Perform semantic analysis on a file with cross-file awareness.
+        
+        Args:
+            file: The primary file to analyze
+            related_files: Other files in the workspace for include/import resolution
         
         Returns a TierResult containing all diagnostics.
         """
@@ -955,7 +1424,7 @@ class SemanticAnalyzer:
             )
         
         try:
-            diagnostics = analyzer.analyze(file)
+            diagnostics = analyzer.analyze(file, related_files)
         except Exception as e:
             # Don't crash on analysis errors
             diagnostics = [
