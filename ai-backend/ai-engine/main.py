@@ -17,6 +17,12 @@ from analyzer import supported_languages
 
 from llm.providers import get_provider
 from llm.prompts import SPLIT_GUI_PROMPT
+from llm.structural_prompts import (
+    format_delta_addition_prompt,
+    format_delta_deletion_prompt,
+    inject_delta_into_code,
+    apply_deletion_delta,
+)
 
 # New imports for enhanced architecture
 from job_queue import (
@@ -554,6 +560,153 @@ async def get_provenance_stats():
     """Get provenance statistics."""
     tracker = get_provenance_tracker()
     return tracker.get_statistics()
+
+
+# ============================================================
+# FAST STRUCTURAL UPDATE ENDPOINTS (for HMR)
+# ============================================================
+
+class StructuralUpdateRequest(BaseModel):
+    """Request for fast structural updates (add/remove elements)."""
+    update_type: str  # "addition", "deletion"
+    changes_description: str = ""  # What changed (for addition/deletion)
+    core_content: str
+    gui_content: str
+    shared_content: str
+    # Existing cached split result to inject delta into
+    cached_result: Optional[dict] = None
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+
+
+@app.post("/refactor/delta")
+async def refactor_delta(req: StructuralUpdateRequest):
+    """
+    Delta-based code generation endpoint for fast HMR.
+    
+    Instead of regenerating all code:
+    1. Keeps existing working code (with guardrails applied)
+    2. Only asks AI to generate the delta (new button code snippet)
+    3. Injects that delta into the existing code
+    
+    Uses Gemini by default for fast ~2-3s response vs ~18s for full split.
+    """
+    start_time = time.time()
+    
+    # Always use Gemini for delta operations (fast and efficient)
+    provider = get_provider(provider_name='gemini', use_custom=bool(req.api_key))
+    
+    try:
+        if req.update_type == "addition":
+            # Generate the delta prompt - asks AI for ONLY the new snippets
+            prompt = format_delta_addition_prompt(
+                req.changes_description,
+                req.core_content,
+                req.gui_content,
+                req.shared_content
+            )
+            
+            # Call AI with smaller focused prompt
+            ai_response = await provider.ask_llm(
+                prompt,
+                "cpp",
+                None,
+                mode="delta",
+                model=req.model or "gemini-2.5-flash-lite",
+                api_key=req.api_key,
+            )
+            
+            print(f"[Delta] AI response:\n{ai_response}")
+            
+            # Parse the delta JSON from AI response
+            delta = _parse_delta_json(ai_response)
+            
+            # If we have a cached result, inject the delta into it
+            if req.cached_result:
+                updated_result = inject_delta_into_code(req.cached_result, delta)
+                elapsed = time.time() - start_time
+                print(f"[Delta Addition] completed in {elapsed:.2f}s")
+                
+                return {
+                    "result": updated_result,
+                    "delta": delta,
+                    "update_type": "addition",
+                    "elapsed_seconds": elapsed
+                }
+            else:
+                # Return just the delta if no cached result to inject into
+                elapsed = time.time() - start_time
+                return {
+                    "delta": delta,
+                    "update_type": "addition", 
+                    "elapsed_seconds": elapsed
+                }
+                
+        elif req.update_type == "deletion":
+            # Generate deletion prompt
+            prompt = format_delta_deletion_prompt(req.changes_description)
+            
+            ai_response = await provider.ask_llm(
+                prompt,
+                "cpp",
+                None,
+                mode="delta",
+                model=req.model or "gemini-2.5-flash-lite",
+                api_key=req.api_key,
+            )
+            
+            delta = _parse_delta_json(ai_response)
+            
+            if req.cached_result:
+                updated_result = apply_deletion_delta(req.cached_result, delta)
+                elapsed = time.time() - start_time
+                print(f"[Delta Deletion] completed in {elapsed:.2f}s")
+                
+                return {
+                    "result": updated_result,
+                    "delta": delta,
+                    "update_type": "deletion",
+                    "elapsed_seconds": elapsed
+                }
+            else:
+                elapsed = time.time() - start_time
+                return {
+                    "delta": delta,
+                    "update_type": "deletion",
+                    "elapsed_seconds": elapsed
+                }
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown update_type: {req.update_type}. Use 'addition' or 'deletion'.")
+            
+    except json.JSONDecodeError as e:
+        print(f"[Delta] JSON parse error: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to parse AI delta response: {e}")
+    except Exception as e:
+        print(f"[Delta] Error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+def _parse_delta_json(ai_response: str) -> dict:
+    """Parse JSON from AI response, handling markdown code blocks."""
+    result_str = ai_response.strip()
+    
+    # Clean up markdown if present
+    if "```json" in result_str:
+        result_str = result_str.split("```json")[1].split("```")[0].strip()
+    elif "```" in result_str:
+        result_str = result_str.split("```")[1].split("```")[0].strip()
+    
+    return json.loads(result_str)
+
+
+@app.post("/refactor/structural")
+async def refactor_structural(req: StructuralUpdateRequest):
+    """
+    Legacy structural update endpoint - redirects to delta-based approach.
+    Kept for backwards compatibility.
+    """
+    # Redirect to delta endpoint
+    return await refactor_delta(req)
 
 
 @app.get("/")

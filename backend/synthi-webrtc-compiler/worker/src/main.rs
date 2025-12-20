@@ -1342,21 +1342,250 @@ fn collect_string_changes(old_strings: &[String], new_strings: &[String]) -> Vec
     changes
 }
 
-/// Perform incremental AI update - ask AI to apply specific changes to existing code
-/// This is MUCH faster than full regeneration (~2-5s vs ~20s)
-async fn perform_incremental_ai_update(
+/// Detect structural DELETIONS between old and new source code
+/// Returns lines that were removed
+fn detect_structural_deletions(old_source: &str, new_source: &str) -> Vec<String> {
+    let old_lines: Vec<&str> = old_source.lines().collect();
+    let new_lines: Vec<&str> = new_source.lines().collect();
+    
+    let mut deletions = Vec::new();
+    
+    for old_line in &old_lines {
+        let trimmed = old_line.trim();
+        if trimmed.is_empty() { continue; }
+        
+        let exists_in_new = new_lines.iter().any(|new_line| {
+            new_line.trim() == trimmed
+        });
+        
+        if !exists_in_new {
+            deletions.push(trimmed.to_string());
+        }
+    }
+    
+    deletions
+}
+
+/// Try to apply deletions locally without calling AI
+/// Returns Some(updated_result) if successful, None if AI is needed
+fn try_local_deletion_patch(
     cached_result: &serde_json::Value,
-    changes: &[(String, String)],
-    language: &str,
+    deletions: &[String],
+) -> Option<serde_json::Value> {
+    if deletions.is_empty() {
+        return None;
+    }
+    
+    // Get current code
+    let core_content = cached_result.get("core")
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let gui_content = cached_result.get("gui")
+        .and_then(|g| g.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let shared_content = cached_result.get("shared")
+        .and_then(|s| s.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    
+    let mut new_core = core_content.to_string();
+    let mut new_gui = gui_content.to_string();
+    let mut new_shared = shared_content.to_string();
+    let mut any_changes = false;
+    
+    for deletion in deletions {
+        // Try to find and remove related code in the split files
+        // Look for patterns that match the deleted line
+        
+        // Skip empty or very short lines
+        if deletion.len() < 3 { continue; }
+        
+        // For button deletions, look for btn_ variables
+        if deletion.contains("btn_") || deletion.contains("button") || deletion.contains("Button") {
+            // Extract button variable names like btn2_x, reset_btn_x, etc.
+            let btn_pattern = regex::Regex::new(r"(\w+_btn_\w+|btn\d*_\w+)").unwrap();
+            for cap in btn_pattern.captures_iter(deletion) {
+                let var_name = &cap[1];
+                let base_name = var_name.split('_').take(2).collect::<Vec<_>>().join("_");
+                
+                // Remove from shared.h (state struct fields)
+                let field_pattern = format!("int {};", var_name);
+                if new_shared.contains(&field_pattern) {
+                    new_shared = new_shared.replace(&field_pattern, &format!("// REMOVED: {}", field_pattern));
+                    any_changes = true;
+                    eprintln!("[LocalPatch] Removed field {} from shared.h", var_name);
+                }
+                
+                // Comment out references in core.cpp - collect lines to replace first
+                let core_lines: Vec<String> = new_core.lines().map(|s| s.to_string()).collect();
+                for line in &core_lines {
+                    if line.contains(&base_name) && !line.trim().starts_with("//") {
+                        new_core = new_core.replace(line, &format!("// REMOVED: {}", line));
+                        any_changes = true;
+                    }
+                }
+                
+                // Comment out references in gui.cpp - collect lines to replace first
+                let gui_lines: Vec<String> = new_gui.lines().map(|s| s.to_string()).collect();
+                for line in &gui_lines {
+                    if line.contains(&base_name) && !line.trim().starts_with("//") {
+                        new_gui = new_gui.replace(line, &format!("// REMOVED: {}", line));
+                        any_changes = true;
+                    }
+                }
+            }
+        }
+        
+        // For XFillRectangle/XDrawRectangle deletions (drawing code)
+        if deletion.contains("XFillRectangle") || deletion.contains("XDrawRectangle") ||
+           deletion.contains("SDL_RenderFillRect") || deletion.contains("SDL_RenderDrawRect") {
+            // Find and comment out the SDL equivalent in gui.cpp
+            // This is trickier - we need to match the geometry
+            // For now, just mark as needing AI help if we can't do simple match
+        }
+    }
+    
+    if !any_changes {
+        return None;
+    }
+    
+    // Build updated result
+    let mut result = cached_result.clone();
+    if let Some(core) = result.get_mut("core") {
+        core["content"] = serde_json::Value::String(new_core);
+    }
+    if let Some(gui) = result.get_mut("gui") {
+        gui["content"] = serde_json::Value::String(new_gui);
+    }
+    if let Some(shared) = result.get_mut("shared") {
+        shared["content"] = serde_json::Value::String(new_shared);
+    }
+    
+    eprintln!("[LocalPatch] Applied local deletion patch - no AI call needed");
+    Some(result)
+}
+
+/// Detect structural additions between old and new source code
+/// Returns a description of what was added (new buttons, new elements, etc.)
+fn detect_structural_additions(old_source: &str, new_source: &str) -> Option<String> {
+    // Split into lines for diff analysis
+    let old_lines: Vec<&str> = old_source.lines().collect();
+    let new_lines: Vec<&str> = new_source.lines().collect();
+    
+    // Find added lines (simple diff - lines in new but not in old)
+    let mut additions = Vec::new();
+    
+    for new_line in &new_lines {
+        let trimmed = new_line.trim();
+        if trimmed.is_empty() { continue; }
+        
+        // Check if this line exists in old (with some fuzzy matching for whitespace)
+        let exists_in_old = old_lines.iter().any(|old_line| {
+            old_line.trim() == trimmed
+        });
+        
+        if !exists_in_old {
+            additions.push(trimmed.to_string());
+        }
+    }
+    
+    // Also check for deletions - if more deletions than additions, this is primarily a deletion
+    let deletions = detect_structural_deletions(old_source, new_source);
+    if deletions.len() > additions.len() && additions.len() < 3 {
+        // This is primarily a deletion, not an addition
+        return None;
+    }
+    
+    if additions.is_empty() {
+        return None;
+    }
+    
+    // Analyze what was added
+    let mut description_parts = Vec::new();
+    
+    // Detect button additions
+    let button_keywords = ["button", "Button", "btn", "Btn", "click", "Click"];
+    let has_button = additions.iter().any(|line| {
+        button_keywords.iter().any(|kw| line.contains(kw))
+    });
+    if has_button {
+        description_parts.push("new button/clickable element");
+    }
+    
+    // Detect draw calls (rectangles, shapes)
+    let draw_keywords = ["draw", "Draw", "rect", "Rect", "fill", "Fill", "XFillRectangle", "XDrawRectangle"];
+    let has_draw = additions.iter().any(|line| {
+        draw_keywords.iter().any(|kw| line.contains(kw))
+    });
+    if has_draw && !has_button {
+        description_parts.push("new shape/rectangle");
+    }
+    
+    // Detect text additions
+    let text_keywords = ["text", "Text", "string", "String", "XDrawString", "printf", "print"];
+    let has_text = additions.iter().any(|line| {
+        text_keywords.iter().any(|kw| line.contains(kw))
+    });
+    if has_text {
+        description_parts.push("new text element");
+    }
+    
+    // Detect event handling additions
+    let event_keywords = ["event", "Event", "handler", "Handler", "motion", "Motion", "expose", "Expose"];
+    let has_event = additions.iter().any(|line| {
+        event_keywords.iter().any(|kw| line.contains(kw))
+    });
+    if has_event {
+        description_parts.push("new event handler");
+    }
+    
+    // Detect variable/struct additions
+    let var_keywords = ["int ", "float ", "double ", "char ", "bool ", "struct ", "void "];
+    let has_var = additions.iter().any(|line| {
+        var_keywords.iter().any(|kw| line.starts_with(kw) || line.contains(&format!(" {}", kw)))
+    });
+    if has_var && description_parts.is_empty() {
+        description_parts.push("new variable/definition");
+    }
+    
+    if description_parts.is_empty() {
+        // Generic structural change
+        description_parts.push("code structure change");
+    }
+    
+    // Build description with actual added code
+    let desc = format!(
+        "User added: {}.\n\nNew/changed code:\n```\n{}\n```",
+        description_parts.join(", "),
+        additions.iter().take(30).cloned().collect::<Vec<_>>().join("\n")
+    );
+    
+    Some(desc)
+}
+
+/// Find the closest cached result by structural similarity
+/// Returns (cached_result, original_source, similarity_score)
+fn find_closest_cached_result(_source: &str) -> Option<(serde_json::Value, String, f32)> {
+    // This would need to be called with the cache lock held
+    // For now, return None and we'll implement via the cache lookup
+    None
+}
+
+/// Perform incremental structural AI update - tell AI what was added, not regenerate everything
+/// NOW USES the fast /refactor/delta endpoint (~2-3s vs ~18s)
+/// - Keeps existing working code (with guardrails applied)
+/// - Only asks AI to generate the delta (new button code snippet)
+/// - Injects that delta into the existing code
+async fn perform_structural_ai_update(
+    cached_result: &serde_json::Value,
+    _original_source: &str,
+    _new_source: &str,
+    structural_changes: &str,
+    _language: &str,
 ) -> Result<serde_json::Value> {
     let start_time = std::time::Instant::now();
-    
-    // Build a focused prompt for the AI
-    let changes_desc: Vec<String> = changes.iter()
-        .map(|(old, new)| format!("- Change \"{}\" to \"{}\"", old, new))
-        .collect();
-    
-    let changes_text = changes_desc.join("\n");
     
     // Extract current code from cached result
     let core_content = cached_result.get("core")
@@ -1372,53 +1601,198 @@ async fn perform_incremental_ai_update(
         .and_then(|c| c.as_str())
         .unwrap_or("");
     
-    let prompt = format!(r#"You have existing split code that needs MINOR UPDATES. Do NOT regenerate - just apply these changes:
-
-{}
-
-IMPORTANT:
-- Only modify what's necessary to apply these changes
-- For color changes: update the SDL_SetRenderDrawColor RGB values appropriately
-- For numeric changes: update the numeric constants
-- Keep ALL other code EXACTLY the same
-- Return the complete updated files in the same JSON format
-
-Current core.cpp:
-```cpp
-{}
-```
-
-Current gui.cpp:
-```cpp
-{}
-```
-
-Current shared.h:
-```cpp
-{}
-```
-
-Return ONLY valid JSON in this exact format:
-{{
-  "core": {{ "filename": "core.cpp", "content": "..." }},
-  "gui": {{ "filename": "gui.cpp", "content": "..." }},
-  "shared": {{ "filename": "shared.h", "content": "..." }}
-}}"#, changes_text, core_content, gui_content, shared_content);
-
+    // Use the NEW fast delta endpoint - sends cached_result so AI only generates delta snippets
     let client = reqwest::Client::new();
     let payload = serde_json::json!({
-        "code": prompt,
-        "lang": language,
-        "mode": "incremental_update"
+        "update_type": "addition",
+        "changes_description": structural_changes,
+        "core_content": core_content,
+        "gui_content": gui_content,
+        "shared_content": shared_content,
+        "cached_result": cached_result  // CRITICAL: Include cached result for delta injection
     });
 
     let backend_url = std::env::var("AI_BACKEND_URL")
         .unwrap_or_else(|_| "http://172.19.224.1:8000".to_string());
-    let url = format!("{}/refactor/split", backend_url);
+    let url = format!("{}/refactor/delta", backend_url);
 
+    eprintln!("[AI Split] Calling fast delta endpoint: {}", url);
+    
     let res = client.post(&url)
         .json(&payload)
-        .timeout(std::time::Duration::from_secs(30)) // Shorter timeout for incremental
+        .timeout(std::time::Duration::from_secs(30)) // Shorter timeout for fast endpoint
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    // Delta endpoint returns {"result": {...}, "delta": {...}}
+    // The "result" is already the updated code with delta injected
+    if let Some(result) = res.get("result") {
+        if result.is_object() && result.get("core").is_some() {
+            let elapsed = start_time.elapsed();
+            eprintln!("[AI Split] Delta injection completed in {:?}", elapsed);
+            return Ok(result.clone());
+        }
+    }
+    
+    // Fallback: try to parse as string (old behavior)
+    let result_str = res["result"].as_str().ok_or(anyhow::anyhow!("No result from AI delta endpoint"))?;
+    
+    // Clean markdown
+    let clean_json = if let Some(start) = result_str.find("```json") {
+        let s = &result_str[start+7..];
+        if let Some(end) = s.find("```") { &s[..end] } else { s }
+    } else if let Some(start) = result_str.find("```") {
+        let s = &result_str[start+3..];
+        if let Some(end) = s.find("```") { &s[..end] } else { s }
+    } else {
+        result_str
+    }.trim();
+
+    // Try to find just the JSON object (AI sometimes adds extra text after)
+    let json_only = if let Some(start) = clean_json.find('{') {
+        // Find the matching closing brace by counting braces
+        let chars: Vec<char> = clean_json[start..].chars().collect();
+        let mut depth = 0;
+        let mut end_idx = chars.len();
+        for (i, c) in chars.iter().enumerate() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end_idx = i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        &clean_json[start..start + end_idx]
+    } else {
+        clean_json
+    };
+
+    let updated_data: serde_json::Value = match serde_json::from_str(json_only) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[AI Split] JSON parse error in structural update: {}", e);
+            eprintln!("[AI Split] Attempted to parse: {}...", &json_only.chars().take(500).collect::<String>());
+            return Err(anyhow::anyhow!("JSON parse error: {}", e));
+        }
+    };
+    
+    let elapsed = start_time.elapsed();
+    eprintln!("[AI Split] Structural update completed in {:?}", elapsed);
+    
+    Ok(updated_data)
+}
+
+/// Perform delta deletion - ask AI to identify what to remove, then apply locally
+/// Uses /refactor/delta endpoint with update_type="deletion"
+async fn perform_delta_deletion(
+    cached_result: &serde_json::Value,
+    deletion_description: &str,
+) -> Result<serde_json::Value> {
+    let start_time = std::time::Instant::now();
+    
+    let core_content = cached_result.get("core")
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let gui_content = cached_result.get("gui")
+        .and_then(|g| g.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let shared_content = cached_result.get("shared")
+        .and_then(|s| s.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "update_type": "deletion",
+        "changes_description": deletion_description,
+        "core_content": core_content,
+        "gui_content": gui_content,
+        "shared_content": shared_content,
+        "cached_result": cached_result
+    });
+
+    let backend_url = std::env::var("AI_BACKEND_URL")
+        .unwrap_or_else(|_| "http://172.19.224.1:8000".to_string());
+    let url = format!("{}/refactor/delta", backend_url);
+
+    eprintln!("[AI Split] Calling delta deletion endpoint: {}", url);
+    
+    let res = client.post(&url)
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    // Delta endpoint returns {"result": {...}, "delta": {...}}
+    if let Some(result) = res.get("result") {
+        if result.is_object() && result.get("core").is_some() {
+            let elapsed = start_time.elapsed();
+            eprintln!("[AI Split] Delta deletion completed in {:?}", elapsed);
+            return Ok(result.clone());
+        }
+    }
+    
+    Err(anyhow::anyhow!("No valid result from delta deletion endpoint"))
+}
+
+/// Perform incremental AI update - ask AI to apply specific changes to existing code
+/// NOW USES the fast /refactor/structural endpoint (~2-3s vs ~10s)
+async fn perform_incremental_ai_update(
+    cached_result: &serde_json::Value,
+    changes: &[(String, String)],
+    _language: &str,
+) -> Result<serde_json::Value> {
+    let start_time = std::time::Instant::now();
+    
+    // Extract current code from cached result
+    let core_content = cached_result.get("core")
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let gui_content = cached_result.get("gui")
+        .and_then(|g| g.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let shared_content = cached_result.get("shared")
+        .and_then(|s| s.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    
+    // Convert changes to JSON array format
+    let changes_json: Vec<serde_json::Value> = changes.iter()
+        .map(|(old, new)| serde_json::json!([old, new]))
+        .collect();
+    
+    // Use the NEW fast structural endpoint
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "update_type": "incremental",
+        "changes": changes_json,
+        "core_content": core_content,
+        "gui_content": gui_content,
+        "shared_content": shared_content
+    });
+
+    let backend_url = std::env::var("AI_BACKEND_URL")
+        .unwrap_or_else(|_| "http://172.19.224.1:8000".to_string());
+    let url = format!("{}/refactor/structural", backend_url);
+
+    eprintln!("[AI Split] Calling fast incremental endpoint: {}", url);
+    
+    let res = client.post(&url)
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(20)) // Short timeout for incremental
         .send()
         .await?
         .json::<serde_json::Value>()
@@ -1551,10 +1925,12 @@ fn extract_structural_signature(source: &str) -> String {
 }
 
 async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
-    // TWO-LEVEL CACHE for fast HMR:
-    // Level 1: Full source hash -> instant cache hit (exact match)
-    // Level 2: Structural hash -> cache hit with string patching (string-only changes)
-    // Level 3: Cache miss -> call AI backend
+    // FOUR-LEVEL CACHE for fast HMR (like Next.js):
+    // Level 1: Full source hash -> instant cache hit (exact match) - 0ms
+    // Level 2: Structural hash -> cache hit with string patching (text-only changes) - ~1ms
+    // Level 2.5: Semantic changes (colors/numbers) -> incremental AI update - ~2-5s
+    // Level 2.75: Structural additions (new button) -> incremental AI update - ~5-10s
+    // Level 3: Full cache miss -> call AI backend for full split - ~15-25s
     
     let source_hash = calculate_hash(&req.source);
     let structural_sig = extract_structural_signature(&req.source);
@@ -1641,8 +2017,112 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
         }
     }
     
-    // Level 3: Cache miss - call AI backend
-    eprintln!("[AI Split] Cache MISS - calling AI backend...");
+    // Level 2.6: Try LOCAL deletion patching (no AI call needed!)
+    // If user deleted code (button, etc.), we can often patch locally
+    let any_cached_for_deletion = {
+        let structural_cache = get_ai_split_structural_cache().lock().await;
+        structural_cache.values().next().cloned()
+    };
+    
+    if let Some(cached) = any_cached_for_deletion {
+        let deletions = detect_structural_deletions(&cached.original_source, &req.source);
+        if !deletions.is_empty() {
+            eprintln!("[AI Split] Detected {} deleted lines - attempting local patch", deletions.len());
+            
+            if let Some(patched_result) = try_local_deletion_patch(&cached.result, &deletions) {
+                // Store patched result in caches
+                let cached_entry = CachedSplit {
+                    result: patched_result.clone(),
+                    original_source: req.source.clone(),
+                };
+                {
+                    let mut cache = get_ai_split_cache().lock().await;
+                    cache.insert(source_hash, cached_entry.clone());
+                }
+                {
+                    let mut structural_cache = get_ai_split_structural_cache().lock().await;
+                    structural_cache.insert(structural_hash, cached_entry);
+                }
+                eprintln!("[AI Split] Local deletion patch applied - instant HMR!");
+                return Ok(patched_result);
+            } else {
+                eprintln!("[AI Split] Local deletion patch failed - will try AI delta deletion");
+                
+                // Try AI delta deletion endpoint
+                let deletion_description = deletions.iter()
+                    .take(10)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                
+                match perform_delta_deletion(&cached.result, &deletion_description).await {
+                    Ok(updated_result) => {
+                        let cached_entry = CachedSplit {
+                            result: updated_result.clone(),
+                            original_source: req.source.clone(),
+                        };
+                        {
+                            let mut cache = get_ai_split_cache().lock().await;
+                            cache.insert(source_hash, cached_entry.clone());
+                        }
+                        {
+                            let mut structural_cache = get_ai_split_structural_cache().lock().await;
+                            structural_cache.insert(structural_hash, cached_entry);
+                        }
+                        eprintln!("[AI Split] Delta deletion complete - fast HMR!");
+                        return Ok(updated_result);
+                    }
+                    Err(e) => {
+                        eprintln!("[AI Split] Delta deletion failed: {} - will try other paths", e);
+                        // Fall through to next level
+                    }
+                }
+            }
+        }
+    }
+    
+    // Level 2.75: Try incremental structural update if we have ANY cached result
+    // This is like Next.js - detect what changed and tell AI to just add that
+    let any_cached_result = {
+        let structural_cache = get_ai_split_structural_cache().lock().await;
+        // Find the most recent cached entry (any entry will do for structural diff)
+        structural_cache.values().next().cloned()
+    };
+    
+    if let Some(cached) = any_cached_result {
+        // Check if this looks like a structural addition (new button, new element)
+        if let Some(structural_changes) = detect_structural_additions(&cached.original_source, &req.source) {
+            eprintln!("[AI Split] Structural ADDITION detected - using incremental update instead of full regen");
+            eprintln!("[AI Split] Changes: {}", structural_changes.lines().next().unwrap_or(""));
+            
+            match perform_structural_ai_update(&cached.result, &cached.original_source, &req.source, &structural_changes, &req.language).await {
+                Ok(updated_result) => {
+                    // Store updated result in both caches
+                    let cached_entry = CachedSplit {
+                        result: updated_result.clone(),
+                        original_source: req.source.clone(),
+                    };
+                    {
+                        let mut cache = get_ai_split_cache().lock().await;
+                        cache.insert(source_hash, cached_entry.clone());
+                    }
+                    {
+                        let mut structural_cache = get_ai_split_structural_cache().lock().await;
+                        structural_cache.insert(structural_hash, cached_entry);
+                    }
+                    eprintln!("[AI Split] Structural incremental update complete - fast HMR for new elements!");
+                    return Ok(updated_result);
+                }
+                Err(e) => {
+                    eprintln!("[AI Split] Structural update failed: {} - falling back to full regen", e);
+                    // Fall through to Level 3 (full AI call)
+                }
+            }
+        }
+    }
+    
+    // Level 3: Cache miss - call AI backend (full regeneration)
+    eprintln!("[AI Split] Cache MISS (no incremental path) - calling AI backend for full split...");
     let start_time = std::time::Instant::now();
     
     let client = reqwest::Client::new();
@@ -3043,6 +3523,36 @@ extern "C" int on_load_from_json(void* state_ptr, const char* json) {
                 content = re_memset.replace_all(&content, "// [Guardrail] memset REMOVED to preserve HMR state").to_string();
             }
 
+            // CRITICAL FIX: AI sometimes uses 'app_state' in gui.cpp instead of 'gui_app_state'
+            // This happens during structural updates when AI copies patterns from core.cpp
+            // The variable in gui.cpp MUST be 'gui_app_state' (injected by guardrail) not 'app_state'
+            if content.contains("static AppState gui_app_state") || content.contains("&gui_app_state") {
+                // gui.cpp uses gui_app_state, so fix any bare 'app_state' references
+                // But be careful not to replace 'gui_app_state' with 'gui_gui_app_state'
+                
+                // Pattern: &app_state that should be &gui_app_state
+                if content.contains("&app_state") && !content.contains("&gui_app_state") {
+                    content = content.replace("&app_state", "&gui_app_state");
+                    eprintln!("[Guardrail] Fixed &app_state -> &gui_app_state in gui.cpp");
+                }
+                
+                // Pattern: bare 'app_state' that should be 'gui_app_state'
+                // Use word boundary \b to match whole word only
+                // But we need to avoid replacing 'gui_app_state' with 'gui_gui_app_state'
+                if content.contains("gui_app_state") {
+                    // Only replace standalone app_state (not gui_app_state)
+                    // Simple approach: temporarily replace gui_app_state, then replace app_state, then restore
+                    let placeholder = "__GUI_APP_STATE_PLACEHOLDER__";
+                    let temp_content = content.replace("gui_app_state", placeholder);
+                    if temp_content.contains("app_state") {
+                        let fixed_content = temp_content.replace("app_state", "gui_app_state");
+                        content = fixed_content.replace(placeholder, "gui_app_state");
+                        eprintln!("[Guardrail] Fixed app_state -> gui_app_state references in gui.cpp");
+                    } else {
+                        // No standalone app_state found, nothing to do
+                    }
+                }
+            }
 
             if content.contains("main(") && !content.contains("extern \"C\" void* entrypoint") {
                  content.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
