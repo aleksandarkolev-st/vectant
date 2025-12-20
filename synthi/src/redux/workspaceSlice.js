@@ -374,7 +374,9 @@ const workspaceSlice = createSlice({
                 if (state.activeFile && state.activeFile.path) {
                     state.fileContentCache.set(state.activeFile.path, newContent);
                     const activePath = state.activeFile.path;
-                    const isUnsaved = newContent !== state.savedContent;
+                    // Normalize trailing whitespace for comparison to prevent false unsaved states
+                    const normalizeTrailing = (s) => s ? s.replace(/[\r\n\s]+$/, '') : '';
+                    const isUnsaved = normalizeTrailing(newContent) !== normalizeTrailing(state.savedContent);
                     const idx = state.openFiles.findIndex(f => f.path === activePath);
                     if (idx !== -1) {
                         state.openFiles[idx] = { ...state.openFiles[idx], isUnsaved };
@@ -551,7 +553,9 @@ const workspaceSlice = createSlice({
                 }
                 
                 // Cache unsaved content of OLD active file before switching
-                if (state.activeFile && state.activeFile.path && state.currentContent!== state.savedContent) {
+                // Use normalized comparison to handle trailing whitespace differences
+                const normalizeTrailing = (s) => s ? s.replace(/[\r\n\s]+$/, '') : '';
+                if (state.activeFile && state.activeFile.path && normalizeTrailing(state.currentContent) !== normalizeTrailing(state.savedContent)) {
                     state.fileContentCache.set(state.activeFile.path, state.currentContent);
                 }
 
@@ -700,10 +704,19 @@ export const selectActiveFile = (state) => state.workspace.activeFile;
 export const selectOpenFiles = (state) => state.workspace.openFiles || [];
 export const selectLoadingFiles = (state) => state.workspace.loadingFiles || [];
 export const selectCurrentContent = (state) => state.workspace.currentContent;
+
+// Normalize content for comparison - trim trailing whitespace/newlines
+// This prevents false "unsaved" states when Yjs syncs content with 
+// slightly different trailing whitespace than the file cache
+const normalizeForComparison = (content) => {
+    if (!content) return '';
+    return content.replace(/[\r\n\s]+$/, '');
+};
+
 export const selectIsUnsaved = createSelector(
     selectCurrentContent,
     (state) => state.workspace.savedContent,
-    (current, saved) => current!== saved
+    (current, saved) => normalizeForComparison(current) !== normalizeForComparison(saved)
 );
 export const selectBreadcrumb = createSelector(
     selectActiveFile,
