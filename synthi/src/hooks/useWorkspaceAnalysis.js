@@ -218,6 +218,14 @@ export function useWorkspaceAnalysis({
     } else {
       workspaceFilesRef.current.push({ path, content, language: lang });
     }
+
+    // Clear diagnostics for this file immediately as they are likely stale
+    setDiagnosticsByFile(prev => {
+      if (!prev[path]) return prev;
+      const newDiagnostics = { ...prev };
+      delete newDiagnostics[path];
+      return newDiagnostics;
+    });
     
     return true; // Change detected
   }, []);
@@ -454,7 +462,8 @@ export function useWorkspaceAnalysis({
     const all = [];
     for (const [path, diags] of Object.entries(diagnosticsByFile)) {
       for (const d of diags) {
-        all.push({ ...d, primaryFile: path });
+        // Ensure filePath is set so consumers can filter correctly
+        all.push({ ...d, filePath: path, primaryFile: path });
       }
     }
     all.push(...crossFileDiagnostics);

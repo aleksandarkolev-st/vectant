@@ -876,34 +876,27 @@ const EditorPanel = ({
         const model = editorInstance.getModel?.();
         if (!model) return; // Guard against disposed editor
         
-        // Combine diagnostics from static analysis and proactive analysis
-        const staticIssues = analysisResult?.static_analysis || analysisResult?.issues || [];
+        // Use only proactive diagnostics - they include static analysis tier
+        // and are properly invalidated when content changes
         const proactiveDiagnostics = diagnostics || [];
         
-        // Convert static analysis format to markers
-        const staticMarkers = staticIssues.map(issue => {
-            const column = issue.column || 0;
-            const endColumn = issue.end_column ?? column;
-            const startCol = Math.max(1, column + 1);
-            // Ensure at least 1 character width for the marker
-            const endCol = Math.max(endColumn + 1, startCol + 1);
+        // IMPORTANT: Filter to only show diagnostics for the CURRENT FILE
+        // This prevents test.cpp errors from showing in test.h editor
+        const currentFilePath = activeFile?.path || activeFile?.name || '';
+        const currentFileDiagnostics = proactiveDiagnostics.filter(diag => {
+            const diagPath = diag.filePath || '';
+            // Match if same path or if diagnostic has no path (legacy)
+            // Also handle cases where path might be relative vs absolute or have different separators
+            if (!diagPath) return true;
             
-            return {
-                startLineNumber: issue.line === 0 ? 1 : issue.line + 1,
-                startColumn: startCol,
-                endLineNumber: issue.end_line ? issue.end_line + 1 : (issue.line === 0 ? 1 : issue.line + 1),
-                endColumn: endCol,
-                message: issue.message,
-                severity: issue.severity === 'error' ? monacoInstance.MarkerSeverity.Error : 
-                         issue.severity === 'warning' ? monacoInstance.MarkerSeverity.Warning :
-                         monacoInstance.MarkerSeverity.Info,
-                source: 'synthi-static',
-                code: issue.code,
-            };
+            const normalize = p => p.replace(/\\/g, '/').toLowerCase();
+            return normalize(diagPath) === normalize(currentFilePath);
         });
         
+        console.log(`[Editor] Filtering diagnostics for "${currentFilePath}": ${proactiveDiagnostics.length} total -> ${currentFileDiagnostics.length} for current file`);
+        
         // Convert proactive diagnostics format to markers
-        const proactiveMarkers = proactiveDiagnostics.map(diag => {
+        const proactiveMarkers = currentFileDiagnostics.map(diag => {
             const location = diag.location || {};
             const column = location.column ?? 0;
             const endColumn = location.endColumn ?? column;
@@ -916,25 +909,22 @@ const EditorPanel = ({
                 startColumn: startCol,
                 endLineNumber: (location.endLine ?? location.line ?? 0) + 1,
                 endColumn: endCol,
-                message: `[${(diag.tier || 'analysis').toUpperCase()}] ${diag.message}`,
+                message: `[${(diag.tier || 'STATIC').toUpperCase()}] ${diag.message}`,
                 severity: diag.severity === 'error' ? monacoInstance.MarkerSeverity.Error :
                          diag.severity === 'warning' ? monacoInstance.MarkerSeverity.Warning :
                          diag.severity === 'hint' ? monacoInstance.MarkerSeverity.Hint :
                          monacoInstance.MarkerSeverity.Info,
-                source: `synthi-${diag.tier || 'proactive'}`,
+                source: `synthi-${diag.tier || 'static'}`,
                 code: diag.code,
             };
         });
         
-        // Combine all markers
-        const allMarkers = [...staticMarkers, ...proactiveMarkers];
-        
         try {
-            monacoInstance.editor.setModelMarkers(model, 'synthi-analysis', allMarkers);
+            monacoInstance.editor.setModelMarkers(model, 'synthi-analysis', proactiveMarkers);
         } catch (e) {
             // Editor may have been disposed
         }
-    }, [editorInstance, monacoInstance, analysisResult, diagnostics]);
+    }, [editorInstance, monacoInstance, diagnostics, activeFile]);
 
     // Handle external completion triggering (e.g. from Chat UI)
     useEffect(() => {

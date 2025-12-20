@@ -455,7 +455,8 @@ class WorkspaceAnalyzer:
                 results[diag.primary_file].append(diag)
                 
         except Exception as e:
-            print(f"[WorkspaceAnalyzer] AI analysis failed: {e}")
+            # print(f"[WorkspaceAnalyzer] AI analysis failed: {e}")
+            pass
         
         return results
     

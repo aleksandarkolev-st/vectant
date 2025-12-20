@@ -268,9 +268,7 @@ export const useEditorProviders = ({
                     // Store pending fix for keyboard shortcuts
                     pendingFixRef.current = { fix, range: firstFixRange, diagnostic: firstFixDiagnostic };
                     
-                    contents.push({ value: '\n---' });
-                    contents.push({ value: `💡 **Quick Fix Available**` });
-                    contents.push({ value: '`Ctrl+.` Apply  •  `Ctrl+Shift+.` Toggle Preview' });
+                    contents.push({ value: '\n\n**💡 Quick Fix Available**\n\nPress `Tab` to apply fix immediately.' });
                     
                     // Show preview immediately while hovering
                     showFixPreview(fix, firstFixRange);
@@ -284,11 +282,50 @@ export const useEditorProviders = ({
             }
         });
         
-        // Add keyboard shortcut for applying fix (Ctrl+. already handled by Monaco code actions)
+        // Add keyboard shortcut for applying fix (Tab)
         // Add Ctrl+Shift+. for preview toggle
         const keyDownDisposable = editorInstance.onKeyDown((e) => {
             const pending = pendingFixRef.current;
             if (!pending) return;
+            
+            // Tab = Apply fix immediately
+            if (e.code === 'Tab') {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                const { fix, range, diagnostic } = pending;
+                const model = editorInstance.getModel();
+                if (!model) return;
+                
+                // Apply the fix
+                editorInstance.executeEdits('synthi-quick-fix', [{
+                    range: range,
+                    text: fix.replacementText || '',
+                    forceMoveMarkers: true,
+                }]);
+                
+                // Clear pending fix state
+                pendingFixRef.current = null;
+                isPreviewingRef.current = false;
+                hideFixPreview();
+                
+                // Remove the diagnostic from state immediately
+                if (removeDiagnosticByLocation && diagnostic.location) {
+                    removeDiagnosticByLocation(diagnostic.location);
+                }
+                
+                // Clear Monaco markers for this specific range
+                const currentMarkers = monacoInstance.editor.getModelMarkers({ resource: model.uri });
+                const remainingMarkers = currentMarkers.filter(m => {
+                    return !(m.startLineNumber === range.startLineNumber &&
+                             m.startColumn === range.startColumn &&
+                             m.endLineNumber === range.endLineNumber &&
+                             m.endColumn === range.endColumn);
+                });
+                monacoInstance.editor.setModelMarkers(model, 'synthi-proactive', remainingMarkers.filter(m => m.owner === 'synthi-proactive'));
+                
+                return;
+            }
             
             // Ctrl+Shift+. = Toggle preview
             if (e.ctrlKey && e.shiftKey && e.code === 'Period') {

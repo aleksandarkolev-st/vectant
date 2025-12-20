@@ -6,14 +6,14 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Set
 
 from analyzer.baseAnalyzer import BaseAnalyzer
-from analyzer.utils import make_diag
+from analyzer.utils import make_diag, CodeFix
 
 _STRICT_EQUALITY = re.compile(r"(?<![=!])==(?!=)")
 _ANY_TYPE = re.compile(r":\s*any\b")
 _DECLARATION = re.compile(r"^(?:export\s+)?(?:const|let)\s+.+$")
 
-_IO_HEADER = "#include <iostream>"
-_IO_USAGE = re.compile(r"\b(?:std::)?c(?:out|in)\b")
+_IO_HEADER = re.compile(r'#\s*include\s*<\s*iostream\s*>')
+_IO_USAGE = re.compile(r"\b(?:std::)?c(?:out|in|err|log)\b|\bstd::endl\b")
 _USING_NAMESPACE_STD = re.compile(r"using\s+namespace\s+std\s*;")
 _JAVA_STRING_EQ = re.compile(r'"[^"]*"\s*==\s*[^;\n]+|"[^"]*"\s*!=\s*[^;\n]+')
 _JAVA_RAW_NEW = re.compile(r"\bnew\s+[A-Z]\w*\s*\(")
@@ -382,17 +382,13 @@ class CppAnalyzer(BaseAnalyzer):
                         )
 
     def _checkIostreamInclude(self, code: str, diagnostics: List[dict]):
-        if _IO_USAGE.search(code) and _IO_HEADER not in code:
-            diagnostics.append(
-                make_diag(
-                    msg="Missing `#include <iostream>` for cin/cout usage",
-                    severity="error",
-                    line=0,
-                    end_line=0,
-                    end_column=1,
-                    code="CPP001",
-                )
-            )
+        # NOTE: Include checking for C++ is now handled by the semantic analyzer
+        # which has access to related files (headers) and can check for transitive includes.
+        # The static analyzer cannot see header file contents, so it would incorrectly
+        # report missing includes when symbols are available via included headers.
+        # 
+        # Keeping this method empty for backwards compatibility but not reporting diagnostics.
+        pass
 
     def _checkUsingNamespaceStd(self, code: str, diagnostics: List[dict]):
         match = _USING_NAMESPACE_STD.search(code)

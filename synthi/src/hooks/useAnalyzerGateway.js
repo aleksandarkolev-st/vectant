@@ -115,7 +115,7 @@ export function useAnalyzerGateway({
         } catch (e) {}
       };
       const response = await clientRef.current.analyzeAi(payload, options);
-      console.log(`AI Response is ${JSON.stringify(response)}`)
+      // console.log(`AI Response is ${JSON.stringify(response)}`)
       const result = response?.data ?? response;
       setLastResult(result);
       return result;
@@ -130,8 +130,15 @@ export function useAnalyzerGateway({
   /**
    * Run proactive analysis (static + semantic + optional AI)
    * Returns diagnostics for potential errors before compilation
+   * @param {Object} options - Analysis options
+   * @param {string} options.code - The code to analyze
+   * @param {string} options.lang - The programming language
+   * @param {string} [options.filePath] - The file path
+   * @param {boolean} [options.includeAi] - Whether to include AI analysis
+   * @param {Array} [options.relatedFiles] - Related files for cross-file analysis (includes, imports)
+   * @param {Function} [options.onTierComplete] - Callback when a tier completes
    */
-  const analyzeProactive = useCallback(async ({ code, lang, filePath, includeAi = false, onTierComplete } = {}) => {
+  const analyzeProactive = useCallback(async ({ code, lang, filePath, includeAi = false, relatedFiles, onTierComplete } = {}) => {
     if (!clientRef.current) {
       throw new SynthiException('Gateway client is not ready yet', 'The analyzer gateway client has not been initialized.');
     }
@@ -153,6 +160,15 @@ export function useAnalyzerGateway({
         includeAi,
         tiers: includeAi ? ['static', 'semantic', 'ai'] : ['static', 'semantic'],
       };
+      
+      // Add related files for cross-file analysis (e.g., resolving includes/imports)
+      if (Array.isArray(relatedFiles) && relatedFiles.length > 0) {
+        payload.relatedFiles = relatedFiles.map(f => ({
+          path: f.path || f.name,
+          content: f.content,
+          language: f.language || lang.toLowerCase(),
+        }));
+      }
       
       const options = {};
       if (typeof onTierComplete === 'function') {

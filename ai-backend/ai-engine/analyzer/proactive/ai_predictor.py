@@ -45,81 +45,92 @@ from .types import (
 )
 
 
-# Prompt template for AI error prediction - PRECISE SENIOR DEV LEVEL
-AI_ERROR_PREDICTION_PROMPT = """You are an expert code reviewer finding REAL bugs that cause incorrect behavior.
+# Prompt template for AI error prediction - ARCHITECTURAL + BUG-FOCUSED
+AI_ERROR_PREDICTION_PROMPT = """You are a senior software architect reviewing code for REAL bugs and design issues.
+
+## YOUR MINDSET
+Think like an architect AND a debugger:
+- Be EAGLE-EYED for small typos that break logic (e.g. `;` after `if`)
+- Find the ROOT CAUSE of issues, not just symptoms
+- Suggest fixes that improve DESIGN, not just patch behavior
+- Consider how this code fits into a larger system
 
 ## YOUR TASK
-Find bugs in the code below. Only report issues that:
-1. Will cause WRONG OUTPUT or RUNTIME ERROR with specific inputs
-2. You can PROVE with a concrete example (e.g., "input X gives Y, but should give Z")
+Find bugs and design issues. Only report:
+1. Bugs that cause WRONG OUTPUT or RUNTIME ERROR (with proof)
+2. Design flaws that will cause problems as code grows
+
+{include_context}
 
 ## WHAT TO LOOK FOR
-- Wrong operators: `<` vs `<=`, `==` vs `!=`, `&&` vs `||`
-- Off-by-one errors in loops or array access
-- Missing edge cases: null, 0, negative, empty, boundary values
-- Incorrect return values or missing returns
-- Infinite loops or recursion without termination
-- Logic that contradicts the function's purpose
 
-## WHAT TO IGNORE (NOT BUGS)
-- Style, formatting, naming conventions
-- Missing comments or documentation  
-- Performance suggestions (unless causes timeout)
+### Bugs (HIGH CONFIDENCE - prove with examples):
+- **Subtle Logic Traps**:
+  - Accidental semicolons after control structures: `if (...);`, `while (...);`, `for (...);`
+  - Assignment `=` used instead of comparison `==` in conditions: `if (x = 1)` (VERIFY it is not `==` before reporting)
+  - Wrong operators: `<` vs `<=`, `==` vs `!=`, `&&` vs `||`
+- **Loop & Index Errors**:
+  - Off-by-one errors: `for (i=0; i<=size; i++)` (accesses out of bounds)
+  - Infinite loops: `while(x > 0)` where x never changes
+- **Memory Management (C/C++)**:
+  - Use after free (accessing pointer after delete)
+  - Double free (deleting same pointer twice)
+  - Memory leaks (new without delete)
+  - Returning pointers to local stack variables (Dangling pointers)
+  - Array out of bounds access
+- **Data Flow**:
+  - Uninitialized variables used in logic
+  - Missing edge cases: null, 0, negative, empty, boundary values
+  - Incorrect return values or missing returns
+
+### Design Issues (MEDIUM CONFIDENCE):
+- Functions doing too many things (suggest splitting)
+- Missing abstractions that would simplify code
+- Error handling that swallows problems
+- Tight coupling that will cause issues later
+
+## WHAT TO IGNORE
+- Style, formatting, naming (unless they hide bugs)
+- Performance (unless causes timeout/OOM)
 - Best practices that don't affect correctness
-- Code that handles edge cases correctly (don't suggest adding checks that exist)
+- Edge cases that ARE already handled
+- **IMPORTANT: Do NOT report missing includes/imports if the symbol is listed as AVAILABLE in the include context above**
 
 ## CRITICAL RULES
-1. READ THE ACTUAL CODE - don't assume what it does
-2. If a check exists (like `if (x < 0)`), don't report it as missing
-3. `if (x < 0)` and `if (x == 0)` are DIFFERENT checks - one tests negative, one tests zero
-4. Only report bugs you can PROVE with input → expected → actual
+1. READ THE ACTUAL CODE CHARACTER-BY-CHARACTER - don't assume what it does based on indentation
+2. Scrutinize every `if`, `while`, `for` for accidental semicolons or assignment operators
+3. Do NOT report 'Assignment in condition' if the operator is `==` (double equals)
+4. If a check exists (like `if (x < 0)`), don't report it as missing
+5. Only report bugs you can PROVE with input → expected → actual
+6. For design issues, explain WHY the current design is problematic
+7. **Do NOT suggest adding #include when the symbol is already available via transitive includes**
 
 ## RESPONSE FORMAT
-Return ONLY a JSON array (no markdown, no explanation outside JSON):
+Return ONLY a JSON array:
 ```json
 [
   {{
     "line_start": 5,
     "line_end": 5,
     "snippet": "exact code from source to highlight",
-    "message": "Brief bug description",
-    "explanation": "PROOF: When input=X, this returns Y but should return Z because...",
+    "message": "Brief description",
+    "explanation": "PROOF: input X → expected Y → actual Z  OR  DESIGN: Why this pattern causes problems",
     "severity": "error",
     "confidence": 0.9,
-    "fix_snippet": "corrected code to replace snippet",
-    "category": "logic_error"
+    "fix_snippet": "improved code (design fix, not just patch)",
+    "category": "logic_error|design_issue"
   }}
 ]
 ```
 
 ## FIELD RULES
-- `snippet`: Copy EXACT code from source (what to replace)
-- `fix_snippet`: The CORRECTED code (replacement). Use "" only to DELETE code.
-- `confidence`: 0.0-1.0. Use 0.9+ only if you can prove the bug.
-- `category`: logic_error | off_by_one | wrong_operator | boundary_error | missing_check
-- `severity`: "error" for bugs causing wrong results, "warning" for potential issues
+- `snippet`: Copy EXACT code from source
+- `fix_snippet`: Improved code. Prefer DESIGN fixes over quick patches.
+- `confidence`: 0.9+ for provable bugs, 0.7-0.85 for design issues
+- `category`: logic_error | off_by_one | wrong_operator | design_issue | missing_check
+- `severity`: "error" for bugs, "warning" for design issues
 
-## EXAMPLES
-
-### Example 1: Wrong operator
-Code: `if (n % 2 == 0) print("odd")`
-Bug: Prints "odd" when n is even (wrong operator)
-```json
-[{{"line_start":1,"line_end":1,"snippet":"n % 2 == 0","message":"Condition is true for even numbers but prints 'odd'","explanation":"PROOF: n=4 → 4%2=0 → true → prints 'odd'. Should use n%2!=0","severity":"error","confidence":0.95,"fix_snippet":"n % 2 != 0","category":"wrong_operator"}}]
-```
-
-### Example 2: Missing base case
-Code: `int f(int n) {{ return n * f(n-1); }}`
-Bug: No base case causes infinite recursion
-```json
-[{{"line_start":1,"line_end":1,"snippet":"return n * f(n-1);","message":"Missing base case causes infinite recursion","explanation":"PROOF: f(1) calls f(0) calls f(-1)... never stops. Need base case for n<=1","severity":"error","confidence":0.95,"fix_snippet":"if (n <= 1) return 1; return n * f(n-1);","category":"missing_check"}}]
-```
-
-### Example 3: NOT a bug (edge case handled)
-Code: `int abs(int x) {{ if (x < 0) return -x; return x; }}`
-Response: `[]`  ← Empty because the negative case IS handled
-
-If no bugs found or uncertain, return: `[]`
+If no issues found or uncertain, return: `[]`
 
 ## CODE TO REVIEW
 ```{language}
@@ -130,71 +141,104 @@ JSON:"""
 
 
 # ============================================================================
-# Multi-File Analysis Prompt
+# Multi-File Analysis Prompt - Workspace-Wide, Architecture-Focused
 # ============================================================================
 
-AI_MULTI_FILE_ANALYSIS_PROMPT = """You are an expert code reviewer analyzing a workspace with multiple related files.
+AI_MULTI_FILE_ANALYSIS_PROMPT = """You are a senior software architect and code reviewer analyzing an entire workspace.
+
+## YOUR MINDSET
+Think like an architect, not a quick-fixer. When you find issues:
+1. Consider the ROOT CAUSE, not just symptoms
+2. Suggest fixes that improve DESIGN, not just patch behavior
+3. Look at how files interact and depend on each other
+4. Identify patterns that could cause bugs across the codebase
 
 ## YOUR TASK
-Find bugs and cross-file issues in the code. Focus on:
-1. Bugs in the FOCUS FILE that will cause WRONG OUTPUT or RUNTIME ERROR
-2. Cross-file issues: missing imports, type mismatches, unused exports
-3. Integration bugs between files (wrong function signatures, incorrect usage)
+Analyze ALL provided files for:
+1. **Cross-file integration bugs**: Wrong function signatures, incorrect imports, type mismatches
+2. **Architecture issues**: Circular dependencies, tight coupling, missing abstractions
+3. **Logic errors**: Bugs that will cause incorrect behavior
+4. **Design improvements**: Better ways to structure the code
 
-## FILES PROVIDED
+{include_context}
+
+## FILES IN WORKSPACE
 {files_section}
 
 ## FOCUS FILE: {focus_file}
+(Primary file user is editing - prioritize issues here, but analyze all files)
 
-## WHAT TO LOOK FOR
-### Single-file bugs (in focus file):
-- Wrong operators, off-by-one errors, missing edge cases
-- Incorrect return values or missing returns
-- Logic errors and infinite loops
+## WHAT TO ANALYZE
 
-### Cross-file issues:
-- Importing something that doesn't exist in the target file
-- Using wrong function signature (wrong params/return type)
-- Calling a function with incorrect arguments based on its definition
-- Missing imports for used symbols
-- Type mismatches between files
+### Cross-File Issues (HIGH PRIORITY):
+- Function called with wrong arguments (check definitions in other files)
+- Import statements for things that don't exist
+- Type mismatches between expected and actual values across files
+- Missing exports that other files try to import
+- Header file changes that break source files (C/C++)
+- **BUT: Do NOT report missing includes if the symbol is available via transitive includes (check AVAILABLE SYMBOLS above)**
+
+### Architecture Issues:
+- Circular dependencies between modules
+- Functions doing too much (suggest splitting)
+- Duplicated logic that should be shared
+- Missing error handling patterns
+- Inconsistent API designs
+
+### Single-File Bugs:
+- Logic errors provable with concrete examples
+- Off-by-one errors, wrong operators
+- Missing edge cases, null checks
+- Unreachable code
 
 ## RESPONSE FORMAT
-Return a JSON object with two arrays:
+Return a JSON object with diagnostics for ANY file in the workspace:
 ```json
 {{
   "diagnostics": [
     {{
-      "file": "path/to/file.js",
+      "file": "path/to/file.ext",
       "line_start": 5,
       "line_end": 5,
       "snippet": "exact code from source",
-      "message": "Brief bug description",
-      "explanation": "Why this is a bug",
-      "severity": "error",
+      "message": "Brief description (include file name if cross-file issue)",
+      "explanation": "ARCHITECTURE: Why this design is problematic OR PROOF: input X → expected Y → actual Z",
+      "severity": "error|warning",
       "confidence": 0.9,
-      "fix_snippet": "corrected code",
-      "category": "logic_error",
+      "fix_snippet": "improved code that fixes the ROOT CAUSE",
+      "category": "logic_error|design_issue|cross_file|type_error",
       "related_files": [
-        {{"file": "other/file.js", "line": 10, "message": "Related definition here"}}
+        {{"file": "other/file.ext", "line": 10, "message": "Related definition/usage here"}}
       ]
     }}
   ],
   "suggestions": [
     {{
-      "title": "Short title for suggestion",
-      "description": "Detailed description of improvement",
-      "category": "refactor",
-      "affected_files": ["file1.js", "file2.js"],
+      "title": "Architectural improvement",
+      "description": "Detailed explanation of how to improve the design, not just fix a symptom",
+      "category": "refactor|architecture|cleanup",
+      "affected_files": ["file1.ext", "file2.ext"],
       "confidence": 0.85
     }}
   ]
 }}
 ```
 
-## CATEGORY OPTIONS
-- `logic_error`, `type_error`, `undefined_variable`, `missing_import`
-- `wrong_signature`, `unused_export`, `security`, `performance`
+## CATEGORIES
+- `logic_error`: Provable bug with wrong output
+- `cross_file`: Issue spanning multiple files
+- `type_error`: Type mismatch (especially across files)
+- `design_issue`: Architectural problem
+- `missing_import`: Symbol used but not imported (ONLY if symbol is NOT in available symbols list)
+- `wrong_signature`: Function called incorrectly
+
+## CRITICAL RULES
+1. **Analyze ALL files**, not just the focus file - bugs often hide in interactions
+2. For cross-file issues, ALWAYS check the actual definitions in other files
+3. **IMPORTANT: Do NOT suggest adding includes/imports for symbols that are already AVAILABLE via transitive includes**
+4. Don't suggest adding code that already exists
+5. When suggesting fixes, prefer DESIGN improvements over quick patches
+6. Include `related_files` for any cross-file issue to help navigation
 
 If no issues found, return: {{"diagnostics": [], "suggestions": []}}
 
@@ -218,6 +262,9 @@ CATEGORY_MAP = {
     "unused_code": DiagnosticCategory.UNUSED_CODE,
     "style": DiagnosticCategory.STYLE,
     "syntax": DiagnosticCategory.SYNTAX,
+    "cross_file": DiagnosticCategory.TYPE_ERROR,  # Cross-file issues often manifest as type errors
+    "design_issue": DiagnosticCategory.BEST_PRACTICE,
+    "architecture": DiagnosticCategory.BEST_PRACTICE,
     # Additional categories for precise diagnostics
     "off_by_one": DiagnosticCategory.LOGIC_ERROR,
     "wrong_operator": DiagnosticCategory.LOGIC_ERROR,
@@ -290,9 +337,9 @@ class AIErrorPredictor:
         except Exception as e:
             # Don't crash on AI errors, just return empty
             diagnostics = []
-            import traceback
-            print(f"[AIErrorPredictor] Analysis failed: {e}")
-            print(f"[AIErrorPredictor] Traceback: {traceback.format_exc()}")
+            # import traceback
+            # print(f"[AIErrorPredictor] Analysis failed: {e}")
+            # print(f"[AIErrorPredictor] Traceback: {traceback.format_exc()}")
         
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         
@@ -302,6 +349,104 @@ class AIErrorPredictor:
             elapsed_ms=elapsed_ms,
         )
     
+    # Standard library headers and their symbols (for C/C++)
+    STD_LIBRARY_SYMBOLS = {
+        'iostream': {'cout', 'cin', 'cerr', 'clog', 'endl', 'flush', 'ostream', 'istream', 'ios'},
+        'string': {'string', 'wstring', 'basic_string', 'to_string', 'stoi', 'stol', 'stof', 'stod'},
+        'vector': {'vector'},
+        'map': {'map', 'multimap'},
+        'set': {'set', 'multiset'},
+        'unordered_map': {'unordered_map', 'unordered_multimap'},
+        'unordered_set': {'unordered_set', 'unordered_multiset'},
+        'algorithm': {'sort', 'find', 'copy', 'transform', 'for_each', 'count', 'fill'},
+        'memory': {'unique_ptr', 'shared_ptr', 'weak_ptr', 'make_unique', 'make_shared'},
+        'cstdio': {'printf', 'scanf', 'sprintf', 'sscanf', 'fprintf', 'fscanf', 'FILE', 'stdin', 'stdout', 'stderr'},
+        'cstring': {'strlen', 'strcpy', 'strcat', 'strcmp', 'memcpy', 'memset', 'memmove'},
+        'cmath': {'sin', 'cos', 'tan', 'sqrt', 'pow', 'abs', 'floor', 'ceil', 'log', 'exp'},
+        'cstdlib': {'malloc', 'free', 'calloc', 'realloc', 'exit', 'atoi', 'atof', 'rand', 'srand'},
+        'fstream': {'ifstream', 'ofstream', 'fstream'},
+        'sstream': {'stringstream', 'istringstream', 'ostringstream'},
+        'functional': {'function', 'bind', 'placeholders'},
+        'utility': {'pair', 'make_pair', 'move', 'swap', 'forward'},
+    }
+    
+    def _build_include_context(
+        self,
+        file: FileContext,
+        related_files: Optional[List[FileContext]],
+    ) -> str:
+        """
+        Build context about available symbols from includes.
+        
+        This helps the AI understand what symbols are already available
+        via direct or transitive includes.
+        """
+        if file.language.lower() not in ('cpp', 'c++', 'c', 'h', 'hpp'):
+            return ""
+        
+        lines = file.content.splitlines()
+        available_symbols = set()
+        include_chain = []  # Track include chain for context
+        
+        # Find direct includes
+        direct_includes = set()
+        for line in lines:
+            stripped = line.strip()
+            match = re.match(r'#include\s*[<"]([^>"]+)[>"]', stripped)
+            if match:
+                header = match.group(1)
+                direct_includes.add(header)
+                header_base = header.replace('.h', '').replace('.hpp', '')
+                if header_base in self.STD_LIBRARY_SYMBOLS:
+                    symbols = self.STD_LIBRARY_SYMBOLS[header_base]
+                    available_symbols.update(symbols)
+                    include_chain.append(f"  - <{header}> provides: {', '.join(sorted(symbols))}")
+        
+        # Process related files (transitive includes)
+        if related_files:
+            processed = set()
+            files_to_check = []
+            
+            # Match direct includes to related files
+            for header in direct_includes:
+                header_lower = header.lower()
+                for rf in related_files:
+                    rf_name = rf.path.lower().split('/')[-1].split('\\')[-1]
+                    if rf_name == header_lower:
+                        files_to_check.append((rf, header))
+            
+            # Process matched files
+            while files_to_check:
+                rf, via_header = files_to_check.pop(0)
+                if rf.path in processed:
+                    continue
+                processed.add(rf.path)
+                
+                # Check includes in this file
+                for line in rf.content.splitlines():
+                    stripped = line.strip()
+                    match = re.match(r'#include\s*[<"]([^>"]+)[>"]', stripped)
+                    if match:
+                        nested_header = match.group(1)
+                        header_base = nested_header.replace('.h', '').replace('.hpp', '')
+                        if header_base in self.STD_LIBRARY_SYMBOLS:
+                            symbols = self.STD_LIBRARY_SYMBOLS[header_base]
+                            available_symbols.update(symbols)
+                            include_chain.append(f"  - <{nested_header}> (via {via_header}) provides: {', '.join(sorted(symbols))}")
+        
+        if not available_symbols:
+            return ""
+        
+        context = """## AVAILABLE SYMBOLS (from includes)
+The following symbols are ALREADY AVAILABLE in this code via direct or transitive includes.
+Do NOT report missing includes for these symbols:
+
+"""
+        context += "\n".join(include_chain) if include_chain else ""
+        context += f"\n\n**All available symbols**: {', '.join(sorted(available_symbols))}\n"
+        
+        return context
+    
     async def _run_analysis(
         self,
         file: FileContext,
@@ -310,9 +455,20 @@ class AIErrorPredictor:
     ) -> List[Diagnostic]:
         """Run the actual AI analysis."""
         
+        # Build include context for the prompt
+        include_context = self._build_include_context(file, related_files)
+        
+        # If we have related files, include them in the prompt for cross-file analysis
+        related_files_section = ""
+        if related_files:
+            related_files_section = "\n\n## RELATED FILES (from includes):\n"
+            for rf in related_files:
+                related_files_section += f"\n### {rf.path}\n```{rf.language}\n{rf.content}\n```\n"
+        
         # Build the prompt - simple string replacement
         prompt = AI_ERROR_PREDICTION_PROMPT.replace("{language}", file.language) \
-                                           .replace("{code}", file.content)
+                                           .replace("{code}", file.content) \
+                                           .replace("{include_context}", include_context + related_files_section)
         
         # Call the LLM
         response = await self._provider.ask_llm(
@@ -568,21 +724,40 @@ class AIErrorPredictor:
         
         return None
     
+    # Keywords that indicate the same type of issue
+    DUPLICATE_KEYWORDS = {
+        'iostream': {'iostream', 'cout', 'cin', 'cerr', 'clog', 'endl'},
+        'include': {'include', 'import', 'missing'},
+        'undefined': {'undefined', 'undeclared', 'not defined', 'unknown'},
+        'unused': {'unused', 'never used', 'not used'},
+        'uninitialized': {'uninitialized', 'not initialized', 'garbage'},
+        'memory': {'memory', 'leak', 'malloc', 'free', 'delete'},
+        'null': {'null', 'nullptr', 'nil', 'none', 'nullpointer'},
+        'type': {'type', 'mismatch', 'incompatible'},
+    }
+    
     def _filter_duplicates(
         self,
         new_diagnostics: List[Diagnostic],
         existing: List[Diagnostic],
     ) -> List[Diagnostic]:
-        """Filter out diagnostics that overlap with existing ones."""
+        """Filter out diagnostics that overlap with existing ones from static/semantic analysis."""
         filtered = []
         
         for new_diag in new_diagnostics:
             is_duplicate = False
             
             for existing_diag in existing:
-                # Check if they're on the same line and similar message
-                if (abs(new_diag.location.line - existing_diag.location.line) <= 1 and
-                    self._similar_message(new_diag.message, existing_diag.message)):
+                # Check if they're on same/nearby line
+                line_match = abs(new_diag.location.line - existing_diag.location.line) <= 2
+                
+                # Check for similar message content
+                msg_similar = self._similar_message(new_diag.message, existing_diag.message)
+                
+                # Check for same category of issue (e.g., both about includes)
+                category_match = self._same_issue_category(new_diag.message, existing_diag.message)
+                
+                if line_match and (msg_similar or category_match):
                     is_duplicate = True
                     break
             
@@ -590,6 +765,19 @@ class AIErrorPredictor:
                 filtered.append(new_diag)
         
         return filtered
+    
+    def _same_issue_category(self, msg1: str, msg2: str) -> bool:
+        """Check if two messages are about the same category of issue."""
+        msg1_lower = msg1.lower()
+        msg2_lower = msg2.lower()
+        
+        for category, keywords in self.DUPLICATE_KEYWORDS.items():
+            msg1_has = any(kw in msg1_lower for kw in keywords)
+            msg2_has = any(kw in msg2_lower for kw in keywords)
+            if msg1_has and msg2_has:
+                return True
+        
+        return False
     
     def _similar_message(self, msg1: str, msg2: str) -> bool:
         """Check if two messages are similar enough to be duplicates."""
@@ -599,6 +787,10 @@ class AIErrorPredictor:
         
         # Exact match
         if msg1 == msg2:
+            return True
+        
+        # One contains the other
+        if msg1 in msg2 or msg2 in msg1:
             return True
         
         # Check for significant word overlap
@@ -611,7 +803,8 @@ class AIErrorPredictor:
         intersection = words1 & words2
         smaller = min(len(words1), len(words2))
         
-        return len(intersection) / smaller > 0.7
+        # Lower threshold from 0.7 to 0.5 for more aggressive filtering
+        return len(intersection) / smaller > 0.5
 
     # ========================================================================
     # Multi-File Analysis Methods
@@ -644,8 +837,8 @@ class AIErrorPredictor:
                 existing_diagnostics,
             )
         except Exception as e:
-            print(f"[AIErrorPredictor] Multi-file analysis failed: {e}")
-            print(f"[AIErrorPredictor] Traceback: {traceback.format_exc()}")
+            # print(f"[AIErrorPredictor] Multi-file analysis failed: {e}")
+            # print(f"[AIErrorPredictor] Traceback: {traceback.format_exc()}")
             return [], []
     
     async def _run_multi_file_analysis(
@@ -660,11 +853,16 @@ class AIErrorPredictor:
         all_files = [focus_file] + related_files
         files_section = self._build_files_section(all_files)
         
+        # Build include context for the focus file
+        include_context = self._build_include_context(focus_file, related_files)
+        
         # Build the prompt
         prompt = AI_MULTI_FILE_ANALYSIS_PROMPT.replace(
             "{files_section}", files_section
         ).replace(
             "{focus_file}", focus_file.path
+        ).replace(
+            "{include_context}", include_context
         )
         
         # Call the LLM
