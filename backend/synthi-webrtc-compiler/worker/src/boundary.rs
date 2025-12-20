@@ -664,6 +664,483 @@ pub mod presets {
     }
 }
 
+// ============================================================
+// MANIFEST FILE PARSING
+// ============================================================
+// Parses boundary manifest files (.boundary.json) from the filesystem
+
+impl BoundaryManifest {
+    /// Load manifest from JSON file
+    pub fn load_from_file(path: &std::path::Path) -> Result<Self, String> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read manifest file {}: {}", path.display(), e))?;
+        Self::parse_json(&content)
+    }
+    
+    /// Parse manifest from JSON string
+    pub fn parse_json(json: &str) -> Result<Self, String> {
+        serde_json::from_str(json)
+            .map_err(|e| format!("Failed to parse manifest JSON: {}", e))
+    }
+    
+    /// Save manifest to JSON file
+    pub fn save_to_file(&self, path: &std::path::Path) -> Result<(), String> {
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("Failed to serialize manifest: {}", e))?;
+        std::fs::write(path, json)
+            .map_err(|e| format!("Failed to write manifest to {}: {}", path.display(), e))
+    }
+    
+    /// Generate manifest from source file analysis
+    pub fn generate_from_source(
+        module_name: &str,
+        source_root: &std::path::Path,
+    ) -> Result<Self, String> {
+        let mut manifest = BoundaryManifest::new(module_name);
+        let detector = WidgetBoundaryDetector::new();
+        
+        // Scan source directory for widget files
+        if let Ok(entries) = std::fs::read_dir(source_root) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.extension().map(|e| e == "cpp" || e == "c" || e == "h").unwrap_or(false) {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        if let Some(widget) = detector.detect_widget(&content, &path) {
+                            manifest.boundaries.push(widget);
+                        }
+                    }
+                }
+            }
+        }
+        
+        manifest.validate()?;
+        Ok(manifest)
+    }
+}
+
+// ============================================================
+// WIDGET BOUNDARY DETECTION
+// ============================================================
+// AI-assisted detection of widget boundaries in source code
+
+/// Widget boundary detector using heuristic pattern matching
+pub struct WidgetBoundaryDetector {
+    /// Patterns that indicate a widget/component definition
+    widget_patterns: Vec<WidgetPattern>,
+    /// Cache of detected widgets
+    cache: std::collections::HashMap<String, Vec<DetectedWidget>>,
+}
+
+/// Pattern for detecting widget boundaries
+#[derive(Debug, Clone)]
+pub struct WidgetPattern {
+    /// Name of the pattern
+    pub name: String,
+    /// Regex pattern to match
+    pub pattern: String,
+    /// Capture group for widget name
+    pub name_capture: usize,
+    /// Confidence score (0.0 - 1.0)
+    pub confidence: f32,
+    /// Boundary type to assign
+    pub boundary_type: BoundaryType,
+}
+
+/// A detected widget in source code
+#[derive(Debug, Clone)]
+pub struct DetectedWidget {
+    pub name: String,
+    pub file_path: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub confidence: f32,
+    pub pattern_used: String,
+    pub exports: Vec<String>,
+    pub dependencies: Vec<String>,
+}
+
+impl WidgetBoundaryDetector {
+    pub fn new() -> Self {
+        Self {
+            widget_patterns: Self::default_patterns(),
+            cache: std::collections::HashMap::new(),
+        }
+    }
+    
+    /// Default patterns for common widget/component patterns
+    fn default_patterns() -> Vec<WidgetPattern> {
+        vec![
+            // SDL/GUI widget class pattern
+            WidgetPattern {
+                name: "class_widget".to_string(),
+                pattern: r"class\s+(\w+Widget)\s*(?::\s*public\s+\w+)?\s*\{".to_string(),
+                name_capture: 1,
+                confidence: 0.9,
+                boundary_type: BoundaryType::Widget,
+            },
+            // SDL/GUI component pattern
+            WidgetPattern {
+                name: "class_component".to_string(),
+                pattern: r"class\s+(\w+Component)\s*(?::\s*public\s+\w+)?\s*\{".to_string(),
+                name_capture: 1,
+                confidence: 0.85,
+                boundary_type: BoundaryType::Widget,
+            },
+            // Struct-based widget
+            WidgetPattern {
+                name: "struct_widget".to_string(),
+                pattern: r"typedef\s+struct\s+(\w+_widget)\s*\{".to_string(),
+                name_capture: 1,
+                confidence: 0.8,
+                boundary_type: BoundaryType::Widget,
+            },
+            // Function-based widget (render function)
+            WidgetPattern {
+                name: "render_function".to_string(),
+                pattern: r"void\s+(\w+)_render\s*\(\s*(?:SDL_Renderer|void)\s*\*".to_string(),
+                name_capture: 1,
+                confidence: 0.75,
+                boundary_type: BoundaryType::GuiRender,
+            },
+            // Event handler pattern
+            WidgetPattern {
+                name: "event_handler".to_string(),
+                pattern: r"(?:bool|int|void)\s+(\w+)_handle_event\s*\(\s*(?:SDL_Event|const\s+SDL_Event)\s*\*".to_string(),
+                name_capture: 1,
+                confidence: 0.75,
+                boundary_type: BoundaryType::GuiEvents,
+            },
+            // Init/create function pattern
+            WidgetPattern {
+                name: "widget_create".to_string(),
+                pattern: r"(?:struct\s+)?(\w+)\s*\*\s*\1_create\s*\(".to_string(),
+                name_capture: 1,
+                confidence: 0.7,
+                boundary_type: BoundaryType::Widget,
+            },
+            // HMR boundary marker (explicit annotation)
+            WidgetPattern {
+                name: "hmr_boundary".to_string(),
+                pattern: r"//\s*@hmr-boundary:\s*(\w+)".to_string(),
+                name_capture: 1,
+                confidence: 1.0,  // Explicit markers are highest confidence
+                boundary_type: BoundaryType::Widget,
+            },
+            // Widget state struct
+            WidgetPattern {
+                name: "widget_state".to_string(),
+                pattern: r"struct\s+(\w+)State\s*\{".to_string(),
+                name_capture: 1,
+                confidence: 0.65,
+                boundary_type: BoundaryType::GuiState,
+            },
+        ]
+    }
+    
+    /// Detect widget in source content
+    pub fn detect_widget(
+        &self, 
+        content: &str, 
+        file_path: &std::path::Path
+    ) -> Option<BoundaryDeclaration> {
+        let detected = self.detect_all_widgets(content, file_path);
+        
+        // Return highest confidence detection as a boundary declaration
+        detected.into_iter()
+            .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap())
+            .map(|w| BoundaryDeclaration {
+                id: format!("widget_{}", w.name.to_lowercase()),
+                boundary_type: BoundaryType::Widget,
+                required_exports: w.exports,
+                allowed_dependencies: w.dependencies,
+                owned_file_patterns: vec![file_path.to_string_lossy().to_string()],
+            })
+    }
+    
+    /// Detect all widgets in source content
+    pub fn detect_all_widgets(
+        &self, 
+        content: &str, 
+        file_path: &std::path::Path
+    ) -> Vec<DetectedWidget> {
+        let mut detected = Vec::new();
+        let file_path_str = file_path.to_string_lossy().to_string();
+        
+        for pattern in &self.widget_patterns {
+            if let Ok(re) = regex::Regex::new(&pattern.pattern) {
+                for cap in re.captures_iter(content) {
+                    if let Some(name_match) = cap.get(pattern.name_capture) {
+                        let name = name_match.as_str().to_string();
+                        
+                        // Find line numbers
+                        let start_pos = name_match.start();
+                        let start_line = content[..start_pos].lines().count();
+                        
+                        // Detect exports (functions with this widget name prefix)
+                        let exports = self.detect_exports(content, &name);
+                        
+                        // Detect dependencies (includes/imports)
+                        let dependencies = self.detect_dependencies(content);
+                        
+                        detected.push(DetectedWidget {
+                            name: name.clone(),
+                            file_path: file_path_str.clone(),
+                            start_line,
+                            end_line: start_line + 50, // Estimate
+                            confidence: pattern.confidence,
+                            pattern_used: pattern.name.clone(),
+                            exports,
+                            dependencies,
+                        });
+                    }
+                }
+            }
+        }
+        
+        // Deduplicate by name, keeping highest confidence
+        let mut seen: std::collections::HashMap<String, DetectedWidget> = std::collections::HashMap::new();
+        for widget in detected {
+            let entry = seen.entry(widget.name.clone()).or_insert(widget.clone());
+            if widget.confidence > entry.confidence {
+                *entry = widget;
+            }
+        }
+        
+        seen.into_values().collect()
+    }
+    
+    /// Detect exported functions for a widget
+    fn detect_exports(&self, content: &str, widget_name: &str) -> Vec<String> {
+        let mut exports = Vec::new();
+        let name_lower = widget_name.to_lowercase();
+        
+        // Look for functions with widget name prefix
+        let func_pattern = format!(r"(?:void|int|bool|{name}[*\s])\s+({name_lower}_\w+)\s*\(", 
+            name = widget_name, name_lower = name_lower);
+        
+        if let Ok(re) = regex::Regex::new(&func_pattern) {
+            for cap in re.captures_iter(content) {
+                if let Some(func_match) = cap.get(1) {
+                    exports.push(func_match.as_str().to_string());
+                }
+            }
+        }
+        
+        exports
+    }
+    
+    /// Detect dependencies from includes
+    fn detect_dependencies(&self, content: &str) -> Vec<String> {
+        let mut deps = Vec::new();
+        
+        // Match #include "..." (local includes)
+        if let Ok(re) = regex::Regex::new(r#"#include\s+"([^"]+)""#) {
+            for cap in re.captures_iter(content) {
+                if let Some(include_match) = cap.get(1) {
+                    let include = include_match.as_str();
+                    // Convert to boundary ID format
+                    if include.contains("widget") || include.contains("component") {
+                        let dep_name = std::path::Path::new(include)
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        if !dep_name.is_empty() {
+                            deps.push(format!("widget_{}", dep_name.to_lowercase()));
+                        }
+                    }
+                }
+            }
+        }
+        
+        deps
+    }
+    
+    /// Add custom pattern for project-specific widget detection
+    pub fn add_pattern(&mut self, pattern: WidgetPattern) {
+        self.widget_patterns.push(pattern);
+    }
+    
+    /// Clear detection cache
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+}
+
+impl Default for WidgetBoundaryDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================
+// STRUCTURAL OWNERSHIP VALIDATION
+// ============================================================
+// Validates that files are owned by exactly one boundary
+
+/// Ownership validator for boundary files
+pub struct OwnershipValidator {
+    /// Compiled ownership rules
+    rules: Vec<CompiledOwnershipRule>,
+}
+
+/// Compiled ownership rule with regex
+struct CompiledOwnershipRule {
+    pattern: regex::Regex,
+    owner: String,
+    exclusive: bool,
+}
+
+/// Result of ownership validation
+#[derive(Debug, Clone)]
+pub struct OwnershipValidationResult {
+    pub valid: bool,
+    pub errors: Vec<OwnershipError>,
+    pub warnings: Vec<String>,
+    pub file_owners: HashMap<String, Vec<String>>,
+}
+
+/// Ownership error
+#[derive(Debug, Clone)]
+pub struct OwnershipError {
+    pub file: String,
+    pub error_type: OwnershipErrorType,
+    pub message: String,
+}
+
+/// Types of ownership errors
+#[derive(Debug, Clone, PartialEq)]
+pub enum OwnershipErrorType {
+    NoOwner,
+    MultipleExclusiveOwners,
+    PatternConflict,
+}
+
+impl OwnershipValidator {
+    /// Create validator from manifest ownership rules
+    pub fn from_manifest(manifest: &BoundaryManifest) -> Result<Self, String> {
+        let mut rules = Vec::new();
+        
+        for rule in &manifest.ownership_rules {
+            // Convert glob pattern to regex
+            let regex_pattern = glob_to_regex(&rule.pattern)?;
+            let compiled = regex::Regex::new(&regex_pattern)
+                .map_err(|e| format!("Invalid pattern '{}': {}", rule.pattern, e))?;
+            
+            rules.push(CompiledOwnershipRule {
+                pattern: compiled,
+                owner: rule.owner_boundary.clone(),
+                exclusive: rule.exclusive,
+            });
+        }
+        
+        Ok(Self { rules })
+    }
+    
+    /// Validate file ownership for a set of files
+    pub fn validate(&self, files: &[String]) -> OwnershipValidationResult {
+        let mut file_owners: HashMap<String, Vec<String>> = HashMap::new();
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+        
+        for file in files {
+            let mut owners = Vec::new();
+            let mut has_exclusive = false;
+            
+            for rule in &self.rules {
+                if rule.pattern.is_match(file) {
+                    if rule.exclusive && !owners.is_empty() {
+                        errors.push(OwnershipError {
+                            file: file.clone(),
+                            error_type: OwnershipErrorType::MultipleExclusiveOwners,
+                            message: format!(
+                                "File '{}' matched exclusive rule for '{}' but already owned by {:?}",
+                                file, rule.owner, owners
+                            ),
+                        });
+                    }
+                    if rule.exclusive {
+                        has_exclusive = true;
+                    }
+                    owners.push(rule.owner.clone());
+                }
+            }
+            
+            if owners.is_empty() {
+                warnings.push(format!("File '{}' has no boundary owner", file));
+            } else if owners.len() > 1 && has_exclusive {
+                errors.push(OwnershipError {
+                    file: file.clone(),
+                    error_type: OwnershipErrorType::PatternConflict,
+                    message: format!(
+                        "File '{}' owned by multiple boundaries with exclusive rules: {:?}",
+                        file, owners
+                    ),
+                });
+            }
+            
+            file_owners.insert(file.clone(), owners);
+        }
+        
+        OwnershipValidationResult {
+            valid: errors.is_empty(),
+            errors,
+            warnings,
+            file_owners,
+        }
+    }
+    
+    /// Get owner boundary for a file
+    pub fn get_owner(&self, file: &str) -> Option<String> {
+        for rule in &self.rules {
+            if rule.pattern.is_match(file) {
+                return Some(rule.owner.clone());
+            }
+        }
+        None
+    }
+    
+    /// Get all files owned by a boundary
+    pub fn get_owned_files(&self, boundary_id: &str, all_files: &[String]) -> Vec<String> {
+        all_files.iter()
+            .filter(|f| self.get_owner(f).as_deref() == Some(boundary_id))
+            .cloned()
+            .collect()
+    }
+}
+
+/// Convert glob pattern to regex
+fn glob_to_regex(glob: &str) -> Result<String, String> {
+    let mut regex = String::from("^");
+    let mut chars = glob.chars().peekable();
+    
+    while let Some(c) = chars.next() {
+        match c {
+            '*' => {
+                if chars.peek() == Some(&'*') {
+                    chars.next();
+                    if chars.peek() == Some(&'/') {
+                        chars.next();
+                        regex.push_str("(?:.*/)?");
+                    } else {
+                        regex.push_str(".*");
+                    }
+                } else {
+                    regex.push_str("[^/]*");
+                }
+            }
+            '?' => regex.push('.'),
+            '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
+                regex.push('\\');
+                regex.push(c);
+            }
+            _ => regex.push(c),
+        }
+    }
+    
+    regex.push('$');
+    Ok(regex)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
