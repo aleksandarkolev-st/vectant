@@ -1347,3 +1347,284 @@ mod tests {
         );
     }
 }
+
+// ============================================================
+// AUTO-PERSISTENCE SYSTEM
+// ============================================================
+// Provides automatic persistence for cross-session state recovery
+// ============================================================
+
+/// Configuration for auto-persistence
+#[derive(Debug, Clone)]
+pub struct AutoPersistConfig {
+    /// Directory to store persistence files
+    pub persistence_dir: std::path::PathBuf,
+    /// Whether auto-persist is enabled
+    pub enabled: bool,
+    /// Debounce interval for writes (ms)
+    pub debounce_ms: u64,
+    /// Maximum file age before cleanup (seconds)
+    pub max_file_age_secs: u64,
+}
+
+impl Default for AutoPersistConfig {
+    fn default() -> Self {
+        Self {
+            persistence_dir: std::path::PathBuf::from(".synthi_kv_persistence"),
+            enabled: true,
+            debounce_ms: 1000,  // 1 second debounce
+            max_file_age_secs: 86400, // 24 hours
+        }
+    }
+}
+
+/// Manager for automatic Host KV persistence across IDE restarts
+pub struct AutoPersistManager {
+    config: AutoPersistConfig,
+    /// Last save timestamps per session
+    last_save: std::sync::RwLock<HashMap<String, std::time::Instant>>,
+    /// Dirty sessions that need saving
+    dirty_sessions: std::sync::RwLock<std::collections::HashSet<String>>,
+}
+
+impl AutoPersistManager {
+    /// Create a new auto-persist manager
+    pub fn new(config: AutoPersistConfig) -> std::io::Result<Self> {
+        if config.enabled {
+            // Ensure persistence directory exists
+            std::fs::create_dir_all(&config.persistence_dir)?;
+        }
+        
+        Ok(Self {
+            config,
+            last_save: std::sync::RwLock::new(HashMap::new()),
+            dirty_sessions: std::sync::RwLock::new(std::collections::HashSet::new()),
+        })
+    }
+    
+    /// Create with default config
+    pub fn new_default() -> std::io::Result<Self> {
+        Self::new(AutoPersistConfig::default())
+    }
+    
+    /// Get the persistence file path for a session
+    fn session_file_path(&self, session_id: &str) -> std::path::PathBuf {
+        self.config.persistence_dir.join(format!("{}.kv.json", session_id))
+    }
+    
+    /// Mark a session as dirty (needs saving)
+    pub fn mark_dirty(&self, session_id: &str) {
+        if self.config.enabled {
+            if let Ok(mut dirty) = self.dirty_sessions.write() {
+                dirty.insert(session_id.to_string());
+            }
+        }
+    }
+    
+    /// Check if a session needs saving and enough time has passed
+    fn should_save(&self, session_id: &str) -> bool {
+        if !self.config.enabled {
+            return false;
+        }
+        
+        let is_dirty = self.dirty_sessions.read()
+            .map(|d| d.contains(session_id))
+            .unwrap_or(false);
+        
+        if !is_dirty {
+            return false;
+        }
+        
+        // Check debounce
+        if let Ok(last_save) = self.last_save.read() {
+            if let Some(last) = last_save.get(session_id) {
+                if last.elapsed() < std::time::Duration::from_millis(self.config.debounce_ms) {
+                    return false;
+                }
+            }
+        }
+        
+        true
+    }
+    
+    /// Save a session's state to disk
+    pub fn save_session(&self, store: &HostKvStore, session_id: &str) -> Result<(), String> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+        
+        let path = self.session_file_path(session_id);
+        let json = store.serialize_to_json()?;
+        
+        std::fs::write(&path, &json)
+            .map_err(|e| format!("Failed to write persistence file: {}", e))?;
+        
+        // Update last save time
+        if let Ok(mut last_save) = self.last_save.write() {
+            last_save.insert(session_id.to_string(), std::time::Instant::now());
+        }
+        
+        // Clear dirty flag
+        if let Ok(mut dirty) = self.dirty_sessions.write() {
+            dirty.remove(session_id);
+        }
+        
+        eprintln!("[Host KV] Persisted session {} to {}", session_id, path.display());
+        Ok(())
+    }
+    
+    /// Load a session's state from disk
+    pub fn load_session(&self, store: &HostKvStore, session_id: &str) -> Result<bool, String> {
+        if !self.config.enabled {
+            return Ok(false);
+        }
+        
+        let path = self.session_file_path(session_id);
+        
+        if !path.exists() {
+            return Ok(false);
+        }
+        
+        let json = std::fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read persistence file: {}", e))?;
+        
+        let count = store.deserialize_from_json(&json)?;
+        
+        eprintln!("[Host KV] Restored {} entries for session {} from {}", 
+                  count, session_id, path.display());
+        
+        Ok(true)
+    }
+    
+    /// Check and save dirty sessions (call periodically)
+    pub fn flush_dirty(&self, store: &HostKvStore) {
+        if !self.config.enabled {
+            return;
+        }
+        
+        let sessions_to_save: Vec<String> = {
+            self.dirty_sessions.read()
+                .map(|d| d.iter().cloned().collect())
+                .unwrap_or_default()
+        };
+        
+        for session_id in sessions_to_save {
+            if self.should_save(&session_id) {
+                if let Err(e) = self.save_session(store, &session_id) {
+                    eprintln!("[Host KV] Failed to persist session {}: {}", session_id, e);
+                }
+            }
+        }
+    }
+    
+    /// Save all dirty sessions immediately (call on shutdown)
+    pub fn save_all(&self, store: &HostKvStore) {
+        if !self.config.enabled {
+            return;
+        }
+        
+        let sessions_to_save: Vec<String> = {
+            self.dirty_sessions.read()
+                .map(|d| d.iter().cloned().collect())
+                .unwrap_or_default()
+        };
+        
+        for session_id in sessions_to_save {
+            if let Err(e) = self.save_session(store, &session_id) {
+                eprintln!("[Host KV] Failed to persist session {} on shutdown: {}", session_id, e);
+            }
+        }
+    }
+    
+    /// Load all sessions from disk on startup
+    pub fn load_all(&self, store: &HostKvStore) -> Result<usize, String> {
+        if !self.config.enabled {
+            return Ok(0);
+        }
+        
+        let mut total = 0;
+        
+        if let Ok(entries) = std::fs::read_dir(&self.config.persistence_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map(|e| e == "json").unwrap_or(false) {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        let session_id = stem.trim_end_matches(".kv");
+                        match self.load_session(store, session_id) {
+                            Ok(true) => total += 1,
+                            Ok(false) => {}
+                            Err(e) => eprintln!("[Host KV] Failed to load {}: {}", path.display(), e),
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok(total)
+    }
+    
+    /// Clean up old persistence files
+    pub fn cleanup_old_files(&self) -> Result<usize, String> {
+        if !self.config.enabled {
+            return Ok(0);
+        }
+        
+        let max_age = std::time::Duration::from_secs(self.config.max_file_age_secs);
+        let mut removed = 0;
+        
+        if let Ok(entries) = std::fs::read_dir(&self.config.persistence_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Ok(metadata) = std::fs::metadata(&path) {
+                    if let Ok(modified) = metadata.modified() {
+                        if let Ok(age) = modified.elapsed() {
+                            if age > max_age {
+                                if std::fs::remove_file(&path).is_ok() {
+                                    removed += 1;
+                                    eprintln!("[Host KV] Cleaned up old file: {}", path.display());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok(removed)
+    }
+}
+
+impl Default for AutoPersistManager {
+    fn default() -> Self {
+        Self::new_default().unwrap_or_else(|_| Self {
+            config: AutoPersistConfig { enabled: false, ..Default::default() },
+            last_save: std::sync::RwLock::new(HashMap::new()),
+            dirty_sessions: std::sync::RwLock::new(std::collections::HashSet::new()),
+        })
+    }
+}
+
+lazy_static::lazy_static! {
+    /// Global auto-persist manager instance
+    pub static ref AUTO_PERSIST: AutoPersistManager = AutoPersistManager::default();
+}
+
+/// Initialize auto-persistence on startup
+pub fn init_auto_persistence() -> Result<usize, String> {
+    AUTO_PERSIST.load_all(&KV_STORE)
+}
+
+/// Save all state on shutdown
+pub fn shutdown_auto_persistence() {
+    AUTO_PERSIST.save_all(&KV_STORE);
+}
+
+/// Mark a session as modified (trigger eventual persistence)
+pub fn mark_session_dirty(session_id: &str) {
+    AUTO_PERSIST.mark_dirty(session_id);
+}
+
+/// Force immediate save of a session
+pub fn persist_session_now(session_id: &str) -> Result<(), String> {
+    AUTO_PERSIST.save_session(&KV_STORE, session_id)
+}
