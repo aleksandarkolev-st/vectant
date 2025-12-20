@@ -1483,6 +1483,25 @@ The runner checks ABI version to ensure compatibility. Include in your state str
 #define SYNTHI_KV_INTERNAL_ERROR  4
 ```
 
+3.8 SCHEMA HASHING (CRITICAL)
+
+    To prevent memory corruption during hot-reloads when the state structure changes, you MUST implement a schema hashing function.
+    
+    The Runner calls this function to verify if the incoming state layout matches the new code's expectation.
+    If the hash differs, the Runner will perform a "Cold Reload" (reset state) instead of crashing.
+    
+    You MUST generate a unique 64-bit hash based on the `AppState` structure definition.
+    The hash should change if:
+    - A field is added or removed
+    - A field type changes
+    - The order of fields changes
+    
+    You can use a simple polynomial hash of the field names and types, or a hardcoded constant that you change whenever you modify the struct.
+    
+    REQUIRED EXPORT:
+    extern "C" uint64_t core_get_state_schema_hash(void); // In core.cpp
+    extern "C" uint64_t gui_get_state_schema_hash(void);  // In gui.cpp
+
 4. SHARED MODULE REQUIREMENTS (C/C++)
 
 The shared.h file MUST contain:
@@ -1756,6 +1775,12 @@ void* gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr) {
     return state;  // NEVER return NULL!
 }
 
+// REQUIRED: Schema Hash for Cold Reload safety
+// You MUST generate a unique hash based on AppState fields
+uint64_t gui_get_state_schema_hash(void) {
+    return 0x1234567890ABCDEF; // REPLACE WITH ACTUAL HASH OF STRUCT
+}
+
 } // extern "C"
 
 6.2 State Access Pattern
@@ -1868,6 +1893,12 @@ extern "C" void on_unload(void* state_ptr) {
     // Core module cleanup - state is managed by the runner
     // NO dlclose needed - Runner handles module lifecycle
     (void)state_ptr;
+}
+
+// REQUIRED: Schema Hash for Cold Reload safety
+// You MUST generate a unique hash based on AppState fields
+extern "C" uint64_t core_get_state_schema_hash(void) {
+    return 0x1234567890ABCDEF; // REPLACE WITH ACTUAL HASH OF STRUCT
 }
 
 7.4 HMR LIFECYCLE SAFETY (CRITICAL - PREVENT FREEZING)

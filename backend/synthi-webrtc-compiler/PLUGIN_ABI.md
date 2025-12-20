@@ -109,6 +109,7 @@ typedef struct CoreAPI {
 | `core_on_save_state` | `char* (CoreState* state)` | No | Serialize state to JSON |
 | `core_on_load_from_json` | `CoreState* (const char* json)` | No | Deserialize state from JSON |
 | `core_get_abi_version` | `uint32_t (void)` | No | Return SYNTHI_CORE_ABI_VERSION |
+| `core_get_state_schema_hash` | `uint64_t (void)` | No | Return stable hash of state struct layout |
 
 ### GUI Module (`gui.so`)
 
@@ -121,6 +122,7 @@ typedef struct CoreAPI {
 | `gui_on_save_state` | `char* (GuiState* state)` | No | Serialize GUI state to JSON |
 | `gui_on_load_from_json` | `GuiState* (const char* json)` | No | Deserialize GUI state |
 | `gui_get_abi_version` | `uint32_t (void)` | No | Return SYNTHI_GUI_ABI_VERSION |
+| `gui_get_state_schema_hash` | `uint64_t (void)` | No | Return stable hash of state struct layout |
 
 ### Legacy Main Module (`main.so`) - Backward Compatibility
 
@@ -203,6 +205,19 @@ if (prev_state->struct_size != sizeof(CurrentState)) {
 }
 // Safe to copy
 ```
+
+### Schema Hash Verification (Strict ABI Check)
+
+To ensure binary compatibility beyond simple size checks, modules should export `*_get_state_schema_hash`.
+
+**Requirements:**
+1.  **Stable Generation:** The hash MUST be generated from a canonical representation of the struct layout (e.g., sorted field names + types). It MUST NOT depend on compiler versions, optimization levels, or padding bytes unless those affect the ABI.
+2.  **Strong Hash:** Use a collision-resistant algorithm (e.g., SipHash-2-4, FNV-1a 64-bit) on the schema definition.
+3.  **Usage:**
+    - If `old_hash != new_hash`: The runner will force a **Cold Reload** (pass `NULL` to `on_load`).
+    - If `new_hash == 0` (missing): The runner assumes unsafe and forces Cold Reload.
+
+This prevents "silent corruption" where a struct layout changes (e.g., swapping two `int` fields) but the size remains the same.
 
 ### Breaking vs Non-Breaking Changes
 

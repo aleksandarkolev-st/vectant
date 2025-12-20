@@ -765,12 +765,20 @@ fn main() {
                                     eprintln!("[Runner] [HMR] The struct layout has changed. Reusing the raw state pointer would cause a crash.");
                                     eprintln!("[Runner] [HMR] Forcing COLD RELOAD for state (passing NULL to on_load).");
                                     
+                                    // Send explicit status event for UI visibility
+                                    let status = HmrStatus::rejected(name, &format!("Schema mismatch (Cold Reload): {:016X} -> {:016X}", old_schema_hash, new_schema_hash));
+                                    eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+
                                     // Force fresh initialization.
                                     // Note: JSON migration (below) can still rescue the data if available,
                                     // because it parses into the NEW struct layout.
                                     new_state = std::ptr::null_mut(); 
                                 } else if new_schema_hash == 0 && old_schema_hash != 0 {
                                     eprintln!("[Runner] [HMR] WARNING: New module missing schema hash. Assuming unsafe.");
+                                    
+                                    let status = HmrStatus::rejected(name, "Missing schema hash (Cold Reload)");
+                                    eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+
                                     new_state = std::ptr::null_mut();
                                 }
                                 
