@@ -1,3 +1,7 @@
+// Reload manager now actively used via HmrOrchestrator
+// Some advanced features (canary reload, circuit breakers) are still infrastructure
+// for future integration - keeping dead_code allow for those
+
 // ============================================================
 // RELOAD MANAGER - COMPREHENSIVE HMR ORCHESTRATION
 // ============================================================
@@ -16,7 +20,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use rand; // For deterministic replay seeding
+// rand is used via full path
 
 // Import boundary types
 pub use crate::boundary::BoundaryId;
@@ -294,7 +298,7 @@ pub enum ClassificationConfidence {
 }
 
 /// Detected changes for classification
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReloadChanges {
     pub modified_functions: HashSet<String>,
     pub api_functions: HashSet<String>,
@@ -424,7 +428,7 @@ impl SnapshotManager {
     pub fn create_snapshot(
         &mut self,
         reload_class: ReloadClass,
-        state_manager: &StateManager,
+        _state_manager: &StateManager,
         boundaries: &[BoundaryId],
     ) -> u64 {
         let snapshot_id = self.next_id.fetch_add(1, Ordering::SeqCst);
@@ -769,7 +773,7 @@ impl AsyncTaskRegistry {
             to_checkpoint,
             to_pause,
             to_terminate,
-            blocking_tasks: blocking,
+            blocking_tasks: blocking.clone(),
             can_proceed: blocking.is_empty() || reload_class == ReloadClass::Cold,
         }
     }
@@ -1087,6 +1091,387 @@ pub enum DiffType {
     NumericOutOfTolerance,
 }
 
+// ============================================================
+// JSON COMPARISON HELPERS
+// ============================================================
+
+/// Compare two JSON values recursively with configurable comparison
+fn compare_json_values(
+    old: &serde_json::Value,
+    new: &serde_json::Value,
+    path: &str,
+    config: &OutputComparisonConfig,
+    semantic: bool,
+) -> (bool, Vec<OutputDifference>) {
+    let mut diffs = Vec::new();
+    
+    // Check if this field should be ignored
+    if config.ignore_fields.iter().any(|f| path.ends_with(f)) {
+        return (true, vec![]);
+    }
+    
+    use serde_json::Value;
+    
+    match (old, new) {
+        (Value::Null, Value::Null) => (true, vec![]),
+        
+        (Value::Bool(a), Value::Bool(b)) => {
+            if a == b {
+                (true, vec![])
+            } else {
+                diffs.push(OutputDifference {
+                    path: path.to_string(),
+                    diff_type: DiffType::ValueMismatch,
+                    old_value: a.to_string(),
+                    new_value: b.to_string(),
+                });
+                (false, diffs)
+            }
+        }
+        
+        (Value::Number(a), Value::Number(b)) => {
+            // Handle numeric comparison with tolerance
+            let a_f64 = a.as_f64().unwrap_or(0.0);
+            let b_f64 = b.as_f64().unwrap_or(0.0);
+            
+            let matches = if config.numeric_tolerance > 0.0 {
+                (a_f64 - b_f64).abs() <= config.numeric_tolerance
+            } else {
+                a == b
+            };
+            
+            if matches {
+                (true, vec![])
+            } else if (a_f64 - b_f64).abs() <= config.numeric_tolerance {
+                (true, vec![]) // Within tolerance
+            } else {
+                diffs.push(OutputDifference {
+                    path: path.to_string(),
+                    diff_type: DiffType::NumericOutOfTolerance,
+                    old_value: truncate_value(&a.to_string(), 100),
+                    new_value: truncate_value(&b.to_string(), 100),
+                });
+                (false, diffs)
+            }
+        }
+        
+        (Value::String(a), Value::String(b)) => {
+            if a == b {
+                (true, vec![])
+            } else if semantic {
+                // Semantic mode: try to parse as numbers
+                if let (Ok(a_num), Ok(b_num)) = (a.parse::<f64>(), b.parse::<f64>()) {
+                    if (a_num - b_num).abs() <= config.numeric_tolerance {
+                        return (true, vec![]);
+                    }
+                }
+                diffs.push(OutputDifference {
+                    path: path.to_string(),
+                    diff_type: DiffType::ValueMismatch,
+                    old_value: truncate_value(a, 100),
+                    new_value: truncate_value(b, 100),
+                });
+                (false, diffs)
+            } else {
+                diffs.push(OutputDifference {
+                    path: path.to_string(),
+                    diff_type: DiffType::ValueMismatch,
+                    old_value: truncate_value(a, 100),
+                    new_value: truncate_value(b, 100),
+                });
+                (false, diffs)
+            }
+        }
+        
+        // Semantic mode: allow type coercion between numbers and strings
+        (Value::Number(a), Value::String(b)) if semantic => {
+            if let Ok(b_num) = b.parse::<f64>() {
+                let a_f64 = a.as_f64().unwrap_or(0.0);
+                if (a_f64 - b_num).abs() <= config.numeric_tolerance {
+                    return (true, vec![]);
+                }
+            }
+            diffs.push(OutputDifference {
+                path: path.to_string(),
+                diff_type: DiffType::TypeMismatch,
+                old_value: format!("number: {}", a),
+                new_value: format!("string: {}", truncate_value(b, 50)),
+            });
+            (false, diffs)
+        }
+        
+        (Value::String(a), Value::Number(b)) if semantic => {
+            if let Ok(a_num) = a.parse::<f64>() {
+                let b_f64 = b.as_f64().unwrap_or(0.0);
+                if (a_num - b_f64).abs() <= config.numeric_tolerance {
+                    return (true, vec![]);
+                }
+            }
+            diffs.push(OutputDifference {
+                path: path.to_string(),
+                diff_type: DiffType::TypeMismatch,
+                old_value: format!("string: {}", truncate_value(a, 50)),
+                new_value: format!("number: {}", b),
+            });
+            (false, diffs)
+        }
+        
+        (Value::Array(a), Value::Array(b)) => {
+            if a.len() != b.len() && config.array_order_sensitive {
+                diffs.push(OutputDifference {
+                    path: path.to_string(),
+                    diff_type: DiffType::ArrayLengthMismatch,
+                    old_value: format!("length {}", a.len()),
+                    new_value: format!("length {}", b.len()),
+                });
+                return (false, diffs);
+            }
+            
+            let mut all_match = true;
+            
+            if config.array_order_sensitive {
+                for (i, (a_item, b_item)) in a.iter().zip(b.iter()).enumerate() {
+                    let item_path = format!("{}[{}]", path, i);
+                    let (matches, item_diffs) = compare_json_values(a_item, b_item, &item_path, config, semantic);
+                    if !matches {
+                        all_match = false;
+                        diffs.extend(item_diffs);
+                    }
+                }
+            } else {
+                // Order insensitive: check that all items in old exist in new
+                for (i, a_item) in a.iter().enumerate() {
+                    let found = b.iter().any(|b_item| {
+                        let (matches, _) = compare_json_values(a_item, b_item, "", config, semantic);
+                        matches
+                    });
+                    if !found {
+                        all_match = false;
+                        diffs.push(OutputDifference {
+                            path: format!("{}[{}]", path, i),
+                            diff_type: DiffType::MissingField,
+                            old_value: truncate_value(&a_item.to_string(), 100),
+                            new_value: "(not found)".to_string(),
+                        });
+                    }
+                }
+                // Check for extra items in new
+                for (i, b_item) in b.iter().enumerate() {
+                    let found = a.iter().any(|a_item| {
+                        let (matches, _) = compare_json_values(a_item, b_item, "", config, semantic);
+                        matches
+                    });
+                    if !found {
+                        all_match = false;
+                        diffs.push(OutputDifference {
+                            path: format!("{}[{}]", path, i),
+                            diff_type: DiffType::ExtraField,
+                            old_value: "(not found)".to_string(),
+                            new_value: truncate_value(&b_item.to_string(), 100),
+                        });
+                    }
+                }
+            }
+            
+            (all_match, diffs)
+        }
+        
+        (Value::Object(a), Value::Object(b)) => {
+            let mut all_match = true;
+            
+            // Check all keys in old
+            for (key, a_val) in a {
+                let child_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{}.{}", path, key)
+                };
+                
+                // Skip ignored fields
+                if config.ignore_fields.contains(key) {
+                    continue;
+                }
+                
+                match b.get(key) {
+                    Some(b_val) => {
+                        let (matches, child_diffs) = compare_json_values(a_val, b_val, &child_path, config, semantic);
+                        if !matches {
+                            all_match = false;
+                            diffs.extend(child_diffs);
+                        }
+                    }
+                    None => {
+                        all_match = false;
+                        diffs.push(OutputDifference {
+                            path: child_path,
+                            diff_type: DiffType::MissingField,
+                            old_value: truncate_value(&a_val.to_string(), 100),
+                            new_value: "(missing)".to_string(),
+                        });
+                    }
+                }
+            }
+            
+            // Check for extra keys in new
+            for (key, b_val) in b {
+                if config.ignore_fields.contains(key) {
+                    continue;
+                }
+                
+                if !a.contains_key(key) {
+                    let child_path = if path.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{}.{}", path, key)
+                    };
+                    all_match = false;
+                    diffs.push(OutputDifference {
+                        path: child_path,
+                        diff_type: DiffType::ExtraField,
+                        old_value: "(missing)".to_string(),
+                        new_value: truncate_value(&b_val.to_string(), 100),
+                    });
+                }
+            }
+            
+            (all_match, diffs)
+        }
+        
+        // Type mismatch
+        (a, b) => {
+            diffs.push(OutputDifference {
+                path: path.to_string(),
+                diff_type: DiffType::TypeMismatch,
+                old_value: truncate_value(&format!("{:?}", json_type_name(a)), 50),
+                new_value: truncate_value(&format!("{:?}", json_type_name(b)), 50),
+            });
+            (false, diffs)
+        }
+    }
+}
+
+/// Compare JSON schemas (structure only, not values)
+fn compare_json_schema(
+    old: &serde_json::Value,
+    new: &serde_json::Value,
+    path: &str,
+) -> (bool, Vec<OutputDifference>) {
+    use serde_json::Value;
+    
+    let mut diffs = Vec::new();
+    
+    match (old, new) {
+        // Same type primitives - always match for schema
+        (Value::Null, Value::Null) |
+        (Value::Bool(_), Value::Bool(_)) |
+        (Value::Number(_), Value::Number(_)) |
+        (Value::String(_), Value::String(_)) => (true, vec![]),
+        
+        (Value::Array(a), Value::Array(b)) => {
+            // For schema comparison, just check first element types match
+            match (a.first(), b.first()) {
+                (Some(a_item), Some(b_item)) => {
+                    compare_json_schema(a_item, b_item, &format!("{}[0]", path))
+                }
+                (None, None) => (true, vec![]),
+                _ => {
+                    diffs.push(OutputDifference {
+                        path: path.to_string(),
+                        diff_type: DiffType::ArrayLengthMismatch,
+                        old_value: if a.is_empty() { "empty" } else { "non-empty" }.to_string(),
+                        new_value: if b.is_empty() { "empty" } else { "non-empty" }.to_string(),
+                    });
+                    (false, diffs)
+                }
+            }
+        }
+        
+        (Value::Object(a), Value::Object(b)) => {
+            let mut all_match = true;
+            
+            // Check all keys exist and types match
+            for (key, a_val) in a {
+                let child_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{}.{}", path, key)
+                };
+                
+                match b.get(key) {
+                    Some(b_val) => {
+                        let (matches, child_diffs) = compare_json_schema(a_val, b_val, &child_path);
+                        if !matches {
+                            all_match = false;
+                            diffs.extend(child_diffs);
+                        }
+                    }
+                    None => {
+                        all_match = false;
+                        diffs.push(OutputDifference {
+                            path: child_path,
+                            diff_type: DiffType::MissingField,
+                            old_value: json_type_name(a_val).to_string(),
+                            new_value: "(missing)".to_string(),
+                        });
+                    }
+                }
+            }
+            
+            // Check for extra keys in new (optional for schema mode)
+            for key in b.keys() {
+                if !a.contains_key(key) {
+                    let child_path = if path.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{}.{}", path, key)
+                    };
+                    // Extra fields in schema mode are typically OK, but note them
+                    diffs.push(OutputDifference {
+                        path: child_path,
+                        diff_type: DiffType::ExtraField,
+                        old_value: "(missing)".to_string(),
+                        new_value: json_type_name(b.get(key).unwrap()).to_string(),
+                    });
+                }
+            }
+            
+            (all_match, diffs)
+        }
+        
+        // Type mismatch
+        (a, b) => {
+            diffs.push(OutputDifference {
+                path: path.to_string(),
+                diff_type: DiffType::TypeMismatch,
+                old_value: json_type_name(a).to_string(),
+                new_value: json_type_name(b).to_string(),
+            });
+            (false, diffs)
+        }
+    }
+}
+
+/// Get JSON type name for error messages
+fn json_type_name(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+/// Truncate a string for display
+fn truncate_value(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len.saturating_sub(3)])
+    }
+}
+
 /// Canary state for a boundary
 pub struct CanaryState {
     pub boundary_id: BoundaryId,
@@ -1191,18 +1576,74 @@ impl CanaryState {
             }
             OutputComparisonMode::JsonStructural | 
             OutputComparisonMode::JsonSemantic => {
-                // Would parse JSON and compare structurally
-                // For now, fall back to exact comparison
-                let matches = old_output == new_output;
-                (matches, vec![])
+                // Parse JSON and compare structurally
+                let old_json: Result<serde_json::Value, _> = serde_json::from_slice(old_output);
+                let new_json: Result<serde_json::Value, _> = serde_json::from_slice(new_output);
+                
+                match (old_json, new_json) {
+                    (Ok(old_val), Ok(new_val)) => {
+                        let semantic = config.mode == OutputComparisonMode::JsonSemantic;
+                        compare_json_values(
+                            &old_val, 
+                            &new_val, 
+                            "", 
+                            config,
+                            semantic
+                        )
+                    }
+                    (Err(_), Ok(_)) => {
+                        (false, vec![OutputDifference {
+                            path: "<root>".to_string(),
+                            diff_type: DiffType::TypeMismatch,
+                            old_value: "invalid JSON".to_string(),
+                            new_value: "valid JSON".to_string(),
+                        }])
+                    }
+                    (Ok(_), Err(_)) => {
+                        (false, vec![OutputDifference {
+                            path: "<root>".to_string(),
+                            diff_type: DiffType::TypeMismatch,
+                            old_value: "valid JSON".to_string(),
+                            new_value: "invalid JSON".to_string(),
+                        }])
+                    }
+                    (Err(_), Err(_)) => {
+                        // Both not JSON, fall back to exact comparison
+                        let matches = old_output == new_output;
+                        let diffs = if matches { vec![] } else {
+                            vec![OutputDifference {
+                                path: "<binary>".to_string(),
+                                diff_type: DiffType::ValueMismatch,
+                                old_value: format!("{} bytes", old_output.len()),
+                                new_value: format!("{} bytes", new_output.len()),
+                            }]
+                        };
+                        (matches, diffs)
+                    }
+                }
             }
             OutputComparisonMode::SchemaOnly => {
-                // Would validate schema shapes match
-                (true, vec![])
+                // Validate schema shapes match (types and structure, not values)
+                let old_json: Result<serde_json::Value, _> = serde_json::from_slice(old_output);
+                let new_json: Result<serde_json::Value, _> = serde_json::from_slice(new_output);
+                
+                match (old_json, new_json) {
+                    (Ok(old_val), Ok(new_val)) => {
+                        compare_json_schema(&old_val, &new_val, "")
+                    }
+                    _ => (false, vec![OutputDifference {
+                        path: "<root>".to_string(),
+                        diff_type: DiffType::TypeMismatch,
+                        old_value: "JSON parse failed".to_string(),
+                        new_value: "JSON parse failed".to_string(),
+                    }])
+                }
             }
             OutputComparisonMode::Custom => {
-                // Would call registered custom comparator
-                (true, vec![])
+                // Custom comparator would be registered via callback
+                // For now, default to exact comparison
+                let matches = old_output == new_output;
+                (matches, vec![])
             }
         };
         
@@ -1841,7 +2282,7 @@ impl ReloadManager {
     
     /// Revert a failed reload
     pub fn revert_reload(&mut self, snapshot_id: u64) -> Result<(), ReloadError> {
-        let snapshot = self.snapshots.revert_to_snapshot(snapshot_id)
+        let _snapshot = self.snapshots.revert_to_snapshot(snapshot_id)
             .map_err(|e| ReloadError::RevertFailed { reason: e })?;
         
         // Would restore state from snapshot here
@@ -2761,10 +3202,10 @@ impl ClassificationTracker {
     /// Record a classification prediction
     pub fn record_prediction(
         &mut self,
-        boundary_id: &BoundaryId,
+        _boundary_id: &BoundaryId,
         predicted: ReloadClass,
-        confidence: ClassificationConfidence,
-        changes: &ReloadChanges,
+        _confidence: ClassificationConfidence,
+        _changes: &ReloadChanges,
     ) -> u64 {
         self.metrics.total_classifications += 1;
         
@@ -2778,7 +3219,7 @@ impl ClassificationTracker {
     /// Record actual outcome after reload
     pub fn record_outcome(
         &mut self,
-        prediction_id: u64,
+        _prediction_id: u64,
         boundary_id: &BoundaryId,
         predicted: ReloadClass,
         actual: ReloadClass,

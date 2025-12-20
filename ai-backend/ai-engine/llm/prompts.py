@@ -329,8 +329,23 @@ app_state.paused = 0;
 app_state.x = 0;
 app_state.y = 200;
 app_state.dx = 5;
+// CRITICAL: Initialize button fields from original code values!
+app_state.btn_x = 200;  // From original: int btn_x = 200
+app_state.btn_y = 10;   // From original: int btn_y = 10
+app_state.btn_w = 120;  // From original: int btn_w = 120  
+app_state.btn_h = 40;   // From original: int btn_h = 40
 // ... other fields explicitly set ...
 ```
+
+## BUTTON/UI FIELD INITIALIZATION (CRITICAL - COMMON MISTAKE)
+**ALL UI fields (btn_x, btn_y, btn_w, btn_h) MUST be initialized in EVERY state init block.**
+
+If the original code has `int btn_x = 200, btn_y = 10, btn_w = 120, btn_h = 40;`, you MUST initialize these in:
+1. The `prev_state` valid path (copy from prev_state)
+2. The ABI mismatch path (field-by-field init)
+3. The first load path (field-by-field init)
+
+**Failure to initialize button fields = invisible buttons at (0,0) with size 0x0!**
 
 ## INCLUDE SHARED.H - DO NOT REDEFINE STRUCTS (CRITICAL)
 **core.cpp and gui.cpp MUST include shared.h and MUST NOT redefine AppState.**
@@ -704,7 +719,11 @@ extern "C" void* on_load(void* prev_state, void* window_ptr) {
             app_state.x = 0;
             app_state.y = 200;
             app_state.dx = 5;
-            // ... initialize other fields individually
+            // CRITICAL: Initialize ALL UI fields from original code!
+            app_state.btn_x = 200;
+            app_state.btn_y = 10;
+            app_state.btn_w = 120;
+            app_state.btn_h = 40;
         }
     } else {
         // First load: Initialize fresh BUT NO memset!
@@ -713,7 +732,14 @@ extern "C" void* on_load(void* prev_state, void* window_ptr) {
         app_state.abi_version = 1;
         app_state.running = 1;
         app_state.paused = 0;
-        // ... initialize other fields individually
+        app_state.x = 0;
+        app_state.y = 200;
+        app_state.dx = 5;
+        // CRITICAL: Initialize ALL UI fields from original code!
+        app_state.btn_x = 200;
+        app_state.btn_y = 10;
+        app_state.btn_w = 120;
+        app_state.btn_h = 40;
     }
     
     // Always update renderer (may change between reloads)

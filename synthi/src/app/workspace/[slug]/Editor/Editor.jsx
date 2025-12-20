@@ -1367,7 +1367,10 @@ const EditorPanel = ({
                                     <ContextMenuItem onClick={() => editorInstance?.getAction('editor.action.formatDocument')?.run()}>
                                         Format Document
                                     </ContextMenuItem>
-                                    <ContextMenuSeparator className="bg-[#27272a]" />
+                                    <ContextMenuItem onClick={() => handleSave()}>
+                                        Save
+                                    </ContextMenuItem>
+                                    <ContextMenuSeparator className="bg-[#454545]" />
                                     <ContextMenuItem onClick={() => editorInstance?.getAction('actions.find')?.run()}>
                                         Find
                                     </ContextMenuItem>

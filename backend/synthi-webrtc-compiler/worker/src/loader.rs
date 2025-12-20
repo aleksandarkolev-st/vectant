@@ -1,3 +1,7 @@
+// Module loader is actively used in runner_bin.rs for ABI validation
+// #![allow(dead_code)] - REMOVED: This module is now wired up
+#![allow(mismatched_lifetime_syntaxes)]
+
 // ============================================================
 // MODULE LOADER
 // ============================================================
@@ -124,7 +128,7 @@ impl ModuleLoader {
                 LoadResult::AbiMismatch {
                     expected: 1, // From expected manifest
                     found: manifest.abi_version.major,
-                    details: compat.version_info,
+                    details: compat.version_info.clone(),
                 }
             };
             self.record_load(path.to_string_lossy().to_string(), LoadResult::LoadError {
