@@ -77,13 +77,29 @@ impl DiffConfig {
     /// Create config optimized for Core state
     pub fn for_core() -> Self {
         let mut config = Self::new();
-        // Core state that should always be preserved
+        // Core state that should always be preserved during HMR
+        // These are the most common user-visible state fields
         config.always_preserve.insert("x".to_string());
         config.always_preserve.insert("y".to_string());
+        config.always_preserve.insert("dx".to_string());
+        config.always_preserve.insert("dy".to_string());
         config.always_preserve.insert("position".to_string());
         config.always_preserve.insert("velocity".to_string());
         config.always_preserve.insert("game_state".to_string());
         config.always_preserve.insert("user_data".to_string());
+        config.always_preserve.insert("running".to_string());
+        config.always_preserve.insert("paused".to_string());
+        
+        // Button positions should be preserved too (UI elements)
+        config.always_preserve.insert("btn_x".to_string());
+        config.always_preserve.insert("btn_y".to_string());
+        config.always_preserve.insert("btn_w".to_string());
+        config.always_preserve.insert("btn_h".to_string());
+        config.always_preserve.insert("btn2_x".to_string());
+        config.always_preserve.insert("btn2_y".to_string());
+        config.always_preserve.insert("btn2_w".to_string());
+        config.always_preserve.insert("btn2_h".to_string());
+        
         config
     }
     

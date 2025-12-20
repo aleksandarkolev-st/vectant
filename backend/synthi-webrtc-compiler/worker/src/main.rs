@@ -15,6 +15,7 @@ mod host_kv;
 mod plugin_contract;
 mod incremental_cache;
 mod state_diff;
+mod binary_state;
 mod crash_recovery;
 mod error_parser;
 pub mod source_map;
@@ -1342,6 +1343,93 @@ fn collect_string_changes(old_strings: &[String], new_strings: &[String]) -> Vec
     changes
 }
 
+/// Parse AppState struct fields from shared.h content
+/// Returns a list of (field_name, field_type, default_value) tuples for int fields
+/// Default value is extracted from declarations like "int btn_x = 200;"
+fn parse_appstate_int_fields_with_defaults(shared_content: &str) -> Vec<(String, String, Option<i64>)> {
+    let mut fields = Vec::new();
+    
+    // Find AppState struct definition
+    let struct_re = regex::Regex::new(r"struct\s+AppState\s*\{([^}]*)\}").ok();
+    
+    if let Some(re) = struct_re {
+        if let Some(captures) = re.captures(shared_content) {
+            if let Some(body) = captures.get(1) {
+                let body_str = body.as_str();
+                
+                // Parse individual field declarations WITH default values
+                // Match patterns like: int x; or int x = 10; or int btn_x = 330, btn_y = 10;
+                // Also handle inline declarations like: int x = 0, y = 0, dx = 5, dy = 5;
+                
+                // First, handle comma-separated declarations on single lines
+                // Pattern: int field1 = val1, field2 = val2, ...;
+                let multi_decl_re = regex::Regex::new(r"\b(int|unsigned|char|short|long)\s+([^;]+);").ok();
+                
+                if let Some(mre) = multi_decl_re {
+                    for cap in mre.captures_iter(body_str) {
+                        if let (Some(type_match), Some(decls_match)) = (cap.get(1), cap.get(2)) {
+                            let field_type = type_match.as_str().to_string();
+                            let decls_str = decls_match.as_str();
+                            
+                            // Split by comma and parse each field
+                            for decl in decls_str.split(',') {
+                                let decl = decl.trim();
+                                if decl.is_empty() { continue; }
+                                
+                                // Parse "name = value" or just "name"
+                                let parts: Vec<&str> = decl.splitn(2, '=').collect();
+                                let field_name = parts[0].trim().to_string();
+                                
+                                // Skip internal fields
+                                if field_name.starts_with("_") || 
+                                   field_name == "magic" || 
+                                   field_name == "struct_size" ||
+                                   field_name == "abi_version" ||
+                                   field_name.is_empty() {
+                                    continue;
+                                }
+                                
+                                // Parse default value if present
+                                let default_value = if parts.len() > 1 {
+                                    let val_str = parts[1].trim();
+                                    // Try to parse as integer
+                                    val_str.parse::<i64>().ok()
+                                } else {
+                                    None
+                                };
+                                
+                                fields.push((field_name, field_type.clone(), default_value));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // If no fields found, use common defaults
+    if fields.is_empty() {
+        fields = vec![
+            ("x".to_string(), "int".to_string(), Some(0)),
+            ("y".to_string(), "int".to_string(), Some(0)),
+            ("dx".to_string(), "int".to_string(), Some(5)),
+            ("dy".to_string(), "int".to_string(), Some(5)),
+            ("running".to_string(), "int".to_string(), Some(1)),
+            ("paused".to_string(), "int".to_string(), Some(0)),
+        ];
+    }
+    
+    fields
+}
+
+/// Generate state serialization code with explicit default values from shared.h
+fn generate_state_serialization_code_with_defaults(
+    fields: &[(String, String, Option<i64>)], 
+    prefix: &str
+) -> String {
+    crate::binary_state::generate_msgpack_serialization_code_with_defaults(fields, prefix)
+}
+
 /// Detect structural DELETIONS between old and new source code
 /// Returns lines that were removed
 fn detect_structural_deletions(old_source: &str, new_source: &str) -> Vec<String> {
@@ -1560,14 +1648,6 @@ fn detect_structural_additions(old_source: &str, new_source: &str) -> Option<Str
     let raw_code = additions.iter().take(50).cloned().collect::<Vec<_>>().join("\n");
     
     Some(raw_code)
-}
-
-/// Find the closest cached result by structural similarity
-/// Returns (cached_result, original_source, similarity_score)
-fn find_closest_cached_result(_source: &str) -> Option<(serde_json::Value, String, f32)> {
-    // This would need to be called with the cache lock held
-    // For now, return None and we'll implement via the cache lookup
-    None
 }
 
 /// Perform incremental structural AI update - tell AI what was added, not regenerate everything
@@ -2089,8 +2169,12 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
     if let Some(cached) = any_cached_result {
         // Check if this looks like a structural addition (new button, new element)
         if let Some(structural_changes) = detect_structural_additions(&cached.original_source, &req.source) {
-            eprintln!("[AI Split] Structural ADDITION detected - translating X11 delta to SDL2");
-            eprintln!("[AI Split] X11 code to translate: {}", structural_changes.lines().next().unwrap_or(""));
+            eprintln!("[AI Split] ╔═══════════════════════════════════════════════════════════╗");
+            eprintln!("[AI Split] ║  DELTA CHANGE DETECTED - Using fast incremental path     ║");
+            eprintln!("[AI Split] ╚═══════════════════════════════════════════════════════════╝");
+            eprintln!("[AI Split] Delta type: Structural ADDITION (new element/button)");
+            eprintln!("[AI Split] X11 code to translate:\n{}", structural_changes.lines().take(5).collect::<Vec<_>>().join("\n"));
+            eprintln!("[AI Split] NOTE: Runner will NOT restart - HMR will hot-reload the modules");
             
             match perform_structural_ai_update(&cached.result, &cached.original_source, &req.source, &structural_changes, &req.language).await {
                 Ok(updated_result) => {
@@ -2107,11 +2191,11 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
                         let mut structural_cache = get_ai_split_structural_cache().lock().await;
                         structural_cache.insert(structural_hash, cached_entry);
                     }
-                    eprintln!("[AI Split] Structural incremental update complete - fast HMR for new elements!");
+                    eprintln!("[AI Split] ✓ Delta injection complete - fast HMR for new elements!");
                     return Ok(updated_result);
                 }
                 Err(e) => {
-                    eprintln!("[AI Split] Structural update failed: {} - falling back to full regen", e);
+                    eprintln!("[AI Split] ✗ Structural update failed: {} - falling back to full regen", e);
                     // Fall through to Level 3 (full AI call)
                 }
             }
@@ -3102,45 +3186,31 @@ async fn handle_compile(
             // These exports enable "Full HMR" detection by the capability checker
             // The runner will see these symbols and grant Full HMR capability
             
-            // Case 1: New-style Core module
+            // Case 1: New-style Core module - generate DYNAMIC JSON serialization based on shared.h
             if content.contains("core_on_load") && !content.contains("core_on_save_state") {
-                let state_serial_stubs = r#"
-
-// [Guardrail] State serialization stubs for Full HMR capability (Core)
-extern "C" char* core_on_save_state(void* state_ptr) {
-    (void)state_ptr;
-    return NULL;
-}
-
-extern "C" int core_on_load_from_json(void* state_ptr, const char* json) {
-    (void)state_ptr;
-    (void)json;
-    return 0;
-}
-"#;
-                content.push_str(state_serial_stubs);
-                eprintln!("[Guardrail] Injected core_on_save_state stubs for Full HMR capability");
+                // Parse actual fields from shared.h WITH DEFAULT VALUES for proper schema migration
+                let fields = parse_appstate_int_fields_with_defaults(shared_content);
+                eprintln!("[Guardrail] Parsed {} fields from shared.h for serialization: {:?}", 
+                    fields.len(), 
+                    fields.iter().map(|(n,_,d)| format!("{}={:?}", n, d)).collect::<Vec<_>>());
+                
+                // Generate serialization code that handles ALL fields with declared defaults
+                let state_serial_stubs = generate_state_serialization_code_with_defaults(&fields, "core");
+                content.push_str(&state_serial_stubs);
+                eprintln!("[Guardrail] Injected DYNAMIC state serialization for Full HMR (core) with declared defaults");
             }
-            // Case 2: Legacy module
+            // Case 2: Legacy module - also use dynamic serialization
             else if content.contains("on_load") && !content.contains("on_save_state") && !content.contains("core_on_load") {
-                let state_serial_stubs = r#"
-
-// [Guardrail] State serialization stubs for Full HMR capability (Legacy)
-extern "C" char* on_save_state(void* state_ptr) {
-    // Return NULL - binary state preservation is used instead
-    (void)state_ptr;
-    return NULL;
-}
-
-extern "C" int on_load_from_json(void* state_ptr, const char* json) {
-    // Return 0 - binary state preservation is used instead
-    (void)state_ptr;
-    (void)json;
-    return 0;
-}
-"#;
-                content.push_str(state_serial_stubs);
-                eprintln!("[Guardrail] Injected on_save_state stubs for Full HMR capability");
+                // Parse actual fields from shared.h WITH DEFAULT VALUES for proper schema migration
+                let fields = parse_appstate_int_fields_with_defaults(shared_content);
+                eprintln!("[Guardrail] Parsed {} fields from shared.h for legacy serialization: {:?}", 
+                    fields.len(), 
+                    fields.iter().map(|(n,_,d)| format!("{}={:?}", n, d)).collect::<Vec<_>>());
+                
+                // Generate serialization code that handles ALL fields (legacy prefix)
+                let state_serial_stubs = generate_state_serialization_code_with_defaults(&fields, "legacy");
+                content.push_str(&state_serial_stubs);
+                eprintln!("[Guardrail] Injected DYNAMIC state serialization for Full HMR (legacy) with declared defaults");
             }
 
             let content_hash = calculate_hash(&content);
@@ -3629,19 +3699,30 @@ extern "C" int on_load_from_json(void* state_ptr, const char* json) {
             }
             
             // Inject State Serialization Stubs for Full HMR Capability in GUI module
+            // GUI typically doesn't need state preservation as it renders Core's state,
+            // but we provide stubs for completeness
             if content.contains("gui_on_load") && !content.contains("gui_on_save_state") {
                 let gui_serial_stubs = r#"
 
-// [Guardrail] State serialization stubs for Full HMR capability
+// [Guardrail] State serialization stubs for Full HMR capability (GUI)
+// GUI module typically renders Core's state, so GUI state preservation is minimal
 extern "C" char* gui_on_save_state(void* state_ptr) {
     (void)state_ptr;
+    // GUI state is usually transient (textures, hover states)
+    // Return empty JSON - GUI will reinitialize from Core state
+    char* json = (char*)malloc(3);
+    if (json) strcpy(json, "{}");
+    return json;
+}
+
+extern "C" void* gui_on_load_from_json(const char* json) {
+    (void)json;
+    // GUI state is reinitialized from Core state during gui_on_load
     return NULL;
 }
 
-extern "C" int gui_on_load_from_json(void* state_ptr, const char* json) {
-    (void)state_ptr;
-    (void)json;
-    return 0;
+extern "C" void synthi_free_json(char* json) {
+    if (json) free(json);
 }
 "#;
                 content.push_str(gui_serial_stubs);
@@ -4365,7 +4446,10 @@ extern "C" int gui_on_load_from_json(void* state_ptr, const char* json) {
 
     // If we can do HMR, skip all the restart/initialization logic and just send load commands
     if existing_runner_can_hmr {
-        eprintln!("[Main] HMR mode: Reusing existing runner, skipping initialization");
+        eprintln!("[Main] ╔═══════════════════════════════════════════════════════════╗");
+        eprintln!("[Main] ║  HMR MODE: Reusing existing runner - NO RESTART          ║");
+        eprintln!("[Main] ╚═══════════════════════════════════════════════════════════╝");
+        eprintln!("[Main] HMR mode: Skipping track attachment and output subscription (already set up)");
     } else if let Some(state) = guard.as_mut() {
         // We have an existing runner but can't do HMR - need to restart
         let gui_mode_changed = state.is_gui != req.is_gui;
