@@ -1260,17 +1260,19 @@ fn extract_string_literals(source: &str) -> Vec<String> {
 }
 
 /// Patch string literals in cached JSON result with new strings from source
+/// Returns (patched_result, did_patch_anything)
 fn patch_strings_in_cached_result(
     cached: &serde_json::Value,
     old_strings: &[String],
     new_strings: &[String],
-) -> serde_json::Value {
+) -> (serde_json::Value, bool) {
     // Only patch if we have a reasonable mapping
     if old_strings.is_empty() || new_strings.is_empty() {
-        return cached.clone();
+        return (cached.clone(), false);
     }
     
     let mut result = cached.clone();
+    let mut any_patches_applied = false;
     
     // Patch each file's content in the split result
     for key in &["core", "gui", "shared"] {
@@ -1286,7 +1288,10 @@ fn patch_strings_in_cached_result(
                             // Use format with quotes to avoid partial matches
                             let old_quoted = format!("\"{}\"", old);
                             let new_quoted = format!("\"{}\"", new);
-                            patched = patched.replace(&old_quoted, &new_quoted);
+                            if patched.contains(&old_quoted) {
+                                patched = patched.replace(&old_quoted, &new_quoted);
+                                any_patches_applied = true;
+                            }
                         }
                     }
                     
@@ -1296,7 +1301,148 @@ fn patch_strings_in_cached_result(
         }
     }
     
-    result
+    (result, any_patches_applied)
+}
+
+/// Check if a string looks like a semantic value that AI transforms (not just copies)
+/// These include: color names, font names, file paths, etc.
+fn is_semantic_string(s: &str) -> bool {
+    // X11/CSS color names
+    let color_names = [
+        "black", "white", "red", "green", "blue", "yellow", "cyan", "magenta",
+        "orange", "purple", "pink", "brown", "gray", "grey", "navy", "teal",
+        "lime", "aqua", "maroon", "olive", "silver", "fuchsia",
+    ];
+    
+    let lower = s.to_lowercase();
+    color_names.iter().any(|c| lower == *c)
+}
+
+/// Check if any changed strings are semantic (would need AI re-processing)
+fn has_semantic_string_changes(old_strings: &[String], new_strings: &[String]) -> bool {
+    for (old, new) in old_strings.iter().zip(new_strings.iter()) {
+        if old != new {
+            // If either old or new is a semantic string, we need AI
+            if is_semantic_string(old) || is_semantic_string(new) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Collect the specific string changes for incremental AI update
+fn collect_string_changes(old_strings: &[String], new_strings: &[String]) -> Vec<(String, String)> {
+    let mut changes = Vec::new();
+    for (old, new) in old_strings.iter().zip(new_strings.iter()) {
+        if old != new {
+            changes.push((old.clone(), new.clone()));
+        }
+    }
+    changes
+}
+
+/// Perform incremental AI update - ask AI to apply specific changes to existing code
+/// This is MUCH faster than full regeneration (~2-5s vs ~20s)
+async fn perform_incremental_ai_update(
+    cached_result: &serde_json::Value,
+    changes: &[(String, String)],
+    language: &str,
+) -> Result<serde_json::Value> {
+    let start_time = std::time::Instant::now();
+    
+    // Build a focused prompt for the AI
+    let changes_desc: Vec<String> = changes.iter()
+        .map(|(old, new)| format!("- Change \"{}\" to \"{}\"", old, new))
+        .collect();
+    
+    let changes_text = changes_desc.join("\n");
+    
+    // Extract current code from cached result
+    let core_content = cached_result.get("core")
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let gui_content = cached_result.get("gui")
+        .and_then(|g| g.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let shared_content = cached_result.get("shared")
+        .and_then(|s| s.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    
+    let prompt = format!(r#"You have existing split code that needs MINOR UPDATES. Do NOT regenerate - just apply these changes:
+
+{}
+
+IMPORTANT:
+- Only modify what's necessary to apply these changes
+- For color changes: update the SDL_SetRenderDrawColor RGB values appropriately
+- For numeric changes: update the numeric constants
+- Keep ALL other code EXACTLY the same
+- Return the complete updated files in the same JSON format
+
+Current core.cpp:
+```cpp
+{}
+```
+
+Current gui.cpp:
+```cpp
+{}
+```
+
+Current shared.h:
+```cpp
+{}
+```
+
+Return ONLY valid JSON in this exact format:
+{{
+  "core": {{ "filename": "core.cpp", "content": "..." }},
+  "gui": {{ "filename": "gui.cpp", "content": "..." }},
+  "shared": {{ "filename": "shared.h", "content": "..." }}
+}}"#, changes_text, core_content, gui_content, shared_content);
+
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "code": prompt,
+        "lang": language,
+        "mode": "incremental_update"
+    });
+
+    let backend_url = std::env::var("AI_BACKEND_URL")
+        .unwrap_or_else(|_| "http://172.19.224.1:8000".to_string());
+    let url = format!("{}/refactor/split", backend_url);
+
+    let res = client.post(&url)
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(30)) // Shorter timeout for incremental
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    let result_str = res["result"].as_str().ok_or(anyhow::anyhow!("No result from AI"))?;
+    
+    // Clean markdown
+    let clean_json = if let Some(start) = result_str.find("```json") {
+        let s = &result_str[start+7..];
+        if let Some(end) = s.find("```") { &s[..end] } else { s }
+    } else if let Some(start) = result_str.find("```") {
+        let s = &result_str[start+3..];
+        if let Some(end) = s.find("```") { &s[..end] } else { s }
+    } else {
+        result_str
+    }.trim();
+
+    let updated_data: serde_json::Value = serde_json::from_str(clean_json)?;
+    
+    let elapsed = start_time.elapsed();
+    eprintln!("[AI Split] Incremental update completed in {:?}", elapsed);
+    
+    Ok(updated_data)
 }
 
 
@@ -1424,29 +1570,74 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
     }
     
     // Level 2: Check structural match (fast patching, no AI call)
-    {
+    // Only works for simple text changes, NOT semantic changes like colors
+    let structural_cache_result = {
         let structural_cache = get_ai_split_structural_cache().lock().await;
-        if let Some(cached) = structural_cache.get(&structural_hash) {
+        structural_cache.get(&structural_hash).cloned()
+    };
+    
+    if let Some(cached) = structural_cache_result {
+        // Extract strings from old and new source
+        let old_strings = extract_string_literals(&cached.original_source);
+        let new_strings = extract_string_literals(&req.source);
+        
+        // Check if any changes are semantic (colors, etc.) that need AI re-processing
+        if has_semantic_string_changes(&old_strings, &new_strings) {
+            eprintln!("[AI Split] Structural match but SEMANTIC change detected - using incremental AI update");
+            
+            // Level 2.5: Incremental AI update (faster than full regen)
+            // Ask AI to just update the specific changes, not regenerate everything
+            let changes = collect_string_changes(&old_strings, &new_strings);
+            if !changes.is_empty() {
+                match perform_incremental_ai_update(&cached.result, &changes, &req.language).await {
+                    Ok(updated_result) => {
+                        // Store updated result in both caches
+                        let cached_entry = CachedSplit {
+                            result: updated_result.clone(),
+                            original_source: req.source.clone(),
+                        };
+                        {
+                            let mut cache = get_ai_split_cache().lock().await;
+                            cache.insert(source_hash, cached_entry.clone());
+                        }
+                        {
+                            let mut structural_cache = get_ai_split_structural_cache().lock().await;
+                            structural_cache.insert(structural_hash, cached_entry);
+                        }
+                        eprintln!("[AI Split] Incremental update complete - fast semantic HMR!");
+                        return Ok(updated_result);
+                    }
+                    Err(e) => {
+                        eprintln!("[AI Split] Incremental update failed: {} - falling back to full regen", e);
+                        // Fall through to Level 3 (full AI call)
+                    }
+                }
+            }
+        } else {
             eprintln!("[AI Split] Cache HIT (structural match) - patching strings...");
             
-            // Extract strings from old and new source
-            let old_strings = extract_string_literals(&cached.original_source);
-            let new_strings = extract_string_literals(&req.source);
-            
             // Patch the cached result with new strings
-            let patched_result = patch_strings_in_cached_result(&cached.result, &old_strings, &new_strings);
+            let (patched_result, did_patch) = patch_strings_in_cached_result(&cached.result, &old_strings, &new_strings);
             
-            // Store patched result in exact-match cache for future
-            {
-                let mut cache = get_ai_split_cache().lock().await;
-                cache.insert(source_hash, CachedSplit {
-                    result: patched_result.clone(),
-                    original_source: req.source.clone(),
-                });
+            // If patching didn't actually change anything, and strings differ, something's wrong
+            // Fall back to AI call
+            let strings_differ = old_strings != new_strings;
+            if strings_differ && !did_patch {
+                eprintln!("[AI Split] String patching FAILED (strings not found in output) - calling AI");
+                // Fall through to Level 3 (AI call)
+            } else {
+                // Store patched result in exact-match cache for future
+                {
+                    let mut cache = get_ai_split_cache().lock().await;
+                    cache.insert(source_hash, CachedSplit {
+                        result: patched_result.clone(),
+                        original_source: req.source.clone(),
+                    });
+                }
+                
+                eprintln!("[AI Split] String patching complete - fast HMR!");
+                return Ok(patched_result);
             }
-            
-            eprintln!("[AI Split] String patching complete - fast HMR!");
-            return Ok(patched_result);
         }
     }
     
