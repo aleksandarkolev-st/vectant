@@ -342,8 +342,6 @@ export const deleteItemThunk = createAsyncThunk(
 );
 
 
-import { gitClient } from '@/services/gitClient';
-
 // 7. Open Diff (Read)
 export const openDiffThunk = createAsyncThunk(
     'workspace/openDiff',
