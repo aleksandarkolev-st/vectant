@@ -261,13 +261,15 @@ export const handleCreateItemThunk = createAsyncThunk(
         
         // Also write the file to collab-server (local disk) so it appears immediately in the file tree
         // The file tree reads from collab-server's listFilesMeta which uses local disk
-        if (!isFolder) {
-            try {
+        try {
+            if (!isFolder) {
                 await gitClient.writeFile(slug, fullPath, '');
-            } catch (e) {
-                console.warn('[Workspace] Failed to write file to collab-server:', e);
-                // Don't throw - file was still created in GCS, just may not appear until refresh
+            } else {
+                await gitClient.createDirectory(slug, fullPath);
             }
+        } catch (e) {
+            console.warn('[Workspace] Failed to write item to collab-server:', e);
+            // Don't throw - item was still created in GCS, just may not appear until refresh
         }
         
         // Dispatch cleanup and revalidation

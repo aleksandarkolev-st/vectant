@@ -637,6 +637,10 @@ const server = http.createServer(async (req, res) => {
                     await gitService.writeFile(slug, data.path, data.content);
                     result = { success: true };
                     break;
+                case 'create-directory':
+                    await gitService.createDirectory(slug, data.path);
+                    result = { success: true };
+                    break;
                 case 'clear-collab':
                     // Clear Yjs persistence for specified files (used after merge conflict resolution)
                     const filesToClear = Array.isArray(data.files) ? data.files : (data.path ? [data.path] : []);
