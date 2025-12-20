@@ -599,3 +599,75 @@
   from { opacity: 0; transform: translateY(2px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* ===== Monaco Editor Hover Widget Styling ===== */
+
+/* Main Hover Container */
+.monaco-hover {
+  background-color: var(--bg-panel) !important;
+  border: 1px solid var(--border-medium) !important;
+  border-radius: var(--radius) !important;
+  box-shadow: var(--shadow-dropdown) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  padding: 4px !important;
+  animation: fadeIn 0.15s ease-out;
+}
+
+/* Remove default sharp corners and borders */
+.monaco-hover-content {
+  background-color: transparent !important;
+  border: none !important;
+}
+
+/* Typography in Hover */
+.monaco-hover .hover-contents {
+  font-family: var(--font-ui) !important;
+  color: var(--text-primary) !important;
+  font-size: 13px !important;
+  line-height: 1.5 !important;
+}
+
+/* Error Message Text */
+.monaco-hover .hover-contents span {
+  color: var(--text-primary) !important;
+}
+
+/* Error Source (e.g. [ts], [pylance]) */
+.monaco-hover .hover-contents .source-code {
+  opacity: 0.6;
+  font-size: 0.85em;
+  background: var(--bg-surface);
+  padding: 2px 6px;
+  border-radius: 12px;
+  margin-left: 8px;
+  border: 1px solid var(--border-subtle);
+}
+
+/* Quick Fix / Action Bar */
+.monaco-hover .hover-row.status-bar {
+  background-color: var(--bg-surface) !important;
+  border-top: 1px solid var(--border-medium) !important;
+  border-radius: 0 0 calc(var(--radius) - 4px) calc(var(--radius) - 4px) !important;
+  padding: 6px 12px !important;
+  margin: 4px -4px -4px -4px !important; /* Negative margin to flush with container */
+}
+
+/* Quick Fix Links/Buttons */
+.monaco-hover .actions .action-item {
+  color: var(--accent-primary) !important;
+  font-weight: 500 !important;
+  transition: all 0.2s ease;
+  border-radius: 4px;
+}
+
+.monaco-hover .actions .action-item:hover {
+  background-color: rgba(50, 116, 100, 0.15) !important; /* Soft teal hover */
+  text-decoration: none !important;
+}
+
+/* Scrollbar in hover */
+.monaco-hover .monaco-scrollable-element > .scrollbar > .slider {
+  background: var(--border-strong) !important;
+  border-radius: 10px !important;
+}
