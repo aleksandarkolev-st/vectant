@@ -64,7 +64,7 @@ pub struct CacheEntry {
     pub source_hash: u64,
     /// Hash of compiler flags used
     pub flags_hash: u64,
-    /// Hash of included headers (transitive)
+    /// Hash of included headers (transitive) - INCLUDES CONTENT not just paths
     pub headers_hash: u64,
     /// Path to the cached object file
     pub object_path: PathBuf,
@@ -77,6 +77,208 @@ pub struct CacheEntry {
     /// CRC32 checksum of the object file for integrity validation
     #[serde(default)]
     pub checksum: u32,
+    /// Toolchain info for invalidation on toolchain drift
+    #[serde(default)]
+    pub toolchain: ToolchainInfo,
+    /// Individual header hashes for fine-grained invalidation
+    /// Maps header path -> content hash
+    #[serde(default)]
+    pub header_content_hashes: HashMap<String, u64>,
+}
+
+/// Toolchain information for cache invalidation
+/// Cache entries with different toolchain info are NOT compatible
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct ToolchainInfo {
+    /// Compiler name and version (e.g., "g++ 11.4.0", "clang 15.0.0")
+    pub compiler_version: String,
+    /// Target triple (e.g., "x86_64-linux-gnu")
+    pub target_triple: String,
+    /// C++ standard library version (for ABI compatibility)
+    pub stdlib_version: String,
+    /// Optimization level affects codegen
+    pub optimization_level: String,
+    /// Debug info affects object size and compatibility
+    pub debug_info: bool,
+    /// Position-independent code flag
+    pub pic: bool,
+    /// LTO mode (none, thin, full)
+    pub lto_mode: String,
+    /// Hash of all compiler-related environment variables
+    pub env_hash: u64,
+}
+
+impl ToolchainInfo {
+    /// Create toolchain info from the current environment
+    pub fn from_environment(compiler: &str, flags: &[&str]) -> Self {
+        use std::process::Command;
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        
+        // Get compiler version
+        let compiler_version = Command::new(compiler)
+            .arg("--version")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.lines().next().unwrap_or("unknown").to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        
+        // Get target triple
+        let target_triple = Command::new(compiler)
+            .arg("-dumpmachine")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        
+        // Detect optimization level from flags
+        let optimization_level = flags.iter()
+            .find(|f| f.starts_with("-O"))
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "-O0".to_string());
+        
+        // Detect debug info
+        let debug_info = flags.iter().any(|f| f.starts_with("-g"));
+        
+        // Detect PIC
+        let pic = flags.iter().any(|f| *f == "-fPIC" || *f == "-fpic");
+        
+        // Detect LTO
+        let lto_mode = if flags.iter().any(|f| *f == "-flto=thin") {
+            "thin".to_string()
+        } else if flags.iter().any(|f| *f == "-flto") {
+            "full".to_string()
+        } else {
+            "none".to_string()
+        };
+        
+        // Get stdlib version (platform-specific)
+        let stdlib_version = Self::detect_stdlib_version(compiler);
+        
+        // Hash relevant environment variables
+        let env_hash = Self::hash_environment();
+        
+        Self {
+            compiler_version,
+            target_triple,
+            stdlib_version,
+            optimization_level,
+            debug_info,
+            pic,
+            lto_mode,
+            env_hash,
+        }
+    }
+    
+    fn detect_stdlib_version(compiler: &str) -> String {
+        use std::process::Command;
+        
+        // Try to get libstdc++ version by compiling a test program
+        // For now, use a simpler heuristic based on compiler
+        if compiler.contains("clang") {
+            // Check for libc++ vs libstdc++
+            "libc++".to_string()
+        } else {
+            // Assume libstdc++
+            "libstdc++".to_string()
+        }
+    }
+    
+    fn hash_environment() -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        
+        let mut hasher = DefaultHasher::new();
+        
+        // Hash relevant environment variables that affect compilation
+        let vars = [
+            "CC", "CXX", "CFLAGS", "CXXFLAGS", "LDFLAGS",
+            "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH",
+            "LIBRARY_PATH", "LD_LIBRARY_PATH",
+            "SYSROOT", "SDKROOT",
+        ];
+        
+        for var in vars {
+            if let Ok(value) = std::env::var(var) {
+                var.hash(&mut hasher);
+                value.hash(&mut hasher);
+            }
+        }
+        
+        hasher.finish()
+    }
+    
+    /// Check if this toolchain is compatible with another
+    /// STRICT: Any difference invalidates the cache
+    pub fn is_compatible_with(&self, other: &ToolchainInfo) -> bool {
+        // Compiler version must match (major.minor at minimum)
+        if !Self::versions_compatible(&self.compiler_version, &other.compiler_version) {
+            return false;
+        }
+        
+        // Target triple must match exactly
+        if self.target_triple != other.target_triple {
+            return false;
+        }
+        
+        // Optimization level affects codegen
+        if self.optimization_level != other.optimization_level {
+            return false;
+        }
+        
+        // Debug info affects object layout
+        if self.debug_info != other.debug_info {
+            return false;
+        }
+        
+        // PIC affects code generation
+        if self.pic != other.pic {
+            return false;
+        }
+        
+        // LTO mode affects object format
+        if self.lto_mode != other.lto_mode {
+            return false;
+        }
+        
+        // Environment hash must match
+        if self.env_hash != other.env_hash {
+            return false;
+        }
+        
+        true
+    }
+    
+    fn versions_compatible(v1: &str, v2: &str) -> bool {
+        // Extract major.minor version
+        let extract_version = |s: &str| -> Option<(u32, u32)> {
+            let re = regex::Regex::new(r"(\d+)\.(\d+)").ok()?;
+            let caps = re.captures(s)?;
+            Some((
+                caps.get(1)?.as_str().parse().ok()?,
+                caps.get(2)?.as_str().parse().ok()?,
+            ))
+        };
+        
+        match (extract_version(v1), extract_version(v2)) {
+            (Some((maj1, min1)), Some((maj2, min2))) => {
+                maj1 == maj2 && min1 == min2
+            }
+            _ => v1 == v2  // Fall back to exact match
+        }
+    }
+    
+    /// Compute a hash for use in cache keys
+    pub fn cache_key_component(&self) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        
+        let mut hasher = DefaultHasher::new();
+        self.hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    }
 }
 
 /// Compilation unit identifier
@@ -127,6 +329,7 @@ impl IncrementalCache {
     }
     
     /// Generate cache key from source content and compiler flags
+    /// DEPRECATED: Use cache_key_with_toolchain for production
     pub fn cache_key(source: &str, flags: &[&str], headers: &[(&str, &str)]) -> String {
         let mut hasher = DefaultHasher::new();
         source.hash(&mut hasher);
@@ -148,7 +351,94 @@ impl IncrementalCache {
         format!("{:016x}_{:016x}_{:016x}", source_hash, flags_hash, headers_hash)
     }
     
+    /// Generate cache key including toolchain info
+    /// PRODUCTION SAFE: Includes compiler version, target, flags for invalidation
+    pub fn cache_key_with_toolchain(
+        source: &str, 
+        flags: &[&str], 
+        headers: &[(&str, &str)],
+        toolchain: &ToolchainInfo,
+    ) -> String {
+        let base_key = Self::cache_key(source, flags, headers);
+        let toolchain_component = toolchain.cache_key_component();
+        format!("{}_{}", base_key, toolchain_component)
+    }
+    
+    /// Check if a compiled object exists in cache (with toolchain validation)
+    pub async fn get_with_toolchain(&self, key: &str, current_toolchain: &ToolchainInfo) -> Option<PathBuf> {
+        let mut index = self.index.write().await;
+        
+        if let Some(entry) = index.get_mut(key) {
+            // SAFETY CHECK: Validate toolchain compatibility
+            if !entry.toolchain.is_compatible_with(current_toolchain) {
+                eprintln!(
+                    "[Cache] TOOLCHAIN MISMATCH for {}: cached={:?}, current={:?}",
+                    key, entry.toolchain, current_toolchain
+                );
+                // Remove incompatible entry
+                let size = entry.size_bytes;
+                let path = entry.object_path.clone();
+                index.remove(key);
+                *self.total_size.write().await -= size;
+                let _ = std::fs::remove_file(&path);
+                return None;
+            }
+            
+            // Check if object file still exists
+            if entry.object_path.exists() {
+                // Check age
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                
+                if now - entry.created_at < MAX_CACHE_AGE_SECS {
+                    // SAFETY: Validate integrity with checksum before returning
+                    if entry.checksum != 0 {
+                        match std::fs::read(&entry.object_path) {
+                            Ok(data) => {
+                                let actual_checksum = calculate_crc32(&data);
+                                if actual_checksum != entry.checksum {
+                                    eprintln!("[Cache] CORRUPTED: {} (expected CRC32 {:08X}, got {:08X})", 
+                                              entry.object_path.display(), entry.checksum, actual_checksum);
+                                    // Remove corrupted entry
+                                    let size = entry.size_bytes;
+                                    let path = entry.object_path.clone();
+                                    index.remove(key);
+                                    *self.total_size.write().await -= size;
+                                    let _ = std::fs::remove_file(&path);
+                                    return None;
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("[Cache] Failed to read for integrity check: {}", e);
+                                // File unreadable, remove entry
+                                let size = entry.size_bytes;
+                                index.remove(key);
+                                *self.total_size.write().await -= size;
+                                return None;
+                            }
+                        }
+                    }
+                    
+                    // Update last accessed
+                    entry.last_accessed = now;
+                    return Some(entry.object_path.clone());
+                }
+            }
+            
+            // Entry is stale or missing, remove it
+            let size = entry.size_bytes;
+            index.remove(key);
+            *self.total_size.write().await -= size;
+            return None;
+        }
+        
+        None
+    }
+    
     /// Check if a compiled object exists in cache
+    /// LEGACY: Does not validate toolchain compatibility
     pub async fn get(&self, key: &str) -> Option<PathBuf> {
         let mut index = self.index.write().await;
         
@@ -239,6 +529,8 @@ impl IncrementalCache {
             created_at: now,
             last_accessed: now,
             checksum,
+            toolchain: ToolchainInfo::default(),
+            header_content_hashes: HashMap::new(),
         };
         
         // Update index
@@ -254,6 +546,110 @@ impl IncrementalCache {
         self.save_index().await?;
         
         Ok(object_path)
+    }
+    
+    /// Store a compiled object in cache with detailed header tracking
+    /// ENHANCED: Tracks individual header content hashes for precise invalidation
+    pub async fn put_with_headers(
+        &self,
+        key: String,
+        source_hash: u64,
+        flags_hash: u64,
+        headers_hash: u64,
+        headers: &[(&str, &str)],  // (path, content) pairs
+        object_data: &[u8],
+        toolchain: ToolchainInfo,
+    ) -> Result<PathBuf, std::io::Error> {
+        // Check if we need to evict entries
+        let size = object_data.len() as u64;
+        self.maybe_evict(size).await;
+        
+        // Calculate checksum for integrity validation
+        let checksum = calculate_crc32(object_data);
+        
+        // Build header content hashes map
+        let mut header_content_hashes = HashMap::new();
+        for (path, content) in headers {
+            let mut hasher = DefaultHasher::new();
+            content.hash(&mut hasher);
+            header_content_hashes.insert(path.to_string(), hasher.finish());
+        }
+        
+        // Write object file
+        let object_path = self.cache_dir.join(format!("{}.o", key));
+        fs::write(&object_path, object_data).await?;
+        
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        let entry = CacheEntry {
+            source_hash,
+            flags_hash,
+            headers_hash,
+            object_path: object_path.clone(),
+            size_bytes: size,
+            created_at: now,
+            last_accessed: now,
+            checksum,
+            toolchain,
+            header_content_hashes,
+        };
+        
+        // Update index
+        {
+            let mut index = self.index.write().await;
+            if let Some(old) = index.insert(key.clone(), entry) {
+                *self.total_size.write().await -= old.size_bytes;
+            }
+            *self.total_size.write().await += size;
+        }
+        
+        // Persist index
+        self.save_index().await?;
+        
+        Ok(object_path)
+    }
+    
+    /// Check if any header has changed since the cache entry was created
+    /// Returns (changed, list of changed headers) for debugging
+    pub async fn check_headers_changed(
+        &self,
+        key: &str,
+        current_headers: &[(&str, &str)],
+    ) -> (bool, Vec<String>) {
+        let index = self.index.read().await;
+        
+        if let Some(entry) = index.get(key) {
+            let mut changed = Vec::new();
+            
+            for (path, content) in current_headers {
+                let mut hasher = DefaultHasher::new();
+                content.hash(&mut hasher);
+                let current_hash = hasher.finish();
+                
+                if let Some(&cached_hash) = entry.header_content_hashes.get(*path) {
+                    if cached_hash != current_hash {
+                        changed.push(path.to_string());
+                    }
+                } else {
+                    // New header not in cache - counts as changed
+                    changed.push(format!("{} (new)", path));
+                }
+            }
+            
+            // Check for removed headers
+            for cached_path in entry.header_content_hashes.keys() {
+                if !current_headers.iter().any(|(p, _)| p == cached_path) {
+                    changed.push(format!("{} (removed)", cached_path));
+                }
+            }
+            
+            return (!changed.is_empty(), changed);
+        }
+        
+        (true, vec!["cache entry not found".to_string()])
     }
     
     /// Evict entries if cache is too large

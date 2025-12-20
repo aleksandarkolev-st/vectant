@@ -17,12 +17,42 @@
 //   (longjmp from signal handlers is undefined behavior in Rust)
 // - Plugin code runs in a "sandbox" that can be safely aborted
 //
-// SAFETY NOTE:
-// The previous implementation used setjmp/longjmp which is technically
-// undefined behavior when called from signal handlers. This version uses:
-// 1. Process fork isolation (safest, but has IPC overhead)
-// 2. Timeout-based watchdog for hung plugins
-// 3. Structured signal handling with proper cleanup
+// ============================================================
+// CRITICAL SAFETY DOCUMENTATION
+// ============================================================
+// 
+// SIGNAL RECOVERY LIMITATIONS - READ CAREFULLY
+// 
+// After SIGSEGV, SIGABRT, or any signal indicating memory corruption:
+// - Heap state is UNKNOWN and potentially corrupted
+// - Mutex/lock state is UNKNOWN and potentially deadlocked
+// - Stack frames may be unwound incorrectly
+// - Global state may be inconsistent
+// 
+// WHAT WE CAN SAFELY DO:
+// 1. Log the crash (if logging doesn't allocate)
+// 2. Store minimal crash info in pre-allocated buffers
+// 3. Exit the process (in fork mode: child only)
+// 4. RESTART from a clean state
+//
+// WHAT WE CANNOT SAFELY DO:
+// 1. Resume execution in the same process after SIGSEGV
+// 2. Call malloc/free after heap corruption
+// 3. Acquire locks after potential deadlock
+// 4. Assume any data structure is valid
+//
+// THE ONLY SAFE RECOVERY IS RESTART WITH ROLLBACK
+// 
+// This module provides:
+// - Fork isolation: crash in child, parent continues cleanly
+// - Crash reporting: capture info for debugging
+// - Rollback support: restore to pre-crash snapshot
+// - Restart orchestration: clean restart of plugin subsystem
+//
+// It does NOT provide:
+// - In-process recovery after SIGSEGV (undefined behavior)
+// - Continuation after allocator corruption
+// - Magic healing of corrupted state
 // ============================================================
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -45,7 +75,38 @@ static IN_PLUGIN_CONTEXT: AtomicBool = AtomicBool::new(false);
 /// Counter for consecutive crashes (triggers full restart if too many)
 static CRASH_COUNT: AtomicU32 = AtomicU32::new(0);
 
-/// Maximum consecutive crashes before giving up
+/// Configurable maximum consecutive crashes before giving up
+/// Can be overridden via SYNTHI_MAX_CRASHES environment variable
+/// Default: 3
+static MAX_CRASHES_OVERRIDE: AtomicU32 = AtomicU32::new(0);
+
+/// Get the maximum consecutive crashes allowed before forced restart
+/// Checks environment variable SYNTHI_MAX_CRASHES on first call
+pub fn get_max_consecutive_crashes() -> u32 {
+    let override_val = MAX_CRASHES_OVERRIDE.load(Ordering::Relaxed);
+    if override_val > 0 {
+        return override_val;
+    }
+    
+    // Check environment variable once
+    if let Ok(val_str) = std::env::var("SYNTHI_MAX_CRASHES") {
+        if let Ok(val) = val_str.parse::<u32>() {
+            let clamped = val.clamp(1, 10); // Reasonable bounds
+            MAX_CRASHES_OVERRIDE.store(clamped, Ordering::Relaxed);
+            return clamped;
+        }
+    }
+    
+    // Return default
+    MAX_CONSECUTIVE_CRASHES
+}
+
+/// Set the maximum consecutive crashes programmatically
+pub fn set_max_consecutive_crashes(max: u32) {
+    MAX_CRASHES_OVERRIDE.store(max.clamp(1, 10), Ordering::SeqCst);
+}
+
+/// Maximum consecutive crashes before giving up (default)
 const MAX_CONSECUTIVE_CRASHES: u32 = 3;
 
 /// Maximum time (in seconds) a plugin operation can run before timeout
@@ -148,6 +209,23 @@ impl CrashInfo {
                 format!("{}:{}", loc.file, loc.line)
             }
         })
+    }
+
+    /// Check if the crash indicates fatal memory corruption that requires process restart
+    pub fn is_fatal_memory_error(&self) -> bool {
+        #[cfg(unix)]
+        {
+            self.signal == libc::SIGSEGV || 
+            self.signal == libc::SIGBUS || 
+            self.signal == libc::SIGABRT ||
+            self.signal == libc::SIGFPE
+        }
+        #[cfg(not(unix))]
+        {
+            // On non-Unix, we assume any reported signal/exception is fatal
+            // unless it's a known safe panic (signal 0)
+            self.signal != 0
+        }
     }
 }
 
@@ -562,9 +640,9 @@ where
 #[cfg(unix)]
 pub fn execute_with_protection<F, R>(module_name: &str, f: F) -> Result<R, CrashInfo>
 where
-    F: FnOnce() -> R,
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
 {
-    use std::sync::mpsc;
     use std::thread;
     
     // Set current module name
@@ -575,9 +653,6 @@ where
     // Reset abort flag
     ABORT_REQUESTED.store(false, Ordering::SeqCst);
     IN_PLUGIN_CONTEXT.store(true, Ordering::SeqCst);
-    
-    // Create channel for result
-    let (tx, rx) = mpsc::channel();
     
     // Spawn thread for plugin execution (allows timeout)
     let module_name_clone = module_name.to_string();
@@ -709,8 +784,14 @@ where
 }
 
 /// Check if we've had too many consecutive crashes
+/// Uses configurable max from SYNTHI_MAX_CRASHES env var or set_max_consecutive_crashes()
 pub fn should_force_restart() -> bool {
-    CRASH_COUNT.load(Ordering::SeqCst) >= MAX_CONSECUTIVE_CRASHES
+    CRASH_COUNT.load(Ordering::SeqCst) >= get_max_consecutive_crashes()
+}
+
+/// Get current crash count
+pub fn get_crash_count() -> u32 {
+    CRASH_COUNT.load(Ordering::SeqCst)
 }
 
 /// Reset crash count (call after successful recovery)
