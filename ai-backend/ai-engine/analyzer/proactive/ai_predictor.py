@@ -72,6 +72,11 @@ Find bugs and design issues. Only report:
 - **Loop & Index Errors**:
   - Off-by-one errors: `for (i=0; i<=size; i++)` (accesses out of bounds)
   - Infinite loops: `while(x > 0)` where x never changes
+- **Memory Management (C/C++)**:
+  - Use after free / Double free
+  - Memory leaks (new without delete)
+  - Returning pointers to stack variables (Dangling pointers)
+  - Array out of bounds access
 - **Data Flow**:
   - Uninitialized variables used in logic
   - Missing edge cases: null, 0, negative, empty, boundary values

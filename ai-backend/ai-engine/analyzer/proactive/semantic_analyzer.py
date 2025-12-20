@@ -852,7 +852,7 @@ class CppSemanticAnalyzer(BaseSemanticAnalyzer):
                 
                 # Extract user-defined symbols (functions, classes, variables) from header files
                 # Function declarations: return_type function_name(...)
-                func_match = re.match(r'^(?:static\s+|inline\s+|extern\s+)?(?:const\s+)?(?:unsigned\s+|signed\s+)?(?:\w+)\s+(\w+)\s*\(', stripped)
+                func_match = re.match(r'^(?:static\s+|inline\s+|extern\s+)?(?:const\s+)?(?:unsigned\s+|signed\s+)?(?:[\w:]+(?:<[^>]+>)?)(?:[\s\*&]+)(\w+)\s*\(', stripped)
                 if func_match and not stripped.startswith('#') and not stripped.startswith('//'):
                     func_name = func_match.group(1)
                     # Skip if it's a type keyword
@@ -932,7 +932,7 @@ class CppSemanticAnalyzer(BaseSemanticAnalyzer):
         for line in lines:
             stripped = line.strip()
             # Function definition: return_type name(args) { or return_type name(args);
-            func_def = re.match(r'^(?:static\s+|inline\s+|extern\s+|virtual\s+)?(?:const\s+)?(?:unsigned\s+|signed\s+)?(?:\w+(?:<[^>]+>)?)\s+(\w+)\s*\([^)]*\)\s*(?:const)?\s*[{;]?', stripped)
+            func_def = re.match(r'^(?:static\s+|inline\s+|extern\s+|virtual\s+)?(?:const\s+)?(?:unsigned\s+|signed\s+)?(?:[\w:]+(?:<[^>]+>)?)(?:[\s\*&]+)(\w+)\s*\([^)]*\)\s*(?:const)?\s*[{;]?', stripped)
             if func_def and not stripped.startswith('#') and not stripped.startswith('//'):
                 func_name = func_def.group(1)
                 if func_name not in {'if', 'for', 'while', 'switch', 'return', 'sizeof', 'typedef', 'struct', 'class', 'enum', 'union', 'namespace'}:
@@ -956,7 +956,7 @@ class CppSemanticAnalyzer(BaseSemanticAnalyzer):
                 continue
             
             # Skip function definitions (we're looking for calls, not definitions)
-            if re.match(r'^(?:static\s+|inline\s+)?(?:const\s+)?(?:\w+)\s+\w+\s*\([^)]*\)\s*\{?$', stripped):
+            if re.match(r'^(?:static\s+|inline\s+)?(?:const\s+)?(?:[\w:]+(?:<[^>]+>)?)(?:[\s\*&]+)\w+\s*\([^)]*\)\s*\{?$', stripped):
                 continue
             
             # Look for function calls: name(
