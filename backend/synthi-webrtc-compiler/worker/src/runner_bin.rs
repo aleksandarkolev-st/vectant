@@ -111,6 +111,7 @@ struct AppState {
 struct ModuleState {
     state_ptr: *mut c_void,      // Module's own state (CoreState or GuiState)
     abi_version: u32,            // ABI version reported by the module
+    schema_hash: u64,            // Schema hash for strict binary compatibility check
     core_api_ptr: *mut c_void,   // For GUI: pointer to CoreAPI from core module
 }
 
@@ -119,6 +120,7 @@ impl Default for ModuleState {
         ModuleState { 
             state_ptr: std::ptr::null_mut(),
             abi_version: 0,
+            schema_hash: 0,
             core_api_ptr: std::ptr::null_mut(),
         }
     }
@@ -737,6 +739,40 @@ fn main() {
                                 // Start with module's previous state or null for fresh init
                                 let mut new_state: *mut c_void = module_prev_state;
                                 let mut core_api_ptr: *mut c_void = std::ptr::null_mut();
+
+                                // ============================================================
+                                // SCHEMA HASH VERIFICATION (STRICT ABI CHECK)
+                                // ============================================================
+                                // Before reusing the raw state pointer, we MUST verify that the
+                                // struct layout hasn't changed. We use a hash provided by the
+                                // compiler/plugin for this.
+                                // ============================================================
+                                let old_schema_hash = module_states.get(name).map(|s| s.schema_hash).unwrap_or(0);
+                                let mut new_schema_hash: u64 = 0;
+                                
+                                let get_schema_hash: Result<Symbol<unsafe extern "C" fn() -> u64>, _> = 
+                                    if name == "core" { new_lib.get(b"core_get_state_schema_hash") }
+                                    else if name == "gui" { new_lib.get(b"gui_get_state_schema_hash") }
+                                    else { Err(libloading::Error::DlSymUnknown) }; // Legacy doesn't support this
+
+                                if let Ok(f) = get_schema_hash {
+                                    new_schema_hash = f();
+                                    eprintln!("[Runner] [HMR] Module '{}' schema hash: {:016X}", name, new_schema_hash);
+                                }
+
+                                if old_schema_hash != 0 && new_schema_hash != 0 && old_schema_hash != new_schema_hash {
+                                    eprintln!("[Runner] [HMR] CRITICAL: Schema hash mismatch (Old: {:016X}, New: {:016X})", old_schema_hash, new_schema_hash);
+                                    eprintln!("[Runner] [HMR] The struct layout has changed. Reusing the raw state pointer would cause a crash.");
+                                    eprintln!("[Runner] [HMR] Forcing COLD RELOAD for state (passing NULL to on_load).");
+                                    
+                                    // Force fresh initialization.
+                                    // Note: JSON migration (below) can still rescue the data if available,
+                                    // because it parses into the NEW struct layout.
+                                    new_state = std::ptr::null_mut(); 
+                                } else if new_schema_hash == 0 && old_schema_hash != 0 {
+                                    eprintln!("[Runner] [HMR] WARNING: New module missing schema hash. Assuming unsafe.");
+                                    new_state = std::ptr::null_mut();
+                                }
                                 
                                 // If we have saved state, restore it to new module
                                 // Try new symbol name first, then legacy
@@ -1078,6 +1114,7 @@ fn main() {
                                 module_states.insert(name.to_string(), ModuleState { 
                                     state_ptr: new_state,
                                     abi_version: module_abi_version,
+                                    schema_hash: new_schema_hash,
                                     core_api_ptr: if name == "gui" { core_api_ptr } else { std::ptr::null_mut() },
                                 });
                                 
