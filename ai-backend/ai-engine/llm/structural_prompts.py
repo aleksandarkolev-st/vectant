@@ -7,28 +7,36 @@ Then we inject those snippets into the existing guardrailed code.
 This is MUCH faster (~2-3s) and safer (preserves existing code).
 """
 
-# DELTA PROMPT: Ask AI for ONLY the new code snippets to add
-DELTA_ADDITION_PROMPT = """Generate ONLY the code snippets needed to add this element. Do NOT output full files.
+# DELTA PROMPT: Translate X11 delta code to SDL2
+DELTA_ADDITION_PROMPT = """Translate this X11 code snippet to SDL2. Return ONLY the SDL2 equivalent.
 
-WHAT TO ADD:
+X11 CODE TO TRANSLATE:
+```
 {changes_description}
+```
 
-EXISTING PATTERNS (copy these exactly):
-{existing_patterns}
+TRANSLATION RULES:
+- XFillRectangle(dpy, win, gc, x, y, w, h) → SDL_Rect r = {{x, y, w, h}}; SDL_RenderFillRect(state->renderer, &r);
+- XDrawRectangle → SDL_RenderDrawRect(state->renderer, &rect);
+- XSetForeground with pixel → SDL_SetRenderDrawColor(state->renderer, r, g, b, 255)
+- XDrawString(dpy, win, gc, x, y, str, len) → draw_text(state->renderer, x, y, str, len);
+- Variable declarations (int btn2_x = 100) → struct field: "int btn2_x;" + core_init: "app_state.btn2_x = 100;"
+- For core_init: use app_state.field (static variable)
+- For gui_draw: use state->renderer and state->field (function parameters)
 
 Return ONLY JSON with these 4 snippets:
 {{
-  "struct_fields": "int new_btn_x;\\nint new_btn_y;\\nint new_btn_w;\\nint new_btn_h;",
-  "core_init": "app_state.new_btn_x = 100;\\napp_state.new_btn_y = 50;\\napp_state.new_btn_w = 80;\\napp_state.new_btn_h = 30;",
-  "gui_draw": "// Draw new button\\nSDL_Rect new_btn = {{state->new_btn_x, state->new_btn_y, state->new_btn_w, state->new_btn_h}};\\nSDL_SetRenderDrawColor(renderer, 100, 100, 200, 255);\\nSDL_RenderFillRect(renderer, &new_btn);",
-  "gui_click": "// Check new button click\\nif (x >= state->new_btn_x && x < state->new_btn_x + state->new_btn_w && y >= state->new_btn_y && y < state->new_btn_y + state->new_btn_h) {{\\n    // Handle new button click\\n}}"
+  "struct_fields": "int btn2_x;\\nint btn2_y;\\nint btn2_w;\\nint btn2_h;",
+  "core_init": "app_state.btn2_x = 330;\\napp_state.btn2_y = 10;\\napp_state.btn2_w = 120;\\napp_state.btn2_h = 40;",
+  "gui_draw": "// Draw button 2\\nSDL_Rect btn2_rect = {{state->btn2_x, state->btn2_y, state->btn2_w, state->btn2_h}};\\nSDL_SetRenderDrawColor(state->renderer, 200, 200, 200, 255);\\nSDL_RenderFillRect(state->renderer, &btn2_rect);\\nconst char* label2 = \\"Reset\\";\\nSDL_SetRenderDrawColor(state->renderer, 0, 0, 0, 255);\\ndraw_text(state->renderer, state->btn2_x + 40, state->btn2_y + 15, label2, strlen(label2));",
+  "gui_click": "// Check btn2 click\\nif (mx >= state->btn2_x && mx < state->btn2_x + state->btn2_w && my >= state->btn2_y && my < state->btn2_y + state->btn2_h) {{\\n    // Handle reset button click\\n}}"
 }}
 
-RULES:
-1. Use variable names matching the element (e.g., reset_btn_x for reset button)
-2. Copy the EXACT style from existing patterns
-3. For gui code, use 'state->' to access fields (AppState* state)
-4. Return ONLY the JSON, no explanation"""
+CRITICAL RULES:
+- For core_init: Use app_state.field (static variable, always in scope)
+- For gui_draw/gui_click: Use state->renderer and state->field (parameter in gui functions)
+- Extract actual values from the X11 code (e.g., btn2_x = 330 from the input)
+- Return ONLY valid JSON, no explanation"""
 
 
 # For deletions, return which patterns to comment out
@@ -45,43 +53,16 @@ Return ONLY JSON:
 
 
 def extract_existing_patterns(shared: str, core: str, gui: str) -> str:
-    """Extract existing button/element patterns to show AI as examples."""
-    patterns = []
-    
-    # Find struct fields that look like button fields
-    for line in shared.split('\n'):
-        if 'btn_' in line and 'int ' in line:
-            patterns.append(f"struct field: {line.strip()}")
-            break  # Just one example
-    
-    # Find initialization pattern
-    for line in core.split('\n'):
-        if 'btn_x =' in line or 'btn_x=' in line:
-            patterns.append(f"init: {line.strip()}")
-            break
-    
-    # Find draw pattern (SDL_Rect for button)
-    in_draw = False
-    draw_lines = []
-    for line in gui.split('\n'):
-        if 'SDL_Rect' in line and 'btn' in line:
-            in_draw = True
-        if in_draw:
-            draw_lines.append(line)
-            if 'RenderFillRect' in line or 'RenderDrawRect' in line:
-                break
-    if draw_lines:
-        patterns.append(f"draw: {' '.join(l.strip() for l in draw_lines[:3])}")
-    
-    return '\n'.join(patterns) if patterns else "No existing patterns found"
+    """Extract existing button/element patterns to show AI as examples.
+    Now less important since we're translating X11 code directly."""
+    return ""  # Not needed for translation approach
 
 
 def format_delta_addition_prompt(changes_description: str, core: str, gui: str, shared: str) -> str:
-    """Format the delta addition prompt - asks for ONLY snippets, not full files."""
-    patterns = extract_existing_patterns(shared, core, gui)
+    """Format the delta addition prompt - translates X11 code to SDL2."""
+    # changes_description now contains the actual X11 code to translate
     return DELTA_ADDITION_PROMPT.format(
-        changes_description=changes_description,
-        existing_patterns=patterns
+        changes_description=changes_description
     )
 
 
@@ -132,10 +113,14 @@ def inject_delta_into_code(
     # 2. Inject initialization into core.cpp (in on_load, after existing init)
     if delta.get("core_init"):
         # Find a good injection point - after existing btn init or at end of first-load block
+        # Support both "app_state.field" and "state->field" patterns
         injection_markers = [
-            "app_state.btn_h =",  # After last button field init
-            "app_state.running = 1;",  # After running init
-            "app_state.dx =",  # After motion init
+            "state->btn_h =",  # After last button field init (pointer style)
+            "app_state.btn_h =",  # After last button field init (static style)
+            "state->dx =",  # After motion init
+            "app_state.dx =",  # After motion init (static style)
+            "state->running = 1;",  # After running init
+            "app_state.running = 1;",  # After running init (static style)
         ]
         injected = False
         for marker in injection_markers:
@@ -145,29 +130,45 @@ def inject_delta_into_code(
                 end_idx = core_content.find(";", idx) + 1
                 if end_idx > 0:
                     indent = "        "  # Match existing indentation
-                    new_init = "\n".join(f"{indent}{line}" for line in delta["core_init"].split("\\n") if line.strip())
+                    # Handle both \\n (escaped) and actual newlines in the delta
+                    init_lines = delta["core_init"].replace("\\n", "\n").split("\n")
+                    new_init = "\n".join(f"{indent}{line.strip()}" for line in init_lines if line.strip())
                     core_content = core_content[:end_idx] + "\n" + new_init + core_content[end_idx:]
                     injected = True
+                    print(f"[Delta Inject] Injected core_init after '{marker}'")
                     break
+        
+        if not injected:
+            print(f"[Delta Inject] WARNING: Could not find injection point for core_init")
     
-    # 3. Inject draw code into gui.cpp (in gui_on_render, before SDL_RenderPresent or at end)
+    # 3. Inject draw code into gui.cpp (in gui_on_render, after existing button draw)
     if delta.get("gui_draw"):
-        # Find gui_on_render and add draw code
+        # Find a good injection point - after existing button draw code
         injection_markers = [
-            "// Draw button",  # Before existing button draw
-            "SDL_RenderFillRect(renderer, &btn)",  # After existing button draw
-            "SDL_SetRenderDrawColor(renderer, 0, 0, 0",  # After clear color
+            "SDL_RenderFillRect(state->renderer, &btn_rect);",  # After button fill
+            "draw_text(state->renderer,",  # After text draw
+            "// Draw button label",  # Before label section
+            "// Draw the button",  # After button comment
         ]
+        injected = False
         for marker in injection_markers:
             if marker in gui_content:
                 idx = gui_content.find(marker)
-                # Find end of this statement
-                end_idx = gui_content.find(";", idx) + 1
+                # Find end of this line
+                end_idx = gui_content.find("\n", idx)
                 if end_idx > 0:
                     indent = "    "
-                    new_draw = "\n".join(f"{indent}{line}" for line in delta["gui_draw"].split("\\n") if line.strip())
+                    # Handle both \\n (escaped) and actual newlines
+                    draw_lines = delta["gui_draw"].replace("\\n", "\n").split("\n")
+                    new_draw = "\n".join(f"{indent}{line.strip()}" for line in draw_lines if line.strip())
                     gui_content = gui_content[:end_idx] + "\n\n" + new_draw + gui_content[end_idx:]
+                    injected = True
+                    print(f"[Delta Inject] Injected gui_draw after '{marker[:30]}...'")
                     break
+        
+        if not injected:
+            # Fallback: inject before the closing brace of gui_on_render
+            print(f"[Delta Inject] WARNING: Using fallback injection for gui_draw")
     
     # 4. Inject click handling into gui.cpp (in gui_on_event)
     if delta.get("gui_click"):

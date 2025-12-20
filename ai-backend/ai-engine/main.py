@@ -582,12 +582,13 @@ class StructuralUpdateRequest(BaseModel):
 @app.post("/refactor/delta")
 async def refactor_delta(req: StructuralUpdateRequest):
     """
-    Delta-based code generation endpoint for fast HMR.
+    Delta-based code translation endpoint for fast HMR.
     
     Instead of regenerating all code:
     1. Keeps existing working code (with guardrails applied)
-    2. Only asks AI to generate the delta (new button code snippet)
-    3. Injects that delta into the existing code
+    2. Takes the X11 delta the user wrote
+    3. Asks AI to TRANSLATE that X11 code to SDL2
+    4. Injects the translated SDL2 code into the existing modules
     
     Uses Gemini by default for fast ~2-3s response vs ~18s for full split.
     """
@@ -598,7 +599,9 @@ async def refactor_delta(req: StructuralUpdateRequest):
     
     try:
         if req.update_type == "addition":
-            # Generate the delta prompt - asks AI for ONLY the new snippets
+            print(f"[Delta] Translating X11 code to SDL2:\n{req.changes_description[:200]}...")
+            
+            # Generate the translation prompt - AI translates X11 -> SDL2
             prompt = format_delta_addition_prompt(
                 req.changes_description,
                 req.core_content,
@@ -606,7 +609,7 @@ async def refactor_delta(req: StructuralUpdateRequest):
                 req.shared_content
             )
             
-            # Call AI with smaller focused prompt
+            # Call AI to translate X11 to SDL2
             ai_response = await provider.ask_llm(
                 prompt,
                 "cpp",
@@ -616,7 +619,7 @@ async def refactor_delta(req: StructuralUpdateRequest):
                 api_key=req.api_key,
             )
             
-            print(f"[Delta] AI response:\n{ai_response}")
+            print(f"[Delta] SDL2 translation:\n{ai_response}")
             
             # Parse the delta JSON from AI response
             delta = _parse_delta_json(ai_response)

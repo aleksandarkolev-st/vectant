@@ -1555,14 +1555,11 @@ fn detect_structural_additions(old_source: &str, new_source: &str) -> Option<Str
         description_parts.push("code structure change");
     }
     
-    // Build description with actual added code
-    let desc = format!(
-        "User added: {}.\n\nNew/changed code:\n```\n{}\n```",
-        description_parts.join(", "),
-        additions.iter().take(30).cloned().collect::<Vec<_>>().join("\n")
-    );
+    // Return ONLY the raw X11 code for translation to SDL2
+    // The AI will translate this X11 code directly to SDL2
+    let raw_code = additions.iter().take(50).cloned().collect::<Vec<_>>().join("\n");
     
-    Some(desc)
+    Some(raw_code)
 }
 
 /// Find the closest cached result by structural similarity
@@ -2092,8 +2089,8 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
     if let Some(cached) = any_cached_result {
         // Check if this looks like a structural addition (new button, new element)
         if let Some(structural_changes) = detect_structural_additions(&cached.original_source, &req.source) {
-            eprintln!("[AI Split] Structural ADDITION detected - using incremental update instead of full regen");
-            eprintln!("[AI Split] Changes: {}", structural_changes.lines().next().unwrap_or(""));
+            eprintln!("[AI Split] Structural ADDITION detected - translating X11 delta to SDL2");
+            eprintln!("[AI Split] X11 code to translate: {}", structural_changes.lines().next().unwrap_or(""));
             
             match perform_structural_ai_update(&cached.result, &cached.original_source, &req.source, &structural_changes, &req.language).await {
                 Ok(updated_result) => {
@@ -2940,6 +2937,30 @@ async fn handle_compile(
                 }
             }
 
+            // CRITICAL FIX: Delta injection sometimes uses 'state->' in core.cpp init blocks
+            // but 'state' is a local variable inside on_load(). Must use 'app_state.' instead.
+            // This fixes AI-generated code like: state->btn2_x = 330; -> app_state.btn2_x = 330;
+            if content.contains("state->btn") && content.contains("static AppState app_state") {
+                // Find state->btn patterns that should be app_state.btn
+                let patterns = [
+                    ("state->btn2_", "app_state.btn2_"),
+                    ("state->btn3_", "app_state.btn3_"),
+                    ("state->btn4_", "app_state.btn4_"),
+                    ("state->new_btn_", "app_state.new_btn_"),
+                    ("state->reset_btn_", "app_state.reset_btn_"),
+                ];
+                let mut fixed = false;
+                for (wrong, correct) in &patterns {
+                    if content.contains(*wrong) {
+                        content = content.replace(*wrong, *correct);
+                        fixed = true;
+                    }
+                }
+                if fixed {
+                    eprintln!("[Guardrail] Fixed state->btn* -> app_state.btn* in core.cpp init code");
+                }
+            }
+
             // FIX: cleanup_window not declared
             if content.contains("cleanup_window(app_state.window)") && !content.contains("void cleanup_window") {
                 // Inject a simple implementation before it's used (e.g. at the top, after headers)
@@ -3556,6 +3577,55 @@ extern "C" int on_load_from_json(void* state_ptr, const char* json) {
 
             if content.contains("main(") && !content.contains("extern \"C\" void* entrypoint") {
                  content.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
+            }
+
+            // CRITICAL FIX: Delta injection sometimes uses 'renderer' instead of 'state->renderer'
+            // Fix any bare 'renderer' that should be 'state->renderer' in SDL calls
+            if content.contains("SDL_Render") || content.contains("SDL_SetRenderDrawColor") || content.contains("draw_text") {
+                // Match patterns like SDL_RenderFillRect(renderer, but NOT state->renderer
+                // Use simple string replacement for common patterns
+                let fixes = [
+                    ("SDL_RenderFillRect(renderer,", "SDL_RenderFillRect(state->renderer,"),
+                    ("SDL_RenderDrawRect(renderer,", "SDL_RenderDrawRect(state->renderer,"),
+                    ("SDL_SetRenderDrawColor(renderer,", "SDL_SetRenderDrawColor(state->renderer,"),
+                    ("SDL_RenderClear(renderer)", "SDL_RenderClear(state->renderer)"),
+                    ("draw_text(renderer,", "draw_text(state->renderer,"),
+                ];
+                let mut fixed_any = false;
+                for (wrong, correct) in &fixes {
+                    if content.contains(*wrong) {
+                        content = content.replace(*wrong, *correct);
+                        fixed_any = true;
+                    }
+                }
+                if fixed_any {
+                    eprintln!("[Guardrail] Fixed renderer -> state->renderer in gui.cpp SDL calls");
+                }
+            }
+
+            // CRITICAL FIX: Delta injection click handlers use 'x'/'y' but should use 'mx'/'my'
+            // The event handler declares: int mx = ev->button.x; int my = ev->button.y;
+            if content.contains("SDL_MOUSEBUTTONDOWN") {
+                // Fix click checks that use wrong variable names
+                // Pattern: "if (x >= state->" should be "if (mx >= state->"
+                let click_fixes = [
+                    ("if (x >= state->", "if (mx >= state->"),
+                    ("if (y >= state->", "if (my >= state->"),
+                    ("&& x <", "&& mx <"),
+                    ("&& y <", "&& my <"),
+                    ("&& x <=", "&& mx <="),
+                    ("&& y <=", "&& my <="),
+                ];
+                let mut fixed_click = false;
+                for (wrong, correct) in &click_fixes {
+                    if content.contains(*wrong) {
+                        content = content.replace(*wrong, *correct);
+                        fixed_click = true;
+                    }
+                }
+                if fixed_click {
+                    eprintln!("[Guardrail] Fixed x/y -> mx/my in gui.cpp click handlers");
+                }
             }
             
             // Inject State Serialization Stubs for Full HMR Capability in GUI module
