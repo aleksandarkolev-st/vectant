@@ -560,3 +560,42 @@
 .animate-bounce-subtle {
   animation: bounce-subtle 2s ease-in-out infinite;
 }
+
+/* Synthi Fix Preview Styling */
+.synthi-fix-preview-code-above {
+  background-color: rgba(50, 116, 100, 0.15);
+  border-left: 3px solid var(--accent-primary);
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 2px 0;
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  border-radius: 0 4px 4px 0;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.synthi-fix-indent {
+  display: inline-block;
+  white-space: pre;
+}
+
+.synthi-fix-code {
+  color: #a8e6cf; /* Synthi string color for suggestion */
+  font-weight: 500;
+}
+
+.synthi-fix-preview-strikethrough {
+  text-decoration: line-through;
+  opacity: 0.5;
+  background-color: rgba(255, 87, 87, 0.15); /* Soft red background */
+  color: var(--text-muted);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
