@@ -1273,16 +1273,29 @@ fn main() {
                             if let Err(crash_info) = result {
                                 // Crash recovered! Log and continue with old module
                                 eprintln!("{}", generate_crash_report(&crash_info));
-                                let status = HmrCrashStatus::from_crash(&crash_info, !should_force_restart());
+                                
+                                // CRITICAL SAFETY CHECK:
+                                // If the crash was caused by memory corruption (SIGSEGV, SIGBUS, etc.),
+                                // we MUST NOT continue in the same process, as the heap state is undefined.
+                                // We must force a cold restart regardless of the crash count.
+                                let is_fatal = crash_info.is_fatal_memory_error();
+                                let force_restart = is_fatal || should_force_restart();
+                                
+                                let status = HmrCrashStatus::from_crash(&crash_info, !force_restart);
                                 eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
                                 
-                                if should_force_restart() {
-                                    eprintln!("[Runner] Too many consecutive crashes. Exiting.");
+                                if force_restart {
+                                    if is_fatal {
+                                        eprintln!("[Runner] Fatal memory corruption detected ({:?}). Forcing cold restart.", crash_info.signal_name);
+                                    } else {
+                                        eprintln!("[Runner] Too many consecutive crashes. Exiting.");
+                                    }
                                     std::process::exit(1);
                                 }
                                 
                                 // Skip this module for now, continue with others
-                                reset_crash_count();
+                                // Do NOT reset crash count here, otherwise the limit will never be reached!
+                                // reset_crash_count(); 
                                 continue;
                             }
                         }

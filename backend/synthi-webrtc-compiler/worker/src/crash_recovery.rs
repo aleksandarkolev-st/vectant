@@ -210,6 +210,23 @@ impl CrashInfo {
             }
         })
     }
+
+    /// Check if the crash indicates fatal memory corruption that requires process restart
+    pub fn is_fatal_memory_error(&self) -> bool {
+        #[cfg(unix)]
+        {
+            self.signal == libc::SIGSEGV || 
+            self.signal == libc::SIGBUS || 
+            self.signal == libc::SIGABRT ||
+            self.signal == libc::SIGFPE
+        }
+        #[cfg(not(unix))]
+        {
+            // On non-Unix, we assume any reported signal/exception is fatal
+            // unless it's a known safe panic (signal 0)
+            self.signal != 0
+        }
+    }
 }
 
 // Global crash info storage
