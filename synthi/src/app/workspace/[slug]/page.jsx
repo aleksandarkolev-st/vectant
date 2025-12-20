@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { use } from 'react';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
-import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent } from '@/redux/workspaceSlice';
+import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent, selectFileCacheEntries } from '@/redux/workspaceSlice';
 import { 
     selectShowTerminal, 
     selectShowEmulatorPreview,
@@ -194,7 +194,8 @@ export default function EditorPage({ params }) {
     const treeOnRight = useAppSelector(selectTreeOnRight);
     const currentContent = useAppSelector(selectCurrentContent);
     const rawFiles = useAppSelector(state => state.workspace.rawFiles);
-    // File contents are cached via an in-memory LRU cache service (not Redux)
+    // Redux file content cache - contains edited content of open files
+    const fileCacheEntries = useAppSelector(selectFileCacheEntries);
 
     // Remove a specific diagnostic by location (called when a fix is applied)
     const removeDiagnosticByLocation = useCallback((location, filePath) => {
@@ -323,17 +324,35 @@ export default function EditorPage({ params }) {
     const getRelatedFilesForAnalysis = useCallback(async () => {
         if (!activeFile || !rawFiles) return [];
         
+        // Build a map from fileCacheEntries for fast lookup
+        // This contains the LATEST edited content of open files
+        const reduxCacheMap = new Map(fileCacheEntries);
+        
         const getContentForDep = async (path) => {
             // If it's the active file, use the current editor content
             if (path === activeFile.path) {
                 return typeof currentContent === 'string' ? currentContent : '';
             }
-            // Check cache
+            
+            // PRIORITY 1: Check Redux cache (has edited content of open files)
+            const reduxCached = reduxCacheMap.get(path);
+            if (reduxCached !== undefined) {
+                console.log(`[RELATED FILES] Using Redux cache for ${path}: ${reduxCached?.length || 0} chars`);
+                return reduxCached;
+            }
+            
+            // PRIORITY 2: Check fileCache service (LRU cache)
             const cached = fileCache.get(path);
-            if (cached !== undefined) return cached;
-            // Fetch
+            if (cached !== undefined) {
+                console.log(`[RELATED FILES] Using fileCache for ${path}: ${cached?.length || 0} chars`);
+                return cached;
+            }
+            
+            // PRIORITY 3: Fetch from server
             try {
-                return await api.fetchFileContent(slug, path);
+                const fetched = await api.fetchFileContent(slug, path);
+                console.log(`[RELATED FILES] Fetched ${path}: ${fetched?.length || 0} chars`);
+                return fetched;
             } catch (e) {
                 console.warn(`Could not fetch content for ${path}:`, e);
                 return '';
@@ -351,7 +370,7 @@ export default function EditorPage({ params }) {
             console.warn('Failed to resolve dependencies for analysis:', e);
             return [];
         }
-    }, [activeFile, rawFiles, currentContent, slug]);
+    }, [activeFile, rawFiles, currentContent, slug, fileCacheEntries]);
 
     useEffect(() => {
         if (!activeFile || !currentContent || !hasLoadedInitialFile) return;
@@ -561,6 +580,11 @@ export default function EditorPage({ params }) {
         }
     }, [activeFile, hasLoadedInitialFile, setWorkspaceFocusFile]);
     
+    // NOTE: Workspace analysis is DISABLED because it runs without related files context,
+    // causing false positives (e.g., "test228 is not defined" when it IS defined in a header).
+    // The proactive analysis (above) already handles single-file analysis with related files.
+    // TODO: Re-enable workspace analysis once it properly includes related files.
+    /*
     // Notify workspace analyzer when file content changes
     useEffect(() => {
         if (!activeFile || !currentContent || !hasLoadedInitialFile || !workspaceClientReady) return;
@@ -577,6 +601,7 @@ export default function EditorPage({ params }) {
             }
         }
     }, [currentContent, activeFile, hasLoadedInitialFile, workspaceClientReady, trackFileChange, triggerWorkspaceAnalysis]);
+    */
 
     // Merge single-file diagnostics with workspace-level cross-file diagnostics
     const mergedDiagnostics = useMemo(() => {

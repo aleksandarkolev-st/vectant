@@ -880,8 +880,19 @@ const EditorPanel = ({
         // and are properly invalidated when content changes
         const proactiveDiagnostics = diagnostics || [];
         
+        // IMPORTANT: Filter to only show diagnostics for the CURRENT FILE
+        // This prevents test.cpp errors from showing in test.h editor
+        const currentFilePath = activeFile?.path || activeFile?.name || '';
+        const currentFileDiagnostics = proactiveDiagnostics.filter(diag => {
+            const diagPath = diag.filePath || '';
+            // Match if same path or if diagnostic has no path (legacy)
+            return diagPath === currentFilePath || diagPath === '' || !diagPath;
+        });
+        
+        console.log(`[Editor] Filtering diagnostics for "${currentFilePath}": ${proactiveDiagnostics.length} total -> ${currentFileDiagnostics.length} for current file`);
+        
         // Convert proactive diagnostics format to markers
-        const proactiveMarkers = proactiveDiagnostics.map(diag => {
+        const proactiveMarkers = currentFileDiagnostics.map(diag => {
             const location = diag.location || {};
             const column = location.column ?? 0;
             const endColumn = location.endColumn ?? column;
@@ -909,7 +920,7 @@ const EditorPanel = ({
         } catch (e) {
             // Editor may have been disposed
         }
-    }, [editorInstance, monacoInstance, diagnostics]);
+    }, [editorInstance, monacoInstance, diagnostics, activeFile]);
 
     // Handle external completion triggering (e.g. from Chat UI)
     useEffect(() => {

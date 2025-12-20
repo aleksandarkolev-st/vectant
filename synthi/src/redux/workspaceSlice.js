@@ -369,9 +369,10 @@ const workspaceSlice = createSlice({
         updateContent: (state, action) => {
             const newContent = action.payload || '';
             state.currentContent = newContent;
-            // Mark active file's tab as unsaved when content differs from savedContent
+            // ALWAYS update cache on edit to ensure related file analysis has fresh content
             try {
                 if (state.activeFile && state.activeFile.path) {
+                    state.fileContentCache.set(state.activeFile.path, newContent);
                     const activePath = state.activeFile.path;
                     const isUnsaved = newContent !== state.savedContent;
                     const idx = state.openFiles.findIndex(f => f.path === activePath);

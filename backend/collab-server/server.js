@@ -173,27 +173,35 @@ if (LeveldbPersistence) {
 class ValidatingPersistence {
   constructor(innerPersistence) {
     this.inner = innerPersistence;
+    console.log('[Collab DEBUG] ValidatingPersistence wrapper initialized');
   }
 
   async bindState(docName, ydoc) {
+    console.log(`[Collab DEBUG] === bindState START: ${docName} ===`);
+    
     // First, bind the persisted state (if any)
     if (this.inner.bindState) {
+      console.log(`[Collab DEBUG]   Calling inner.bindState...`);
       await this.inner.bindState(docName, ydoc);
+      console.log(`[Collab DEBUG]   Inner bindState completed`);
     }
 
     // Now validate against actual file
     const parsed = parseDocName(docName);
     if (!parsed) {
       // Not a workspace document, skip validation
+      console.log(`[Collab DEBUG]   Not a workspace document, skipping validation`);
       return;
     }
 
     const { slug, filePath } = parsed;
+    console.log(`[Collab DEBUG]   Parsed: slug=${slug}, filePath=${filePath}`);
+    
     const actualContent = await getActualFileContent(slug, filePath);
     
     if (actualContent === null) {
       // File doesn't exist on disk, keep persisted state
-      console.log(`[Collab] File not found on disk, keeping persisted state: ${docName}`);
+      console.log(`[Collab DEBUG]   File not found on disk, keeping persisted state`);
       return;
     }
 
@@ -201,15 +209,19 @@ class ValidatingPersistence {
     const actualHash = computeHash(actualContent);
     const persistedHash = computeHash(persistedContent);
 
+    console.log(`[Collab DEBUG]   Persisted content: ${persistedContent.length} chars, hash=${persistedHash.substring(0, 8)}`);
+    console.log(`[Collab DEBUG]   Actual file: ${actualContent.length} chars, hash=${actualHash.substring(0, 8)}`);
+    console.log(`[Collab DEBUG]   Persisted preview: ${JSON.stringify(persistedContent.substring(0, 100))}...`);
+    console.log(`[Collab DEBUG]   Actual preview: ${JSON.stringify(actualContent.substring(0, 100))}...`);
+
     if (actualHash !== persistedHash) {
-      console.log(`[Collab] STALE DATA DETECTED for ${docName}`);
-      console.log(`[Collab]   Persisted hash: ${persistedHash.substring(0, 8)}... (${persistedContent.length} chars)`);
-      console.log(`[Collab]   Actual hash: ${actualHash.substring(0, 8)}... (${actualContent.length} chars)`);
-      console.log(`[Collab]   Resetting document to actual file content`);
+      console.log(`[Collab DEBUG]   *** STALE DATA DETECTED ***`);
+      console.log(`[Collab DEBUG]   Resetting document to actual file content`);
 
       // Clear the persisted state and reset to actual content
       if (this.inner.clearDocument) {
         await this.inner.clearDocument(docName);
+        console.log(`[Collab DEBUG]   Cleared persisted state`);
       }
 
       // Reset Yjs document to actual file content
@@ -222,7 +234,7 @@ class ValidatingPersistence {
             text.delete(0, text.length);
             text.insert(0, actualContent);
           });
-          console.log(`[Collab]   Reset text type '${name}' with actual content`);
+          console.log(`[Collab DEBUG]   Reset text type '${name}' with ${actualContent.length} chars`);
           break;
         }
       }
@@ -230,22 +242,27 @@ class ValidatingPersistence {
       // Update hash cache
       fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
     } else {
-      console.log(`[Collab] Persistence valid for ${docName}`);
+      console.log(`[Collab DEBUG]   Content is VALID (hashes match)`);
       fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
     }
+    
+    console.log(`[Collab DEBUG] === bindState END: ${docName} ===`);
   }
 
   async writeState(docName, ydoc) {
+    const content = getYDocContent(ydoc);
+    console.log(`[Collab DEBUG] writeState: ${docName} (${content.length} chars)`);
+    
     if (this.inner.writeState) {
       await this.inner.writeState(docName, ydoc);
     }
     
     // Update hash cache when writing
-    const content = getYDocContent(ydoc);
     fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
   }
 
   async clearDocument(docName) {
+    console.log(`[Collab DEBUG] clearDocument: ${docName}`);
     fileHashCache.delete(docName);
     if (this.inner.clearDocument) {
       await this.inner.clearDocument(docName);
@@ -254,6 +271,7 @@ class ValidatingPersistence {
 
   // Proxy other methods to inner persistence
   async flushDocument(docName) {
+    console.log(`[Collab DEBUG] flushDocument: ${docName}`);
     if (this.inner.flushDocument) {
       await this.inner.flushDocument(docName);
     }
@@ -296,6 +314,64 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
+    return;
+  }
+  
+  // Debug endpoint to check collab server state
+  if (req.url === '/debug/status' && req.method === 'GET') {
+    const status = {
+      server: 'running',
+      persistence: LeveldbPersistence ? 'LevelDB' : 'In-Memory',
+      fileHashCacheSize: fileHashCache.size,
+      fileHashes: Object.fromEntries(
+        Array.from(fileHashCache.entries()).map(([k, v]) => [k, { 
+          hash: v.hash.substring(0, 8), 
+          timestamp: new Date(v.timestamp).toISOString() 
+        }])
+      ),
+    };
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(status, null, 2));
+    return;
+  }
+  
+  // Debug endpoint to validate a specific file
+  if (req.url.startsWith('/debug/validate/') && req.method === 'GET') {
+    const urlObj = new URL(req.url, `http://${req.headers.host}`);
+    const parts = urlObj.pathname.split('/');
+    // /debug/validate/:slug/:filePath
+    const slug = parts[3];
+    const filePath = parts.slice(4).join('/');
+    
+    if (!slug || !filePath) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: 'Missing slug or filePath' }));
+      return;
+    }
+    
+    const docName = `workspace:${slug}:${filePath}`;
+    const actualContent = await getActualFileContent(slug, filePath);
+    const cachedHash = fileHashCache.get(docName);
+    
+    const result = {
+      docName,
+      actualFile: actualContent !== null ? {
+        exists: true,
+        length: actualContent.length,
+        hash: computeHash(actualContent).substring(0, 8),
+        preview: actualContent.substring(0, 200),
+      } : { exists: false },
+      cachedHash: cachedHash ? {
+        hash: cachedHash.hash.substring(0, 8),
+        timestamp: new Date(cachedHash.timestamp).toISOString(),
+      } : null,
+      valid: cachedHash && actualContent !== null 
+        ? cachedHash.hash === computeHash(actualContent) 
+        : null,
+    };
+    
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result, null, 2));
     return;
   }
 
@@ -611,14 +687,51 @@ const server = http.createServer(async (req, res) => {
 
 const wss = new WebSocket.Server({ noServer: true });
 
+// Track active documents and their content for debugging
+const activeDocuments = new Map(); // docName -> { ydoc, lastContent, clientCount }
+
 wss.on('connection', (ws, req) => {
+  const roomName = req.url ? req.url.slice(1).split('?')[0] : 'unknown';
+  const clientIp = req.socket?.remoteAddress || 'unknown';
+  
+  console.log(`[Collab DEBUG] === WebSocket Connection ===`);
+  console.log(`[Collab DEBUG]   Room: ${roomName}`);
+  console.log(`[Collab DEBUG]   Client IP: ${clientIp}`);
+  console.log(`[Collab DEBUG]   URL: ${req.url}`);
+  
   // setupWSConnection handles the y-websocket protocol for a Y.Doc room
   setupWSConnection(ws, req, {
-    persistence
+    persistence,
+    docName: roomName,
+  });
+  
+  // Track this connection
+  if (!activeDocuments.has(roomName)) {
+    activeDocuments.set(roomName, { clientCount: 0, lastUpdate: Date.now() });
+  }
+  const docInfo = activeDocuments.get(roomName);
+  docInfo.clientCount++;
+  console.log(`[Collab DEBUG]   Active clients for ${roomName}: ${docInfo.clientCount}`);
+  
+  ws.on('message', (data) => {
+    console.log(`[Collab DEBUG] Message received for ${roomName}: ${data.length} bytes`);
+    docInfo.lastUpdate = Date.now();
+  });
+  
+  ws.on('close', () => {
+    docInfo.clientCount--;
+    console.log(`[Collab DEBUG] Connection closed for ${roomName}. Remaining clients: ${docInfo.clientCount}`);
+  });
+  
+  ws.on('error', (err) => {
+    console.error(`[Collab DEBUG] WebSocket error for ${roomName}:`, err.message);
   });
 });
 
 server.on('upgrade', (request, socket, head) => {
+  const roomName = request.url ? request.url.slice(1).split('?')[0] : 'unknown';
+  console.log(`[Collab DEBUG] Upgrade request for room: ${roomName}`);
+  
   // We accept all WebSocket connections at any path (room name encoded in path)
   wss.handleUpgrade(request, socket, head, (ws) => {
     wss.emit('connection', ws, request);
@@ -627,4 +740,5 @@ server.on('upgrade', (request, socket, head) => {
 
 server.listen(PORT, () => {
   console.log(`Collaboration server (y-websocket) listening on port ${PORT}`);
+  console.log(`[Collab DEBUG] Server started with persistence: ${LeveldbPersistence ? 'LevelDB' : 'In-Memory'}`);
 });
