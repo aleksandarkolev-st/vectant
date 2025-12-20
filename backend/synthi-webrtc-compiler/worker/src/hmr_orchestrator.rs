@@ -35,7 +35,7 @@ use crate::reload_manager::{
     SnapshotManager, ReloadSnapshot,
 };
 use crate::state_manager::{MigrationResult, MigrationSchema, SchemaVersion, StateHandle, StateManager};
-use crate::state_diff::{diff_and_merge, DiffConfig, DiffResult};
+use crate::state_diff::{migrate_state_with_config, DiffConfig, DiffResult};
 use crate::supervisor::{CrashEvent, CrashSupervisor, RecoveryAction, SupervisorConfig};
 use crate::crash_recovery::CrashInfo;
 use crate::fast_refresh::{BoundaryChecker, BoundaryCheckResult, RefreshAction, BoundaryViolationEvent};
@@ -734,16 +734,13 @@ impl HmrOrchestrator {
             ModuleSlot::Main => DiffConfig::new(),
         };
 
-        let diff_result = diff_and_merge(old_json, template_json, &config)?;
+        let (merged_str, diff_result) = migrate_state_with_config(old_json, template_json, &config)?;
         
         let summary = MigrationSummary {
             preserved_fields: diff_result.preserved_fields.clone(),
             reset_fields: diff_result.reset_fields.clone(),
             new_fields: diff_result.new_fields.clone(),
         };
-
-        let merged_str = serde_json::to_string(&diff_result.merged_state)
-            .map_err(|e| format!("Failed to serialize merged state: {}", e))?;
 
         Ok((merged_str, summary))
     }

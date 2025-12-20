@@ -157,11 +157,10 @@ struct RunnerState {
     widget_hashes: HashMap<String, u64>,          // widget_id -> content_hash
 }
 
-// Allow RunnerState to be constructed for future use without triggering dead_code
-#[allow(dead_code)]
+/// RunnerState builder methods for fluent configuration
 impl RunnerState {
-    /// Create a new RunnerState (for future HMR orchestration integration)
-    fn new(
+    /// Create a new RunnerState with required fields
+    pub fn new(
         process: Option<tokio::process::Child>,
         stdin: tokio::process::ChildStdin,
         output_tx: tokio::sync::broadcast::Sender<String>,
@@ -188,6 +187,89 @@ impl RunnerState {
             loaded_widget_paths: HashMap::new(),
             widget_hashes: HashMap::new(),
         }
+    }
+
+    /// Configure GUI mode settings
+    pub fn with_gui(mut self, is_gui: bool, width: u32, height: u32) -> Self {
+        self.is_gui = is_gui;
+        self.width = width;
+        self.height = height;
+        self
+    }
+
+    /// Set HMR capability information
+    pub fn with_hmr_capability(mut self, is_capable: bool, capability: Option<HmrCapability>) -> Self {
+        self.is_hmr_capable = is_capable;
+        self.hmr_capability = capability;
+        self
+    }
+
+    /// Set Xvfb process for headless GUI rendering
+    pub fn with_xvfb(mut self, xvfb: Option<tokio::process::Child>, display_str: String, gst_display: String) -> Self {
+        self.xvfb_process = xvfb;
+        self.wsl_display_str = display_str;
+        self.gst_display_str = gst_display;
+        self
+    }
+
+    /// Set GStreamer pipeline for video streaming
+    pub fn with_gst_pipeline(mut self, pipeline: Option<gst::Pipeline>) -> Self {
+        self.gst_pipeline = pipeline;
+        self
+    }
+
+    /// Set SDL event channel for GUI interaction
+    pub fn with_sdl_tx(mut self, sdl_tx: Option<mpsc::UnboundedSender<String>>) -> Self {
+        self.sdl_tx = sdl_tx;
+        self
+    }
+
+    /// Set WebRTC media tracks for streaming
+    pub fn with_media_tracks(
+        mut self, 
+        video: Option<Arc<TrackLocalStaticRTP>>, 
+        audio: Option<Arc<TrackLocalStaticRTP>>
+    ) -> Self {
+        self.video_track = video;
+        self.audio_track = audio;
+        self
+    }
+
+    /// Update module hashes for differential rebuild tracking
+    pub fn update_module_hashes(&mut self, hashes: ModuleHashes) {
+        self.module_hashes = hashes;
+    }
+
+    /// Set loaded core module path
+    pub fn set_core_path(&mut self, path: Option<String>) {
+        self.loaded_core_path = path;
+    }
+
+    /// Set loaded GUI module path
+    pub fn set_gui_path(&mut self, path: Option<String>) {
+        self.loaded_gui_path = path;
+    }
+
+    /// Register a loaded widget module
+    pub fn register_widget(&mut self, widget_id: String, so_path: String, content_hash: u64) {
+        self.loaded_widget_paths.insert(widget_id.clone(), so_path);
+        self.widget_hashes.insert(widget_id, content_hash);
+    }
+
+    /// Unregister a widget module
+    pub fn unregister_widget(&mut self, widget_id: &str) {
+        self.loaded_widget_paths.remove(widget_id);
+        self.widget_hashes.remove(widget_id);
+    }
+
+    /// Check if a widget needs rebuild based on content hash
+    pub fn widget_needs_rebuild(&self, widget_id: &str, new_hash: u64) -> bool {
+        self.widget_hashes.get(widget_id).map(|&h| h != new_hash).unwrap_or(true)
+    }
+
+    /// Get all loaded widget paths
+    pub fn get_widget_paths(&self) -> &HashMap<String, String> {
+        &self.loaded_widget_paths
     }
 }
 
