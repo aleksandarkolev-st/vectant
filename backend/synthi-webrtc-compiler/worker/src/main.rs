@@ -29,7 +29,10 @@ mod reload_manager;
 mod hmr_orchestrator;
 
 // Re-export orchestrator for external use
-pub use hmr_orchestrator::{HmrOrchestrator, HmrResult, HmrStatus, OrchestratorConfig};
+pub use hmr_orchestrator::{
+    HmrOrchestrator, HmrResult, HmrStatus, OrchestratorConfig,
+    SavedState, LoadedState, MigrationSummary, SchemaCompatibility,
+};
 
 use builder::{RebuildScope, ModuleHashes, hash_content, WidgetDetector, WidgetCompiler};
 use fast_refresh::{BoundaryChecker, RefreshAction, BoundaryViolationEvent};

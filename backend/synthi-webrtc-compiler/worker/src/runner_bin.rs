@@ -36,6 +36,7 @@ mod supervisor;
 mod state_manager;
 mod boundary;
 mod reload_manager;
+mod hmr_orchestrator;
 
 use plugin_contract::{ModuleSlot, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
 use capability::{HmrCapability, detect_capabilities, HmrStatus};
@@ -49,6 +50,7 @@ use crash_recovery::{install_crash_handlers, execute_with_protection, should_for
 use loader::{ModuleLoader, LoadResult};
 use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 use state_manager::{StateManager, StateHandle};
+use hmr_orchestrator::{HmrOrchestrator, SavedState, LoadedState, SchemaCompatibility};
 
 // SDL2 Definitions
 #[cfg(target_os = "linux")]
@@ -366,6 +368,18 @@ fn main() {
     // StateManager tracks state per module for centralized lifecycle management
     let mut state_manager = StateManager::new();
     eprintln!("[Runner] StateManager initialized");
+    
+    // ============================================================
+    // HMR ORCHESTRATOR (Unified State/Reload Management)
+    // ============================================================
+    // The orchestrator consolidates:
+    // - State save/load (binary-first with JSON fallback)
+    // - Reload classification (Safe/Warm/Cold)
+    // - Schema compatibility checking
+    // - Crash recovery coordination
+    // ============================================================
+    let mut orchestrator = HmrOrchestrator::new();
+    eprintln!("[Runner] HmrOrchestrator initialized (binary_state=ENABLED)");
     
     #[cfg(not(target_os = "linux"))]
     let (window, renderer) = (ptr::null_mut(), ptr::null_mut());
@@ -778,72 +792,38 @@ fn main() {
                                 }
                                 
                                 // ============================================================
-                                // Phase 2: Save state from OLD module (while it's still valid)
+                                // Phase 2: Save state from OLD module (via Orchestrator)
                                 // ============================================================
-                                // INDEPENDENT SWAP: Each module has its own state pointer.
-                                // We save/restore the state specific to this module only.
-                                // 
-                                // BINARY STATE (Fast Path - 10-50x faster than JSON):
-                                // Try binary serialization first, fall back to JSON.
-                                // Binary format includes schema hash for migration detection.
+                                // The orchestrator handles:
+                                // - Binary vs JSON serialization (binary preferred for speed)
+                                // - Memory management (free C-allocated buffers)
+                                // - Statistics tracking
                                 // ============================================================
-                                let mut json_state: Option<std::ffi::CString> = None;
-                                let mut binary_state: Option<Vec<u8>> = None;
+                                let mut saved_state: Option<SavedState> = None;
                                 let mut old_lib_for_cleanup: Option<Library> = None;
                                 
                                 // Get the module-specific state (not the shared app_state.raw)
                                 let module_prev_state = module_states.get(name).map(|s| s.state_ptr).unwrap_or(std::ptr::null_mut());
                                 
                                 if let Some(old_lib) = modules.remove(name) {
-                                    eprintln!("[Runner] [HMR] Phase 2: Saving state from old module '{}'...", name);
+                                    eprintln!("[Runner] [HMR] Phase 2: Saving state via orchestrator for '{}'...", name);
                                     
                                     // Save state BEFORE any cleanup - use module-specific state
                                     let state_to_save = if !module_prev_state.is_null() { module_prev_state } else { app_state.raw };
                                     
-                                    // ============================================================
-                                    // Try BINARY save first (fast path - ~10-50x faster than JSON)
-                                    // ============================================================
-                                    let save_binary: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut usize) -> *mut u8>, _> =
-                                        if name == "core" {
-                                            old_lib.get(b"core_on_save_state_binary")
-                                        } else if name == "gui" {
-                                            old_lib.get(b"gui_on_save_state_binary")
-                                        } else {
-                                            old_lib.get(b"on_save_state_binary")
-                                        };
+                                    // Use orchestrator for unified save (binary-first with JSON fallback)
+                                    saved_state = Some(orchestrator.save_module_state(
+                                        slot.unwrap_or(ModuleSlot::Main),
+                                        &old_lib,
+                                        state_to_save,
+                                    ));
                                     
-                                    if let Ok(f) = save_binary {
-                                        let mut size: usize = 0;
-                                        let ptr = f(state_to_save, &mut size);
-                                        if !ptr.is_null() && size > 0 {
-                                            // Copy binary data to owned Vec
-                                            let data = std::slice::from_raw_parts(ptr, size).to_vec();
-                                            binary_state = Some(data);
-                                            eprintln!("[Runner] [HMR] Binary state saved for '{}': {} bytes", name, size);
-                                            libc::free(ptr as *mut c_void);
-                                        }
-                                    }
-                                    
-                                    // ============================================================
-                                    // Fall back to JSON save (for compatibility and debugging)
-                                    // ============================================================
-                                    if binary_state.is_none() {
-                                        let save_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut std::ffi::c_char>, _> =
-                                            if name == "core" {
-                                                old_lib.get(b"core_on_save_state").or_else(|_| old_lib.get(b"on_save_state"))
-                                            } else if name == "gui" {
-                                                old_lib.get(b"gui_on_save_state").or_else(|_| old_lib.get(b"on_save_state"))
-                                            } else {
-                                                old_lib.get(b"on_save_state")
-                                            };
-                                        if let Ok(f) = save_func {
-                                            let ptr = f(state_to_save);
-                                            if !ptr.is_null() {
-                                                let c_str = std::ffi::CStr::from_ptr(ptr);
-                                                json_state = Some(c_str.to_owned());
-                                                eprintln!("[Runner] [HMR] JSON state saved for module '{}': {:?}", name, c_str);
-                                                libc::free(ptr as *mut c_void);
-                                            }
+                                    if let Some(ref ss) = saved_state {
+                                        if ss.was_binary {
+                                            eprintln!("[Runner] [HMR] State saved via BINARY path ({} bytes)", 
+                                                ss.binary.as_ref().map(|b| b.len()).unwrap_or(0));
+                                        } else if ss.json.is_some() {
+                                            eprintln!("[Runner] [HMR] State saved via JSON path");
                                         }
                                     }
                                     
@@ -890,169 +870,85 @@ fn main() {
                                     eprintln!("[Runner] [HMR] Module '{}' schema hash: {:016X}", name, new_schema_hash);
                                 }
 
+                                // ============================================================
+                                // Schema Compatibility Check (via Orchestrator helper)
+                                // ============================================================
+                                // The orchestrator checks if the old and new schemas are compatible.
+                                // If incompatible, we force cold reload (NULL state to on_load).
+                                // JSON migration can still rescue data by parsing into new layout.
+                                // ============================================================
+                                let mut force_cold_reload = false;
+                                
                                 if old_schema_hash != 0 && new_schema_hash != 0 && old_schema_hash != new_schema_hash {
                                     eprintln!("[Runner] [HMR] CRITICAL: Schema hash mismatch (Old: {:016X}, New: {:016X})", old_schema_hash, new_schema_hash);
-                                    eprintln!("[Runner] [HMR] The struct layout has changed. Reusing the raw state pointer would cause a crash.");
-                                    eprintln!("[Runner] [HMR] Forcing COLD RELOAD for state (passing NULL to on_load).");
+                                    eprintln!("[Runner] [HMR] Forcing COLD RELOAD - JSON migration will attempt data rescue.");
                                     
-                                    // Send explicit status event for UI visibility
                                     let status = HmrStatus::rejected(name, &format!("Schema mismatch (Cold Reload): {:016X} -> {:016X}", old_schema_hash, new_schema_hash));
                                     eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
-
-                                    // Force fresh initialization.
-                                    // Note: JSON migration (below) can still rescue the data if available,
-                                    // because it parses into the NEW struct layout.
-                                    new_state = std::ptr::null_mut(); 
+                                    force_cold_reload = true;
+                                    new_state = std::ptr::null_mut();
                                 } else if new_schema_hash == 0 && old_schema_hash != 0 {
                                     eprintln!("[Runner] [HMR] WARNING: New module missing schema hash. Assuming unsafe.");
                                     
                                     let status = HmrStatus::rejected(name, "Missing schema hash (Cold Reload)");
                                     eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
-
+                                    force_cold_reload = true;
                                     new_state = std::ptr::null_mut();
                                 }
                                 
                                 // ============================================================
-                                // State Restoration: Try BINARY first, then JSON fallback
+                                // State Restoration (via Orchestrator)
                                 // ============================================================
-                                // Binary state is ~10-50x faster and includes schema hash
-                                // for automatic migration detection.
+                                // The orchestrator handles:
+                                // - Binary load (fast path, 10-50x faster)
+                                // - JSON load with field-level diffing (fallback)
+                                // - Template generation for migration
                                 // ============================================================
                                 let mut state_restored = false;
                                 
-                                // Try BINARY restore first (fast path)
-                                if let Some(ref binary_data) = binary_state {
-                                    let load_binary: Result<Symbol<unsafe extern "C" fn(*const u8, usize) -> *mut c_void>, _> =
-                                        if name == "core" { new_lib.get(b"core_on_load_from_binary") }
-                                        else if name == "gui" { new_lib.get(b"gui_on_load_from_binary") }
-                                        else { new_lib.get(b"on_load_from_binary") };
+                                if let Some(ref ss) = saved_state {
+                                    // Get template JSON for field-level diffing (if JSON path needed)
+                                    let template_json = orchestrator.get_template_json(
+                                        slot.unwrap_or(ModuleSlot::Main),
+                                        &new_lib,
+                                    );
                                     
-                                    if let Ok(f) = load_binary {
-                                        eprintln!("[Runner] [HMR] Restoring state from BINARY ({} bytes) into '{}'...", binary_data.len(), name);
-                                        new_state = f(binary_data.as_ptr(), binary_data.len());
-                                        if !new_state.is_null() {
-                                            state_restored = true;
-                                            eprintln!("[Runner] [HMR] Binary state restored successfully for '{}'", name);
+                                    // Use orchestrator to load state
+                                    let loaded = orchestrator.load_module_state(
+                                        slot.unwrap_or(ModuleSlot::Main),
+                                        &new_lib,
+                                        ss,
+                                        template_json.as_deref(),
+                                    );
+                                    
+                                    if !loaded.state_ptr.is_null() {
+                                        new_state = loaded.state_ptr;
+                                        state_restored = true;
+                                        
+                                        // Report migration results
+                                        if let Some(ref migration) = loaded.migration_result {
+                                            let report = format!(
+                                                "preserved={}, reset={}, new={}",
+                                                migration.preserved_fields.len(),
+                                                migration.reset_fields.len(),
+                                                migration.new_fields.len()
+                                            );
+                                            eprintln!("[Runner] [HMR] State migrated via orchestrator: {}", report);
                                             
-                                            // Emit success status - binary state handles migration internally
+                                            let status = HmrStatus::state_migrated(
+                                                name,
+                                                migration.preserved_fields.len(),
+                                                migration.reset_fields.len(),
+                                                migration.new_fields.len(),
+                                            );
+                                            eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                                        } else if loaded.was_binary {
                                             let status = HmrStatus::state_migrated(name, 0, 0, 0);
                                             eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
-                                        } else {
-                                            eprintln!("[Runner] [HMR] Binary load returned NULL - falling back to JSON");
+                                            eprintln!("[Runner] [HMR] Binary state restored successfully");
                                         }
-                                    }
-                                }
-                                
-                                // Fall back to JSON restore with field-level diffing
-                                if !state_restored {
-                                    if let Some(ref json) = json_state {
-                                    let load_json_new: Result<Symbol<unsafe extern "C" fn(*const std::ffi::c_char) -> *mut c_void>, _> = 
-                                        if name == "core" { new_lib.get(b"core_on_load_from_json") }
-                                        else if name == "gui" { new_lib.get(b"gui_on_load_from_json") }
-                                        else { new_lib.get(b"on_load_from_json") };
-                                    let load_json_legacy: Result<Symbol<unsafe extern "C" fn(*const std::ffi::c_char) -> *mut c_void>, _> = new_lib.get(b"on_load_from_json");
-                                    
-                                    if let Ok(f) = load_json_new.or(load_json_legacy) {
-                                        let old_json_str = json.to_str().unwrap_or("{}");
-                                        
-                                        // ============================================================
-                                        // FIELD-LEVEL STATE DIFFING
-                                        // ============================================================
-                                        // Try to get a "default" state from the new module to use as template.
-                                        // This allows field-level diffing like Next.js Fast Refresh.
-                                        // ============================================================
-                                        let mut use_field_diff = false;
-                                        let mut migrated_json_cstring: Option<CString> = None;
-                                        
-                                        // Get on_load symbol to create a fresh template state
-                                        let load_new: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = 
-                                            if name == "core" { new_lib.get(b"core_on_load") }
-                                            else if name == "gui" { new_lib.get(b"gui_on_load") }
-                                            else { new_lib.get(b"on_load") };
-                                        let load_legacy: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = 
-                                            new_lib.get(b"on_load");
-                                        
-                                        // Get on_save_to_json to serialize template state
-                                        let save_json_new: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut i8>, _> = 
-                                            if name == "core" { new_lib.get(b"core_on_save_to_json") }
-                                            else if name == "gui" { new_lib.get(b"gui_on_save_to_json") }
-                                            else { new_lib.get(b"on_save_to_json") };
-                                        let save_json_legacy: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut i8>, _> = 
-                                            new_lib.get(b"on_save_to_json");
-                                        
-                                        // If both symbols exist, we can do field-level diffing
-                                        if let (Ok(load_fn), Ok(save_fn)) = (load_new.or(load_legacy), save_json_new.or(save_json_legacy)) {
-                                            // Create a fresh state with default values (the "template")
-                                            let template_state = load_fn(std::ptr::null_mut(), std::ptr::null_mut());
-                                            
-                                            if !template_state.is_null() {
-                                                // Serialize template state to JSON
-                                                let template_json_ptr = save_fn(template_state);
-                                                
-                                                if !template_json_ptr.is_null() {
-                                                    let template_json_cstr = std::ffi::CStr::from_ptr(template_json_ptr);
-                                                    if let Ok(template_json_str) = template_json_cstr.to_str() {
-                                                        // Perform field-level state migration
-                                                        let module_type = if name == "core" { "core" } else if name == "gui" { "gui" } else { "main" };
-                                                        
-                                                        match migrate_state(old_json_str, template_json_str, module_type) {
-                                                            Ok((merged_json, diff_result)) => {
-                                                                // Log migration report
-                                                                let report = generate_migration_report(&diff_result);
-                                                                eprintln!("[Runner] [HMR] Field-level state migration for '{}':", name);
-                                                                eprintln!("{}", report);
-                                                                
-                                                                // Emit HMR status with migration details
-                                                                let status = HmrStatus::state_migrated(
-                                                                    name, 
-                                                                    diff_result.preserved_fields.len(), 
-                                                                    diff_result.reset_fields.len(),
-                                                                    diff_result.new_fields.len()
-                                                                );
-                                                                eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
-                                                                
-                                                                // Prepare the migrated JSON for loading
-                                                                migrated_json_cstring = CString::new(merged_json).ok();
-                                                                use_field_diff = true;
-                                                            }
-                                                            Err(e) => {
-                                                                eprintln!("[Runner] [HMR] Field-level diff failed for '{}': {}", name, e);
-                                                            }
-                                                        }
-                                                    }
-                                                    
-                                                    // Free the template JSON (if the module provides a free function)
-                                                    let free_json: Result<Symbol<unsafe extern "C" fn(*mut i8)>, _> = new_lib.get(b"synthi_free_json");
-                                                    if let Ok(free_fn) = free_json {
-                                                        free_fn(template_json_ptr);
-                                                    }
-                                                }
-                                                
-                                                // Free the template state (if the module provides an unload function)
-                                                let unload: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = 
-                                                    if name == "core" { new_lib.get(b"core_on_unload") }
-                                                    else if name == "gui" { new_lib.get(b"gui_on_unload") }
-                                                    else { new_lib.get(b"on_unload") };
-                                                if let Ok(unload_fn) = unload {
-                                                    unload_fn(template_state);
-                                                }
-                                            }
-                                        }
-                                        
-                                        // Load state (either migrated or original)
-                                        let final_json_ptr = if use_field_diff {
-                                            if let Some(ref migrated) = migrated_json_cstring {
-                                                migrated.as_ptr()
-                                            } else {
-                                                json.as_ptr()
-                                            }
-                                        } else {
-                                            json.as_ptr()
-                                        };
-                                        
-                                        eprintln!("[Runner] [HMR] Restoring state from JSON into new module '{}' (field_diff={})...", name, use_field_diff);
-                                        new_state = f(final_json_ptr);
-                                    }
+                                    } else {
+                                        eprintln!("[Runner] [HMR] Orchestrator load returned NULL - fresh init");
                                     }
                                 }
                                 

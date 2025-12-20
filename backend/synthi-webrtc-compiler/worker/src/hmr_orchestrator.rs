@@ -18,10 +18,13 @@
 // ============================================================
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::{c_void, CStr, CString};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use libloading::{Library, Symbol};
 
 use crate::binary_state::{MsgPackState, SchemaMigrator, SchemaMigrationResult};
 use crate::boundary::{Boundary, BoundaryId, BoundaryManifest, BoundaryType, ReloadPlan};
@@ -32,6 +35,7 @@ use crate::reload_manager::{
     SnapshotManager, ReloadSnapshot,
 };
 use crate::state_manager::{MigrationResult, MigrationSchema, SchemaVersion, StateHandle, StateManager};
+use crate::state_diff::{diff_and_merge, DiffConfig, DiffResult};
 use crate::supervisor::{CrashEvent, CrashSupervisor, RecoveryAction, SupervisorConfig};
 use crate::crash_recovery::CrashInfo;
 use crate::fast_refresh::{BoundaryChecker, BoundaryCheckResult, RefreshAction, BoundaryViolationEvent};
@@ -105,6 +109,33 @@ impl HmrResult {
     }
 }
 
+/// Schema compatibility check result
+#[derive(Debug, Clone)]
+pub enum SchemaCompatibility {
+    /// Schemas match - safe to reuse state pointer
+    Compatible { hash: u64 },
+    /// Schemas differ - need migration
+    Incompatible { old_hash: u64, new_hash: u64 },
+    /// New module missing hash - assume unsafe
+    NewMissing { old_hash: u64 },
+    /// Old module missing hash - first load
+    OldMissing { new_hash: u64 },
+    /// Neither has hash - legacy modules
+    NeitherHasHash,
+}
+
+impl SchemaCompatibility {
+    /// Returns true if state pointer can be safely reused
+    pub fn is_compatible(&self) -> bool {
+        matches!(self, SchemaCompatibility::Compatible { .. } | SchemaCompatibility::NeitherHasHash)
+    }
+    
+    /// Returns true if cold reload is required
+    pub fn requires_cold_reload(&self) -> bool {
+        matches!(self, SchemaCompatibility::Incompatible { .. } | SchemaCompatibility::NewMissing { .. })
+    }
+}
+
 /// HMR status for frontend reporting
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct HmrStatus {
@@ -133,6 +164,39 @@ impl From<&HmrResult> for HmrStatus {
             snapshot_available: result.snapshot_id.is_some(),
         }
     }
+}
+
+// ============================================================
+// LIBRARY-BASED STATE OPERATION TYPES
+// ============================================================
+
+/// Result of a state save operation
+#[derive(Debug, Clone)]
+pub struct SavedState {
+    pub binary: Option<Vec<u8>>,
+    pub json: Option<String>,
+    pub was_binary: bool,
+    pub module: ModuleSlot,
+}
+
+/// Result of a state load operation
+#[derive(Debug, Clone)]
+pub struct LoadedState {
+    pub state_ptr: *mut c_void,
+    pub was_binary: bool,
+    pub migration_result: Option<MigrationSummary>,
+}
+
+// Safety: LoadedState contains a raw pointer that is managed by the plugin
+unsafe impl Send for LoadedState {}
+unsafe impl Sync for LoadedState {}
+
+/// Summary of migration for external use
+#[derive(Debug, Clone)]
+pub struct MigrationSummary {
+    pub preserved_fields: Vec<String>,
+    pub reset_fields: Vec<String>,
+    pub new_fields: Vec<String>,
 }
 
 // ============================================================
@@ -479,6 +543,316 @@ impl HmrOrchestrator {
             Ok(MigratedState::Json(result))
         } else {
             Err(result.error.unwrap_or_else(|| "Migration failed".to_string()))
+        }
+    }
+
+    // ============================================================
+    // LIBRARY-BASED STATE OPERATIONS (for runner_bin.rs integration)
+    // ============================================================
+    // These methods work directly with libloading::Library references,
+    // allowing runner_bin.rs to delegate state save/load to the orchestrator.
+    // ============================================================
+
+    /// Save module state using the best available method (binary first, JSON fallback)
+    /// 
+    /// # Arguments
+    /// * `slot` - Module slot (Core, Gui, Main)
+    /// * `lib` - Reference to the loaded library
+    /// * `state_ptr` - Pointer to the state to save
+    /// 
+    /// # Returns
+    /// SavedState containing binary and/or JSON representation
+    pub fn save_module_state(
+        &mut self,
+        slot: ModuleSlot,
+        lib: &Library,
+        state_ptr: *mut c_void,
+    ) -> SavedState {
+        let mut result = SavedState {
+            binary: None,
+            json: None,
+            was_binary: false,
+            module: slot,
+        };
+
+        if state_ptr.is_null() {
+            eprintln!("[Orchestrator] save_module_state: NULL state pointer for {:?}", slot);
+            return result;
+        }
+
+        // Try binary save first (fast path)
+        let binary_symbol = match slot {
+            ModuleSlot::Core => b"core_on_save_state_binary\0".as_slice(),
+            ModuleSlot::Gui => b"gui_on_save_state_binary\0".as_slice(),
+            ModuleSlot::Main => b"on_save_state_binary\0".as_slice(),
+        };
+
+        unsafe {
+            let save_binary: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut usize) -> *mut u8>, _> = 
+                lib.get(&binary_symbol[..binary_symbol.len()-1]);
+            
+            if let Ok(f) = save_binary {
+                let mut size: usize = 0;
+                let ptr = f(state_ptr, &mut size);
+                if !ptr.is_null() && size > 0 {
+                    let data = std::slice::from_raw_parts(ptr, size).to_vec();
+                    result.binary = Some(data);
+                    result.was_binary = true;
+                    self.stats.binary_migrations += 1;
+                    eprintln!("[Orchestrator] Binary state saved for {:?}: {} bytes", slot, size);
+                    
+                    // Free the C-allocated buffer
+                    libc::free(ptr as *mut c_void);
+                    return result;
+                }
+            }
+        }
+
+        // Fall back to JSON save
+        let json_symbol = match slot {
+            ModuleSlot::Core => b"core_on_save_state\0".as_slice(),
+            ModuleSlot::Gui => b"gui_on_save_state\0".as_slice(),
+            ModuleSlot::Main => b"on_save_state\0".as_slice(),
+        };
+
+        unsafe {
+            let save_json: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut i8>, _> = 
+                lib.get(&json_symbol[..json_symbol.len()-1]);
+            
+            if let Ok(f) = save_json {
+                let ptr = f(state_ptr);
+                if !ptr.is_null() {
+                    if let Ok(json_str) = CStr::from_ptr(ptr).to_str() {
+                        result.json = Some(json_str.to_string());
+                        self.stats.json_migrations += 1;
+                        eprintln!("[Orchestrator] JSON state saved for {:?}: {} chars", slot, json_str.len());
+                    }
+                    libc::free(ptr as *mut c_void);
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Load module state with automatic migration
+    /// 
+    /// # Arguments
+    /// * `slot` - Module slot (Core, Gui, Main)
+    /// * `new_lib` - Reference to the NEW library to load into
+    /// * `saved` - Previously saved state from save_module_state()
+    /// * `template_json` - Optional JSON template for field-level diffing
+    /// 
+    /// # Returns
+    /// LoadedState with new state pointer and migration details
+    pub fn load_module_state(
+        &mut self,
+        slot: ModuleSlot,
+        new_lib: &Library,
+        saved: &SavedState,
+        template_json: Option<&str>,
+    ) -> LoadedState {
+        let mut result = LoadedState {
+            state_ptr: std::ptr::null_mut(),
+            was_binary: false,
+            migration_result: None,
+        };
+
+        // Try binary load first if we have binary data
+        if let Some(ref binary_data) = saved.binary {
+            let load_symbol = match slot {
+                ModuleSlot::Core => b"core_on_load_from_binary\0".as_slice(),
+                ModuleSlot::Gui => b"gui_on_load_from_binary\0".as_slice(),
+                ModuleSlot::Main => b"on_load_from_binary\0".as_slice(),
+            };
+
+            unsafe {
+                let load_binary: Result<Symbol<unsafe extern "C" fn(*const u8, usize) -> *mut c_void>, _> = 
+                    new_lib.get(&load_symbol[..load_symbol.len()-1]);
+                
+                if let Ok(f) = load_binary {
+                    result.state_ptr = f(binary_data.as_ptr(), binary_data.len());
+                    if !result.state_ptr.is_null() {
+                        result.was_binary = true;
+                        eprintln!("[Orchestrator] Binary state loaded for {:?}", slot);
+                        return result;
+                    }
+                }
+            }
+        }
+
+        // Fall back to JSON load with optional migration
+        if let Some(ref json_str) = saved.json {
+            // Perform field-level diff if template provided
+            let final_json = if let Some(template) = template_json {
+                match self.diff_and_migrate_json(slot, json_str, template) {
+                    Ok((migrated, summary)) => {
+                        result.migration_result = Some(summary);
+                        migrated
+                    }
+                    Err(e) => {
+                        eprintln!("[Orchestrator] JSON migration failed: {}, using original", e);
+                        json_str.clone()
+                    }
+                }
+            } else {
+                json_str.clone()
+            };
+
+            let load_symbol = match slot {
+                ModuleSlot::Core => b"core_on_load_from_json\0".as_slice(),
+                ModuleSlot::Gui => b"gui_on_load_from_json\0".as_slice(),
+                ModuleSlot::Main => b"on_load_from_json\0".as_slice(),
+            };
+
+            unsafe {
+                let load_json: Result<Symbol<unsafe extern "C" fn(*const i8) -> *mut c_void>, _> = 
+                    new_lib.get(&load_symbol[..load_symbol.len()-1]);
+                
+                if let Ok(f) = load_json {
+                    if let Ok(cstring) = CString::new(final_json) {
+                        result.state_ptr = f(cstring.as_ptr());
+                        eprintln!("[Orchestrator] JSON state loaded for {:?}", slot);
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Internal: Perform JSON diff and merge with config
+    fn diff_and_migrate_json(
+        &self,
+        slot: ModuleSlot,
+        old_json: &str,
+        template_json: &str,
+    ) -> Result<(String, MigrationSummary), String> {
+        let config = match slot {
+            ModuleSlot::Core => DiffConfig::for_core(),
+            ModuleSlot::Gui => DiffConfig::for_gui(),
+            ModuleSlot::Main => DiffConfig::new(),
+        };
+
+        let diff_result = diff_and_merge(old_json, template_json, &config)?;
+        
+        let summary = MigrationSummary {
+            preserved_fields: diff_result.preserved_fields.clone(),
+            reset_fields: diff_result.reset_fields.clone(),
+            new_fields: diff_result.new_fields.clone(),
+        };
+
+        let merged_str = serde_json::to_string(&diff_result.merged_state)
+            .map_err(|e| format!("Failed to serialize merged state: {}", e))?;
+
+        Ok((merged_str, summary))
+    }
+
+    /// Get a template JSON from a fresh state (for field-level diffing)
+    pub fn get_template_json(
+        &self,
+        slot: ModuleSlot,
+        lib: &Library,
+    ) -> Option<String> {
+        // Get on_load to create fresh state
+        let load_symbol = match slot {
+            ModuleSlot::Core => b"core_on_load\0".as_slice(),
+            ModuleSlot::Gui => b"gui_on_load\0".as_slice(),
+            ModuleSlot::Main => b"on_load\0".as_slice(),
+        };
+
+        // Get save_to_json to serialize
+        let save_symbol = match slot {
+            ModuleSlot::Core => b"core_on_save_to_json\0".as_slice(),
+            ModuleSlot::Gui => b"gui_on_save_to_json\0".as_slice(),
+            ModuleSlot::Main => b"on_save_to_json\0".as_slice(),
+        };
+
+        // Get unload to clean up
+        let unload_symbol = match slot {
+            ModuleSlot::Core => b"core_on_unload\0".as_slice(),
+            ModuleSlot::Gui => b"gui_on_unload\0".as_slice(),
+            ModuleSlot::Main => b"on_unload\0".as_slice(),
+        };
+
+        unsafe {
+            let load_fn: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = 
+                lib.get(&load_symbol[..load_symbol.len()-1]);
+            let save_fn: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut i8>, _> = 
+                lib.get(&save_symbol[..save_symbol.len()-1]);
+
+            if let (Ok(load), Ok(save)) = (load_fn, save_fn) {
+                // Create fresh state
+                let template_state = load(std::ptr::null_mut(), std::ptr::null_mut());
+                if template_state.is_null() {
+                    return None;
+                }
+
+                // Serialize to JSON
+                let json_ptr = save(template_state);
+                let result = if !json_ptr.is_null() {
+                    CStr::from_ptr(json_ptr).to_str().ok().map(|s| s.to_string())
+                } else {
+                    None
+                };
+
+                // Clean up
+                if !json_ptr.is_null() {
+                    libc::free(json_ptr as *mut c_void);
+                }
+                
+                let unload_fn: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = 
+                    lib.get(&unload_symbol[..unload_symbol.len()-1]);
+                if let Ok(unload) = unload_fn {
+                    unload(template_state);
+                }
+
+                return result;
+            }
+        }
+
+        None
+    }
+
+    /// Check schema hash compatibility between old and new module
+    pub fn check_schema_compatibility(
+        &self,
+        slot: ModuleSlot,
+        old_lib: &Library,
+        new_lib: &Library,
+    ) -> SchemaCompatibility {
+        let get_hash_symbol = match slot {
+            ModuleSlot::Core => b"core_get_state_schema_hash\0".as_slice(),
+            ModuleSlot::Gui => b"gui_get_state_schema_hash\0".as_slice(),
+            ModuleSlot::Main => b"get_state_schema_hash\0".as_slice(),
+        };
+
+        unsafe {
+            let old_hash_fn: Result<Symbol<unsafe extern "C" fn() -> u64>, _> = 
+                old_lib.get(&get_hash_symbol[..get_hash_symbol.len()-1]);
+            let new_hash_fn: Result<Symbol<unsafe extern "C" fn() -> u64>, _> = 
+                new_lib.get(&get_hash_symbol[..get_hash_symbol.len()-1]);
+
+            match (old_hash_fn.ok(), new_hash_fn.ok()) {
+                (Some(old_fn), Some(new_fn)) => {
+                    let old_hash = old_fn();
+                    let new_hash = new_fn();
+                    if old_hash == new_hash {
+                        SchemaCompatibility::Compatible { hash: old_hash }
+                    } else {
+                        SchemaCompatibility::Incompatible { old_hash, new_hash }
+                    }
+                }
+                (Some(old_fn), None) => {
+                    SchemaCompatibility::NewMissing { old_hash: old_fn() }
+                }
+                (None, Some(new_fn)) => {
+                    SchemaCompatibility::OldMissing { new_hash: new_fn() }
+                }
+                (None, None) => {
+                    SchemaCompatibility::NeitherHasHash
+                }
+            }
         }
     }
 
