@@ -374,8 +374,9 @@ const workspaceSlice = createSlice({
                 if (state.activeFile && state.activeFile.path) {
                     state.fileContentCache.set(state.activeFile.path, newContent);
                     const activePath = state.activeFile.path;
-                    // Normalize trailing whitespace for comparison to prevent false unsaved states
-                    const normalizeTrailing = (s) => s ? s.replace(/[\r\n\s]+$/, '') : '';
+                    // Normalize trailing newlines for comparison to prevent false unsaved states from Yjs sync
+                    // Only strip newlines, not spaces/tabs, so whitespace changes are still detected
+                    const normalizeTrailing = (s) => s ? s.replace(/[\r\n]+$/, '') : '';
                     const isUnsaved = normalizeTrailing(newContent) !== normalizeTrailing(state.savedContent);
                     const idx = state.openFiles.findIndex(f => f.path === activePath);
                     if (idx !== -1) {
@@ -553,8 +554,9 @@ const workspaceSlice = createSlice({
                 }
                 
                 // Cache unsaved content of OLD active file before switching
-                // Use normalized comparison to handle trailing whitespace differences
-                const normalizeTrailing = (s) => s ? s.replace(/[\r\n\s]+$/, '') : '';
+                // Use normalized comparison to handle trailing newline differences from Yjs sync
+                // Only strip newlines, not spaces/tabs, so whitespace changes are still detected
+                const normalizeTrailing = (s) => s ? s.replace(/[\r\n]+$/, '') : '';
                 if (state.activeFile && state.activeFile.path && normalizeTrailing(state.currentContent) !== normalizeTrailing(state.savedContent)) {
                     state.fileContentCache.set(state.activeFile.path, state.currentContent);
                 }
@@ -705,12 +707,14 @@ export const selectOpenFiles = (state) => state.workspace.openFiles || [];
 export const selectLoadingFiles = (state) => state.workspace.loadingFiles || [];
 export const selectCurrentContent = (state) => state.workspace.currentContent;
 
-// Normalize content for comparison - trim trailing whitespace/newlines
+// Normalize content for comparison - only trim trailing newlines (not all whitespace)
 // This prevents false "unsaved" states when Yjs syncs content with 
-// slightly different trailing whitespace than the file cache
+// slightly different trailing newlines than the file cache, while still
+// detecting intentional whitespace changes like added spaces
 const normalizeForComparison = (content) => {
     if (!content) return '';
-    return content.replace(/[\r\n\s]+$/, '');
+    // Only strip trailing newlines (\r\n or \n), not spaces/tabs
+    return content.replace(/[\r\n]+$/, '');
 };
 
 export const selectIsUnsaved = createSelector(
