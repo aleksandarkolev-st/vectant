@@ -81,6 +81,10 @@ pub mod core_symbols {
     pub const ON_SAVE_STATE: &[u8] = b"core_on_save_state\0";
     pub const ON_LOAD_FROM_JSON: &[u8] = b"core_on_load_from_json\0";
     
+    /// Returns a hash/checksum of the state struct layout.
+    /// Used to verify binary compatibility before raw pointer reuse.
+    pub const GET_STATE_SCHEMA_HASH: &[u8] = b"core_get_state_schema_hash\0";
+
     // ============================================================
     // HOST KV SYMBOLS (optional, for host-context-aware loading)
     // ============================================================
@@ -95,7 +99,7 @@ pub mod core_symbols {
     pub const REQUIRED: &[&[u8]] = &[ON_LOAD, ON_UPDATE, GET_API];
     
     /// Optional symbols
-    pub const OPTIONAL: &[&[u8]] = &[ON_EVENT, ON_UNLOAD, GET_ABI_VERSION, ON_SAVE_STATE, ON_LOAD_FROM_JSON, ON_LOAD_HOST, HOST_KV_SCHEMAS_LEN, HOST_KV_SCHEMAS];
+    pub const OPTIONAL: &[&[u8]] = &[ON_EVENT, ON_UNLOAD, GET_ABI_VERSION, ON_SAVE_STATE, ON_LOAD_FROM_JSON, GET_STATE_SCHEMA_HASH, ON_LOAD_HOST, HOST_KV_SCHEMAS_LEN, HOST_KV_SCHEMAS];
     
     // Function signatures
     /// CoreState* core_on_load(CoreState* prev, void* renderer)
@@ -125,6 +129,9 @@ pub mod core_symbols {
     /// CoreState* core_on_load_from_json(const char* json)
     pub type OnLoadFromJsonFn = unsafe extern "C" fn(*const c_char) -> StatePtr;
     
+    /// uint64_t core_get_state_schema_hash(void)
+    pub type GetStateSchemaHashFn = unsafe extern "C" fn() -> u64;
+
     /// uint32_t core_host_kv_schemas_len(void)
     pub type HostKvSchemasLenFn = unsafe extern "C" fn() -> c_uint;
     
@@ -148,6 +155,9 @@ pub mod gui_symbols {
     pub const ON_SAVE_STATE: &[u8] = b"gui_on_save_state\0";
     pub const ON_LOAD_FROM_JSON: &[u8] = b"gui_on_load_from_json\0";
     
+    /// Returns a hash/checksum of the state struct layout.
+    pub const GET_STATE_SCHEMA_HASH: &[u8] = b"gui_get_state_schema_hash\0";
+
     // ============================================================
     // HOST KV SYMBOLS (optional, for host-context-aware loading)
     // ============================================================
@@ -162,7 +172,7 @@ pub mod gui_symbols {
     pub const REQUIRED: &[&[u8]] = &[ON_LOAD, ON_RENDER];
     
     /// Optional symbols
-    pub const OPTIONAL: &[&[u8]] = &[ON_EVENT, ON_UNLOAD, GET_ABI_VERSION, ON_SAVE_STATE, ON_LOAD_FROM_JSON, ON_LOAD_HOST, HOST_KV_SCHEMAS_LEN, HOST_KV_SCHEMAS];
+    pub const OPTIONAL: &[&[u8]] = &[ON_EVENT, ON_UNLOAD, GET_ABI_VERSION, ON_SAVE_STATE, ON_LOAD_FROM_JSON, GET_STATE_SCHEMA_HASH, ON_LOAD_HOST, HOST_KV_SCHEMAS_LEN, HOST_KV_SCHEMAS];
     
     // Function signatures
     /// GuiState* gui_on_load(GuiState* prev, void* renderer, CoreAPI* api)
@@ -189,6 +199,9 @@ pub mod gui_symbols {
     /// GuiState* gui_on_load_from_json(const char* json)
     pub type OnLoadFromJsonFn = unsafe extern "C" fn(*const c_char) -> StatePtr;
     
+    /// uint64_t gui_get_state_schema_hash(void)
+    pub type GetStateSchemaHashFn = unsafe extern "C" fn() -> u64;
+
     /// uint32_t gui_host_kv_schemas_len(void)
     pub type HostKvSchemasLenFn = unsafe extern "C" fn() -> c_uint;
     

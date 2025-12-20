@@ -219,7 +219,7 @@ impl BoundaryChecker {
     }
     
     /// Analyze source code and extract boundary-relevant information
-    pub fn analyze_source(&self, source: &str, module_name: &str) -> ModuleAnalysis {
+    pub fn analyze_source(&self, source: &str, _module_name: &str) -> ModuleAnalysis {
         let mut analysis = ModuleAnalysis::default();
         
         // Extract function signatures

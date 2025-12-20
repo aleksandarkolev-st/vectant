@@ -3,9 +3,16 @@ use std::io::{self, BufRead, Write};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
-use std::ffi::{c_void, c_int, c_uint, c_ulong, c_long, CString};
+use std::ffi::{c_void, c_int, c_uint, CString};
 use std::ptr;
 use std::collections::HashMap;
+
+// Wrapper types to make raw pointers thread-safe to move across threads
+#[derive(Clone, Copy)]
+struct SendVoidPtr(pub usize);
+unsafe impl Send for SendVoidPtr {}
+unsafe impl Sync for SendVoidPtr {}
+
 #[cfg(target_os = "linux")]
 use std::process::Command;
 
@@ -14,23 +21,24 @@ use x11rb::connection::Connection;
 #[cfg(target_os = "linux")]
 use x11rb::protocol::xproto::*;
 #[cfg(target_os = "linux")]
-use x11rb::protocol::shm::{self, ConnectionExt as ShmConnectionExt};
+use x11rb::protocol::shm::ConnectionExt as ShmConnectionExt;
 
 mod plugin_contract;
 mod capability;
 mod host_kv;
 mod state_diff;
 mod crash_recovery;
+mod source_map;
 
-use plugin_contract::{ModuleSlot, ModuleInfo, RebuildScope, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
+use plugin_contract::{ModuleSlot, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
 use capability::{HmrCapability, detect_capabilities, HmrStatus};
 use host_kv::{
-    KV_STORE, SynthiHostContextV1, HostKvApiV1, HostKvSchemaEvent,
+    KV_STORE, SynthiHostContextV1, HostKvSchemaEvent,
     create_kv_api, read_schema_table, module_slot_to_u32,
 };
 use state_diff::{migrate_state, generate_migration_report};
 use crash_recovery::{install_crash_handlers, execute_with_protection, should_force_restart, 
-                     reset_crash_count, get_last_crash, HmrCrashStatus, generate_crash_report};
+                     reset_crash_count, HmrCrashStatus, generate_crash_report, set_current_lib_path};
 
 // SDL2 Definitions
 #[cfg(target_os = "linux")]
@@ -103,6 +111,7 @@ struct AppState {
 struct ModuleState {
     state_ptr: *mut c_void,      // Module's own state (CoreState or GuiState)
     abi_version: u32,            // ABI version reported by the module
+    schema_hash: u64,            // Schema hash for strict binary compatibility check
     core_api_ptr: *mut c_void,   // For GUI: pointer to CoreAPI from core module
 }
 
@@ -111,6 +120,7 @@ impl Default for ModuleState {
         ModuleState { 
             state_ptr: std::ptr::null_mut(),
             abi_version: 0,
+            schema_hash: 0,
             core_api_ptr: std::ptr::null_mut(),
         }
     }
@@ -327,15 +337,23 @@ fn main() {
             unsafe {
                 let mut event: SDL_Event = std::mem::zeroed();
                 while SDL_PollEvent(&mut event) != 0 {
-                    // INDEPENDENT SWAP: Pass events with module-specific state
+                    // SPLIT MODE: Events go to core module with core's state.
+                    // Core handles button clicks, key presses, etc. that affect app state.
+                    // GUI module can also receive events for hover/focus handling.
                     // Pass SDL_Event to all loaded modules that export on_event
                     // The plugin's on_event expects SDL_Event* (not XEvent*)
                     // Plugins MUST be compiled to expect SDL_Event, not XEvent
                     for (name, lib) in modules.iter() {
                         let event_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut SDL_Event)>, _> = lib.get(b"on_event");
                         if let Ok(f) = event_func {
-                            // Use module-specific state for GUI
-                            let state_ptr = if name == "gui" {
+                            // CRITICAL FIX: In split mode, both core and GUI should receive
+                            // core's state for events. Core handles state changes (pause, quit),
+                            // and if GUI has on_event it should also see core's state.
+                            let state_ptr = if modules.contains_key("core") && !app_state.raw.is_null() {
+                                // Split mode: use core's state for all event handlers
+                                app_state.raw
+                            } else if name == "gui" {
+                                // GUI-only mode: use GUI's own state
                                 module_states.get(name).map(|s| s.state_ptr).unwrap_or(app_state.raw)
                             } else {
                                 app_state.raw
@@ -721,6 +739,48 @@ fn main() {
                                 // Start with module's previous state or null for fresh init
                                 let mut new_state: *mut c_void = module_prev_state;
                                 let mut core_api_ptr: *mut c_void = std::ptr::null_mut();
+
+                                // ============================================================
+                                // SCHEMA HASH VERIFICATION (STRICT ABI CHECK)
+                                // ============================================================
+                                // Before reusing the raw state pointer, we MUST verify that the
+                                // struct layout hasn't changed. We use a hash provided by the
+                                // compiler/plugin for this.
+                                // ============================================================
+                                let old_schema_hash = module_states.get(name).map(|s| s.schema_hash).unwrap_or(0);
+                                let mut new_schema_hash: u64 = 0;
+                                
+                                let get_schema_hash: Result<Symbol<unsafe extern "C" fn() -> u64>, _> = 
+                                    if name == "core" { new_lib.get(b"core_get_state_schema_hash") }
+                                    else if name == "gui" { new_lib.get(b"gui_get_state_schema_hash") }
+                                    else { Err(libloading::Error::DlSymUnknown) }; // Legacy doesn't support this
+
+                                if let Ok(f) = get_schema_hash {
+                                    new_schema_hash = f();
+                                    eprintln!("[Runner] [HMR] Module '{}' schema hash: {:016X}", name, new_schema_hash);
+                                }
+
+                                if old_schema_hash != 0 && new_schema_hash != 0 && old_schema_hash != new_schema_hash {
+                                    eprintln!("[Runner] [HMR] CRITICAL: Schema hash mismatch (Old: {:016X}, New: {:016X})", old_schema_hash, new_schema_hash);
+                                    eprintln!("[Runner] [HMR] The struct layout has changed. Reusing the raw state pointer would cause a crash.");
+                                    eprintln!("[Runner] [HMR] Forcing COLD RELOAD for state (passing NULL to on_load).");
+                                    
+                                    // Send explicit status event for UI visibility
+                                    let status = HmrStatus::rejected(name, &format!("Schema mismatch (Cold Reload): {:016X} -> {:016X}", old_schema_hash, new_schema_hash));
+                                    eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+
+                                    // Force fresh initialization.
+                                    // Note: JSON migration (below) can still rescue the data if available,
+                                    // because it parses into the NEW struct layout.
+                                    new_state = std::ptr::null_mut(); 
+                                } else if new_schema_hash == 0 && old_schema_hash != 0 {
+                                    eprintln!("[Runner] [HMR] WARNING: New module missing schema hash. Assuming unsafe.");
+                                    
+                                    let status = HmrStatus::rejected(name, "Missing schema hash (Cold Reload)");
+                                    eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+
+                                    new_state = std::ptr::null_mut();
+                                }
                                 
                                 // If we have saved state, restore it to new module
                                 // Try new symbol name first, then legacy
@@ -735,22 +795,103 @@ fn main() {
                                     if let Ok(f) = load_json_new.or(load_json_legacy) {
                                         let old_json_str = json.to_str().unwrap_or("{}");
                                         
-                                        // Try to get a "default" state from the new module to use as template
-                                        // This allows field-level diffing
+                                        // ============================================================
+                                        // FIELD-LEVEL STATE DIFFING
+                                        // ============================================================
+                                        // Try to get a "default" state from the new module to use as template.
+                                        // This allows field-level diffing like Next.js Fast Refresh.
+                                        // ============================================================
                                         let mut use_field_diff = false;
-                                        let mut migrated_json = old_json_str.to_string();
+                                        let mut migrated_json_cstring: Option<CString> = None;
                                         
-                                        // For now, load with old state directly
-                                        // TODO: Get template state from new module for true field-level diff
-                                        // The migrate_state function is available if we can get the template
+                                        // Get on_load symbol to create a fresh template state
+                                        let load_new: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = 
+                                            if name == "core" { new_lib.get(b"core_on_load") }
+                                            else if name == "gui" { new_lib.get(b"gui_on_load") }
+                                            else { new_lib.get(b"on_load") };
+                                        let load_legacy: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = 
+                                            new_lib.get(b"on_load");
                                         
-                                        eprintln!("[Runner] [HMR] Restoring state from JSON into new module '{}'...", name);
-                                        new_state = f(json.as_ptr());
+                                        // Get on_save_to_json to serialize template state
+                                        let save_json_new: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut i8>, _> = 
+                                            if name == "core" { new_lib.get(b"core_on_save_to_json") }
+                                            else if name == "gui" { new_lib.get(b"gui_on_save_to_json") }
+                                            else { new_lib.get(b"on_save_to_json") };
+                                        let save_json_legacy: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut i8>, _> = 
+                                            new_lib.get(b"on_save_to_json");
                                         
-                                        // Log migration report if we did field-level diffing
-                                        if use_field_diff {
-                                            eprintln!("[Runner] [HMR] Field-level state migration applied");
+                                        // If both symbols exist, we can do field-level diffing
+                                        if let (Ok(load_fn), Ok(save_fn)) = (load_new.or(load_legacy), save_json_new.or(save_json_legacy)) {
+                                            // Create a fresh state with default values (the "template")
+                                            let template_state = load_fn(std::ptr::null_mut(), std::ptr::null_mut());
+                                            
+                                            if !template_state.is_null() {
+                                                // Serialize template state to JSON
+                                                let template_json_ptr = save_fn(template_state);
+                                                
+                                                if !template_json_ptr.is_null() {
+                                                    let template_json_cstr = std::ffi::CStr::from_ptr(template_json_ptr);
+                                                    if let Ok(template_json_str) = template_json_cstr.to_str() {
+                                                        // Perform field-level state migration
+                                                        let module_type = if name == "core" { "core" } else if name == "gui" { "gui" } else { "main" };
+                                                        
+                                                        match migrate_state(old_json_str, template_json_str, module_type) {
+                                                            Ok((merged_json, diff_result)) => {
+                                                                // Log migration report
+                                                                let report = generate_migration_report(&diff_result);
+                                                                eprintln!("[Runner] [HMR] Field-level state migration for '{}':", name);
+                                                                eprintln!("{}", report);
+                                                                
+                                                                // Emit HMR status with migration details
+                                                                let status = HmrStatus::state_migrated(
+                                                                    name, 
+                                                                    diff_result.preserved_fields.len(), 
+                                                                    diff_result.reset_fields.len(),
+                                                                    diff_result.new_fields.len()
+                                                                );
+                                                                eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                                                                
+                                                                // Prepare the migrated JSON for loading
+                                                                migrated_json_cstring = CString::new(merged_json).ok();
+                                                                use_field_diff = true;
+                                                            }
+                                                            Err(e) => {
+                                                                eprintln!("[Runner] [HMR] Field-level diff failed for '{}': {}", name, e);
+                                                            }
+                                                        }
+                                                    }
+                                                    
+                                                    // Free the template JSON (if the module provides a free function)
+                                                    let free_json: Result<Symbol<unsafe extern "C" fn(*mut i8)>, _> = new_lib.get(b"synthi_free_json");
+                                                    if let Ok(free_fn) = free_json {
+                                                        free_fn(template_json_ptr);
+                                                    }
+                                                }
+                                                
+                                                // Free the template state (if the module provides an unload function)
+                                                let unload: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = 
+                                                    if name == "core" { new_lib.get(b"core_on_unload") }
+                                                    else if name == "gui" { new_lib.get(b"gui_on_unload") }
+                                                    else { new_lib.get(b"on_unload") };
+                                                if let Ok(unload_fn) = unload {
+                                                    unload_fn(template_state);
+                                                }
+                                            }
                                         }
+                                        
+                                        // Load state (either migrated or original)
+                                        let final_json_ptr = if use_field_diff {
+                                            if let Some(ref migrated) = migrated_json_cstring {
+                                                migrated.as_ptr()
+                                            } else {
+                                                json.as_ptr()
+                                            }
+                                        } else {
+                                            json.as_ptr()
+                                        };
+                                        
+                                        eprintln!("[Runner] [HMR] Restoring state from JSON into new module '{}' (field_diff={})...", name, use_field_diff);
+                                        new_state = f(final_json_ptr);
                                     }
                                 }
                                 
@@ -910,6 +1051,21 @@ fn main() {
                                     }
                                 }
                                 
+                                // ============================================================
+                                // VALIDATE on_load RETURN POINTER (CRITICAL FOR HMR)
+                                // ============================================================
+                                // The on_load function MUST return the same pointer when prev_state
+                                // is valid. If it returns a different pointer (e.g., from malloc),
+                                // state won't be preserved properly on next HMR cycle.
+                                // ============================================================
+                                if !module_prev_state.is_null() && !new_state.is_null() && new_state != module_prev_state {
+                                    eprintln!("[Runner] [HMR] WARNING: on_load returned different pointer!");
+                                    eprintln!("[Runner] [HMR]   prev_state: {:p}", module_prev_state);
+                                    eprintln!("[Runner] [HMR]   new_state:  {:p}", new_state);
+                                    eprintln!("[Runner] [HMR]   This suggests module used malloc instead of static variable.");
+                                    eprintln!("[Runner] [HMR]   State preservation may not work correctly on next reload.");
+                                }
+                                
                                 // Validate state header after initialization
                                 if !new_state.is_null() {
                                     let expected_magic = match slot {
@@ -966,6 +1122,7 @@ fn main() {
                                 module_states.insert(name.to_string(), ModuleState { 
                                     state_ptr: new_state,
                                     abi_version: module_abi_version,
+                                    schema_hash: new_schema_hash,
                                     core_api_ptr: if name == "gui" { core_api_ptr } else { std::ptr::null_mut() },
                                 });
                                 
@@ -1043,7 +1200,7 @@ fn main() {
                                 // ============================================================
                                 // Send detailed HMR status to stdout for the main process
                                 // ============================================================
-                                if let Ok(ref report) = capability_report {
+                                if let Ok(ref _report) = capability_report {
                                     let status = HmrStatus::Applied {
                                         module: name.to_string(),
                                         capability: hmr_capability.description().to_string(),
@@ -1146,23 +1303,44 @@ fn main() {
                         #[cfg(unix)]
                         {
                             let module_name = name.clone();
-                            let result = execute_with_protection(&module_name, || {
-                                f(state_ptr, dt);
+                            // Set current library path for source map lookup on crash
+                            if let Some(lib_path) = loaded_paths.get(name) {
+                                set_current_lib_path(lib_path);
+                            }
+                            
+                            let state_ptr_wrapper = SendVoidPtr(state_ptr as usize);
+                            let func_ptr = *f;
+                            let result = execute_with_protection(&module_name, move || {
+                                let state_ptr = state_ptr_wrapper.0 as *mut std::ffi::c_void;
+                                func_ptr(state_ptr, dt);
                             });
                             
                             if let Err(crash_info) = result {
                                 // Crash recovered! Log and continue with old module
                                 eprintln!("{}", generate_crash_report(&crash_info));
-                                let status = HmrCrashStatus::from_crash(&crash_info, !should_force_restart());
+                                
+                                // CRITICAL SAFETY CHECK:
+                                // If the crash was caused by memory corruption (SIGSEGV, SIGBUS, etc.),
+                                // we MUST NOT continue in the same process, as the heap state is undefined.
+                                // We must force a cold restart regardless of the crash count.
+                                let is_fatal = crash_info.is_fatal_memory_error();
+                                let force_restart = is_fatal || should_force_restart();
+                                
+                                let status = HmrCrashStatus::from_crash(&crash_info, !force_restart);
                                 eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
                                 
-                                if should_force_restart() {
-                                    eprintln!("[Runner] Too many consecutive crashes. Exiting.");
+                                if force_restart {
+                                    if is_fatal {
+                                        eprintln!("[Runner] Fatal memory corruption detected ({:?}). Forcing cold restart.", crash_info.signal_name);
+                                    } else {
+                                        eprintln!("[Runner] Too many consecutive crashes. Exiting.");
+                                    }
                                     std::process::exit(1);
                                 }
                                 
                                 // Skip this module for now, continue with others
-                                reset_crash_count();
+                                // Do NOT reset crash count here, otherwise the limit will never be reached!
+                                // reset_crash_count(); 
                                 continue;
                             }
                         }
@@ -1177,8 +1355,11 @@ fn main() {
         }
         
         // Render pass: 
-        // INDEPENDENT SWAP: For GUI-only updates, call gui's on_render with gui's state.
-        // For split mode (core+gui): Call gui_on_render independently.
+        // SPLIT MODE: GUI renders core's state (app_state.raw) since core owns the
+        // application data (x, y, dx, paused, etc.). GUI only handles presentation.
+        // The GUI's own state (module_states["gui"]) is for GUI-specific data like
+        // cached textures, hover states, etc. - but core state drives the rendering.
+        // 
         // For non-split mode (main): Call main's on_render/gui_render.
         
         // Check if GUI module has an independent on_render
@@ -1190,11 +1371,19 @@ fn main() {
                         .or_else(|| lib.get(b"on_render").ok())
                         .or_else(|| lib.get(b"gui_render").ok());
                 
-                // Get GUI's own state
-                let gui_state = module_states.get("gui").map(|s| s.state_ptr).unwrap_or(app_state.raw);
+                // CRITICAL FIX: In split mode (core+gui), GUI must render core's state
+                // because core owns application data (x, y, dx, paused, etc.).
+                // Only fall back to GUI's own state if core is not loaded.
+                let render_state = if modules.contains_key("core") && !app_state.raw.is_null() {
+                    // Split mode: render core's state (has animation data)
+                    app_state.raw
+                } else {
+                    // GUI-only mode: render GUI's own state
+                    module_states.get("gui").map(|s| s.state_ptr).unwrap_or(app_state.raw)
+                };
                 
                 if let Some(f) = render_func {
-                    f(gui_state);
+                    f(render_state);
                 }
             }
         } else if let Some(lib) = modules.get("core") {

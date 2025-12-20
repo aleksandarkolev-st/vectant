@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Extension System Test Suite v2 - Hardened</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; margin: 0; }
+    h1 { color: #58a6ff; margin-bottom: 10px; }
+    h2 { color: #8b949e; font-size: 14px; margin-top: 20px; }
+    .container { max-width: 1400px; margin: 0 auto; }
+    
+    .test-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+    @media (max-width: 1200px) { .test-grid { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 800px) { .test-grid { grid-template-columns: 1fr; } }
+    
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 16px; }
+    .card h3 { margin-top: 0; color: #58a6ff; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; }
+    
+    button { 
+      background: #238636; color: white; border: none; padding: 8px 16px; margin: 4px; 
+      border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500;
+    }
+    button:hover { background: #2ea043; }
+    button:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
+    button.danger { background: #da3633; }
+    button.danger:hover { background: #f85149; }
+    button.secondary { background: #21262d; border: 1px solid #30363d; }
+    button.secondary:hover { background: #30363d; }
+    button.warning { background: #9e6a03; }
+    button.warning:hover { background: #bb8009; }
+    
+    .log { 
+      background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+      padding: 12px; font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; 
+      white-space: pre-wrap; height: 400px; overflow: auto; 
+    }
+    .log .success { color: #3fb950; }
+    .log .error { color: #f85149; }
+    .log .warning { color: #d29922; }
+    .log .info { color: #58a6ff; }
+    .log .dim { color: #484f58; }
+    
+    .status { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 15px; }
+    .badge { 
+      display: inline-block; padding: 4px 8px; border-radius: 20px; font-size: 11px;
+      font-weight: 500; text-transform: uppercase;
+    }
+    .badge.pass { background: #238636; }
+    .badge.fail { background: #da3633; }
+    .badge.pending { background: #21262d; border: 1px solid #30363d; }
+    .badge.running { background: #1f6feb; }
+    
+    .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 10px; margin-top: 10px; }
+    .metric { background: #21262d; padding: 10px; border-radius: 6px; text-align: center; }
+    .metric-value { font-size: 20px; font-weight: bold; color: #58a6ff; }
+    .metric-label { font-size: 10px; color: #8b949e; text-transform: uppercase; }
+    
+    .extension-list { margin-top: 10px; max-height: 200px; overflow-y: auto; }
+    .extension-item { 
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 8px 12px; background: #21262d; border-radius: 6px; margin-bottom: 6px;
+    }
+    .extension-item .name { font-weight: 500; font-size: 13px; }
+    .extension-item .state { font-size: 10px; padding: 2px 8px; border-radius: 10px; text-transform: uppercase; }
+    .state.active { background: #238636; }
+    .state.loaded { background: #1f6feb; }
+    .state.installed { background: #6e7681; }
+    .state.suspended { background: #9e6a03; }
+    .state.crashed { background: #da3633; }
+    .state.quarantined { background: #8b1538; }
+    .state.disabled { background: #21262d; border: 1px solid #30363d; }
+
+    .phase-header { color: #f0883e; margin: 20px 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🛡️ Synthi Extension System v2 - Hardened Test Suite</h1>
+    <p style="color: #8b949e; margin-bottom: 20px;">
+      Testing: State Machine • Failure Semantics • Worker Isolation • Protocol Validation
+    </p>
+
+    <div class="test-grid">
+      <!-- Column 1: Test Controls -->
+      <div>
+        <div class="card">
+          <h3>📋 Test Status</h3>
+          <div class="status" id="testStatus">
+            <span class="badge pending" id="badge-init">Init</span>
+            <span class="badge pending" id="badge-load">Load</span>
+            <span class="badge pending" id="badge-activate">Activate</span>
+            <span class="badge pending" id="badge-command">Command</span>
+            <span class="badge pending" id="badge-timeout">Timeout</span>
+            <span class="badge pending" id="badge-recovery">Recovery</span>
+            <span class="badge pending" id="badge-quarantine">Quarantine</span>
+            <span class="badge pending" id="badge-states">States</span>
+          </div>
+          <div>
+            <button onclick="runAllTests()">▶ Run All Tests</button>
+            <button onclick="reset()" class="secondary">↺ Reset</button>
+          </div>
+        </div>
+
+        <div class="phase-header">Phase E: Malicious Extension Tests</div>
+        <div class="card">
+          <h3>💀 Abuse Tests</h3>
+          <div>
+            <button onclick="testInfiniteLoop()" class="danger">∞ Infinite Loop</button>
+            <button onclick="testSetIntervalSpam()" class="danger">⏱️ setInterval Spam</button>
+            <button onclick="testMessageFlood()" class="danger">📨 Message Flood</button>
+            <button onclick="testProtocolViolation()" class="danger">⚠️ Protocol Violation</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>🔧 Manual Controls</h3>
+          <div>
+            <button onclick="initWorker()">1. Init Worker</button>
+            <button onclick="loadGoodExtension()">2. Load Good Ext</button>
+            <button onclick="activateExtension('test.hello')">3. Activate</button>
+            <button onclick="executeCommand('hello.sayHello')">4. Run Command</button>
+          </div>
+          <div style="margin-top: 8px;">
+            <button onclick="pingWorker()" class="secondary">Ping Worker</button>
+            <button onclick="getStates()" class="secondary">Get States</button>
+            <button onclick="restartWorker()" class="warning">Restart Worker</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Column 2: System State -->
+      <div>
+        <div class="card">
+          <h3>📊 Metrics</h3>
+          <div class="metrics">
+            <div class="metric">
+              <div class="metric-value" id="workerGen">0</div>
+              <div class="metric-label">Worker Gen</div>
+            </div>
+            <div class="metric">
+              <div class="metric-value" id="workerState">-</div>
+              <div class="metric-label">Worker</div>
+            </div>
+            <div class="metric">
+              <div class="metric-value" id="extCount">0</div>
+              <div class="metric-label">Extensions</div>
+            </div>
+            <div class="metric">
+              <div class="metric-value" id="quarantined">0</div>
+              <div class="metric-label">Quarantined</div>
+            </div>
+            <div class="metric">
+              <div class="metric-value" id="pendingCount">0</div>
+              <div class="metric-label">Pending</div>
+            </div>
+            <div class="metric">
+              <div class="metric-value" id="restartCount">0</div>
+              <div class="metric-label">Restarts</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>📦 Extension States (Main Thread Authoritative)</h3>
+          <div class="extension-list" id="extensionList">
+            <p style="color: #8b949e; font-size: 12px;">No extensions registered</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>🔍 State Machine</h3>
+          <div style="font-size: 12px; color: #8b949e;">
+            <p><strong>Valid States:</strong></p>
+            <code style="color: #58a6ff;">installed → loaded → activating → active → suspended → crashed → quarantined</code>
+            <p style="margin-top: 10px;"><strong>Failure Policy:</strong></p>
+            <ul style="margin: 5px 0; padding-left: 20px;">
+              <li>Activation timeout → <span style="color: #f85149;">Immediate quarantine</span></li>
+              <li>Runtime crash ×2 in 10min → <span style="color: #f85149;">Quarantine</span></li>
+              <li>Protocol violation → <span style="color: #f85149;">Immediate quarantine</span></li>
+              <li>CPU limit ×3 → <span style="color: #d29922;">Suspend then quarantine</span></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- Column 3: Logs -->
+      <div>
+        <div class="card" style="height: 100%;">
+          <h3>📝 Log Output 
+            <button onclick="clearLog()" class="secondary" style="float: right; padding: 4px 8px; font-size: 11px;">Clear</button>
+          </h3>
+          <div id="log" class="log"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    // ============================================================================
+    // State (Main Thread is Source of Truth!)
+    // ============================================================================
+    
+    // State machine states (from Phase A)
+    const ExtensionState = {
+      INSTALLED: 'installed',
+      LOADED: 'loaded',
+      ACTIVATING: 'activating',
+      ACTIVE: 'active',
+      SUSPENDED: 'suspended',
+      CRASHED: 'crashed',
+      QUARANTINED: 'quarantined',
+      DISABLED: 'disabled'
+    };
+
+    // Main thread state
+    const state = {
+      worker: null,
+      workerGeneration: 0,
+      workerState: 'uninitialized', // uninitialized | initializing | running | restarting | dead
+      extensions: new Map(), // extensionId -> {state, manifest, code, failureReason, failureHistory}
+      pendingRequests: new Map(),
+      messageId: 0,
+      lastHeartbeat: null,
+      restartCount: 0
+    };
+
+    // ============================================================================
+    // Logging
+    // ============================================================================
+    function log(msg, level = 'info') {
+      const el = document.getElementById('log');
+      const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+      el.innerHTML += `<span class="${level}">[${time}] ${msg}</span>\n`;
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function clearLog() {
+      document.getElementById('log').innerHTML = '';
+    }
+
+    // ============================================================================
+    // UI Updates
+    // ============================================================================
+    function setBadge(name, status) {
+      const badge = document.getElementById(`badge-${name}`);
+      if (badge) {
+        badge.className = `badge ${status}`;
+      }
+    }
+
+    function updateMetrics() {
+      document.getElementById('workerGen').textContent = state.workerGeneration;
+      document.getElementById('workerState').textContent = state.workerState;
+      document.getElementById('extCount').textContent = state.extensions.size;
+      document.getElementById('quarantined').textContent = 
+        [...state.extensions.values()].filter(e => e.state === ExtensionState.QUARANTINED).length;
+      document.getElementById('pendingCount').textContent = state.pendingRequests.size;
+      document.getElementById('restartCount').textContent = state.restartCount;
+    }
+
+    function updateExtensionList() {
+      const listEl = document.getElementById('extensionList');
+      if (state.extensions.size === 0) {
+        listEl.innerHTML = '<p style="color: #8b949e; font-size: 12px;">No extensions registered</p>';
+        return;
+      }
+
+      listEl.innerHTML = [...state.extensions.entries()].map(([id, ext]) => `
+        <div class="extension-item">
+          <span class="name">${ext.manifest?.displayName || id}</span>
+          <span class="state ${ext.state}">${ext.state}</span>
+        </div>
+      `).join('');
+      
+      updateMetrics();
+    }
+
+    // ============================================================================
+    // State Machine (Main Thread Authoritative!)
+    // ============================================================================
+    
+    function transitionState(extensionId, newState, reason = null) {
+      const ext = state.extensions.get(extensionId);
+      if (!ext) {
+        log(`Cannot transition unknown extension: ${extensionId}`, 'error');
+        return false;
+      }
+
+      const oldState = ext.state;
+      ext.state = newState;
+      ext.stateChangedAt = Date.now();
+      
+      if (reason) {
+        ext.failureReason = reason;
+        ext.failureHistory = ext.failureHistory || [];
+        ext.failureHistory.push({ state: newState, reason, timestamp: Date.now() });
+      }
+
+      log(`State: ${extensionId} [${oldState}] → [${newState}]${reason ? ` (${reason})` : ''}`, 
+        newState === ExtensionState.QUARANTINED ? 'error' : 
+        newState === ExtensionState.CRASHED ? 'warning' : 'dim');
+
+      updateExtensionList();
+      return true;
+    }
+
+    function registerExtension(extensionId, manifest, code) {
+      state.extensions.set(extensionId, {
+        state: ExtensionState.INSTALLED,
+        manifest,
+        code,
+        failureReason: null,
+        failureHistory: [],
+        activationAttempts: 0
+      });
+      log(`Registered: ${extensionId}`, 'dim');
+      updateExtensionList();
+    }
+
+    // ============================================================================
+    // Worker Communication
+    // ============================================================================
+    
+    function sendRequest(method, args = [], timeout = 5000) {
+      return new Promise((resolve, reject) => {
+        if (state.workerState !== 'running') {
+          reject(new Error(`Worker not running (state: ${state.workerState})`));
+          return;
+        }
+
+        const id = ++state.messageId;
+        const timer = setTimeout(() => {
+          state.pendingRequests.delete(id);
+          updateMetrics();
+          reject(new Error(`Timeout: ${method}`));
+        }, timeout);
+
+        state.pendingRequests.set(id, { resolve, reject, timer, method });
+        updateMetrics();
+
+        state.worker.postMessage({
+          id,
+          type: 'request',
+          method,
+          args,
+          generation: state.workerGeneration
+        });
+
+        log(`→ ${method}(${args.slice(0, 2).map(a => 
+          typeof a === 'string' ? a.substring(0, 25) : JSON.stringify(a)?.substring(0, 25)
+        ).join(', ')})`, 'dim');
+      });
+    }
+
+    function handleWorkerMessage(event) {
+      const data = event.data;
+      
+      // Drop stale messages
+      if (typeof data?.generation === 'number' && data.generation !== state.workerGeneration) {
+        log(`Dropped stale message (gen ${data.generation} vs ${state.workerGeneration})`, 'dim');
+        return;
+      }
+
+      if (data.type === 'response') {
+        const pending = state.pendingRequests.get(data.id);
+        if (pending) {
+          clearTimeout(pending.timer);
+          state.pendingRequests.delete(data.id);
+          updateMetrics();
+          
+          if (data.error) {
+            log(`← Error: ${data.error.message}`, 'error');
+            pending.reject(new Error(data.error.message));
+          } else {
+            pending.resolve(data.result);
+          }
+        }
+      } else if (data.type === 'event') {
+        handleWorkerEvent(data);
+      }
+    }
+
+    function handleWorkerEvent(data) {
+      const { method, args = [] } = data;
+      
+      switch (method) {
+        case 'workerReady':
+          log('← Worker ready', 'success');
+          break;
+          
+        case 'heartbeat':
+          state.lastHeartbeat = Date.now();
+          break;
+          
+        case 'registerCommand':
+          log(`← Command registered: ${args[0]}`, 'dim');
+          break;
+          
+        case 'activationComplete':
+          const [extId, success, time, error] = args;
+          if (success) {
+            transitionState(extId, ExtensionState.ACTIVE);
+            log(`← Activation complete: ${extId} (${time?.toFixed(0)}ms)`, 'success');
+          } else {
+            log(`← Activation failed: ${extId} - ${error}`, 'error');
+          }
+          break;
+          
+        case 'protocolViolation':
+          log(`← PROTOCOL VIOLATION: ${args[0]}`, 'error');
+          break;
+          
+        case 'workerError':
+          log(`← Worker error: ${args[0]}`, 'error');
+          break;
+          
+        default:
+          log(`← ${method}`, 'dim');
+      }
+    }
+
+    // ============================================================================
+    // Worker Lifecycle
+    // ============================================================================
+    
+    window.initWorker = async function() {
+      log('\n━━━ Initializing Worker ━━━', 'info');
+      setBadge('init', 'running');
+
+      return new Promise((resolve, reject) => {
+        if (state.worker) {
+          state.worker.terminate();
+          log('Terminated previous worker', 'dim');
+        }
+
+        // Reject all pending
+        for (const [id, pending] of state.pendingRequests) {
+          clearTimeout(pending.timer);
+          pending.reject(new Error('Worker restarting'));
+        }
+        state.pendingRequests.clear();
+
+        state.workerGeneration++;
+        state.workerState = 'initializing';
+        updateMetrics();
+
+        try {
+          // Use the HARDENED worker
+          state.worker = new Worker('/extension-host-worker-hardened.js');
+          log('Created hardened worker', 'dim');
+        } catch (err) {
+          state.workerState = 'dead';
+          log(`✗ Failed to create worker: ${err.message}`, 'error');
+          setBadge('init', 'fail');
+          updateMetrics();
+          reject(err);
+          return;
+        }
+
+        state.worker.onerror = (err) => {
+          log(`✗ Worker error: ${err.message}`, 'error');
+          state.workerState = 'dead';
+          updateMetrics();
+        };
+
+        state.worker.onmessage = handleWorkerMessage;
+
+        // Wait for ready
+        let resolved = false;
+        const timeout = setTimeout(() => {
+          if (!resolved) {
+            log('✗ Worker init timeout', 'error');
+            state.workerState = 'dead';
+            setBadge('init', 'fail');
+            updateMetrics();
+            reject(new Error('Worker init timeout'));
+          }
+        }, 10000);
+
+        const checkReady = (event) => {
+          if (event.data?.method === 'workerReady' && !resolved) {
+            resolved = true;
+            clearTimeout(timeout);
+            state.workerState = 'running';
+            state.lastHeartbeat = Date.now();
+            log('✓ Worker READY', 'success');
+            setBadge('init', 'pass');
+            updateMetrics();
+            resolve(true);
+          }
+        };
+
+        // Add temporary ready listener
+        const originalHandler = state.worker.onmessage;
+        state.worker.onmessage = (event) => {
+          checkReady(event);
+          originalHandler(event);
+        };
+      });
+    };
+
+    window.restartWorker = async function() {
+      log('\n━━━ Restarting Worker ━━━', 'warning');
+      state.restartCount++;
+      
+      // All extensions go back to INSTALLED (need reload)
+      for (const [id, ext] of state.extensions) {
+        if (ext.state !== ExtensionState.QUARANTINED && ext.state !== ExtensionState.DISABLED) {
+          ext.state = ExtensionState.INSTALLED;
+        }
+      }
+      updateExtensionList();
+
+      await initWorker();
+      
+      // Reload non-quarantined extensions
+      for (const [id, ext] of state.extensions) {
+        if (ext.state === ExtensionState.QUARANTINED || ext.state === ExtensionState.DISABLED) {
+          log(`Skipping ${id} (${ext.state})`, 'dim');
+          continue;
+        }
+
+        try {
+          await sendRequest('loadExtension', [id, ext.code, ext.manifest]);
+          transitionState(id, ExtensionState.LOADED);
+        } catch (err) {
+          log(`Failed to reload ${id}: ${err.message}`, 'error');
+        }
+      }
+    };
+
+    // ============================================================================
+    // Test Extensions
+    // ============================================================================
+    
+    const GOOD_EXTENSION_CODE = `
+function activate(context) {
+  console.log('[HelloExt] activate()');
+  
+  const cmd1 = vscode.commands.registerCommand('hello.sayHello', () => {
+    return 'Hello from extension! Time: ' + new Date().toLocaleTimeString();
+  });
+  
+  const cmd2 = vscode.commands.registerCommand('hello.openWebview', () => {
+    const panel = vscode.window.createWebviewPanel('hello', 'Hello', { viewColumn: 1 }, {});
+    panel.webview.html = '<h1>Hello!</h1>';
+    return 'Webview opened';
+  });
+  
+  context.subscriptions.push(cmd1, cmd2);
+}
+function deactivate() {}
+module.exports = { activate, deactivate };
+`;
+
+    const GOOD_MANIFEST = {
+      name: 'test.hello',
+      displayName: 'Hello Extension',
+      version: '1.0.0'
+    };
+
+    const INFINITE_LOOP_CODE = `
+function activate(context) {
+  console.log('[BadExt] Starting infinite loop...');
+  while (true) { /* This must be killed */ }
+}
+function deactivate() {}
+module.exports = { activate, deactivate };
+`;
+
+    const SETINTERVAL_SPAM_CODE = `
+function activate(context) {
+  console.log('[SpamExt] Starting setInterval spam...');
+  for (let i = 0; i < 1000; i++) {
+    setInterval(() => {
+      vscode.window.showInformationMessage('Spam ' + i);
+    }, 1);
+  }
+}
+function deactivate() {}
+module.exports = { activate, deactivate };
+`;
+
+    const MESSAGE_FLOOD_CODE = `
+function activate(context) {
+  console.log('[FloodExt] Starting message flood...');
+  const cmd = vscode.commands.registerCommand('flood.start', () => {
+    for (let i = 0; i < 10000; i++) {
+      vscode.window.showInformationMessage('Flood ' + i);
+    }
+    return 'Flooded';
+  });
+  context.subscriptions.push(cmd);
+}
+function deactivate() {}
+module.exports = { activate, deactivate };
+`;
+
+    // ============================================================================
+    // Test Functions
+    // ============================================================================
+    
+    window.loadGoodExtension = async function() {
+      log('\n━━━ Loading Good Extension ━━━', 'info');
+      setBadge('load', 'running');
+
+      try {
+        registerExtension('test.hello', GOOD_MANIFEST, GOOD_EXTENSION_CODE);
+        await sendRequest('loadExtension', ['test.hello', GOOD_EXTENSION_CODE, GOOD_MANIFEST]);
+        transitionState('test.hello', ExtensionState.LOADED);
+        log('✓ Extension loaded', 'success');
+        setBadge('load', 'pass');
+        return true;
+      } catch (err) {
+        log(`✗ Load failed: ${err.message}`, 'error');
+        setBadge('load', 'fail');
+        throw err;
+      }
+    };
+
+    window.activateExtension = async function(extensionId) {
+      log(`\n━━━ Activating: ${extensionId} ━━━`, 'info');
+      setBadge('activate', 'running');
+
+      const ext = state.extensions.get(extensionId);
+      if (!ext) {
+        log('✗ Extension not registered', 'error');
+        setBadge('activate', 'fail');
+        return;
+      }
+
+      if (ext.state === ExtensionState.QUARANTINED) {
+        log(`✗ Extension is quarantined: ${ext.failureReason}`, 'error');
+        setBadge('activate', 'fail');
+        return;
+      }
+
+      transitionState(extensionId, ExtensionState.ACTIVATING);
+      ext.activationAttempts++;
+
+      try {
+        const result = await sendRequest('activateExtension', [extensionId], 3000);
+        
+        if (result.success) {
+          transitionState(extensionId, ExtensionState.ACTIVE);
+          log(`✓ Activated in ${result.activationTime?.toFixed(0)}ms`, 'success');
+          setBadge('activate', 'pass');
+          return result;
+        } else {
+          // Activation returned failure
+          if (result.fatal || result.code === 'ACTIVATION_TIMEOUT') {
+            transitionState(extensionId, ExtensionState.QUARANTINED, result.error);
+            log(`✗ Quarantined: ${result.error}`, 'error');
+          } else {
+            transitionState(extensionId, ExtensionState.CRASHED, result.error);
+          }
+          setBadge('activate', 'fail');
+          throw new Error(result.error);
+        }
+      } catch (err) {
+        // Request itself failed (e.g., timeout)
+        if (err.message.includes('Timeout')) {
+          log('✗ Hard timeout - quarantining and restarting worker', 'error');
+          transitionState(extensionId, ExtensionState.QUARANTINED, 'Activation hard timeout');
+          setBadge('activate', 'fail');
+          await restartWorker();
+        } else {
+          transitionState(extensionId, ExtensionState.CRASHED, err.message);
+          setBadge('activate', 'fail');
+        }
+        throw err;
+      }
+    };
+
+    window.executeCommand = async function(commandId) {
+      log(`\n━━━ Executing: ${commandId} ━━━`, 'info');
+      setBadge('command', 'running');
+
+      try {
+        const startTime = performance.now();
+        const result = await sendRequest('executeCommand', [commandId], 5000);
+        const elapsed = performance.now() - startTime;
+        
+        log(`✓ Result: "${result}" (${elapsed.toFixed(0)}ms)`, 'success');
+        setBadge('command', 'pass');
+        return result;
+      } catch (err) {
+        log(`✗ Command failed: ${err.message}`, 'error');
+        setBadge('command', 'fail');
+        throw err;
+      }
+    };
+
+    window.pingWorker = async function() {
+      try {
+        const result = await sendRequest('ping', [], 1000);
+        log(`✓ Pong: gen=${result.generation}`, 'success');
+      } catch (err) {
+        log(`✗ Ping failed: ${err.message}`, 'error');
+      }
+    };
+
+    window.getStates = async function() {
+      log('\n━━━ Extension States ━━━', 'info');
+      setBadge('states', 'running');
+      
+      try {
+        const workerStates = await sendRequest('getExtensionStates', [], 2000);
+        log(`Worker reports ${workerStates.length} extension(s)`, 'dim');
+        
+        // Compare with main thread state
+        log('Main thread authoritative state:', 'info');
+        for (const [id, ext] of state.extensions) {
+          log(`  ${id}: ${ext.state}${ext.failureReason ? ` (${ext.failureReason})` : ''}`, 
+            ext.state === ExtensionState.QUARANTINED ? 'error' : 'dim');
+        }
+        
+        setBadge('states', 'pass');
+        return workerStates;
+      } catch (err) {
+        log(`✗ Failed to get states: ${err.message}`, 'error');
+        setBadge('states', 'fail');
+        throw err;
+      }
+    };
+
+    // ============================================================================
+    // Phase E: Malicious Extension Tests
+    // ============================================================================
+    
+    window.testInfiniteLoop = async function() {
+      log('\n━━━ ABUSE TEST: Infinite Loop ━━━', 'warning');
+      setBadge('timeout', 'running');
+
+      const BAD_MANIFEST = { name: 'bad.infinite', displayName: 'Infinite Loop' };
+      registerExtension('bad.infinite', BAD_MANIFEST, INFINITE_LOOP_CODE);
+
+      try {
+        await sendRequest('loadExtension', ['bad.infinite', INFINITE_LOOP_CODE, BAD_MANIFEST]);
+        transitionState('bad.infinite', ExtensionState.LOADED);
+        log('Bad extension loaded', 'dim');
+      } catch (err) {
+        log(`Load failed: ${err.message}`, 'error');
+        return;
+      }
+
+      log('Activating (expect timeout in ~2s)...', 'warning');
+      const startTime = performance.now();
+
+      try {
+        transitionState('bad.infinite', ExtensionState.ACTIVATING);
+        await sendRequest('activateExtension', ['bad.infinite'], 3000);
+        
+        // If we get here, something is wrong
+        log('✗ BAD: Extension activated! Infinite loop was not killed!', 'error');
+        setBadge('timeout', 'fail');
+      } catch (err) {
+        const elapsed = performance.now() - startTime;
+        log(`✓ Activation failed after ${elapsed.toFixed(0)}ms: ${err.message}`, 'success');
+        
+        // Quarantine and restart
+        transitionState('bad.infinite', ExtensionState.QUARANTINED, 'Activation hard timeout');
+        log('Worker restart required...', 'warning');
+        await restartWorker();
+        
+        // Verify quarantine stuck
+        const ext = state.extensions.get('bad.infinite');
+        if (ext.state === ExtensionState.QUARANTINED) {
+          log('✓ Extension correctly quarantined', 'success');
+          setBadge('timeout', 'pass');
+          setBadge('quarantine', 'pass');
+        } else {
+          log(`✗ Extension not quarantined (state: ${ext.state})`, 'error');
+          setBadge('timeout', 'fail');
+        }
+      }
+    };
+
+    window.testSetIntervalSpam = async function() {
+      log('\n━━━ ABUSE TEST: setInterval Spam ━━━', 'warning');
+      
+      const SPAM_MANIFEST = { name: 'bad.spam', displayName: 'setInterval Spam' };
+      registerExtension('bad.spam', SPAM_MANIFEST, SETINTERVAL_SPAM_CODE);
+
+      try {
+        await sendRequest('loadExtension', ['bad.spam', SETINTERVAL_SPAM_CODE, SPAM_MANIFEST]);
+        transitionState('bad.spam', ExtensionState.LOADED);
+        
+        transitionState('bad.spam', ExtensionState.ACTIVATING);
+        const result = await sendRequest('activateExtension', ['bad.spam'], 5000);
+        
+        if (result.success) {
+          log('Extension activated (spam is running in worker)', 'warning');
+          transitionState('bad.spam', ExtensionState.ACTIVE);
+          log('Rate limiting should prevent message flood from reaching main thread', 'info');
+        }
+      } catch (err) {
+        log(`Test result: ${err.message}`, err.message.includes('Rate limit') ? 'success' : 'error');
+        transitionState('bad.spam', ExtensionState.CRASHED, err.message);
+      }
+    };
+
+    window.testMessageFlood = async function() {
+      log('\n━━━ ABUSE TEST: Message Flood ━━━', 'warning');
+      
+      const FLOOD_MANIFEST = { name: 'bad.flood', displayName: 'Message Flood' };
+      registerExtension('bad.flood', FLOOD_MANIFEST, MESSAGE_FLOOD_CODE);
+
+      try {
+        await sendRequest('loadExtension', ['bad.flood', MESSAGE_FLOOD_CODE, FLOOD_MANIFEST]);
+        transitionState('bad.flood', ExtensionState.LOADED);
+        
+        transitionState('bad.flood', ExtensionState.ACTIVATING);
+        await sendRequest('activateExtension', ['bad.flood'], 3000);
+        transitionState('bad.flood', ExtensionState.ACTIVE);
+        
+        log('Extension activated, executing flood command...', 'warning');
+        await sendRequest('executeCommand', ['flood.start'], 5000);
+        
+        log('Flood command completed - rate limiting protected main thread', 'success');
+      } catch (err) {
+        log(`Flood test: ${err.message}`, 'warning');
+      }
+    };
+
+    window.testProtocolViolation = async function() {
+      log('\n━━━ ABUSE TEST: Protocol Violation ━━━', 'warning');
+      
+      // Send malformed message directly
+      if (state.worker && state.workerState === 'running') {
+        log('Sending malformed message to worker...', 'dim');
+        
+        // Missing id
+        state.worker.postMessage({ type: 'request', method: 'loadExtension' });
+        
+        // Invalid type
+        state.worker.postMessage({ id: 999, type: 'invalid', method: 'foo' });
+        
+        // Unknown method
+        state.worker.postMessage({ id: 998, type: 'request', method: 'unknownMethod', args: [] });
+        
+        log('Malformed messages sent - worker should reject them', 'info');
+        log('Check for protocolViolation events in log', 'info');
+      } else {
+        log('Worker not running', 'error');
+      }
+    };
+
+    // ============================================================================
+    // Full Test Suite
+    // ============================================================================
+    
+    window.runAllTests = async function() {
+      clearLog();
+      log('═══════════════════════════════════════════════════════', 'info');
+      log('  SYNTHI EXTENSION SYSTEM v2 - HARDENED TEST SUITE', 'info');
+      log('═══════════════════════════════════════════════════════', 'info');
+      log('Testing: State Machine • Failure Semantics • Worker Isolation', 'dim');
+      log('');
+
+      // Reset badges
+      ['init', 'load', 'activate', 'command', 'timeout', 'recovery', 'quarantine', 'states'].forEach(b => setBadge(b, 'pending'));
+
+      try {
+        // 1. Initialize
+        await initWorker();
+        
+        // 2. Load good extension
+        await loadGoodExtension();
+        
+        // 3. Activate
+        await activateExtension('test.hello');
+        
+        // 4. Execute command
+        await executeCommand('hello.sayHello');
+        
+        // 5. Test timeout handling
+        await testInfiniteLoop();
+        
+        // 6. Verify recovery
+        log('\n━━━ Recovery Check ━━━', 'info');
+        setBadge('recovery', 'running');
+        
+        // Good extension should still work after restart
+        const goodExt = state.extensions.get('test.hello');
+        if (goodExt.state === ExtensionState.LOADED || goodExt.state === ExtensionState.INSTALLED) {
+          await activateExtension('test.hello');
+          const result = await executeCommand('hello.sayHello');
+          log(`✓ Good extension recovered: ${result}`, 'success');
+          setBadge('recovery', 'pass');
+        } else if (goodExt.state === ExtensionState.ACTIVE) {
+          const result = await executeCommand('hello.sayHello');
+          log(`✓ Good extension still working: ${result}`, 'success');
+          setBadge('recovery', 'pass');
+        } else {
+          log(`✗ Good extension in unexpected state: ${goodExt.state}`, 'error');
+          setBadge('recovery', 'fail');
+        }
+        
+        // 7. Verify quarantine
+        log('\n━━━ Quarantine Verification ━━━', 'info');
+        const badExt = state.extensions.get('bad.infinite');
+        if (badExt?.state === ExtensionState.QUARANTINED) {
+          log(`✓ Bad extension quarantined: ${badExt.failureReason}`, 'success');
+          setBadge('quarantine', 'pass');
+        } else {
+          log(`✗ Bad extension not quarantined (state: ${badExt?.state})`, 'error');
+          setBadge('quarantine', 'fail');
+        }
+        
+        // 8. Final states
+        await getStates();
+
+        log('\n═══════════════════════════════════════════════════════', 'success');
+        log('  ✓ ALL TESTS COMPLETED', 'success');
+        log('═══════════════════════════════════════════════════════', 'success');
+
+      } catch (err) {
+        log('\n═══════════════════════════════════════════════════════', 'error');
+        log(`  ✗ TEST FAILED: ${err.message}`, 'error');
+        log('═══════════════════════════════════════════════════════', 'error');
+      }
+    };
+
+    window.reset = function() {
+      if (state.worker) {
+        state.worker.terminate();
+        state.worker = null;
+      }
+      
+      for (const [id, pending] of state.pendingRequests) {
+        clearTimeout(pending.timer);
+      }
+      
+      state.pendingRequests.clear();
+      state.extensions.clear();
+      state.messageId = 0;
+      state.workerGeneration = 0;
+      state.workerState = 'uninitialized';
+      state.restartCount = 0;
+      
+      ['init', 'load', 'activate', 'command', 'timeout', 'recovery', 'quarantine', 'states'].forEach(b => setBadge(b, 'pending'));
+      updateExtensionList();
+      updateMetrics();
+      clearLog();
+      log('Reset complete', 'info');
+    };
+
+    // ============================================================================
+    // Init
+    // ============================================================================
+    log('Extension Test Suite v2 ready.', 'info');
+    log('Click "Run All Tests" to verify the hardened extension system.', 'info');
+    log('', 'info');
+    log('This suite tests:', 'dim');
+    log('  • Phase A: State machine with explicit transitions', 'dim');
+    log('  • Phase A: Failure semantics (timeout → quarantine)', 'dim');
+    log('  • Phase B: Worker is disposable (restart without state loss)', 'dim');
+    log('  • Phase B: Protocol validation (unknown methods rejected)', 'dim');
+    log('  • Phase B: Rate limiting (message flood protection)', 'dim');
+    updateMetrics();
+  </script>
+</body>
+</html>

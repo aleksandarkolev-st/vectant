@@ -147,6 +147,13 @@ export class HMRRuntime {
 
         this._setStatus('check');
 
+        // SAFETY: Validate update structure before processing
+        if (!update || typeof update !== 'object') {
+            console.error('[HMRRuntime] Invalid update payload - not an object');
+            this._setStatus('fail');
+            return;
+        }
+
         // 1. Validate session hash (if provided in update to ensure continuity)
         // In this simple model, we just check if the update hash is different from current.
         if (update.hash === this.currentHash) {
@@ -221,9 +228,23 @@ export class HMRRuntime {
             
             let newFactory;
             try {
+                // SAFETY: Validate factory source before eval
+                if (newFactorySource === null || newFactorySource === undefined) {
+                    console.error(`[HMR] Null/undefined factory source for ${moduleId}, skipping`);
+                    continue;
+                }
+                
                 // Assuming newFactorySource is a string like "(module, exports, require) => { ... }"
                 // Or it could be the function itself if passed in-memory.
                 if (typeof newFactorySource === 'string') {
+                    // SAFETY: Limit factory source size to prevent DoS
+                    const MAX_FACTORY_SIZE = 5 * 1024 * 1024; // 5MB max
+                    if (newFactorySource.length > MAX_FACTORY_SIZE) {
+                        console.error(`[HMR] Factory source for ${moduleId} exceeds max size (${newFactorySource.length} > ${MAX_FACTORY_SIZE})`);
+                        this._setStatus('fail');
+                        return;
+                    }
+                    
                     let sourceToEval = newFactorySource.trim();
                     // If it doesn't look like a function, wrap it in a standard CJS factory
                     if (!sourceToEval.startsWith('(') && !sourceToEval.startsWith('function')) {
@@ -231,11 +252,31 @@ export class HMRRuntime {
                     }
                     // Wrap in parentheses to ensure it's treated as an expression
                     newFactory = (0, eval)(sourceToEval);
-                } else {
+                    
+                    // SAFETY: Verify eval produced a function
+                    if (typeof newFactory !== 'function') {
+                        console.error(`[HMR] Eval did not produce a function for ${moduleId}, got ${typeof newFactory}`);
+                        continue;
+                    }
+                } else if (typeof newFactorySource === 'function') {
                     newFactory = newFactorySource;
+                } else {
+                    console.error(`[HMR] Invalid factory source type for ${moduleId}: ${typeof newFactorySource}`);
+                    continue;
                 }
             } catch (e) {
                 console.error(`[HMR] Failed to compile update for ${moduleId}`, e);
+                // Dispatch error event for UI feedback
+                if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent('synthi:hmr-status', {
+                        detail: {
+                            status: 'compile-error',
+                            module: moduleId,
+                            error: e.message
+                        }
+                    }));
+                }
+                this._setStatus('fail');
                 this.onReload();
                 return;
             }

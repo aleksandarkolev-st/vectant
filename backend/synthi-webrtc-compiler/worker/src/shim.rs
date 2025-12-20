@@ -158,25 +158,50 @@ int _user_main(int argc, char* argv[]);
 // ============================================================
 
 extern "C" void* on_load(void* prev_state, void* renderer) {{
-    {state_name}* state;
+    // Use static storage for reliability (avoids heap fragmentation/pointer issues)
+    static {state_name} app_state = {{0}};
+    {state_name}* state = &app_state;
     
     if (prev_state != NULL) {{
-        // Reloading: validate and reuse state
-        state = ({state_name}*)prev_state;
-        if (state->magic != 0xDEADBEEF) {{
-            fprintf(stderr, "[Shim] Invalid state magic, creating new state\\n");
-            state = ({state_name}*)calloc(1, sizeof({state_name}));
+        // SAFETY: Validate prev_state pointer before dereferencing
+        // Check magic number at the expected offset to validate pointer
+        {state_name}* old_state = ({state_name}*)prev_state;
+        
+        // Read magic carefully - if prev_state is invalid this could crash,
+        // but signal handlers should catch it
+        volatile uint32_t magic_check = 0;
+        magic_check = old_state->magic;
+        
+        if (magic_check != 0xDEADBEEF) {{
+            fprintf(stderr, "[Shim] Invalid state magic (0x%08X), re-initializing static state\\n", magic_check);
+            memset(state, 0, sizeof({state_name}));
             state->magic = 0xDEADBEEF;
             state->struct_size = sizeof({state_name});
             state->abi_version = 1;
             state->initialized = false;
             state->first_frame = true;
         }} else {{
-            fprintf(stderr, "[Shim] Restored state from previous module\\n");
+            // SAFETY: Validate struct_size matches before copying
+            if (old_state->struct_size != sizeof({state_name})) {{
+                fprintf(stderr, "[Shim] State struct size mismatch (old: %u, new: %lu), re-initializing\\n", 
+                        old_state->struct_size, (unsigned long)sizeof({state_name}));
+                memset(state, 0, sizeof({state_name}));
+                state->magic = 0xDEADBEEF;
+                state->struct_size = sizeof({state_name});
+                state->abi_version = 1;
+                state->initialized = false;
+                state->first_frame = true;
+            }} else {{
+                fprintf(stderr, "[Shim] Restored state from previous module (ABI v%u)\\n", old_state->abi_version);
+                // Safe to copy - sizes match and magic is valid
+                if (state != old_state) {{
+                    memcpy(state, old_state, sizeof({state_name}));
+                }}
+            }}
         }}
     }} else {{
         // Fresh start
-        state = ({state_name}*)calloc(1, sizeof({state_name}));
+        memset(state, 0, sizeof({state_name}));
         state->magic = 0xDEADBEEF;
         state->struct_size = sizeof({state_name});
         state->abi_version = 1;
@@ -298,10 +323,19 @@ typedef struct {state_name} {{
         on_load = if !has_on_load {
             format!(r#"
 extern "C" void* on_load(void* prev, void* renderer) {{
-    {state_name}* state = prev ? ({state_name}*)prev : ({state_name}*)calloc(1, sizeof({state_name}));
-    state->magic = 0xDEADBEEF;
-    state->struct_size = sizeof({state_name});
-    state->abi_version = 1;
+    static {state_name} app_state = {{0}};
+    {state_name}* state = &app_state;
+    
+    if (prev) {{
+        {state_name}* old = ({state_name}*)prev;
+        if (state != old) *state = *old;
+    }} else {{
+        memset(state, 0, sizeof({state_name}));
+        state->magic = 0xDEADBEEF;
+        state->struct_size = sizeof({state_name});
+        state->abi_version = 1;
+    }}
+    
     state->renderer = renderer;
     return state;
 }}
@@ -430,23 +464,32 @@ __attribute__((weak)) void user_event({state_name}* state, SDL_Event* event) {{
     (void)event;
 }}
 
-extern "C" void* on_load(void* prev_state, void* renderer) {{
-    {state_name}* state;
+extern "C" void* on_load(void* prev_state, void* renderer, void* core_api) {{
+    // Use static storage
+    static {state_name} app_state = {{0}};
+    {state_name}* state = &app_state;
     
     if (prev_state) {{
-        state = ({state_name}*)prev_state;
-        if (state->magic != 0xDEADBEEF) {{
-            state = ({state_name}*)calloc(1, sizeof({state_name}));
+        {state_name}* old = ({state_name}*)prev_state;
+        if (old->magic == 0xDEADBEEF) {{
+            if (state != old) *state = *old;
+        }} else {{
+            // Invalid magic, reset
+            memset(state, 0, sizeof({state_name}));
         }}
     }} else {{
-        state = ({state_name}*)calloc(1, sizeof({state_name}));
+        memset(state, 0, sizeof({state_name}));
     }}
     
-    state->magic = 0xDEADBEEF;
-    state->struct_size = sizeof({state_name});
-    state->abi_version = 1;
+    // Ensure magic is set
+    if (state->magic != 0xDEADBEEF) {{
+        state->magic = 0xDEADBEEF;
+        state->struct_size = sizeof({state_name});
+        state->abi_version = 1;
+        state->running = true;
+    }}
+    
     state->renderer = (SDL_Renderer*)renderer;
-    state->running = true;
     
     if (!state->initialized) {{
         user_setup(state);
@@ -477,7 +520,7 @@ extern "C" void on_event(void* state_ptr, SDL_Event* event) {{
 extern "C" void gui_render(void* state_ptr) {{
     {state_name}* state = ({state_name}*)state_ptr;
     if (!state) return;
-    SDL_RenderPresent(state->renderer);
+    // SDL_RenderPresent removed - runner handles this
 }}
 
 extern "C" void on_unload(void* state_ptr) {{
