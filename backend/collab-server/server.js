@@ -51,6 +51,9 @@ try {
 }
 const Y = require('yjs');
 const fileIndex = require('./fileIndex');
+const fs = require('fs').promises;
+const path = require('path');
+const crypto = require('crypto');
 
 // LevelDB persistence is optional — some environments (or registries) may not
 // provide a compatible `y-leveldb` binary. Try to load it and fall back to
@@ -65,10 +68,69 @@ try {
 
 const PORT = process.env.COLLAB_PORT || 1234;
 
+// Track file hashes to detect when actual files change outside of the editor
+const fileHashCache = new Map(); // docName -> { hash, timestamp }
+
+/**
+ * Compute MD5 hash of content for change detection
+ */
+function computeHash(content) {
+  return crypto.createHash('md5').update(content || '').digest('hex');
+}
+
+/**
+ * Parse document name to extract slug and file path
+ * Format: "workspace:slug:filepath"
+ */
+function parseDocName(docName) {
+  if (!docName || !docName.startsWith('workspace:')) {
+    return null;
+  }
+  const parts = docName.split(':');
+  if (parts.length < 3) return null;
+  const slug = parts[1];
+  const filePath = parts.slice(2).join(':'); // Handle colons in file path
+  return { slug, filePath };
+}
+
+/**
+ * Get the actual file content from disk
+ */
+async function getActualFileContent(slug, filePath) {
+  try {
+    const repoPath = path.join(__dirname, 'repos', slug);
+    const fullPath = path.join(repoPath, filePath);
+    const content = await fs.readFile(fullPath, 'utf8');
+    return content;
+  } catch (e) {
+    console.log(`[Collab] Could not read file ${slug}/${filePath}:`, e.code || e.message);
+    return null;
+  }
+}
+
+/**
+ * Get content from a Yjs document's text type
+ */
+function getYDocContent(ydoc) {
+  try {
+    // Try common text type names used by Monaco/CodeMirror bindings
+    const textTypes = ['monaco', 'content', 'text', 'codemirror'];
+    for (const name of textTypes) {
+      const text = ydoc.getText(name);
+      if (text && text.length > 0) {
+        return text.toString();
+      }
+    }
+    return '';
+  } catch (e) {
+    return '';
+  }
+}
+
 // Use LevelDB persistence when available, otherwise use an in-memory fallback
-let persistence;
+let basePersistence;
 if (LeveldbPersistence) {
-  persistence = new LeveldbPersistence('./data/collab-leveldb');
+  basePersistence = new LeveldbPersistence('./data/collab-leveldb');
 } else {
   // Simple in-memory persistence that encodes/decodes Yjs state updates
   class InMemoryPersistence {
@@ -101,8 +163,105 @@ if (LeveldbPersistence) {
     }
   }
 
-  persistence = new InMemoryPersistence();
+  basePersistence = new InMemoryPersistence();
 }
+
+/**
+ * Wrapper persistence that validates cached state against actual file content.
+ * This prevents stale data from being loaded when files change outside the editor.
+ */
+class ValidatingPersistence {
+  constructor(innerPersistence) {
+    this.inner = innerPersistence;
+  }
+
+  async bindState(docName, ydoc) {
+    // First, bind the persisted state (if any)
+    if (this.inner.bindState) {
+      await this.inner.bindState(docName, ydoc);
+    }
+
+    // Now validate against actual file
+    const parsed = parseDocName(docName);
+    if (!parsed) {
+      // Not a workspace document, skip validation
+      return;
+    }
+
+    const { slug, filePath } = parsed;
+    const actualContent = await getActualFileContent(slug, filePath);
+    
+    if (actualContent === null) {
+      // File doesn't exist on disk, keep persisted state
+      console.log(`[Collab] File not found on disk, keeping persisted state: ${docName}`);
+      return;
+    }
+
+    const persistedContent = getYDocContent(ydoc);
+    const actualHash = computeHash(actualContent);
+    const persistedHash = computeHash(persistedContent);
+
+    if (actualHash !== persistedHash) {
+      console.log(`[Collab] STALE DATA DETECTED for ${docName}`);
+      console.log(`[Collab]   Persisted hash: ${persistedHash.substring(0, 8)}... (${persistedContent.length} chars)`);
+      console.log(`[Collab]   Actual hash: ${actualHash.substring(0, 8)}... (${actualContent.length} chars)`);
+      console.log(`[Collab]   Resetting document to actual file content`);
+
+      // Clear the persisted state and reset to actual content
+      if (this.inner.clearDocument) {
+        await this.inner.clearDocument(docName);
+      }
+
+      // Reset Yjs document to actual file content
+      // Find the text type and replace its content
+      const textTypes = ['monaco', 'content', 'text', 'codemirror'];
+      for (const name of textTypes) {
+        const text = ydoc.getText(name);
+        if (text) {
+          ydoc.transact(() => {
+            text.delete(0, text.length);
+            text.insert(0, actualContent);
+          });
+          console.log(`[Collab]   Reset text type '${name}' with actual content`);
+          break;
+        }
+      }
+
+      // Update hash cache
+      fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
+    } else {
+      console.log(`[Collab] Persistence valid for ${docName}`);
+      fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
+    }
+  }
+
+  async writeState(docName, ydoc) {
+    if (this.inner.writeState) {
+      await this.inner.writeState(docName, ydoc);
+    }
+    
+    // Update hash cache when writing
+    const content = getYDocContent(ydoc);
+    fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
+  }
+
+  async clearDocument(docName) {
+    fileHashCache.delete(docName);
+    if (this.inner.clearDocument) {
+      await this.inner.clearDocument(docName);
+    }
+  }
+
+  // Proxy other methods to inner persistence
+  async flushDocument(docName) {
+    if (this.inner.flushDocument) {
+      await this.inner.flushDocument(docName);
+    }
+  }
+}
+
+// Wrap the base persistence with validation
+const persistence = new ValidatingPersistence(basePersistence);
 
 const gitService = require('./gitService');
 const workspaceManager = require('./workspaceManager');

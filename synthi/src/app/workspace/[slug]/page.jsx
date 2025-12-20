@@ -398,8 +398,19 @@ export default function EditorPage({ params }) {
             try {
                 relatedFiles = await getRelatedFilesForAnalysis();
             } catch (e) {
-                console.warn('Failed to get related files for analysis:', e);
+                console.warn('[page.jsx] Failed to get related files for analysis:', e);
             }
+            
+            console.log('[page.jsx] === PROACTIVE ANALYSIS START ===');
+            console.log('[page.jsx] File:', activeFile?.path || activeFile?.name || 'untitled');
+            console.log('[page.jsx] Language:', normalizedLang);
+            console.log('[page.jsx] Code length:', contentToAnalyze.length);
+            console.log('[page.jsx] Code preview:', contentToAnalyze.substring(0, 150));
+            console.log('[page.jsx] Related files count:', relatedFiles.length);
+            relatedFiles.forEach((rf, i) => {
+                console.log(`[page.jsx]   Related[${i}]: ${rf.path} (${rf.content?.length || 0} chars)`);
+                console.log(`[page.jsx]     Content: ${rf.content?.substring(0, 80)}...`);
+            });
             
             // STEP 1: Run fast static+semantic analysis first for immediate feedback
             analyzeProactive({
@@ -410,7 +421,15 @@ export default function EditorPage({ params }) {
                 relatedFiles, // Pass related files for cross-file include resolution
             })
                 .then((fastResult) => {
+                    console.log('[page.jsx] === FAST ANALYSIS RESULT ===');
+                    console.log('[page.jsx] Raw result:', fastResult);
+                    
                     const fastDiags = fastResult?.diagnostics || fastResult?.data?.diagnostics || [];
+                    console.log('[page.jsx] Fast diagnostics count:', fastDiags.length);
+                    fastDiags.forEach((d, i) => {
+                        console.log(`[page.jsx]   Fast[${i}]: [${d.tier}] ${d.message} @ line ${d.location?.line}`);
+                    });
+                    
                     const currentFilePath = activeFile?.path || activeFile?.name || 'untitled';
                     
                     // Filter out stale diagnostics that reference code not in the current content
@@ -418,7 +437,9 @@ export default function EditorPage({ params }) {
                     const validDiags = fastDiags.filter(d => {
                         // If diagnostic has originalText, verify it exists in current content
                         if (d.originalText && typeof d.originalText === 'string') {
-                            return contentToAnalyze.includes(d.originalText);
+                            const exists = contentToAnalyze.includes(d.originalText);
+                            if (!exists) console.log(`[page.jsx] Filtering: originalText not found - "${d.message}"`);
+                            return exists;
                         }
                         // For diagnostics about specific symbols, check if symbol is used in code
                         const msg = d.message?.toLowerCase() || '';
@@ -426,18 +447,31 @@ export default function EditorPage({ params }) {
                             // Check if the code actually uses iostream symbols
                             const usesIostream = /\b(std::)?(cout|cin|cerr|clog|endl)\b/.test(contentToAnalyze);
                             if (!usesIostream) {
-                                console.log(`[proactive] Filtering stale diagnostic: "${d.message}" - no iostream usage found`);
+                                console.log(`[page.jsx] Filtering stale diagnostic: "${d.message}" - no iostream usage found`);
                                 return false;
                             }
                         }
                         return true;
                     });
                     
+                    console.log('[page.jsx] Valid diagnostics after filter:', validDiags.length);
+                    
                     // Add filePath to each diagnostic for proper grouping in ProblemsPanel
                     const diagsWithPath = validDiags.map(d => ({ ...d, filePath: d.filePath || currentFilePath }));
                     // Replace diagnostics for this file only, keep diagnostics from other files
                     setDiagnostics(prev => {
+                        console.log('[page.jsx] === DIAGNOSTIC STATE UPDATE ===');
+                        console.log('[page.jsx] Current file path:', currentFilePath);
+                        console.log('[page.jsx] Previous diagnostics:', prev.length);
+                        prev.forEach((d, i) => {
+                            console.log(`[page.jsx]   Prev[${i}]: filePath="${d.filePath}" msg="${d.message?.substring(0, 50)}"`);
+                        });
                         const otherFileDiags = prev.filter(d => d.filePath !== currentFilePath);
+                        console.log('[page.jsx] Keeping', otherFileDiags.length, 'diagnostics from other files');
+                        console.log('[page.jsx] Setting', diagsWithPath.length, 'new diagnostics for', currentFilePath);
+                        diagsWithPath.forEach((d, i) => {
+                            console.log(`[page.jsx]   New[${i}]: [${d.tier}] "${d.message?.substring(0, 50)}" @ line ${d.location?.line}`);
+                        });
                         return [...otherFileDiags, ...diagsWithPath];
                     });
                     lastProactiveSignatureRef.current = signature;

@@ -7,6 +7,22 @@ import json
 import sys
 import os
 import asyncio
+import logging
+
+# Configure logging for detailed debugging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger('ai-engine')
+logger.setLevel(logging.DEBUG)
+
+# Also set up logging for proactive analyzer modules
+for module in ['analyzer.proactive', 'analyzer.proactive.semantic_analyzer', 'analyzer.proactive.orchestrator']:
+    logging.getLogger(module).setLevel(logging.DEBUG)
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -162,15 +178,28 @@ async def analyze_proactive(req: ProactiveAnalysisRequest):
         language=req.lang,
     )
     
+    logger.info(f"=== PROACTIVE ANALYSIS START ===")
+    logger.info(f"File: {file_context.path}")
+    logger.info(f"Language: {file_context.language}")
+    logger.info(f"Content length: {len(file_context.content)} chars")
+    logger.info(f"Content preview: {file_context.content[:200]}...")
+    logger.info(f"Tiers requested: {tiers}")
+    
     # Build related files context
     related_files = []
     if req.related_files:
+        logger.info(f"Related files count from request: {len(req.related_files)}")
         for rf in req.related_files:
+            rf_path = rf.path or rf.name or f"file-{len(related_files)}"
+            logger.info(f"  Related file: {rf_path} ({len(rf.content)} chars)")
+            logger.info(f"    Content preview: {rf.content[:100]}...")
             related_files.append(FileContext(
-                path=rf.path or rf.name or f"file-{len(related_files)}",
+                path=rf_path,
                 content=rf.content,
                 language=req.lang,
             ))
+    else:
+        logger.info("No related files in request")
     
     # Create analysis request
     analysis_request = AnalysisRequest(
@@ -187,8 +216,14 @@ async def analyze_proactive(req: ProactiveAnalysisRequest):
     
     try:
         result = await analyzer.analyze(analysis_request)
+        logger.info(f"=== PROACTIVE ANALYSIS RESULT ===")
+        logger.info(f"Total diagnostics: {len(result.all_diagnostics)}")
+        for d in result.all_diagnostics:
+            logger.info(f"  [{d.tier.value}] {d.severity.value}: {d.message} @ line {d.location.line}")
+        logger.info(f"=== PROACTIVE ANALYSIS END ===")
         return result.to_dict()
     except Exception as e:
+        logger.error(f"Analysis failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 
