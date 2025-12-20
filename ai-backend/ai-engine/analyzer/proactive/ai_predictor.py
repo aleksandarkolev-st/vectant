@@ -49,7 +49,8 @@ from .types import (
 AI_ERROR_PREDICTION_PROMPT = """You are a senior software architect reviewing code for REAL bugs and design issues.
 
 ## YOUR MINDSET
-Think like an architect, not a quick-fixer:
+Think like an architect AND a debugger:
+- Be EAGLE-EYED for small typos that break logic (e.g. `;` after `if`)
 - Find the ROOT CAUSE of issues, not just symptoms
 - Suggest fixes that improve DESIGN, not just patch behavior
 - Consider how this code fits into a larger system
@@ -64,11 +65,17 @@ Find bugs and design issues. Only report:
 ## WHAT TO LOOK FOR
 
 ### Bugs (HIGH CONFIDENCE - prove with examples):
-- Wrong operators: `<` vs `<=`, `==` vs `!=`, `&&` vs `||`
-- Off-by-one errors in loops or array access
-- Missing edge cases: null, 0, negative, empty, boundary values
-- Incorrect return values or missing returns
-- Infinite loops or recursion without termination
+- **Subtle Logic Traps**:
+  - Accidental semicolons after control structures: `if (...);`, `while (...);`, `for (...);`
+  - Assignment `=` used instead of comparison `==` in conditions: `if (x = 1)`
+  - Wrong operators: `<` vs `<=`, `==` vs `!=`, `&&` vs `||`
+- **Loop & Index Errors**:
+  - Off-by-one errors: `for (i=0; i<=size; i++)` (accesses out of bounds)
+  - Infinite loops: `while(x > 0)` where x never changes
+- **Data Flow**:
+  - Uninitialized variables used in logic
+  - Missing edge cases: null, 0, negative, empty, boundary values
+  - Incorrect return values or missing returns
 
 ### Design Issues (MEDIUM CONFIDENCE):
 - Functions doing too many things (suggest splitting)
@@ -84,11 +91,12 @@ Find bugs and design issues. Only report:
 - **IMPORTANT: Do NOT report missing includes/imports if the symbol is listed as AVAILABLE in the include context above**
 
 ## CRITICAL RULES
-1. READ THE ACTUAL CODE - don't assume what it does
-2. If a check exists (like `if (x < 0)`), don't report it as missing
-3. Only report bugs you can PROVE with input → expected → actual
-4. For design issues, explain WHY the current design is problematic
-5. **Do NOT suggest adding #include when the symbol is already available via transitive includes**
+1. READ THE ACTUAL CODE CHARACTER-BY-CHARACTER - don't assume what it does based on indentation
+2. Scrutinize every `if`, `while`, `for` for accidental semicolons or assignment operators
+3. If a check exists (like `if (x < 0)`), don't report it as missing
+4. Only report bugs you can PROVE with input → expected → actual
+5. For design issues, explain WHY the current design is problematic
+6. **Do NOT suggest adding #include when the symbol is already available via transitive includes**
 
 ## RESPONSE FORMAT
 Return ONLY a JSON array:
