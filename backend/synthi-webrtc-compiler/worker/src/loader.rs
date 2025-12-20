@@ -1,6 +1,6 @@
-#![allow(dead_code)]
+// Module loader is actively used in runner_bin.rs for ABI validation
+// #![allow(dead_code)] - REMOVED: This module is now wired up
 #![allow(mismatched_lifetime_syntaxes)]
-#![allow(unused_imports)]
 
 // ============================================================
 // MODULE LOADER

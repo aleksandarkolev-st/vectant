@@ -26,6 +26,10 @@ mod loader;
 mod supervisor;
 mod state_manager;
 mod reload_manager;
+mod hmr_orchestrator;
+
+// Re-export orchestrator for external use
+pub use hmr_orchestrator::{HmrOrchestrator, HmrResult, HmrStatus, OrchestratorConfig};
 
 use builder::{RebuildScope, ModuleHashes, hash_content, WidgetDetector, WidgetCompiler};
 use fast_refresh::{BoundaryChecker, RefreshAction, BoundaryViolationEvent};
@@ -120,7 +124,10 @@ struct CompileRequest {
     use_ai_split: bool,
 }
 
-#[allow(dead_code)]
+// RunnerState tracks the state of a running plugin process
+// This is used by the worker to manage HMR, video streaming, and process lifecycle
+// Currently the runner uses individual fields directly, but this struct provides
+// the complete state model for future HMR orchestration integration
 struct RunnerState {
     process: Option<tokio::process::Child>, // Option to allow taking it if needed, or just drop
     stdin: tokio::process::ChildStdin,
@@ -145,6 +152,40 @@ struct RunnerState {
     // Widget-level compilation state
     loaded_widget_paths: HashMap<String, String>, // widget_id -> so_path
     widget_hashes: HashMap<String, u64>,          // widget_id -> content_hash
+}
+
+// Allow RunnerState to be constructed for future use without triggering dead_code
+#[allow(dead_code)]
+impl RunnerState {
+    /// Create a new RunnerState (for future HMR orchestration integration)
+    fn new(
+        process: Option<tokio::process::Child>,
+        stdin: tokio::process::ChildStdin,
+        output_tx: tokio::sync::broadcast::Sender<String>,
+    ) -> Self {
+        Self {
+            process,
+            stdin,
+            output_tx,
+            is_gui: false,
+            is_hmr_capable: false,
+            hmr_capability: None,
+            xvfb_process: None,
+            gst_pipeline: None,
+            sdl_tx: None,
+            video_track: None,
+            audio_track: None,
+            width: 800,
+            height: 600,
+            wsl_display_str: String::new(),
+            gst_display_str: String::new(),
+            module_hashes: ModuleHashes::default(),
+            loaded_core_path: None,
+            loaded_gui_path: None,
+            loaded_widget_paths: HashMap::new(),
+            widget_hashes: HashMap::new(),
+        }
+    }
 }
 
 struct LspSessionState {

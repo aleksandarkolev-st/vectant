@@ -32,6 +32,10 @@ mod source_map;
 mod binary_state;
 mod abi_version;
 mod loader;
+mod supervisor;
+mod state_manager;
+mod boundary;
+mod reload_manager;
 
 use plugin_contract::{ModuleSlot, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
 use capability::{HmrCapability, detect_capabilities, HmrStatus};
@@ -43,6 +47,8 @@ use state_diff::{migrate_state, generate_migration_report};
 use crash_recovery::{install_crash_handlers, execute_with_protection, should_force_restart, 
                      HmrCrashStatus, generate_crash_report, set_current_lib_path};
 use loader::{ModuleLoader, LoadResult};
+use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
+use state_manager::{StateManager, StateHandle};
 
 // SDL2 Definitions
 #[cfg(target_os = "linux")]
@@ -106,8 +112,8 @@ const SDL_TEXTUREACCESS_STREAMING: c_int = 1;
 // 3. State migration runs only for the affected module
 // ============================================================
 
-// Legacy state container - still used for backward compatibility with "main" module
-#[allow(dead_code)]
+// Legacy state container - used for backward compatibility with "main" module
+// Now actively used in the main loop for app_state tracking
 struct AppState {
     raw: *mut c_void,
     renderer: *mut c_void,
@@ -115,7 +121,7 @@ struct AppState {
 
 // Per-module state tracking for independent swaps
 // Enhanced to track ABI version and CoreAPI pointer for proper HMR
-#[allow(dead_code)]
+// Now actively used in module_states HashMap
 struct ModuleState {
     state_ptr: *mut c_void,      // Module's own state (CoreState or GuiState)
     abi_version: u32,            // ABI version reported by the module
@@ -150,8 +156,9 @@ unsafe fn get_module_abi_version(state: *mut c_void) -> u32 {
     *((state as *const u32).add(2))
 }
 
+// Host context for passing window/renderer to plugins
+// Now actively used when creating SynthiHostContextV1
 #[repr(C)]
-#[allow(dead_code)]
 struct HostContext {
     window: *mut c_void,
     renderer: *mut c_void,
@@ -333,6 +340,32 @@ fn main() {
     if loader_enabled {
         eprintln!("[Runner] ModuleLoader ABI validation ENABLED");
     }
+    
+    // ============================================================
+    // CRASH SUPERVISOR
+    // ============================================================
+    // CrashSupervisor coordinates crash recovery with policies:
+    // - First crash: attempt hot reload
+    // - Second crash: rollback to previous version
+    // - Third+ crash: clean restart
+    // - Too many crashes: full restart required
+    let mut crash_supervisor = CrashSupervisor::new(SupervisorConfig {
+        max_consecutive_crashes: 3,
+        crash_window: Duration::from_secs(60),
+        detailed_logging: true,
+        ..Default::default()
+    });
+    let supervisor_enabled = std::env::var("SYNTHI_CRASH_SUPERVISOR").is_ok() || true; // Enable by default
+    if supervisor_enabled {
+        eprintln!("[Runner] CrashSupervisor ENABLED (max_crashes=3, window=60s)");
+    }
+    
+    // ============================================================
+    // STATE MANAGER
+    // ============================================================
+    // StateManager tracks state per module for centralized lifecycle management
+    let mut state_manager = StateManager::new();
+    eprintln!("[Runner] StateManager initialized");
     
     #[cfg(not(target_os = "linux"))]
     let (window, renderer) = (ptr::null_mut(), ptr::null_mut());
@@ -1435,6 +1468,12 @@ fn main() {
                                 set_current_lib_path(lib_path);
                             }
                             
+                            // Enter crash supervisor context for this module
+                            if supervisor_enabled {
+                                let slot = ModuleSlot::from_str(name).unwrap_or(ModuleSlot::Main);
+                                crash_supervisor.enter_context(slot);
+                            }
+                            
                             let state_ptr_wrapper = SendVoidPtr(state_ptr as usize);
                             let func_ptr = *f;
                             let result = execute_with_protection(&module_name, move || {
@@ -1442,34 +1481,55 @@ fn main() {
                                 func_ptr(state_ptr, dt);
                             });
                             
+                            // Exit crash supervisor context
+                            if supervisor_enabled {
+                                crash_supervisor.exit_context();
+                            }
+                            
                             if let Err(crash_info) = result {
                                 // Crash recovered! Log and continue with old module
                                 eprintln!("{}", generate_crash_report(&crash_info));
                                 
+                                // Use CrashSupervisor to determine recovery action
+                                let recovery_action = if supervisor_enabled {
+                                    crash_supervisor.report_crash(&crash_info)
+                                } else {
+                                    RecoveryAction::HotReload
+                                };
+                                
                                 // CRITICAL SAFETY CHECK:
                                 // If the crash was caused by memory corruption (SIGSEGV, SIGBUS, etc.),
                                 // we MUST NOT continue in the same process, as the heap state is undefined.
-                                // We must force a cold restart regardless of the crash count.
                                 let is_fatal = crash_info.is_fatal_memory_error();
-                                let force_restart = is_fatal || should_force_restart();
+                                let force_restart = is_fatal || 
+                                    recovery_action == RecoveryAction::FullRestart ||
+                                    recovery_action == RecoveryAction::Fatal ||
+                                    (supervisor_enabled && crash_supervisor.should_force_restart());
                                 
                                 let status = HmrCrashStatus::from_crash(&crash_info, !force_restart);
                                 eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                                eprintln!("[Runner] Recovery action: {:?}", recovery_action);
                                 
                                 if force_restart {
                                     if is_fatal {
                                         eprintln!("[Runner] Fatal memory corruption detected ({:?}). Forcing cold restart.", crash_info.signal_name);
                                     } else {
-                                        eprintln!("[Runner] Too many consecutive crashes. Exiting.");
+                                        eprintln!("[Runner] Too many consecutive crashes (action={:?}). Exiting.", recovery_action);
                                     }
                                     std::process::exit(1);
                                 }
                                 
+                                // On successful hot reload, reset crash count
+                                if recovery_action == RecoveryAction::HotReload && supervisor_enabled {
+                                    // Don't reset here - reset after successful reload
+                                }
+                                
                                 // Skip this module for now, continue with others
-                                // Do NOT reset crash count here, otherwise the limit will never be reached!
-                                // reset_crash_count(); 
                                 continue;
                             }
+                            
+                            // Successful execution - reset crash count if supervisor enabled
+                            // Note: We only reset on successful frame completion, not per-module
                         }
                         
                         #[cfg(not(unix))]

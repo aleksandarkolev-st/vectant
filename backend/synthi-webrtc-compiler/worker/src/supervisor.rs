@@ -1,5 +1,5 @@
-#![allow(dead_code)]
-#![allow(unused_imports)]
+// Crash supervisor is now actively used in runner_bin.rs and HmrOrchestrator
+// #![allow(dead_code)] - REMOVED: This module is now wired up
 
 // ============================================================
 // CRASH SUPERVISOR

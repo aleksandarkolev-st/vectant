@@ -18,12 +18,8 @@
 // - Smaller payloads (~40% of JSON)
 // - Schema-aware migration for structural additions
 //
-// NOTE: Some types in this module are infrastructure for future
-// advanced binary state features (schema evolution, C header generation).
-// They are preserved for forward compatibility.
+// STATUS: ACTIVE - used by HmrOrchestrator and main.rs
 // ============================================================
-
-#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

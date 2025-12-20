@@ -1,4 +1,5 @@
-#![allow(dead_code)]
+// Host KV is actively used by runner_bin.rs for plugin key-value storage
+// #![allow(dead_code)] - REMOVED: This module is now wired up
 #![allow(static_mut_refs)]
 
 // ============================================================

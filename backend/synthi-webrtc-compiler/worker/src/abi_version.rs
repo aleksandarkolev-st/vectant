@@ -1,6 +1,6 @@
-#![allow(dead_code)]
+// ABI versioning is now actively used via ModuleLoader and HmrOrchestrator
+// Some advanced features are infrastructure for future use
 #![allow(mismatched_lifetime_syntaxes)]
-#![allow(unused_imports)]
 
 // ============================================================
 // ABI VERSIONING AND COMPATIBILITY

@@ -1,5 +1,5 @@
-#![allow(dead_code)]
-#![allow(unused_imports)]
+// Boundary module now actively used via HmrOrchestrator
+// Advanced manifest features are infrastructure for future use
 
 // ============================================================
 // SUB-MODULE HMR BOUNDARIES WITH EXPLICIT MANIFESTS
