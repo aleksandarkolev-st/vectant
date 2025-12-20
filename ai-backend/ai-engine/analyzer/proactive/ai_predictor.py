@@ -337,9 +337,9 @@ class AIErrorPredictor:
         except Exception as e:
             # Don't crash on AI errors, just return empty
             diagnostics = []
-            import traceback
-            print(f"[AIErrorPredictor] Analysis failed: {e}")
-            print(f"[AIErrorPredictor] Traceback: {traceback.format_exc()}")
+            # import traceback
+            # print(f"[AIErrorPredictor] Analysis failed: {e}")
+            # print(f"[AIErrorPredictor] Traceback: {traceback.format_exc()}")
         
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         
@@ -837,8 +837,8 @@ Do NOT report missing includes for these symbols:
                 existing_diagnostics,
             )
         except Exception as e:
-            print(f"[AIErrorPredictor] Multi-file analysis failed: {e}")
-            print(f"[AIErrorPredictor] Traceback: {traceback.format_exc()}")
+            # print(f"[AIErrorPredictor] Multi-file analysis failed: {e}")
+            # print(f"[AIErrorPredictor] Traceback: {traceback.format_exc()}")
             return [], []
     
     async def _run_multi_file_analysis(

@@ -11,18 +11,18 @@ import logging
 
 # Configure logging for detailed debugging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger('ai-engine')
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 # Also set up logging for proactive analyzer modules
 for module in ['analyzer.proactive', 'analyzer.proactive.semantic_analyzer', 'analyzer.proactive.orchestrator']:
-    logging.getLogger(module).setLevel(logging.DEBUG)
+    logging.getLogger(module).setLevel(logging.INFO)
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse

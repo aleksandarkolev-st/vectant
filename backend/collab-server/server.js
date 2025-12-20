@@ -173,35 +173,35 @@ if (LeveldbPersistence) {
 class ValidatingPersistence {
   constructor(innerPersistence) {
     this.inner = innerPersistence;
-    console.log('[Collab DEBUG] ValidatingPersistence wrapper initialized');
+    // console.log('[Collab DEBUG] ValidatingPersistence wrapper initialized');
   }
 
   async bindState(docName, ydoc) {
-    console.log(`[Collab DEBUG] === bindState START: ${docName} ===`);
+    // console.log(\`[Collab DEBUG] === bindState START: \${docName} ===\`);
     
     // First, bind the persisted state (if any)
     if (this.inner.bindState) {
-      console.log(`[Collab DEBUG]   Calling inner.bindState...`);
+      // console.log(\`[Collab DEBUG]   Calling inner.bindState...\`);
       await this.inner.bindState(docName, ydoc);
-      console.log(`[Collab DEBUG]   Inner bindState completed`);
+      // console.log(\`[Collab DEBUG]   Inner bindState completed\`);
     }
 
     // Now validate against actual file
     const parsed = parseDocName(docName);
     if (!parsed) {
       // Not a workspace document, skip validation
-      console.log(`[Collab DEBUG]   Not a workspace document, skipping validation`);
+      // console.log(\`[Collab DEBUG]   Not a workspace document, skipping validation\`);
       return;
     }
 
     const { slug, filePath } = parsed;
-    console.log(`[Collab DEBUG]   Parsed: slug=${slug}, filePath=${filePath}`);
+    // console.log(\`[Collab DEBUG]   Parsed: slug=\${slug}, filePath=\${filePath}\`);
     
     const actualContent = await getActualFileContent(slug, filePath);
     
     if (actualContent === null) {
       // File doesn't exist on disk, keep persisted state
-      console.log(`[Collab DEBUG]   File not found on disk, keeping persisted state`);
+      // console.log(\`[Collab DEBUG]   File not found on disk, keeping persisted state\`);
       return;
     }
 
@@ -209,19 +209,19 @@ class ValidatingPersistence {
     const actualHash = computeHash(actualContent);
     const persistedHash = computeHash(persistedContent);
 
-    console.log(`[Collab DEBUG]   Persisted content: ${persistedContent.length} chars, hash=${persistedHash.substring(0, 8)}`);
-    console.log(`[Collab DEBUG]   Actual file: ${actualContent.length} chars, hash=${actualHash.substring(0, 8)}`);
-    console.log(`[Collab DEBUG]   Persisted preview: ${JSON.stringify(persistedContent.substring(0, 100))}...`);
-    console.log(`[Collab DEBUG]   Actual preview: ${JSON.stringify(actualContent.substring(0, 100))}...`);
+    // console.log(\`[Collab DEBUG]   Persisted content: \${persistedContent.length} chars, hash=\${persistedHash.substring(0, 8)}\`);
+    // console.log(\`[Collab DEBUG]   Actual file: \${actualContent.length} chars, hash=\${actualHash.substring(0, 8)}\`);
+    // console.log(\`[Collab DEBUG]   Persisted preview: \${JSON.stringify(persistedContent.substring(0, 100))}...\`);
+    // console.log(\`[Collab DEBUG]   Actual preview: \${JSON.stringify(actualContent.substring(0, 100))}...\`);
 
     if (actualHash !== persistedHash) {
-      console.log(`[Collab DEBUG]   *** STALE DATA DETECTED ***`);
-      console.log(`[Collab DEBUG]   Resetting document to actual file content`);
+      // console.log(\`[Collab DEBUG]   *** STALE DATA DETECTED ***\`);
+      // console.log(\`[Collab DEBUG]   Resetting document to actual file content\`);
 
       // Clear the persisted state and reset to actual content
       if (this.inner.clearDocument) {
         await this.inner.clearDocument(docName);
-        console.log(`[Collab DEBUG]   Cleared persisted state`);
+        // console.log(\`[Collab DEBUG]   Cleared persisted state\`);
       }
 
       // Reset Yjs document to actual file content
@@ -234,7 +234,7 @@ class ValidatingPersistence {
             text.delete(0, text.length);
             text.insert(0, actualContent);
           });
-          console.log(`[Collab DEBUG]   Reset text type '${name}' with ${actualContent.length} chars`);
+          // console.log(\`[Collab DEBUG]   Reset text type '\${name}' with \${actualContent.length} chars\`);
           break;
         }
       }
@@ -242,11 +242,11 @@ class ValidatingPersistence {
       // Update hash cache
       fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
     } else {
-      console.log(`[Collab DEBUG]   Content is VALID (hashes match)`);
+      // console.log(\`[Collab DEBUG]   Content is VALID (hashes match)\`);
       fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
     }
     
-    console.log(`[Collab DEBUG] === bindState END: ${docName} ===`);
+    // console.log(\`[Collab DEBUG] === bindState END: \${docName} ===\`);
   }
 
   async writeState(docName, ydoc) {

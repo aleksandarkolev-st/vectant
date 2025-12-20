@@ -422,15 +422,15 @@ export default function EditorPage({ params }) {
                 console.warn('[page.jsx] Failed to get related files for analysis:', e);
             }
             
-            console.log('[page.jsx] === PROACTIVE ANALYSIS START ===');
-            console.log('[page.jsx] File:', activeFile?.path || activeFile?.name || 'untitled');
-            console.log('[page.jsx] Language:', normalizedLang);
-            console.log('[page.jsx] Code length:', contentToAnalyze.length);
-            console.log('[page.jsx] Code preview:', contentToAnalyze.substring(0, 150));
-            console.log('[page.jsx] Related files count:', relatedFiles.length);
+            // console.log('[page.jsx] === PROACTIVE ANALYSIS START ===');
+            // console.log('[page.jsx] File:', activeFile?.path || activeFile?.name || 'untitled');
+            // console.log('[page.jsx] Language:', normalizedLang);
+            // console.log('[page.jsx] Code length:', contentToAnalyze.length);
+            // console.log('[page.jsx] Code preview:', contentToAnalyze.substring(0, 150));
+            // console.log('[page.jsx] Related files count:', relatedFiles.length);
             relatedFiles.forEach((rf, i) => {
-                console.log(`[page.jsx]   Related[${i}]: ${rf.path} (${rf.content?.length || 0} chars)`);
-                console.log(`[page.jsx]     Content: ${rf.content?.substring(0, 80)}...`);
+                // console.log(`[page.jsx]   Related[${i}]: ${rf.path} (${rf.content?.length || 0} chars)`);
+                // console.log(`[page.jsx]     Content: ${rf.content?.substring(0, 80)}...`);
             });
             
             // STEP 1: Run fast static+semantic analysis first for immediate feedback
@@ -442,11 +442,11 @@ export default function EditorPage({ params }) {
                 relatedFiles, // Pass related files for cross-file include resolution
             })
                 .then((fastResult) => {
-                    console.log('[page.jsx] === FAST ANALYSIS RESULT ===');
-                    console.log('[page.jsx] Raw result:', fastResult);
+                    // console.log('[page.jsx] === FAST ANALYSIS RESULT ===');
+                    // console.log('[page.jsx] Raw result:', fastResult);
                     
                     const fastDiags = fastResult?.diagnostics || fastResult?.data?.diagnostics || [];
-                    console.log('[page.jsx] Fast diagnostics count:', fastDiags.length);
+                    // console.log('[page.jsx] Fast diagnostics count:', fastDiags.length);
                     fastDiags.forEach((d, i) => {
                         console.log(`[page.jsx]   Fast[${i}]: [${d.tier}] ${d.message} @ line ${d.location?.line}`);
                     });
