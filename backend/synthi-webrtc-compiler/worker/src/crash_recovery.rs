@@ -75,7 +75,38 @@ static IN_PLUGIN_CONTEXT: AtomicBool = AtomicBool::new(false);
 /// Counter for consecutive crashes (triggers full restart if too many)
 static CRASH_COUNT: AtomicU32 = AtomicU32::new(0);
 
-/// Maximum consecutive crashes before giving up
+/// Configurable maximum consecutive crashes before giving up
+/// Can be overridden via SYNTHI_MAX_CRASHES environment variable
+/// Default: 3
+static MAX_CRASHES_OVERRIDE: AtomicU32 = AtomicU32::new(0);
+
+/// Get the maximum consecutive crashes allowed before forced restart
+/// Checks environment variable SYNTHI_MAX_CRASHES on first call
+pub fn get_max_consecutive_crashes() -> u32 {
+    let override_val = MAX_CRASHES_OVERRIDE.load(Ordering::Relaxed);
+    if override_val > 0 {
+        return override_val;
+    }
+    
+    // Check environment variable once
+    if let Ok(val_str) = std::env::var("SYNTHI_MAX_CRASHES") {
+        if let Ok(val) = val_str.parse::<u32>() {
+            let clamped = val.clamp(1, 10); // Reasonable bounds
+            MAX_CRASHES_OVERRIDE.store(clamped, Ordering::Relaxed);
+            return clamped;
+        }
+    }
+    
+    // Return default
+    MAX_CONSECUTIVE_CRASHES
+}
+
+/// Set the maximum consecutive crashes programmatically
+pub fn set_max_consecutive_crashes(max: u32) {
+    MAX_CRASHES_OVERRIDE.store(max.clamp(1, 10), Ordering::SeqCst);
+}
+
+/// Maximum consecutive crashes before giving up (default)
 const MAX_CONSECUTIVE_CRASHES: u32 = 3;
 
 /// Maximum time (in seconds) a plugin operation can run before timeout
@@ -736,8 +767,14 @@ where
 }
 
 /// Check if we've had too many consecutive crashes
+/// Uses configurable max from SYNTHI_MAX_CRASHES env var or set_max_consecutive_crashes()
 pub fn should_force_restart() -> bool {
-    CRASH_COUNT.load(Ordering::SeqCst) >= MAX_CONSECUTIVE_CRASHES
+    CRASH_COUNT.load(Ordering::SeqCst) >= get_max_consecutive_crashes()
+}
+
+/// Get current crash count
+pub fn get_crash_count() -> u32 {
+    CRASH_COUNT.load(Ordering::SeqCst)
 }
 
 /// Reset crash count (call after successful recovery)

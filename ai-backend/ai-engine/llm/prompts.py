@@ -34,18 +34,98 @@ def _coerce_mapping(entry: Any) -> Optional[Mapping[str, Any]]:
     return None
 
 
-def _trim_file_block(content: str, max_chars: int = FILE_CONTEXT_MAX_CHARS) -> str:
+def _trim_file_block(
+    content: str, 
+    max_chars: int = FILE_CONTEXT_MAX_CHARS,
+    cursor_line: Optional[int] = None,
+    context_window: int = 50,  # Lines around cursor to preserve
+) -> str:
+    """
+    Trim file content intelligently, preserving:
+    1. Head and tail for context
+    2. Area around cursor if specified (most important for edits)
+    
+    Args:
+        content: Full file content
+        max_chars: Maximum characters to return
+        cursor_line: Line number where user's cursor is (1-indexed)
+        context_window: Number of lines around cursor to preserve
+    
+    Returns:
+        Trimmed content with [...] markers for omitted sections
+    """
     if not content:
         return ""
     if len(content) <= max_chars:
         return content
+    
+    lines = content.split('\n')
+    total_lines = len(lines)
+    
+    # If cursor is specified, use three-part trimming: head + cursor area + tail
+    if cursor_line is not None and 1 <= cursor_line <= total_lines:
+        cursor_idx = cursor_line - 1  # 0-indexed
+        
+        # Calculate regions
+        cursor_start = max(0, cursor_idx - context_window)
+        cursor_end = min(total_lines, cursor_idx + context_window + 1)
+        
+        # Budget: split between head, cursor area, and tail
+        cursor_lines = lines[cursor_start:cursor_end]
+        cursor_chars = sum(len(l) for l in cursor_lines) + len(cursor_lines)  # +newlines
+        
+        remaining = max_chars - cursor_chars - 50  # Reserve 50 for markers
+        if remaining > 0:
+            head_budget = remaining // 3
+            tail_budget = remaining // 3
+            
+            # Build head (from start to before cursor region)
+            head_lines = []
+            head_chars = 0
+            for i in range(cursor_start):
+                line_len = len(lines[i]) + 1
+                if head_chars + line_len > head_budget:
+                    break
+                head_lines.append(lines[i])
+                head_chars += line_len
+            
+            # Build tail (from after cursor region to end)
+            tail_lines = []
+            tail_chars = 0
+            for i in range(total_lines - 1, cursor_end - 1, -1):
+                line_len = len(lines[i]) + 1
+                if tail_chars + line_len > tail_budget:
+                    break
+                tail_lines.insert(0, lines[i])
+                tail_chars += line_len
+            
+            # Assemble with markers
+            parts = []
+            if head_lines:
+                parts.append('\n'.join(head_lines))
+            if len(head_lines) < cursor_start:
+                parts.append(f"[... {cursor_start - len(head_lines)} lines omitted ...]")
+            
+            parts.append('\n'.join(cursor_lines))
+            
+            omitted_after = (total_lines - cursor_end) - len(tail_lines)
+            if omitted_after > 0:
+                parts.append(f"[... {omitted_after} lines omitted ...]")
+            if tail_lines:
+                parts.append('\n'.join(tail_lines))
+            
+            return '\n'.join(parts)
+    
+    # Fallback: simple head + tail trimming
     head = content[:FILE_CONTEXT_HEAD_CHARS]
     tail = content[-FILE_CONTEXT_TAIL_CHARS:]
-    return f"{head}\n...\n{tail}"
+    omitted = len(content) - FILE_CONTEXT_HEAD_CHARS - FILE_CONTEXT_TAIL_CHARS
+    return f"{head}\n[... {omitted} characters omitted ...]\n{tail}"
 
 
 def _format_files_context(
     files: Optional[Sequence[Mapping[str, Any]]],
+    cursor_info: Optional[Mapping[str, Any]] = None,  # {"file": path, "line": int}
 ) -> Tuple[str, Optional[str]]:
     if not files:
         return ("", None)
@@ -56,10 +136,19 @@ def _format_files_context(
         data = _coerce_mapping(raw)
         if not data:
             continue
-        content = _trim_file_block(str(data.get("content", "") or ""))
+        
+        raw_content = str(data.get("content", "") or "")
+        path = data.get("path") or data.get("name") or f"file-{idx}"
+        
+        # Check if this is the focused file with cursor info
+        cursor_line = None
+        if cursor_info and cursor_info.get("file") == path:
+            cursor_line = cursor_info.get("line")
+        
+        content = _trim_file_block(raw_content, cursor_line=cursor_line)
         if not content.strip():
             continue
-        path = data.get("path") or data.get("name") or f"file-{idx}"
+        
         if not focus_path:
             focus_path = path
         segments.append(
@@ -77,7 +166,6 @@ def _file_guidance(focus_path: Optional[str]) -> str:
     if focus_path:
         guidance += f" Focus primarily on `{focus_path}` when making edits."
     return guidance
-
 
 def _response_format_instructions(mode: str, focus_path: Optional[str]) -> str:
     focus_clause = (

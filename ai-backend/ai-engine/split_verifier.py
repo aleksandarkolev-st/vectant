@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -127,17 +128,87 @@ class ModuleAnalysis:
 # HARD LIMITS FOR AI HALLUCINATION DETECTION
 # ============================================================
 
-# Known valid SDL functions (subset - expand as needed)
+# Known valid SDL functions - EXTENSIBLE via environment or config
+# Base set covers SDL2 2.0.x common functions
 KNOWN_SDL_FUNCTIONS = {
-    "SDL_Init", "SDL_Quit", "SDL_CreateWindow", "SDL_DestroyWindow",
-    "SDL_CreateRenderer", "SDL_DestroyRenderer", "SDL_RenderClear",
-    "SDL_RenderPresent", "SDL_SetRenderDrawColor", "SDL_RenderFillRect",
-    "SDL_RenderDrawRect", "SDL_PollEvent", "SDL_Delay", "SDL_GetTicks",
-    "SDL_RenderCopy", "SDL_LoadBMP", "SDL_CreateTextureFromSurface",
-    "SDL_FreeSurface", "SDL_DestroyTexture", "SDL_GetWindowSize",
-    "SDL_SetWindowTitle", "SDL_ShowWindow", "SDL_HideWindow",
-    "SDL_GetError", "SDL_GetKeyboardState", "SDL_GetMouseState",
+    # Initialization
+    "SDL_Init", "SDL_Quit", "SDL_WasInit", "SDL_InitSubSystem", "SDL_QuitSubSystem",
+    
+    # Window
+    "SDL_CreateWindow", "SDL_DestroyWindow", "SDL_GetWindowSize", "SDL_SetWindowSize",
+    "SDL_SetWindowTitle", "SDL_ShowWindow", "SDL_HideWindow", "SDL_RaiseWindow",
+    "SDL_MaximizeWindow", "SDL_MinimizeWindow", "SDL_RestoreWindow", "SDL_GetWindowFlags",
+    "SDL_SetWindowFullscreen", "SDL_GetWindowSurface", "SDL_UpdateWindowSurface",
+    "SDL_SetWindowPosition", "SDL_GetWindowPosition", "SDL_SetWindowBordered",
+    "SDL_SetWindowResizable", "SDL_GetWindowID", "SDL_GetWindowFromID",
+    
+    # Renderer
+    "SDL_CreateRenderer", "SDL_DestroyRenderer", "SDL_RenderClear", "SDL_RenderPresent",
+    "SDL_SetRenderDrawColor", "SDL_GetRenderDrawColor", "SDL_RenderFillRect",
+    "SDL_RenderDrawRect", "SDL_RenderDrawLine", "SDL_RenderDrawPoint",
+    "SDL_RenderDrawLines", "SDL_RenderDrawPoints", "SDL_RenderDrawRects",
+    "SDL_RenderFillRects", "SDL_RenderCopy", "SDL_RenderCopyEx",
+    "SDL_SetRenderTarget", "SDL_GetRenderTarget", "SDL_RenderSetScale",
+    "SDL_RenderGetScale", "SDL_RenderSetViewport", "SDL_RenderGetViewport",
+    "SDL_RenderSetClipRect", "SDL_RenderGetClipRect", "SDL_RenderIsClipEnabled",
+    "SDL_RenderSetLogicalSize", "SDL_RenderGetLogicalSize", "SDL_GetRendererInfo",
+    "SDL_GetRendererOutputSize", "SDL_RenderReadPixels", "SDL_SetRenderDrawBlendMode",
+    "SDL_GetRenderDrawBlendMode", "SDL_CreateSoftwareRenderer",
+    
+    # Texture
+    "SDL_CreateTexture", "SDL_CreateTextureFromSurface", "SDL_DestroyTexture",
+    "SDL_UpdateTexture", "SDL_LockTexture", "SDL_UnlockTexture",
+    "SDL_SetTextureColorMod", "SDL_GetTextureColorMod", "SDL_SetTextureAlphaMod",
+    "SDL_GetTextureAlphaMod", "SDL_SetTextureBlendMode", "SDL_GetTextureBlendMode",
+    "SDL_QueryTexture",
+    
+    # Surface
+    "SDL_LoadBMP", "SDL_SaveBMP", "SDL_FreeSurface", "SDL_CreateRGBSurface",
+    "SDL_CreateRGBSurfaceWithFormat", "SDL_CreateRGBSurfaceFrom",
+    "SDL_ConvertSurface", "SDL_ConvertSurfaceFormat", "SDL_FillRect", "SDL_FillRects",
+    "SDL_BlitSurface", "SDL_BlitScaled", "SDL_SetSurfaceColorMod",
+    "SDL_GetSurfaceColorMod", "SDL_SetSurfaceAlphaMod", "SDL_GetSurfaceAlphaMod",
+    "SDL_SetColorKey", "SDL_GetColorKey", "SDL_SetSurfaceBlendMode",
+    "SDL_GetSurfaceBlendMode", "SDL_LockSurface", "SDL_UnlockSurface",
+    
+    # Events
+    "SDL_PollEvent", "SDL_PushEvent", "SDL_WaitEvent", "SDL_WaitEventTimeout",
+    "SDL_PeepEvents", "SDL_HasEvent", "SDL_HasEvents", "SDL_FlushEvent",
+    "SDL_FlushEvents", "SDL_EventState", "SDL_RegisterEvents",
+    
+    # Input
+    "SDL_GetKeyboardState", "SDL_GetModState", "SDL_SetModState",
+    "SDL_GetMouseState", "SDL_GetRelativeMouseState", "SDL_WarpMouseInWindow",
+    "SDL_SetRelativeMouseMode", "SDL_GetRelativeMouseMode", "SDL_ShowCursor",
+    "SDL_CaptureMouse", "SDL_GetGlobalMouseState",
+    
+    # Timer
+    "SDL_Delay", "SDL_GetTicks", "SDL_GetTicks64", "SDL_GetPerformanceCounter",
+    "SDL_GetPerformanceFrequency", "SDL_AddTimer", "SDL_RemoveTimer",
+    
+    # Audio
+    "SDL_OpenAudio", "SDL_CloseAudio", "SDL_PauseAudio", "SDL_GetAudioStatus",
+    "SDL_OpenAudioDevice", "SDL_CloseAudioDevice", "SDL_PauseAudioDevice",
+    "SDL_GetAudioDeviceStatus", "SDL_QueueAudio", "SDL_DequeueAudio",
+    "SDL_ClearQueuedAudio", "SDL_GetQueuedAudioSize", "SDL_LockAudio",
+    "SDL_UnlockAudio", "SDL_LockAudioDevice", "SDL_UnlockAudioDevice",
+    "SDL_MixAudio", "SDL_MixAudioFormat", "SDL_LoadWAV", "SDL_FreeWAV",
+    
+    # Error
+    "SDL_GetError", "SDL_SetError", "SDL_ClearError",
+    
+    # Clipboard
+    "SDL_SetClipboardText", "SDL_GetClipboardText", "SDL_HasClipboardText",
+    
+    # Misc
+    "SDL_GetBasePath", "SDL_GetPrefPath", "SDL_ShowSimpleMessageBox",
+    "SDL_ShowMessageBox", "SDL_GetVersion", "SDL_GetRevision",
 }
+
+# Allow extending via environment variable (comma-separated)
+_extra_sdl_funcs = os.environ.get("SYNTHI_EXTRA_SDL_FUNCTIONS", "")
+if _extra_sdl_funcs:
+    KNOWN_SDL_FUNCTIONS.update(f.strip() for f in _extra_sdl_funcs.split(",") if f.strip())
 
 # Known valid C standard library functions
 KNOWN_STDLIB_FUNCTIONS = {
@@ -665,39 +736,71 @@ class SplitStructuralVerifier:
         modules: Dict[str, str],
         analysis: SplitAnalysis,
     ) -> List[SplitViolation]:
-        """Check for AI hallucinations - invented APIs, phantom imports, etc."""
+        """Check for AI hallucinations - invented APIs, phantom imports, etc.
+        
+        NOTE: This uses a whitelist approach which may produce false positives.
+        Unknown functions are flagged as WARNINGS, not errors, to allow valid
+        but unlisted functions to pass through.
+        
+        To reduce false positives:
+        1. Set SYNTHI_EXTRA_SDL_FUNCTIONS env var with comma-separated function names
+        2. Pass known_functions to SplitStructuralVerifier constructor
+        3. Use strict_mode=False for advisory-only verification
+        """
         violations = []
         
-        # Check for invented SDL functions
-        sdl_call_pattern = r'SDL_(\w+)\s*\('
+        # Check for potentially invented SDL functions
+        sdl_call_pattern = r'SDL_([A-Z][a-zA-Z0-9_]*)\s*\('
         
         for name, content in modules.items():
+            unknown_sdl_funcs = set()  # Dedupe within module
+            
             for m in re.finditer(sdl_call_pattern, content):
                 func_name = "SDL_" + m.group(1)
-                if func_name not in KNOWN_SDL_FUNCTIONS:
-                    # Might be a valid function we don't know about
-                    line_num = content[:m.start()].count('\n') + 1
-                    violations.append(SplitViolation(
-                        type=SplitViolationType.INVENTED_API,
-                        message=f"Unrecognized SDL function: '{func_name}' - possible hallucination",
-                        module=name,
-                        location=f"line {line_num}",
-                        severity="warning",
-                        suggestion="Verify this SDL function exists in SDL2 documentation",
-                    ))
+                if func_name not in KNOWN_SDL_FUNCTIONS and func_name not in self.known_functions:
+                    if func_name not in unknown_sdl_funcs:
+                        unknown_sdl_funcs.add(func_name)
+                        line_num = content[:m.start()].count('\n') + 1
+                        violations.append(SplitViolation(
+                            type=SplitViolationType.INVENTED_API,
+                            message=f"Unrecognized SDL function: '{func_name}' - verify it exists in SDL2 docs",
+                            module=name,
+                            location=f"line {line_num}",
+                            severity="warning",  # WARNING not error - may be valid unlisted function
+                            suggestion=f"If '{func_name}' is valid, add to SYNTHI_EXTRA_SDL_FUNCTIONS env var",
+                        ))
         
         # Check for phantom includes
         known_headers = {
-            "SDL.h", "SDL2/SDL.h", "stdio.h", "stdlib.h", "string.h",
-            "math.h", "time.h", "stdint.h", "stdbool.h", "shared.h",
-            "cstdio", "cstdlib", "cstring", "cmath", "iostream",
+            # C standard
+            "stdio.h", "stdlib.h", "string.h", "math.h", "time.h",
+            "stdint.h", "stdbool.h", "stddef.h", "stdarg.h", "limits.h",
+            "float.h", "errno.h", "assert.h", "signal.h", "setjmp.h",
+            "ctype.h", "locale.h", "iso646.h", "wchar.h", "wctype.h",
+            # C++ standard
+            "cstdio", "cstdlib", "cstring", "cmath", "ctime",
+            "iostream", "fstream", "sstream", "string", "vector",
+            "map", "set", "unordered_map", "unordered_set", "array",
+            "algorithm", "memory", "utility", "functional", "chrono",
+            "thread", "mutex", "condition_variable", "atomic", "future",
+            # SDL
+            "SDL.h", "SDL2/SDL.h", "SDL_image.h", "SDL2/SDL_image.h",
+            "SDL_ttf.h", "SDL2/SDL_ttf.h", "SDL_mixer.h", "SDL2/SDL_mixer.h",
+            # Project
+            "shared.h", "core.h", "gui.h", "types.h", "config.h",
         }
         
         for name, mod in analysis.modules.items():
             for include in mod.includes:
-                if include not in known_headers and not include.endswith(".h"):
-                    violations.append(SplitViolation(
-                        type=SplitViolationType.PHANTOM_IMPORT,
+                # Allow any .h file (user headers) and known system headers
+                if include in known_headers or include.endswith(".h") or include.endswith(".hpp"):
+                    continue
+                # C++ headers without extension are usually standard library
+                if include in {"iostream", "fstream", "vector", "string", "map", "set", 
+                               "algorithm", "memory", "utility", "chrono", "thread"}:
+                    continue
+                violations.append(SplitViolation(
+                    type=SplitViolationType.PHANTOM_IMPORT,
                         message=f"Unrecognized include: '{include}'",
                         module=name,
                         severity="warning",

@@ -64,7 +64,7 @@ pub struct CacheEntry {
     pub source_hash: u64,
     /// Hash of compiler flags used
     pub flags_hash: u64,
-    /// Hash of included headers (transitive)
+    /// Hash of included headers (transitive) - INCLUDES CONTENT not just paths
     pub headers_hash: u64,
     /// Path to the cached object file
     pub object_path: PathBuf,
@@ -80,6 +80,10 @@ pub struct CacheEntry {
     /// Toolchain info for invalidation on toolchain drift
     #[serde(default)]
     pub toolchain: ToolchainInfo,
+    /// Individual header hashes for fine-grained invalidation
+    /// Maps header path -> content hash
+    #[serde(default)]
+    pub header_content_hashes: HashMap<String, u64>,
 }
 
 /// Toolchain information for cache invalidation
@@ -525,6 +529,8 @@ impl IncrementalCache {
             created_at: now,
             last_accessed: now,
             checksum,
+            toolchain: ToolchainInfo::default(),
+            header_content_hashes: HashMap::new(),
         };
         
         // Update index
@@ -540,6 +546,110 @@ impl IncrementalCache {
         self.save_index().await?;
         
         Ok(object_path)
+    }
+    
+    /// Store a compiled object in cache with detailed header tracking
+    /// ENHANCED: Tracks individual header content hashes for precise invalidation
+    pub async fn put_with_headers(
+        &self,
+        key: String,
+        source_hash: u64,
+        flags_hash: u64,
+        headers_hash: u64,
+        headers: &[(&str, &str)],  // (path, content) pairs
+        object_data: &[u8],
+        toolchain: ToolchainInfo,
+    ) -> Result<PathBuf, std::io::Error> {
+        // Check if we need to evict entries
+        let size = object_data.len() as u64;
+        self.maybe_evict(size).await;
+        
+        // Calculate checksum for integrity validation
+        let checksum = calculate_crc32(object_data);
+        
+        // Build header content hashes map
+        let mut header_content_hashes = HashMap::new();
+        for (path, content) in headers {
+            let mut hasher = DefaultHasher::new();
+            content.hash(&mut hasher);
+            header_content_hashes.insert(path.to_string(), hasher.finish());
+        }
+        
+        // Write object file
+        let object_path = self.cache_dir.join(format!("{}.o", key));
+        fs::write(&object_path, object_data).await?;
+        
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        let entry = CacheEntry {
+            source_hash,
+            flags_hash,
+            headers_hash,
+            object_path: object_path.clone(),
+            size_bytes: size,
+            created_at: now,
+            last_accessed: now,
+            checksum,
+            toolchain,
+            header_content_hashes,
+        };
+        
+        // Update index
+        {
+            let mut index = self.index.write().await;
+            if let Some(old) = index.insert(key.clone(), entry) {
+                *self.total_size.write().await -= old.size_bytes;
+            }
+            *self.total_size.write().await += size;
+        }
+        
+        // Persist index
+        self.save_index().await?;
+        
+        Ok(object_path)
+    }
+    
+    /// Check if any header has changed since the cache entry was created
+    /// Returns (changed, list of changed headers) for debugging
+    pub async fn check_headers_changed(
+        &self,
+        key: &str,
+        current_headers: &[(&str, &str)],
+    ) -> (bool, Vec<String>) {
+        let index = self.index.read().await;
+        
+        if let Some(entry) = index.get(key) {
+            let mut changed = Vec::new();
+            
+            for (path, content) in current_headers {
+                let mut hasher = DefaultHasher::new();
+                content.hash(&mut hasher);
+                let current_hash = hasher.finish();
+                
+                if let Some(&cached_hash) = entry.header_content_hashes.get(*path) {
+                    if cached_hash != current_hash {
+                        changed.push(path.to_string());
+                    }
+                } else {
+                    // New header not in cache - counts as changed
+                    changed.push(format!("{} (new)", path));
+                }
+            }
+            
+            // Check for removed headers
+            for cached_path in entry.header_content_hashes.keys() {
+                if !current_headers.iter().any(|(p, _)| p == cached_path) {
+                    changed.push(format!("{} (removed)", cached_path));
+                }
+            }
+            
+            return (!changed.is_empty(), changed);
+        }
+        
+        (true, vec!["cache entry not found".to_string()])
     }
     
     /// Evict entries if cache is too large
