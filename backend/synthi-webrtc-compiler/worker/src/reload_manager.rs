@@ -1193,18 +1193,74 @@ impl CanaryState {
             }
             OutputComparisonMode::JsonStructural | 
             OutputComparisonMode::JsonSemantic => {
-                // Would parse JSON and compare structurally
-                // For now, fall back to exact comparison
-                let matches = old_output == new_output;
-                (matches, vec![])
+                // Parse JSON and compare structurally
+                let old_json: Result<serde_json::Value, _> = serde_json::from_slice(old_output);
+                let new_json: Result<serde_json::Value, _> = serde_json::from_slice(new_output);
+                
+                match (old_json, new_json) {
+                    (Ok(old_val), Ok(new_val)) => {
+                        let semantic = config.mode == OutputComparisonMode::JsonSemantic;
+                        compare_json_values(
+                            &old_val, 
+                            &new_val, 
+                            "", 
+                            config,
+                            semantic
+                        )
+                    }
+                    (Err(_), Ok(_)) => {
+                        (false, vec![OutputDifference {
+                            path: "<root>".to_string(),
+                            diff_type: DiffType::TypeMismatch,
+                            old_value: "invalid JSON".to_string(),
+                            new_value: "valid JSON".to_string(),
+                        }])
+                    }
+                    (Ok(_), Err(_)) => {
+                        (false, vec![OutputDifference {
+                            path: "<root>".to_string(),
+                            diff_type: DiffType::TypeMismatch,
+                            old_value: "valid JSON".to_string(),
+                            new_value: "invalid JSON".to_string(),
+                        }])
+                    }
+                    (Err(_), Err(_)) => {
+                        // Both not JSON, fall back to exact comparison
+                        let matches = old_output == new_output;
+                        let diffs = if matches { vec![] } else {
+                            vec![OutputDifference {
+                                path: "<binary>".to_string(),
+                                diff_type: DiffType::ValueMismatch,
+                                old_value: format!("{} bytes", old_output.len()),
+                                new_value: format!("{} bytes", new_output.len()),
+                            }]
+                        };
+                        (matches, diffs)
+                    }
+                }
             }
             OutputComparisonMode::SchemaOnly => {
-                // Would validate schema shapes match
-                (true, vec![])
+                // Validate schema shapes match (types and structure, not values)
+                let old_json: Result<serde_json::Value, _> = serde_json::from_slice(old_output);
+                let new_json: Result<serde_json::Value, _> = serde_json::from_slice(new_output);
+                
+                match (old_json, new_json) {
+                    (Ok(old_val), Ok(new_val)) => {
+                        compare_json_schema(&old_val, &new_val, "")
+                    }
+                    _ => (false, vec![OutputDifference {
+                        path: "<root>".to_string(),
+                        diff_type: DiffType::TypeMismatch,
+                        old_value: "JSON parse failed".to_string(),
+                        new_value: "JSON parse failed".to_string(),
+                    }])
+                }
             }
             OutputComparisonMode::Custom => {
-                // Would call registered custom comparator
-                (true, vec![])
+                // Custom comparator would be registered via callback
+                // For now, default to exact comparison
+                let matches = old_output == new_output;
+                (matches, vec![])
             }
         };
         
