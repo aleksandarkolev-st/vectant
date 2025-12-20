@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(function_casts_as_integer)]
+
 // ============================================================
 // RUNTIME ERROR RECOVERY MODULE
 // ============================================================
@@ -494,7 +497,7 @@ where
         unsafe { libc::close(write_fd); }
         
         let mut status: c_int = 0;
-        let timeout_ms = timeout.as_millis() as i32;
+        let _timeout_ms = timeout.as_millis() as i32;
         
         // Poll for child completion with timeout
         loop {

@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+#![allow(mismatched_lifetime_syntaxes)]
+#![allow(unused_imports)]
+
 // ============================================================
 // MODULE LOADER
 // ============================================================
@@ -124,7 +128,7 @@ impl ModuleLoader {
                 LoadResult::AbiMismatch {
                     expected: 1, // From expected manifest
                     found: manifest.abi_version.major,
-                    details: compat.version_info,
+                    details: compat.version_info.clone(),
                 }
             };
             self.record_load(path.to_string_lossy().to_string(), LoadResult::LoadError {

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 // ============================================================
 // RELOAD MANAGER - COMPREHENSIVE HMR ORCHESTRATION
 // ============================================================
@@ -16,7 +18,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use rand; // For deterministic replay seeding
+// rand is used via full path
 
 // Import boundary types
 pub use crate::boundary::BoundaryId;
@@ -294,7 +296,7 @@ pub enum ClassificationConfidence {
 }
 
 /// Detected changes for classification
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReloadChanges {
     pub modified_functions: HashSet<String>,
     pub api_functions: HashSet<String>,
@@ -424,7 +426,7 @@ impl SnapshotManager {
     pub fn create_snapshot(
         &mut self,
         reload_class: ReloadClass,
-        state_manager: &StateManager,
+        _state_manager: &StateManager,
         boundaries: &[BoundaryId],
     ) -> u64 {
         let snapshot_id = self.next_id.fetch_add(1, Ordering::SeqCst);
@@ -769,7 +771,7 @@ impl AsyncTaskRegistry {
             to_checkpoint,
             to_pause,
             to_terminate,
-            blocking_tasks: blocking,
+            blocking_tasks: blocking.clone(),
             can_proceed: blocking.is_empty() || reload_class == ReloadClass::Cold,
         }
     }
@@ -1841,7 +1843,7 @@ impl ReloadManager {
     
     /// Revert a failed reload
     pub fn revert_reload(&mut self, snapshot_id: u64) -> Result<(), ReloadError> {
-        let snapshot = self.snapshots.revert_to_snapshot(snapshot_id)
+        let _snapshot = self.snapshots.revert_to_snapshot(snapshot_id)
             .map_err(|e| ReloadError::RevertFailed { reason: e })?;
         
         // Would restore state from snapshot here
@@ -2761,10 +2763,10 @@ impl ClassificationTracker {
     /// Record a classification prediction
     pub fn record_prediction(
         &mut self,
-        boundary_id: &BoundaryId,
+        _boundary_id: &BoundaryId,
         predicted: ReloadClass,
-        confidence: ClassificationConfidence,
-        changes: &ReloadChanges,
+        _confidence: ClassificationConfidence,
+        _changes: &ReloadChanges,
     ) -> u64 {
         self.metrics.total_classifications += 1;
         
@@ -2778,7 +2780,7 @@ impl ClassificationTracker {
     /// Record actual outcome after reload
     pub fn record_outcome(
         &mut self,
-        prediction_id: u64,
+        _prediction_id: u64,
         boundary_id: &BoundaryId,
         predicted: ReloadClass,
         actual: ReloadClass,

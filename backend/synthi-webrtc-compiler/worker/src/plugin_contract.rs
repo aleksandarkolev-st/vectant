@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::ffi::{c_void, c_double, c_char, c_uint};
 
 // ============================================================

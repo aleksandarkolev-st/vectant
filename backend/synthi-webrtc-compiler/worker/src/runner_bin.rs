@@ -38,10 +38,11 @@ use host_kv::{
 };
 use state_diff::{migrate_state, generate_migration_report};
 use crash_recovery::{install_crash_handlers, execute_with_protection, should_force_restart, 
-                     reset_crash_count, HmrCrashStatus, generate_crash_report, set_current_lib_path};
+                     HmrCrashStatus, generate_crash_report, set_current_lib_path};
 
 // SDL2 Definitions
 #[cfg(target_os = "linux")]
+#[allow(non_camel_case_types)]
 type SDL_Window = c_void;
 
 #[cfg(target_os = "linux")]
@@ -51,6 +52,7 @@ struct SDL_Event {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 #[link(name = "SDL2")]
 extern "C" {
     fn SDL_Init(flags: u32) -> c_int;
@@ -101,6 +103,7 @@ const SDL_TEXTUREACCESS_STREAMING: c_int = 1;
 // ============================================================
 
 // Legacy state container - still used for backward compatibility with "main" module
+#[allow(dead_code)]
 struct AppState {
     raw: *mut c_void,
     renderer: *mut c_void,
@@ -108,6 +111,7 @@ struct AppState {
 
 // Per-module state tracking for independent swaps
 // Enhanced to track ABI version and CoreAPI pointer for proper HMR
+#[allow(dead_code)]
 struct ModuleState {
     state_ptr: *mut c_void,      // Module's own state (CoreState or GuiState)
     abi_version: u32,            // ABI version reported by the module
@@ -143,6 +147,7 @@ unsafe fn get_module_abi_version(state: *mut c_void) -> u32 {
 }
 
 #[repr(C)]
+#[allow(dead_code)]
 struct HostContext {
     window: *mut c_void,
     renderer: *mut c_void,
@@ -175,7 +180,7 @@ fn main() {
     
     // Spawn Xvfb and setup X11
     #[cfg(target_os = "linux")]
-    let (_xvfb_proc, x11_conn, x11_screen_num, x11_root) = {
+    let (_xvfb_proc, x11_conn, _x11_screen_num, x11_root) = {
         let mut cmd = Command::new("Xvfb");
         cmd.args(&[":99", "-screen", "0", "800x600x24"]);
         let child = cmd.spawn().ok();
@@ -566,7 +571,7 @@ fn main() {
                                         // OR legacy on_load/on_update for backward compat
                                         let core_load: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"core_on_load");
                                         let core_update: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = new_lib.get(b"core_on_update");
-                                        let core_get_api: Result<Symbol<unsafe extern "C" fn() -> *mut c_void>, _> = new_lib.get(b"core_get_api");
+                                        let _core_get_api: Result<Symbol<unsafe extern "C" fn() -> *mut c_void>, _> = new_lib.get(b"core_get_api");
                                         let legacy_load: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"on_load");
                                         let legacy_update: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = new_lib.get(b"on_update");
                                         
@@ -913,7 +918,6 @@ fn main() {
                                 // This allows the module to write to KV during on_load
                                 // ============================================================
                                 let module_slot = slot.unwrap_or(ModuleSlot::Main);
-                                let mut host_kv_events: Vec<HostKvSchemaEvent> = Vec::new();
                                 let has_host_kv_support: bool;
                                 
                                 if let Some(ref sid) = session_id {
@@ -926,7 +930,7 @@ fn main() {
                                                  name, schemas.len(), schemas.iter().map(|(ns, _)| ns).collect::<Vec<_>>());
                                         
                                         // Register schemas and handle any resets
-                                        host_kv_events = KV_STORE.register_schemas(sid, module_slot_to_u32(module_slot), &schemas);
+                                        let host_kv_events = KV_STORE.register_schemas(sid, module_slot_to_u32(module_slot), &schemas);
                                         
                                         // Emit HMR status for schema events
                                         for event in &host_kv_events {

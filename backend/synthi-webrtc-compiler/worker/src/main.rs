@@ -32,6 +32,7 @@ use watcher::{PreemptiveConfig, PreemptiveMessage, SpeculativeCache};
 use error_parser::{parse_compiler_output, CompilerType, DiagnosticEvent};
 use capability::{detect_capabilities, HmrCapability, HmrStatus};
 use shim::{auto_shim, ShimMode, detect_shim_mode};
+#[allow(unused_imports)]
 use incremental_cache::{IncrementalCache, compile_with_cache, link_objects};
 use gstreamer as gst;
 use gstreamer::prelude::*;
@@ -118,6 +119,7 @@ struct CompileRequest {
     use_ai_split: bool,
 }
 
+#[allow(dead_code)]
 struct RunnerState {
     process: Option<tokio::process::Child>, // Option to allow taking it if needed, or just drop
     stdin: tokio::process::ChildStdin,
@@ -326,7 +328,7 @@ async fn main() -> Result<()> {
     // Build Loop Task with Preemptive/Speculative Compilation
     tokio::task::spawn_blocking(move || {
         use std::sync::atomic::Ordering;
-        use std::time::{Instant, Duration};
+        use std::time::Instant;
         
         loop {
             if let Ok(message) = preemptive_rx.recv() {
@@ -1163,11 +1165,27 @@ async fn create_peer(signal_tx: mpsc::UnboundedSender<SignalMessage>) -> Result<
 }
 
 // Cache for AI split results to avoid redundant API calls
+// Two-level cache: 
+//   1. Full source hash -> instant hit (no patching needed)
+//   2. Structural hash -> hit with string patching (fast, no AI call)
 use std::sync::OnceLock;
-static AI_SPLIT_CACHE: OnceLock<tokio::sync::Mutex<std::collections::HashMap<u64, serde_json::Value>>> = OnceLock::new();
 
-fn get_ai_split_cache() -> &'static tokio::sync::Mutex<std::collections::HashMap<u64, serde_json::Value>> {
+#[derive(Clone)]
+struct CachedSplit {
+    result: serde_json::Value,
+    original_source: String,  // Store original source for string extraction
+}
+
+static AI_SPLIT_CACHE: OnceLock<tokio::sync::Mutex<std::collections::HashMap<u64, CachedSplit>>> = OnceLock::new();
+// Secondary cache keyed by structural hash for string-patching hits
+static AI_SPLIT_STRUCTURAL_CACHE: OnceLock<tokio::sync::Mutex<std::collections::HashMap<u64, CachedSplit>>> = OnceLock::new();
+
+fn get_ai_split_cache() -> &'static tokio::sync::Mutex<std::collections::HashMap<u64, CachedSplit>> {
     AI_SPLIT_CACHE.get_or_init(|| tokio::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn get_ai_split_structural_cache() -> &'static tokio::sync::Mutex<std::collections::HashMap<u64, CachedSplit>> {
+    AI_SPLIT_STRUCTURAL_CACHE.get_or_init(|| tokio::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
 fn calculate_hash<T: Hash>(t: &T) -> u64 {
@@ -1175,6 +1193,112 @@ fn calculate_hash<T: Hash>(t: &T) -> u64 {
     t.hash(&mut s);
     s.finish()
 }
+
+/// Extract all string literals from C/C++ source in order
+fn extract_string_literals(source: &str) -> Vec<String> {
+    let mut strings = Vec::new();
+    let mut chars = source.chars().peekable();
+    let mut in_string = false;
+    let mut in_char = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut escape_next = false;
+    let mut current_string = String::new();
+    
+    while let Some(c) = chars.next() {
+        if escape_next {
+            if in_string {
+                current_string.push('\\');
+                current_string.push(c);
+            }
+            escape_next = false;
+            continue;
+        }
+        
+        if in_line_comment {
+            if c == '\n' { in_line_comment = false; }
+            continue;
+        }
+        
+        if in_block_comment {
+            if c == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                in_block_comment = false;
+            }
+            continue;
+        }
+        
+        if in_string {
+            if c == '\\' {
+                escape_next = true;
+            } else if c == '"' {
+                strings.push(current_string.clone());
+                current_string.clear();
+                in_string = false;
+            } else {
+                current_string.push(c);
+            }
+            continue;
+        }
+        
+        if in_char {
+            if c == '\\' { escape_next = true; }
+            else if c == '\'' { in_char = false; }
+            continue;
+        }
+        
+        // Detect start of constructs
+        if c == '/' {
+            if chars.peek() == Some(&'/') { chars.next(); in_line_comment = true; continue; }
+            if chars.peek() == Some(&'*') { chars.next(); in_block_comment = true; continue; }
+        }
+        if c == '"' { in_string = true; continue; }
+        if c == '\'' { in_char = true; continue; }
+    }
+    
+    strings
+}
+
+/// Patch string literals in cached JSON result with new strings from source
+fn patch_strings_in_cached_result(
+    cached: &serde_json::Value,
+    old_strings: &[String],
+    new_strings: &[String],
+) -> serde_json::Value {
+    // Only patch if we have a reasonable mapping
+    if old_strings.is_empty() || new_strings.is_empty() {
+        return cached.clone();
+    }
+    
+    let mut result = cached.clone();
+    
+    // Patch each file's content in the split result
+    for key in &["core", "gui", "shared"] {
+        if let Some(file_obj) = result.get_mut(key) {
+            if let Some(content) = file_obj.get_mut("content") {
+                if let Some(content_str) = content.as_str() {
+                    let mut patched = content_str.to_string();
+                    
+                    // Replace old strings with new strings where they differ
+                    // Match by position in the string list (assuming order is preserved)
+                    for (old, new) in old_strings.iter().zip(new_strings.iter()) {
+                        if old != new && !old.is_empty() {
+                            // Use format with quotes to avoid partial matches
+                            let old_quoted = format!("\"{}\"", old);
+                            let new_quoted = format!("\"{}\"", new);
+                            patched = patched.replace(&old_quoted, &new_quoted);
+                        }
+                    }
+                    
+                    *content = serde_json::Value::String(patched);
+                }
+            }
+        }
+    }
+    
+    result
+}
+
 
 /// Extract structural signature from C/C++ code for smart caching.
 /// This ignores string literals, comments, and numeric constants so that
@@ -1281,19 +1405,52 @@ fn extract_structural_signature(source: &str) -> String {
 }
 
 async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
-    // Use STRUCTURAL hash for cache - ignores string literals, comments, numbers
-    // This gives Next.js-like HMR behavior: changing "Paused" to "Resume" won't trigger AI
-    let structural_sig = extract_structural_signature(&req.source);
-    let source_hash = calculate_hash(&structural_sig);
+    // TWO-LEVEL CACHE for fast HMR:
+    // Level 1: Full source hash -> instant cache hit (exact match)
+    // Level 2: Structural hash -> cache hit with string patching (string-only changes)
+    // Level 3: Cache miss -> call AI backend
     
+    let source_hash = calculate_hash(&req.source);
+    let structural_sig = extract_structural_signature(&req.source);
+    let structural_hash = calculate_hash(&structural_sig);
+    
+    // Level 1: Check exact source match (instant, no work)
     {
         let cache = get_ai_split_cache().lock().await;
         if let Some(cached) = cache.get(&source_hash) {
-            eprintln!("[AI Split] Cache HIT - using cached split result");
-            return Ok(cached.clone());
+            eprintln!("[AI Split] Cache HIT (exact match) - instant return");
+            return Ok(cached.result.clone());
         }
     }
     
+    // Level 2: Check structural match (fast patching, no AI call)
+    {
+        let structural_cache = get_ai_split_structural_cache().lock().await;
+        if let Some(cached) = structural_cache.get(&structural_hash) {
+            eprintln!("[AI Split] Cache HIT (structural match) - patching strings...");
+            
+            // Extract strings from old and new source
+            let old_strings = extract_string_literals(&cached.original_source);
+            let new_strings = extract_string_literals(&req.source);
+            
+            // Patch the cached result with new strings
+            let patched_result = patch_strings_in_cached_result(&cached.result, &old_strings, &new_strings);
+            
+            // Store patched result in exact-match cache for future
+            {
+                let mut cache = get_ai_split_cache().lock().await;
+                cache.insert(source_hash, CachedSplit {
+                    result: patched_result.clone(),
+                    original_source: req.source.clone(),
+                });
+            }
+            
+            eprintln!("[AI Split] String patching complete - fast HMR!");
+            return Ok(patched_result);
+        }
+    }
+    
+    // Level 3: Cache miss - call AI backend
     eprintln!("[AI Split] Cache MISS - calling AI backend...");
     let start_time = std::time::Instant::now();
     
@@ -1369,17 +1526,34 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
         }
     };
     
-    // Cache the result for future requests with same source
+    // Cache the result for future requests
     let elapsed = start_time.elapsed();
     eprintln!("[AI Split] Completed in {:?}", elapsed);
+    
+    let cached_entry = CachedSplit {
+        result: split_data.clone(),
+        original_source: req.source.clone(),
+    };
+    
+    // Store in both caches
     {
         let mut cache = get_ai_split_cache().lock().await;
-        cache.insert(source_hash, split_data.clone());
+        cache.insert(source_hash, cached_entry.clone());
         // Limit cache size to 100 entries
         if cache.len() > 100 {
-            // Remove oldest (first) entry
             if let Some(oldest_key) = cache.keys().next().cloned() {
                 cache.remove(&oldest_key);
+            }
+        }
+    }
+    
+    {
+        let mut structural_cache = get_ai_split_structural_cache().lock().await;
+        structural_cache.insert(structural_hash, cached_entry);
+        // Limit structural cache size to 50 entries
+        if structural_cache.len() > 50 {
+            if let Some(oldest_key) = structural_cache.keys().next().cloned() {
+                structural_cache.remove(&oldest_key);
             }
         }
     }
@@ -1821,6 +1995,16 @@ async fn handle_compile(
             let fname = core["filename"].as_str().unwrap_or("core.cpp");
             let mut content = core["content"].as_str().unwrap_or("").to_string();
 
+            // Read shared.h content to check what's defined there
+            let shared_content = split_data.get("shared")
+                .and_then(|s| s["content"].as_str())
+                .unwrap_or("");
+            
+            // Detect if shared.h has full struct definitions or just forward declarations
+            let shared_has_full_hostkv = shared_content.contains("struct HostKvApiV1 {") ||
+                                          shared_content.contains("struct SynthiHostContextV1 {") ||
+                                          shared_content.contains("struct SynthiNamespaceSchemaV1 {");
+
             // Fix common AI mistakes in core.cpp before compilation.
             if content.contains("is_running") {
                 content = content.replace("is_running", "running");
@@ -2032,23 +2216,56 @@ async fn handle_compile(
                 }
 
                 // Pattern 3: Host KV structs (HostKvApiV1, SynthiHostContextV1, SynthiNamespaceSchemaV1)
+                // Intelligently handle these based on what's in shared.h
                 for struct_name in &["HostKvApiV1", "SynthiHostContextV1", "SynthiNamespaceSchemaV1"] {
-                     // typedef struct Name Name;
+                     // Always strip typedef forward declarations if they exist
                      let typedef_pattern = format!("typedef struct {} {};", struct_name, struct_name);
                      if content.contains(&typedef_pattern) {
-                         content = content.replace(&typedef_pattern, &format!("// {} defined in shared.h", struct_name));
+                         content = content.replace(&typedef_pattern, &format!("// {} forward-declared in shared.h", struct_name));
+                         eprintln!("[Guardrail] Stripped typedef forward decl for '{}' from core.cpp", struct_name);
                      }
                      
-                     // struct Name { ... };
-                     let struct_decl = format!("struct {} {{", struct_name);
-                     if let Some(start) = content.find(&struct_decl) {
-                         if let Some(end) = content[start..].find("};") {
-                             let block_end = start + end + "};".len();
-                             let block = &content[start..block_end];
-                             eprintln!("[Guardrail] Stripping duplicate 'struct {}' from core.cpp", struct_name);
-                             content = content.replace(block, &format!("// {} defined in shared.h", struct_name));
+                     // Strip full struct definitions ONLY if shared.h has them
+                     if shared_has_full_hostkv {
+                         let struct_decl = format!("struct {} {{", struct_name);
+                         if let Some(start) = content.find(&struct_decl) {
+                             if let Some(end) = content[start..].find("};") {
+                                 let block_end = start + end + "};".len();
+                                 let block = &content[start..block_end];
+                                 eprintln!("[Guardrail] Stripping duplicate 'struct {}' from core.cpp (full definition in shared.h)", struct_name);
+                                 content = content.replace(block, &format!("// {} fully defined in shared.h", struct_name));
+                             }
                          }
+                     } else {
+                         // shared.h only has forward declarations, keep full definitions here
+                         eprintln!("[Guardrail] Keeping 'struct {}' definition in core.cpp (shared.h has forward decl only)", struct_name);
                      }
+                }
+            }
+
+            // FIX: AI often forgets to initialize button state fields in core.cpp
+            // If the AppState has btn_x/btn_y/btn_w/btn_h but core doesn't initialize them,
+            // the button won't be visible. Inject default values if missing.
+            if shared_content.contains("btn_x") && shared_content.contains("btn_y") {
+                // Check if core.cpp initializes any btn_ fields
+                let has_btn_init = content.contains("btn_x =") || 
+                                   content.contains("btn_x=") ||
+                                   content.contains("->btn_x =") ||
+                                   content.contains(".btn_x =");
+                
+                if !has_btn_init {
+                    // Find ALL state initialization blocks and inject button init after dx = 5
+                    // The AI typically generates: app_state.dx = 5; without btn_ fields
+                    let btn_init_code = "\n        app_state.btn_x = 200;\n        app_state.btn_y = 10;\n        app_state.btn_w = 120;\n        app_state.btn_h = 40;";
+                    
+                    // Replace ALL occurrences of dx = 5 initialization
+                    if content.contains("app_state.dx = 5;") {
+                        content = content.replace(
+                            "app_state.dx = 5;",
+                            &format!("app_state.dx = 5;{}", btn_init_code)
+                        );
+                        eprintln!("[Guardrail] Injected button state initialization (btn_x/y/w/h) in core.cpp");
+                    }
                 }
             }
 
@@ -2458,6 +2675,16 @@ extern "C" int on_load_from_json(void* state_ptr, const char* json) {
             let fname = gui["filename"].as_str().unwrap_or("gui.cpp");
             let mut content = gui["content"].as_str().unwrap_or("").to_string();
 
+            // Read shared.h content to check what's defined there (reuse from core processing)
+            let shared_content = split_data.get("shared")
+                .and_then(|s| s["content"].as_str())
+                .unwrap_or("");
+            
+            // Detect if shared.h has full struct definitions or just forward declarations
+            let shared_has_full_hostkv = shared_content.contains("struct HostKvApiV1 {") ||
+                                          shared_content.contains("struct SynthiHostContextV1 {") ||
+                                          shared_content.contains("struct SynthiNamespaceSchemaV1 {");
+
             // CRITICAL: Strip X11-related functions that the AI incorrectly preserved from the input.
             let x11_type_patterns = [
                 "Display*", "Display *", "XIM", "XIC", "Atom", "Colormap", "Pixmap", "GC ",
@@ -2531,22 +2758,29 @@ extern "C" int on_load_from_json(void* state_ptr, const char* json) {
                 }
 
                 // Pattern 3: Host KV structs (HostKvApiV1, SynthiHostContextV1, SynthiNamespaceSchemaV1)
+                // Intelligently handle these based on what's in shared.h
                 for struct_name in &["HostKvApiV1", "SynthiHostContextV1", "SynthiNamespaceSchemaV1"] {
-                     // typedef struct Name Name;
+                     // Always strip typedef forward declarations if they exist
                      let typedef_pattern = format!("typedef struct {} {};", struct_name, struct_name);
                      if content.contains(&typedef_pattern) {
-                         content = content.replace(&typedef_pattern, &format!("// {} defined in shared.h", struct_name));
+                         content = content.replace(&typedef_pattern, &format!("// {} forward-declared in shared.h", struct_name));
+                         eprintln!("[Guardrail] Stripped typedef forward decl for '{}' from gui.cpp", struct_name);
                      }
                      
-                     // struct Name { ... };
-                     let struct_decl = format!("struct {} {{", struct_name);
-                     if let Some(start) = content.find(&struct_decl) {
-                         if let Some(end) = content[start..].find("};") {
-                             let block_end = start + end + "};".len();
-                             let block = &content[start..block_end];
-                             eprintln!("[Guardrail] Stripping duplicate 'struct {}' from gui.cpp", struct_name);
-                             content = content.replace(block, &format!("// {} defined in shared.h", struct_name));
+                     // Strip full struct definitions ONLY if shared.h has them
+                     if shared_has_full_hostkv {
+                         let struct_decl = format!("struct {} {{", struct_name);
+                         if let Some(start) = content.find(&struct_decl) {
+                             if let Some(end) = content[start..].find("};") {
+                                 let block_end = start + end + "};".len();
+                                 let block = &content[start..block_end];
+                                 eprintln!("[Guardrail] Stripping duplicate 'struct {}' from gui.cpp (full definition in shared.h)", struct_name);
+                                 content = content.replace(block, &format!("// {} fully defined in shared.h", struct_name));
+                             }
                          }
+                     } else {
+                         // shared.h only has forward declarations, keep full definitions here
+                         eprintln!("[Guardrail] Keeping 'struct {}' definition in gui.cpp (shared.h has forward decl only)", struct_name);
                      }
                 }
             }
@@ -3002,7 +3236,6 @@ extern "C" int gui_on_load_from_json(void* state_ptr, const char* json) {
         // This is the key to "Next.js-like" HMR that works without users
         // needing to structure their code in a specific way.
         // ============================================================
-        let shimmed_source = source_code.clone();
         let mut shimmed_filename = req.filename.clone();
         let mut shim_applied = false;
         

@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+#![allow(mismatched_lifetime_syntaxes)]
+#![allow(unused_imports)]
+
 // ============================================================
 // ABI VERSIONING AND COMPATIBILITY
 // ============================================================
@@ -433,7 +437,7 @@ pub unsafe fn extract_manifest_from_library(
     let mut manifest = SymbolManifest::new(module_name, AbiVersion::default());
 
     // Try to get ABI version
-    let version_symbol = match module_name {
+    let version_symbol: &[u8] = match module_name {
         "core" => b"core_get_abi_version\0",
         "gui" => b"gui_get_abi_version\0",
         _ => b"get_abi_version\0",

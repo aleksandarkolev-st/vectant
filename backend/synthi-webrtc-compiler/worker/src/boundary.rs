@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused_imports)]
+
 // ============================================================
 // SUB-MODULE HMR BOUNDARIES WITH EXPLICIT MANIFESTS
 // ============================================================
@@ -528,6 +531,8 @@ impl BoundaryTracker {
         BoundaryStats {
             total_boundaries: self.boundaries.len(),
             reload_count: self.reload_count.load(Ordering::Relaxed),
+            manifest_validated_count: self.boundaries.values().filter(|b| b.manifest_validated).count(),
+            unvalidated_count: self.boundaries.values().filter(|b| !b.manifest_validated).count(),
             boundaries_by_type: self
                 .boundaries
                 .values()

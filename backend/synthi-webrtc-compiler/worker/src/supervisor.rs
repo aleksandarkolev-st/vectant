@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused_imports)]
+
 // ============================================================
 // CRASH SUPERVISOR
 // ============================================================
@@ -174,7 +177,7 @@ impl CrashSupervisor {
     }
 
     /// Determine the appropriate recovery action
-    fn determine_recovery_action(&self, consecutive: u32, module: &ModuleSlot) -> RecoveryAction {
+    fn determine_recovery_action(&self, consecutive: u32, _module: &ModuleSlot) -> RecoveryAction {
         if consecutive >= self.config.max_consecutive_crashes {
             // Too many crashes, escalate
             return RecoveryAction::FullRestart;
