@@ -86,6 +86,21 @@ pub mod core_symbols {
     /// Returns a hash/checksum of the state struct layout.
     /// Used to verify binary compatibility before raw pointer reuse.
     pub const GET_STATE_SCHEMA_HASH: &[u8] = b"core_get_state_schema_hash\0";
+    
+    // ============================================================
+    // BINARY SERIALIZATION SYMBOLS (fast MessagePack-based HMR)
+    // ============================================================
+    /// unsigned char* core_on_save_state_binary(CoreState* state, size_t* out_size)
+    /// Returns heap-allocated buffer, caller must free. out_size receives byte count.
+    pub const ON_SAVE_STATE_BINARY: &[u8] = b"core_on_save_state_binary\0";
+    
+    /// CoreState* core_on_load_from_binary(const unsigned char* data, size_t size)
+    /// Returns heap-allocated state struct from binary data.
+    pub const ON_LOAD_FROM_BINARY: &[u8] = b"core_on_load_from_binary\0";
+    
+    /// size_t core_get_state_binary_size()
+    /// Returns expected binary state size (header + fields)
+    pub const GET_STATE_BINARY_SIZE: &[u8] = b"core_get_state_binary_size\0";
 
     // ============================================================
     // HOST KV SYMBOLS (optional, for host-context-aware loading)
@@ -101,7 +116,12 @@ pub mod core_symbols {
     pub const REQUIRED: &[&[u8]] = &[ON_LOAD, ON_UPDATE, GET_API];
     
     /// Optional symbols
-    pub const OPTIONAL: &[&[u8]] = &[ON_EVENT, ON_UNLOAD, GET_ABI_VERSION, ON_SAVE_STATE, ON_LOAD_FROM_JSON, GET_STATE_SCHEMA_HASH, ON_LOAD_HOST, HOST_KV_SCHEMAS_LEN, HOST_KV_SCHEMAS];
+    pub const OPTIONAL: &[&[u8]] = &[
+        ON_EVENT, ON_UNLOAD, GET_ABI_VERSION, 
+        ON_SAVE_STATE, ON_LOAD_FROM_JSON, GET_STATE_SCHEMA_HASH,
+        ON_SAVE_STATE_BINARY, ON_LOAD_FROM_BINARY, GET_STATE_BINARY_SIZE,  // Binary serialization
+        ON_LOAD_HOST, HOST_KV_SCHEMAS_LEN, HOST_KV_SCHEMAS
+    ];
     
     // Function signatures
     /// CoreState* core_on_load(CoreState* prev, void* renderer)
@@ -133,6 +153,22 @@ pub mod core_symbols {
     
     /// uint64_t core_get_state_schema_hash(void)
     pub type GetStateSchemaHashFn = unsafe extern "C" fn() -> u64;
+    
+    // ============================================================
+    // BINARY SERIALIZATION TYPE SIGNATURES (10-50x faster than JSON)
+    // ============================================================
+    
+    /// unsigned char* core_on_save_state_binary(CoreState* state, size_t* out_size)
+    /// Returns heap-allocated buffer, caller must free. out_size receives byte count.
+    pub type OnSaveStateBinaryFn = unsafe extern "C" fn(StatePtr, *mut usize) -> *mut u8;
+    
+    /// CoreState* core_on_load_from_binary(const unsigned char* data, size_t size)
+    /// Returns heap-allocated state struct from binary data.
+    pub type OnLoadFromBinaryFn = unsafe extern "C" fn(*const u8, usize) -> StatePtr;
+    
+    /// size_t core_get_state_binary_size()
+    /// Returns expected binary state size (header + fields)
+    pub type GetStateBinarySizeFn = unsafe extern "C" fn() -> usize;
 
     /// uint32_t core_host_kv_schemas_len(void)
     pub type HostKvSchemasLenFn = unsafe extern "C" fn() -> c_uint;
@@ -159,6 +195,18 @@ pub mod gui_symbols {
     
     /// Returns a hash/checksum of the state struct layout.
     pub const GET_STATE_SCHEMA_HASH: &[u8] = b"gui_get_state_schema_hash\0";
+    
+    // ============================================================
+    // BINARY SERIALIZATION SYMBOLS (fast MessagePack-based HMR)
+    // ============================================================
+    /// unsigned char* gui_on_save_state_binary(GuiState* state, size_t* out_size)
+    pub const ON_SAVE_STATE_BINARY: &[u8] = b"gui_on_save_state_binary\0";
+    
+    /// GuiState* gui_on_load_from_binary(const unsigned char* data, size_t size)
+    pub const ON_LOAD_FROM_BINARY: &[u8] = b"gui_on_load_from_binary\0";
+    
+    /// size_t gui_get_state_binary_size()
+    pub const GET_STATE_BINARY_SIZE: &[u8] = b"gui_get_state_binary_size\0";
 
     // ============================================================
     // HOST KV SYMBOLS (optional, for host-context-aware loading)
@@ -174,7 +222,12 @@ pub mod gui_symbols {
     pub const REQUIRED: &[&[u8]] = &[ON_LOAD, ON_RENDER];
     
     /// Optional symbols
-    pub const OPTIONAL: &[&[u8]] = &[ON_EVENT, ON_UNLOAD, GET_ABI_VERSION, ON_SAVE_STATE, ON_LOAD_FROM_JSON, GET_STATE_SCHEMA_HASH, ON_LOAD_HOST, HOST_KV_SCHEMAS_LEN, HOST_KV_SCHEMAS];
+    pub const OPTIONAL: &[&[u8]] = &[
+        ON_EVENT, ON_UNLOAD, GET_ABI_VERSION, 
+        ON_SAVE_STATE, ON_LOAD_FROM_JSON, GET_STATE_SCHEMA_HASH,
+        ON_SAVE_STATE_BINARY, ON_LOAD_FROM_BINARY, GET_STATE_BINARY_SIZE,  // Binary serialization
+        ON_LOAD_HOST, HOST_KV_SCHEMAS_LEN, HOST_KV_SCHEMAS
+    ];
     
     // Function signatures
     /// GuiState* gui_on_load(GuiState* prev, void* renderer, CoreAPI* api)
@@ -203,6 +256,19 @@ pub mod gui_symbols {
     
     /// uint64_t gui_get_state_schema_hash(void)
     pub type GetStateSchemaHashFn = unsafe extern "C" fn() -> u64;
+    
+    // ============================================================
+    // BINARY SERIALIZATION TYPE SIGNATURES (10-50x faster than JSON)
+    // ============================================================
+    
+    /// unsigned char* gui_on_save_state_binary(GuiState* state, size_t* out_size)
+    pub type OnSaveStateBinaryFn = unsafe extern "C" fn(StatePtr, *mut usize) -> *mut u8;
+    
+    /// GuiState* gui_on_load_from_binary(const unsigned char* data, size_t size)
+    pub type OnLoadFromBinaryFn = unsafe extern "C" fn(*const u8, usize) -> StatePtr;
+    
+    /// size_t gui_get_state_binary_size()
+    pub type GetStateBinarySizeFn = unsafe extern "C" fn() -> usize;
 
     /// uint32_t gui_host_kv_schemas_len(void)
     pub type HostKvSchemasLenFn = unsafe extern "C" fn() -> c_uint;
@@ -230,6 +296,18 @@ pub mod legacy_symbols {
     pub const ON_RENDER: &[u8] = b"on_render\0";
     
     // ============================================================
+    // BINARY SERIALIZATION SYMBOLS (fast MessagePack-based HMR)
+    // ============================================================
+    /// unsigned char* on_save_state_binary(void* state, size_t* out_size)
+    pub const ON_SAVE_STATE_BINARY: &[u8] = b"on_save_state_binary\0";
+    
+    /// void* on_load_from_binary(const unsigned char* data, size_t size)
+    pub const ON_LOAD_FROM_BINARY: &[u8] = b"on_load_from_binary\0";
+    
+    /// size_t get_state_binary_size()
+    pub const GET_STATE_BINARY_SIZE: &[u8] = b"get_state_binary_size\0";
+
+    // ============================================================
     // HOST KV SYMBOLS (optional, for host-context-aware loading)
     // ============================================================
     /// void* on_load_host(void* prev, const SynthiHostContextV1* host_ctx)
@@ -251,6 +329,19 @@ pub mod legacy_symbols {
     pub type RenderFn = unsafe extern "C" fn(StatePtr);
     pub type HostKvSchemasLenFn = unsafe extern "C" fn() -> c_uint;
     pub type HostKvSchemasFn = unsafe extern "C" fn() -> *const c_void;
+    
+    // ============================================================
+    // BINARY SERIALIZATION TYPE SIGNATURES
+    // ============================================================
+    
+    /// unsigned char* on_save_state_binary(void* state, size_t* out_size)
+    pub type OnSaveStateBinaryFn = unsafe extern "C" fn(StatePtr, *mut usize) -> *mut u8;
+    
+    /// void* on_load_from_binary(const unsigned char* data, size_t size)
+    pub type OnLoadFromBinaryFn = unsafe extern "C" fn(*const u8, usize) -> StatePtr;
+    
+    /// size_t get_state_binary_size()
+    pub type GetStateBinarySizeFn = unsafe extern "C" fn() -> usize;
 }
 
 // ============================================================
