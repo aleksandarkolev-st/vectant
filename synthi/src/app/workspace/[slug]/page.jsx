@@ -885,117 +885,123 @@ export default function EditorPage({ params }) {
                 sendGuiEvent={sendGuiEvent}
             />
 
-            <ResizablePanelGroup
-                direction="horizontal"
-                className="flex-1 min-h-0"
-                key={panelGroupKey}
-            >
-                {treeOnRight ? (
+            <ResizablePanelGroup direction="vertical" className="flex-1 min-h-0">
+                <ResizablePanel defaultSize={showProblemsPanel ? 75 : 100} minSize={20}>
+                    <ResizablePanelGroup
+                        direction="horizontal"
+                        className="h-full w-full"
+                        key={panelGroupKey}
+                    >
+                        {treeOnRight ? (
+                            <>
+                                {EditorPanelComponent}
+
+                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+
+                                {FileTreePanel}
+
+                                {chatVisible && (
+                                    <>
+                                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                        {ChatPanel}
+                                    </>
+                                )}
+
+                                {showEmulatorPreview && (
+                                    <>
+                                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                        {EmulatorPreviewPanel}
+                                    </>
+                                )}
+                            </>
+                        ) : (
+                            <>
+                                {FileTreePanel}
+
+                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+
+                                {EditorPanelComponent}
+
+                                {chatVisible && (
+                                    <>
+                                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                        {ChatPanel}
+                                    </>
+                                )}
+
+                                {showEmulatorPreview && (
+                                    <>
+                                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
+                                        {EmulatorPreviewPanel}
+                                    </>
+                                )}
+                            </>
+                        )}
+                    </ResizablePanelGroup>
+                </ResizablePanel>
+
+                {showProblemsPanel && (
                     <>
-                        {EditorPanelComponent}
-
-                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-
-                        {FileTreePanel}
-
-                        {chatVisible && (
-                            <>
-                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                                {ChatPanel}
-                            </>
-                        )}
-
-                        {showEmulatorPreview && (
-                            <>
-                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                                {EmulatorPreviewPanel}
-                            </>
-                        )}
-                    </>
-                ) : (
-                    <>
-                        {FileTreePanel}
-
-                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-
-                        {EditorPanelComponent}
-
-                        {chatVisible && (
-                            <>
-                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                                {ChatPanel}
-                            </>
-                        )}
-
-                        {showEmulatorPreview && (
-                            <>
-                                <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                                {EmulatorPreviewPanel}
-                            </>
-                        )}
+                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] h-px z-50" />
+                        <ResizablePanel defaultSize={25} minSize={10}>
+                            <ProblemsPanel
+                                diagnostics={mergedDiagnostics}
+                                summary={diagnosticSummary}
+                                isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
+                                filePath={activeFile?.path || activeFile?.name || 'Current File'}
+                                onClose={() => setShowProblemsPanel(false)}
+                                onNavigate={(location) => {
+                                    const targetFile = location.filePath;
+                                    const currentFile = activeFile?.path || activeFile?.name;
+                                    
+                                    // If navigating to a different file, select it first
+                                    if (targetFile && targetFile !== currentFile) {
+                                        // Find the file in rawFiles and select it
+                                        const findFile = (files, path) => {
+                                            for (const file of files || []) {
+                                                if (file.isFolder && file.children) {
+                                                    const found = findFile(file.children, path);
+                                                    if (found) return found;
+                                                } else if (file.path === path || file.name === path) {
+                                                    return file;
+                                                }
+                                            }
+                                            return null;
+                                        };
+                                        
+                                        const fileToSelect = findFile(rawFiles, targetFile);
+                                        if (fileToSelect) {
+                                            dispatch(selectFileThunk(fileToSelect));
+                                            // Wait a bit for file to load, then navigate
+                                            setTimeout(() => {
+                                                if (editor) {
+                                                    const position = {
+                                                        lineNumber: (location.line ?? 0) + 1,
+                                                        column: (location.column ?? 0) + 1,
+                                                    };
+                                                    editor.setPosition(position);
+                                                    editor.revealPositionInCenter(position);
+                                                    editor.focus();
+                                                }
+                                            }, 100);
+                                        }
+                                    } else if (editor) {
+                                        // Same file, just navigate
+                                        const position = {
+                                            lineNumber: (location.line ?? 0) + 1,
+                                            column: (location.column ?? 0) + 1,
+                                        };
+                                        editor.setPosition(position);
+                                        editor.revealPositionInCenter(position);
+                                        editor.focus();
+                                    }
+                                }}
+                                className="h-full rounded-none border-0"
+                            />
+                        </ResizablePanel>
                     </>
                 )}
             </ResizablePanelGroup>
-
-            {/* Problems Panel */}
-            {showProblemsPanel && (
-                <div className="h-48 max-h-48 flex-shrink-0 border-t border-[#1a1b24]">
-                    <ProblemsPanel
-                        diagnostics={mergedDiagnostics}
-                        summary={diagnosticSummary}
-                        isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
-                        filePath={activeFile?.path || activeFile?.name || 'Current File'}
-                        onClose={() => setShowProblemsPanel(false)}
-                        onNavigate={(location) => {
-                            const targetFile = location.filePath;
-                            const currentFile = activeFile?.path || activeFile?.name;
-                            
-                            // If navigating to a different file, select it first
-                            if (targetFile && targetFile !== currentFile) {
-                                // Find the file in rawFiles and select it
-                                const findFile = (files, path) => {
-                                    for (const file of files || []) {
-                                        if (file.isFolder && file.children) {
-                                            const found = findFile(file.children, path);
-                                            if (found) return found;
-                                        } else if (file.path === path || file.name === path) {
-                                            return file;
-                                        }
-                                    }
-                                    return null;
-                                };
-                                
-                                const fileToSelect = findFile(rawFiles, targetFile);
-                                if (fileToSelect) {
-                                    dispatch(selectFileThunk(fileToSelect));
-                                    // Wait a bit for file to load, then navigate
-                                    setTimeout(() => {
-                                        if (editor) {
-                                            const position = {
-                                                lineNumber: (location.line ?? 0) + 1,
-                                                column: (location.column ?? 0) + 1,
-                                            };
-                                            editor.setPosition(position);
-                                            editor.revealPositionInCenter(position);
-                                            editor.focus();
-                                        }
-                                    }, 100);
-                                }
-                            } else if (editor) {
-                                // Same file, just navigate
-                                const position = {
-                                    lineNumber: (location.line ?? 0) + 1,
-                                    column: (location.column ?? 0) + 1,
-                                };
-                                editor.setPosition(position);
-                                editor.revealPositionInCenter(position);
-                                editor.focus();
-                            }
-                        }}
-                        className="h-full rounded-none border-0"
-                    />
-                </div>
-            )}
         </div>
 
         {/* Status Bar */}
