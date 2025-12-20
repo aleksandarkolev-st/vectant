@@ -454,7 +454,8 @@ export function useWorkspaceAnalysis({
     const all = [];
     for (const [path, diags] of Object.entries(diagnosticsByFile)) {
       for (const d of diags) {
-        all.push({ ...d, primaryFile: path });
+        // Ensure filePath is set so consumers can filter correctly
+        all.push({ ...d, filePath: path, primaryFile: path });
       }
     }
     all.push(...crossFileDiagnostics);

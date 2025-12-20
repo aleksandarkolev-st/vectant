@@ -88,6 +88,8 @@ export default function EditorPage({ params }) {
         trackFileDeletion,
         setFocusFile: setWorkspaceFocusFile,
         triggerAnalysis: triggerWorkspaceAnalysis,
+        runFullAnalysis,
+        trackFiles,
         allDiagnostics: workspaceDiagnostics,
         summary: workspaceSummary,
         isAnalyzing: isWorkspaceAnalyzing,
@@ -171,6 +173,52 @@ export default function EditorPage({ params }) {
                         // Successful
                         setWorkspaceMissing(false);
                         setWorkspaceMissingMessage('');
+
+                        // Trigger full workspace analysis on initialization
+                        const { files } = result.payload;
+                        if (files && files.length > 0) {
+                            (async () => {
+                                try {
+                                    // Helper to flatten tree
+                                    const flatten = (nodes) => {
+                                        let flat = [];
+                                        for (const node of nodes) {
+                                            if (node.isFolder) {
+                                                if (node.children) flat = flat.concat(flatten(node.children));
+                                            } else {
+                                                flat.push(node);
+                                            }
+                                        }
+                                        return flat;
+                                    };
+                                    
+                                    const flatFiles = flatten(files);
+                                    // Limit to reasonable number of files to avoid overwhelming the browser/network
+                                    const MAX_INIT_FILES = 50;
+                                    const filesToAnalyze = flatFiles.slice(0, MAX_INIT_FILES);
+                                    
+                                    // Fetch content for analysis
+                                    const filesWithContent = await Promise.all(filesToAnalyze.map(async (f) => {
+                                        try {
+                                            const content = await api.fetchFileContent(slug, f.path);
+                                            return { ...f, content };
+                                        } catch (e) {
+                                            return null;
+                                        }
+                                    }));
+                                    
+                                    const validFiles = filesWithContent.filter(f => f && f.content);
+                                    
+                                    if (validFiles.length > 0) {
+                                        trackFiles(validFiles);
+                                        // Trigger full analysis (AI + Semantic + Static)
+                                        await runFullAnalysis({ includeAi: true });
+                                    }
+                                } catch (err) {
+                                    console.error('Failed to trigger initial workspace analysis', err);
+                                }
+                            })();
+                        }
                     }
                 } catch (e) {
                     const msg = e?.message || String(e);
