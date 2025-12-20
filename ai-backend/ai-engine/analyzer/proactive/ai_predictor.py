@@ -67,15 +67,16 @@ Find bugs and design issues. Only report:
 ### Bugs (HIGH CONFIDENCE - prove with examples):
 - **Subtle Logic Traps**:
   - Accidental semicolons after control structures: `if (...);`, `while (...);`, `for (...);`
-  - Assignment `=` used instead of comparison `==` in conditions: `if (x = 1)`
+  - Assignment `=` used instead of comparison `==` in conditions: `if (x = 1)` (VERIFY it is not `==` before reporting)
   - Wrong operators: `<` vs `<=`, `==` vs `!=`, `&&` vs `||`
 - **Loop & Index Errors**:
   - Off-by-one errors: `for (i=0; i<=size; i++)` (accesses out of bounds)
   - Infinite loops: `while(x > 0)` where x never changes
 - **Memory Management (C/C++)**:
-  - Use after free / Double free
+  - Use after free (accessing pointer after delete)
+  - Double free (deleting same pointer twice)
   - Memory leaks (new without delete)
-  - Returning pointers to stack variables (Dangling pointers)
+  - Returning pointers to local stack variables (Dangling pointers)
   - Array out of bounds access
 - **Data Flow**:
   - Uninitialized variables used in logic
@@ -98,10 +99,11 @@ Find bugs and design issues. Only report:
 ## CRITICAL RULES
 1. READ THE ACTUAL CODE CHARACTER-BY-CHARACTER - don't assume what it does based on indentation
 2. Scrutinize every `if`, `while`, `for` for accidental semicolons or assignment operators
-3. If a check exists (like `if (x < 0)`), don't report it as missing
-4. Only report bugs you can PROVE with input → expected → actual
-5. For design issues, explain WHY the current design is problematic
-6. **Do NOT suggest adding #include when the symbol is already available via transitive includes**
+3. Do NOT report 'Assignment in condition' if the operator is `==` (double equals)
+4. If a check exists (like `if (x < 0)`), don't report it as missing
+5. Only report bugs you can PROVE with input → expected → actual
+6. For design issues, explain WHY the current design is problematic
+7. **Do NOT suggest adding #include when the symbol is already available via transitive includes**
 
 ## RESPONSE FORMAT
 Return ONLY a JSON array:
