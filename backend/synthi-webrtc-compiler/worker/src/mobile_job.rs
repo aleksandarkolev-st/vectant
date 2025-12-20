@@ -12,8 +12,11 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::time::Instant;
 use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::sync::Mutex;
 use anyhow::{Result, Context, bail};
 use serde_json::json;
 use webrtc::data_channel::RTCDataChannel;
@@ -217,23 +220,94 @@ pub async fn handle_react_native_emulator_job(
         env: HashMap::new(),
     };
     
+    // Keep a small rolling buffer of recent Gradle output so we can surface a useful
+    // error snippet to the frontend on failure.
+    let recent_lines: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::with_capacity(200)));
+
     // Create log callback that forwards to the frontend
     let log_dc_for_build = log_dc.clone();
     let session_id_for_build = session_id.clone();
+    let recent_for_build = recent_lines.clone();
     let log_callback: Box<dyn Fn(String) + Send + Sync> = Box::new(move |line: String| {
         let dc = log_dc_for_build.clone();
         let sid = session_id_for_build.clone();
+        let recent = recent_for_build.clone();
         tokio::spawn(async move {
+            {
+                let mut buf = recent.lock().await;
+                if buf.len() >= 200 {
+                    let _ = buf.pop_front();
+                }
+                buf.push_back(line.clone());
+            }
             send_log(&dc, &sid, &line, "gradle").await;
         });
     });
+
+    // Heartbeat while building so the frontend doesn't look frozen during long Gradle phases.
+    let (build_done_tx, mut build_done_rx) = watch::channel(false);
+    {
+        let dc = log_dc.clone();
+        let sid = session_id.clone();
+        tokio::spawn(async move {
+            let start = Instant::now();
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        if *build_done_rx.borrow() {
+                            break;
+                        }
+                        send_status(&dc, &sid, "building", "Building APK...", Some(json!({
+                            "elapsed_ms": start.elapsed().as_millis() as u64,
+                        }))).await;
+                    }
+                    changed = build_done_rx.changed() => {
+                        if changed.is_ok() && *build_done_rx.borrow() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    }
     
-    let build_result = build_apk_for_emulator(&build_config, Some(log_callback)).await
-        .context("APK build failed")?;
+    let build_result = match build_apk_for_emulator(&build_config, Some(log_callback)).await {
+        Ok(r) => {
+            let _ = build_done_tx.send(true);
+            r
+        }
+        Err(e) => {
+            let _ = build_done_tx.send(true);
+            send_status(&log_dc, &session_id, "build-failed", "APK build failed", Some(json!({
+                "error": format!("{:#}", e),
+            }))).await;
+            return Err(e).context("APK build failed");
+        }
+    };
     
     if !build_result.success {
+        let snapshot: Vec<String> = {
+            let buf = recent_lines.lock().await;
+            buf.iter().cloned().collect()
+        };
+
+        // Prefer the section starting at the last "FAILURE: Build failed" if present.
+        let start_idx = snapshot
+            .iter()
+            .rposition(|l| l.contains("FAILURE: Build failed"))
+            .unwrap_or_else(|| snapshot.len().saturating_sub(60));
+        let snippet = snapshot
+            .into_iter()
+            .skip(start_idx)
+            .take(120)
+            .collect::<Vec<_>>()
+            .join("\n");
+
         send_status(&log_dc, &session_id, "build-failed", "APK build failed", Some(json!({
             "diagnostics": build_result.diagnostics,
+            "error": snippet,
         }))).await;
         bail!("APK build failed");
     }

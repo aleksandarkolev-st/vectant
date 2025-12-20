@@ -1993,91 +1993,91 @@ extern "C" void* on_load_from_json(const char* json) {
             }
 
             let content_hash = calculate_hash(&content);
-            
-            let mut cached_path = None;
+            // Cache hit? reuse compiled library path.
             {
                 let cache = compile_cache.lock().await;
                 if let Some((h, p)) = cache.get("core") {
                     if *h == content_hash {
-                        cached_path = Some(p.clone());
+                        core_lib_path = p.clone();
+                        println!("Using cached core library: {}", core_lib_path);
                     }
-                    let p = core_out.to_string_lossy().to_string();
-                    
-                    let mut cache = compile_cache.lock().await;
-                    cache.insert("core".to_string(), (content_hash, p.clone()));
-                    return Ok(Some(p));
                 }
             }
-            Ok(None)
-        };
 
-        let gui_future = async {
-            if let Some(gui) = split_data.get("gui") {
-                let fname = gui["filename"].as_str().unwrap_or("gui.cpp");
-                let mut content = gui["content"].as_str().unwrap_or("").to_string();
+            // Cache miss: compile core.
+            if core_lib_path.is_empty() {
+                tokio::fs::write(dir_path.join(fname), &content).await?;
 
-                if content.contains("main(") && !content.contains("extern \"C\" void* entrypoint") {
-                     content.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
-                }
-                
                 let core_out = output_dir.join(format!("libcore_{}.{}", timestamp, ext));
                 let mut cmd = system_command("g++");
                 cmd.arg("-shared").arg("-fPIC")
-                   .arg("-D_POSIX_C_SOURCE=199309L")
-                   // Debug flags for source map generation
-                   .arg("-g").arg("-gdwarf-4").arg("-fno-omit-frame-pointer")
-                   // Add JSON diagnostics flag for structured error parsing
-                   .arg("-fdiagnostics-format=json")
-                   .arg(fname).arg("-I.").arg("-o").arg(&core_out)
-                   .arg("-ldl")
-                   // Export symbols for backtracing
-                   .arg("-rdynamic");
+                    .arg("-D_POSIX_C_SOURCE=199309L")
+                    // Debug flags for source map generation
+                    .arg("-g").arg("-gdwarf-4").arg("-fno-omit-frame-pointer")
+                    // Add JSON diagnostics flag for structured error parsing
+                    .arg("-fdiagnostics-format=json")
+                    .arg(fname)
+                    .arg("-I.")
+                    .arg("-o")
+                    .arg(&core_out)
+                    .arg("-ldl")
+                    // Export symbols for backtracing
+                    .arg("-rdynamic");
                 cmd.current_dir(&dir_path);
-                
+
                 let output = cmd.output().await?;
                 if !output.status.success() {
-                     let stderr = String::from_utf8_lossy(&output.stderr);
-                     
-                     // Parse compiler output into structured diagnostics
-                     let diag_report = parse_compiler_output(&stderr, "core", CompilerType::Gcc, true);
-                     let diag_event = DiagnosticEvent::new("core", diag_report.clone())
-                         .with_session(session_id.clone().unwrap_or_default());
-                     
-                     // Send structured diagnostics
-                     let diag_payload = serde_json::json!({
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+
+                    // Parse compiler output into structured diagnostics
+                    let diag_report = parse_compiler_output(&stderr, "core", CompilerType::Gcc, true);
+                    let diag_event = DiagnosticEvent::new("core", diag_report.clone())
+                        .with_session(session_id.clone().unwrap_or_default());
+
+                    // Send structured diagnostics
+                    let diag_payload = serde_json::json!({
                         "sessionId": session_id.clone(),
                         "type": "compile-diagnostics",
                         "data": serde_json::from_str::<serde_json::Value>(&diag_event.to_json()).unwrap_or_default()
-                     });
-                     let _ = log_dc.send_text(serde_json::to_string(&diag_payload).unwrap_or_default()).await;
-                     
-                     // Send compile error HMR status - rollback behavior keeps old module
-                     let status = HmrStatus::compile_error("core", vec![stderr.to_string()]);
-                     let hmr_payload = serde_json::json!({
+                    });
+                    let _ = log_dc
+                        .send_text(serde_json::to_string(&diag_payload).unwrap_or_default())
+                        .await;
+
+                    // Send compile error HMR status - rollback behavior keeps old module
+                    let status = HmrStatus::compile_error("core", vec![stderr.to_string()]);
+                    let hmr_payload = serde_json::json!({
                         "sessionId": session_id.clone(),
                         "type": "hmr-status",
                         "data": serde_json::from_str::<serde_json::Value>(&status.to_json()).unwrap_or_default()
-                     });
-                     let _ = log_dc.send_text(serde_json::to_string(&hmr_payload).unwrap_or_default()).await;
-                     
-                     // If we have an existing runner with the old core, keep it running (rollback)
-                     {
-                         let guard = runner_store.lock().await;
-                         if let Some(state) = guard.as_ref() {
-                             if state.loaded_core_path.is_some() {
-                                 let rejected = HmrStatus::rejected("core", "Compilation failed - keeping previous module");
-                                 let payload = serde_json::json!({
-                                     "sessionId": session_id.clone(),
-                                     "type": "hmr-status",
-                                     "data": serde_json::from_str::<serde_json::Value>(&rejected.to_json()).unwrap_or_default()
-                                 });
-                                 let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
-                                 eprintln!("[Rollback] Core compile failed, keeping old module running");
-                             }
-                         }
-                     }
-                     
-                     let payload = serde_json::json!({
+                    });
+                    let _ = log_dc
+                        .send_text(serde_json::to_string(&hmr_payload).unwrap_or_default())
+                        .await;
+
+                    // If we have an existing runner with the old core, keep it running (rollback)
+                    {
+                        let guard = runner_store.lock().await;
+                        if let Some(state) = guard.as_ref() {
+                            if state.loaded_core_path.is_some() {
+                                let rejected = HmrStatus::rejected(
+                                    "core",
+                                    "Compilation failed - keeping previous module",
+                                );
+                                let payload = serde_json::json!({
+                                    "sessionId": session_id.clone(),
+                                    "type": "hmr-status",
+                                    "data": serde_json::from_str::<serde_json::Value>(&rejected.to_json()).unwrap_or_default()
+                                });
+                                let _ = log_dc
+                                    .send_text(serde_json::to_string(&payload).unwrap_or_default())
+                                    .await;
+                                eprintln!("[Rollback] Core compile failed, keeping old module running");
+                            }
+                        }
+                    }
+
+                    let payload = serde_json::json!({
                         "sessionId": session_id.clone(),
                         "status": "done",
                         "success": false,
@@ -2085,35 +2085,36 @@ extern "C" void* on_load_from_json(const char* json) {
                         "error": stderr,
                         "diagnostics": diag_report.diagnostics.len()
                     });
-                    let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                    let _ = log_dc
+                        .send_text(serde_json::to_string(&payload).unwrap_or_default())
+                        .await;
                     return Ok(());
                 }
+
                 core_lib_path = core_out.to_string_lossy().to_string();
-                
+
                 // Detect Core module capabilities from exports
                 if let Ok(core_report) = detect_capabilities(std::path::Path::new(&core_lib_path)) {
-                    eprintln!("[Capability] Core module: {:?}, HMR: {:?}", core_report.module_type, core_report.hmr_capability);
+                    eprintln!(
+                        "[Capability] Core module: {:?}, HMR: {:?}",
+                        core_report.module_type, core_report.hmr_capability
+                    );
                     let status = HmrStatus::capability_detected("core", &core_report);
                     let payload = serde_json::json!({
                         "sessionId": session_id.clone(),
                         "type": "hmr-status",
                         "data": serde_json::from_str::<serde_json::Value>(&status.to_json()).unwrap_or_default()
                     });
-                    let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                    let _ = log_dc
+                        .send_text(serde_json::to_string(&payload).unwrap_or_default())
+                        .await;
                 }
-                
+
                 let mut cache = compile_cache.lock().await;
                 cache.insert("core".to_string(), (content_hash, core_lib_path.clone()));
             }
-            Ok(None)
-        };
 
-        // Run compilations in parallel
-        let (core_res, gui_res) = tokio::join!(core_future, gui_future);
-
-        if let Ok(Some(p)) = core_res {
-            core_lib_path = p;
-             if !core_lib_path.is_empty() {
+            if !core_lib_path.is_empty() {
                 // Create symlink ./core.so -> core_lib_path so gui can dlopen("./core.so")
                 #[cfg(unix)]
                 {

@@ -65,6 +65,8 @@ export default function EditorPage({ params }) {
     const [buildLogs, setBuildLogs] = useState([]);
     const [useAiSplit, setUseAiSplit] = useState(false);
     const [emulatorRunNonce, setEmulatorRunNonce] = useState(0);
+    const [emulatorSessionId, setEmulatorSessionId] = useState(null);
+    const [emulatorForcedError, setEmulatorForcedError] = useState('');
     const analysisTimeoutRef = useRef(null);
     const lastAnalyzedSignatureRef = useRef('');
     
@@ -472,9 +474,12 @@ export default function EditorPage({ params }) {
         const isReactNative = hasRnImports || hasRnPackage;
         const target = isReactNative ? 'react-native-emulator' : null;
 
-        // Auto-open the UI-only emulator panel when we run a mobile build.
-        // This is intentionally NOT a real emulator: it only shows the preview panel.
+        // Auto-open the emulator panel when we run a mobile build.
+        let mobileSid = null;
         if (isReactNative) {
+            mobileSid = `sess-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+            setEmulatorSessionId(mobileSid);
+            setEmulatorForcedError('');
             dispatch(setEmulatorPreviewVisible(true));
             setEmulatorRunNonce((v) => v + 1); // remount to simulate a fresh boot
         }
@@ -499,6 +504,7 @@ export default function EditorPage({ params }) {
                 target,
                 projectRoot,
                 slug, // Pass workspace slug for mobile builds to download synced files
+                sessionId: mobileSid,
                 onLog: (line) => {
                     appendBuildLog(line);
                     console.log('[build]', line);
@@ -508,6 +514,9 @@ export default function EditorPage({ params }) {
         } catch (err) {
             console.error('Compile failed', err);
             appendBuildLog(`error: ${err?.message || err}`);
+            if (isReactNative) {
+                setEmulatorForcedError(err?.message || String(err));
+            }
         }
     }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, useAiSplit]);
 
@@ -658,7 +667,18 @@ export default function EditorPage({ params }) {
     // via command palette / toolbar (stub only per requirements).
     const EmulatorPreviewPanel = (
         <ResizablePanel defaultSize={24} minSize={18} maxSize={55} className="border-l border-[#545454] bg-[#0c0c0e] min-w-0">
-            <EmulatorPanel key={emulatorRunNonce} defaultState={EMULATOR_STATES.BOOTING} />
+            <EmulatorPanel
+                key={emulatorRunNonce}
+                defaultState={EMULATOR_STATES.BOOTING}
+                sessionId={emulatorSessionId}
+                mediaStream={mediaStream}
+                forcedErrorMessage={emulatorForcedError}
+                onClose={() => {
+                    dispatch(setEmulatorPreviewVisible(false));
+                    setEmulatorSessionId(null);
+                    setEmulatorForcedError('');
+                }}
+            />
         </ResizablePanel>
     );
 
@@ -668,7 +688,7 @@ export default function EditorPage({ params }) {
 
     return (
     <div className="flex flex-col h-screen overflow-hidden bg-[#09090b] text-[#D7DAE0]">
-        <div className="flex flex-col h-screen bg-[#1e1e1e] text-gray-200">
+        <div className="flex flex-col flex-1 bg-[#1e1e1e] text-gray-200">
             {/* Hydrate workspace-specific tabs from localStorage */}
             <WorkspaceHydrator slug={slug} />
 
@@ -758,7 +778,7 @@ export default function EditorPage({ params }) {
                 )}
             </ResizablePanelGroup>
 
-            {/* Problems Panel - Shows diagnostics from proactive analysis */}
+            {/* Problems Panel */}
             {showProblemsPanel && (
                 <div className="h-48 max-h-48 flex-shrink-0 border-t border-[#1a1b24]">
                     <ProblemsPanel
@@ -783,20 +803,17 @@ export default function EditorPage({ params }) {
                 </div>
             )}
         </div>
+
+        {/* Status Bar */}
+        <StatusBar
+            slug={slug}
+            diagnosticSummary={diagnosticSummary}
+            isAnalyzing={isAnalyzingProactive}
+            onProblemsClick={() => setShowProblemsPanel(prev => !prev)}
+        />
+
+        {/* Error Overlay */}
+        <ErrorOverlay />
     </div>
-                )}
-
-                {/* Status Bar - VS Code style bottom bar with branch selector */}
-                <StatusBar
-                    slug={slug}
-                    diagnosticSummary={diagnosticSummary}
-                    isAnalyzing={isAnalyzingProactive}
-                    onProblemsClick={() => setShowProblemsPanel(prev => !prev)}
-                />
-
-                {/* Error Overlay for compile/runtime errors */}
-                <ErrorOverlay />
-            </div>
-        </div>
-    );
+);
 }

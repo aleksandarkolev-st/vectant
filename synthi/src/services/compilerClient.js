@@ -405,7 +405,7 @@ export class CompilerClient {
         return channel;
     }
 
-    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false, target = null, projectRoot = null, slug = null } = {}) {
+    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false, target = null, projectRoot = null, slug = null, sessionId: providedSessionId = null } = {}) {
         // Auto-detect React Native from source if no target specified and file is JS/JSX/TSX
         const ext = (filename || '').split('.').pop().toLowerCase();
         const isJsxFile = ['js', 'jsx', 'tsx', 'ts'].includes(ext);
@@ -425,7 +425,9 @@ export class CompilerClient {
 
         return new Promise((resolve, reject) => {
             // Unique session id for this compile - allows streaming and session-scoped events
-            const sessionId = `sess-${Date.now()}-${Math.floor(Math.random()*100000)}`;
+            const sessionId = (typeof providedSessionId === 'string' && providedSessionId.length > 0)
+                ? providedSessionId
+                : `sess-${Date.now()}-${Math.floor(Math.random()*100000)}`;
 
             const handleLog = (msg) => {
                 // `msg` is normalized to a string by notifyLog. Ensure we have a string.
