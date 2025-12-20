@@ -76,7 +76,23 @@ export class CompilerClient {
         if (['cpp', 'cc', 'cxx', 'hpp', 'h'].includes(ext)) return 'cpp';
         if (ext === 'rs') return 'rust';
         if (ext === 'ts' || ext === 'tsx') return 'ts';
+        // Note: js/jsx are intentionally not mapped here - they need special handling
+        // for React Native vs browser environments
         return null;
+    }
+
+    // Detect if source code contains React Native imports
+    _detectReactNativeInSource(source = '') {
+        if (!source) return false;
+        // Check for common React Native imports
+        const rnPatterns = [
+            /from\s+['"]react-native['"]/,
+            /require\s*\(['"]react-native['"]\)/,
+            /from\s+['"]@react-native/,
+            /from\s+['"]expo/,
+            /import.*from\s+['"]react-native-/
+        ];
+        return rnPatterns.some(pattern => pattern.test(source));
     }
 
     _notifyLog(msg) {
@@ -389,9 +405,20 @@ export class CompilerClient {
         return channel;
     }
 
-    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false } = {}) {
-        const lang = language || this._mapLanguage(filename);
-        if (!lang) throw new SynthiException('Unsupported language for compilation', 'The file extension is not supported by the compiler.');
+    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false, target = null, projectRoot = null, slug = null } = {}) {
+        // Auto-detect React Native from source if no target specified and file is JS/JSX/TSX
+        const ext = (filename || '').split('.').pop().toLowerCase();
+        const isJsxFile = ['js', 'jsx', 'tsx', 'ts'].includes(ext);
+        
+        let effectiveTarget = target;
+        if (!effectiveTarget && isJsxFile && this._detectReactNativeInSource(source)) {
+            effectiveTarget = 'react-native-emulator';
+            console.log('[CompilerClient] Auto-detected React Native project from source imports');
+        }
+        
+        // For mobile targets, language detection is optional
+        const lang = effectiveTarget === 'react-native-emulator' ? (language || 'javascript') : (language || this._mapLanguage(filename));
+        if (!effectiveTarget && !lang) throw new SynthiException('Unsupported language for compilation', 'The file extension is not supported by the compiler.');
         await this.connect();
 
         if (onLog) this.logHandlers.add(onLog);
@@ -425,6 +452,26 @@ export class CompilerClient {
                     }
                 } catch (e) { /* ignore */ }
 
+                // Check for mobile job completion
+                if (parsed && parsed.type === 'mobile-status' && parsed.status === 'done') {
+                    this.logHandlers.delete(handleLog);
+                    if (onLog) this.logHandlers.delete(onLog);
+                    if (parsed.data?.success) {
+                        resolve(parsed);
+                    } else {
+                        reject(new SynthiException('Mobile build failed', parsed.message || 'Mobile emulator job failed'));
+                    }
+                    return;
+                }
+
+                // Check for mobile job error
+                if (parsed && parsed.type === 'mobile-status' && parsed.status === 'error') {
+                    this.logHandlers.delete(handleLog);
+                    if (onLog) this.logHandlers.delete(onLog);
+                    reject(new SynthiException('Mobile build failed', parsed.message || 'Mobile emulator job failed'));
+                    return;
+                }
+
                 // Check for final JSON status message to resolve/reject for this session
                 if (parsed && parsed.status === 'done') {
                     // cleanup
@@ -451,7 +498,10 @@ export class CompilerClient {
                     width: width,
                     height: height,
                     supports_h265: this.supportsH265,
-                    use_ai_split: useAiSplit
+                    use_ai_split: useAiSplit,
+                    target: effectiveTarget,
+                    project_root: projectRoot,
+                    slug: slug || this.slug
                 }));
             } catch (e) {
                 this.logHandlers.delete(handleLog);

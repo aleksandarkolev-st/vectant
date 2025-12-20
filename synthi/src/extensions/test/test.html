@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Synthi Extension System Test</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      margin: 0;
+      padding: 20px;
+    }
+    h1 { color: #569cd6; }
+    h2 { color: #4ec9b0; margin-top: 30px; }
+    .test-section { 
+      background: #252526;
+      border: 1px solid #3c3c3c;
+      border-radius: 4px;
+      padding: 15px;
+      margin: 10px 0;
+    }
+    button {
+      background: #0e639c;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      margin: 5px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover { background: #1177bb; }
+    button:disabled { background: #3c3c3c; cursor: not-allowed; }
+    button.danger { background: #d73a49; }
+    button.danger:hover { background: #f85149; }
+    .log {
+      background: #1e1e1e;
+      border: 1px solid #3c3c3c;
+      padding: 10px;
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 12px;
+      max-height: 300px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+    .log-entry { margin: 2px 0; }
+    .log-entry.info { color: #9cdcfe; }
+    .log-entry.success { color: #4ec9b0; }
+    .log-entry.warn { color: #ce9178; }
+    .log-entry.error { color: #f14c4c; }
+    .status {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 3px;
+      font-size: 12px;
+      font-weight: bold;
+    }
+    .status.ok { background: #2d5a2d; color: #4ec9b0; }
+    .status.fail { background: #5a2d2d; color: #f14c4c; }
+    .status.pending { background: #5a5a2d; color: #dcdcaa; }
+    #typing-area {
+      width: 100%;
+      height: 100px;
+      background: #1e1e1e;
+      border: 1px solid #3c3c3c;
+      color: #d4d4d4;
+      padding: 10px;
+      font-family: 'Consolas', monospace;
+      resize: vertical;
+    }
+    .metric {
+      display: inline-block;
+      margin: 5px 10px;
+      padding: 5px 10px;
+      background: #2d2d2d;
+      border-radius: 3px;
+    }
+    .metric-label { color: #9cdcfe; }
+    .metric-value { color: #b5cea8; font-weight: bold; }
+    #extension-list {
+      list-style: none;
+      padding: 0;
+    }
+    #extension-list li {
+      padding: 8px;
+      margin: 5px 0;
+      background: #2d2d2d;
+      border-radius: 4px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    #webview-container {
+      border: 1px solid #3c3c3c;
+      min-height: 200px;
+      background: #252526;
+    }
+  </style>
+</head>
+<body>
+  <h1>🧪 Synthi Extension System Test</h1>
+  
+  <!-- Step 1: Load extension -->
+  <div class="test-section">
+    <h2>Step 1: Load Real VSIX</h2>
+    <p>Load a real extension that exports activate(context) and registers a command.</p>
+    <button id="btn-init">Initialize Worker</button>
+    <button id="btn-load-hello" disabled>Load Hello World Extension</button>
+    <span id="status-load" class="status pending">Not loaded</span>
+  </div>
+
+  <!-- Step 2: Activation -->
+  <div class="test-section">
+    <h2>Step 2: Verify Activation</h2>
+    <p>activate() must be called and timeboxed. Timeout kills execution.</p>
+    <button id="btn-activate" disabled>Activate Extension</button>
+    <span id="status-activate" class="status pending">Not activated</span>
+    <div class="metric">
+      <span class="metric-label">Activation Time:</span>
+      <span class="metric-value" id="metric-activation">-</span>
+    </div>
+  </div>
+
+  <!-- Step 3: Command execution -->
+  <div class="test-section">
+    <h2>Step 3: Execute Command</h2>
+    <p>Run extension's command. Proves vscode.commands, message bridge, worker execution.</p>
+    <button id="btn-execute" disabled>Execute sayHello</button>
+    <span id="status-command" class="status pending">Not executed</span>
+  </div>
+
+  <!-- Step 4: Webview -->
+  <div class="test-section">
+    <h2>Step 4: Open Webview</h2>
+    <p>Extension opens a webview. Minimal UI proof.</p>
+    <button id="btn-webview" disabled>Open Webview</button>
+    <span id="status-webview" class="status pending">Not opened</span>
+    <div id="webview-container"></div>
+  </div>
+
+  <!-- Step 5: Typing latency -->
+  <div class="test-section">
+    <h2>Step 5: Typing Latency</h2>
+    <p>Type while extension runs. Latency must stay &lt;10ms.</p>
+    <textarea id="typing-area" placeholder="Type here while testing extensions..."></textarea>
+    <div>
+      <span class="metric">
+        <span class="metric-label">Last Keypress:</span>
+        <span class="metric-value" id="metric-keypress">-</span>
+      </span>
+      <span class="metric">
+        <span class="metric-label">Avg Latency:</span>
+        <span class="metric-value" id="metric-avg-latency">-</span>
+      </span>
+      <span class="metric">
+        <span class="metric-label">Max Latency:</span>
+        <span class="metric-value" id="metric-max-latency">-</span>
+      </span>
+      <span id="status-latency" class="status pending">Measuring</span>
+    </div>
+  </div>
+
+  <!-- Step 6: Kill extension -->
+  <div class="test-section">
+    <h2>Step 6: Kill Misbehaving Extension</h2>
+    <p>Load bad extension with infinite loop. Scheduler must kill it, IDE must survive.</p>
+    <button id="btn-load-bad" class="danger" disabled>Load Bad Extension</button>
+    <button id="btn-activate-bad" class="danger" disabled>Activate (Will Freeze)</button>
+    <span id="status-kill" class="status pending">Not tested</span>
+  </div>
+
+  <!-- Step 7: Extension management -->
+  <div class="test-section">
+    <h2>Step 7: Extension Management</h2>
+    <p>List loaded extensions, show state, reload.</p>
+    <button id="btn-list">List Extensions</button>
+    <button id="btn-reload" disabled>Reload All</button>
+    <ul id="extension-list"></ul>
+  </div>
+
+  <!-- Log output -->
+  <div class="test-section">
+    <h2>📋 Log Output</h2>
+    <div class="log" id="log"></div>
+  </div>
+
+  <script type="module">
+    import { ExtensionTestRunner } from './extension-test-runner.js';
+    
+    const runner = new ExtensionTestRunner();
+    window.runner = runner; // For debugging
+    
+    // Log helper
+    function log(msg, level = 'info') {
+      const logEl = document.getElementById('log');
+      const entry = document.createElement('div');
+      entry.className = `log-entry ${level}`;
+      entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      logEl.appendChild(entry);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    
+    function setStatus(id, status, text) {
+      const el = document.getElementById(id);
+      el.className = `status ${status}`;
+      el.textContent = text;
+    }
+    
+    // Hook console
+    const origLog = console.log;
+    const origWarn = console.warn;
+    const origError = console.error;
+    console.log = (...args) => { origLog(...args); log(args.join(' '), 'info'); };
+    console.warn = (...args) => { origWarn(...args); log(args.join(' '), 'warn'); };
+    console.error = (...args) => { origError(...args); log(args.join(' '), 'error'); };
+    
+    // Step 1: Initialize
+    document.getElementById('btn-init').addEventListener('click', async () => {
+      try {
+        log('Initializing extension host worker...');
+        await runner.init();
+        log('✓ Worker initialized', 'success');
+        document.getElementById('btn-load-hello').disabled = false;
+        document.getElementById('btn-load-bad').disabled = false;
+      } catch (err) {
+        log(`✗ Failed to initialize: ${err.message}`, 'error');
+        setStatus('status-load', 'fail', 'Init failed');
+      }
+    });
+    
+    // Load hello world extension
+    document.getElementById('btn-load-hello').addEventListener('click', async () => {
+      try {
+        log('Loading Hello World extension...');
+        await runner.loadHelloWorldExtension();
+        log('✓ Extension loaded', 'success');
+        setStatus('status-load', 'ok', 'Loaded');
+        document.getElementById('btn-activate').disabled = false;
+      } catch (err) {
+        log(`✗ Failed to load: ${err.message}`, 'error');
+        setStatus('status-load', 'fail', 'Load failed');
+      }
+    });
+    
+    // Step 2: Activate
+    document.getElementById('btn-activate').addEventListener('click', async () => {
+      try {
+        log('Activating extension...');
+        const result = await runner.activateExtension('synthi.hello-world');
+        log(`✓ Activation complete in ${result.activationTime.toFixed(1)}ms`, 'success');
+        setStatus('status-activate', 'ok', 'Active');
+        document.getElementById('metric-activation').textContent = `${result.activationTime.toFixed(1)}ms`;
+        document.getElementById('btn-execute').disabled = false;
+        document.getElementById('btn-webview').disabled = false;
+      } catch (err) {
+        log(`✗ Activation failed: ${err.message}`, 'error');
+        setStatus('status-activate', 'fail', 'Failed');
+      }
+    });
+    
+    // Step 3: Execute command
+    document.getElementById('btn-execute').addEventListener('click', async () => {
+      try {
+        log('Executing command helloWorld.sayHello...');
+        const result = await runner.executeCommand('helloWorld.sayHello');
+        log(`✓ Command returned: ${result}`, 'success');
+        setStatus('status-command', 'ok', 'Executed');
+      } catch (err) {
+        log(`✗ Command failed: ${err.message}`, 'error');
+        setStatus('status-command', 'fail', 'Failed');
+      }
+    });
+    
+    // Step 4: Open webview
+    document.getElementById('btn-webview').addEventListener('click', async () => {
+      try {
+        log('Opening webview...');
+        const webview = await runner.executeCommand('helloWorld.openWebview');
+        log('✓ Webview command executed', 'success');
+        setStatus('status-webview', 'ok', 'Opened');
+        
+        // Show webview in container
+        const container = document.getElementById('webview-container');
+        container.innerHTML = '<p>Webview panel created (check logs for details)</p>';
+      } catch (err) {
+        log(`✗ Webview failed: ${err.message}`, 'error');
+        setStatus('status-webview', 'fail', 'Failed');
+      }
+    });
+    
+    // Step 5: Typing latency
+    const typingArea = document.getElementById('typing-area');
+    let keypressStart = 0;
+    let latencies = [];
+    
+    typingArea.addEventListener('keydown', () => {
+      keypressStart = performance.now();
+    });
+    
+    typingArea.addEventListener('input', () => {
+      if (keypressStart) {
+        const latency = performance.now() - keypressStart;
+        latencies.push(latency);
+        if (latencies.length > 100) latencies.shift();
+        
+        const avg = latencies.reduce((a, b) => a + b, 0) / latencies.length;
+        const max = Math.max(...latencies);
+        
+        document.getElementById('metric-keypress').textContent = `${latency.toFixed(1)}ms`;
+        document.getElementById('metric-avg-latency').textContent = `${avg.toFixed(1)}ms`;
+        document.getElementById('metric-max-latency').textContent = `${max.toFixed(1)}ms`;
+        
+        if (max < 10) {
+          setStatus('status-latency', 'ok', '< 10ms ✓');
+        } else if (max < 16) {
+          setStatus('status-latency', 'pending', `${max.toFixed(1)}ms`);
+        } else {
+          setStatus('status-latency', 'fail', `${max.toFixed(1)}ms (SLOW)`);
+        }
+        
+        keypressStart = 0;
+      }
+    });
+    
+    // Step 6: Bad extension
+    document.getElementById('btn-load-bad').addEventListener('click', async () => {
+      try {
+        log('Loading bad extension (infinite loop)...', 'warn');
+        await runner.loadBadExtension();
+        log('✓ Bad extension loaded', 'success');
+        document.getElementById('btn-activate-bad').disabled = false;
+      } catch (err) {
+        log(`✗ Failed to load bad extension: ${err.message}`, 'error');
+      }
+    });
+    
+    document.getElementById('btn-activate-bad').addEventListener('click', async () => {
+      try {
+        log('Activating bad extension (will freeze)...', 'warn');
+        log('⚠ This should timeout at 1000ms', 'warn');
+        const result = await runner.activateExtension('synthi.bad-extension');
+        
+        // This should not happen
+        log(`✗ Bad extension activated (should have timed out!)`, 'error');
+        setStatus('status-kill', 'fail', 'Not killed');
+      } catch (err) {
+        log(`✓ Extension killed: ${err.message}`, 'success');
+        setStatus('status-kill', 'ok', 'Killed ✓');
+      }
+    });
+    
+    // Step 7: List extensions
+    document.getElementById('btn-list').addEventListener('click', () => {
+      const extensions = runner.getExtensions();
+      const list = document.getElementById('extension-list');
+      list.innerHTML = '';
+      
+      if (extensions.length === 0) {
+        list.innerHTML = '<li>No extensions loaded</li>';
+        return;
+      }
+      
+      for (const ext of extensions) {
+        const li = document.createElement('li');
+        li.innerHTML = `
+          <span>${ext.displayName} (${ext.id})</span>
+          <span class="status ${ext.isActive ? 'ok' : 'pending'}">
+            ${ext.isActive ? 'Active' : 'Loaded'}
+          </span>
+        `;
+        list.appendChild(li);
+      }
+      
+      document.getElementById('btn-reload').disabled = false;
+    });
+    
+    log('Test harness ready. Click "Initialize Worker" to begin.');
+  </script>
+</body>
+</html>

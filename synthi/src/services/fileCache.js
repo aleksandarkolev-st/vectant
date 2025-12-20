@@ -1,0 +1,107 @@
+const DEFAULT_LIMIT_MB = 32;
+
+function estimateBytes(str) {
+  if (typeof str !== 'string') return 0;
+  // JS strings are roughly 2 bytes/char (UTF-16)
+  return str.length * 2;
+}
+
+export class FileCache {
+  constructor(options = {}) {
+    const mb = Number(options.maxMB || process.env.NEXT_PUBLIC_FILE_CACHE_MB || DEFAULT_LIMIT_MB);
+    this.maxBytes = Number.isFinite(mb) ? Math.max(4, mb) * 1024 * 1024 : DEFAULT_LIMIT_MB * 1024 * 1024;
+
+    this._map = new Map(); // path -> entry
+    this._bytes = 0;
+    this._activePath = null;
+  }
+
+  stats() {
+    return { entries: this._map.size, bytes: this._bytes, maxBytes: this.maxBytes, activePath: this._activePath };
+  }
+
+  setActive(path) {
+    this._activePath = path || null;
+    if (path) this.touch(path);
+  }
+
+  has(path) {
+    return this._map.has(path);
+  }
+
+  getEntry(path) {
+    const entry = this._map.get(path);
+    if (!entry) return undefined;
+    this.touch(path);
+    return entry;
+  }
+
+  get(path) {
+    const entry = this.getEntry(path);
+    return entry ? entry.content : undefined;
+  }
+
+  touch(path) {
+    const entry = this._map.get(path);
+    if (!entry) return;
+    entry.lastAccessed = Date.now();
+    // LRU via insertion order
+    this._map.delete(path);
+    this._map.set(path, entry);
+  }
+
+  set(path, content, options = {}) {
+    if (!path) return;
+
+    const ast = options.ast;
+    const now = Date.now();
+    const newBytes = estimateBytes(content);
+
+    const existing = this._map.get(path);
+    if (existing) {
+      this._bytes -= existing.sizeBytes || 0;
+      this._map.delete(path);
+    }
+
+    const entry = {
+      path,
+      content: typeof content === 'string' ? content : String(content ?? ''),
+      ast: ast ?? existing?.ast,
+      lastAccessed: now,
+      sizeBytes: newBytes,
+    };
+
+    this._map.set(path, entry);
+    this._bytes += newBytes;
+
+    this._evictIfNeeded();
+  }
+
+  delete(path) {
+    const entry = this._map.get(path);
+    if (!entry) return;
+    this._map.delete(path);
+    this._bytes -= entry.sizeBytes || 0;
+    if (this._activePath === path) this._activePath = null;
+  }
+
+  clear() {
+    this._map.clear();
+    this._bytes = 0;
+    this._activePath = null;
+  }
+
+  _evictIfNeeded() {
+    if (this._bytes <= this.maxBytes) return;
+
+    // Evict least-recently-used, never evict active.
+    for (const [key, entry] of this._map) {
+      if (this._bytes <= this.maxBytes) break;
+      if (this._activePath && key === this._activePath) continue;
+      this._map.delete(key);
+      this._bytes -= entry.sizeBytes || 0;
+    }
+  }
+}
+
+export const fileCache = new FileCache();

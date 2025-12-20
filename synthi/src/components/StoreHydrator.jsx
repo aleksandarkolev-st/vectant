@@ -2,13 +2,20 @@
 import { useEffect } from 'react';
 import { useAppDispatch } from '@/redux/hooks';
 import { hydrateUi } from '@/redux/uiSlice';
-import { hydrateWorkspace } from '@/redux/workspaceSlice';
-import { loadUiPrefs, loadOpenTabs, loadActiveTab, loadExpandedFolders } from '@/redux/store';
+import { loadUiPrefs, loadExpandedFolders } from '@/redux/store';
 
+/**
+ * StoreHydrator - Hydrates global UI preferences from localStorage.
+ * 
+ * Note: Workspace-specific state (open tabs, active tab) is now hydrated by
+ * WorkspaceHydrator component which is placed in the workspace page after
+ * the slug is known. This ensures each workspace maintains its own tabs.
+ */
 export default function StoreHydrator() {
   const dispatch = useAppDispatch();
 
   useEffect(() => {
+    // Hydrate global UI preferences
     const uiPrefs = loadUiPrefs();
     const expandedFolders = loadExpandedFolders();
     
@@ -18,22 +25,7 @@ export default function StoreHydrator() {
       dispatch(hydrateUi(payload));
     }
 
-    const openTabs = loadOpenTabs();
-    const activeTab = loadActiveTab();
-    
-    if (openTabs || activeTab) {
-        const payload = {};
-        if (openTabs) payload.openFiles = openTabs;
-        if (activeTab) payload.activeFile = activeTab;
-        
-        // If we have open tabs, we should try to match activeTab to one of them
-        if (openTabs && activeTab) {
-             const match = openTabs.find(f => f.path === activeTab.path);
-             if (match) payload.activeFile = match;
-        }
-        
-        dispatch(hydrateWorkspace(payload));
-    }
+    // Note: Workspace tabs are now hydrated per-workspace by WorkspaceHydrator
   }, [dispatch]);
 
   return null;
