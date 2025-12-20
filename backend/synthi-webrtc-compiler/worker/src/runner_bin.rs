@@ -6,6 +6,13 @@ use std::time::{Duration, Instant};
 use std::ffi::{c_void, c_int, c_uint, CString};
 use std::ptr;
 use std::collections::HashMap;
+
+// Wrapper types to make raw pointers thread-safe to move across threads
+#[derive(Clone, Copy)]
+struct SendVoidPtr(pub usize);
+unsafe impl Send for SendVoidPtr {}
+unsafe impl Sync for SendVoidPtr {}
+
 #[cfg(target_os = "linux")]
 use std::process::Command;
 
@@ -104,6 +111,7 @@ struct AppState {
 struct ModuleState {
     state_ptr: *mut c_void,      // Module's own state (CoreState or GuiState)
     abi_version: u32,            // ABI version reported by the module
+    schema_hash: u64,            // Schema hash for strict binary compatibility check
     core_api_ptr: *mut c_void,   // For GUI: pointer to CoreAPI from core module
 }
 
@@ -112,6 +120,7 @@ impl Default for ModuleState {
         ModuleState { 
             state_ptr: std::ptr::null_mut(),
             abi_version: 0,
+            schema_hash: 0,
             core_api_ptr: std::ptr::null_mut(),
         }
     }
@@ -730,6 +739,48 @@ fn main() {
                                 // Start with module's previous state or null for fresh init
                                 let mut new_state: *mut c_void = module_prev_state;
                                 let mut core_api_ptr: *mut c_void = std::ptr::null_mut();
+
+                                // ============================================================
+                                // SCHEMA HASH VERIFICATION (STRICT ABI CHECK)
+                                // ============================================================
+                                // Before reusing the raw state pointer, we MUST verify that the
+                                // struct layout hasn't changed. We use a hash provided by the
+                                // compiler/plugin for this.
+                                // ============================================================
+                                let old_schema_hash = module_states.get(name).map(|s| s.schema_hash).unwrap_or(0);
+                                let mut new_schema_hash: u64 = 0;
+                                
+                                let get_schema_hash: Result<Symbol<unsafe extern "C" fn() -> u64>, _> = 
+                                    if name == "core" { new_lib.get(b"core_get_state_schema_hash") }
+                                    else if name == "gui" { new_lib.get(b"gui_get_state_schema_hash") }
+                                    else { Err(libloading::Error::DlSymUnknown) }; // Legacy doesn't support this
+
+                                if let Ok(f) = get_schema_hash {
+                                    new_schema_hash = f();
+                                    eprintln!("[Runner] [HMR] Module '{}' schema hash: {:016X}", name, new_schema_hash);
+                                }
+
+                                if old_schema_hash != 0 && new_schema_hash != 0 && old_schema_hash != new_schema_hash {
+                                    eprintln!("[Runner] [HMR] CRITICAL: Schema hash mismatch (Old: {:016X}, New: {:016X})", old_schema_hash, new_schema_hash);
+                                    eprintln!("[Runner] [HMR] The struct layout has changed. Reusing the raw state pointer would cause a crash.");
+                                    eprintln!("[Runner] [HMR] Forcing COLD RELOAD for state (passing NULL to on_load).");
+                                    
+                                    // Send explicit status event for UI visibility
+                                    let status = HmrStatus::rejected(name, &format!("Schema mismatch (Cold Reload): {:016X} -> {:016X}", old_schema_hash, new_schema_hash));
+                                    eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+
+                                    // Force fresh initialization.
+                                    // Note: JSON migration (below) can still rescue the data if available,
+                                    // because it parses into the NEW struct layout.
+                                    new_state = std::ptr::null_mut(); 
+                                } else if new_schema_hash == 0 && old_schema_hash != 0 {
+                                    eprintln!("[Runner] [HMR] WARNING: New module missing schema hash. Assuming unsafe.");
+                                    
+                                    let status = HmrStatus::rejected(name, "Missing schema hash (Cold Reload)");
+                                    eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+
+                                    new_state = std::ptr::null_mut();
+                                }
                                 
                                 // If we have saved state, restore it to new module
                                 // Try new symbol name first, then legacy
@@ -1071,6 +1122,7 @@ fn main() {
                                 module_states.insert(name.to_string(), ModuleState { 
                                     state_ptr: new_state,
                                     abi_version: module_abi_version,
+                                    schema_hash: new_schema_hash,
                                     core_api_ptr: if name == "gui" { core_api_ptr } else { std::ptr::null_mut() },
                                 });
                                 
@@ -1255,23 +1307,40 @@ fn main() {
                             if let Some(lib_path) = loaded_paths.get(name) {
                                 set_current_lib_path(lib_path);
                             }
-                            let result = execute_with_protection(&module_name, || {
-                                f(state_ptr, dt);
+                            
+                            let state_ptr_wrapper = SendVoidPtr(state_ptr as usize);
+                            let func_ptr = *f;
+                            let result = execute_with_protection(&module_name, move || {
+                                let state_ptr = state_ptr_wrapper.0 as *mut std::ffi::c_void;
+                                func_ptr(state_ptr, dt);
                             });
                             
                             if let Err(crash_info) = result {
                                 // Crash recovered! Log and continue with old module
                                 eprintln!("{}", generate_crash_report(&crash_info));
-                                let status = HmrCrashStatus::from_crash(&crash_info, !should_force_restart());
+                                
+                                // CRITICAL SAFETY CHECK:
+                                // If the crash was caused by memory corruption (SIGSEGV, SIGBUS, etc.),
+                                // we MUST NOT continue in the same process, as the heap state is undefined.
+                                // We must force a cold restart regardless of the crash count.
+                                let is_fatal = crash_info.is_fatal_memory_error();
+                                let force_restart = is_fatal || should_force_restart();
+                                
+                                let status = HmrCrashStatus::from_crash(&crash_info, !force_restart);
                                 eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
                                 
-                                if should_force_restart() {
-                                    eprintln!("[Runner] Too many consecutive crashes. Exiting.");
+                                if force_restart {
+                                    if is_fatal {
+                                        eprintln!("[Runner] Fatal memory corruption detected ({:?}). Forcing cold restart.", crash_info.signal_name);
+                                    } else {
+                                        eprintln!("[Runner] Too many consecutive crashes. Exiting.");
+                                    }
                                     std::process::exit(1);
                                 }
                                 
                                 // Skip this module for now, continue with others
-                                reset_crash_count();
+                                // Do NOT reset crash count here, otherwise the limit will never be reached!
+                                // reset_crash_count(); 
                                 continue;
                             }
                         }

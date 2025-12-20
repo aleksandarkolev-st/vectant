@@ -198,5 +198,8 @@ export function useAnalyzerGateway({
     resetResult,
     resetError,
     clientReady: Boolean(clientRef.current),
+    // Expose client for advanced use cases (e.g., workspace analysis)
+    client: clientRef.current,
+    clientRef,
   };
 }
