@@ -1001,10 +1001,179 @@ class CppSemanticAnalyzer(BaseSemanticAnalyzer):
         return diagnostics
     
     def _check_syntax_issues(self, lines: List[str], file: FileContext) -> List[Diagnostic]:
-        """Check for basic syntax issues like missing semicolons."""
+        """Check for basic syntax issues like missing semicolons, malformed includes, unbalanced braces."""
         diagnostics = []
         brace_depth = 0
+        paren_depth = 0
+        full_content = '\n'.join(lines)
         
+        # Check for malformed #include directives
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            
+            # Check for malformed includes - missing closing > or "
+            include_match = re.match(r'#\s*include\s*<([^>]*)$', stripped)
+            if include_match:
+                # Line ends without closing >
+                diagnostics.append(Diagnostic(
+                    message="Malformed #include directive: missing closing '>'",
+                    severity=Severity.ERROR,
+                    tier=AnalysisTier.SEMANTIC,
+                    location=DiagnosticLocation(
+                        line=i,
+                        column=len(stripped),
+                        end_line=i,
+                        end_column=len(stripped) + 1,
+                    ),
+                    code="SEM220",
+                    category=DiagnosticCategory.SYNTAX,
+                    fixes=[
+                        CodeFix(
+                            description="Add missing '>'",
+                            replacement_text=stripped + ">",
+                            location=DiagnosticLocation(i, 0, i, len(line.rstrip())),
+                            is_preferred=True,
+                        )
+                    ],
+                ))
+            
+            include_match_quote = re.match(r'#\s*include\s*"([^"]*)$', stripped)
+            if include_match_quote:
+                diagnostics.append(Diagnostic(
+                    message="Malformed #include directive: missing closing '\"'",
+                    severity=Severity.ERROR,
+                    tier=AnalysisTier.SEMANTIC,
+                    location=DiagnosticLocation(
+                        line=i,
+                        column=len(stripped),
+                        end_line=i,
+                        end_column=len(stripped) + 1,
+                    ),
+                    code="SEM220",
+                    category=DiagnosticCategory.SYNTAX,
+                    fixes=[
+                        CodeFix(
+                            description='Add missing \'"\'',
+                            replacement_text=stripped + '"',
+                            location=DiagnosticLocation(i, 0, i, len(line.rstrip())),
+                            is_preferred=True,
+                        )
+                    ],
+                ))
+        
+        # Check for missing function return type (e.g., main() instead of int main())
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            
+            # Skip comments and preprocessor
+            if stripped.startswith('//') or stripped.startswith('#') or stripped.startswith('/*'):
+                continue
+            
+            # Pattern: function definition without return type - starts with identifier followed by (
+            # But skip keywords that look like functions
+            if re.match(r'^(\w+)\s*\([^)]*\)\s*\{?\s*$', stripped):
+                func_name = re.match(r'^(\w+)', stripped).group(1)
+                # Skip if it's a keyword or looks like a type
+                keywords = {'if', 'for', 'while', 'switch', 'catch', 'return', 'delete', 'sizeof', 'typeof', 'alignof'}
+                type_keywords = {'int', 'float', 'double', 'char', 'void', 'bool', 'long', 'short', 'unsigned', 'signed', 'auto', 'const', 'static', 'extern', 'inline', 'virtual', 'explicit', 'class', 'struct', 'enum', 'namespace', 'template', 'typename'}
+                
+                if func_name not in keywords and func_name not in type_keywords:
+                    # Check if previous non-empty line has a return type
+                    prev_line_has_type = False
+                    for j in range(i - 1, -1, -1):
+                        prev_stripped = lines[j].strip()
+                        if prev_stripped and not prev_stripped.startswith('//'):
+                            # Check if it looks like a return type (ends with type keyword or *)
+                            if re.search(r'(int|float|double|char|void|bool|long|short|unsigned|auto|\*|&)\s*$', prev_stripped):
+                                prev_line_has_type = True
+                            break
+                    
+                    if not prev_line_has_type:
+                        col = line.find(func_name)
+                        diagnostics.append(Diagnostic(
+                            message=f"Function '{func_name}' is missing a return type",
+                            severity=Severity.ERROR,
+                            tier=AnalysisTier.SEMANTIC,
+                            location=DiagnosticLocation(
+                                line=i,
+                                column=col,
+                                end_line=i,
+                                end_column=col + len(func_name),
+                            ),
+                            code="SEM221",
+                            category=DiagnosticCategory.SYNTAX,
+                            explanation="In C++, all functions must have an explicit return type. Use 'int' for main() or 'void' for functions that don't return a value.",
+                            fixes=[
+                                CodeFix(
+                                    description=f"Add 'int' return type",
+                                    replacement_text=line[:col] + f"int {func_name}" + line[col + len(func_name):].rstrip(),
+                                    location=DiagnosticLocation(i, 0, i, len(line.rstrip())),
+                                    is_preferred=func_name == 'main',
+                                ),
+                                CodeFix(
+                                    description=f"Add 'void' return type",
+                                    replacement_text=line[:col] + f"void {func_name}" + line[col + len(func_name):].rstrip(),
+                                    location=DiagnosticLocation(i, 0, i, len(line.rstrip())),
+                                    is_preferred=func_name != 'main',
+                                ),
+                            ],
+                        ))
+        
+        # Track brace depth for unbalanced brace detection
+        brace_stack = []  # Stack of (line, column) for opening braces
+        
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            
+            # Skip string literals and comments for brace counting
+            in_string = False
+            in_char = False
+            for j, ch in enumerate(line):
+                if ch == '"' and (j == 0 or line[j-1] != '\\'):
+                    in_string = not in_string
+                elif ch == "'" and (j == 0 or line[j-1] != '\\'):
+                    in_char = not in_char
+                elif not in_string and not in_char:
+                    if ch == '{':
+                        brace_stack.append((i, j))
+                    elif ch == '}':
+                        if brace_stack:
+                            brace_stack.pop()
+                        else:
+                            # Unmatched closing brace
+                            diagnostics.append(Diagnostic(
+                                message="Unmatched closing brace '}'",
+                                severity=Severity.ERROR,
+                                tier=AnalysisTier.SEMANTIC,
+                                location=DiagnosticLocation(
+                                    line=i,
+                                    column=j,
+                                    end_line=i,
+                                    end_column=j + 1,
+                                ),
+                                code="SEM222",
+                                category=DiagnosticCategory.SYNTAX,
+                            ))
+        
+        # Check for unclosed braces at end of file
+        for open_line, open_col in brace_stack:
+            diagnostics.append(Diagnostic(
+                message="Unclosed brace '{' - missing closing '}'",
+                severity=Severity.ERROR,
+                tier=AnalysisTier.SEMANTIC,
+                location=DiagnosticLocation(
+                    line=open_line,
+                    column=open_col,
+                    end_line=open_line,
+                    end_column=open_col + 1,
+                ),
+                code="SEM223",
+                category=DiagnosticCategory.SYNTAX,
+                explanation="Every opening brace '{' must have a matching closing brace '}'",
+            ))
+        
+        # Original semicolon checking
+        brace_depth = 0
         for i, line in enumerate(lines):
             stripped = line.strip()
             

@@ -5,6 +5,7 @@ import collabClient from '@/services/collabClient';
 import { getCompilerClient } from '@/services/compilerClient';
 import { cancelUiAction } from './uiSlice'; // Cross-slice dependency
 import { syncFileToGit, fetchGitStatus } from './gitSlice';
+import { gitClient } from '@/services/gitClient';
 import {
     findFirstFile,
     findFileInTree,
@@ -257,6 +258,17 @@ export const handleCreateItemThunk = createAsyncThunk(
         }
 
         await api.createItem(slug, fullPath, isFolder);
+        
+        // Also write the file to collab-server (local disk) so it appears immediately in the file tree
+        // The file tree reads from collab-server's listFilesMeta which uses local disk
+        if (!isFolder) {
+            try {
+                await gitClient.writeFile(slug, fullPath, '');
+            } catch (e) {
+                console.warn('[Workspace] Failed to write file to collab-server:', e);
+                // Don't throw - file was still created in GCS, just may not appear until refresh
+            }
+        }
         
         // Dispatch cleanup and revalidation
         dispatch(cancelUiAction());
