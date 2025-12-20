@@ -64,19 +64,55 @@ export function DraggableVideoWidget({
         const el = videoRef.current;
         if (!el || !guiConfig) return;
 
+        // Calculate coordinates relative to the Xvfb display resolution (guiConfig.width/height)
+        // This must account for:
+        // 1. The video element's position on screen (getBoundingClientRect)
+        // 2. object-contain letterboxing (video may be smaller than container)
+        // 3. Scaling from displayed size to actual Xvfb resolution
         const toDisplayCoords = (clientX, clientY) => {
             const rect = el.getBoundingClientRect();
-            // Use the actual rendered size of the video for coordinate mapping
-            // This handles the case where the video is resized via CSS
-            const dw = guiConfig.width || rect.width;
-            const dh = guiConfig.height || rect.height;
             
-            // If video is scaled (e.g. fit to container), we need to map click to original resolution
-            // But here we assume the backend expects coordinates in the declared resolution (guiConfig.width/height)
+            // The target resolution is the Xvfb display size
+            const targetWidth = guiConfig.width || 640;
+            const targetHeight = guiConfig.height || 480;
             
-            const x = Math.round((clientX - rect.left) * (dw / rect.width));
-            const y = Math.round((clientY - rect.top) * (dh / rect.height));
-            return { x, y };
+            // Calculate the actual displayed video size with object-contain
+            // object-contain maintains aspect ratio and fits within the container
+            const containerWidth = rect.width;
+            const containerHeight = rect.height;
+            
+            const videoAspect = targetWidth / targetHeight;
+            const containerAspect = containerWidth / containerHeight;
+            
+            let renderedWidth, renderedHeight, offsetX, offsetY;
+            
+            if (containerAspect > videoAspect) {
+                // Container is wider than video - letterboxed on sides
+                renderedHeight = containerHeight;
+                renderedWidth = containerHeight * videoAspect;
+                offsetX = (containerWidth - renderedWidth) / 2;
+                offsetY = 0;
+            } else {
+                // Container is taller than video - letterboxed on top/bottom
+                renderedWidth = containerWidth;
+                renderedHeight = containerWidth / videoAspect;
+                offsetX = 0;
+                offsetY = (containerHeight - renderedHeight) / 2;
+            }
+            
+            // Convert client coordinates to video-relative coordinates
+            const relX = clientX - rect.left - offsetX;
+            const relY = clientY - rect.top - offsetY;
+            
+            // Scale to Xvfb resolution
+            const x = Math.round((relX / renderedWidth) * targetWidth);
+            const y = Math.round((relY / renderedHeight) * targetHeight);
+            
+            // Clamp to valid range (in case click is in letterbox area)
+            return { 
+                x: Math.max(0, Math.min(targetWidth - 1, x)), 
+                y: Math.max(0, Math.min(targetHeight - 1, y)) 
+            };
         };
 
         const handleMouseMove = (ev) => {

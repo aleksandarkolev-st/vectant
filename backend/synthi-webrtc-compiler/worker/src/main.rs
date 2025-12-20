@@ -1,9 +1,9 @@
 use std::sync::Arc;
-use std::process::Stdio;
 use std::collections::HashMap;
-use std::env;
-use std::collections::hash_map::DefaultHasher;
+use std::process::Stdio;
 use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
+use std::env;
 
 mod builder;
 mod watcher;
@@ -33,6 +33,11 @@ pub use hmr_orchestrator::{
     HmrOrchestrator, HmrResult, HmrStatus, OrchestratorConfig,
     SavedState, LoadedState, MigrationSummary, SchemaCompatibility,
 };
+mod mobile_routing;
+mod react_native_builder;
+mod android_emulator;
+mod mobile_job;
+mod env_setup;
 
 use builder::{RebuildScope, ModuleHashes, hash_content, WidgetDetector, WidgetCompiler};
 use fast_refresh::{BoundaryChecker, RefreshAction, BoundaryViolationEvent};
@@ -42,36 +47,38 @@ use capability::{detect_capabilities, HmrCapability, HmrStatus};
 use shim::{auto_shim, ShimMode, detect_shim_mode};
 #[allow(unused_imports)]
 use incremental_cache::{IncrementalCache, compile_with_cache, link_objects};
+use serde::{Serialize, Deserialize};
 use gstreamer as gst;
-use gstreamer::prelude::*;
+use gstreamer::prelude::{ElementExt, Cast, GstObjectExt, GstBinExt};
 use gstreamer_app as gst_app;
-
 use anyhow::{Context, Result};
 use futures::{FutureExt, StreamExt, SinkExt};
-use serde::{Deserialize, Serialize};
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader, AsyncWriteExt};
 use chrono::Utc;
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
+use tokio::process::Command;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use webrtc::api::media_engine::MediaEngine;
+use chrono::Utc;
 use webrtc::api::APIBuilder;
+use webrtc::api::media_engine::MediaEngine;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
-use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
-use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
-use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType, RTCRtpCodecParameters};
-use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
+use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType};
+use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
+use webrtc::track::track_local::TrackLocal;
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+use webrtc::track::track_local::TrackLocalWriter;
+use webrtc::util::Unmarshal;
 use webrtc::rtp::packet::Packet;
-use webrtc::util::marshal::Unmarshal;
 use bytes::Bytes;
 
 #[derive(Debug, Deserialize)]
@@ -125,6 +132,15 @@ struct CompileRequest {
     supports_h265: Option<bool>,
     #[serde(default)]
     use_ai_split: bool,
+    /// Target platform for execution: "native" (default), "react-native-emulator", etc.
+    #[serde(default)]
+    target: Option<String>,
+    /// Project root path for mobile builds (relative to workspace)
+    #[serde(default)]
+    project_root: Option<String>,
+    /// Workspace slug for mobile builds (to download synced files)
+    #[serde(default)]
+    slug: Option<String>,
 }
 
 // RunnerState tracks the state of a running plugin process
@@ -343,6 +359,19 @@ fn make_chunks(data: &[u8], msg_id: u32) -> Vec<Vec<u8>> {
 async fn main() -> Result<()> {
     println!("Worker starting...");
     println!("Operating System: {}", std::env::consts::OS);
+    // Cargo does not source shell rc files, so ensure Android SDK tools are visible
+    // to this process deterministically before any SDK checks or emulator logic.
+    env_setup::ensure_android_sdk_env();
+    env_setup::log_android_env_diagnostics("startup");
+
+    println!("=== WORKER ENV DIAGNOSTIC (post-bootstrap) ===");
+    println!("CARGO_MANIFEST_DIR = {:?}", std::env::var("CARGO_MANIFEST_DIR"));
+    println!("HOME = {:?}", std::env::var("HOME"));
+    println!("PATH = {:?}", std::env::var("PATH"));
+    println!("ANDROID_SDK_ROOT = {:?}", std::env::var("ANDROID_SDK_ROOT"));
+    println!("ANDROID_HOME = {:?}", std::env::var("ANDROID_HOME"));
+    println!("===========================================");
+
     gst::init()?;
     verify_tooling().await?;
     let (ws_stream, _) = connect_async("ws://localhost:9000").await?;
@@ -611,10 +640,74 @@ async fn main() -> Result<()> {
                             if msg.is_string {
                                 // Try to parse as a CompileRequest
                                 if let Ok(req) = serde_json::from_slice::<CompileRequest>(&msg.data) {
-                                    eprintln!("[Main] Received CompileRequest: is_gui={}, use_ai_split={}, lang={}", 
-                                        req.is_gui, req.use_ai_split, req.language);
+                                    eprintln!("[Main] Received CompileRequest: is_gui={}, use_ai_split={}, lang={}, target={:?}", 
+                                        req.is_gui, req.use_ai_split, req.language, req.target);
                                     let log_dc = { store.lock().await.clone() };
                                     if let Some(log) = log_dc {
+                                        // Check if this is a mobile emulator target
+                                        if let Some(ref target) = req.target {
+                                            if target == "react-native-emulator" {
+                                                let session_id = req.session_id.clone().unwrap_or_else(|| {
+                                                    format!("sess-{}-{}", chrono::Utc::now().timestamp_millis(), uuid::Uuid::new_v4().as_u128() % 100000)
+                                                });
+                                                let project_root = req.project_root.clone();
+                                                let slug = req.slug.clone();
+                                                let log_clone = log.clone();
+                                                tokio::spawn(async move {
+                                                    // Download the workspace if slug is provided. Force re-download to avoid stale state.
+                                                    let workspace_path = if let Some(s) = &slug {
+                                                        let local_dir = std::path::PathBuf::from("/synthi").join(s);
+                                                        if local_dir.exists() {
+                                                            // Remove stale directory to force fresh download
+                                                            if let Err(e) = std::fs::remove_dir_all(&local_dir) {
+                                                                eprintln!("[Mobile] Failed to clear existing workspace {}: {}", local_dir.display(), e);
+                                                            }
+                                                        }
+
+                                                        match storage::download(&s, None).await {
+                                                            Ok(path) => {
+                                                                eprintln!("[Mobile] Downloaded workspace to: {}", path.display());
+                                                                path
+                                                            },
+                                                            Err(e) => {
+                                                                eprintln!("[Mobile] Failed to download workspace: {}", e);
+                                                                let payload = serde_json::json!({
+                                                                    "sessionId": session_id,
+                                                                    "type": "mobile-status",
+                                                                    "status": "error",
+                                                                    "message": format!("Failed to download workspace: {}", e),
+                                                                });
+                                                                let _ = log_clone.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                                                return;
+                                                            }
+                                                        }
+                                                    } else {
+                                                        eprintln!("[Mobile] No slug provided, cannot download workspace");
+                                                        let payload = serde_json::json!({
+                                                            "sessionId": session_id,
+                                                            "type": "mobile-status",
+                                                            "status": "error",
+                                                            "message": "No workspace slug provided for mobile build",
+                                                        });
+                                                        let _ = log_clone.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                                        return;
+                                                    };
+                                                    
+                                                    if let Err(e) = mobile_job::handle_react_native_emulator_job(
+                                                        log_clone,
+                                                        session_id.clone(),
+                                                        workspace_path,
+                                                        project_root,
+                                                        false, // debug build by default
+                                                    ).await {
+                                                        eprintln!("[Main] Mobile emulator job failed: {:?}", e);
+                                                    }
+                                                });
+                                                return;
+                                            }
+                                        }
+                                        
+                                        // Default: native compile flow
                                         let ts = term_store_for_msg.clone();
                                         let sdls = sdl_store.clone();
                                         let rs = runner_store.clone();
@@ -2439,6 +2532,47 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
     Ok(split_data)
 }
 
+async fn perform_ai_fix(code: &str, error: &str) -> Result<String> {
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "code": code,
+        "error": error,
+        "mode": "fix"
+    });
+
+    let backend_url = std::env::var("AI_BACKEND_URL")
+        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
+    let url = format!("{}/refactor/fix", backend_url);
+
+    let res = client.post(&url)
+        .json(&payload)
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    let result_str = res["result"].as_str().ok_or(anyhow::anyhow!("No result from AI"))?;
+    
+    // Clean markdown
+    let clean_code = if let Some(start) = result_str.find("```") {
+        let s = &result_str[start+3..];
+        if let Some(newline) = s.find('\n') {
+             let s = &s[newline+1..];
+             if let Some(end) = s.rfind("```") {
+                 &s[..end]
+             } else {
+                 s
+             }
+        } else {
+            s
+        }
+    } else {
+        result_str
+    }.trim();
+
+    Ok(clean_code.to_string())
+}
+
 async fn handle_compile(
     req: CompileRequest,
     log_dc: Arc<RTCDataChannel>,
@@ -3454,6 +3588,31 @@ typedef struct HostKvApiV1 {
             } else {
                 // Cache miss - need to compile
                 tokio::fs::write(dir_path.join(fname), &content).await?;
+            let mut cached_path = None;
+            {
+                let cache = compile_cache.lock().await;
+                if let Some((h, p)) = cache.get("core") {
+                    if *h == content_hash {
+                        cached_path = Some(p.clone());
+                    }
+                    let p = core_out.to_string_lossy().to_string();
+                    
+                    let mut cache = compile_cache.lock().await;
+                    cache.insert("core".to_string(), (content_hash, p.clone()));
+                    return Ok(Some(p));
+                }
+            }
+            Ok(None)
+        };
+
+        let gui_future = async {
+            if let Some(gui) = split_data.get("gui") {
+                let fname = gui["filename"].as_str().unwrap_or("gui.cpp");
+                let mut content = gui["content"].as_str().unwrap_or("").to_string();
+
+                if content.contains("main(") && !content.contains("extern \"C\" void* entrypoint") {
+                     content.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
+                }
                 
                 let core_out = output_dir.join(format!("libcore_{}.{}", timestamp, ext));
                 let mut cmd = system_command("g++");
@@ -3553,7 +3712,15 @@ typedef struct HostKvApiV1 {
                 let mut cache = compile_cache.lock().await;
                 cache.insert("core".to_string(), (content_hash, core_lib_path.clone()));
             }
-            if !core_lib_path.is_empty() {
+            Ok(None)
+        };
+
+        // Run compilations in parallel
+        let (core_res, gui_res) = tokio::join!(core_future, gui_future);
+
+        if let Ok(Some(p)) = core_res {
+            core_lib_path = p;
+             if !core_lib_path.is_empty() {
                 // Create symlink ./core.so -> core_lib_path so gui can dlopen("./core.so")
                 #[cfg(unix)]
                 {
@@ -4441,6 +4608,7 @@ extern "C" void synthi_free_json(char* json) {
                 if req.is_gui {
                     c.arg("-lSDL2").arg("-lX11");
                 }
+                apply_build_directives(&req.source, &mut c);
                 c
             }
             "rust" => {
@@ -5355,5 +5523,53 @@ fn system_command(program: &str) -> Command {
         cmd
     } else {
         Command::new(program)
+    }
+}
+
+fn apply_build_directives(content: &str, cmd: &mut Command) {
+    for line in content.lines() {
+        // Parse custom linker flags
+        // Format: // LINK: -lSDL2 -lGL
+        if let Some(flags) = line.trim().strip_prefix("// LINK:") {
+            for flag in flags.split_whitespace() {
+                cmd.arg(flag);
+            }
+        }
+        
+        // Parse pkg-config dependencies
+        // Format: // PKG: gtk+-3.0 opencv4
+        if let Some(pkgs) = line.trim().strip_prefix("// PKG:") {
+            let pkgs_str = pkgs.trim();
+            if !pkgs_str.is_empty() {
+                let mut pkg_cmd = if cfg!(target_os = "windows") {
+                    let mut c = std::process::Command::new("wsl");
+                    c.arg("pkg-config");
+                    c
+                } else {
+                    std::process::Command::new("pkg-config")
+                };
+                
+                let output = pkg_cmd
+                    .arg("--cflags")
+                    .arg("--libs")
+                    .args(pkgs_str.split_whitespace())
+                    .output();
+                
+                match output {
+                    Ok(out) if out.status.success() => {
+                        let flags = String::from_utf8_lossy(&out.stdout);
+                        for flag in flags.split_whitespace() {
+                            cmd.arg(flag);
+                        }
+                    },
+                    Ok(out) => {
+                        println!("pkg-config failed for {}: {}", pkgs_str, String::from_utf8_lossy(&out.stderr));
+                    }
+                    Err(e) => {
+                        println!("Failed to run pkg-config: {}", e);
+                    }
+                }
+            }
+        }
     }
 }

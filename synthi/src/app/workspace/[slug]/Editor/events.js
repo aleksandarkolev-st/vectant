@@ -328,5 +328,5 @@ export const useEditorEvents = ({
         return () => {
             disposables.forEach((disposable) => disposable?.dispose?.());
         };
-    }, [editorInstance, cancelActiveCompletion, requestAiCompletion, hasActiveDiff, aiAutoEnabled, rawFiles, dispatch, activeFile, fileCacheEntries]);
+    }, [editorInstance, monacoInstance, cancelActiveCompletion, requestAiCompletion, hasActiveDiff, aiAutoEnabled, rawFiles, dispatch, activeFile, fileCacheEntries]);
 };

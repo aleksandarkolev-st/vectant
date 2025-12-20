@@ -6,14 +6,14 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Set
 
 from analyzer.baseAnalyzer import BaseAnalyzer
-from analyzer.utils import make_diag
+from analyzer.utils import make_diag, CodeFix
 
 _STRICT_EQUALITY = re.compile(r"(?<![=!])==(?!=)")
 _ANY_TYPE = re.compile(r":\s*any\b")
 _DECLARATION = re.compile(r"^(?:export\s+)?(?:const|let)\s+.+$")
 
-_IO_HEADER = "#include <iostream>"
-_IO_USAGE = re.compile(r"\b(?:std::)?c(?:out|in)\b")
+_IO_HEADER = re.compile(r'#\s*include\s*<\s*iostream\s*>')
+_IO_USAGE = re.compile(r"\b(?:std::)?c(?:out|in|err|log)\b|\bstd::endl\b")
 _USING_NAMESPACE_STD = re.compile(r"using\s+namespace\s+std\s*;")
 _JAVA_STRING_EQ = re.compile(r'"[^"]*"\s*==\s*[^;\n]+|"[^"]*"\s*!=\s*[^;\n]+')
 _JAVA_RAW_NEW = re.compile(r"\bnew\s+[A-Z]\w*\s*\(")
@@ -249,21 +249,146 @@ class CppAnalyzer(BaseAnalyzer):
         self._checkMainReturn(code, diagnostics)
         self._checkGoto(code, diagnostics)
         self._checkCStyleCast(code, diagnostics)
+        self._checkMissingSemicolons(code, diagnostics)
+        self._checkUninitializedVariables(code, diagnostics)
 
         return diagnostics
 
+    def _checkMissingSemicolons(self, code: str, diagnostics: List[dict]):
+        """Check for potential missing semicolons."""
+        lines = code.splitlines()
+        inside_function = False
+        brace_depth = 0
+        
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            
+            # Track brace depth
+            brace_depth += stripped.count('{') - stripped.count('}')
+            
+            # Skip empty lines, comments, preprocessor directives
+            if not stripped or stripped.startswith('//') or stripped.startswith('#') or stripped.startswith('/*') or stripped.startswith('*'):
+                continue
+            
+            # Skip lines that end with control structures
+            if any(stripped.endswith(x) for x in ['{', '}', ':', '//', '*/']):
+                continue
+            
+            # Skip lines that are just opening/closing braces
+            if stripped in ['{', '}', '};']:
+                continue
+            
+            # Skip function declarations, class declarations, etc.
+            if any(kw in stripped for kw in ['class ', 'struct ', 'enum ', 'namespace ', 'template', 'public:', 'private:', 'protected:']):
+                continue
+            
+            # Skip if/else/for/while/switch statements (they don't need semicolons)
+            if re.match(r'^(if|else|for|while|switch|do)\s*[\(\{]?', stripped):
+                continue
+            if stripped in ['else', 'else{', 'do', 'do{']:
+                continue
+            
+            # Check if line ends without semicolon but should have one
+            # This is a heuristic: lines with declarations or statements inside functions
+            if brace_depth > 0:  # Inside a function/block
+                # Lines that look like statements but don't end with semicolon
+                if not stripped.endswith(';') and not stripped.endswith(','):
+                    # Check if it looks like a variable declaration or statement
+                    if re.match(r'^\s*(int|float|double|char|bool|long|short|unsigned|auto|const|static|void|string|std::\w+)\s+\w+', stripped):
+                        # Find the actual column position
+                        col = len(line) - len(line.lstrip())
+                        diagnostics.append(
+                            make_diag(
+                                msg="Missing semicolon at end of statement",
+                                severity="error",
+                                line=idx,
+                                column=len(line.rstrip()),
+                                end_line=idx,
+                                end_column=len(line.rstrip()) + 1,
+                                code="CPP010",
+                            )
+                        )
+                    # Check for expressions like function calls without semicolon
+                    elif re.match(r'^\s*\w+.*[^;{}\s]$', stripped) and '(' in stripped and ')' in stripped:
+                        if not any(kw in stripped for kw in ['if', 'for', 'while', 'switch', 'catch']):
+                            diagnostics.append(
+                                make_diag(
+                                    msg="Missing semicolon at end of statement",
+                                    severity="error",
+                                    line=idx,
+                                    column=len(line.rstrip()),
+                                    end_line=idx,
+                                    end_column=len(line.rstrip()) + 1,
+                                    code="CPP010",
+                                )
+                            )
+
+    def _checkUninitializedVariables(self, code: str, diagnostics: List[dict]):
+        """Check for potentially uninitialized variables."""
+        lines = code.splitlines()
+        
+        # Track declared variables and their initialization status
+        # This is a simplified heuristic - a full check would require proper parsing
+        declared_vars = {}  # name -> (line, initialized)
+        
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            
+            # Skip comments and preprocessor
+            if not stripped or stripped.startswith('//') or stripped.startswith('#'):
+                continue
+            
+            # Check for variable declarations without initialization
+            # Pattern: type name; or type name, name2;
+            match = re.match(r'^\s*(int|float|double|char|bool|long|short|unsigned|auto|const|static)\s+(\w+)\s*;', stripped)
+            if match:
+                var_type = match.group(1)
+                var_name = match.group(2)
+                # Skip if it's a function declaration
+                if '(' not in stripped:
+                    col = line.find(var_name)
+                    declared_vars[var_name] = (idx, False, col)
+        
+        # Check for usage of uninitialized variables
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            
+            for var_name, (decl_line, initialized, col) in list(declared_vars.items()):
+                # Check if variable is used before being assigned
+                if idx > decl_line:
+                    # Check for assignment (var = something)
+                    if re.search(rf'\b{var_name}\s*=', stripped):
+                        declared_vars[var_name] = (decl_line, True, col)
+                        continue
+                    
+                    # Check for usage without prior assignment
+                    if re.search(rf'\b{var_name}\b', stripped) and not initialized:
+                        # Check if it's being assigned in this line (cin >> var)
+                        if re.search(rf'>>\s*{var_name}\b', stripped):
+                            declared_vars[var_name] = (decl_line, True, col)
+                            continue
+                        # It's being used without initialization
+                        use_col = line.find(var_name)
+                        diagnostics.append(
+                            make_diag(
+                                msg=f"Variable '{var_name}' may be used before initialization",
+                                severity="warning",
+                                line=idx,
+                                column=use_col,
+                                end_line=idx,
+                                end_column=use_col + len(var_name),
+                                code="CPP011",
+                            )
+                        )
+
     def _checkIostreamInclude(self, code: str, diagnostics: List[dict]):
-        if _IO_USAGE.search(code) and _IO_HEADER not in code:
-            diagnostics.append(
-                make_diag(
-                    msg="Missing `#include <iostream>` for cin/cout usage",
-                    severity="error",
-                    line=0,
-                    end_line=0,
-                    end_column=1,
-                    code="CPP001",
-                )
-            )
+        # NOTE: Include checking for C++ is now handled by the semantic analyzer
+        # which has access to related files (headers) and can check for transitive includes.
+        # The static analyzer cannot see header file contents, so it would incorrectly
+        # report missing includes when symbols are available via included headers.
+        # 
+        # Keeping this method empty for backwards compatibility but not reporting diagnostics.
+        pass
 
     def _checkUsingNamespaceStd(self, code: str, diagnostics: List[dict]):
         match = _USING_NAMESPACE_STD.search(code)

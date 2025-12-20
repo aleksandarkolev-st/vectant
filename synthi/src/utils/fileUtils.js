@@ -119,3 +119,39 @@ export const findFolderInTree = (nodes, folderName) => {
 export const getItemPathInBucket = (item) => {
     return item.path + (item.isFolder ? '/' : '');
 }
+
+export const getTargetFolder = (activeFile, filesTree) => {
+  // Safety check: ensure filesTree is an array
+  if (!filesTree || !Array.isArray(filesTree)) {
+    console.warn('filesTree is not an array:', filesTree);
+    return null;
+  }
+  
+  if (!activeFile) return null;
+  
+  // If active file is a folder, use it
+  if (activeFile.isFolder) {
+    return activeFile;
+  }
+  
+  // Otherwise, find the parent folder
+  const findParentFolder = (nodes, targetPath) => {
+    if (!Array.isArray(nodes)) return null;
+    
+    for (const node of nodes) {
+      if (node.isFolder && node.children && Array.isArray(node.children)) {
+        // Check if this folder contains the target file
+        const hasChild = node.children.some(child => child.path === targetPath);
+        if (hasChild) {
+          return node;
+        }
+        // Recursively search in children
+        const found = findParentFolder(node.children, targetPath);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+  
+  return findParentFolder(filesTree, activeFile.path);
+};

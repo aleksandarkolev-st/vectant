@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Extension System Test Suite</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; margin: 0; }
+    h1 { color: #58a6ff; margin-bottom: 10px; }
+    h2 { color: #8b949e; font-size: 14px; margin-top: 20px; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    
+    .test-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media (max-width: 900px) { .test-grid { grid-template-columns: 1fr; } }
+    
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 16px; }
+    .card h3 { margin-top: 0; color: #58a6ff; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; }
+    
+    button { 
+      background: #238636; color: white; border: none; padding: 8px 16px; margin: 4px; 
+      border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500;
+    }
+    button:hover { background: #2ea043; }
+    button:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
+    button.danger { background: #da3633; }
+    button.danger:hover { background: #f85149; }
+    button.secondary { background: #21262d; border: 1px solid #30363d; }
+    button.secondary:hover { background: #30363d; }
+    
+    .log { 
+      background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+      padding: 12px; font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; 
+      white-space: pre-wrap; height: 300px; overflow: auto; 
+    }
+    .log .success { color: #3fb950; }
+    .log .error { color: #f85149; }
+    .log .warning { color: #d29922; }
+    .log .info { color: #58a6ff; }
+    .log .dim { color: #484f58; }
+    
+    .status { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 15px; }
+    .badge { 
+      display: inline-block; padding: 4px 8px; border-radius: 20px; font-size: 11px;
+      font-weight: 500; text-transform: uppercase;
+    }
+    .badge.pass { background: #238636; }
+    .badge.fail { background: #da3633; }
+    .badge.pending { background: #21262d; border: 1px solid #30363d; }
+    
+    .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 10px; }
+    .metric { background: #21262d; padding: 10px; border-radius: 6px; text-align: center; }
+    .metric-value { font-size: 24px; font-weight: bold; color: #58a6ff; }
+    .metric-label { font-size: 11px; color: #8b949e; text-transform: uppercase; }
+    
+    .extension-list { margin-top: 10px; }
+    .extension-item { 
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 8px 12px; background: #21262d; border-radius: 6px; margin-bottom: 6px;
+    }
+    .extension-item .name { font-weight: 500; }
+    .extension-item .state { font-size: 11px; padding: 2px 8px; border-radius: 10px; }
+    .state.active { background: #238636; }
+    .state.loaded { background: #1f6feb; }
+    .state.killed { background: #da3633; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🧪 Synthi Extension System Test Suite</h1>
+    <p style="color: #8b949e; margin-bottom: 20px;">Verify each step. If any step fails, STOP.</p>
+
+    <div class="test-grid">
+      <!-- Left Column: Tests -->
+      <div>
+        <div class="card">
+          <h3>📋 Test Controls</h3>
+          <div class="status" id="testStatus">
+            <span class="badge pending" id="badge1">1. Worker</span>
+            <span class="badge pending" id="badge2">2. Load</span>
+            <span class="badge pending" id="badge3">3. Activate</span>
+            <span class="badge pending" id="badge4">4. Command</span>
+            <span class="badge pending" id="badge5">5. Webview</span>
+            <span class="badge pending" id="badge6">6. Kill</span>
+            <span class="badge pending" id="badge7">7. Manage</span>
+          </div>
+          <div>
+            <button onclick="runAllTests()">▶ Run All Tests</button>
+            <button onclick="runStepByStep()" class="secondary">Step By Step</button>
+            <button onclick="reset()" class="secondary">↺ Reset</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>🔌 Manual Steps</h3>
+          <div>
+            <button onclick="step1_initWorker()">1. Init Worker</button>
+            <button onclick="step2_loadExtension()">2. Load Extension</button>
+            <button onclick="step3_activateExtension()">3. Activate</button>
+            <button onclick="step4_executeCommand()">4. Run Command</button>
+            <button onclick="step5_openWebview()">5. Open Webview</button>
+            <button onclick="step6_testBadExtension()" class="danger">6. Test Bad Ext</button>
+            <button onclick="step7_listExtensions()">7. List Extensions</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>📊 Metrics</h3>
+          <div class="metrics">
+            <div class="metric">
+              <div class="metric-value" id="activationTime">-</div>
+              <div class="metric-label">Activation (ms)</div>
+            </div>
+            <div class="metric">
+              <div class="metric-value" id="commandTime">-</div>
+              <div class="metric-label">Command (ms)</div>
+            </div>
+            <div class="metric">
+              <div class="metric-value" id="extensionCount">0</div>
+              <div class="metric-label">Extensions</div>
+            </div>
+            <div class="metric">
+              <div class="metric-value" id="killedCount">0</div>
+              <div class="metric-label">Killed</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>📦 Loaded Extensions</h3>
+          <div class="extension-list" id="extensionList">
+            <p style="color: #8b949e; font-size: 12px;">No extensions loaded</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Logs -->
+      <div>
+        <div class="card" style="height: 100%;">
+          <h3>📝 Log Output <button onclick="clearLog()" class="secondary" style="float: right; padding: 4px 8px;">Clear</button></h3>
+          <div id="log" class="log"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ============================================================================
+    // State
+    // ============================================================================
+    let worker = null;
+    let pendingRequests = new Map();
+    let messageId = 0;
+    let stepIndex = 0;
+    let extensionStates = [];
+    const extensionCatalog = new Map();
+    const permanentlyFailed = new Set();
+
+    // ============================================================================
+    // Logging
+    // ============================================================================
+    function log(msg, level = 'info') {
+      const el = document.getElementById('log');
+      const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+      el.innerHTML += `<span class="${level}">[${time}] ${msg}</span>\n`;
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function clearLog() {
+      document.getElementById('log').innerHTML = '';
+    }
+
+    // ============================================================================
+    // Badge Updates
+    // ============================================================================
+    function setBadge(num, status) {
+      const badge = document.getElementById(`badge${num}`);
+      if (badge) {
+        badge.className = `badge ${status}`;
+      }
+    }
+
+    // ============================================================================
+    // Worker Communication
+    // ============================================================================
+    function sendRequest(method, args = [], timeout = 5000) {
+      return new Promise((resolve, reject) => {
+        const id = ++messageId;
+        const timer = setTimeout(async () => {
+          pendingRequests.delete(id);
+
+          // Hard-stop path: if activation hangs, kill and restart the worker (Option A)
+          if (method === 'activateExtension') {
+            const failedId = args?.[0];
+            log(`⚠ Hard timeout during activateExtension(${failedId || 'unknown'}) - restarting worker`, 'warning');
+            try {
+              await restartWorkerDueToTimeout(failedId || 'unknown', 'activation timeout');
+            } catch (restartErr) {
+              log(`✗ Worker restart failed: ${restartErr.message}`, 'error');
+            }
+          }
+
+          reject(new Error(`Timeout: ${method}`));
+        }, timeout);
+
+        pendingRequests.set(id, { resolve, reject, timer });
+        log(`→ ${method}(${args.map(a => typeof a === 'string' ? a.substring(0, 30) : JSON.stringify(a).substring(0, 30)).join(', ')})`, 'dim');
+        worker.postMessage({ id, type: 'request', method, args });
+      });
+    }
+
+    async function restartWorkerDueToTimeout(badExtensionId, reason) {
+      log(`⚠ Hard timeout: ${reason || 'unknown reason'}. Terminating worker and reloading healthy extensions...`, 'warning');
+
+      if (badExtensionId) {
+        permanentlyFailed.add(badExtensionId);
+      }
+
+      if (worker) {
+        worker.terminate();
+        worker = null;
+      }
+      pendingRequests.clear();
+      messageId = 0;
+
+      await step1_initWorker();
+
+      for (const [id, info] of extensionCatalog) {
+        if (permanentlyFailed.has(id)) {
+          log(`Skipping disabled extension ${id}`, 'dim');
+          continue;
+        }
+
+        try {
+          await sendRequest('loadExtension', [id, info.code, info.manifest]);
+          log(`Reloaded ${id}`, 'dim');
+
+          if (info.state === 'active') {
+            try {
+              await sendRequest('activateExtension', [id], 3000);
+              log(`Reactivated ${id}`, 'dim');
+            } catch (err) {
+              log(`?o- Failed to reactivate ${id}: ${err.message}`, 'error');
+              permanentlyFailed.add(id);
+            }
+          }
+        } catch (err) {
+          log(`?o- Failed to reload ${id}: ${err.message}`, 'error');
+          permanentlyFailed.add(id);
+        }
+      }
+    }
+
+    // ============================================================================
+    // Test Extensions
+    // ============================================================================
+    const GOOD_EXTENSION_CODE = `
+function activate(context) {
+  console.log('[HelloExt] activate() called at', new Date().toISOString());
+  
+  // Register hello command
+  const helloCmd = vscode.commands.registerCommand('hello.sayHello', () => {
+    console.log('[HelloExt] sayHello command executed');
+    return 'Hello from extension! Time: ' + new Date().toLocaleTimeString();
+  });
+  
+  // Register webview command  
+  const webviewCmd = vscode.commands.registerCommand('hello.openWebview', () => {
+    console.log('[HelloExt] openWebview command executed');
+    const panel = vscode.window.createWebviewPanel(
+      'helloWebview',
+      'Hello Webview',
+      { viewColumn: 1 },
+      { enableScripts: true }
+    );
+    panel.webview.html = '<html><body style="color:white;background:#1e1e1e;padding:20px;"><h1>Hello from Webview!</h1><p>Extension is working!</p><p id="time"></p><script>document.getElementById("time").textContent = "Rendered at: " + new Date().toLocaleTimeString();</' + 'script></body></html>';
+    return 'Webview opened';
+  });
+  
+  context.subscriptions.push(helloCmd, webviewCmd);
+  console.log('[HelloExt] Registered 2 commands');
+}
+
+function deactivate() {
+  console.log('[HelloExt] deactivate()');
+}
+
+module.exports = { activate, deactivate };
+`;
+
+    const BAD_EXTENSION_CODE = `
+function activate(context) {
+  console.log('[BadExt] Starting infinite loop...');
+  // This MUST be killed by the timeout
+  while (true) {
+    // Infinite loop to test kill functionality
+  }
+  console.log('[BadExt] This should never be reached');
+}
+
+function deactivate() {}
+
+module.exports = { activate, deactivate };
+`;
+
+    const GOOD_MANIFEST = {
+      name: 'hello-extension',
+      displayName: 'Hello Extension',
+      version: '1.0.0',
+      publisher: 'synthi-test',
+      activationEvents: ['onCommand:hello.sayHello'],
+      contributes: {
+        commands: [
+          { command: 'hello.sayHello', title: 'Hello: Say Hello' },
+          { command: 'hello.openWebview', title: 'Hello: Open Webview' }
+        ]
+      }
+    };
+
+    const BAD_MANIFEST = {
+      name: 'bad-extension',
+      displayName: 'Bad Extension (Infinite Loop)',
+      version: '1.0.0',
+      publisher: 'synthi-test',
+      activationEvents: ['*']
+    };
+
+    // ============================================================================
+    // Test Steps
+    // ============================================================================
+    async function step1_initWorker() {
+      log('\n━━━ STEP 1: Initialize Worker ━━━', 'info');
+      
+      return new Promise((resolve, reject) => {
+        if (worker) {
+          worker.terminate();
+          log('Terminated previous worker', 'dim');
+        }
+
+        try {
+          worker = new Worker('/extension-host-worker.js');
+          log('Worker created', 'dim');
+        } catch (err) {
+          log(`✗ Failed to create worker: ${err.message}`, 'error');
+          setBadge(1, 'fail');
+          reject(err);
+          return;
+        }
+        
+        worker.onerror = (err) => {
+          log(`✗ Worker error: ${err.message}`, 'error');
+          setBadge(1, 'fail');
+          reject(err);
+        };
+
+        let resolved = false;
+        worker.onmessage = (event) => {
+          const msg = event.data;
+          
+          // Log incoming messages
+          if (msg.type === 'event') {
+            if (msg.method === 'workerReady' && !resolved) {
+              resolved = true;
+              log('✓ Worker is READY', 'success');
+              setBadge(1, 'pass');
+              resolve(true);
+            } else if (msg.method === 'registerCommand') {
+              log(`  → Command registered: ${msg.args[0]}`, 'dim');
+            } else if (msg.method === 'extensionKilled') {
+              log(`  ⚠ Extension killed: ${msg.args[0]} (${msg.args[1]})`, 'warning');
+            } else if (msg.method === 'activationComplete') {
+              const [extId, success, time, error] = msg.args;
+              if (success) {
+                log(`  → Activation complete: ${extId} in ${time?.toFixed(0) || '?'}ms`, 'dim');
+              } else {
+                log(`  → Activation failed: ${extId} - ${error}`, 'warning');
+              }
+            } else {
+              log(`← Event: ${msg.method}`, 'dim');
+            }
+          } else if (msg.type === 'response') {
+            const pending = pendingRequests.get(msg.id);
+            if (pending) {
+              clearTimeout(pending.timer);
+              pendingRequests.delete(msg.id);
+              if (msg.error) {
+                log(`← Error: ${msg.error.message}`, 'error');
+                pending.reject(new Error(msg.error.message));
+              } else {
+                pending.resolve(msg.result);
+              }
+            }
+          }
+        };
+
+        // Timeout for worker init
+        setTimeout(() => {
+          if (!resolved) {
+            log('✗ Worker init timeout', 'error');
+            setBadge(1, 'fail');
+            reject(new Error('Worker init timeout'));
+          }
+        }, 3000);
+      });
+    }
+
+    async function step2_loadExtension() {
+      log('\n━━━ STEP 2: Load Extension ━━━', 'info');
+      
+      if (!worker) {
+        throw new Error('Worker not initialized. Run Step 1 first.');
+      }
+
+      try {
+        const result = await sendRequest('loadExtension', ['hello.ext', GOOD_EXTENSION_CODE, GOOD_MANIFEST]);
+        log(`✓ Extension loaded: ${result.extensionId}`, 'success');
+        extensionCatalog.set('hello.ext', { code: GOOD_EXTENSION_CODE, manifest: GOOD_MANIFEST, state: 'loaded' });
+        setBadge(2, 'pass');
+        await updateExtensionList();
+        return result;
+      } catch (err) {
+        log(`✗ Load failed: ${err.message}`, 'error');
+        setBadge(2, 'fail');
+        throw err;
+      }
+    }
+
+    async function step3_activateExtension() {
+      log('\n━━━ STEP 3: Activate Extension ━━━', 'info');
+
+      if (!worker) {
+        throw new Error('Worker not initialized');
+      }
+
+      try {
+        const startTime = performance.now();
+        const result = await sendRequest('activateExtension', ['hello.ext']);
+        const totalTime = performance.now() - startTime;
+        
+        if (result.success) {
+          document.getElementById('activationTime').textContent = result.activationTime?.toFixed(0) || totalTime.toFixed(0);
+          log(`✓ Extension ACTIVATED in ${result.activationTime?.toFixed(0) || totalTime.toFixed(0)}ms`, 'success');
+          extensionCatalog.set('hello.ext', { code: GOOD_EXTENSION_CODE, manifest: GOOD_MANIFEST, state: 'active' });
+          setBadge(3, 'pass');
+        } else {
+          throw new Error(result.error || 'Activation failed');
+        }
+        
+        await updateExtensionList();
+        return result;
+      } catch (err) {
+        log(`✗ Activation failed: ${err.message}`, 'error');
+        setBadge(3, 'fail');
+        throw err;
+      }
+    }
+
+    async function step4_executeCommand() {
+      log('\n━━━ STEP 4: Execute Command ━━━', 'info');
+
+      if (!worker) {
+        throw new Error('Worker not initialized');
+      }
+
+      try {
+        const startTime = performance.now();
+        const result = await sendRequest('executeCommand', ['hello.sayHello']);
+        const cmdTime = performance.now() - startTime;
+        
+        document.getElementById('commandTime').textContent = cmdTime.toFixed(0);
+        log(`✓ Command result: "${result}"`, 'success');
+        log(`  Execution time: ${cmdTime.toFixed(0)}ms`, 'dim');
+        setBadge(4, 'pass');
+        return result;
+      } catch (err) {
+        log(`✗ Command failed: ${err.message}`, 'error');
+        setBadge(4, 'fail');
+        throw err;
+      }
+    }
+
+    async function step5_openWebview() {
+      log('\n━━━ STEP 5: Open Webview ━━━', 'info');
+
+      if (!worker) {
+        throw new Error('Worker not initialized');
+      }
+
+      try {
+        const result = await sendRequest('executeCommand', ['hello.openWebview']);
+        log(`✓ Webview command result: "${result}"`, 'success');
+        log('  (Check for createWebviewPanel event in logs)', 'dim');
+        setBadge(5, 'pass');
+        return result;
+      } catch (err) {
+        log(`✗ Webview failed: ${err.message}`, 'error');
+        setBadge(5, 'fail');
+        throw err;
+      }
+    }
+
+    async function step6_testBadExtension() {
+      log('\n━━━ STEP 6: Test Bad Extension (Infinite Loop) ━━━', 'info');
+      log('Loading extension with infinite loop in activate()...', 'warning');
+
+      if (!worker) {
+        throw new Error('Worker not initialized');
+      }
+
+      try {
+        // Load bad extension
+        await sendRequest('loadExtension', ['bad.ext', BAD_EXTENSION_CODE, BAD_MANIFEST]);
+        log('Bad extension loaded', 'dim');
+        extensionCatalog.set('bad.ext', { code: BAD_EXTENSION_CODE, manifest: BAD_MANIFEST, state: 'loaded' });
+        
+        // Try to activate - this should timeout
+        log('Activating (expect timeout in ~1000ms)...', 'warning');
+        const startTime = performance.now();
+        
+        try {
+          const result = await sendRequest('activateExtension', ['bad.ext'], 3000);
+          const elapsed = performance.now() - startTime;
+          
+          if (result.success) {
+            // This should NOT happen
+            log(`✗ BAD: Extension activated! This is wrong - infinite loop should have been killed`, 'error');
+            setBadge(6, 'fail');
+          } else {
+            // Expected path - activation failed due to timeout
+            log(`✓ Extension activation correctly failed after ${elapsed.toFixed(0)}ms`, 'success');
+            log(`  Reason: ${result.error}`, 'dim');
+            setBadge(6, 'pass');
+          }
+        } catch (activateErr) {
+          const elapsed = performance.now() - startTime;
+          log(`✓ Extension activation correctly threw after ${elapsed.toFixed(0)}ms`, 'success');
+          log(`  Error: ${activateErr.message}`, 'dim');
+          setBadge(6, 'pass');
+        }
+        
+        // Hard timeout should kill the worker and disable the bad extension
+        await restartWorkerDueToTimeout('bad.ext', 'activation timeout');
+        log('Worker restarted after killing bad.ext', 'warning');
+
+        // Update extension list from recovered worker
+        await updateExtensionList();
+        
+      } catch (err) {
+        log(`✗ Test failed: ${err.message}`, 'error');
+        setBadge(6, 'fail');
+        throw err;
+      }
+    }
+
+    async function step7_listExtensions() {
+      log('\n━━━ STEP 7: List Extensions ━━━', 'info');
+
+      if (!worker) {
+        throw new Error('Worker not initialized');
+      }
+
+      try {
+        const states = await sendRequest('getExtensionStates', []);
+        log(`Found ${states.length} extension(s):`, 'success');
+        
+        let activeCount = 0;
+        let killedCount = 0;
+        
+        for (const ext of states) {
+          const icon = ext.state === 'active' ? '✓' : (ext.state === 'killed' ? '✗' : '○');
+          log(`  ${icon} ${ext.extensionId}: ${ext.state} (${ext.commands.length} commands)`, ext.state === 'killed' ? 'warning' : 'dim');
+          if (ext.state === 'active') activeCount++;
+          if (ext.state === 'killed') killedCount++;
+        }
+        
+        document.getElementById('extensionCount').textContent = states.length;
+        document.getElementById('killedCount').textContent = killedCount;
+        
+        extensionStates = states;
+        setBadge(7, 'pass');
+        await updateExtensionList();
+        return states;
+      } catch (err) {
+        log(`✗ List failed: ${err.message}`, 'error');
+        setBadge(7, 'fail');
+        throw err;
+      }
+    }
+
+    async function updateExtensionList() {
+      try {
+        const states = await sendRequest('getExtensionStates', []);
+        extensionStates = states;
+        
+        const listEl = document.getElementById('extensionList');
+        if (states.length === 0) {
+          listEl.innerHTML = '<p style="color: #8b949e; font-size: 12px;">No extensions loaded</p>';
+          return;
+        }
+
+        listEl.innerHTML = states.map(ext => `
+          <div class="extension-item">
+            <span class="name">${ext.manifest?.displayName || ext.extensionId}</span>
+            <span class="state ${ext.state}">${ext.state}</span>
+          </div>
+        `).join('');
+        
+        document.getElementById('extensionCount').textContent = states.length;
+        document.getElementById('killedCount').textContent = states.filter(e => e.state === 'killed').length;
+      } catch (err) {
+        console.error('Failed to update extension list:', err);
+      }
+    }
+
+    // ============================================================================
+    // Test Runners
+    // ============================================================================
+    async function runAllTests() {
+      clearLog();
+      log('═══════════════════════════════════════════════════════', 'info');
+      log('  SYNTHI EXTENSION SYSTEM - AUTOMATED TEST SUITE', 'info');
+      log('═══════════════════════════════════════════════════════', 'info');
+      
+      // Reset badges
+      for (let i = 1; i <= 7; i++) setBadge(i, 'pending');
+
+      try {
+        await step1_initWorker();
+        await step2_loadExtension();
+        await step3_activateExtension();
+        await step4_executeCommand();
+        await step5_openWebview();
+        await step6_testBadExtension();
+        await step7_listExtensions();
+
+        log('\n═══════════════════════════════════════════════════════', 'success');
+        log('  ✓ ALL 7 TESTS PASSED!', 'success');
+        log('═══════════════════════════════════════════════════════', 'success');
+        
+      } catch (err) {
+        log('\n═══════════════════════════════════════════════════════', 'error');
+        log(`  ✗ TEST SUITE FAILED: ${err.message}`, 'error');
+        log('═══════════════════════════════════════════════════════', 'error');
+      }
+    }
+
+    async function runStepByStep() {
+      clearLog();
+      log('Click "Run All Tests" to run all tests automatically', 'info');
+      log('Or use the individual buttons below to test step by step', 'info');
+      for (let i = 1; i <= 7; i++) setBadge(i, 'pending');
+    }
+
+    function reset() {
+      if (worker) {
+        worker.terminate();
+        worker = null;
+      }
+      pendingRequests.clear();
+      messageId = 0;
+      extensionStates = [];
+      extensionCatalog.clear();
+      permanentlyFailed.clear();
+      
+      for (let i = 1; i <= 7; i++) setBadge(i, 'pending');
+      document.getElementById('activationTime').textContent = '-';
+      document.getElementById('commandTime').textContent = '-';
+      document.getElementById('extensionCount').textContent = '0';
+      document.getElementById('killedCount').textContent = '0';
+      document.getElementById('extensionList').innerHTML = '<p style="color: #8b949e; font-size: 12px;">No extensions loaded</p>';
+      
+      clearLog();
+      log('Reset complete. Worker terminated.', 'info');
+    }
+
+    // ============================================================================
+    // Auto-start
+    // ============================================================================
+    log('Extension Test Suite ready.', 'info');
+    log('Click "Run All Tests" to verify the extension system.', 'info');
+  </script>
+</body>
+</html>
