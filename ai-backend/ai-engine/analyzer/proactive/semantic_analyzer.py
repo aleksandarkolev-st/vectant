@@ -956,7 +956,12 @@ class CppSemanticAnalyzer(BaseSemanticAnalyzer):
                 continue
             
             # Skip function definitions (we're looking for calls, not definitions)
+            # Standard function: Type name(...)
             if re.match(r'^(?:static\s+|inline\s+)?(?:const\s+)?(?:[\w:]+(?:<[^>]+>)?)(?:[\s\*&]+)\w+\s*\([^)]*\)\s*\{?$', stripped):
+                continue
+            # Constructor/Destructor definition: ClassName(...) or ~ClassName(...)
+            # Heuristic: Starts with word, has parens, no return type, might have init list
+            if re.match(r'^(?:~)?\w+\s*\([^)]*\)\s*(?::.*)?\{?$', stripped):
                 continue
             
             # Look for function calls: name(
@@ -980,6 +985,29 @@ class CppSemanticAnalyzer(BaseSemanticAnalyzer):
                     if before.endswith('.') or before.endswith('->') or before.endswith('::'):
                         continue
                 
+                # Skip constructor initialization lists
+                # Heuristic: : member(val)
+                colon_pos = line.find(':')
+                if colon_pos != -1 and colon_pos < col:
+                    # Check for ternary
+                    if '?' in line[:colon_pos]:
+                        pass # Ternary, don't skip
+                    # Check for range-based for
+                    elif line.strip().startswith('for'):
+                        pass # For loop, don't skip
+                    # Check for access modifiers
+                    elif re.search(r'\b(public|private|protected)\s*:', line[:colon_pos+1]):
+                        pass # Access modifier, don't skip
+                    # Check for switch case
+                    elif re.search(r'\bcase\s+.*:', line[:colon_pos+1]):
+                        pass # Case label, don't skip
+                    else:
+                        # Check if there's a block start or end between colon and call
+                        between = line[colon_pos+1:col]
+                        if '{' not in between and ';' not in between:
+                            # Likely constructor initialization list
+                            continue
+
                 # Check if function is available
                 if func_name not in all_available:
                     logger.info(f"[_check_undefined_functions] Undefined function call: {func_name}")

@@ -373,8 +373,11 @@ export default function EditorPage({ params }) {
     }, [activeFile, rawFiles, currentContent, slug, fileCacheEntries]);
 
     useEffect(() => {
-        if (!activeFile || !currentContent || !hasLoadedInitialFile) return;
-
+        if (!activeFile || !hasLoadedInitialFile) return;
+        
+        // Ensure content is available (might be empty string, that's fine)
+        const contentToAnalyze = typeof currentContent === 'string' ? currentContent : '';
+        
         if (proactiveTimeoutRef.current) {
             clearTimeout(proactiveTimeoutRef.current);
         }
@@ -385,7 +388,6 @@ export default function EditorPage({ params }) {
         }
 
         // Capture the content we're analyzing (for freshness checks)
-        const contentToAnalyze = typeof currentContent === 'string' ? currentContent : '';
         const contentHash = computeContentHash(contentToAnalyze);
         
         // When content changes, IMMEDIATELY clear all diagnostics for this file
