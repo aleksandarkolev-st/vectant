@@ -168,12 +168,52 @@ class AnalysisResult:
     
     @property
     def all_diagnostics(self) -> List[Diagnostic]:
-        """Get all diagnostics from all tiers, sorted by severity and line."""
+        """
+        Get all diagnostics from all tiers, sorted by severity and line.
+        Deduplicates similar diagnostics that appear in multiple tiers.
+        """
         severity_order = {Severity.ERROR: 0, Severity.WARNING: 1, Severity.INFO: 2, Severity.HINT: 3}
+        tier_priority = {AnalysisTier.AI: 0, AnalysisTier.SEMANTIC: 1, AnalysisTier.STATIC: 2}
+        
         all_diags = []
         for tier_result in self.tiers.values():
             all_diags.extend(tier_result.diagnostics)
-        return sorted(all_diags, key=lambda d: (severity_order[d.severity], d.location.line))
+        
+        # Deduplicate diagnostics by creating a key from location and similar message
+        # Keep the highest-priority tier's diagnostic (AI > SEMANTIC > STATIC)
+        seen: Dict[str, Diagnostic] = {}
+        
+        for diag in all_diags:
+            # Create a key for deduplication:
+            # Same line and similar message content (ignoring tier-specific wording)
+            loc = diag.location
+            # Extract core message by removing common prefixes/suffixes
+            core_msg = diag.message.lower()
+            # Normalize message for comparison
+            core_msg = core_msg.replace('`', '').replace("'", '')
+            
+            # Key combines location and core diagnostic concept
+            # For include errors, group by the header being suggested
+            if 'include' in core_msg and '<' in core_msg:
+                # Extract header name for grouping include-related errors
+                import re
+                header_match = re.search(r'<([^>]+)>', core_msg)
+                header = header_match.group(1) if header_match else ''
+                key = f"{loc.line}:{header}:include"
+            else:
+                # For other errors, use line + first 30 chars of message
+                key = f"{loc.line}:{loc.column}:{core_msg[:30]}"
+            
+            if key in seen:
+                existing = seen[key]
+                # Keep the one from higher priority tier
+                if tier_priority.get(diag.tier, 3) < tier_priority.get(existing.tier, 3):
+                    seen[key] = diag
+            else:
+                seen[key] = diag
+        
+        # Return deduplicated list sorted by severity and line
+        return sorted(seen.values(), key=lambda d: (severity_order[d.severity], d.location.line))
     
     @property
     def error_count(self) -> int:

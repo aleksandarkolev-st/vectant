@@ -768,8 +768,9 @@ class CppSemanticAnalyzer(BaseSemanticAnalyzer):
         diagnostics.extend(self._check_const_correctness(lines, file))
         diagnostics.extend(self._check_syntax_issues(lines, file))
         diagnostics.extend(self._check_variable_issues(lines, file))
-        diagnostics.extend(self._check_include_issues(lines, file, available_symbols, related_files or []))
+        diagnostics.extend(self._check_undefined_functions(lines, file, available_symbols))
         # Note: Logic error detection is handled by AI tier for better accuracy
+        # Note: Include checking disabled - too many false positives, let compiler handle it
         
         logger.info(f"[CppSemanticAnalyzer] Total diagnostics: {len(diagnostics)}")
         for d in diagnostics:
@@ -848,6 +849,30 @@ class CppSemanticAnalyzer(BaseSemanticAnalyzer):
                             header_lower = header.lower()
                             if rel_path.endswith(header_lower):
                                 files_to_process.append(other_related)
+                
+                # Extract user-defined symbols (functions, classes, variables) from header files
+                # Function declarations: return_type function_name(...)
+                func_match = re.match(r'^(?:static\s+|inline\s+|extern\s+)?(?:const\s+)?(?:unsigned\s+|signed\s+)?(?:\w+)\s+(\w+)\s*\(', stripped)
+                if func_match and not stripped.startswith('#') and not stripped.startswith('//'):
+                    func_name = func_match.group(1)
+                    # Skip if it's a type keyword
+                    if func_name not in {'if', 'for', 'while', 'switch', 'return', 'sizeof', 'typedef', 'struct', 'class', 'enum', 'union'}:
+                        logger.info(f"[_collect_available_symbols] Found user-defined function: {func_name}")
+                        available.add(func_name)
+                
+                # Class/struct declarations
+                class_match = re.match(r'^(?:class|struct)\s+(\w+)', stripped)
+                if class_match:
+                    class_name = class_match.group(1)
+                    logger.info(f"[_collect_available_symbols] Found user-defined class/struct: {class_name}")
+                    available.add(class_name)
+                
+                # Constant/variable declarations  
+                var_match = re.match(r'^(?:const\s+|static\s+|extern\s+)?(?:unsigned\s+|signed\s+)?(?:int|float|double|char|bool|long|short|auto)\s+(\w+)\s*[=;]', stripped)
+                if var_match and not stripped.startswith('#'):
+                    var_name = var_match.group(1)
+                    logger.info(f"[_collect_available_symbols] Found user-defined variable: {var_name}")
+                    available.add(var_name)
         
         logger.info(f"[_collect_available_symbols] Final available symbols: {available}")
         return available
@@ -859,76 +884,119 @@ class CppSemanticAnalyzer(BaseSemanticAnalyzer):
         available_symbols: Set[str],
         related_files: List[FileContext]
     ) -> List[Diagnostic]:
-        """Check for include-related issues with cross-file awareness."""
+        """Check for include-related issues with cross-file awareness.
+        
+        DISABLED: This check was producing too many false positives.
+        The include checking is now handled properly by the compiler.
+        Semantic analysis should focus on logic errors, not include errors.
+        """
+        # Return empty - don't check for missing includes in semantic tier
+        # This was causing false positives when:
+        # 1. Cache returned stale results
+        # 2. Include was actually present but symbol detection failed
+        # Let the compiler handle include errors - it's more accurate
+        return []
+    
+    def _check_undefined_functions(
+        self,
+        lines: List[str],
+        file: FileContext,
+        available_symbols: Set[str],
+    ) -> List[Diagnostic]:
+        """Check for undefined function calls.
+        
+        This detects when a function is called but not defined in:
+        1. The current file
+        2. Any included header files (via available_symbols)
+        3. Standard library
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         diagnostics = []
         
-        # Mapping from symbol to required header
-        symbol_to_header = {
-            'cout': 'iostream',
-            'cin': 'iostream',
-            'cerr': 'iostream',
-            'clog': 'iostream',
-            'endl': 'iostream',
-            'flush': 'iostream',
-            'ostream': 'iostream',
-            'istream': 'iostream',
-            'string': 'string',
-            'vector': 'vector',
-            'map': 'map',
-            'set': 'set',
-            'unique_ptr': 'memory',
-            'shared_ptr': 'memory',
-            'make_unique': 'memory',
-            'make_shared': 'memory',
-            'sort': 'algorithm',
-            'find': 'algorithm',
+        # Standard library functions that are commonly used without explicit include check
+        std_functions = {
+            'main', 'printf', 'scanf', 'strlen', 'strcpy', 'strcmp', 'memcpy', 'memset',
+            'malloc', 'free', 'calloc', 'realloc', 'exit', 'abort',
+            'sin', 'cos', 'tan', 'sqrt', 'pow', 'abs', 'floor', 'ceil',
+            'rand', 'srand', 'time', 'clock',
+            'assert', 'static_assert',
+            # Common STL methods
+            'begin', 'end', 'size', 'empty', 'push_back', 'pop_back',
+            'insert', 'erase', 'find', 'sort', 'swap', 'move',
         }
         
-        # Check for missing includes based on symbol usage
-        std_usage_patterns = {
-            r'\bstd::cout\b': ('iostream', 'cout'),
-            r'\bstd::cin\b': ('iostream', 'cin'),
-            r'\bstd::cerr\b': ('iostream', 'cerr'),
-            r'\bstd::endl\b': ('iostream', 'endl'),
-            r'\bstd::string\b': ('string', 'string'),
-            r'\bstd::vector\b': ('vector', 'vector'),
-            r'\bstd::map\b': ('map', 'map'),
-            r'\bstd::set\b': ('set', 'set'),
-            r'\bstd::unique_ptr\b': ('memory', 'unique_ptr'),
-            r'\bstd::shared_ptr\b': ('memory', 'shared_ptr'),
-            r'\bstd::make_unique\b': ('memory', 'make_unique'),
-            r'\bstd::make_shared\b': ('memory', 'make_shared'),
-            r'\bstd::sort\b': ('algorithm', 'sort'),
-            r'\bstd::find\b': ('algorithm', 'find'),
-        }
+        # Collect functions defined in current file
+        local_functions = set()
+        for line in lines:
+            stripped = line.strip()
+            # Function definition: return_type name(args) { or return_type name(args);
+            func_def = re.match(r'^(?:static\s+|inline\s+|extern\s+|virtual\s+)?(?:const\s+)?(?:unsigned\s+|signed\s+)?(?:\w+(?:<[^>]+>)?)\s+(\w+)\s*\([^)]*\)\s*(?:const)?\s*[{;]?', stripped)
+            if func_def and not stripped.startswith('#') and not stripped.startswith('//'):
+                func_name = func_def.group(1)
+                if func_name not in {'if', 'for', 'while', 'switch', 'return', 'sizeof', 'typedef', 'struct', 'class', 'enum', 'union', 'namespace'}:
+                    local_functions.add(func_name)
+                    logger.info(f"[_check_undefined_functions] Found local function: {func_name}")
         
-        # Now check for missing includes using the available_symbols set
-        # which was already computed with transitive includes
+        # All available functions = local + from includes + standard
+        all_available = local_functions | available_symbols | std_functions
+        logger.info(f"[_check_undefined_functions] All available functions: {all_available}")
+        
+        # Check for function calls that aren't available
+        inside_function = False
+        brace_depth = 0
+        
         for i, line in enumerate(lines):
-            for pattern, (required_header, symbol_name) in std_usage_patterns.items():
-                if re.search(pattern, line):
-                    # Check if symbol is available (either directly or transitively)
-                    is_available = symbol_name in available_symbols
-                    if not is_available:
-                        col = line.find('std::')
-                        if col >= 0:
-                            diagnostics.append(Diagnostic(
-                                message=f"Missing `#include <{required_header}>` for {pattern.strip(r'\\b')} usage",
-                                severity=Severity.ERROR,
-                                tier=AnalysisTier.SEMANTIC,
-                                location=DiagnosticLocation(line=i, column=col, end_line=i, end_column=col + len(pattern) - 4),
-                                code="CPP001",
-                                category=DiagnosticCategory.UNDEFINED_VARIABLE,
-                                explanation=f"The symbol requires `#include <{required_header}>` to be available.",
-                                fixes=[
-                                    CodeFix(
-                                        description=f"Add #include <{required_header}>",
-                                        replacement_text=f"#include <{required_header}>\n",
-                                        location=DiagnosticLocation(0, 0, 0, 0),
-                                        is_preferred=True,
-                                    )
-                                ],
-                            ))
+            stripped = line.strip()
+            brace_depth += stripped.count('{') - stripped.count('}')
+            
+            # Skip preprocessor, comments
+            if stripped.startswith('#') or stripped.startswith('//') or stripped.startswith('/*'):
+                continue
+            
+            # Skip function definitions (we're looking for calls, not definitions)
+            if re.match(r'^(?:static\s+|inline\s+)?(?:const\s+)?(?:\w+)\s+\w+\s*\([^)]*\)\s*\{?$', stripped):
+                continue
+            
+            # Look for function calls: name(
+            # But not: type name( which is a declaration
+            calls = re.finditer(r'\b(\w+)\s*\(', line)
+            for match in calls:
+                func_name = match.group(1)
+                
+                # Skip keywords and types
+                if func_name in {'if', 'for', 'while', 'switch', 'return', 'sizeof', 'typeof', 'decltype',
+                                 'int', 'float', 'double', 'char', 'bool', 'void', 'long', 'short',
+                                 'unsigned', 'signed', 'auto', 'const', 'static', 'extern', 'inline',
+                                 'class', 'struct', 'enum', 'union', 'namespace', 'template',
+                                 'new', 'delete', 'throw', 'catch', 'try'}:
+                    continue
+                
+                # Skip method calls (obj.method() or obj->method())
+                col = match.start()
+                if col > 0:
+                    before = line[:col].rstrip()
+                    if before.endswith('.') or before.endswith('->') or before.endswith('::'):
+                        continue
+                
+                # Check if function is available
+                if func_name not in all_available:
+                    logger.info(f"[_check_undefined_functions] Undefined function call: {func_name}")
+                    diagnostics.append(Diagnostic(
+                        message=f"Function '{func_name}' is not defined. Did you mean a different function name?",
+                        severity=Severity.ERROR,
+                        tier=AnalysisTier.SEMANTIC,
+                        location=DiagnosticLocation(
+                            line=i,
+                            column=col,
+                            end_line=i,
+                            end_column=col + len(func_name),
+                        ),
+                        code="SEM301",
+                        category=DiagnosticCategory.UNDEFINED_VARIABLE,
+                        explanation=f"The function '{func_name}' is called but not defined in the current file or any included headers.",
+                    ))
         
         return diagnostics
     

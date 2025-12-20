@@ -443,10 +443,17 @@ Do NOT report missing includes for these symbols:
         # Build include context for the prompt
         include_context = self._build_include_context(file, related_files)
         
+        # If we have related files, include them in the prompt for cross-file analysis
+        related_files_section = ""
+        if related_files:
+            related_files_section = "\n\n## RELATED FILES (from includes):\n"
+            for rf in related_files:
+                related_files_section += f"\n### {rf.path}\n```{rf.language}\n{rf.content}\n```\n"
+        
         # Build the prompt - simple string replacement
         prompt = AI_ERROR_PREDICTION_PROMPT.replace("{language}", file.language) \
                                            .replace("{code}", file.content) \
-                                           .replace("{include_context}", include_context)
+                                           .replace("{include_context}", include_context + related_files_section)
         
         # Call the LLM
         response = await self._provider.ask_llm(

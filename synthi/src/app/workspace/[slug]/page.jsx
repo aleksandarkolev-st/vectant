@@ -412,8 +412,29 @@ export default function EditorPage({ params }) {
                 .then((fastResult) => {
                     const fastDiags = fastResult?.diagnostics || fastResult?.data?.diagnostics || [];
                     const currentFilePath = activeFile?.path || activeFile?.name || 'untitled';
+                    
+                    // Filter out stale diagnostics that reference code not in the current content
+                    // This handles cases where cached results return diagnostics for old code
+                    const validDiags = fastDiags.filter(d => {
+                        // If diagnostic has originalText, verify it exists in current content
+                        if (d.originalText && typeof d.originalText === 'string') {
+                            return contentToAnalyze.includes(d.originalText);
+                        }
+                        // For diagnostics about specific symbols, check if symbol is used in code
+                        const msg = d.message?.toLowerCase() || '';
+                        if (msg.includes('iostream') || msg.includes('cout') || msg.includes('cin') || msg.includes('endl')) {
+                            // Check if the code actually uses iostream symbols
+                            const usesIostream = /\b(std::)?(cout|cin|cerr|clog|endl)\b/.test(contentToAnalyze);
+                            if (!usesIostream) {
+                                console.log(`[proactive] Filtering stale diagnostic: "${d.message}" - no iostream usage found`);
+                                return false;
+                            }
+                        }
+                        return true;
+                    });
+                    
                     // Add filePath to each diagnostic for proper grouping in ProblemsPanel
-                    const diagsWithPath = fastDiags.map(d => ({ ...d, filePath: d.filePath || currentFilePath }));
+                    const diagsWithPath = validDiags.map(d => ({ ...d, filePath: d.filePath || currentFilePath }));
                     // Replace diagnostics for this file only, keep diagnostics from other files
                     setDiagnostics(prev => {
                         const otherFileDiags = prev.filter(d => d.filePath !== currentFilePath);
@@ -449,8 +470,27 @@ export default function EditorPage({ params }) {
                                                    currentHash === contentHash;
                             if (isStillCurrent) {
                                 const aiDiags = aiResult?.diagnostics || aiResult?.data?.diagnostics || [];
+                                
+                                // Filter out stale diagnostics that reference code not in the current content
+                                const validAiDiags = aiDiags.filter(d => {
+                                    // If diagnostic has originalText, verify it exists in current content
+                                    if (d.originalText && typeof d.originalText === 'string') {
+                                        return contentToAnalyze.includes(d.originalText);
+                                    }
+                                    // For diagnostics about specific symbols, check if symbol is used in code
+                                    const msg = d.message?.toLowerCase() || '';
+                                    if (msg.includes('iostream') || msg.includes('cout') || msg.includes('cin') || msg.includes('endl')) {
+                                        const usesIostream = /\b(std::)?(cout|cin|cerr|clog|endl)\b/.test(contentToAnalyze);
+                                        if (!usesIostream) {
+                                            console.log(`[proactive] Filtering stale AI diagnostic: "${d.message}"`);
+                                            return false;
+                                        }
+                                    }
+                                    return true;
+                                });
+                                
                                 // Add filePath to each diagnostic
-                                const aiDiagsWithPath = aiDiags.map(d => ({ ...d, filePath: d.filePath || currentFilePath }));
+                                const aiDiagsWithPath = validAiDiags.map(d => ({ ...d, filePath: d.filePath || currentFilePath }));
                                 // Replace diagnostics for this file only
                                 setDiagnostics(prev => {
                                     const otherFileDiags = prev.filter(d => d.filePath !== currentFilePath);

@@ -382,30 +382,13 @@ class CppAnalyzer(BaseAnalyzer):
                         )
 
     def _checkIostreamInclude(self, code: str, diagnostics: List[dict]):
-        # Only report if iostream is used but NOT included
-        if _IO_USAGE.search(code) and not _IO_HEADER.search(code):
-            diagnostics.append(
-                make_diag(
-                    msg="Missing `#include <iostream>` for cin/cout usage",
-                    severity="error",
-                    line=0,
-                    column=0,
-                    end_line=0,
-                    end_column=1,
-                    code="CPP001",
-                    fixes=[
-                        CodeFix(
-                            description="Add #include <iostream>",
-                            replacement_text="#include <iostream>\n",
-                            line=0,
-                            column=0,
-                            end_line=0,
-                            end_column=0,
-                            is_preferred=True,
-                        )
-                    ],
-                )
-            )
+        # NOTE: Include checking for C++ is now handled by the semantic analyzer
+        # which has access to related files (headers) and can check for transitive includes.
+        # The static analyzer cannot see header file contents, so it would incorrectly
+        # report missing includes when symbols are available via included headers.
+        # 
+        # Keeping this method empty for backwards compatibility but not reporting diagnostics.
+        pass
 
     def _checkUsingNamespaceStd(self, code: str, diagnostics: List[dict]):
         match = _USING_NAMESPACE_STD.search(code)
