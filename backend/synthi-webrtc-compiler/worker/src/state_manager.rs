@@ -17,8 +17,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::ptr;
-use std::sync::Arc;
 
 use crate::plugin_contract::ModuleSlot;
 use crate::state_diff::{DiffConfig, DiffResult, diff_and_merge};

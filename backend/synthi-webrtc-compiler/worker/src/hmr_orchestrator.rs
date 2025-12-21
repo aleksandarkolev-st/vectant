@@ -17,26 +17,26 @@
 //   let result = orchestrator.hot_reload("core", new_path, changes);
 // ============================================================
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::{c_void, CStr, CString};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::path::Path;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use libloading::{Library, Symbol};
 
-use crate::binary_state::{MsgPackState, SchemaMigrator, SchemaMigrationResult};
-use crate::boundary::{Boundary, BoundaryId, BoundaryManifest, BoundaryType, ReloadPlan};
+use crate::binary_state::{MsgPackState, SchemaMigrationResult};
+use crate::boundary::{Boundary, BoundaryId, BoundaryManifest, ReloadPlan};
 use crate::loader::{LoadResult, ModuleLoader};
 use crate::plugin_contract::ModuleSlot;
 use crate::reload_manager::{
     AsyncTaskRegistry, ReloadChanges, ReloadClass, ReloadClassifier, 
     SnapshotManager, ReloadSnapshot,
 };
-use crate::state_manager::{MigrationResult, MigrationSchema, SchemaVersion, StateHandle, StateManager};
-use crate::state_diff::{migrate_state_with_config, DiffConfig, DiffResult};
-use crate::supervisor::{CrashEvent, CrashSupervisor, RecoveryAction, SupervisorConfig};
+use crate::state_manager::{MigrationResult, MigrationSchema, SchemaVersion, StateManager};
+use crate::state_diff::{migrate_state_with_config, DiffConfig};
+use crate::supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 use crate::crash_recovery::CrashInfo;
 use crate::fast_refresh::{BoundaryChecker, BoundaryCheckResult, RefreshAction, BoundaryViolationEvent};
 use crate::source_map::SOURCE_MAP_CACHE;
@@ -401,7 +401,7 @@ impl HmrOrchestrator {
 
         // 4. Drain async tasks (if cold reload)
         if reload_class.requires_task_shutdown() {
-            self.task_registry.shutdown_boundary(&slot.as_str().to_string());
+            let _ = self.task_registry.prepare_for_reload(&slot.as_str().to_string(), ReloadClass::Cold);
         }
 
         // 5. Validate ABI (if strict mode)
@@ -959,12 +959,19 @@ impl HmrOrchestrator {
         boundary_id: BoundaryId,
         supports_checkpoint: bool,
     ) -> Arc<AtomicBool> {
-        self.task_registry.register_task(task_id, boundary_id, supports_checkpoint)
+        use crate::reload_manager::AsyncTaskType;
+        self.task_registry.register(
+            task_id,
+            AsyncTaskType::BackgroundComputation,
+            boundary_id,
+            supports_checkpoint,
+            false, // supports_pause
+        )
     }
 
     /// Unregister a task
     pub fn unregister_task(&mut self, task_id: &str) {
-        self.task_registry.unregister_task(task_id);
+        self.task_registry.unregister(task_id);
     }
 
     // ============================================================
@@ -1017,7 +1024,9 @@ impl HmrOrchestrator {
             eprintln!("[Orchestrator] Fast Refresh boundary check for '{}': {} violation(s)",
                 module_name, result.violations.len());
             for violation in &result.violations {
-                eprintln!("  - {}", violation.message());
+                use crate::fast_refresh::BoundaryViolation;
+                let v: &BoundaryViolation = violation;
+                eprintln!("  - {}", v.message());
             }
         }
 
@@ -1114,53 +1123,6 @@ enum MigratedState {
     Binary(Vec<u8>, SchemaMigrationResult),
     Json(MigrationResult),
     None,
-}
-
-// ============================================================
-// ASYNC TASK REGISTRY EXTENSIONS
-// ============================================================
-
-impl AsyncTaskRegistry {
-    /// Register a task and return its shutdown signal
-    pub fn register_task(
-        &mut self,
-        task_id: String,
-        boundary_id: BoundaryId,
-        supports_checkpoint: bool,
-    ) -> Arc<AtomicBool> {
-        use crate::reload_manager::{RegisteredTask, AsyncTaskType};
-        
-        let shutdown_signal = Arc::new(AtomicBool::new(false));
-        let task = RegisteredTask {
-            task_id: task_id.clone(),
-            task_type: AsyncTaskType::BackgroundComputation,
-            boundary_id,
-            supports_checkpoint,
-            supports_pause: false,
-            shutdown_signal: shutdown_signal.clone(),
-            registered_at: Instant::now(),
-            last_checkpoint: None,
-            shutdown_signaled_at: None,
-        };
-        
-        self.tasks.insert(task_id, task);
-        shutdown_signal
-    }
-
-    /// Unregister a task
-    pub fn unregister_task(&mut self, task_id: &str) {
-        self.tasks.remove(task_id);
-    }
-
-    /// Shutdown all tasks for a boundary
-    pub fn shutdown_boundary(&mut self, boundary_id: &str) {
-        for task in self.tasks.values_mut() {
-            if task.boundary_id == boundary_id {
-                task.shutdown_signal.store(true, Ordering::SeqCst);
-                task.shutdown_signaled_at = Some(Instant::now());
-            }
-        }
-    }
 }
 
 // ============================================================

@@ -16,11 +16,9 @@
 // ============================================================
 
 use std::collections::HashMap;
-use std::ffi::c_void;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use crate::abi_version::{AbiVersionManager, SymbolManifest, CompatibilityResult};
+use crate::abi_version::AbiVersionManager;
 use crate::plugin_contract::ModuleSlot;
 
 /// Result of a module load operation

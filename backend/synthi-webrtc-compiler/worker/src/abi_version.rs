@@ -19,7 +19,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::ffi::CStr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 /// Semantic version for ABI
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

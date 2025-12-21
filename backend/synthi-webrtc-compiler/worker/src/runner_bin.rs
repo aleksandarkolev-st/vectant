@@ -36,6 +36,7 @@ mod supervisor;
 mod state_manager;
 mod boundary;
 mod reload_manager;
+mod fast_refresh;
 mod hmr_orchestrator;
 
 use plugin_contract::{ModuleSlot, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
@@ -44,13 +45,12 @@ use host_kv::{
     KV_STORE, SynthiHostContextV1, HostKvSchemaEvent,
     create_kv_api, read_schema_table, module_slot_to_u32,
 };
-use state_diff::{migrate_state, generate_migration_report};
-use crash_recovery::{install_crash_handlers, execute_with_protection, should_force_restart, 
+use crash_recovery::{install_crash_handlers, execute_with_protection, 
                      HmrCrashStatus, generate_crash_report, set_current_lib_path};
 use loader::{ModuleLoader, LoadResult};
 use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
-use state_manager::{StateManager, StateHandle};
-use hmr_orchestrator::{HmrOrchestrator, SavedState, LoadedState, SchemaCompatibility};
+use state_manager::StateManager;
+use hmr_orchestrator::{HmrOrchestrator, SavedState};
 
 // SDL2 Definitions
 #[cfg(target_os = "linux")]
@@ -366,7 +366,7 @@ fn main() {
     // STATE MANAGER
     // ============================================================
     // StateManager tracks state per module for centralized lifecycle management
-    let mut state_manager = StateManager::new();
+    let _state_manager = StateManager::new();
     eprintln!("[Runner] StateManager initialized");
     
     // ============================================================
@@ -877,7 +877,7 @@ fn main() {
                                 // If incompatible, we force cold reload (NULL state to on_load).
                                 // JSON migration can still rescue data by parsing into new layout.
                                 // ============================================================
-                                let mut force_cold_reload = false;
+                                let mut _force_cold_reload = false;
                                 
                                 if old_schema_hash != 0 && new_schema_hash != 0 && old_schema_hash != new_schema_hash {
                                     eprintln!("[Runner] [HMR] CRITICAL: Schema hash mismatch (Old: {:016X}, New: {:016X})", old_schema_hash, new_schema_hash);
@@ -885,14 +885,14 @@ fn main() {
                                     
                                     let status = HmrStatus::rejected(name, &format!("Schema mismatch (Cold Reload): {:016X} -> {:016X}", old_schema_hash, new_schema_hash));
                                     eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
-                                    force_cold_reload = true;
+                                    _force_cold_reload = true;
                                     new_state = std::ptr::null_mut();
                                 } else if new_schema_hash == 0 && old_schema_hash != 0 {
                                     eprintln!("[Runner] [HMR] WARNING: New module missing schema hash. Assuming unsafe.");
                                     
                                     let status = HmrStatus::rejected(name, "Missing schema hash (Cold Reload)");
                                     eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
-                                    force_cold_reload = true;
+                                    _force_cold_reload = true;
                                     new_state = std::ptr::null_mut();
                                 }
                                 
@@ -904,7 +904,7 @@ fn main() {
                                 // - JSON load with field-level diffing (fallback)
                                 // - Template generation for migration
                                 // ============================================================
-                                let mut state_restored = false;
+                                let mut _state_restored = false;
                                 
                                 if let Some(ref ss) = saved_state {
                                     // Get template JSON for field-level diffing (if JSON path needed)
@@ -923,7 +923,7 @@ fn main() {
                                     
                                     if !loaded.state_ptr.is_null() {
                                         new_state = loaded.state_ptr;
-                                        state_restored = true;
+                                        _state_restored = true;
                                         
                                         // Report migration results
                                         if let Some(ref migration) = loaded.migration_result {
@@ -1260,7 +1260,7 @@ fn main() {
                                     let status = HmrStatus::Applied {
                                         module: name.to_string(),
                                         capability: hmr_capability.description().to_string(),
-                                        state_preserved: state_will_preserve && json_state.is_some(),
+                                        state_preserved: state_will_preserve && saved_state.is_some(),
                                     };
                                     eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
                                 }

@@ -19,7 +19,7 @@ mod binary_state;
 mod crash_recovery;
 mod error_parser;
 pub mod source_map;
-mod fast_refresh;
+pub mod fast_refresh;
 mod boundary;
 mod abi_version;
 mod loader;
@@ -30,7 +30,7 @@ mod hmr_orchestrator;
 
 // Re-export orchestrator for external use
 pub use hmr_orchestrator::{
-    HmrOrchestrator, HmrResult, HmrStatus, OrchestratorConfig,
+    HmrOrchestrator, HmrResult, HmrStatus as OrchestratorHmrStatus, OrchestratorConfig,
     SavedState, LoadedState, MigrationSummary, SchemaCompatibility,
 };
 
@@ -39,6 +39,7 @@ use fast_refresh::{BoundaryChecker, RefreshAction, BoundaryViolationEvent};
 use watcher::{PreemptiveConfig, PreemptiveMessage, SpeculativeCache};
 use error_parser::{parse_compiler_output, CompilerType, DiagnosticEvent};
 use capability::{detect_capabilities, HmrCapability, HmrStatus};
+// Note: HmrStatus from capability is used for frontend reporting
 use shim::{auto_shim, ShimMode, detect_shim_mode};
 #[allow(unused_imports)]
 use incremental_cache::{IncrementalCache, compile_with_cache, link_objects};
