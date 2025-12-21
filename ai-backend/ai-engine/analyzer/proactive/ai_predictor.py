@@ -335,10 +335,12 @@ class AIErrorPredictor:
         print(f"  Language: {file.language}")
         print(f"  Content Length: {content_length} chars")
         print(f"  Content MD5 Hash: {content_hash}")
-        print(f"  Content Preview (first 300 chars):")
+        print(f"  Content Preview (FULL CONTENT):")
         print(f"  ---")
-        preview = file.content[:300].replace('\n', '\n  ')
-        print(f"  {preview}")
+        # Print full content with line numbers for easier debugging
+        lines = file.content.splitlines()
+        for i, line in enumerate(lines):
+            print(f"  {i+1:4d} | {line}")
         print(f"  ---")
         if related_files:
             print(f"  Related Files: {len(related_files)}")
@@ -510,6 +512,10 @@ Do NOT report missing includes for these symbols:
                                            .replace("{include_context}", include_context + related_files_section)
         
         print(f"  Prompt Length: {len(prompt)} chars")
+        print(f"  PROMPT SENT TO LLM:")
+        print(f"  ---")
+        print(prompt)
+        print(f"  ---")
         
         # Call the LLM
         response = await self._provider.ask_llm(
@@ -520,6 +526,10 @@ Do NOT report missing includes for these symbols:
         )
         
         print(f"  LLM Response Length: {len(response)} chars")
+        print(f"  RAW LLM RESPONSE:")
+        print(f"  ---")
+        print(response)
+        print(f"  ---")
         
         # Parse the response
         diagnostics = self._parse_response(response, file)
@@ -563,6 +573,61 @@ Do NOT report missing includes for these symbols:
         
         return diagnostics
     
+    def _find_snippet_in_code(self, full_code: str, snippet: str) -> int:
+        """
+        Find the start index of a snippet in the code, ignoring whitespace differences.
+        Returns -1 if not found.
+        """
+        if not snippet:
+            return -1
+            
+        # 1. Try exact match first
+        idx = full_code.find(snippet)
+        if idx != -1:
+            return idx
+            
+        # 2. Try matching stripped lines
+        snippet_lines = [line.strip() for line in snippet.splitlines() if line.strip()]
+        if not snippet_lines:
+            return -1
+            
+        # Find the first line of the snippet in the code
+        first_line = snippet_lines[0]
+        start_pos = 0
+        
+        while True:
+            # Find next occurrence of the first line
+            # We search for the content, but we need to be careful about partial matches
+            found_idx = full_code.find(first_line, start_pos)
+            if found_idx == -1:
+                return -1
+                
+            # Verify the rest of the snippet matches
+            # We construct a "normalized" version of the candidate section in the code
+            # and compare it with the normalized snippet
+            
+            # Heuristic: Extract a chunk of code starting from found_idx
+            # The chunk size should be roughly the size of the snippet + some buffer for whitespace
+            chunk_size = len(snippet) * 2 
+            candidate_chunk = full_code[found_idx : found_idx + chunk_size]
+            
+            # Normalize both
+            norm_snippet = " ".join(snippet.split())
+            norm_candidate = " ".join(candidate_chunk.split())
+            
+            if norm_candidate.startswith(norm_snippet):
+                # Found it!
+                # Now we need to adjust found_idx to include the leading indentation of the line
+                # Walk backwards from found_idx while it's whitespace and not newline
+                actual_start = found_idx
+                while actual_start > 0 and full_code[actual_start-1] in ' \t':
+                    actual_start -= 1
+                return actual_start
+            
+            start_pos = found_idx + 1
+            
+        return -1
+
     def _parse_diagnostic_item(
         self,
         item: Dict[str, Any],
@@ -610,23 +675,33 @@ Do NOT report missing includes for these symbols:
         snippet = snippet.replace("\\n", "\n").replace("\\t", "\t")
         fix_snippet = fix_snippet.replace("\\n", "\n").replace("\\t", "\t")
         
+        print(f"[AIErrorPredictor] Parsing diagnostic: {message}")
+        print(f"  Snippet to find: {repr(snippet)}")
+        
         # Try to find the exact position of the snippet in the code
         column = 0
         end_column = 0
         snippet_found = False
         
         if snippet:
-            # First, try to find in the full code
-            snippet_idx = full_code.find(snippet)
+            # First, try to find in the full code using robust search
+            snippet_idx = self._find_snippet_in_code(full_code, snippet)
+            print(f"  Snippet found at index: {snippet_idx}")
+            
             if snippet_idx != -1:
-                # Found exact match - calculate line and column
-                lines_before = full_code[:snippet_idx].splitlines()
-                if lines_before:
-                    line_num = len(lines_before) - 1
-                    column = len(lines_before[-1]) if lines_before else 0
-                else:
-                    line_num = 0
+                # Found match - calculate line and column
+                # Count newlines to determine line number (more accurate than splitlines)
+                text_before = full_code[:snippet_idx]
+                line_num = text_before.count('\n')
+                
+                # Calculate column: find the position after the last newline
+                last_newline_idx = text_before.rfind('\n')
+                if last_newline_idx == -1:
+                    # No newline before snippet - it's on the first line
                     column = snippet_idx
+                else:
+                    # Column is distance from last newline to snippet
+                    column = snippet_idx - last_newline_idx - 1
                 
                 # Calculate end position
                 snippet_lines = snippet.splitlines()
@@ -639,13 +714,7 @@ Do NOT report missing includes for these symbols:
                 
                 snippet_found = True
             else:
-                # Try case-insensitive or normalized whitespace search
-                normalized_code = " ".join(full_code.split())
-                normalized_snippet = " ".join(snippet.split())
-                
-                if normalized_snippet in normalized_code:
-                    # Found with normalized whitespace - fall back to line-based
-                    snippet_found = False  # Will use line-based highlighting
+                print(f"  Snippet NOT found")
         
         # If snippet not found exactly, highlight the full line range
         if not snippet_found:
@@ -1062,10 +1131,19 @@ Do NOT report missing includes for these symbols:
             full_code = file.content
             snippet_idx = full_code.find(snippet)
             if snippet_idx != -1:
-                lines_before = full_code[:snippet_idx].splitlines()
-                if lines_before:
-                    line_num = len(lines_before) - 1
-                    column = len(lines_before[-1]) if lines_before else 0
+                # Count newlines to determine line number (more accurate than splitlines)
+                text_before = full_code[:snippet_idx]
+                line_num = text_before.count('\n')
+                
+                # Calculate column: find the position after the last newline
+                last_newline_idx = text_before.rfind('\n')
+                if last_newline_idx == -1:
+                    # No newline before snippet - it's on the first line
+                    column = snippet_idx
+                else:
+                    # Column is distance from last newline to snippet
+                    column = snippet_idx - last_newline_idx - 1
+                
                 snippet_lines = snippet.splitlines()
                 if len(snippet_lines) > 1:
                     end_line_num = line_num + len(snippet_lines) - 1

@@ -538,11 +538,26 @@ export default function EditorPage({ params }) {
                     console.log('[page.jsx] Layers run:', result?.layers_run);
                     console.log('[page.jsx] Summary:', result?.summary);
                     console.log('[page.jsx] Time:', result?.analysis_time_ms, 'ms');
+                    console.log('[page.jsx] Content hash from server:', result?.content_hash);
                     
                     const diags = result?.diagnostics || [];
                     console.log('[page.jsx] Diagnostics count:', diags.length);
+                    
+                    // DEBUG: Print every error and the code line it refers to
+                    // Use currentContent which is what was being edited
+                    const sourceLines = (typeof currentContent === 'string' ? currentContent : '').split('\n');
+                    console.log('[page.jsx] Current content lines:', sourceLines.length);
                     diags.forEach((d, i) => {
-                        console.log(`[page.jsx]   [${i}]: [${d.source || d.tier}] ${d.message} @ line ${d.range?.start || d.location?.line}`);
+                        const lineIdx = d.range?.start ?? d.location?.line ?? 0;
+                        // Adjust for 0-based vs 1-based if needed (usually 0-based in API)
+                        const codeLine = sourceLines[lineIdx] ?? "<LINE OUT OF BOUNDS>";
+                        console.log(`[page.jsx]   [DIAG #${i}] Line ${lineIdx} (display as ${lineIdx + 1}): ${d.message}`);
+                        console.log(`[page.jsx]     Frontend code at line ${lineIdx}: "${codeLine.trim()}"`);
+                        console.log(`[page.jsx]     Backend code at line ${lineIdx}: "${d.codeAtLine || 'N/A'}"`);
+                        if (codeLine.trim() !== (d.codeAtLine || '').trim()) {
+                            console.warn(`[page.jsx]     ⚠️ CODE MISMATCH! Frontend and backend see different content!`);
+                        }
+                        console.log(`[page.jsx]     Source: ${d.source || d.tier}`);
                     });
                     
                     // Normalize diagnostics to consistent format
@@ -550,11 +565,12 @@ export default function EditorPage({ params }) {
                         ...d,
                         filePath: d.filePath || d.file || currentFilePath,
                         // Normalize location field for ProblemsPanel compatibility
+                        // IMPORTANT: Use ?? instead of || to handle 0 as valid value
                         location: d.location || {
-                            line: d.range?.start || 1,
-                            startColumn: d.range?.startColumn || 0,
-                            endLine: d.range?.end || d.range?.start || 1,
-                            endColumn: d.range?.endColumn || 0,
+                            line: d.range?.start ?? 0,
+                            column: d.range?.startColumn ?? 0,
+                            endLine: d.range?.end ?? d.range?.start ?? 0,
+                            endColumn: d.range?.endColumn ?? 0,
                         },
                         // Map source to tier for backward compatibility
                         tier: d.tier || (d.source?.toLowerCase().includes('ai') ? 'ai' :

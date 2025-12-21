@@ -66,7 +66,7 @@ from analyzer.proactive import (
     WorkspaceAnalysisResult,
     FileChange,
 )
-from analyzer.proactive.types import AnalysisRequest, FileContext
+from analyzer.proactive.types import AnalysisRequest, FileContext, Severity
 from analyzer.proactive.cache import AnalysisCache
 
 # Intelligence Aggregator - Unified Pipeline
@@ -473,7 +473,7 @@ class UnifiedAnalysisRequest(BaseModel):
     file_path: str  # File path within workspace
     lang: str
     # Version for stale detection - client increments on each keystroke
-    version: Optional[int] = None  # Client-side version counter
+    version: int  # Client-side version counter (MANDATORY)
     # Layer control
     layers: Optional[List[str]] = None  # ["static", "compiler", "ai"]
     # AI configuration
@@ -521,7 +521,7 @@ async def analyze_unified(req: UnifiedAnalysisRequest):
     It uses the ProactiveAnalyzer which includes:
     - Static analysis (syntax patterns)
     - Semantic analysis (CppSemanticAnalyzer, etc.)
-    - Optional AI analysis
+    - Optional AI analysis (auto-triggered on errors if trigger_ai_on_errors=True)
     
     Content is fetched from container filesystem - client sends only paths.
     
@@ -538,6 +538,7 @@ async def analyze_unified(req: UnifiedAnalysisRequest):
     logger.info(f"Language: {req.lang}")
     logger.info(f"Version: {req.version}")
     logger.info(f"Layers: {req.layers or ['static', 'semantic']}")
+    logger.info(f"Auto-trigger AI on errors: {req.trigger_ai_on_errors}")
     
     # Fetch content from container
     content = await fetch_file_from_container(req.slug, req.file_path)
@@ -546,22 +547,29 @@ async def analyze_unified(req: UnifiedAnalysisRequest):
     
     logger.info(f"Fetched: {len(content)} chars")
     
+    # DEBUG: Log content preview to verify correct content is being analyzed
+    content_preview = content[:300].replace('\n', '\\n')
+    logger.info(f"Content preview: {content_preview}...")
+    
     # Compute content hash for client-side caching
     content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+    logger.info(f"Content hash: {content_hash}")
     
     # Determine which tiers to run (map layers to proactive tiers)
     layers = list(req.layers or ["static", "semantic"])
-    tiers = []
+    initial_tiers = []
     if "static" in layers:
-        tiers.append(AnalysisTier.STATIC)
+        initial_tiers.append(AnalysisTier.STATIC)
     if "semantic" in layers or "compiler" in layers:
-        tiers.append(AnalysisTier.SEMANTIC)
+        initial_tiers.append(AnalysisTier.SEMANTIC)
     if "ai" in layers or req.include_ai:
-        tiers.append(AnalysisTier.AI)
+        initial_tiers.append(AnalysisTier.AI)
     
     # Default to static + semantic if nothing specified
-    if not tiers:
-        tiers = [AnalysisTier.STATIC, AnalysisTier.SEMANTIC]
+    if not initial_tiers:
+        initial_tiers = [AnalysisTier.STATIC, AnalysisTier.SEMANTIC]
+    
+    tiers = initial_tiers.copy()
     
     # Build file context for ProactiveAnalyzer
     file_context = FileContext(
@@ -588,12 +596,70 @@ async def analyze_unified(req: UnifiedAnalysisRequest):
             return get_provider(provider_name='chatgpt', use_custom=True)
         return get_provider()
     
+    # First pass: Run static + semantic analysis
     provider = select_provider() if AnalysisTier.AI in tiers else None
     analyzer = get_proactive_analyzer(llm_provider=provider)
     
     try:
         # Run the actual analysis using ProactiveAnalyzer
         result = await analyzer.analyze(analysis_request)
+        
+        # AUTO-TRIGGER AI: If trigger_ai_on_errors is True and we found errors, run AI analysis
+        ai_triggered = False
+        should_run_ai = False
+        
+        if req.trigger_ai_on_errors and AnalysisTier.AI not in initial_tiers:
+            # Count errors from static + semantic analysis
+            error_count = sum(
+                1 for d in result.all_diagnostics 
+                if d.severity == Severity.ERROR or (hasattr(d.severity, 'value') and d.severity.value == 'error')
+            )
+            warning_count = sum(
+                1 for d in result.all_diagnostics 
+                if d.severity == Severity.WARNING or (hasattr(d.severity, 'value') and d.severity.value == 'warning')
+            )
+            info_count = sum(
+                1 for d in result.all_diagnostics
+                if d.severity == Severity.INFO or (hasattr(d.severity, 'value') and d.severity.value == 'info')
+            )
+            
+            logger.info(f"[AUTO-AI] Static/Semantic analysis found: {error_count} errors, {warning_count} warnings, {info_count} infos")
+            
+            # Trigger AI if:
+            # 1. Any errors found, OR
+            # 2. Multiple warnings, OR  
+            # 3. Any diagnostics at all (be proactive)
+            if error_count > 0 or warning_count >= 1 or (info_count > 0 and req.lang in ['cpp', 'c++', 'c']):
+                should_run_ai = True
+                logger.info(f"[AUTO-AI] Triggering AI analysis due to {error_count} errors, {warning_count} warnings, {info_count} infos")
+        
+        if should_run_ai:
+            try:
+                
+                # Run AI analysis
+                ai_provider = select_provider()
+                ai_analyzer = get_proactive_analyzer(llm_provider=ai_provider)
+                
+                ai_request = AnalysisRequest(
+                    file=file_context,
+                    related_files=[],
+                    tiers=[AnalysisTier.AI],
+                    max_diagnostics=req.max_diagnostics or 50,
+                    include_fixes=True,
+                )
+                
+                logger.info(f"[AUTO-AI] Running AI analysis on {file_context.path}...")
+                ai_result = await ai_analyzer.analyze(ai_request)
+                
+                # Merge AI diagnostics into result
+                if ai_result.tiers.get(AnalysisTier.AI):
+                    result.tiers[AnalysisTier.AI] = ai_result.tiers[AnalysisTier.AI]
+                    tiers.append(AnalysisTier.AI)
+                    ai_triggered = True
+                    ai_diag_count = len(ai_result.tiers[AnalysisTier.AI].diagnostics)
+                    logger.info(f"[AUTO-AI] Added {ai_diag_count} AI diagnostics")
+            except Exception as ai_err:
+                logger.error(f"[AUTO-AI] AI analysis failed: {ai_err}", exc_info=True)
         
         elapsed_ms = (time.time() - start_time) * 1000
         
@@ -627,6 +693,11 @@ async def analyze_unified(req: UnifiedAnalysisRequest):
                 content_str = f"{req.file_path}:{diag.location.line}:{diag.message}:{tier_name}"
                 diag_id = hashlib.md5(content_str.encode()).hexdigest()[:12]
 
+            # Get the actual code at this location for verification
+            source_lines = content.splitlines()
+            line_idx = diag.location.line
+            code_at_line = source_lines[line_idx].strip() if 0 <= line_idx < len(source_lines) else ""
+            
             diag_dict = {
                 "id": diag_id,
                 "source": tier_name.capitalize(),
@@ -640,6 +711,7 @@ async def analyze_unified(req: UnifiedAnalysisRequest):
                     "endColumn": diag.location.end_column if diag.location.end_column is not None else diag.location.column + 1,
                 },
                 "tier": tier_name,
+                "codeAtLine": code_at_line,  # Actual code at this line for debugging
             }
             
             if diag.code:
@@ -682,6 +754,18 @@ async def analyze_unified(req: UnifiedAnalysisRequest):
         
         logger.info(f"=== UNIFIED ANALYSIS RESULT ===")
         logger.info(f"Total diagnostics: {len(diagnostics_list)}")
+        
+        # DEBUG: Print every error and the code line it refers to
+        source_lines = content.splitlines()
+        for i, d in enumerate(diagnostics_list):
+            line_idx = d['range']['start']
+            # Handle 0-based vs 1-based indexing (diagnostics are usually 0-based internally but might be 1-based in output)
+            # Assuming 0-based for array access
+            code_line = source_lines[line_idx] if 0 <= line_idx < len(source_lines) else "<LINE OUT OF BOUNDS>"
+            logger.info(f"  [DIAG #{i}] Line {line_idx}: {d['message']}")
+            logger.info(f"    Code: {code_line.strip()}")
+            logger.info(f"    Source: {d['source']} | Severity: {d['severity']}")
+
         logger.info(f"Summary: {summary}")
         logger.info(f"Time: {elapsed_ms:.1f}ms")
         logger.info(f"=== UNIFIED ANALYSIS END ===")
