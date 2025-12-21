@@ -115,6 +115,18 @@ class IntelligenceAggregator:
             except Exception as e:
                 logger.error(f"Subscriber callback error: {e}")
     
+    def clear_diagnostics(self, file_path: str):
+        """
+        Clear diagnostics for a file (notify subscribers).
+        
+        This is called immediately when a new analysis request is received
+        to prevent "ghost errors" (stale diagnostics at old coordinates).
+        """
+        # Create empty result
+        result = AggregatedResult(file_path=file_path)
+        self._notify_subscribers(file_path, result)
+        logger.info(f"Cleared diagnostics for {file_path}")
+
     async def analyze(
         self,
         file_path: str,
@@ -138,6 +150,10 @@ class IntelligenceAggregator:
         Returns:
             Aggregated result with deduplicated diagnostics
         """
+        # Task 2: Immediate Clear / Versioning
+        # Notify subscribers that analysis is starting (clearing old state)
+        self.clear_diagnostics(file_path)
+        
         start_time = time.time()
         
         result = AggregatedResult(file_path=file_path)

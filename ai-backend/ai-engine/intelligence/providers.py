@@ -267,7 +267,7 @@ class StaticAnalysisProvider(DiagnosticProvider):
     def __init__(self):
         from analyzer import get_analyzer, supported_languages
         self._analyzers = {}
-        self._supported = supported_languages
+        self._supported = supported_languages()
     
     @property
     def source(self) -> DiagnosticSource:
