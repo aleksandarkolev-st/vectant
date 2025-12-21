@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use serde::{Serialize, Deserialize};
@@ -440,18 +442,91 @@ impl ModuleGraph {
         };
         self.modules.insert(id.clone(), module);
 
-        // Update parents
+        // Update parents of child modules
+        for child in children {
+            if let Some(child_module) = self.modules.get_mut(&child) {
+                // Child exists, add parent reference
+                if !child_module.parents.contains(&id) {
+                    child_module.parents.push(id.clone());
+                }
+            } else {
+                // Child doesn't exist yet - create a placeholder module
+                // This handles forward references where a module imports another
+                // that hasn't been scanned yet. The placeholder will be updated
+                // when the actual module is scanned.
+                let placeholder = ModuleInfo {
+                    id: child.clone(),
+                    path: child.clone(),
+                    parents: vec![id.clone()],
+                    children: Vec::new(),
+                    last_modified: 0, // Mark as unscanned with timestamp 0
+                };
+                self.modules.insert(child.clone(), placeholder);
+            }
+        }
+    }
+    
+    /// Check if a module is a placeholder (not yet fully scanned)
+    pub fn is_placeholder(&self, id: &str) -> bool {
+        self.modules.get(id)
+            .map(|m| m.last_modified == 0)
+            .unwrap_or(true)
+    }
+    
+    /// Update a placeholder module with actual information
+    pub fn update_module(&mut self, path: String, children: Vec<String>) {
+        let id = path.clone();
+        
+        if let Some(existing) = self.modules.get_mut(&id) {
+            // Preserve existing parents (from forward references)
+            let existing_parents = existing.parents.clone();
+            
+            // Update module info
+            existing.path = path;
+            existing.children = children.clone();
+            existing.last_modified = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            
+            // Ensure parents are preserved
+            for parent in existing_parents {
+                if !existing.parents.contains(&parent) {
+                    existing.parents.push(parent);
+                }
+            }
+        } else {
+            // No placeholder exists, just add normally
+            self.add_module(path, children.clone());
+            return;
+        }
+        
+        // Update parent references for children
         for child in children {
             if let Some(child_module) = self.modules.get_mut(&child) {
                 if !child_module.parents.contains(&id) {
                     child_module.parents.push(id.clone());
                 }
             } else {
-                // Child doesn't exist yet, create a placeholder or handle later
-                // For now, we assume we process files in an order or handle this in a second pass
-                // But simpler: just store the relationship
+                // Create placeholder for unknown child
+                let placeholder = ModuleInfo {
+                    id: child.clone(),
+                    path: child.clone(),
+                    parents: vec![id.clone()],
+                    children: Vec::new(),
+                    last_modified: 0,
+                };
+                self.modules.insert(child.clone(), placeholder);
             }
         }
+    }
+    
+    /// Get all placeholder modules that need scanning
+    pub fn get_unscanned_modules(&self) -> Vec<String> {
+        self.modules.iter()
+            .filter(|(_, m)| m.last_modified == 0)
+            .map(|(id, _)| id.clone())
+            .collect()
     }
     
     // Rebuild parents from children
@@ -540,7 +615,7 @@ impl BuildSession {
         self.graph.rebuild_parents();
     }
 
-    fn parse_imports(&self, content: &str, current_file: &str) -> Vec<String> {
+    fn parse_imports(&self, content: &str, _current_file: &str) -> Vec<String> {
         let mut imports = Vec::new();
         // Very basic parser
         for line in content.lines() {
@@ -967,7 +1042,7 @@ impl WidgetDetector {
     /// Extract class name from a line
     fn extract_class_name(&self, line: &str) -> Option<String> {
         // Match: class ClassName ... or struct StructName ...
-        let patterns = [
+        let _patterns = [
             (r"class\s+(\w+)", 6),  // "class " prefix
             (r"struct\s+(\w+)", 7), // "struct " prefix
         ];
@@ -1048,7 +1123,7 @@ impl WidgetDetector {
         
         // Look for state->varname or state.varname patterns
         for pattern in &self.patterns.state_patterns {
-            let base = pattern.trim_end_matches(|c| c == '-' || c == '>' || c == '.');
+            let _base = pattern.trim_end_matches(|c| c == '-' || c == '>' || c == '.');
             
             // Find all occurrences
             let mut search_start = 0;
@@ -1073,7 +1148,7 @@ impl WidgetDetector {
     }
     
     /// Infer variable type from usage (simplified)
-    fn infer_state_type(&self, var_name: &str, code: &str) -> String {
+    fn infer_state_type(&self, var_name: &str, _code: &str) -> String {
         // Very simplified type inference
         let var_lower = var_name.to_lowercase();
         
@@ -1153,6 +1228,7 @@ impl WidgetDetector {
         class_name: &str,
         original_code: &str,
         entry_point: &str,
+        _state_vars: &[String],
         state_vars: &[String],
         is_class_based: bool,
         original_function: Option<&str>,

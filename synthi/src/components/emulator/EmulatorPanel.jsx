@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Button } from '@/components/ui/button';
 import EmulatorControls from './EmulatorControls';
 import EmulatorFrame from './EmulatorFrame';
 import EmulatorScreen from './EmulatorScreen';
@@ -27,6 +28,7 @@ export default function EmulatorPanel({
   mediaStream = null,
   forcedErrorMessage = '',
   onClose = null,
+  onClose,
 }) {
   const [state, setState] = useState(() => defaultState || getInitialEmulatorState());
   const [orientation, setOrientation] = useState('portrait');
@@ -232,6 +234,19 @@ export default function EmulatorPanel({
           >
             Close
           </button>
+          <div className="text-[11px] text-gray-500">UI-only</div>
+          {typeof onClose === 'function' ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 border-[#4b4b4b] bg-[#262626] hover:bg-[#2e2e2e] hover:border-emerald-500 hover:text-emerald-400 text-gray-200 transition-colors"
+              onClick={onClose}
+              aria-label="Close emulator preview"
+            >
+              Close
+            </Button>
+          ) : null}
         </div>
       </div>
 

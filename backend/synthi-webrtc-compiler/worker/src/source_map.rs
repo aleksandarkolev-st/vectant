@@ -1,3 +1,6 @@
+// Source map is actively used by crash_recovery for source-mapped stack traces
+// #![allow(dead_code)] - REMOVED: This module is now wired up
+
 // ============================================================
 // SOURCE MAP MODULE
 // ============================================================
@@ -13,7 +16,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 use serde::{Serialize, Deserialize};
 
 // ============================================================

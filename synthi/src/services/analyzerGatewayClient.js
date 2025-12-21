@@ -174,6 +174,63 @@ export class AnalyzerGatewayClient {
     return this._sendRequest('analyze/proactive/quick', payload);
   }
 
+  /**
+   * Run workspace-level multi-file analysis
+   * @param {Object} payload - Workspace analysis request
+   * @param {string} payload.workspaceId - Unique workspace identifier
+   * @param {Array} [payload.changedFiles] - Files that changed (for incremental)
+   * @param {Array} [payload.allFiles] - All workspace files
+   * @param {string} [payload.focusFile] - Currently focused file path
+   * @param {boolean} [payload.includeAi] - Include AI analysis
+   * @param {number} [payload.maxDiagnosticsPerFile] - Max diagnostics per file
+   * @param {boolean} [payload.incremental] - Use incremental mode
+   * @param {Object} [options] - Request options
+   * @param {Function} [options.onFileComplete] - Callback when a file analysis completes
+   * @param {Function} [options.onSuggestions] - Callback when suggestions are received
+   * @returns {Promise<Object>} Workspace analysis result
+   */
+  analyzeWorkspace(payload, options = {}) {
+    return this._sendRequest('analyze/workspace', payload, {
+      ...options,
+      onStream: (data) => {
+        // Handle per-file completion events
+        if (data?.filePath && typeof options.onFileComplete === 'function') {
+          options.onFileComplete({
+            filePath: data.filePath,
+            diagnostics: data.diagnostics || [],
+            fromCache: data.fromCache || false,
+          });
+        }
+        // Handle suggestions
+        if (data?.suggestions && typeof options.onSuggestions === 'function') {
+          options.onSuggestions(data.suggestions);
+        }
+        // Forward to generic stream handler
+        if (typeof options.onStream === 'function') {
+          options.onStream(data);
+        }
+      },
+    });
+  }
+
+  /**
+   * Run incremental workspace analysis (only changed files + dependents)
+   * @param {Object} payload - Analysis request
+   * @param {string} payload.workspaceId - Unique workspace identifier
+   * @param {Array} payload.changedFiles - Files that changed
+   * @param {Array} [payload.allFiles] - All workspace files for context
+   * @param {string} [payload.focusFile] - Currently focused file path
+   * @param {boolean} [payload.includeAi] - Include AI analysis
+   * @param {Object} [options] - Request options
+   * @returns {Promise<Object>} Incremental analysis result
+   */
+  analyzeWorkspaceIncremental(payload, options = {}) {
+    return this._sendRequest('analyze/workspace/incremental', {
+      ...payload,
+      incremental: true,
+    }, options);
+  }
+
   _sendRequest(action, data, options = {}) {
     if (this.isDisposed) {
       return Promise.reject(new SynthiException('Gateway client has been disposed', 'The analyzer gateway client has been disposed and can no longer process requests.'));

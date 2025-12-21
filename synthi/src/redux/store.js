@@ -25,6 +25,8 @@ export function loadUiPrefs() {
     if (!raw) return undefined;
     const parsed = JSON.parse(raw);
     // The emulator panel should be default-closed on refresh and not persisted.
+    // The emulator preview panel must be hidden by default and only opened
+    // when the user clicks Run and a mobile build is detected.
     if (parsed && typeof parsed === 'object') {
       delete parsed.showEmulatorPreview;
     }

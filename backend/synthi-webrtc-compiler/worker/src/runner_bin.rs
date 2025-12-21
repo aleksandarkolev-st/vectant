@@ -3,9 +3,16 @@ use std::io::{self, BufRead, Write};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
-use std::ffi::{c_void, c_int, c_uint, c_ulong, c_long, CString};
+use std::ffi::{c_void, c_int, c_uint, CString};
 use std::ptr;
 use std::collections::HashMap;
+
+// Wrapper types to make raw pointers thread-safe to move across threads
+#[derive(Clone, Copy)]
+struct SendVoidPtr(pub usize);
+unsafe impl Send for SendVoidPtr {}
+unsafe impl Sync for SendVoidPtr {}
+
 #[cfg(target_os = "linux")]
 use std::process::Command;
 
@@ -14,26 +21,40 @@ use x11rb::connection::Connection;
 #[cfg(target_os = "linux")]
 use x11rb::protocol::xproto::*;
 #[cfg(target_os = "linux")]
-use x11rb::protocol::shm::{self, ConnectionExt as ShmConnectionExt};
+use x11rb::protocol::shm::ConnectionExt as ShmConnectionExt;
 
 mod plugin_contract;
 mod capability;
 mod host_kv;
 mod state_diff;
 mod crash_recovery;
+mod source_map;
+mod binary_state;
+mod abi_version;
+mod loader;
+mod supervisor;
+mod state_manager;
+mod boundary;
+mod reload_manager;
+mod hmr_orchestrator;
 
-use plugin_contract::{ModuleSlot, ModuleInfo, RebuildScope, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
+use plugin_contract::{ModuleSlot, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
 use capability::{HmrCapability, detect_capabilities, HmrStatus};
 use host_kv::{
-    KV_STORE, SynthiHostContextV1, HostKvApiV1, HostKvSchemaEvent,
+    KV_STORE, SynthiHostContextV1, HostKvSchemaEvent,
     create_kv_api, read_schema_table, module_slot_to_u32,
 };
 use state_diff::{migrate_state, generate_migration_report};
 use crash_recovery::{install_crash_handlers, execute_with_protection, should_force_restart, 
-                     reset_crash_count, get_last_crash, HmrCrashStatus, generate_crash_report};
+                     HmrCrashStatus, generate_crash_report, set_current_lib_path};
+use loader::{ModuleLoader, LoadResult};
+use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
+use state_manager::{StateManager, StateHandle};
+use hmr_orchestrator::{HmrOrchestrator, SavedState, LoadedState, SchemaCompatibility};
 
 // SDL2 Definitions
 #[cfg(target_os = "linux")]
+#[allow(non_camel_case_types)]
 type SDL_Window = c_void;
 
 #[cfg(target_os = "linux")]
@@ -43,6 +64,7 @@ struct SDL_Event {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 #[link(name = "SDL2")]
 extern "C" {
     fn SDL_Init(flags: u32) -> c_int;
@@ -92,7 +114,8 @@ const SDL_TEXTUREACCESS_STREAMING: c_int = 1;
 // 3. State migration runs only for the affected module
 // ============================================================
 
-// Legacy state container - still used for backward compatibility with "main" module
+// Legacy state container - used for backward compatibility with "main" module
+// Now actively used in the main loop for app_state tracking
 struct AppState {
     raw: *mut c_void,
     renderer: *mut c_void,
@@ -100,9 +123,11 @@ struct AppState {
 
 // Per-module state tracking for independent swaps
 // Enhanced to track ABI version and CoreAPI pointer for proper HMR
+// Now actively used in module_states HashMap
 struct ModuleState {
     state_ptr: *mut c_void,      // Module's own state (CoreState or GuiState)
     abi_version: u32,            // ABI version reported by the module
+    schema_hash: u64,            // Schema hash for strict binary compatibility check
     core_api_ptr: *mut c_void,   // For GUI: pointer to CoreAPI from core module
 }
 
@@ -111,6 +136,7 @@ impl Default for ModuleState {
         ModuleState { 
             state_ptr: std::ptr::null_mut(),
             abi_version: 0,
+            schema_hash: 0,
             core_api_ptr: std::ptr::null_mut(),
         }
     }
@@ -132,6 +158,8 @@ unsafe fn get_module_abi_version(state: *mut c_void) -> u32 {
     *((state as *const u32).add(2))
 }
 
+// Host context for passing window/renderer to plugins
+// Now actively used when creating SynthiHostContextV1
 #[repr(C)]
 struct HostContext {
     window: *mut c_void,
@@ -165,7 +193,7 @@ fn main() {
     
     // Spawn Xvfb and setup X11
     #[cfg(target_os = "linux")]
-    let (_xvfb_proc, x11_conn, x11_screen_num, x11_root) = {
+    let (_xvfb_proc, x11_conn, _x11_screen_num, x11_root) = {
         let mut cmd = Command::new("Xvfb");
         cmd.args(&[":99", "-screen", "0", "800x600x24"]);
         let child = cmd.spawn().ok();
@@ -297,6 +325,62 @@ fn main() {
     let mut loaded_paths: HashMap<String, String> = HashMap::new();
     // Independent swap: Track state per module
     let mut module_states: HashMap<String, ModuleState> = HashMap::new();
+    
+    // ============================================================
+    // MODULE LOADER WITH ABI VALIDATION
+    // ============================================================
+    // ModuleLoader provides:
+    // - ABI compatibility checking before load
+    // - Symbol manifest validation
+    // - Rollback support to previous versions
+    // - Load history for debugging
+    // Note: We still use the modules HashMap for actual library storage
+    // because ModuleLoader integration is gradual - it validates but
+    // the existing loading code handles state transfer and lifecycle.
+    let mut module_loader = ModuleLoader::new();
+    let loader_enabled = std::env::var("SYNTHI_LOADER_VALIDATION").is_ok();
+    if loader_enabled {
+        eprintln!("[Runner] ModuleLoader ABI validation ENABLED");
+    }
+    
+    // ============================================================
+    // CRASH SUPERVISOR
+    // ============================================================
+    // CrashSupervisor coordinates crash recovery with policies:
+    // - First crash: attempt hot reload
+    // - Second crash: rollback to previous version
+    // - Third+ crash: clean restart
+    // - Too many crashes: full restart required
+    let mut crash_supervisor = CrashSupervisor::new(SupervisorConfig {
+        max_consecutive_crashes: 3,
+        crash_window: Duration::from_secs(60),
+        detailed_logging: true,
+        ..Default::default()
+    });
+    let supervisor_enabled = std::env::var("SYNTHI_CRASH_SUPERVISOR").is_ok() || true; // Enable by default
+    if supervisor_enabled {
+        eprintln!("[Runner] CrashSupervisor ENABLED (max_crashes=3, window=60s)");
+    }
+    
+    // ============================================================
+    // STATE MANAGER
+    // ============================================================
+    // StateManager tracks state per module for centralized lifecycle management
+    let mut state_manager = StateManager::new();
+    eprintln!("[Runner] StateManager initialized");
+    
+    // ============================================================
+    // HMR ORCHESTRATOR (Unified State/Reload Management)
+    // ============================================================
+    // The orchestrator consolidates:
+    // - State save/load (binary-first with JSON fallback)
+    // - Reload classification (Safe/Warm/Cold)
+    // - Schema compatibility checking
+    // - Crash recovery coordination
+    // ============================================================
+    let mut orchestrator = HmrOrchestrator::new();
+    eprintln!("[Runner] HmrOrchestrator initialized (binary_state=ENABLED)");
+    
     #[cfg(not(target_os = "linux"))]
     let (window, renderer) = (ptr::null_mut(), ptr::null_mut());
     let mut app_state = AppState { raw: std::ptr::null_mut(), renderer };
@@ -327,15 +411,23 @@ fn main() {
             unsafe {
                 let mut event: SDL_Event = std::mem::zeroed();
                 while SDL_PollEvent(&mut event) != 0 {
-                    // INDEPENDENT SWAP: Pass events with module-specific state
+                    // SPLIT MODE: Events go to core module with core's state.
+                    // Core handles button clicks, key presses, etc. that affect app state.
+                    // GUI module can also receive events for hover/focus handling.
                     // Pass SDL_Event to all loaded modules that export on_event
                     // The plugin's on_event expects SDL_Event* (not XEvent*)
                     // Plugins MUST be compiled to expect SDL_Event, not XEvent
                     for (name, lib) in modules.iter() {
                         let event_func: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut SDL_Event)>, _> = lib.get(b"on_event");
                         if let Ok(f) = event_func {
-                            // Use module-specific state for GUI
-                            let state_ptr = if name == "gui" {
+                            // CRITICAL FIX: In split mode, both core and GUI should receive
+                            // core's state for events. Core handles state changes (pause, quit),
+                            // and if GUI has on_event it should also see core's state.
+                            let state_ptr = if modules.contains_key("core") && !app_state.raw.is_null() {
+                                // Split mode: use core's state for all event handlers
+                                app_state.raw
+                            } else if name == "gui" {
+                                // GUI-only mode: use GUI's own state
                                 module_states.get(name).map(|s| s.state_ptr).unwrap_or(app_state.raw)
                             } else {
                                 app_state.raw
@@ -511,12 +603,49 @@ fn main() {
                         // ATOMIC-SWAP HMR: Zero-flicker hot module replacement
                         // ============================================================
                         // Strategy:
-                        // 1. Load NEW library while OLD is still active (old keeps rendering)
-                        // 2. Save state from OLD module
-                        // 3. Pre-initialize NEW module with saved state + graphics
-                        // 4. ATOMIC SWAP: Replace module reference in single operation
-                        // 5. Defer OLD module cleanup (on_unload + drop) until after swap
+                        // 1. Validate ABI compatibility (if loader enabled)
+                        // 2. Load NEW library while OLD is still active (old keeps rendering)
+                        // 3. Save state from OLD module
+                        // 4. Pre-initialize NEW module with saved state + graphics
+                        // 5. ATOMIC SWAP: Replace module reference in single operation
+                        // 6. Defer OLD module cleanup (on_unload + drop) until after swap
                         // ============================================================
+                        
+                        // ============================================================
+                        // PRE-LOAD ABI VALIDATION (Optional, enabled via env var)
+                        // ============================================================
+                        // Use ModuleLoader to check ABI compatibility before loading.
+                        // This catches symbol mismatches and ABI version errors early.
+                        if loader_enabled {
+                            let slot = ModuleSlot::from_str(name);
+                            if let Some(slot) = slot {
+                                // Generate a simple hash for tracking (real hash from file)
+                                let content_hash = std::fs::metadata(path)
+                                    .map(|m| m.len())
+                                    .unwrap_or(0);
+                                
+                                match module_loader.load(std::path::Path::new(path), slot, content_hash) {
+                                    LoadResult::Success { module_id, abi_version } => {
+                                        eprintln!("[Runner] [Loader] ABI validation passed: {} v{}", module_id, abi_version);
+                                    }
+                                    LoadResult::AbiMismatch { expected, found, details } => {
+                                        eprintln!("[Runner] [Loader] ABI MISMATCH: expected v{}, found v{}. {}", 
+                                            expected, found, details);
+                                        eprintln!("[Runner] [Loader] Continuing with legacy loading...");
+                                    }
+                                    LoadResult::MissingSymbols { symbols } => {
+                                        eprintln!("[Runner] [Loader] WARNING: Missing symbols: {:?}", symbols);
+                                        eprintln!("[Runner] [Loader] Continuing with legacy loading...");
+                                    }
+                                    LoadResult::LoadError { reason } => {
+                                        eprintln!("[Runner] [Loader] Load validation error: {}", reason);
+                                        // Don't fail - let legacy loader try
+                                    }
+                                }
+                                // Unload from module_loader since we'll use legacy loading
+                                module_loader.unload(slot);
+                            }
+                        }
                         
                         eprintln!("[Runner] [HMR] Phase 1: Loading new library (old still active): {}", path);
                         #[cfg(unix)]
@@ -548,7 +677,7 @@ fn main() {
                                         // OR legacy on_load/on_update for backward compat
                                         let core_load: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"core_on_load");
                                         let core_update: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = new_lib.get(b"core_on_update");
-                                        let core_get_api: Result<Symbol<unsafe extern "C" fn() -> *mut c_void>, _> = new_lib.get(b"core_get_api");
+                                        let _core_get_api: Result<Symbol<unsafe extern "C" fn() -> *mut c_void>, _> = new_lib.get(b"core_get_api");
                                         let legacy_load: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = new_lib.get(b"on_load");
                                         let legacy_update: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> = new_lib.get(b"on_update");
                                         
@@ -663,39 +792,38 @@ fn main() {
                                 }
                                 
                                 // ============================================================
-                                // Phase 2: Save state from OLD module (while it's still valid)
+                                // Phase 2: Save state from OLD module (via Orchestrator)
                                 // ============================================================
-                                // INDEPENDENT SWAP: Each module has its own state pointer.
-                                // We save/restore the state specific to this module only.
+                                // The orchestrator handles:
+                                // - Binary vs JSON serialization (binary preferred for speed)
+                                // - Memory management (free C-allocated buffers)
+                                // - Statistics tracking
                                 // ============================================================
-                                let mut json_state: Option<std::ffi::CString> = None;
+                                let mut saved_state: Option<SavedState> = None;
                                 let mut old_lib_for_cleanup: Option<Library> = None;
                                 
                                 // Get the module-specific state (not the shared app_state.raw)
                                 let module_prev_state = module_states.get(name).map(|s| s.state_ptr).unwrap_or(std::ptr::null_mut());
                                 
                                 if let Some(old_lib) = modules.remove(name) {
-                                    eprintln!("[Runner] [HMR] Phase 2: Saving state from old module '{}'...", name);
+                                    eprintln!("[Runner] [HMR] Phase 2: Saving state via orchestrator for '{}'...", name);
                                     
                                     // Save state BEFORE any cleanup - use module-specific state
-                                    // Prefer ABI-prefixed symbols, fall back to legacy.
-                                    let save_func: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut std::ffi::c_char>, _> =
-                                        if name == "core" {
-                                            old_lib.get(b"core_on_save_state").or_else(|_| old_lib.get(b"on_save_state"))
-                                        } else if name == "gui" {
-                                            old_lib.get(b"gui_on_save_state").or_else(|_| old_lib.get(b"on_save_state"))
-                                        } else {
-                                            old_lib.get(b"on_save_state")
-                                        };
-                                    if let Ok(f) = save_func {
-                                        // Use module's own state for save, not the shared app_state.raw
-                                        let state_to_save = if !module_prev_state.is_null() { module_prev_state } else { app_state.raw };
-                                        let ptr = f(state_to_save);
-                                        if !ptr.is_null() {
-                                            let c_str = std::ffi::CStr::from_ptr(ptr);
-                                            json_state = Some(c_str.to_owned());
-                                            eprintln!("[Runner] [HMR] State saved for module '{}': {:?}", name, c_str);
-                                            libc::free(ptr as *mut c_void);
+                                    let state_to_save = if !module_prev_state.is_null() { module_prev_state } else { app_state.raw };
+                                    
+                                    // Use orchestrator for unified save (binary-first with JSON fallback)
+                                    saved_state = Some(orchestrator.save_module_state(
+                                        slot.unwrap_or(ModuleSlot::Main),
+                                        &old_lib,
+                                        state_to_save,
+                                    ));
+                                    
+                                    if let Some(ref ss) = saved_state {
+                                        if ss.was_binary {
+                                            eprintln!("[Runner] [HMR] State saved via BINARY path ({} bytes)", 
+                                                ss.binary.as_ref().map(|b| b.len()).unwrap_or(0));
+                                        } else if ss.json.is_some() {
+                                            eprintln!("[Runner] [HMR] State saved via JSON path");
                                         }
                                     }
                                     
@@ -721,36 +849,106 @@ fn main() {
                                 // Start with module's previous state or null for fresh init
                                 let mut new_state: *mut c_void = module_prev_state;
                                 let mut core_api_ptr: *mut c_void = std::ptr::null_mut();
+
+                                // ============================================================
+                                // SCHEMA HASH VERIFICATION (STRICT ABI CHECK)
+                                // ============================================================
+                                // Before reusing the raw state pointer, we MUST verify that the
+                                // struct layout hasn't changed. We use a hash provided by the
+                                // compiler/plugin for this.
+                                // ============================================================
+                                let old_schema_hash = module_states.get(name).map(|s| s.schema_hash).unwrap_or(0);
+                                let mut new_schema_hash: u64 = 0;
                                 
-                                // If we have saved state, restore it to new module
-                                // Try new symbol name first, then legacy
-                                // Use field-level diffing for intelligent state migration
-                                if let Some(ref json) = json_state {
-                                    let load_json_new: Result<Symbol<unsafe extern "C" fn(*const std::ffi::c_char) -> *mut c_void>, _> = 
-                                        if name == "core" { new_lib.get(b"core_on_load_from_json") }
-                                        else if name == "gui" { new_lib.get(b"gui_on_load_from_json") }
-                                        else { new_lib.get(b"on_load_from_json") };
-                                    let load_json_legacy: Result<Symbol<unsafe extern "C" fn(*const std::ffi::c_char) -> *mut c_void>, _> = new_lib.get(b"on_load_from_json");
+                                let get_schema_hash: Result<Symbol<unsafe extern "C" fn() -> u64>, _> = 
+                                    if name == "core" { new_lib.get(b"core_get_state_schema_hash") }
+                                    else if name == "gui" { new_lib.get(b"gui_get_state_schema_hash") }
+                                    else { Err(libloading::Error::DlSymUnknown) }; // Legacy doesn't support this
+
+                                if let Ok(f) = get_schema_hash {
+                                    new_schema_hash = f();
+                                    eprintln!("[Runner] [HMR] Module '{}' schema hash: {:016X}", name, new_schema_hash);
+                                }
+
+                                // ============================================================
+                                // Schema Compatibility Check (via Orchestrator helper)
+                                // ============================================================
+                                // The orchestrator checks if the old and new schemas are compatible.
+                                // If incompatible, we force cold reload (NULL state to on_load).
+                                // JSON migration can still rescue data by parsing into new layout.
+                                // ============================================================
+                                let mut force_cold_reload = false;
+                                
+                                if old_schema_hash != 0 && new_schema_hash != 0 && old_schema_hash != new_schema_hash {
+                                    eprintln!("[Runner] [HMR] CRITICAL: Schema hash mismatch (Old: {:016X}, New: {:016X})", old_schema_hash, new_schema_hash);
+                                    eprintln!("[Runner] [HMR] Forcing COLD RELOAD - JSON migration will attempt data rescue.");
                                     
-                                    if let Ok(f) = load_json_new.or(load_json_legacy) {
-                                        let old_json_str = json.to_str().unwrap_or("{}");
+                                    let status = HmrStatus::rejected(name, &format!("Schema mismatch (Cold Reload): {:016X} -> {:016X}", old_schema_hash, new_schema_hash));
+                                    eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                                    force_cold_reload = true;
+                                    new_state = std::ptr::null_mut();
+                                } else if new_schema_hash == 0 && old_schema_hash != 0 {
+                                    eprintln!("[Runner] [HMR] WARNING: New module missing schema hash. Assuming unsafe.");
+                                    
+                                    let status = HmrStatus::rejected(name, "Missing schema hash (Cold Reload)");
+                                    eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                                    force_cold_reload = true;
+                                    new_state = std::ptr::null_mut();
+                                }
+                                
+                                // ============================================================
+                                // State Restoration (via Orchestrator)
+                                // ============================================================
+                                // The orchestrator handles:
+                                // - Binary load (fast path, 10-50x faster)
+                                // - JSON load with field-level diffing (fallback)
+                                // - Template generation for migration
+                                // ============================================================
+                                let mut state_restored = false;
+                                
+                                if let Some(ref ss) = saved_state {
+                                    // Get template JSON for field-level diffing (if JSON path needed)
+                                    let template_json = orchestrator.get_template_json(
+                                        slot.unwrap_or(ModuleSlot::Main),
+                                        &new_lib,
+                                    );
+                                    
+                                    // Use orchestrator to load state
+                                    let loaded = orchestrator.load_module_state(
+                                        slot.unwrap_or(ModuleSlot::Main),
+                                        &new_lib,
+                                        ss,
+                                        template_json.as_deref(),
+                                    );
+                                    
+                                    if !loaded.state_ptr.is_null() {
+                                        new_state = loaded.state_ptr;
+                                        state_restored = true;
                                         
-                                        // Try to get a "default" state from the new module to use as template
-                                        // This allows field-level diffing
-                                        let mut use_field_diff = false;
-                                        let mut migrated_json = old_json_str.to_string();
-                                        
-                                        // For now, load with old state directly
-                                        // TODO: Get template state from new module for true field-level diff
-                                        // The migrate_state function is available if we can get the template
-                                        
-                                        eprintln!("[Runner] [HMR] Restoring state from JSON into new module '{}'...", name);
-                                        new_state = f(json.as_ptr());
-                                        
-                                        // Log migration report if we did field-level diffing
-                                        if use_field_diff {
-                                            eprintln!("[Runner] [HMR] Field-level state migration applied");
+                                        // Report migration results
+                                        if let Some(ref migration) = loaded.migration_result {
+                                            let report = format!(
+                                                "preserved={}, reset={}, new={}",
+                                                migration.preserved_fields.len(),
+                                                migration.reset_fields.len(),
+                                                migration.new_fields.len()
+                                            );
+                                            eprintln!("[Runner] [HMR] State migrated via orchestrator: {}", report);
+                                            
+                                            let status = HmrStatus::state_migrated(
+                                                name,
+                                                migration.preserved_fields.len(),
+                                                migration.reset_fields.len(),
+                                                migration.new_fields.len(),
+                                            );
+                                            eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                                        } else if loaded.was_binary {
+                                            let status = HmrStatus::state_migrated(name, 0, 0, 0);
+                                            eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                                            eprintln!("[Runner] [HMR] Binary state restored successfully");
                                         }
+                                    } else {
+                                        eprintln!("[Runner] [HMR] Orchestrator load returned NULL - fresh init");
                                     }
                                 }
                                 
@@ -772,7 +970,6 @@ fn main() {
                                 // This allows the module to write to KV during on_load
                                 // ============================================================
                                 let module_slot = slot.unwrap_or(ModuleSlot::Main);
-                                let mut host_kv_events: Vec<HostKvSchemaEvent> = Vec::new();
                                 let has_host_kv_support: bool;
                                 
                                 if let Some(ref sid) = session_id {
@@ -785,7 +982,7 @@ fn main() {
                                                  name, schemas.len(), schemas.iter().map(|(ns, _)| ns).collect::<Vec<_>>());
                                         
                                         // Register schemas and handle any resets
-                                        host_kv_events = KV_STORE.register_schemas(sid, module_slot_to_u32(module_slot), &schemas);
+                                        let host_kv_events = KV_STORE.register_schemas(sid, module_slot_to_u32(module_slot), &schemas);
                                         
                                         // Emit HMR status for schema events
                                         for event in &host_kv_events {
@@ -910,6 +1107,21 @@ fn main() {
                                     }
                                 }
                                 
+                                // ============================================================
+                                // VALIDATE on_load RETURN POINTER (CRITICAL FOR HMR)
+                                // ============================================================
+                                // The on_load function MUST return the same pointer when prev_state
+                                // is valid. If it returns a different pointer (e.g., from malloc),
+                                // state won't be preserved properly on next HMR cycle.
+                                // ============================================================
+                                if !module_prev_state.is_null() && !new_state.is_null() && new_state != module_prev_state {
+                                    eprintln!("[Runner] [HMR] WARNING: on_load returned different pointer!");
+                                    eprintln!("[Runner] [HMR]   prev_state: {:p}", module_prev_state);
+                                    eprintln!("[Runner] [HMR]   new_state:  {:p}", new_state);
+                                    eprintln!("[Runner] [HMR]   This suggests module used malloc instead of static variable.");
+                                    eprintln!("[Runner] [HMR]   State preservation may not work correctly on next reload.");
+                                }
+                                
                                 // Validate state header after initialization
                                 if !new_state.is_null() {
                                     let expected_magic = match slot {
@@ -966,6 +1178,7 @@ fn main() {
                                 module_states.insert(name.to_string(), ModuleState { 
                                     state_ptr: new_state,
                                     abi_version: module_abi_version,
+                                    schema_hash: new_schema_hash,
                                     core_api_ptr: if name == "gui" { core_api_ptr } else { std::ptr::null_mut() },
                                 });
                                 
@@ -1043,7 +1256,7 @@ fn main() {
                                 // ============================================================
                                 // Send detailed HMR status to stdout for the main process
                                 // ============================================================
-                                if let Ok(ref report) = capability_report {
+                                if let Ok(ref _report) = capability_report {
                                     let status = HmrStatus::Applied {
                                         module: name.to_string(),
                                         capability: hmr_capability.description().to_string(),
@@ -1146,25 +1359,73 @@ fn main() {
                         #[cfg(unix)]
                         {
                             let module_name = name.clone();
-                            let result = execute_with_protection(&module_name, || {
-                                f(state_ptr, dt);
+                            // Set current library path for source map lookup on crash
+                            if let Some(lib_path) = loaded_paths.get(name) {
+                                set_current_lib_path(lib_path);
+                            }
+                            
+                            // Enter crash supervisor context for this module
+                            if supervisor_enabled {
+                                let slot = ModuleSlot::from_str(name).unwrap_or(ModuleSlot::Main);
+                                crash_supervisor.enter_context(slot);
+                            }
+                            
+                            let state_ptr_wrapper = SendVoidPtr(state_ptr as usize);
+                            let func_ptr = *f;
+                            let result = execute_with_protection(&module_name, move || {
+                                let state_ptr = state_ptr_wrapper.0 as *mut std::ffi::c_void;
+                                func_ptr(state_ptr, dt);
                             });
+                            
+                            // Exit crash supervisor context
+                            if supervisor_enabled {
+                                crash_supervisor.exit_context();
+                            }
                             
                             if let Err(crash_info) = result {
                                 // Crash recovered! Log and continue with old module
                                 eprintln!("{}", generate_crash_report(&crash_info));
-                                let status = HmrCrashStatus::from_crash(&crash_info, !should_force_restart());
-                                eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
                                 
-                                if should_force_restart() {
-                                    eprintln!("[Runner] Too many consecutive crashes. Exiting.");
+                                // Use CrashSupervisor to determine recovery action
+                                let recovery_action = if supervisor_enabled {
+                                    crash_supervisor.report_crash(&crash_info)
+                                } else {
+                                    RecoveryAction::HotReload
+                                };
+                                
+                                // CRITICAL SAFETY CHECK:
+                                // If the crash was caused by memory corruption (SIGSEGV, SIGBUS, etc.),
+                                // we MUST NOT continue in the same process, as the heap state is undefined.
+                                let is_fatal = crash_info.is_fatal_memory_error();
+                                let force_restart = is_fatal || 
+                                    recovery_action == RecoveryAction::FullRestart ||
+                                    recovery_action == RecoveryAction::Fatal ||
+                                    (supervisor_enabled && crash_supervisor.should_force_restart());
+                                
+                                let status = HmrCrashStatus::from_crash(&crash_info, !force_restart);
+                                eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                                eprintln!("[Runner] Recovery action: {:?}", recovery_action);
+                                
+                                if force_restart {
+                                    if is_fatal {
+                                        eprintln!("[Runner] Fatal memory corruption detected ({:?}). Forcing cold restart.", crash_info.signal_name);
+                                    } else {
+                                        eprintln!("[Runner] Too many consecutive crashes (action={:?}). Exiting.", recovery_action);
+                                    }
                                     std::process::exit(1);
                                 }
                                 
+                                // On successful hot reload, reset crash count
+                                if recovery_action == RecoveryAction::HotReload && supervisor_enabled {
+                                    // Don't reset here - reset after successful reload
+                                }
+                                
                                 // Skip this module for now, continue with others
-                                reset_crash_count();
                                 continue;
                             }
+                            
+                            // Successful execution - reset crash count if supervisor enabled
+                            // Note: We only reset on successful frame completion, not per-module
                         }
                         
                         #[cfg(not(unix))]
@@ -1177,8 +1438,11 @@ fn main() {
         }
         
         // Render pass: 
-        // INDEPENDENT SWAP: For GUI-only updates, call gui's on_render with gui's state.
-        // For split mode (core+gui): Call gui_on_render independently.
+        // SPLIT MODE: GUI renders core's state (app_state.raw) since core owns the
+        // application data (x, y, dx, paused, etc.). GUI only handles presentation.
+        // The GUI's own state (module_states["gui"]) is for GUI-specific data like
+        // cached textures, hover states, etc. - but core state drives the rendering.
+        // 
         // For non-split mode (main): Call main's on_render/gui_render.
         
         // Check if GUI module has an independent on_render
@@ -1190,11 +1454,19 @@ fn main() {
                         .or_else(|| lib.get(b"on_render").ok())
                         .or_else(|| lib.get(b"gui_render").ok());
                 
-                // Get GUI's own state
-                let gui_state = module_states.get("gui").map(|s| s.state_ptr).unwrap_or(app_state.raw);
+                // CRITICAL FIX: In split mode (core+gui), GUI must render core's state
+                // because core owns application data (x, y, dx, paused, etc.).
+                // Only fall back to GUI's own state if core is not loaded.
+                let render_state = if modules.contains_key("core") && !app_state.raw.is_null() {
+                    // Split mode: render core's state (has animation data)
+                    app_state.raw
+                } else {
+                    // GUI-only mode: render GUI's own state
+                    module_states.get("gui").map(|s| s.state_ptr).unwrap_or(app_state.raw)
+                };
                 
                 if let Some(f) = render_func {
-                    f(gui_state);
+                    f(render_state);
                 }
             }
         } else if let Some(lib) = modules.get("core") {

@@ -79,9 +79,9 @@ const TIER_CONFIG = {
 };
 
 /**
- * Single diagnostic item
+ * Single diagnostic item with cross-file navigation support
  */
-function DiagnosticItem({ diagnostic, onNavigate, isSelected }) {
+function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
   const severityConfig = SEVERITY_CONFIG[diagnostic.severity] || SEVERITY_CONFIG.info;
   const tierConfig = TIER_CONFIG[diagnostic.tier] || TIER_CONFIG.static;
   const SeverityIcon = severityConfig.icon;
@@ -89,14 +89,16 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected }) {
   
   const handleClick = useCallback(() => {
     if (onNavigate) {
+      // Include file path for cross-file navigation
       onNavigate({
+        filePath: diagnostic.filePath || diagnostic.primaryFile || filePath,
         line: diagnostic.location?.line ?? 0,
         column: diagnostic.location?.column ?? 0,
         endLine: diagnostic.location?.endLine,
         endColumn: diagnostic.location?.endColumn,
       });
     }
-  }, [diagnostic, onNavigate]);
+  }, [diagnostic, onNavigate, filePath]);
   
   return (
     <button
@@ -161,6 +163,31 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected }) {
           )}
         </div>
         
+        {/* Cross-file references */}
+        {diagnostic.crossFileRefs?.length > 0 && (
+          <div className="mt-1 text-xs text-gray-500">
+            <span className="text-gray-400">Related: </span>
+            {diagnostic.crossFileRefs.map((ref, idx) => (
+              <button
+                key={idx}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (onNavigate) {
+                    onNavigate({
+                      filePath: ref.filePath || ref.file,
+                      line: ref.location?.line ?? ref.line ?? 0,
+                      column: ref.location?.column ?? 0,
+                    });
+                  }
+                }}
+                className="text-blue-400 hover:text-blue-300 hover:underline ml-1"
+              >
+                {ref.filePath?.split('/').pop() || ref.file?.split('/').pop()}:{(ref.location?.line ?? ref.line ?? 0) + 1}
+              </button>
+            ))}
+          </div>
+        )}
+        
         {/* Quick fixes available indicator */}
         {diagnostic.fixes?.length > 0 && (
           <div className="flex items-center gap-1 mt-1 text-xs text-emerald-400">
@@ -223,6 +250,7 @@ function FileGroup({ filePath, diagnostics, onNavigate, isExpanded, onToggle }) 
               key={`${diagnostic.code}-${diagnostic.location?.line}-${index}`}
               diagnostic={diagnostic}
               onNavigate={onNavigate}
+              filePath={filePath}
             />
           ))}
         </div>
@@ -308,8 +336,28 @@ export function ProblemsPanel({
     tiers: ['static', 'semantic', 'ai'],
   });
   
-  // Expansion state
-  const [expandedFiles, setExpandedFiles] = useState(new Set([filePath]));
+  // Expansion state - expand all files with diagnostics by default
+  const [expandedFiles, setExpandedFiles] = useState(() => {
+    const files = new Set();
+    diagnostics.forEach(d => {
+      if (d.filePath) files.add(d.filePath);
+    });
+    files.add(filePath); // Always include current file
+    return files;
+  });
+  
+  // Update expanded files when diagnostics change (to include new files)
+  useMemo(() => {
+    const newFiles = new Set(expandedFiles);
+    diagnostics.forEach(d => {
+      if (d.filePath && !newFiles.has(d.filePath)) {
+        newFiles.add(d.filePath);
+      }
+    });
+    if (newFiles.size !== expandedFiles.size) {
+      setExpandedFiles(newFiles);
+    }
+  }, [diagnostics]);
   
   // Handle filter changes
   const handleFilterChange = useCallback((type, value) => {

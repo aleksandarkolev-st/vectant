@@ -1,3 +1,6 @@
+// Fast refresh is actively used by HmrOrchestrator for boundary checking
+// #![allow(dead_code)] - REMOVED: This module is now wired up
+
 // ============================================================
 // FAST REFRESH BOUNDARY DETECTION MODULE
 // ============================================================
@@ -219,7 +222,7 @@ impl BoundaryChecker {
     }
     
     /// Analyze source code and extract boundary-relevant information
-    pub fn analyze_source(&self, source: &str, module_name: &str) -> ModuleAnalysis {
+    pub fn analyze_source(&self, source: &str, _module_name: &str) -> ModuleAnalysis {
         let mut analysis = ModuleAnalysis::default();
         
         // Extract function signatures

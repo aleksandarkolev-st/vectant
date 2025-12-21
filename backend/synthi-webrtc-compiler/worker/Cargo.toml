@@ -40,8 +40,14 @@ x11rb = { version = "0.13", features = ["allow-unsafe-code", "dl-libxcb", "shm"]
 libc = "0.2"
 setjmp = "0.1"
 regex = "1"
+rand = "0.8"
 backtrace = { version = "0.3", optional = true }
 num_cpus = "1.16"
 zip = "0.6"
 flate2 = "1"
 tar = "0.4"
+# Binary state serialization (MessagePack - much faster than JSON)
+rmp-serde = "1.1"
+rmp = "0.8"
+byteorder = "1.5"
+hex = "0.4"

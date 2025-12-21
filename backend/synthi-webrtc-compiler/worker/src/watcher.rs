@@ -1,10 +1,12 @@
+#![allow(dead_code)]
+
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Debounce delay in milliseconds (for actual compilation trigger)
 const DEBOUNCE_MS: u64 = 300;
@@ -15,6 +17,12 @@ const SPECULATIVE_DEBOUNCE_MS: u64 = 150;
 
 /// Keystroke detection threshold (fast consecutive changes)
 const KEYSTROKE_THRESHOLD_MS: u64 = 100;
+
+/// Maximum debounce extension during burst typing
+const MAX_EXTENDED_DEBOUNCE_MS: u64 = 2000;
+
+/// Minimum time between consecutive events to consider "typing stopped"
+const TYPING_STOPPED_MS: u64 = 500;
 
 /// File change types for rebuild decision
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -262,6 +270,12 @@ pub struct PreemptiveWatcher {
     last_speculative: Instant,
     /// Last commit time
     last_commit: Instant,
+    /// Burst typing detection: track rapid consecutive changes
+    burst_start: Option<Instant>,
+    /// Number of changes in current burst
+    burst_count: u32,
+    /// Last change time (for burst detection)
+    last_change: Instant,
 }
 
 impl PreemptiveWatcher {
@@ -277,6 +291,9 @@ impl PreemptiveWatcher {
             pending: HashMap::new(),
             last_speculative: Instant::now(),
             last_commit: Instant::now(),
+            burst_start: None,
+            burst_count: 0,
+            last_change: Instant::now(),
         }
     }
     
@@ -285,9 +302,54 @@ impl PreemptiveWatcher {
         self.cancel_flag.clone()
     }
     
+    /// Check if user is in a typing burst (rapid consecutive changes)
+    fn is_burst_typing(&self) -> bool {
+        if let Some(burst_start) = self.burst_start {
+            // User is burst typing if: we're in a burst, haven't exceeded max time,
+            // and had recent changes
+            let burst_duration = burst_start.elapsed();
+            let since_last = self.last_change.elapsed();
+            
+            burst_duration < Duration::from_millis(MAX_EXTENDED_DEBOUNCE_MS)
+                && since_last < Duration::from_millis(TYPING_STOPPED_MS)
+                && self.burst_count >= 3  // Need at least 3 rapid changes to be "burst"
+        } else {
+            false
+        }
+    }
+    
+    /// Get effective debounce time (extended during burst typing)
+    fn effective_debounce(&self) -> Duration {
+        if self.is_burst_typing() {
+            // During burst typing, wait longer before committing
+            // Scale up based on burst intensity, but cap at MAX_EXTENDED_DEBOUNCE_MS
+            let base = self.config.commit_delay_ms;
+            let extension = (self.burst_count as u64 * 50).min(500); // +50ms per burst event, max +500ms
+            Duration::from_millis((base + extension).min(MAX_EXTENDED_DEBOUNCE_MS))
+        } else {
+            Duration::from_millis(self.config.commit_delay_ms)
+        }
+    }
+    
     /// Record a file change
     pub fn record_change(&mut self, path: String) {
         let now = Instant::now();
+        let since_last = now.duration_since(self.last_change);
+        
+        // Detect burst typing
+        if since_last < Duration::from_millis(KEYSTROKE_THRESHOLD_MS) {
+            // Rapid change - we're in a burst
+            if self.burst_start.is_none() {
+                self.burst_start = Some(now);
+            }
+            self.burst_count += 1;
+        } else if since_last > Duration::from_millis(TYPING_STOPPED_MS) {
+            // Gap in typing - reset burst state
+            self.burst_start = None;
+            self.burst_count = 0;
+        }
+        
+        self.last_change = now;
         
         // If we have an active speculative compile, check if we should cancel it
         if self.state == SpeculativeState::Compiling {
@@ -324,7 +386,10 @@ impl PreemptiveWatcher {
         }
         
         let speculative_duration = Duration::from_millis(self.config.speculative_delay_ms);
-        let commit_duration = Duration::from_millis(self.config.commit_delay_ms);
+        let commit_duration = self.effective_debounce(); // Use adaptive debounce
+        
+        // Don't start speculative compiles during burst typing
+        let allow_speculative = !self.is_burst_typing();
         
         // Collect files ready for speculative compile
         let mut speculative_ready: Vec<String> = Vec::new();
@@ -373,6 +438,7 @@ impl PreemptiveWatcher {
             && self.state == SpeculativeState::Idle 
             && now.duration_since(self.last_speculative) >= speculative_duration
             && self.speculative_count < self.config.max_speculative_count
+            && allow_speculative  // Don't speculate during burst typing
         {
             // Start speculative compile
             let scope = self.determine_scope(&speculative_ready);

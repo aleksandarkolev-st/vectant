@@ -1,6 +1,4 @@
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use tokio_tungstenite::accept_async;

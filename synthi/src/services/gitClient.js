@@ -179,6 +179,10 @@ export const gitClient = {
     async writeFile(slug, path, content) {
         return this.request(slug, 'write-file', { path, content });
     },
+
+    async createDirectory(slug, path) {
+        return this.request(slug, 'create-directory', { path });
+    },
     
     /**
      * Clear Yjs collaboration persistence for specified files.
