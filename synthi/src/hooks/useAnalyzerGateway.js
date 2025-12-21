@@ -255,6 +255,76 @@ export function useAnalyzerGateway({
       setIsAnalyzing(false);
     }
   }, []);
+
+  /**
+   * Unified Intelligence Pipeline analysis (RECOMMENDED)
+   * 
+   * This is the preferred endpoint that combines:
+   * - Layer A: Static/LSP analysis (< 200ms)
+   * - Layer B: Compiler semantic analysis (500ms-1s)
+   * - Layer C: AI analysis (on-demand, triggered by Layer B errors)
+   * 
+   * Content is fetched from the container filesystem - the client sends only paths.
+   * This ensures the AI analyzes exactly what the compiler sees.
+   * 
+   * @param {Object} options - Analysis options
+   * @param {string} options.slug - Workspace slug (container ID)
+   * @param {string} options.filePath - File path within workspace
+   * @param {string} options.lang - The programming language
+   * @param {string[]} [options.layers] - Analysis layers: 'static', 'compiler', 'ai'
+   * @param {boolean} [options.includeAi] - Force include AI layer
+   * @param {boolean} [options.triggerAiOnErrors] - Auto-trigger AI if compiler finds errors (default: true)
+   * @param {Function} [options.onLayerComplete] - Callback when a layer completes
+   */
+  const analyzeUnified = useCallback(async ({ slug, filePath, lang, layers, includeAi = false, triggerAiOnErrors = true, onLayerComplete, model, apiKey } = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet', 'The analyzer gateway client has not been initialized.');
+    }
+    if (!slug) {
+      throw new SynthiException('`slug` is required for unified analysis', 'The workspace slug must be specified.');
+    }
+    if (!filePath) {
+      throw new SynthiException('`filePath` is required for unified analysis', 'The file path must be specified.');
+    }
+    if (!lang) {
+      throw new SynthiException('`lang` is required for unified analysis', 'The programming language must be specified.');
+    }
+    
+    setIsAnalyzing(true);
+    setLastError(null);
+    
+    try {
+      const payload = {
+        slug,
+        filePath,
+        lang: lang.toLowerCase(),
+        layers: layers || ['static'],
+        includeAi,
+        triggerAiOnErrors,
+      };
+      
+      if (model) payload.model = model;
+      if (apiKey) payload.apiKey = apiKey;
+      
+      const options = {};
+      if (typeof onLayerComplete === 'function') {
+        options.onLayerComplete = onLayerComplete;
+      }
+      
+      const response = await clientRef.current.analyzeUnified(payload, options);
+      console.log('[analyzeUnified] Raw response:', response);
+      const result = response?.data ?? response;
+      console.log('[analyzeUnified] Parsed result:', result);
+      setLastResult(result);
+      return result;
+    } catch (error) {
+      console.error('[analyzeUnified] Error:', error);
+      setLastError(error);
+      throw error;
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }, []);
   
 
   const resetResult = useCallback(() => setLastResult(null), []);
@@ -277,7 +347,8 @@ export function useAnalyzerGateway({
     analyzeCode,
     askAi,
     analyzeProactive,
-    analyzeContainer, // Container-First analysis (RECOMMENDED)
+    analyzeContainer, // Container-First analysis
+    analyzeUnified,   // Unified Intelligence Pipeline (RECOMMENDED)
     resetResult,
     resetError,
     clientReady: Boolean(clientRef.current),

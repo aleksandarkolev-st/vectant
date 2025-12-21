@@ -62,7 +62,7 @@ export default function EditorPage({ params }) {
     const [guiConfig, setGuiConfig] = useState(null);
     const [isGuiRunning, setIsGuiRunning] = useState(false);
     const [editor, setEditor] = useState(null);
-    const { analyzeCode, analyzeProactive, analyzeContainer, lastResult, isAnalyzing: isAnalyzingGateway } = useAnalyzerGateway();
+    const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway } = useAnalyzerGateway();
     const { compile, mediaStream } = useCompiler();
     useHMR();
     const [latestCompletion, setLatestCompletion] = useState(null);
@@ -81,6 +81,8 @@ export default function EditorPage({ params }) {
     const currentAnalysisFileRef = useRef(null); // Track which file diagnostics belong to
     const aiAnalysisRef = useRef(null);
     const lastContentHashRef = useRef('');
+    // Map to track last analyzed hash per file to prevent re-analysis on tab switch
+    const lastAnalyzedHashMapRef = useRef(new Map());
     
     // Multi-file workspace analysis (cross-file issue detection)
     const {
@@ -445,19 +447,32 @@ export default function EditorPage({ params }) {
 
         // Capture the content we're analyzing (for freshness checks)
         const contentHash = computeContentHash(contentToAnalyze);
+        const currentFilePath = activeFile?.path || activeFile?.name || 'untitled';
         
         // DEBUG: Log content hash and preview to trace stale content issues
-        console.log(`[page.jsx] Content changed - Hash: ${contentHash}, Length: ${contentToAnalyze.length}`);
-        console.log(`[page.jsx] Content preview (first 200 chars): ${contentToAnalyze.substring(0, 200)}`);
+        // console.log(`[page.jsx] Content changed - Hash: ${contentHash}, Length: ${contentToAnalyze.length}`);
         
-        // When content changes, IMMEDIATELY clear all diagnostics for this file
-        // New analysis will provide fresh diagnostics
-        const currentFilePath = activeFile?.path || activeFile?.name || 'untitled';
-        if (lastContentHashRef.current && lastContentHashRef.current !== contentHash) {
-            console.log(`[page.jsx] Hash changed from ${lastContentHashRef.current} to ${contentHash} - clearing diagnostics`);
-            // Clear diagnostics for this file - fresh analysis will repopulate
+        // Check if content actually changed for this file compared to last analysis
+        const lastAnalyzedHash = lastAnalyzedHashMapRef.current.get(currentFilePath);
+        
+        // If content hasn't changed since last analysis (e.g. just switched tabs back),
+        // DO NOT clear diagnostics and DO NOT trigger new analysis.
+        if (lastAnalyzedHash === contentHash) {
+            // console.log(`[page.jsx] Skipping analysis - content hash matches last analysis for ${currentFilePath}`);
+            return;
+        }
+        
+        // If content changed (or first load), IMMEDIATELY clear diagnostics for this file
+        // This prevents "shifting errors" where old diagnostics point to wrong lines
+        if (lastAnalyzedHash !== contentHash) {
+            console.log(`[page.jsx] Content changed for ${currentFilePath} (Hash: ${lastAnalyzedHash?.substring(0,8)} -> ${contentHash.substring(0,8)}) - clearing diagnostics`);
             setDiagnostics(prev => prev.filter(d => d.filePath !== currentFilePath));
         }
+        
+        // Update the last analyzed hash map immediately so we don't re-trigger if effect runs again
+        // Note: We update it here to prevent re-entry, but if analysis fails we might want to revert?
+        // For now, assume we want to attempt analysis once per content change.
+        lastAnalyzedHashMapRef.current.set(currentFilePath, contentHash);
         lastContentHashRef.current = contentHash;
 
         // Debounce proactive analysis to avoid overwhelming the backend
@@ -468,7 +483,7 @@ export default function EditorPage({ params }) {
                 (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
                 'plaintext';
             const normalizedLang = langSource.toLowerCase();
-            const signature = `container::${slug}::${currentFilePath}::${contentHash}`;
+            const signature = `unified::${slug}::${currentFilePath}::${contentHash}`;
 
             if (lastProactiveSignatureRef.current === signature) {
                 return;
@@ -476,94 +491,63 @@ export default function EditorPage({ params }) {
 
             setIsAnalyzingProactive(true);
             
-            // Get related file PATHS for cross-file analysis (includes, imports)
-            // Container-First: we send paths only, server fetches content
-            let relatedPaths = [];
-            try {
-                const relatedFiles = await getRelatedFilesForAnalysis();
-                relatedPaths = relatedFiles.map(f => f.path).filter(Boolean);
-            } catch (e) {
-                console.warn('[page.jsx] Failed to get related files for analysis:', e);
-            }
-            
-            console.log('[page.jsx] === CONTAINER-FIRST ANALYSIS START ===');
+            console.log('[page.jsx] === UNIFIED INTELLIGENCE ANALYSIS START ===');
             console.log('[page.jsx] Slug:', slug);
             console.log('[page.jsx] File:', currentFilePath);
             console.log('[page.jsx] Language:', normalizedLang);
-            console.log('[page.jsx] Related paths count:', relatedPaths.length);
-            console.log('[page.jsx] NOTE: Server will fetch content from container filesystem');
+            console.log('[page.jsx] NOTE: Using unified pipeline with auto AI trigger');
             
-            // STEP 1: Run fast static+semantic analysis (Container-First)
-            // The server fetches content from the container filesystem
-            analyzeContainer({
+            // Use the new unified intelligence pipeline
+            // - Layer A: Static analysis (< 200ms)
+            // - Layer B: Compiler analysis (when available)  
+            // - Layer C: AI analysis (auto-triggered when Layer B finds errors)
+            analyzeUnified({
                 slug,
                 filePath: currentFilePath,
                 lang: normalizedLang,
-                relatedPaths,
-                includeAi: false, // Fast tier first
+                layers: ['static'],           // Start with static layer
+                triggerAiOnErrors: true,      // Auto-trigger AI if errors found
+                includeAi: false,             // Don't force AI, let it trigger automatically
             })
-                .then((fastResult) => {
-                    console.log('[page.jsx] === CONTAINER ANALYSIS RESULT ===');
+                .then((result) => {
+                    console.log('[page.jsx] === UNIFIED ANALYSIS RESULT ===');
+                    console.log('[page.jsx] Layers run:', result?.layers_run);
+                    console.log('[page.jsx] Summary:', result?.summary);
+                    console.log('[page.jsx] Time:', result?.analysis_time_ms, 'ms');
                     
-                    const fastDiags = fastResult?.diagnostics || fastResult?.data?.diagnostics || [];
-                    console.log('[page.jsx] Diagnostics count:', fastDiags.length);
-                    fastDiags.forEach((d, i) => {
-                        console.log(`[page.jsx]   [${i}]: [${d.tier}] ${d.message} @ line ${d.location?.line}`);
+                    const diags = result?.diagnostics || [];
+                    console.log('[page.jsx] Diagnostics count:', diags.length);
+                    diags.forEach((d, i) => {
+                        console.log(`[page.jsx]   [${i}]: [${d.source}] ${d.message} @ line ${d.range?.start || d.location?.line}`);
                     });
                     
-                    // Add filePath to each diagnostic for proper grouping in ProblemsPanel
-                    const diagsWithPath = fastDiags.map(d => ({ ...d, filePath: d.filePath || currentFilePath }));
+                    // Normalize diagnostics to consistent format
+                    const normalizedDiags = diags.map(d => ({
+                        ...d,
+                        filePath: d.filePath || currentFilePath,
+                        // Normalize location field for ProblemsPanel compatibility
+                        location: d.location || {
+                            line: d.range?.start || 1,
+                            startColumn: d.range?.startColumn || 0,
+                            endLine: d.range?.end || d.range?.start || 1,
+                            endColumn: d.range?.endColumn || 0,
+                        },
+                        // Map source to tier for backward compatibility
+                        tier: d.source?.toLowerCase().includes('ai') ? 'ai' :
+                              d.source?.toLowerCase().includes('compiler') ? 'semantic' : 'static',
+                    }));
                     
-                    // Replace diagnostics for this file only, keep diagnostics from other files
+                    // Replace diagnostics for this file only
                     setDiagnostics(prev => {
                         const otherFileDiags = prev.filter(d => d.filePath !== currentFilePath);
-                        console.log('[page.jsx] Setting', diagsWithPath.length, 'diagnostics for', currentFilePath);
-                        return [...otherFileDiags, ...diagsWithPath];
+                        console.log('[page.jsx] Setting', normalizedDiags.length, 'diagnostics for', currentFilePath);
+                        return [...otherFileDiags, ...normalizedDiags];
                     });
                     lastProactiveSignatureRef.current = signature;
                     setIsAnalyzingProactive(false);
-                    
-                    // STEP 2: Run AI analysis in background for logic error detection
-                    const aiTracker = { 
-                        cancelled: false, 
-                        contentHash,
-                    };
-                    aiAnalysisRef.current = aiTracker;
-                    
-                    analyzeContainer({
-                        slug,
-                        filePath: currentFilePath,
-                        lang: normalizedLang,
-                        relatedPaths,
-                        includeAi: true, // AI tier for logic errors
-                    })
-                        .then((aiResult) => {
-                            // Only update if not cancelled and content hash hasn't changed
-                            const currentHash = lastContentHashRef.current;
-                            const isStillCurrent = !aiTracker.cancelled && 
-                                                   aiAnalysisRef.current === aiTracker &&
-                                                   currentHash === contentHash;
-                            if (isStillCurrent) {
-                                const aiDiags = aiResult?.diagnostics || aiResult?.data?.diagnostics || [];
-                                console.log('[page.jsx] AI analysis complete:', aiDiags.length, 'diagnostics');
-                                
-                                // Add filePath to each diagnostic
-                                const aiDiagsWithPath = aiDiags.map(d => ({ ...d, filePath: d.filePath || currentFilePath }));
-                                // Replace diagnostics for this file only
-                                setDiagnostics(prev => {
-                                    const otherFileDiags = prev.filter(d => d.filePath !== currentFilePath);
-                                    return [...otherFileDiags, ...aiDiagsWithPath];
-                                });
-                            }
-                        })
-                        .catch((err) => {
-                            if (!aiTracker.cancelled) {
-                                console.error('[page.jsx] AI analysis failed:', err);
-                            }
-                        });
                 })
                 .catch((err) => {
-                    console.error('[page.jsx] Container analysis failed:', err);
+                    console.error('[page.jsx] Unified analysis failed:', err);
                     setIsAnalyzingProactive(false);
                 });
         }, 500); // 500ms debounce to ensure Y.js auto-flush completes (150ms on server + margin)
@@ -573,7 +557,7 @@ export default function EditorPage({ params }) {
                 clearTimeout(proactiveTimeoutRef.current);
             }
         };
-    }, [currentContent, activeFile, hasLoadedInitialFile, slug, analyzeContainer, getRelatedFilesForAnalysis, computeContentHash]);
+    }, [currentContent, activeFile, hasLoadedInitialFile, slug, analyzeUnified, computeContentHash]);
 
     // Track focused file and content changes for workspace analysis
     useEffect(() => {

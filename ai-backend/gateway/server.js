@@ -15,6 +15,7 @@ const backendAiAnalyzeUrl = new URL("/analyze/ai", backendUrl).toString();
 const backendProactiveAnalyzeUrl = new URL("/analyze/proactive", backendUrl).toString();
 const backendProactiveQuickUrl = new URL("/analyze/proactive/quick", backendUrl).toString();
 const backendContainerAnalyzeUrl = new URL("/analyze/container", backendUrl).toString();
+const backendUnifiedAnalyzeUrl = new URL("/analyze/unified", backendUrl).toString();
 // Workspace-level analysis endpoints
 const backendWorkspaceAnalyzeUrl = new URL("/analyze/workspace", backendUrl).toString();
 const backendWorkspaceIncrementalUrl = new URL("/analyze/workspace/incremental", backendUrl).toString();
@@ -120,6 +121,9 @@ async function handleClientMessage(socket, raw) {
       break;
     case "analyze/container":
       await forwardContainerAnalysis(socket, data, requestId);
+      break;
+    case "analyze/unified":
+      await forwardUnifiedAnalysis(socket, data, requestId);
       break;
     case "analyze/workspace":
       await forwardWorkspaceAnalysis(socket, data, requestId);
@@ -556,6 +560,149 @@ async function forwardContainerAnalysis(socket, data, requestId) {
   safeSend(socket, {
     type: "response",
     action: "analyze/container",
+    requestId,
+    data: responseJson,
+  });
+}
+
+/**
+ * Forward unified intelligence pipeline analysis request.
+ * 
+ * This is the RECOMMENDED endpoint that combines:
+ * - Layer A: Static/LSP analysis (< 200ms)
+ * - Layer B: Compiler semantic analysis (500ms-1s)
+ * - Layer C: AI analysis (on-demand, auto-triggered when errors found)
+ * 
+ * Content is fetched from container filesystem - NOT sent by client.
+ */
+async function forwardUnifiedAnalysis(socket, data, requestId) {
+  const slug = data?.slug;
+  const filePath = data?.file_path || data?.filePath;
+  const lang = data?.lang;
+
+  if (typeof slug !== "string" || !slug.trim()) {
+    sendError(socket, "`slug` must be a non-empty string", { requestId });
+    return;
+  }
+
+  if (typeof filePath !== "string" || !filePath.trim()) {
+    sendError(socket, "`file_path` must be a non-empty string", { requestId });
+    return;
+  }
+
+  if (typeof lang !== "string" || !lang.trim()) {
+    sendError(socket, "`lang` must be a non-empty string", { requestId });
+    return;
+  }
+
+  // Build request body for unified pipeline
+  const forwardBody = {
+    slug: slug.trim(),
+    file_path: filePath.trim(),
+    lang: lang.trim(),
+  };
+
+  // Optional: specify which layers to run (static, compiler, ai)
+  if (Array.isArray(data?.layers) && data.layers.length) {
+    forwardBody.layers = data.layers;
+  }
+
+  // Optional: auto-trigger AI on errors (default true)
+  if (typeof data?.trigger_ai_on_errors === "boolean") {
+    forwardBody.trigger_ai_on_errors = data.trigger_ai_on_errors;
+  }
+
+  // Optional: force include AI layer
+  if (typeof data?.include_ai === "boolean") {
+    forwardBody.include_ai = data.include_ai;
+  }
+
+  // Optional: max diagnostics limit
+  if (typeof data?.max_diagnostics === "number") {
+    forwardBody.max_diagnostics = data.max_diagnostics;
+  }
+
+  // Optional: custom model/API key for AI layer
+  if (typeof data?.model === "string" && data.model.trim()) {
+    forwardBody.model = data.model.trim();
+  }
+  if (typeof data?.api_key === "string" && data.api_key.trim()) {
+    forwardBody.api_key = data.api_key.trim();
+  }
+
+  console.log(`[Gateway] === UNIFIED ANALYSIS REQUEST ===`);
+  console.log(`[Gateway] Slug: ${forwardBody.slug}`);
+  console.log(`[Gateway] File: ${forwardBody.file_path}`);
+  console.log(`[Gateway] Language: ${forwardBody.lang}`);
+  console.log(`[Gateway] Layers: ${forwardBody.layers?.join(", ") || "default"}`);
+  console.log(`[Gateway] Auto-AI on errors: ${forwardBody.trigger_ai_on_errors !== false}`);
+
+  let backendResponse;
+  try {
+    backendResponse = await fetch(backendUnifiedAnalyzeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(forwardBody),
+    });
+  } catch (err) {
+    console.error("[Gateway] Unified analysis backend request failed", err);
+    sendError(socket, "Failed to reach unified analysis backend", {
+      requestId,
+      detail: err.message,
+    });
+    return;
+  }
+
+  const responseText = await backendResponse.text();
+  console.log(`[Gateway] Unified analysis response status: ${backendResponse.status}`);
+
+  if (!backendResponse.ok) {
+    console.error(`[Gateway] Unified analysis error: ${responseText}`);
+    sendError(socket, "Unified analysis backend returned an error", {
+      requestId,
+      detail: responseText,
+      status: backendResponse.status,
+    });
+    return;
+  }
+
+  let responseJson;
+  try {
+    responseJson = JSON.parse(responseText);
+  } catch (err) {
+    sendError(socket, "Unified analysis response was not valid JSON", {
+      requestId,
+      detail: err.message,
+    });
+    return;
+  }
+
+  // Log results
+  console.log(`[Gateway] === UNIFIED ANALYSIS RESPONSE ===`);
+  console.log(`[Gateway] Diagnostics count: ${responseJson.diagnostics?.length || 0}`);
+  console.log(`[Gateway] Layers run: ${responseJson.layers_run?.join(", ") || "none"}`);
+  console.log(`[Gateway] Time: ${responseJson.analysis_time_ms?.toFixed(1) || 0}ms`);
+
+  // Send layer updates for streaming experience (if available)
+  if (responseJson?.layer_results) {
+    for (const [layerName, layerData] of Object.entries(responseJson.layer_results)) {
+      safeSend(socket, {
+        type: "stream",
+        streamId: requestId,
+        action: "unified.layer",
+        data: {
+          layer: layerName,
+          diagnostics: layerData.diagnostics || [],
+          elapsedMs: layerData.elapsedMs || 0,
+        },
+      });
+    }
+  }
+
+  // Send final response
+  safeSend(socket, {
+    type: "response",
+    action: "analyze/unified",
     requestId,
     data: responseJson,
   });

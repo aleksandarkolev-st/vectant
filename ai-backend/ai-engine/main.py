@@ -69,6 +69,24 @@ from analyzer.proactive import (
 from analyzer.proactive.types import AnalysisRequest, FileContext
 from analyzer.proactive.cache import AnalysisCache
 
+# Intelligence Aggregator - Unified Pipeline
+from intelligence import (
+    IntelligenceAggregator,
+    AggregatedResult,
+    get_aggregator,
+    create_aggregator_with_ai,
+    DiagnosticSource,
+    UnifiedDiagnostic,
+    StaticAnalysisProvider,
+    AIAnalysisProvider,
+    CompilerProvider,
+    get_compiler_provider,
+    FileWatcher,
+    get_file_watcher,
+    FileChangeEvent,
+    FileChangeType,
+)
+
 app = FastAPI()
 
 # Initialize proactive analyzer with shared cache
@@ -434,6 +452,198 @@ async def analyze_from_container(req: ContainerAnalysisRequest):
     except Exception as e:
         logger.error(f"Container analysis failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+# ============================================================================
+# Unified Intelligence Pipeline
+# ============================================================================
+
+class UnifiedAnalysisRequest(BaseModel):
+    """
+    Request for unified intelligence analysis.
+    
+    This is the recommended endpoint that combines:
+    - Layer A: Static/LSP analysis (< 200ms)
+    - Layer B: Compiler semantic analysis (500ms-1s)
+    - Layer C: AI analysis (on-demand, triggered by Layer B errors)
+    
+    Content is fetched from container filesystem - NOT sent by client.
+    """
+    slug: str  # Workspace slug
+    file_path: str  # File path within workspace
+    lang: str
+    # Layer control
+    layers: Optional[List[str]] = None  # ["static", "compiler", "ai"]
+    # AI configuration
+    trigger_ai_on_errors: Optional[bool] = True  # Auto-trigger AI if compiler finds errors
+    include_ai: Optional[bool] = False  # Force include AI layer
+    # Limits
+    max_diagnostics: Optional[int] = 50
+    # API config
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+
+
+class UnifiedAnalysisResponse(BaseModel):
+    """Unified response combining all diagnostic sources."""
+    file_path: str
+    diagnostics: List[dict]
+    summary: dict  # error/warning/info counts per source
+    analysis_time_ms: float
+    layers_run: List[str]
+
+
+# Aggregator instance (created on first use)
+_aggregator_instance: Optional[IntelligenceAggregator] = None
+
+
+def get_intelligence_aggregator() -> IntelligenceAggregator:
+    """Get or create the Intelligence Aggregator singleton."""
+    global _aggregator_instance
+    if _aggregator_instance is None:
+        logger.info("[Intelligence] Creating aggregator with providers...")
+        # Create with default providers and AI
+        _aggregator_instance = create_aggregator_with_ai(
+            llm_provider=get_provider()
+        )
+        logger.info("[Intelligence] Aggregator initialized with Static + AI providers")
+    return _aggregator_instance
+
+
+@app.post("/analyze/unified")
+async def analyze_unified(req: UnifiedAnalysisRequest):
+    """
+    Unified Intelligence Pipeline endpoint.
+    
+    This is the RECOMMENDED endpoint for all code analysis.
+    It combines multiple analysis layers with intelligent deduplication.
+    
+    Layers:
+    - static: Fast syntax/lint analysis (< 200ms)
+    - compiler: Semantic analysis via compiler dry-run (500ms-1s)  
+    - ai: AI-powered analysis (on-demand, triggered by errors)
+    
+    The AI layer is automatically triggered when:
+    1. `include_ai=True` is set, OR
+    2. `trigger_ai_on_errors=True` AND compiler finds errors
+    
+    Content is fetched from container filesystem - client sends only paths.
+    """
+    import time
+    import hashlib
+    start_time = time.time()
+    
+    logger.info(f"=== UNIFIED ANALYSIS START ===")
+    logger.info(f"Slug: {req.slug}")
+    logger.info(f"File: {req.file_path}")
+    logger.info(f"Language: {req.lang}")
+    logger.info(f"Layers: {req.layers or ['static', 'compiler']}")
+    
+    # Fetch content from container
+    content = await fetch_file_from_container(req.slug, req.file_path)
+    if content is None:
+        raise HTTPException(status_code=404, detail=f"File not found: {req.file_path}")
+    
+    logger.info(f"Fetched: {len(content)} chars")
+    
+    # Compute content hash for client-side caching
+    content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+    
+    # Determine which layers to run
+    layers = list(req.layers or ["static"])
+    
+    # Get aggregator
+    aggregator = get_intelligence_aggregator()
+    
+    # Determine if AI should be forced
+    force_ai = "ai" in layers or req.include_ai
+    
+    try:
+        # Run aggregated analysis using the aggregator's analyze method
+        result = await aggregator.analyze(
+            file_path=req.file_path,
+            content=content,
+            language=req.lang,
+            related_files=None,
+            force_ai=force_ai,
+        )
+        
+        # The aggregator handles AI auto-trigger internally based on compiler errors
+        # Update layers_run based on what sources actually completed
+        layers_run = []
+        for source in result.sources_completed:
+            if source == DiagnosticSource.STATIC or source.value.lower() in ['static', 'lsp']:
+                if 'static' not in layers_run:
+                    layers_run.append('static')
+            elif source == DiagnosticSource.COMPILER:
+                if 'compiler' not in layers_run:
+                    layers_run.append('compiler')
+            elif source == DiagnosticSource.AI_REVIEW:
+                if 'ai' not in layers_run:
+                    layers_run.append('ai')
+        
+        elapsed_ms = (time.time() - start_time) * 1000
+        
+        # Build summary
+        summary = {
+            "static": {"errors": 0, "warnings": 0, "info": 0},
+            "compiler": {"errors": 0, "warnings": 0, "info": 0},
+            "ai": {"errors": 0, "warnings": 0, "info": 0},
+        }
+        
+        for diag in result.diagnostics:
+            source_key = diag.source.value.lower().replace("_", "")
+            if "static" in source_key or "lsp" in source_key:
+                source_key = "static"
+            elif "compiler" in source_key:
+                source_key = "compiler"
+            elif "ai" in source_key:
+                source_key = "ai"
+            else:
+                continue
+            
+            # Handle severity as enum or string
+            sev = diag.severity.value.lower() if hasattr(diag.severity, 'value') else str(diag.severity).lower()
+            if sev == 'information':
+                sev = 'info'
+            if sev in summary.get(source_key, {}):
+                summary[source_key][sev] += 1
+        
+        # Convert diagnostics to dict format
+        diagnostics_list = [d.to_dict() for d in result.diagnostics]
+        
+        logger.info(f"=== UNIFIED ANALYSIS RESULT ===")
+        logger.info(f"Total diagnostics: {len(diagnostics_list)}")
+        logger.info(f"Summary: {summary}")
+        logger.info(f"Time: {elapsed_ms:.1f}ms")
+        logger.info(f"=== UNIFIED ANALYSIS END ===")
+        
+        return {
+            "file_path": req.file_path,
+            "diagnostics": diagnostics_list,
+            "summary": summary,
+            "analysis_time_ms": elapsed_ms,
+            "layers_run": layers_run,
+            "content_hash": content_hash,
+        }
+        
+    except Exception as e:
+        logger.error(f"Unified analysis failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@app.get("/analyze/unified/status")
+async def get_unified_status():
+    """Get the status of the Intelligence Aggregator."""
+    aggregator = get_intelligence_aggregator()
+    providers = [p.source.value for p in aggregator._providers]
+    if aggregator._ai_provider:
+        providers.append(aggregator._ai_provider.source.value)
+    return {
+        "status": "active",
+        "providers": providers,
+        "ai_auto_trigger": aggregator._enable_ai_auto_trigger,
+    }
 
 
 # ============================================================================

@@ -214,6 +214,64 @@ export class AnalyzerGatewayClient {
   }
 
   /**
+   * Unified Intelligence Pipeline analysis (RECOMMENDED)
+   * 
+   * This is the preferred endpoint that combines:
+   * - Layer A: Static/LSP analysis (< 200ms)
+   * - Layer B: Compiler semantic analysis (500ms-1s)
+   * - Layer C: AI analysis (on-demand, triggered by Layer B errors)
+   * 
+   * Content is fetched from the container filesystem - the client sends only paths.
+   * This ensures the AI analyzes exactly what the compiler sees.
+   * 
+   * @param {Object} payload - Analysis request
+   * @param {string} payload.slug - Workspace slug (container ID)
+   * @param {string} payload.filePath - File path within workspace
+   * @param {string} payload.lang - Language identifier
+   * @param {string[]} [payload.layers] - Analysis layers: 'static', 'compiler', 'ai'
+   * @param {boolean} [payload.includeAi] - Force include AI layer
+   * @param {boolean} [payload.triggerAiOnErrors] - Auto-trigger AI if compiler finds errors (default: true)
+   * @param {number} [payload.maxDiagnostics] - Max diagnostics to return
+   * @param {string} [payload.model] - AI model to use
+   * @param {string} [payload.apiKey] - Custom API key for AI
+   * @param {Object} [options] - Request options
+   * @param {Function} [options.onLayerComplete] - Callback when a layer completes
+   * @returns {Promise<Object>} Unified analysis result with deduplicated diagnostics
+   */
+  analyzeUnified(payload, options = {}) {
+    // Map from frontend naming to backend naming (snake_case)
+    const backendPayload = {
+      slug: payload.slug,
+      file_path: payload.filePath,
+      lang: payload.lang,
+      layers: payload.layers || ['static'],
+      include_ai: payload.includeAi || false,
+      trigger_ai_on_errors: payload.triggerAiOnErrors !== false, // Default true
+      max_diagnostics: payload.maxDiagnostics || 50,
+    };
+    
+    if (payload.model) backendPayload.model = payload.model;
+    if (payload.apiKey) backendPayload.api_key = payload.apiKey;
+    
+    return this._sendRequest('analyze/unified', backendPayload, {
+      ...options,
+      onStream: (data) => {
+        // Handle layer completion events (for streaming results)
+        if (data?.layer && typeof options.onLayerComplete === 'function') {
+          options.onLayerComplete({
+            layer: data.layer,
+            diagnostics: data.diagnostics || [],
+            elapsedMs: data.elapsedMs || 0,
+          });
+        }
+        if (typeof options.onStream === 'function') {
+          options.onStream(data);
+        }
+      },
+    });
+  }
+
+  /**
    * Run quick proactive analysis (static + semantic only, optimized for real-time)
    * @param {Object} payload - Analysis request
    * @param {string} payload.code - Code to analyze  
