@@ -260,9 +260,9 @@ export function useAnalyzerGateway({
    * Unified Intelligence Pipeline analysis (RECOMMENDED)
    * 
    * This is the preferred endpoint that combines:
-   * - Layer A: Static/LSP analysis (< 200ms)
-   * - Layer B: Compiler semantic analysis (500ms-1s)
-   * - Layer C: AI analysis (on-demand, triggered by Layer B errors)
+   * - Layer A: Static analysis (syntax patterns)
+   * - Layer B: Semantic analysis (CppSemanticAnalyzer, etc.)
+   * - Layer C: AI analysis (on-demand, triggered when errors found)
    * 
    * Content is fetched from the container filesystem - the client sends only paths.
    * This ensures the AI analyzes exactly what the compiler sees.
@@ -271,12 +271,13 @@ export function useAnalyzerGateway({
    * @param {string} options.slug - Workspace slug (container ID)
    * @param {string} options.filePath - File path within workspace
    * @param {string} options.lang - The programming language
-   * @param {string[]} [options.layers] - Analysis layers: 'static', 'compiler', 'ai'
+   * @param {number} [options.version] - Document version for stale detection
+   * @param {string[]} [options.layers] - Analysis layers: 'static', 'semantic', 'ai'
    * @param {boolean} [options.includeAi] - Force include AI layer
-   * @param {boolean} [options.triggerAiOnErrors] - Auto-trigger AI if compiler finds errors (default: true)
+   * @param {boolean} [options.triggerAiOnErrors] - Auto-trigger AI if errors found (default: true)
    * @param {Function} [options.onLayerComplete] - Callback when a layer completes
    */
-  const analyzeUnified = useCallback(async ({ slug, filePath, lang, layers, includeAi = false, triggerAiOnErrors = true, onLayerComplete, model, apiKey } = {}) => {
+  const analyzeUnified = useCallback(async ({ slug, filePath, lang, version, layers, includeAi = false, triggerAiOnErrors = true, onLayerComplete, model, apiKey } = {}) => {
     if (!clientRef.current) {
       throw new SynthiException('Gateway client is not ready yet', 'The analyzer gateway client has not been initialized.');
     }
@@ -298,10 +299,15 @@ export function useAnalyzerGateway({
         slug,
         filePath,
         lang: lang.toLowerCase(),
-        layers: layers || ['static'],
+        layers: layers || ['static', 'semantic'],
         includeAi,
         triggerAiOnErrors,
       };
+      
+      // Include version for stale detection
+      if (typeof version === 'number') {
+        payload.version = version;
+      }
       
       if (model) payload.model = model;
       if (apiKey) payload.apiKey = apiKey;

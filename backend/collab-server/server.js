@@ -860,7 +860,11 @@ wss.on('connection', (ws, req) => {
   console.log(`[Collab DEBUG]   Active clients for ${roomName}: ${docInfo.clientCount}`);
   
   ws.on('message', (data) => {
-    console.log(`[Collab DEBUG] Message received for ${roomName}: ${data.length} bytes`);
+    // Handle both Buffer and string messages safely
+    const byteLen = Buffer.isBuffer(data) ? data.length : (typeof data === 'string' ? Buffer.byteLength(data) : 0);
+    if (byteLen > 0) {
+      console.log(`[Collab DEBUG] Message received for ${roomName}: ${byteLen} bytes`);
+    }
     docInfo.lastUpdate = Date.now();
   });
   

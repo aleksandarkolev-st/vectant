@@ -83,6 +83,8 @@ export default function EditorPage({ params }) {
     const lastContentHashRef = useRef('');
     // Map to track last analyzed hash per file to prevent re-analysis on tab switch
     const lastAnalyzedHashMapRef = useRef(new Map());
+    // Version counter for stale detection - increments on each edit
+    const docVersionRef = useRef(0);
     
     // Multi-file workspace analysis (cross-file issue detection)
     const {
@@ -466,7 +468,17 @@ export default function EditorPage({ params }) {
         // This prevents "shifting errors" where old diagnostics point to wrong lines
         if (lastAnalyzedHash !== contentHash) {
             console.log(`[page.jsx] Content changed for ${currentFilePath} (Hash: ${lastAnalyzedHash?.substring(0,8)} -> ${contentHash.substring(0,8)}) - clearing diagnostics`);
-            setDiagnostics(prev => prev.filter(d => d.filePath !== currentFilePath));
+            
+            // Robust path comparison for clearing
+            setDiagnostics(prev => prev.filter(d => {
+                // Normalize paths for comparison (remove leading slashes, handle undefined)
+                const p1 = (d.filePath || '').replace(/^[/\\]/, '');
+                const p2 = (currentFilePath || '').replace(/^[/\\]/, '');
+                return p1 !== p2;
+            }));
+            
+            // Increment version counter for stale detection
+            docVersionRef.current++;
         }
         
         // Update the last analyzed hash map immediately so we don't re-trigger if effect runs again
@@ -474,6 +486,9 @@ export default function EditorPage({ params }) {
         // For now, assume we want to attempt analysis once per content change.
         lastAnalyzedHashMapRef.current.set(currentFilePath, contentHash);
         lastContentHashRef.current = contentHash;
+        
+        // Capture version at request time for stale detection
+        const requestVersion = docVersionRef.current;
 
         // Debounce proactive analysis to avoid overwhelming the backend
         // Using longer debounce (500ms) to ensure Y.js auto-flush completes (150ms debounce on server)
@@ -495,21 +510,30 @@ export default function EditorPage({ params }) {
             console.log('[page.jsx] Slug:', slug);
             console.log('[page.jsx] File:', currentFilePath);
             console.log('[page.jsx] Language:', normalizedLang);
-            console.log('[page.jsx] NOTE: Using unified pipeline with auto AI trigger');
+            console.log('[page.jsx] Version:', requestVersion);
+            console.log('[page.jsx] NOTE: Using unified pipeline with semantic analysis');
             
             // Use the new unified intelligence pipeline
-            // - Layer A: Static analysis (< 200ms)
-            // - Layer B: Compiler analysis (when available)  
-            // - Layer C: AI analysis (auto-triggered when Layer B finds errors)
+            // - Layer A: Static analysis (syntax patterns)
+            // - Layer B: Semantic analysis (CppSemanticAnalyzer, etc.)
+            // - Layer C: AI analysis (optional, auto-triggered when errors found)
             analyzeUnified({
                 slug,
                 filePath: currentFilePath,
                 lang: normalizedLang,
-                layers: ['static'],           // Start with static layer
-                triggerAiOnErrors: true,      // Auto-trigger AI if errors found
-                includeAi: false,             // Don't force AI, let it trigger automatically
+                layers: ['static', 'semantic'], // Include semantic layer for full analysis
+                triggerAiOnErrors: true,        // Auto-trigger AI if errors found
+                includeAi: false,               // Don't force AI, let it trigger automatically
+                version: requestVersion,        // For stale detection
             })
                 .then((result) => {
+                    // STALE DETECTION: Check if version matches current
+                    if (result?.version !== undefined && result.version !== docVersionRef.current) {
+                        console.log(`[page.jsx] Ignoring stale diagnostics (version ${result.version} != current ${docVersionRef.current})`);
+                        setIsAnalyzingProactive(false);
+                        return;
+                    }
+                    
                     console.log('[page.jsx] === UNIFIED ANALYSIS RESULT ===');
                     console.log('[page.jsx] Layers run:', result?.layers_run);
                     console.log('[page.jsx] Summary:', result?.summary);
@@ -518,13 +542,13 @@ export default function EditorPage({ params }) {
                     const diags = result?.diagnostics || [];
                     console.log('[page.jsx] Diagnostics count:', diags.length);
                     diags.forEach((d, i) => {
-                        console.log(`[page.jsx]   [${i}]: [${d.source}] ${d.message} @ line ${d.range?.start || d.location?.line}`);
+                        console.log(`[page.jsx]   [${i}]: [${d.source || d.tier}] ${d.message} @ line ${d.range?.start || d.location?.line}`);
                     });
                     
                     // Normalize diagnostics to consistent format
                     const normalizedDiags = diags.map(d => ({
                         ...d,
-                        filePath: d.filePath || currentFilePath,
+                        filePath: d.filePath || d.file || currentFilePath,
                         // Normalize location field for ProblemsPanel compatibility
                         location: d.location || {
                             line: d.range?.start || 1,
@@ -533,8 +557,8 @@ export default function EditorPage({ params }) {
                             endColumn: d.range?.endColumn || 0,
                         },
                         // Map source to tier for backward compatibility
-                        tier: d.source?.toLowerCase().includes('ai') ? 'ai' :
-                              d.source?.toLowerCase().includes('compiler') ? 'semantic' : 'static',
+                        tier: d.tier || (d.source?.toLowerCase().includes('ai') ? 'ai' :
+                              d.source?.toLowerCase().includes('semantic') ? 'semantic' : 'static'),
                     }));
                     
                     // Replace diagnostics for this file only

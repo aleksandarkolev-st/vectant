@@ -217,9 +217,9 @@ export class AnalyzerGatewayClient {
    * Unified Intelligence Pipeline analysis (RECOMMENDED)
    * 
    * This is the preferred endpoint that combines:
-   * - Layer A: Static/LSP analysis (< 200ms)
-   * - Layer B: Compiler semantic analysis (500ms-1s)
-   * - Layer C: AI analysis (on-demand, triggered by Layer B errors)
+   * - Layer A: Static analysis (syntax patterns)
+   * - Layer B: Semantic analysis (CppSemanticAnalyzer, etc.)
+   * - Layer C: AI analysis (on-demand, triggered when errors found)
    * 
    * Content is fetched from the container filesystem - the client sends only paths.
    * This ensures the AI analyzes exactly what the compiler sees.
@@ -228,9 +228,10 @@ export class AnalyzerGatewayClient {
    * @param {string} payload.slug - Workspace slug (container ID)
    * @param {string} payload.filePath - File path within workspace
    * @param {string} payload.lang - Language identifier
-   * @param {string[]} [payload.layers] - Analysis layers: 'static', 'compiler', 'ai'
+   * @param {number} [payload.version] - Document version for stale detection
+   * @param {string[]} [payload.layers] - Analysis layers: 'static', 'semantic', 'ai'
    * @param {boolean} [payload.includeAi] - Force include AI layer
-   * @param {boolean} [payload.triggerAiOnErrors] - Auto-trigger AI if compiler finds errors (default: true)
+   * @param {boolean} [payload.triggerAiOnErrors] - Auto-trigger AI if errors found (default: true)
    * @param {number} [payload.maxDiagnostics] - Max diagnostics to return
    * @param {string} [payload.model] - AI model to use
    * @param {string} [payload.apiKey] - Custom API key for AI
@@ -244,11 +245,16 @@ export class AnalyzerGatewayClient {
       slug: payload.slug,
       file_path: payload.filePath,
       lang: payload.lang,
-      layers: payload.layers || ['static'],
+      layers: payload.layers || ['static', 'semantic'],
       include_ai: payload.includeAi || false,
       trigger_ai_on_errors: payload.triggerAiOnErrors !== false, // Default true
       max_diagnostics: payload.maxDiagnostics || 50,
     };
+    
+    // Include version for stale detection
+    if (typeof payload.version === 'number') {
+      backendPayload.version = payload.version;
+    }
     
     if (payload.model) backendPayload.model = payload.model;
     if (payload.apiKey) backendPayload.api_key = payload.apiKey;

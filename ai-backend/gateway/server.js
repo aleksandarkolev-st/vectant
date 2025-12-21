@@ -602,7 +602,12 @@ async function forwardUnifiedAnalysis(socket, data, requestId) {
     lang: lang.trim(),
   };
 
-  // Optional: specify which layers to run (static, compiler, ai)
+  // Optional: version for stale detection
+  if (typeof data?.version === "number") {
+    forwardBody.version = data.version;
+  }
+
+  // Optional: specify which layers to run (static, semantic, ai)
   if (Array.isArray(data?.layers) && data.layers.length) {
     forwardBody.layers = data.layers;
   }
@@ -634,6 +639,7 @@ async function forwardUnifiedAnalysis(socket, data, requestId) {
   console.log(`[Gateway] Slug: ${forwardBody.slug}`);
   console.log(`[Gateway] File: ${forwardBody.file_path}`);
   console.log(`[Gateway] Language: ${forwardBody.lang}`);
+  console.log(`[Gateway] Version: ${forwardBody.version || 'not set'}`);
   console.log(`[Gateway] Layers: ${forwardBody.layers?.join(", ") || "default"}`);
   console.log(`[Gateway] Auto-AI on errors: ${forwardBody.trigger_ai_on_errors !== false}`);
 
