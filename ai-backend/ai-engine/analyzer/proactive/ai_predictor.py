@@ -512,10 +512,10 @@ Do NOT report missing includes for these symbols:
                                            .replace("{include_context}", include_context + related_files_section)
         
         print(f"  Prompt Length: {len(prompt)} chars")
-        print(f"  PROMPT SENT TO LLM:")
-        print(f"  ---")
-        print(prompt)
-        print(f"  ---")
+        # print(f"  PROMPT SENT TO LLM:")
+        # print(f"  ---")
+        # print(prompt)
+        # print(f"  ---")
         
         # Call the LLM
         response = await self._provider.ask_llm(

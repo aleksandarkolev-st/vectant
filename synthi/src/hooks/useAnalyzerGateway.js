@@ -271,13 +271,14 @@ export function useAnalyzerGateway({
    * @param {string} options.slug - Workspace slug (container ID)
    * @param {string} options.filePath - File path within workspace
    * @param {string} options.lang - The programming language
+   * @param {string} [options.content] - The file content (optional, for unsaved changes)
    * @param {number} [options.version] - Document version for stale detection
    * @param {string[]} [options.layers] - Analysis layers: 'static', 'semantic', 'ai'
    * @param {boolean} [options.includeAi] - Force include AI layer
    * @param {boolean} [options.triggerAiOnErrors] - Auto-trigger AI if errors found (default: true)
    * @param {Function} [options.onLayerComplete] - Callback when a layer completes
    */
-  const analyzeUnified = useCallback(async ({ slug, filePath, lang, version, layers, includeAi = false, triggerAiOnErrors = true, onLayerComplete, model, apiKey } = {}) => {
+  const analyzeUnified = useCallback(async ({ slug, filePath, lang, content, version, layers, includeAi = false, triggerAiOnErrors = true, onLayerComplete, model, apiKey } = {}) => {
     if (!clientRef.current) {
       throw new SynthiException('Gateway client is not ready yet', 'The analyzer gateway client has not been initialized.');
     }
@@ -303,6 +304,10 @@ export function useAnalyzerGateway({
         includeAi,
         triggerAiOnErrors,
       };
+      
+      if (content !== undefined) {
+        payload.content = content;
+      }
       
       // Include version for stale detection
       if (typeof version === 'number') {

@@ -470,12 +470,20 @@ export default function EditorPage({ params }) {
             console.log(`[page.jsx] Content changed for ${currentFilePath} (Hash: ${lastAnalyzedHash?.substring(0,8)} -> ${contentHash.substring(0,8)}) - clearing diagnostics`);
             
             // Robust path comparison for clearing
-            setDiagnostics(prev => prev.filter(d => {
-                // Normalize paths for comparison (remove leading slashes, handle undefined)
-                const p1 = (d.filePath || '').replace(/^[/\\]/, '');
-                const p2 = (currentFilePath || '').replace(/^[/\\]/, '');
-                return p1 !== p2;
-            }));
+            setDiagnostics(prev => {
+                const normalizePath = (p) => {
+                    if (!p) return '';
+                    return p.replace(/^[./\\]+/, '').replace(/\\/g, '/').toLowerCase();
+                };
+                
+                const filtered = prev.filter(d => {
+                    const p1 = normalizePath(d.filePath || '');
+                    const p2 = normalizePath(currentFilePath || '');
+                    return p1 !== p2;
+                });
+                console.log(`[page.jsx] Cleared diagnostics for ${currentFilePath}. Prev: ${prev.length}, New: ${filtered.length}`);
+                return filtered;
+            });
             
             // Increment version counter for stale detection
             docVersionRef.current++;
@@ -490,8 +498,9 @@ export default function EditorPage({ params }) {
         // Capture version at request time for stale detection
         const requestVersion = docVersionRef.current;
 
-        // Debounce proactive analysis to avoid overwhelming the backend
-        // Using longer debounce (500ms) to ensure Y.js auto-flush completes (150ms debounce on server)
+        // Debounce proactive analysis.
+        // Since we now send content explicitly, we don't need to wait for Y.js flush (150ms).
+        // Using 100ms to keep it responsive but avoid analyzing every single keystroke if typing fast.
         proactiveTimeoutRef.current = setTimeout(async () => {
             const langSource =
                 activeFile.language ||
@@ -521,6 +530,7 @@ export default function EditorPage({ params }) {
                 slug,
                 filePath: currentFilePath,
                 lang: normalizedLang,
+                content: contentToAnalyze,
                 layers: ['static', 'semantic'], // Include semantic layer for full analysis
                 triggerAiOnErrors: true,        // Auto-trigger AI if errors found
                 includeAi: false,               // Don't force AI, let it trigger automatically
@@ -579,7 +589,17 @@ export default function EditorPage({ params }) {
                     
                     // Replace diagnostics for this file only
                     setDiagnostics(prev => {
-                        const otherFileDiags = prev.filter(d => d.filePath !== currentFilePath);
+                        const normalizePath = (p) => {
+                            if (!p) return '';
+                            return p.replace(/^[./\\]+/, '').replace(/\\/g, '/').toLowerCase();
+                        };
+
+                        // Use same robust normalization for filtering
+                        const otherFileDiags = prev.filter(d => {
+                            const p1 = normalizePath(d.filePath || '');
+                            const p2 = normalizePath(currentFilePath || '');
+                            return p1 !== p2;
+                        });
                         console.log('[page.jsx] Setting', normalizedDiags.length, 'diagnostics for', currentFilePath);
                         return [...otherFileDiags, ...normalizedDiags];
                     });
@@ -590,7 +610,7 @@ export default function EditorPage({ params }) {
                     console.error('[page.jsx] Unified analysis failed:', err);
                     setIsAnalyzingProactive(false);
                 });
-        }, 500); // 500ms debounce to ensure Y.js auto-flush completes (150ms on server + margin)
+        }, 100); // 100ms debounce for responsiveness
 
         return () => {
             if (proactiveTimeoutRef.current) {

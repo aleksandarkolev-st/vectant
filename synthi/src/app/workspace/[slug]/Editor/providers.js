@@ -53,10 +53,13 @@ export const useEditorProviders = ({
         const model = editorInstance.getModel();
         if (!model) return;
         
+        // Handle both camelCase and snake_case (backend compatibility)
+        const text = fix.replacementText ?? fix.replacement_text ?? '';
+        
         // Apply the fix as an edit
         editorInstance.executeEdits('synthi-quick-fix', [{
             range: range,
-            text: fix.replacementText || '',
+            text: text,
             forceMoveMarkers: true,
         }]);
         
@@ -76,7 +79,8 @@ export const useEditorProviders = ({
         const model = editorInstance.getModel();
         if (!model) return;
         
-        const replacementText = fix.replacementText ?? '';
+        // Handle both camelCase and snake_case (backend compatibility)
+        const replacementText = fix.replacementText ?? fix.replacement_text ?? '';
         const isDelete = replacementText === '';
         
         if (isDelete) return; // Don't show preview for deletions
@@ -467,8 +471,14 @@ export const useEditorProviders = ({
                         if (!diagnostic.fixes?.length) continue;
                         
                         for (const fix of diagnostic.fixes) {
+                            // DEBUG: Log fix object to check replacementText
+                            // console.log('[providers.js] Processing fix:', fix);
+
+                            // Handle both camelCase and snake_case (backend compatibility)
+                            const text = fix.replacementText ?? fix.replacement_text ?? '';
+
                             // Create a unique key for this fix to avoid duplicates
-                            const fixKey = `${fix.description}:${fix.replacementText}:${fix.location?.line}`;
+                            const fixKey = `${fix.description}:${text}:${fix.location?.line}`;
                             if (seenFixes.has(fixKey)) continue;
                             seenFixes.add(fixKey);
                             

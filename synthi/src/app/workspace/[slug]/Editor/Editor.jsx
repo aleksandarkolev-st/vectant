@@ -883,17 +883,24 @@ const EditorPanel = ({
         // IMPORTANT: Filter to only show diagnostics for the CURRENT FILE
         // This prevents test.cpp errors from showing in test.h editor
         const currentFilePath = activeFile?.path || activeFile?.name || '';
+        
+        // Robust normalization function
+        const normalizePath = (p) => {
+            if (!p) return '';
+            // Remove leading ./ or / or \ and normalize slashes
+            return p.replace(/^[./\\]+/, '').replace(/\\/g, '/').toLowerCase();
+        };
+
         const currentFileDiagnostics = proactiveDiagnostics.filter(diag => {
             const diagPath = diag.filePath || '';
-            // Match if same path or if diagnostic has no path (legacy)
-            // Also handle cases where path might be relative vs absolute or have different separators
             if (!diagPath) return true;
             
-            const normalize = p => p.replace(/\\/g, '/').toLowerCase();
-            return normalize(diagPath) === normalize(currentFilePath);
+            const p1 = normalizePath(diagPath);
+            const p2 = normalizePath(currentFilePath);
+            return p1 === p2;
         });
         
-        console.log(`[Editor] Filtering diagnostics for "${currentFilePath}": ${proactiveDiagnostics.length} total -> ${currentFileDiagnostics.length} for current file`);
+        // console.log(`[Editor] Filtering diagnostics for "${currentFilePath}": ${proactiveDiagnostics.length} total -> ${currentFileDiagnostics.length} for current file`);
         
         // Convert proactive diagnostics format to markers
         const proactiveMarkers = currentFileDiagnostics.map(diag => {

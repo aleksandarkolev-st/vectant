@@ -474,6 +474,8 @@ class UnifiedAnalysisRequest(BaseModel):
     lang: str
     # Version for stale detection - client increments on each keystroke
     version: int  # Client-side version counter (MANDATORY)
+    # Optional content override (for unsaved changes)
+    content: Optional[str] = None
     # Layer control
     layers: Optional[List[str]] = None  # ["static", "compiler", "ai"]
     # AI configuration
@@ -540,10 +542,14 @@ async def analyze_unified(req: UnifiedAnalysisRequest):
     logger.info(f"Layers: {req.layers or ['static', 'semantic']}")
     logger.info(f"Auto-trigger AI on errors: {req.trigger_ai_on_errors}")
     
-    # Fetch content from container
-    content = await fetch_file_from_container(req.slug, req.file_path)
-    if content is None:
-        raise HTTPException(status_code=404, detail=f"File not found: {req.file_path}")
+    # Fetch content from container OR use provided content
+    if req.content is not None:
+        content = req.content
+        logger.info(f"Using provided content: {len(content)} chars")
+    else:
+        content = await fetch_file_from_container(req.slug, req.file_path)
+        if content is None:
+            raise HTTPException(status_code=404, detail=f"File not found: {req.file_path}")
     
     logger.info(f"Fetched: {len(content)} chars")
     

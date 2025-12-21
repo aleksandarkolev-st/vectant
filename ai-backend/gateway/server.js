@@ -607,6 +607,11 @@ async function forwardUnifiedAnalysis(socket, data, requestId) {
     forwardBody.version = data.version;
   }
 
+  // Optional: content override
+  if (typeof data?.content === "string") {
+    forwardBody.content = data.content;
+  }
+
   // Optional: specify which layers to run (static, semantic, ai)
   if (Array.isArray(data?.layers) && data.layers.length) {
     forwardBody.layers = data.layers;
