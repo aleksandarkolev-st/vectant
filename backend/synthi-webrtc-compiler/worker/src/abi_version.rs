@@ -1,5 +1,6 @@
 // ABI versioning is now actively used via ModuleLoader and HmrOrchestrator
 // Some advanced features are infrastructure for future use
+#![allow(dead_code)]
 #![allow(mismatched_lifetime_syntaxes)]
 
 // ============================================================

@@ -1,5 +1,6 @@
 // Plugin contract defines the ABI - symbols are used via dlsym at runtime
 // The dead_code warning is a false positive since these are FFI constants
+#![allow(dead_code)]
 
 use std::ffi::{c_void, c_double, c_char, c_uint};
 

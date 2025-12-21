@@ -1,6 +1,7 @@
 // ============================================================
 // BINARY STATE SCHEMA - PRODUCTION-SAFE STATE MIGRATION
 // ============================================================
+#![allow(dead_code)]
 // JSON-based state diffing is fragile (type drift, padding, floats).
 // This module provides binary schemas with explicit layout, alignment,
 // and versioned offsets for production safety.

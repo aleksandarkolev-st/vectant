@@ -457,7 +457,7 @@ impl HmrOrchestrator {
                 result.duration_ms = start.elapsed().as_millis() as u64;
 
                 match migrated {
-                    MigratedState::Binary(bytes, schema_result) => {
+                    MigratedState::Binary(_bytes, schema_result) => {
                         result = result.with_migration(&schema_result);
                         self.stats.binary_migrations += 1;
                         self.stats.total_preserved_fields += schema_result.preserved.len() as u64;
@@ -1119,6 +1119,7 @@ impl Default for HmrOrchestrator {
 }
 
 /// Migrated state result
+#[allow(dead_code)]
 enum MigratedState {
     Binary(Vec<u8>, SchemaMigrationResult),
     Json(MigrationResult),

@@ -116,6 +116,7 @@ const SDL_TEXTUREACCESS_STREAMING: c_int = 1;
 
 // Legacy state container - used for backward compatibility with "main" module
 // Now actively used in the main loop for app_state tracking
+#[allow(dead_code)]
 struct AppState {
     raw: *mut c_void,
     renderer: *mut c_void,
@@ -124,6 +125,7 @@ struct AppState {
 // Per-module state tracking for independent swaps
 // Enhanced to track ABI version and CoreAPI pointer for proper HMR
 // Now actively used in module_states HashMap
+#[allow(dead_code)]
 struct ModuleState {
     state_ptr: *mut c_void,      // Module's own state (CoreState or GuiState)
     abi_version: u32,            // ABI version reported by the module

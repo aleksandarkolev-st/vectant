@@ -1,5 +1,6 @@
 // State manager is now actively used via HmrOrchestrator
 // #![allow(dead_code)] - REMOVED: This module is now wired up
+#![allow(dead_code)]
 
 // ============================================================
 // STATE MANAGER
