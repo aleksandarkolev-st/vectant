@@ -1,6 +1,7 @@
 // Reload manager now actively used via HmrOrchestrator
 // Some advanced features (canary reload, circuit breakers) are still infrastructure
 // for future integration - keeping dead_code allow for those
+#![allow(dead_code)]
 
 // ============================================================
 // RELOAD MANAGER - COMPREHENSIVE HMR ORCHESTRATION

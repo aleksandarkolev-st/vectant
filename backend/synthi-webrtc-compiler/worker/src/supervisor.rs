@@ -1,5 +1,6 @@
 // Crash supervisor is now actively used in runner_bin.rs and HmrOrchestrator
 // #![allow(dead_code)] - REMOVED: This module is now wired up
+#![allow(dead_code)]
 
 // ============================================================
 // CRASH SUPERVISOR
@@ -16,7 +17,6 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::crash_recovery::{CrashInfo, ProtectionMode};

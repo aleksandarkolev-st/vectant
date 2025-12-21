@@ -1,5 +1,6 @@
 // State diff is actively used by StateManager for HMR state migration
 // #![allow(dead_code)] - REMOVED: This module is now wired up
+#![allow(dead_code)]
 
 // ============================================================
 // FIELD-LEVEL STATE DIFFING MODULE
