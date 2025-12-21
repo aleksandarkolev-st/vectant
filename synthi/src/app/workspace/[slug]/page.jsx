@@ -62,7 +62,7 @@ export default function EditorPage({ params }) {
     const [guiConfig, setGuiConfig] = useState(null);
     const [isGuiRunning, setIsGuiRunning] = useState(false);
     const [editor, setEditor] = useState(null);
-    const { analyzeCode, analyzeProactive, lastResult, isAnalyzing: isAnalyzingGateway } = useAnalyzerGateway();
+    const { analyzeCode, analyzeProactive, analyzeContainer, lastResult, isAnalyzing: isAnalyzingGateway } = useAnalyzerGateway();
     const { compile, mediaStream } = useCompiler();
     useHMR();
     const [latestCompletion, setLatestCompletion] = useState(null);
@@ -261,8 +261,16 @@ export default function EditorPage({ params }) {
             return !(sameStart && sameEnd);
         }));
         
-        // Also invalidate the signature so next analysis runs fresh
-        lastProactiveSignatureRef.current = '';
+        // Invalidate the signature so next analysis runs fresh
+        // Use requestAnimationFrame to ensure this happens AFTER the content
+        // has propagated to Redux (Editor uses rAF to batch content updates)
+        requestAnimationFrame(() => {
+            setTimeout(() => {
+                lastProactiveSignatureRef.current = '';
+                // Also clear the content hash to ensure fresh analysis
+                lastContentHashRef.current = '';
+            }, 50); // Small delay to ensure Redux state is updated
+        });
     }, [activeFile]);
 
     const [initialContent, setInitialContent] = useState('');
@@ -421,7 +429,7 @@ export default function EditorPage({ params }) {
     }, [activeFile, rawFiles, currentContent, slug, fileCacheEntries]);
 
     useEffect(() => {
-        if (!activeFile || !hasLoadedInitialFile) return;
+        if (!activeFile || !hasLoadedInitialFile || !slug) return;
         
         // Ensure content is available (might be empty string, that's fine)
         const contentToAnalyze = typeof currentContent === 'string' ? currentContent : '';
@@ -438,23 +446,29 @@ export default function EditorPage({ params }) {
         // Capture the content we're analyzing (for freshness checks)
         const contentHash = computeContentHash(contentToAnalyze);
         
+        // DEBUG: Log content hash and preview to trace stale content issues
+        console.log(`[page.jsx] Content changed - Hash: ${contentHash}, Length: ${contentToAnalyze.length}`);
+        console.log(`[page.jsx] Content preview (first 200 chars): ${contentToAnalyze.substring(0, 200)}`);
+        
         // When content changes, IMMEDIATELY clear all diagnostics for this file
         // New analysis will provide fresh diagnostics
         const currentFilePath = activeFile?.path || activeFile?.name || 'untitled';
         if (lastContentHashRef.current && lastContentHashRef.current !== contentHash) {
+            console.log(`[page.jsx] Hash changed from ${lastContentHashRef.current} to ${contentHash} - clearing diagnostics`);
             // Clear diagnostics for this file - fresh analysis will repopulate
             setDiagnostics(prev => prev.filter(d => d.filePath !== currentFilePath));
         }
         lastContentHashRef.current = contentHash;
 
         // Debounce proactive analysis to avoid overwhelming the backend
+        // Using longer debounce (500ms) to ensure Y.js auto-flush completes (150ms debounce on server)
         proactiveTimeoutRef.current = setTimeout(async () => {
             const langSource =
                 activeFile.language ||
                 (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
                 'plaintext';
             const normalizedLang = langSource.toLowerCase();
-            const signature = `proactive::${activeFile?.path || activeFile?.name || ''}::${contentToAnalyze}`;
+            const signature = `container::${slug}::${currentFilePath}::${contentHash}`;
 
             if (lastProactiveSignatureRef.current === signature) {
                 return;
@@ -462,138 +476,79 @@ export default function EditorPage({ params }) {
 
             setIsAnalyzingProactive(true);
             
-            // Get related files for cross-file analysis (includes, imports)
-            let relatedFiles = [];
+            // Get related file PATHS for cross-file analysis (includes, imports)
+            // Container-First: we send paths only, server fetches content
+            let relatedPaths = [];
             try {
-                relatedFiles = await getRelatedFilesForAnalysis();
+                const relatedFiles = await getRelatedFilesForAnalysis();
+                relatedPaths = relatedFiles.map(f => f.path).filter(Boolean);
             } catch (e) {
                 console.warn('[page.jsx] Failed to get related files for analysis:', e);
             }
             
-            // console.log('[page.jsx] === PROACTIVE ANALYSIS START ===');
-            // console.log('[page.jsx] File:', activeFile?.path || activeFile?.name || 'untitled');
-            // console.log('[page.jsx] Language:', normalizedLang);
-            // console.log('[page.jsx] Code length:', contentToAnalyze.length);
-            // console.log('[page.jsx] Code preview:', contentToAnalyze.substring(0, 150));
-            // console.log('[page.jsx] Related files count:', relatedFiles.length);
-            relatedFiles.forEach((rf, i) => {
-                // console.log(`[page.jsx]   Related[${i}]: ${rf.path} (${rf.content?.length || 0} chars)`);
-                // console.log(`[page.jsx]     Content: ${rf.content?.substring(0, 80)}...`);
-            });
+            console.log('[page.jsx] === CONTAINER-FIRST ANALYSIS START ===');
+            console.log('[page.jsx] Slug:', slug);
+            console.log('[page.jsx] File:', currentFilePath);
+            console.log('[page.jsx] Language:', normalizedLang);
+            console.log('[page.jsx] Related paths count:', relatedPaths.length);
+            console.log('[page.jsx] NOTE: Server will fetch content from container filesystem');
             
-            // STEP 1: Run fast static+semantic analysis first for immediate feedback
-            analyzeProactive({
-                code: contentToAnalyze,
+            // STEP 1: Run fast static+semantic analysis (Container-First)
+            // The server fetches content from the container filesystem
+            analyzeContainer({
+                slug,
+                filePath: currentFilePath,
                 lang: normalizedLang,
-                filePath: activeFile?.path || activeFile?.name || 'untitled',
+                relatedPaths,
                 includeAi: false, // Fast tier first
-                relatedFiles, // Pass related files for cross-file include resolution
             })
                 .then((fastResult) => {
-                    // console.log('[page.jsx] === FAST ANALYSIS RESULT ===');
-                    // console.log('[page.jsx] Raw result:', fastResult);
+                    console.log('[page.jsx] === CONTAINER ANALYSIS RESULT ===');
                     
                     const fastDiags = fastResult?.diagnostics || fastResult?.data?.diagnostics || [];
-                    // console.log('[page.jsx] Fast diagnostics count:', fastDiags.length);
+                    console.log('[page.jsx] Diagnostics count:', fastDiags.length);
                     fastDiags.forEach((d, i) => {
-                        console.log(`[page.jsx]   Fast[${i}]: [${d.tier}] ${d.message} @ line ${d.location?.line}`);
+                        console.log(`[page.jsx]   [${i}]: [${d.tier}] ${d.message} @ line ${d.location?.line}`);
                     });
-                    
-                    const currentFilePath = activeFile?.path || activeFile?.name || 'untitled';
-                    
-                    // Filter out stale diagnostics that reference code not in the current content
-                    // This handles cases where cached results return diagnostics for old code
-                    const validDiags = fastDiags.filter(d => {
-                        // If diagnostic has originalText, verify it exists in current content
-                        if (d.originalText && typeof d.originalText === 'string') {
-                            const exists = contentToAnalyze.includes(d.originalText);
-                            if (!exists) console.log(`[page.jsx] Filtering: originalText not found - "${d.message}"`);
-                            return exists;
-                        }
-                        // For diagnostics about specific symbols, check if symbol is used in code
-                        const msg = d.message?.toLowerCase() || '';
-                        if (msg.includes('iostream') || msg.includes('cout') || msg.includes('cin') || msg.includes('endl')) {
-                            // Check if the code actually uses iostream symbols
-                            const usesIostream = /\b(std::)?(cout|cin|cerr|clog|endl)\b/.test(contentToAnalyze);
-                            if (!usesIostream) {
-                                console.log(`[page.jsx] Filtering stale diagnostic: "${d.message}" - no iostream usage found`);
-                                return false;
-                            }
-                        }
-                        return true;
-                    });
-                    
-                    console.log('[page.jsx] Valid diagnostics after filter:', validDiags.length);
                     
                     // Add filePath to each diagnostic for proper grouping in ProblemsPanel
-                    const diagsWithPath = validDiags.map(d => ({ ...d, filePath: d.filePath || currentFilePath }));
+                    const diagsWithPath = fastDiags.map(d => ({ ...d, filePath: d.filePath || currentFilePath }));
+                    
                     // Replace diagnostics for this file only, keep diagnostics from other files
                     setDiagnostics(prev => {
-                        console.log('[page.jsx] === DIAGNOSTIC STATE UPDATE ===');
-                        console.log('[page.jsx] Current file path:', currentFilePath);
-                        console.log('[page.jsx] Previous diagnostics:', prev.length);
-                        prev.forEach((d, i) => {
-                            console.log(`[page.jsx]   Prev[${i}]: filePath="${d.filePath}" msg="${d.message?.substring(0, 50)}"`);
-                        });
                         const otherFileDiags = prev.filter(d => d.filePath !== currentFilePath);
-                        console.log('[page.jsx] Keeping', otherFileDiags.length, 'diagnostics from other files');
-                        console.log('[page.jsx] Setting', diagsWithPath.length, 'new diagnostics for', currentFilePath);
-                        diagsWithPath.forEach((d, i) => {
-                            console.log(`[page.jsx]   New[${i}]: [${d.tier}] "${d.message?.substring(0, 50)}" @ line ${d.location?.line}`);
-                        });
+                        console.log('[page.jsx] Setting', diagsWithPath.length, 'diagnostics for', currentFilePath);
                         return [...otherFileDiags, ...diagsWithPath];
                     });
                     lastProactiveSignatureRef.current = signature;
                     setIsAnalyzingProactive(false);
                     
                     // STEP 2: Run AI analysis in background for logic error detection
-                    // Track the exact content that was analyzed for freshness verification
                     const aiTracker = { 
                         cancelled: false, 
                         contentHash,
-                        analyzedContent: contentToAnalyze  // Store actual content for verification
                     };
                     aiAnalysisRef.current = aiTracker;
                     
-                    analyzeProactive({
-                        code: contentToAnalyze,
-                        lang: normalizedLang,
+                    analyzeContainer({
+                        slug,
                         filePath: currentFilePath,
+                        lang: normalizedLang,
+                        relatedPaths,
                         includeAi: true, // AI tier for logic errors
-                        relatedFiles, // Pass related files for cross-file analysis
                     })
                         .then((aiResult) => {
-                            // Only update if:
-                            // 1. Not cancelled
-                            // 2. This is still the current tracker
-                            // 3. The content hash hasn't changed since we started
+                            // Only update if not cancelled and content hash hasn't changed
                             const currentHash = lastContentHashRef.current;
                             const isStillCurrent = !aiTracker.cancelled && 
                                                    aiAnalysisRef.current === aiTracker &&
                                                    currentHash === contentHash;
                             if (isStillCurrent) {
                                 const aiDiags = aiResult?.diagnostics || aiResult?.data?.diagnostics || [];
-                                
-                                // Filter out stale diagnostics that reference code not in the current content
-                                const validAiDiags = aiDiags.filter(d => {
-                                    // If diagnostic has originalText, verify it exists in current content
-                                    if (d.originalText && typeof d.originalText === 'string') {
-                                        return contentToAnalyze.includes(d.originalText);
-                                    }
-                                    // For diagnostics about specific symbols, check if symbol is used in code
-                                    const msg = d.message?.toLowerCase() || '';
-                                    if (msg.includes('iostream') || msg.includes('cout') || msg.includes('cin') || msg.includes('endl')) {
-                                        const usesIostream = /\b(std::)?(cout|cin|cerr|clog|endl)\b/.test(contentToAnalyze);
-                                        if (!usesIostream) {
-                                            console.log(`[proactive] Filtering stale AI diagnostic: "${d.message}"`);
-                                            return false;
-                                        }
-                                    }
-                                    return true;
-                                });
+                                console.log('[page.jsx] AI analysis complete:', aiDiags.length, 'diagnostics');
                                 
                                 // Add filePath to each diagnostic
-                                const aiDiagsWithPath = validAiDiags.map(d => ({ ...d, filePath: d.filePath || currentFilePath }));
+                                const aiDiagsWithPath = aiDiags.map(d => ({ ...d, filePath: d.filePath || currentFilePath }));
                                 // Replace diagnostics for this file only
                                 setDiagnostics(prev => {
                                     const otherFileDiags = prev.filter(d => d.filePath !== currentFilePath);
@@ -603,22 +558,22 @@ export default function EditorPage({ params }) {
                         })
                         .catch((err) => {
                             if (!aiTracker.cancelled) {
-                                console.error('AI analysis failed:', err);
+                                console.error('[page.jsx] AI analysis failed:', err);
                             }
                         });
                 })
                 .catch((err) => {
-                    console.error('Proactive analysis failed', err);
+                    console.error('[page.jsx] Container analysis failed:', err);
                     setIsAnalyzingProactive(false);
                 });
-        }, 300); // Fast 300ms debounce for near-realtime feedback
+        }, 500); // 500ms debounce to ensure Y.js auto-flush completes (150ms on server + margin)
 
         return () => {
             if (proactiveTimeoutRef.current) {
                 clearTimeout(proactiveTimeoutRef.current);
             }
         };
-    }, [currentContent, activeFile, hasLoadedInitialFile, analyzeProactive, getRelatedFilesForAnalysis, computeContentHash]);
+    }, [currentContent, activeFile, hasLoadedInitialFile, slug, analyzeContainer, getRelatedFilesForAnalysis, computeContentHash]);
 
     // Track focused file and content changes for workspace analysis
     useEffect(() => {

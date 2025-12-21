@@ -322,7 +322,31 @@ class AIErrorPredictor:
         Returns:
             TierResult containing AI-generated diagnostics
         """
+        import hashlib
+        
         start_time = time.perf_counter()
+        
+        # === CONTENT VERIFICATION LOGGING ===
+        content_hash = hashlib.md5(file.content.encode()).hexdigest()
+        content_length = len(file.content)
+        print(f"\n{'='*60}")
+        print(f"[AIErrorPredictor.analyze] ANALYZING FILE")
+        print(f"  Path: {file.path}")
+        print(f"  Language: {file.language}")
+        print(f"  Content Length: {content_length} chars")
+        print(f"  Content MD5 Hash: {content_hash}")
+        print(f"  Content Preview (first 300 chars):")
+        print(f"  ---")
+        preview = file.content[:300].replace('\n', '\n  ')
+        print(f"  {preview}")
+        print(f"  ---")
+        if related_files:
+            print(f"  Related Files: {len(related_files)}")
+            for rf in related_files:
+                rf_hash = hashlib.md5(rf.content.encode()).hexdigest()
+                print(f"    - {rf.path} ({len(rf.content)} chars, hash: {rf_hash})")
+        print(f"{'='*60}\n")
+        # === END CONTENT VERIFICATION LOGGING ===
         
         if self._provider is None:
             # No provider configured, skip AI analysis
@@ -454,6 +478,21 @@ Do NOT report missing includes for these symbols:
         existing_diagnostics: Optional[List[Diagnostic]],
     ) -> List[Diagnostic]:
         """Run the actual AI analysis."""
+        import hashlib
+        
+        # === PRE-LLM CONTENT VERIFICATION ===
+        content_hash = hashlib.md5(file.content.encode()).hexdigest()
+        print(f"\n[AIErrorPredictor._run_analysis] SENDING TO LLM:")
+        print(f"  File: {file.path}")
+        print(f"  Content Hash: {content_hash}")
+        print(f"  Content Length: {len(file.content)} chars")
+        # Print first and last line to verify content boundaries
+        lines = file.content.splitlines()
+        if lines:
+            print(f"  First Line: {lines[0][:100]}")
+            print(f"  Last Line: {lines[-1][:100] if len(lines) > 1 else '(same as first)'}")
+            print(f"  Total Lines: {len(lines)}")
+        # === END PRE-LLM VERIFICATION ===
         
         # Build include context for the prompt
         include_context = self._build_include_context(file, related_files)
@@ -470,6 +509,8 @@ Do NOT report missing includes for these symbols:
                                            .replace("{code}", file.content) \
                                            .replace("{include_context}", include_context + related_files_section)
         
+        print(f"  Prompt Length: {len(prompt)} chars")
+        
         # Call the LLM
         response = await self._provider.ask_llm(
             code=file.content,
@@ -477,6 +518,8 @@ Do NOT report missing includes for these symbols:
             prompt=prompt,
             mode="analyze",
         )
+        
+        print(f"  LLM Response Length: {len(response)} chars")
         
         # Parse the response
         diagnostics = self._parse_response(response, file)

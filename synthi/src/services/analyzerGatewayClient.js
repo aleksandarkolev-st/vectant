@@ -163,6 +163,57 @@ export class AnalyzerGatewayClient {
   }
 
   /**
+   * Container-First proactive analysis (RECOMMENDED)
+   * 
+   * This endpoint does NOT require content - only file paths.
+   * The server fetches content directly from the container filesystem,
+   * ensuring the AI analyzes exactly what the compiler sees.
+   * 
+   * @param {Object} payload - Analysis request
+   * @param {string} payload.slug - Workspace slug (container ID)
+   * @param {string} payload.filePath - File path within workspace
+   * @param {string} payload.lang - Language identifier
+   * @param {string[]} [payload.relatedPaths] - Related file paths for cross-file analysis
+   * @param {boolean} [payload.includeAi] - Include AI analysis
+   * @param {string[]} [payload.tiers] - Analysis tiers: 'static', 'semantic', 'ai'
+   * @param {Object} [options] - Request options
+   * @param {Function} [options.onTierComplete] - Callback when a tier completes
+   * @returns {Promise<Object>} Analysis result with diagnostics
+   */
+  analyzeContainer(payload, options = {}) {
+    // Map from frontend naming to backend naming
+    const backendPayload = {
+      slug: payload.slug,
+      file_path: payload.filePath,
+      lang: payload.lang,
+      related_paths: payload.relatedPaths || [],
+      include_ai: payload.includeAi || false,
+      tiers: payload.tiers || ['static', 'semantic'],
+      max_diagnostics: payload.maxDiagnostics || 50,
+    };
+    
+    if (payload.model) backendPayload.model = payload.model;
+    if (payload.apiKey) backendPayload.api_key = payload.apiKey;
+    
+    return this._sendRequest('analyze/container', backendPayload, {
+      ...options,
+      onStream: (data) => {
+        if (data?.tier && typeof options.onTierComplete === 'function') {
+          options.onTierComplete({
+            tier: data.tier,
+            diagnostics: data.diagnostics || [],
+            elapsedMs: data.elapsedMs || 0,
+            fromCache: data.fromCache || false,
+          });
+        }
+        if (typeof options.onStream === 'function') {
+          options.onStream(data);
+        }
+      },
+    });
+  }
+
+  /**
    * Run quick proactive analysis (static + semantic only, optimized for real-time)
    * @param {Object} payload - Analysis request
    * @param {string} payload.code - Code to analyze  

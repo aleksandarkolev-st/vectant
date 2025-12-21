@@ -198,8 +198,15 @@ class WorkspaceAnalyzer:
                 prev_state.pop(change.path, None)
             else:
                 old_state = prev_state.get(change.path)
+                # CRITICAL: Always re-analyze if content_hash differs OR if we have new content
+                # This ensures we analyze the latest content even if hashing differs
                 if not old_state or old_state.content_hash != change.content_hash:
                     changed_paths.add(change.path)
+                    print(f"[WorkspaceAnalyzer] File changed: {change.path}")
+                    print(f"  Old hash: {old_state.content_hash if old_state else 'N/A'}")
+                    print(f"  New hash: {change.content_hash}")
+                    if change.content:
+                        print(f"  Content preview: {change.content[:100]}...")
         
         if not changed_paths:
             # No changes - return cached results
@@ -236,9 +243,24 @@ class WorkspaceAnalyzer:
         
         # Build file contexts for analysis
         file_map = {f.path: f for f in request.all_files}
+        
+        # Ensure changed files are in the map (using content from change)
+        # This is critical because request.all_files might be truncated/sliced
+        for change in request.changed_files:
+            if change.change_type != "deleted" and change.content is not None:
+                file_map[change.path] = FileContext(
+                    path=change.path,
+                    content=change.content,
+                    language=change.language or "plaintext",
+                )
+        
         files_to_process = [file_map[p] for p in analysis_order if p in file_map]
         
         # Run analysis on changed files
+        print(f"[WorkspaceAnalyzer] Analyzing {len(files_to_process)} changed files")
+        for f in files_to_process:
+            print(f"  - {f.path} ({len(f.content)} chars) Hash: {hashlib.md5(f.content.encode()).hexdigest()[:8]}")
+            
         new_results = await self._run_static_semantic_analysis(
             files_to_process,
             request,
@@ -246,6 +268,7 @@ class WorkspaceAnalyzer:
         
         # Run AI analysis if enabled (only on focus file + related)
         if request.include_ai and self._enable_ai and request.focus_file:
+            print(f"[WorkspaceAnalyzer] Running AI analysis for focus file: {request.focus_file}")
             ai_results = await self._run_ai_analysis(
                 files_to_process,
                 new_results,
@@ -259,17 +282,31 @@ class WorkspaceAnalyzer:
         merged_state = dict(prev_state)
         merged_state.update(new_results)
         
+        # Ensure we have a complete list of files for cross-file analysis
+        # Start with request.all_files
+        cross_analysis_files = list(request.all_files)
+        files_in_list = {f.path for f in cross_analysis_files}
+        
+        # Add changed files if not present
+        for change in request.changed_files:
+            if change.change_type != "deleted" and change.content is not None and change.path not in files_in_list:
+                cross_analysis_files.append(FileContext(
+                    path=change.path,
+                    content=change.content,
+                    language=change.language or "plaintext",
+                ))
+        
         # Detect cross-file issues
         cross_file_diags = self._detect_cross_file_issues(
             merged_state,
-            request.all_files,
+            cross_analysis_files,
         )
         
         # Generate suggestions
         suggestions = self._generate_suggestions(
             merged_state,
             cross_file_diags,
-            request.all_files,
+            cross_analysis_files,
         )
         
         # Build result
@@ -566,6 +603,9 @@ class WorkspaceAnalyzer:
         existing_diags: List[Diagnostic] = []
         
         # Run analysis
+        print(f"[AI Predictor] Analyzing {focus_file.path} with {len(related_files)} related files")
+        print(f"[AI Predictor] Focus file content preview: {focus_file.content[:100]}...")
+        
         result = await predictor.analyze(
             focus_file,
             related_files,

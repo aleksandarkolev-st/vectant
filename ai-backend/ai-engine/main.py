@@ -142,6 +142,61 @@ class ProactiveAnalysisRequest(BaseModel):
     api_key: Optional[str] = None
 
 
+class ContainerAnalysisRequest(BaseModel):
+    """
+    Container-First analysis request.
+    Content is fetched from the server filesystem, NOT sent by client.
+    This ensures analysis always sees the same content as the compiler.
+    """
+    slug: str  # Workspace slug
+    file_path: str  # File path within workspace
+    lang: str
+    related_paths: Optional[List[str]] = None  # Paths to related files
+    tiers: Optional[List[str]] = None
+    include_ai: Optional[bool] = True
+    max_diagnostics: Optional[int] = 50
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+
+
+# Collab server URL for fetching file content
+COLLAB_SERVER_URL = os.environ.get('COLLAB_SERVER_URL', 'http://localhost:1234')
+
+
+async def fetch_file_from_container(slug: str, file_path: str) -> Optional[str]:
+    """
+    Fetch file content from the collab server (container filesystem).
+    This is the Source of Truth for all analysis.
+    
+    The collab server auto-flushes Y.js changes to disk (150ms debounce),
+    so this always returns the latest content.
+    """
+    import aiohttp
+    
+    try:
+        # Use the /file-content endpoint which reads directly from disk
+        url = f"{COLLAB_SERVER_URL}/file-content/{slug}/{file_path}"
+        logger.info(f"[Container] Fetching from: {url}")
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    content = await resp.text()
+                    logger.info(f"[Container] Fetched {file_path}: {len(content)} chars")
+                    logger.info(f"[Container] Content preview: {content[:200]}...")
+                    return content
+                elif resp.status == 404:
+                    logger.warning(f"[Container] File not found: {slug}/{file_path}")
+                    return None
+                else:
+                    error_body = await resp.text()
+                    logger.warning(f"[Container] Failed to fetch {file_path}: {resp.status} - {error_body}")
+                    return None
+    except Exception as e:
+        logger.error(f"[Container] Error fetching {file_path}: {e}")
+        return None
+
+
 @app.post("/analyze/static")
 def analyze_code(req: AnalyzeRequest):
     try:
@@ -284,6 +339,101 @@ async def clear_cache():
     analyzer = get_proactive_analyzer()
     await analyzer.clear_cache()
     return {"status": "ok", "message": "Cache cleared"}
+
+
+@app.post("/analyze/container")
+async def analyze_from_container(req: ContainerAnalysisRequest):
+    """
+    Container-First proactive analysis endpoint.
+    
+    This endpoint fetches file content directly from the server filesystem
+    (via collab server), ensuring the AI analyzes exactly what the compiler sees.
+    
+    This is the RECOMMENDED endpoint for production use.
+    The client should NOT send content - only file paths.
+    """
+    logger.info(f"=== CONTAINER ANALYSIS START ===")
+    logger.info(f"Slug: {req.slug}")
+    logger.info(f"File: {req.file_path}")
+    logger.info(f"Language: {req.lang}")
+    
+    # Fetch main file content from container
+    content = await fetch_file_from_container(req.slug, req.file_path)
+    if content is None:
+        raise HTTPException(status_code=404, detail=f"File not found: {req.file_path}")
+    
+    logger.info(f"Fetched main file: {len(content)} chars")
+    logger.info(f"Content preview: {content[:200]}...")
+    
+    # Build file context
+    file_context = FileContext(
+        path=req.file_path,
+        content=content,
+        language=req.lang,
+    )
+    
+    # Fetch related files from container
+    related_files = []
+    if req.related_paths:
+        logger.info(f"Fetching {len(req.related_paths)} related files from container...")
+        for rpath in req.related_paths:
+            rcontent = await fetch_file_from_container(req.slug, rpath)
+            if rcontent is not None:
+                related_files.append(FileContext(
+                    path=rpath,
+                    content=rcontent,
+                    language=req.lang,
+                ))
+                logger.info(f"  Fetched {rpath}: {len(rcontent)} chars")
+            else:
+                logger.warning(f"  Could not fetch {rpath}")
+    
+    # Determine tiers
+    tiers = []
+    if req.tiers:
+        tier_map = {
+            'static': AnalysisTier.STATIC,
+            'semantic': AnalysisTier.SEMANTIC,
+            'ai': AnalysisTier.AI,
+        }
+        tiers = [tier_map[t.lower()] for t in req.tiers if t.lower() in tier_map]
+    else:
+        tiers = [AnalysisTier.STATIC, AnalysisTier.SEMANTIC]
+        if req.include_ai:
+            tiers.append(AnalysisTier.AI)
+    
+    # Create analysis request
+    analysis_request = AnalysisRequest(
+        file=file_context,
+        related_files=related_files,
+        tiers=tiers,
+        max_diagnostics=req.max_diagnostics or 50,
+        include_fixes=True,
+    )
+    
+    # Get analyzer with provider for AI tier
+    def select_provider():
+        if req.api_key:
+            model_name = (req.model or '').lower()
+            if 'gemini' in model_name:
+                return get_provider(provider_name='gemini', use_custom=True)
+            return get_provider(provider_name='chatgpt', use_custom=True)
+        return get_provider()
+    
+    provider = select_provider() if AnalysisTier.AI in tiers else None
+    analyzer = get_proactive_analyzer(llm_provider=provider)
+    
+    try:
+        result = await analyzer.analyze(analysis_request)
+        logger.info(f"=== CONTAINER ANALYSIS RESULT ===")
+        logger.info(f"Total diagnostics: {len(result.all_diagnostics)}")
+        for d in result.all_diagnostics:
+            logger.info(f"  [{d.tier.value}] {d.severity.value}: {d.message} @ line {d.location.line}")
+        logger.info(f"=== CONTAINER ANALYSIS END ===")
+        return result.to_dict()
+    except Exception as e:
+        logger.error(f"Container analysis failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 
 # ============================================================================
