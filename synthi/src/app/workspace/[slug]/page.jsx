@@ -464,26 +464,11 @@ export default function EditorPage({ params }) {
             return;
         }
         
-        // If content changed (or first load), IMMEDIATELY clear diagnostics for this file
-        // This prevents "shifting errors" where old diagnostics point to wrong lines
+        // If content changed (or first load), we used to clear diagnostics immediately.
+        // BUT, to support "shifting errors" (where markers move with text), we must NOT clear them here.
+        // Instead, we let Monaco handle the marker positions until the new analysis arrives.
         if (lastAnalyzedHash !== contentHash) {
-            console.log(`[page.jsx] Content changed for ${currentFilePath} (Hash: ${lastAnalyzedHash?.substring(0,8)} -> ${contentHash.substring(0,8)}) - clearing diagnostics`);
-            
-            // Robust path comparison for clearing
-            setDiagnostics(prev => {
-                const normalizePath = (p) => {
-                    if (!p) return '';
-                    return p.replace(/^[./\\]+/, '').replace(/\\/g, '/').toLowerCase();
-                };
-                
-                const filtered = prev.filter(d => {
-                    const p1 = normalizePath(d.filePath || '');
-                    const p2 = normalizePath(currentFilePath || '');
-                    return p1 !== p2;
-                });
-                console.log(`[page.jsx] Cleared diagnostics for ${currentFilePath}. Prev: ${prev.length}, New: ${filtered.length}`);
-                return filtered;
-            });
+            // console.log(`[page.jsx] Content changed for ${currentFilePath} (Hash: ${lastAnalyzedHash?.substring(0,8)} -> ${contentHash.substring(0,8)}) - keeping diagnostics for shifting`);
             
             // Increment version counter for stale detection
             docVersionRef.current++;
@@ -500,7 +485,7 @@ export default function EditorPage({ params }) {
 
         // Debounce proactive analysis.
         // Since we now send content explicitly, we don't need to wait for Y.js flush (150ms).
-        // Using 100ms to keep it responsive but avoid analyzing every single keystroke if typing fast.
+        // Using 50ms to be very responsive ("on any code change").
         proactiveTimeoutRef.current = setTimeout(async () => {
             const langSource =
                 activeFile.language ||

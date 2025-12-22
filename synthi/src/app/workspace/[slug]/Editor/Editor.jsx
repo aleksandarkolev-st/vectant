@@ -935,7 +935,7 @@ const EditorPanel = ({
         } catch (e) {
             // Editor may have been disposed
         }
-    }, [editorInstance, monacoInstance, diagnostics, activeFile]);
+    }, [editorInstance, monacoInstance, diagnostics, activeFile?.path]);
 
     // Handle external completion triggering (e.g. from Chat UI)
     useEffect(() => {
