@@ -641,13 +641,13 @@ async function forwardUnifiedAnalysis(socket, data, requestId) {
     forwardBody.api_key = data.api_key.trim();
   }
 
-  console.log(`[Gateway] === UNIFIED ANALYSIS REQUEST ===`);
-  console.log(`[Gateway] Slug: ${forwardBody.slug}`);
-  console.log(`[Gateway] File: ${forwardBody.file_path}`);
-  console.log(`[Gateway] Language: ${forwardBody.lang}`);
-  console.log(`[Gateway] Version: ${forwardBody.version || 'not set'}`);
-  console.log(`[Gateway] Layers: ${forwardBody.layers?.join(", ") || "default"}`);
-  console.log(`[Gateway] Auto-AI on errors: ${forwardBody.trigger_ai_on_errors !== false}`);
+  // Compute content hash for debugging
+  const crypto = require('crypto');
+  const contentHash = forwardBody.content 
+    ? crypto.createHash('md5').update(forwardBody.content).digest('hex').substring(0, 16)
+    : 'N/A (fetching from disk)';
+
+  console.log(`[Gateway] UNIFIED: ${forwardBody.file_path} | v=${forwardBody.version || 'N/A'} | hash=${contentHash} | content=${forwardBody.content?.length || 0} chars`);
 
   let backendResponse;
   try {
@@ -689,11 +689,8 @@ async function forwardUnifiedAnalysis(socket, data, requestId) {
     return;
   }
 
-  // Log results
-  console.log(`[Gateway] === UNIFIED ANALYSIS RESPONSE ===`);
-  console.log(`[Gateway] Diagnostics count: ${responseJson.diagnostics?.length || 0}`);
-  console.log(`[Gateway] Layers run: ${responseJson.layers_run?.join(", ") || "none"}`);
-  console.log(`[Gateway] Time: ${responseJson.analysis_time_ms?.toFixed(1) || 0}ms`);
+  // Condensed response logging
+  console.log(`[Gateway] UNIFIED RESULT: ${responseJson.diagnostics?.length || 0} diags | layers=${responseJson.layers_run?.join(",") || "none"} | ${responseJson.analysis_time_ms?.toFixed(0) || 0}ms | hash=${responseJson.content_hash || 'N/A'}`);
 
   // Send layer updates for streaming experience (if available)
   if (responseJson?.layer_results) {

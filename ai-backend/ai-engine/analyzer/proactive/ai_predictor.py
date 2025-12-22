@@ -326,28 +326,13 @@ class AIErrorPredictor:
         
         start_time = time.perf_counter()
         
-        # === CONTENT VERIFICATION LOGGING ===
-        content_hash = hashlib.md5(file.content.encode()).hexdigest()
+        # === CONTENT VERIFICATION LOGGING (condensed) ===
+        content_hash = hashlib.md5(file.content.encode()).hexdigest()[:16]
         content_length = len(file.content)
-        print(f"\n{'='*60}")
-        print(f"[AIErrorPredictor.analyze] ANALYZING FILE")
-        print(f"  Path: {file.path}")
-        print(f"  Language: {file.language}")
-        print(f"  Content Length: {content_length} chars")
-        print(f"  Content MD5 Hash: {content_hash}")
-        print(f"  Content Preview (FULL CONTENT):")
-        print(f"  ---")
-        # Print full content with line numbers for easier debugging
         lines = file.content.splitlines()
-        for i, line in enumerate(lines):
-            print(f"  {i+1:4d} | {line}")
-        print(f"  ---")
-        if related_files:
-            print(f"  Related Files: {len(related_files)}")
-            for rf in related_files:
-                rf_hash = hashlib.md5(rf.content.encode()).hexdigest()
-                print(f"    - {rf.path} ({len(rf.content)} chars, hash: {rf_hash})")
-        print(f"{'='*60}\n")
+        first_line = lines[0] if lines else ''
+        last_line = lines[-1] if len(lines) > 1 else first_line
+        print(f"[AIPredictor] {file.path} | {content_length} chars | hash={content_hash} | lines={len(lines)} | first=\"{first_line[:60]}\" | last=\"{last_line[:60]}\"")
         # === END CONTENT VERIFICATION LOGGING ===
         
         if self._provider is None:
@@ -482,19 +467,10 @@ Do NOT report missing includes for these symbols:
         """Run the actual AI analysis."""
         import hashlib
         
-        # === PRE-LLM CONTENT VERIFICATION ===
-        content_hash = hashlib.md5(file.content.encode()).hexdigest()
-        print(f"\n[AIErrorPredictor._run_analysis] SENDING TO LLM:")
-        print(f"  File: {file.path}")
-        print(f"  Content Hash: {content_hash}")
-        print(f"  Content Length: {len(file.content)} chars")
-        # Print first and last line to verify content boundaries
+        # Condensed pre-LLM logging
+        content_hash = hashlib.md5(file.content.encode()).hexdigest()[:16]
         lines = file.content.splitlines()
-        if lines:
-            print(f"  First Line: {lines[0][:100]}")
-            print(f"  Last Line: {lines[-1][:100] if len(lines) > 1 else '(same as first)'}")
-            print(f"  Total Lines: {len(lines)}")
-        # === END PRE-LLM VERIFICATION ===
+        print(f"[AIPredictor._run_analysis] Sending to LLM: {file.path} | hash={content_hash} | {len(file.content)} chars | {len(lines)} lines")
         
         # Build include context for the prompt
         include_context = self._build_include_context(file, related_files)
@@ -511,12 +487,6 @@ Do NOT report missing includes for these symbols:
                                            .replace("{code}", file.content) \
                                            .replace("{include_context}", include_context + related_files_section)
         
-        print(f"  Prompt Length: {len(prompt)} chars")
-        # print(f"  PROMPT SENT TO LLM:")
-        # print(f"  ---")
-        # print(prompt)
-        # print(f"  ---")
-        
         # Call the LLM
         response = await self._provider.ask_llm(
             code=file.content,
@@ -525,11 +495,7 @@ Do NOT report missing includes for these symbols:
             mode="analyze",
         )
         
-        print(f"  LLM Response Length: {len(response)} chars")
-        print(f"  RAW LLM RESPONSE:")
-        print(f"  ---")
-        print(response)
-        print(f"  ---")
+        print(f"[AIPredictor] LLM response: {len(response)} chars")
         
         # Parse the response
         diagnostics = self._parse_response(response, file)
@@ -540,6 +506,9 @@ Do NOT report missing includes for these symbols:
         
         # Filter by confidence
         diagnostics = [d for d in diagnostics if d.confidence >= self._min_confidence]
+        
+        # Validate diagnostics against actual code (catch LLM hallucinations)
+        diagnostics = self._validate_diagnostics(diagnostics, file.content)
         
         return diagnostics
     
@@ -815,6 +784,98 @@ Do NOT report missing includes for these symbols:
             ))
         
         return diagnostic
+    
+    def _validate_diagnostics(
+        self,
+        diagnostics: List[Diagnostic],
+        full_code: str,
+    ) -> List[Diagnostic]:
+        """
+        Validate diagnostics against actual code to catch LLM hallucinations.
+        
+        This is critical for catching cases where the LLM reports issues that
+        don't actually exist in the code, such as:
+        - "Missing return statement" when the function has return 0;
+        - "Missing semicolon" when the line ends with ;
+        - "Undefined function" when the function is defined locally
+        """
+        validated = []
+        lines = full_code.splitlines()
+        
+        for diag in diagnostics:
+            message_lower = diag.message.lower()
+            loc = diag.location
+            should_reject = False
+            
+            # Get the actual code at the diagnostic location
+            line_num = loc.line
+            end_line = loc.end_line
+            
+            if line_num >= len(lines):
+                # Line doesn't exist - hallucination
+                print(f"[AI VALIDATION] Rejecting: line {line_num} doesn't exist (max {len(lines)-1})")
+                continue
+            
+            # Get the function context around the diagnostic location
+            # Look backwards to find function definition
+            context_lines = []
+            for i in range(max(0, line_num - 10), min(len(lines), end_line + 3)):
+                context_lines.append(lines[i])
+            context_code = '\n'.join(context_lines)
+            
+            # === VALIDATION RULES ===
+            
+            # Rule 1: "Missing return" but function has return statement
+            if 'missing return' in message_lower or 'no return' in message_lower:
+                # Look for return statement in the function context
+                has_return = any('return' in line and ';' in line for line in context_lines)
+                if has_return:
+                    print(f"[AI VALIDATION] Rejecting 'missing return': function has return statement")
+                    should_reject = True
+            
+            # Rule 2: "Missing semicolon" but line ends with semicolon
+            if not should_reject and ('missing semicolon' in message_lower or 'missing ;' in message_lower):
+                if line_num < len(lines):
+                    line_content = lines[line_num].rstrip()
+                    if line_content.endswith(';'):
+                        print(f"[AI VALIDATION] Rejecting 'missing semicolon': line ends with ;")
+                        should_reject = True
+            
+            # Rule 3: "Incomplete statement" - check if it's actually incomplete
+            if not should_reject and 'incomplete' in message_lower and 'statement' in message_lower:
+                if line_num < len(lines):
+                    line_content = lines[line_num].strip()
+                    # A complete statement typically ends with ; } or {
+                    if line_content.endswith((';', '{', '}')):
+                        print(f"[AI VALIDATION] Rejecting 'incomplete statement': line is complete")
+                        should_reject = True
+            
+            # Rule 4: Check if the snippet is a very short return-related fragment
+            # When the LLM reports something like snippet='return' with 'missing return value'
+            # but the code actually has 'return 0;', this is a hallucination
+            if not should_reject and diag.originalText:
+                snippet = diag.originalText.strip()
+                if len(snippet) < 10 and 'return' in snippet.lower():
+                    # Check if this is about a missing return value
+                    if 'missing' in message_lower and ('return' in message_lower or 'value' in message_lower):
+                        # Look for a complete return statement in context
+                        for line in context_lines:
+                            stripped = line.strip()
+                            if stripped.startswith('return ') and stripped.endswith(';'):
+                                print(f"[AI VALIDATION] Rejecting short return snippet: function has complete return statement")
+                                should_reject = True
+                                break
+            
+            if should_reject:
+                continue
+            
+            # Diagnostic passed validation
+            validated.append(diag)
+        
+        if len(validated) < len(diagnostics):
+            print(f"[AI VALIDATION] Filtered {len(diagnostics) - len(validated)} hallucinated diagnostics")
+        
+        return validated
     
     def _extract_json(self, text: str) -> Optional[str]:
         """Extract JSON array from LLM response."""

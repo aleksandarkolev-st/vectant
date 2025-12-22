@@ -94,20 +94,11 @@ async def log_requests(request: Request, call_next):
     import time
     start_time = time.time()
     
-    # Log request
-    body = await request.body()
-    logger.info(f"[AI-ENGINE DEBUG] Request: {request.method} {request.url}")
-    try:
-        if body:
-            logger.info(f"[AI-ENGINE DEBUG] Request Body: {body.decode('utf-8')[:1000]}...")
-    except:
-        pass
-        
     response = await call_next(request)
     
-    # Log response
+    # Condensed request/response logging
     process_time = time.time() - start_time
-    logger.info(f"[AI-ENGINE DEBUG] Response: {response.status_code} (took {process_time:.4f}s)")
+    logger.info(f"[AI-ENGINE] {request.method} {request.url.path} -> {response.status_code} ({process_time:.3f}s)")
     
     return response
 
@@ -216,21 +207,18 @@ async def fetch_file_from_container(slug: str, file_path: str) -> Optional[str]:
     try:
         # Use the /file-content endpoint which reads directly from disk
         url = f"{COLLAB_SERVER_URL}/file-content/{slug}/{file_path}"
-        logger.info(f"[Container] Fetching from: {url}")
         
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as resp:
                 if resp.status == 200:
                     content = await resp.text()
-                    logger.info(f"[Container] Fetched {file_path}: {len(content)} chars")
-                    logger.info(f"[Container] Content preview: {content[:200]}...")
                     return content
                 elif resp.status == 404:
                     logger.warning(f"[Container] File not found: {slug}/{file_path}")
                     return None
                 else:
                     error_body = await resp.text()
-                    logger.warning(f"[Container] Failed to fetch {file_path}: {resp.status} - {error_body}")
+                    logger.warning(f"[Container] Failed to fetch {file_path}: {resp.status}")
                     return None
     except Exception as e:
         logger.error(f"[Container] Error fetching {file_path}: {e}")
@@ -294,28 +282,20 @@ async def analyze_proactive(req: ProactiveAnalysisRequest):
         language=req.lang,
     )
     
-    logger.info(f"=== PROACTIVE ANALYSIS START ===")
-    logger.info(f"File: {file_context.path}")
-    logger.info(f"Language: {file_context.language}")
-    logger.info(f"Content length: {len(file_context.content)} chars")
-    logger.info(f"Content preview: {file_context.content[:200]}...")
-    logger.info(f"Tiers requested: {tiers}")
+    import hashlib
+    content_hash = hashlib.md5(req.code.encode()).hexdigest()[:16]
+    logger.info(f"[PROACTIVE] {file_context.path} | {len(file_context.content)} chars | hash={content_hash} | tiers={tiers}")
     
     # Build related files context
     related_files = []
     if req.related_files:
-        logger.info(f"Related files count from request: {len(req.related_files)}")
         for rf in req.related_files:
             rf_path = rf.path or rf.name or f"file-{len(related_files)}"
-            logger.info(f"  Related file: {rf_path} ({len(rf.content)} chars)")
-            logger.info(f"    Content preview: {rf.content[:100]}...")
             related_files.append(FileContext(
                 path=rf_path,
                 content=rf.content,
                 language=req.lang,
             ))
-    else:
-        logger.info("No related files in request")
     
     # Create analysis request
     analysis_request = AnalysisRequest(
@@ -332,11 +312,7 @@ async def analyze_proactive(req: ProactiveAnalysisRequest):
     
     try:
         result = await analyzer.analyze(analysis_request)
-        logger.info(f"=== PROACTIVE ANALYSIS RESULT ===")
-        logger.info(f"Total diagnostics: {len(result.all_diagnostics)}")
-        for d in result.all_diagnostics:
-            logger.info(f"  [{d.tier.value}] {d.severity.value}: {d.message} @ line {d.location.line}")
-        logger.info(f"=== PROACTIVE ANALYSIS END ===")
+        logger.info(f"[PROACTIVE] Result: {len(result.all_diagnostics)} diags")
         return result.to_dict()
     except Exception as e:
         logger.error(f"Analysis failed: {str(e)}", exc_info=True)
@@ -392,18 +368,15 @@ async def analyze_from_container(req: ContainerAnalysisRequest):
     This is the RECOMMENDED endpoint for production use.
     The client should NOT send content - only file paths.
     """
-    logger.info(f"=== CONTAINER ANALYSIS START ===")
-    logger.info(f"Slug: {req.slug}")
-    logger.info(f"File: {req.file_path}")
-    logger.info(f"Language: {req.lang}")
+    import hashlib
     
     # Fetch main file content from container
     content = await fetch_file_from_container(req.slug, req.file_path)
     if content is None:
         raise HTTPException(status_code=404, detail=f"File not found: {req.file_path}")
     
-    logger.info(f"Fetched main file: {len(content)} chars")
-    logger.info(f"Content preview: {content[:200]}...")
+    content_hash = hashlib.md5(content.encode()).hexdigest()[:16]
+    logger.info(f"[CONTAINER] {req.file_path} | {len(content)} chars | hash={content_hash}")
     
     # Build file context
     file_context = FileContext(
@@ -415,7 +388,6 @@ async def analyze_from_container(req: ContainerAnalysisRequest):
     # Fetch related files from container
     related_files = []
     if req.related_paths:
-        logger.info(f"Fetching {len(req.related_paths)} related files from container...")
         for rpath in req.related_paths:
             rcontent = await fetch_file_from_container(req.slug, rpath)
             if rcontent is not None:
@@ -424,9 +396,6 @@ async def analyze_from_container(req: ContainerAnalysisRequest):
                     content=rcontent,
                     language=req.lang,
                 ))
-                logger.info(f"  Fetched {rpath}: {len(rcontent)} chars")
-            else:
-                logger.warning(f"  Could not fetch {rpath}")
     
     # Determine tiers
     tiers = []
@@ -465,11 +434,7 @@ async def analyze_from_container(req: ContainerAnalysisRequest):
     
     try:
         result = await analyzer.analyze(analysis_request)
-        logger.info(f"=== CONTAINER ANALYSIS RESULT ===")
-        logger.info(f"Total diagnostics: {len(result.all_diagnostics)}")
-        for d in result.all_diagnostics:
-            logger.info(f"  [{d.tier.value}] {d.severity.value}: {d.message} @ line {d.location.line}")
-        logger.info(f"=== CONTAINER ANALYSIS END ===")
+        logger.info(f"[CONTAINER] Result: {len(result.all_diagnostics)} diags")
         return result.to_dict()
     except Exception as e:
         logger.error(f"Container analysis failed: {str(e)}", exc_info=True)
@@ -556,32 +521,21 @@ async def analyze_unified(req: UnifiedAnalysisRequest):
     import hashlib
     start_time = time.time()
     
-    logger.info(f"=== UNIFIED ANALYSIS START ===")
-    logger.info(f"Slug: {req.slug}")
-    logger.info(f"File: {req.file_path}")
-    logger.info(f"Language: {req.lang}")
-    logger.info(f"Version: {req.version}")
-    logger.info(f"Layers: {req.layers or ['static', 'semantic']}")
-    logger.info(f"Auto-trigger AI on errors: {req.trigger_ai_on_errors}")
-    
     # Fetch content from container OR use provided content
     if req.content is not None:
         content = req.content
-        logger.info(f"Using provided content: {len(content)} chars")
     else:
         content = await fetch_file_from_container(req.slug, req.file_path)
         if content is None:
             raise HTTPException(status_code=404, detail=f"File not found: {req.file_path}")
     
-    logger.info(f"Fetched: {len(content)} chars")
-    
-    # DEBUG: Log content preview to verify correct content is being analyzed
-    content_preview = content[:300].replace('\n', '\\n')
-    logger.info(f"Content preview: {content_preview}...")
-    
     # Compute content hash for client-side caching
     content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
-    logger.info(f"Content hash: {content_hash}")
+    lines = content.splitlines()
+    first_line = lines[0] if lines else ''
+    
+    # Condensed request logging
+    logger.info(f"[UNIFIED] {req.file_path} | v={req.version} | {len(content)} chars | hash={content_hash} | layers={req.layers or ['static', 'semantic']} | first=\"{first_line[:50]}\"")
     
     # Determine which tiers to run (map layers to proactive tiers)
     layers = list(req.layers or ["static", "semantic"])

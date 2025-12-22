@@ -798,7 +798,13 @@ const EditorPanel = ({
                 requestAiCompletion(true, latestCodeRef.current, { reason: 'pause', pauseTrigger: true, recentEditSnippet: takeLastChars(latestCodeRef.current, 512) });
             }
         }, 900);
-    }, [aiAutoEnabled, activeDiffCheck, cancelActiveCompletion, dispatch, requestAiCompletion]);
+    }, [activeFile, aiAutoEnabled, activeDiffCheck, cancelActiveCompletion, dispatch, requestAiCompletion]);
+
+    // Keep a ref to the latest handleCodeChange to avoid stale closures in the editor onMount listener
+    const handleCodeChangeRef = useRef(handleCodeChange);
+    useEffect(() => {
+        handleCodeChangeRef.current = handleCodeChange;
+    }, [handleCodeChange]);
 
     const handleSave = useCallback(() => {
         if (activeFile && isUnsaved) dispatch(saveFileContentThunk());
@@ -1357,7 +1363,7 @@ const EditorPanel = ({
                                                     // that @monaco-editor/react's onChange might skip
                                                     editor.onDidChangeModelContent(() => {
                                                         const newCode = editor.getModel()?.getValue() ?? '';
-                                                        handleCodeChange(newCode);
+                                                        handleCodeChangeRef.current(newCode);
                                                     });
 
                                                     // Ensure layout refreshes on mount

@@ -266,31 +266,24 @@ class ValidatingPersistence {
   }
 
   async bindState(docName, ydoc) {
-    console.log(`[Collab DEBUG] === bindState START: ${docName} ===`);
-    
     // First, bind the persisted state (if any)
     if (this.inner.bindState) {
-      console.log(`[Collab DEBUG]   Calling inner.bindState...`);
       await this.inner.bindState(docName, ydoc);
-      console.log(`[Collab DEBUG]   Inner bindState completed`);
     }
 
     // Now validate against actual file
     const parsed = parseDocName(docName);
     if (!parsed) {
       // Not a workspace document, skip validation
-      console.log(`[Collab DEBUG]   Not a workspace document, skipping validation`);
       return;
     }
 
     const { slug, filePath } = parsed;
-    console.log(`[Collab DEBUG]   Parsed: slug=${slug}, filePath=${filePath}`);
     
     const actualContent = await getActualFileContent(slug, filePath);
     
     if (actualContent === null) {
       // File doesn't exist on disk, keep persisted state
-      console.log(`[Collab DEBUG]   File not found on disk, keeping persisted state`);
       return;
     }
 
@@ -298,19 +291,13 @@ class ValidatingPersistence {
     const actualHash = computeHash(actualContent);
     const persistedHash = computeHash(persistedContent);
 
-    console.log(`[Collab DEBUG]   Persisted content: ${persistedContent.length} chars, hash=${persistedHash.substring(0, 8)}`);
-    console.log(`[Collab DEBUG]   Actual file: ${actualContent.length} chars, hash=${actualHash.substring(0, 8)}`);
-    console.log(`[Collab DEBUG]   Persisted preview: ${JSON.stringify(persistedContent.substring(0, 100))}...`);
-    console.log(`[Collab DEBUG]   Actual preview: ${JSON.stringify(actualContent.substring(0, 100))}...`);
-
+    // Condensed logging - only log when relevant
     if (actualHash !== persistedHash) {
-      console.log(`[Collab DEBUG]   *** STALE DATA DETECTED ***`);
-      console.log(`[Collab DEBUG]   Resetting document to actual file content`);
+      console.log(`[Collab] STALE DATA: ${filePath} | persisted=${persistedHash.substring(0, 8)} | actual=${actualHash.substring(0, 8)} | resetting...`);
 
       // Clear the persisted state and reset to actual content
       if (this.inner.clearDocument) {
         await this.inner.clearDocument(docName);
-        console.log(`[Collab DEBUG]   Cleared persisted state`);
       }
 
       // Reset Yjs document to actual file content
@@ -323,7 +310,6 @@ class ValidatingPersistence {
             text.delete(0, text.length);
             text.insert(0, actualContent);
           });
-          console.log(`[Collab DEBUG]   Reset text type '${name}' with ${actualContent.length} chars`);
           break;
         }
       }
@@ -331,20 +317,16 @@ class ValidatingPersistence {
       // Update hash cache
       fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
     } else {
-      console.log(`[Collab DEBUG]   Content is VALID (hashes match)`);
       fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
     }
     
     // Set up auto-flush so all future Y.js changes are written to disk
     // This is critical for Container-First architecture
     this._setupAutoFlush(docName, ydoc);
-    
-    console.log(`[Collab DEBUG] === bindState END: ${docName} ===`);
   }
 
   async writeState(docName, ydoc) {
     const content = getYDocContent(ydoc);
-    console.log(`[Collab DEBUG] writeState: ${docName} (${content.length} chars)`);
     
     if (this.inner.writeState) {
       await this.inner.writeState(docName, ydoc);
@@ -355,7 +337,6 @@ class ValidatingPersistence {
   }
 
   async clearDocument(docName) {
-    console.log(`[Collab DEBUG] clearDocument: ${docName}`);
     fileHashCache.delete(docName);
     if (this.inner.clearDocument) {
       await this.inner.clearDocument(docName);
@@ -364,7 +345,6 @@ class ValidatingPersistence {
 
   // Proxy other methods to inner persistence
   async flushDocument(docName) {
-    console.log(`[Collab DEBUG] flushDocument: ${docName}`);
     if (this.inner.flushDocument) {
       await this.inner.flushDocument(docName);
     }

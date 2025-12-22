@@ -255,6 +255,11 @@ export class AnalyzerGatewayClient {
     if (typeof payload.version === 'number') {
       backendPayload.version = payload.version;
     }
+
+    // Include content override if provided
+    if (typeof payload.content === 'string') {
+      backendPayload.content = payload.content;
+    }
     
     if (payload.model) backendPayload.model = payload.model;
     if (payload.apiKey) backendPayload.api_key = payload.apiKey;

@@ -285,10 +285,20 @@ export default function EditorPage({ params }) {
     const [hasLoadedInitialFile, setHasLoadedInitialFile] = useState(false);
 
     // 3. Load content for the initially selected file
+    // IMPORTANT: We must wait for the thunk to complete before setting hasLoadedInitialFile
+    // Otherwise analysis may trigger before content is available in Redux
     useEffect(() => {
         if (activeFile && !hasLoadedInitialFile) {
-            dispatch(selectFileThunk(activeFile));
-            setHasLoadedInitialFile(true);
+            dispatch(selectFileThunk(activeFile))
+                .then(() => {
+                    // Only mark as loaded AFTER the content is actually in Redux
+                    setHasLoadedInitialFile(true);
+                })
+                .catch((err) => {
+                    console.warn('[page.jsx] Failed to load initial file content:', err);
+                    // Still set as loaded to prevent infinite retry loop
+                    setHasLoadedInitialFile(true);
+                });
         }
     }, [activeFile, hasLoadedInitialFile, dispatch]);
 
@@ -368,16 +378,17 @@ export default function EditorPage({ params }) {
     */
 
     // Run proactive analysis (AI-powered error detection) on content change
-    // Simple but effective hash function for content comparison
+    // Simple hash function for content comparison - produces consistent hex format
+    // This is used for local change detection, not cryptographic purposes
     const computeContentHash = useCallback((content) => {
         if (!content) return '';
-        let hash = 0;
+        // FNV-1a hash - produces consistent 32-bit hash as positive hex
+        let hash = 2166136261; // FNV offset basis
         for (let i = 0; i < content.length; i++) {
-            const char = content.charCodeAt(i);
-            hash = ((hash << 5) - hash) + char;
-            hash = hash & hash; // Convert to 32bit integer
+            hash ^= content.charCodeAt(i);
+            hash = (hash * 16777619) >>> 0; // FNV prime, keep unsigned
         }
-        return hash.toString(16);
+        return hash.toString(16).padStart(8, '0');
     }, []);
 
     // Get related files for cross-file analysis (includes, imports)
@@ -435,8 +446,15 @@ export default function EditorPage({ params }) {
     useEffect(() => {
         if (!activeFile || !hasLoadedInitialFile || !slug) return;
         
-        // Ensure content is available (might be empty string, that's fine)
+        // Ensure content is available
         const contentToAnalyze = typeof currentContent === 'string' ? currentContent : '';
+        
+        // GUARD: Skip analysis if content is empty - this likely means Y.js hasn't synced yet
+        // or the file content hasn't been loaded from Redux. We'll re-trigger when content updates.
+        if (contentToAnalyze.length === 0) {
+            console.log('[page.jsx] Skipping analysis - content is empty, waiting for Y.js sync or Redux update');
+            return;
+        }
         
         if (proactiveTimeoutRef.current) {
             clearTimeout(proactiveTimeoutRef.current);
@@ -529,6 +547,9 @@ export default function EditorPage({ params }) {
                         return;
                     }
                     
+                    // Note: Content hash comparison removed - client and server use different algorithms
+                    // Version-based staleness detection is sufficient and more reliable
+                    
                     console.log('[page.jsx] === UNIFIED ANALYSIS RESULT ===');
                     console.log('[page.jsx] Layers run:', result?.layers_run);
                     console.log('[page.jsx] Summary:', result?.summary);
@@ -555,8 +576,50 @@ export default function EditorPage({ params }) {
                         console.log(`[page.jsx]     Source: ${d.source || d.tier}`);
                     });
                     
+                    // Filter out stale diagnostics where originalText no longer matches current code
+                    const filteredDiags = diags.filter(d => {
+                        // Keep diagnostics without originalText (can't verify staleness)
+                        if (!d.originalText) return true;
+                        
+                        const loc = d.location || {};
+                        const lineNum = loc.line ?? 0;
+                        const endLineNum = loc.endLine ?? lineNum;
+                        const col = loc.column ?? 0;
+                        const endCol = loc.endColumn ?? col;
+                        
+                        // Extract text at diagnostic location from current content
+                        let currentTextAtLocation = '';
+                        try {
+                            if (lineNum === endLineNum && lineNum < sourceLines.length) {
+                                currentTextAtLocation = sourceLines[lineNum].substring(col, endCol);
+                            } else if (lineNum < sourceLines.length) {
+                                // Multi-line
+                                const textParts = [];
+                                for (let i = lineNum; i <= Math.min(endLineNum, sourceLines.length - 1); i++) {
+                                    if (i === lineNum) textParts.push(sourceLines[i].substring(col));
+                                    else if (i === endLineNum) textParts.push(sourceLines[i].substring(0, endCol));
+                                    else textParts.push(sourceLines[i]);
+                                }
+                                currentTextAtLocation = textParts.join('\n');
+                            }
+                        } catch (e) {
+                            return true; // Keep on error
+                        }
+                        
+                        // If text changed, diagnostic is stale
+                        const isStale = currentTextAtLocation !== d.originalText;
+                        if (isStale) {
+                            console.log(`[page.jsx] Filtering stale diagnostic at line ${lineNum}: originalText doesn't match current code`);
+                            console.log(`[page.jsx]   Expected: "${d.originalText}"`);
+                            console.log(`[page.jsx]   Actual: "${currentTextAtLocation}"`);
+                        }
+                        return !isStale;
+                    });
+                    
+                    console.log(`[page.jsx] After staleness filter: ${filteredDiags.length} diagnostics (removed ${diags.length - filteredDiags.length} stale)`);
+                    
                     // Normalize diagnostics to consistent format
-                    const normalizedDiags = diags.map(d => ({
+                    const normalizedDiags = filteredDiags.map(d => ({
                         ...d,
                         filePath: d.filePath || d.file || currentFilePath,
                         // Normalize location field for ProblemsPanel compatibility
