@@ -31,7 +31,61 @@ from pydantic import BaseModel
 from analyzer import get_analyzer
 from analyzer import supported_languages
 
-# ... existing imports ...
+from llm.providers import get_provider
+from llm.prompts import SPLIT_GUI_PROMPT
+from llm.structural_prompts import (
+    format_delta_addition_prompt,
+    format_delta_deletion_prompt,
+    inject_delta_into_code,
+    apply_deletion_delta,
+)
+
+# New imports for enhanced architecture
+from job_queue import (
+    PriorityJobQueue, JobType, JobPriority, JobBudget, 
+    JobWorker, get_queue
+)
+from verifier import AIOutputVerifier, get_verifier, VerificationStatus
+from streaming import (
+    StreamingManager, get_streaming_manager, 
+    OpenAIStreamer, GeminiStreamer, StreamingStatus
+)
+from provenance import (
+    ProvenanceTracker, get_provenance_tracker,
+    ChangeType, VerificationStatus as ProvVerificationStatus, track_ai_call
+)
+# Proactive Analysis imports
+from analyzer.proactive import (
+    ProactiveAnalyzer,
+    AnalysisResult,
+    AnalysisTier,
+    # Workspace analysis
+    WorkspaceAnalyzer,
+    get_workspace_analyzer,
+    WorkspaceAnalysisRequest,
+    WorkspaceAnalysisResult,
+    FileChange,
+)
+from analyzer.proactive.types import AnalysisRequest, FileContext, Severity
+from analyzer.proactive.cache import AnalysisCache
+
+# Intelligence Aggregator - Unified Pipeline
+from intelligence import (
+    IntelligenceAggregator,
+    AggregatedResult,
+    get_aggregator,
+    create_aggregator_with_ai,
+    DiagnosticSource,
+    UnifiedDiagnostic,
+    StaticAnalysisProvider,
+    AIAnalysisProvider,
+    CompilerProvider,
+    get_compiler_provider,
+    FileWatcher,
+    get_file_watcher,
+    FileChangeEvent,
+    FileChangeType,
+)
 
 app = FastAPI()
 
