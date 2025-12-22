@@ -86,6 +86,7 @@ function handleHttpRequest(req, res) {
 
 async function handleClientMessage(socket, raw) {
   const payloadText = raw.toString("utf8").trim();
+  console.log(`[Gateway DEBUG] Received from client: ${payloadText.substring(0, 200)}...`);
   if (!payloadText) {
     sendError(socket, "Empty payload received");
     return;
@@ -1063,7 +1064,9 @@ function safeSend(socket, payload) {
   }
 
   try {
-    socket.send(JSON.stringify(payload));
+    const str = JSON.stringify(payload);
+    console.log(`[Gateway DEBUG] Sending to client: ${str.substring(0, 200)}...`);
+    socket.send(str);
   } catch (err) {
     console.error("Failed to send payload", err);
   }

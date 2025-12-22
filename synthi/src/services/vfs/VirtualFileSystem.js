@@ -344,12 +344,13 @@ export class VirtualFileSystem extends EventEmitter {
    */
   async readFile(path, options = {}) {
     const { forceServer = false, signal } = options;
+    console.log(`[VFS DEBUG] readFile: ${path} (forceServer=${forceServer})`);
     
     // 1. Check hot cache (fastest)
     if (!forceServer) {
       const hotFile = this.hotCache.get(path);
       if (hotFile && hotFile.syncState !== 'conflict') {
-        console.log(`[VFS] Hot cache hit: ${path}`);
+        console.log(`[VFS DEBUG] Hot cache hit: ${path} (len=${hotFile.content.length})`);
         return hotFile;
       }
     }
@@ -361,20 +362,22 @@ export class VirtualFileSystem extends EventEmitter {
         // Validate hash against server
         const serverHash = await this._fetchServerHash(path, signal);
         if (serverHash && serverHash === warmFile.contentHash) {
-          console.log(`[VFS] Warm cache hit (validated): ${path}`);
+          console.log(`[VFS DEBUG] Warm cache hit (validated): ${path}`);
           // Promote to hot cache
           this._addToHotCache(path, warmFile);
           return warmFile;
         }
-        console.log(`[VFS] Warm cache stale, fetching from server: ${path}`);
+        console.log(`[VFS DEBUG] Warm cache stale, fetching from server: ${path}`);
       }
     }
     
     // 3. Fetch from server (Source of Truth)
-    console.log(`[VFS] Fetching from server: ${path}`);
+    console.log(`[VFS DEBUG] Fetching from server: ${path}`);
     const content = await this._fetchFromServer(path, signal);
     const contentHash = await computeHash(content);
     
+    console.log(`[VFS DEBUG] Fetched from server: ${path} (len=${content.length}, hash=${contentHash.substring(0, 8)})`);
+
     const file = {
       path,
       content,
@@ -432,12 +435,14 @@ export class VirtualFileSystem extends EventEmitter {
    */
   async updateContent(path, content) {
     const contentHash = await computeHash(content);
+    console.log(`[VFS DEBUG] updateContent: ${path} (len=${content.length}, hash=${contentHash.substring(0, 8)})`);
     
     let file = this.hotCache.get(path);
     
     if (file) {
       // Check if content actually changed
       if (file.contentHash === contentHash) {
+        console.log(`[VFS DEBUG] Content unchanged for ${path}`);
         return file; // No change
       }
       
@@ -480,6 +485,7 @@ export class VirtualFileSystem extends EventEmitter {
    * @returns {Promise<VFSFile>}
    */
   async saveFile(path, content) {
+    console.log(`[VFS DEBUG] saveFile: ${path}`);
     let file = this.hotCache.get(path);
     
     if (content !== undefined) {
@@ -495,7 +501,9 @@ export class VirtualFileSystem extends EventEmitter {
     
     try {
       // Send to server
+      console.log(`[VFS DEBUG] Sending to server: ${path}`);
       await this._saveToServer(path, file.content);
+      console.log(`[VFS DEBUG] Saved to server: ${path}`);
       
       // Update state to clean
       file = {

@@ -25,69 +25,37 @@ for module in ['analyzer.proactive', 'analyzer.proactive.semantic_analyzer', 'an
     logging.getLogger(module).setLevel(logging.INFO)
 import time
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from analyzer import get_analyzer
 from analyzer import supported_languages
 
-from llm.providers import get_provider
-from llm.prompts import SPLIT_GUI_PROMPT
-from llm.structural_prompts import (
-    format_delta_addition_prompt,
-    format_delta_deletion_prompt,
-    inject_delta_into_code,
-    apply_deletion_delta,
-)
-
-# New imports for enhanced architecture
-from job_queue import (
-    PriorityJobQueue, JobType, JobPriority, JobBudget, 
-    JobWorker, get_queue
-)
-from verifier import AIOutputVerifier, get_verifier, VerificationStatus
-from streaming import (
-    StreamingManager, get_streaming_manager, 
-    OpenAIStreamer, GeminiStreamer, StreamingStatus
-)
-from provenance import (
-    ProvenanceTracker, get_provenance_tracker,
-    ChangeType, VerificationStatus as ProvVerificationStatus, track_ai_call
-)
-# Proactive Analysis imports
-from analyzer.proactive import (
-    ProactiveAnalyzer,
-    AnalysisResult,
-    AnalysisTier,
-    # Workspace analysis
-    WorkspaceAnalyzer,
-    get_workspace_analyzer,
-    WorkspaceAnalysisRequest,
-    WorkspaceAnalysisResult,
-    FileChange,
-)
-from analyzer.proactive.types import AnalysisRequest, FileContext, Severity
-from analyzer.proactive.cache import AnalysisCache
-
-# Intelligence Aggregator - Unified Pipeline
-from intelligence import (
-    IntelligenceAggregator,
-    AggregatedResult,
-    get_aggregator,
-    create_aggregator_with_ai,
-    DiagnosticSource,
-    UnifiedDiagnostic,
-    StaticAnalysisProvider,
-    AIAnalysisProvider,
-    CompilerProvider,
-    get_compiler_provider,
-    FileWatcher,
-    get_file_watcher,
-    FileChangeEvent,
-    FileChangeType,
-)
+# ... existing imports ...
 
 app = FastAPI()
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    import time
+    start_time = time.time()
+    
+    # Log request
+    body = await request.body()
+    logger.info(f"[AI-ENGINE DEBUG] Request: {request.method} {request.url}")
+    try:
+        if body:
+            logger.info(f"[AI-ENGINE DEBUG] Request Body: {body.decode('utf-8')[:1000]}...")
+    except:
+        pass
+        
+    response = await call_next(request)
+    
+    # Log response
+    process_time = time.time() - start_time
+    logger.info(f"[AI-ENGINE DEBUG] Response: {response.status_code} (took {process_time:.4f}s)")
+    
+    return response
 
 # Initialize proactive analyzer with shared cache
 _analysis_cache = AnalysisCache(max_entries=2000, max_age_seconds=3600)
