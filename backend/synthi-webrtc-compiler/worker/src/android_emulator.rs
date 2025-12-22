@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::process::{Child, Command};
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::timeout;
 use anyhow::{Result, Context, bail};
@@ -52,6 +53,53 @@ const DEFAULT_AVD_NAME: &str = "synthi_cloud_avd";
 
 /// Default system image for x86_64 (no Play Store, smaller)
 const DEFAULT_SYSTEM_IMAGE: &str = "system-images;android-34;google_apis;x86_64";
+
+fn parse_installed_system_images(stdout: &str) -> Vec<String> {
+    // `sdkmanager --list_installed` output varies across versions.
+    // We best-effort extract the first whitespace token from lines containing `system-images;`.
+    let mut out = vec![];
+    for line in stdout.lines() {
+        if !line.contains("system-images;") {
+            continue;
+        }
+        let trimmed = line.trim();
+        if let Some(pkg) = trimmed.split_whitespace().next() {
+            if pkg.starts_with("system-images;") {
+                out.push(pkg.to_string());
+            }
+        }
+    }
+    out
+}
+
+fn system_image_api_level(pkg: &str) -> Option<u32> {
+    // Example: system-images;android-34;google_apis;x86_64
+    // Extract 34.
+    let parts: Vec<&str> = pkg.split(';').collect();
+    if parts.len() < 4 {
+        return None;
+    }
+    let android_part = parts.get(1)?.trim();
+    let ver = android_part.strip_prefix("android-")?;
+    ver.parse::<u32>().ok()
+}
+
+fn rank_system_image(pkg: &str) -> (u32, u32) {
+    // Higher is better.
+    // Primary: API level.
+    // Secondary: flavor preference.
+    let api = system_image_api_level(pkg).unwrap_or(0);
+    let flavor = if pkg.contains("google_apis") {
+        3
+    } else if pkg.contains("playstore") {
+        2
+    } else if pkg.contains("default") {
+        1
+    } else {
+        0
+    };
+    (api, flavor)
+}
 
 // ============================================================
 // EMULATOR CONFIGURATION
@@ -256,57 +304,185 @@ impl EmulatorSession {
             return Ok(()); // AVD already exists
         }
         
-        // Create AVD
-        let status = Command::new(&avdmanager)
-            .args([
-                "create", "avd",
-                "--name", &self.config.avd_name,
-                "--package", &self.config.system_image,
-                "--device", "pixel_4",
-                "--force",
-            ])
-            .stdin(Stdio::null())
-            .status()
+        // Create AVD.
+        // avdmanager may prompt (e.g. "Do you wish to create a custom hardware profile?"),
+        // so provide a default "no".
+        let mut cmd = Command::new(&avdmanager);
+        cmd.args([
+            "create", "avd",
+            "--name", &self.config.avd_name,
+            "--package", &self.config.system_image,
+            "--device", "pixel_4",
+            "--force",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+        let mut child = cmd.spawn().context("Failed to spawn avdmanager create avd")?;
+        if let Some(mut stdin) = child.stdin.take() {
+            // "no" is the safe default.
+            let _ = stdin.write_all(b"no\n").await;
+        }
+        let out = child
+            .wait_with_output()
             .await
-            .context("Failed to create AVD")?;
-        
-        if !status.success() {
-            bail!("avdmanager create avd failed");
+            .context("Failed to wait for avdmanager")?;
+        if !out.status.success() {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            bail!(
+                "avdmanager create avd failed (status={:?})\nstdout:\n{}\nstderr:\n{}",
+                out.status.code(),
+                stdout,
+                stderr
+            );
         }
         
         Ok(())
     }
     
     /// Downloads the required system image if not present
-    pub async fn ensure_system_image(&self) -> Result<()> {
+    pub async fn ensure_system_image(&mut self) -> Result<()> {
         let sdkmanager = self.config.android_sdk_root
             .join("cmdline-tools/latest/bin/sdkmanager");
         
-        // Check if system image is installed
-        let output = Command::new(&sdkmanager)
-            .args(["--list_installed"])
-            .output()
-            .await
-            .context("Failed to list installed SDK packages")?;
-        
-        let installed = String::from_utf8_lossy(&output.stdout);
-        if installed.contains(&self.config.system_image) {
+        async fn list_installed(sdkmanager: &Path, sdk_root: &Path) -> Result<String> {
+            let output = Command::new(sdkmanager)
+                .arg(format!("--sdk_root={}", sdk_root.display()))
+                .args(["--list_installed"])
+                .output()
+                .await
+                .with_context(|| format!("Failed to run {} --list_installed", sdkmanager.display()))?;
+            Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        }
+
+        async fn accept_licenses_best_effort(sdkmanager: &Path, sdk_root: &Path) {
+            let mut cmd = Command::new(sdkmanager);
+            cmd.arg(format!("--sdk_root={}", sdk_root.display()))
+                .arg("--licenses")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            if let Ok(mut child) = cmd.spawn() {
+                if let Some(mut stdin) = child.stdin.take() {
+                    // Some license prompts require multiple confirmations.
+                    let _ = stdin.write_all(b"y\n").await;
+                    let _ = stdin.write_all(b"y\n").await;
+                    let _ = stdin.write_all(b"y\n").await;
+                    let _ = stdin.write_all(b"y\n").await;
+                    let _ = stdin.flush().await;
+                }
+                let _ = child.wait().await;
+            }
+        }
+
+        async fn install_package(sdkmanager: &Path, sdk_root: &Path, pkg: &str) -> Result<()> {
+            // Try to accept licenses first; ignore failures.
+            accept_licenses_best_effort(sdkmanager, sdk_root).await;
+
+            let mut cmd = Command::new(sdkmanager);
+            cmd.arg(format!("--sdk_root={}", sdk_root.display()))
+                .arg(pkg)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+
+            let mut child = cmd
+                .spawn()
+                .with_context(|| format!("Failed to spawn sdkmanager to install {}", pkg))?;
+            if let Some(mut stdin) = child.stdin.take() {
+                // Accept licenses / prompts.
+                let _ = stdin.write_all(b"y\n").await;
+                let _ = stdin.write_all(b"y\n").await;
+                let _ = stdin.write_all(b"y\n").await;
+                let _ = stdin.write_all(b"y\n").await;
+                let _ = stdin.flush().await;
+            }
+
+            let out = child
+                .wait_with_output()
+                .await
+                .with_context(|| format!("Failed to wait for sdkmanager installing {}", pkg))?;
+
+            if !out.status.success() {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                bail!(
+                    "sdkmanager install failed for: {} (status={:?})\nstdout:\n{}\nstderr:\n{}",
+                    pkg,
+                    out.status.code(),
+                    stdout,
+                    stderr
+                );
+            }
+
+            Ok(())
+        }
+
+        let sdk_root = self.config.android_sdk_root.clone();
+        let installed_text = list_installed(&sdkmanager, &sdk_root).await?;
+        let installed_images = parse_installed_system_images(&installed_text);
+
+        // If the requested image already exists, we're done.
+        if installed_images.iter().any(|p| p == &self.config.system_image) {
             return Ok(());
         }
-        
-        // Install system image
-        let status = Command::new(&sdkmanager)
-            .arg(&self.config.system_image)
-            .stdin(Stdio::null())
-            .status()
-            .await
-            .context("Failed to install system image")?;
-        
-        if !status.success() {
-            bail!("sdkmanager install failed for: {}", self.config.system_image);
+
+        // Try installing the requested image.
+        let requested = self.config.system_image.clone();
+        if install_package(&sdkmanager, &sdk_root, &requested).await.is_ok() {
+            return Ok(());
         }
-        
-        Ok(())
+
+        // If install failed, try fallbacks (prefer already-installed images first).
+        if !installed_images.is_empty() {
+            let mut sorted = installed_images;
+            sorted.sort_by(|a, b| rank_system_image(b).cmp(&rank_system_image(a)));
+            let chosen = sorted[0].clone();
+            self.config.system_image = chosen;
+            return Ok(());
+        }
+
+        // No installed system images; try a few commonly available candidates.
+        let fallback_candidates = [
+            // Same API, alternate ABI/flavor.
+            "system-images;android-34;google_apis;x86",
+            "system-images;android-34;default;x86_64",
+            // Commonly available older API.
+            "system-images;android-33;google_apis;x86_64",
+            "system-images;android-33;default;x86_64",
+            "system-images;android-32;google_apis;x86_64",
+            "system-images;android-31;google_apis;x86_64",
+        ];
+
+        let mut last_err: Option<anyhow::Error> = None;
+        for pkg in fallback_candidates {
+            match install_package(&sdkmanager, &sdk_root, pkg).await {
+                Ok(_) => {
+                    self.config.system_image = pkg.to_string();
+                    return Ok(());
+                }
+                Err(e) => last_err = Some(e),
+            }
+        }
+
+        // Re-list for debugging context.
+        let installed_after = list_installed(&sdkmanager, &sdk_root).await.unwrap_or_default();
+        let installed_images_after = parse_installed_system_images(&installed_after);
+
+        if let Some(e) = last_err {
+            bail!(
+                "No usable Android system image could be installed. Last error: {:#}\nCurrently installed system images: {:?}",
+                e,
+                installed_images_after
+            );
+        }
+
+        bail!(
+            "No usable Android system image could be installed. Currently installed system images: {:?}",
+            installed_images_after
+        );
     }
     
     // ============================================================

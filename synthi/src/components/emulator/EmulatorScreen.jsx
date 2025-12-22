@@ -24,7 +24,7 @@ function HomeScreenMock() {
     <div className="h-full w-full bg-gradient-to-b from-[#0b0b10] to-[#050506]">
       <StatusBar />
       <div className="p-4">
-        <div className="text-xs text-gray-300 mb-3">Synthi Android (mock)</div>
+        <div className="text-xs text-gray-300 mb-3">Synthi Android</div>
         <div className="grid grid-cols-4 gap-3">
           {icons.map((i) => (
             <div key={i} className="flex flex-col items-center gap-1">
@@ -83,6 +83,26 @@ export default function EmulatorScreen({
 
   if (state === EMULATOR_STATES.OFF) {
     return <div className="h-full w-full bg-black" />;
+  }
+
+  // If a MediaStream exists, always prefer rendering the real streaming surface.
+  // This avoids falling back to mock UI during real mobile sessions.
+  if (mediaStream && state !== EMULATOR_STATES.ERROR) {
+    return (
+      <div className="h-full w-full bg-black relative">
+        <video
+          ref={videoRef}
+          className="absolute inset-0 h-full w-full object-contain"
+          muted
+          playsInline
+          autoPlay
+        />
+
+        <div className="absolute inset-0 pointer-events-none">
+          <canvas ref={canvasRef} className="hidden" />
+        </div>
+      </div>
+    );
   }
 
   if (state === EMULATOR_STATES.BOOTING) {

@@ -40,16 +40,26 @@ export default function EmulatorPanel({
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
 
-  // Fake boot completion.
+  // Fake boot completion (UI-only mode).
+  // When a real session is active, the worker stream drives state.
   useEffect(() => {
+    if (sessionId) return;
     if (state !== EMULATOR_STATES.BOOTING) return;
     const id = window.setTimeout(() => {
       setState(EMULATOR_STATES.IDLE);
     }, bootDurationMs);
     return () => window.clearTimeout(id);
-  }, [state, bootDurationMs]);
+  }, [state, bootDurationMs, sessionId]);
+
+  // If we have a media stream for a real session, ensure we render the streaming surface.
+  useEffect(() => {
+    if (!sessionId) return;
+    if (!mediaStream) return;
+    setState((prev) => (prev === EMULATOR_STATES.ERROR ? prev : EMULATOR_STATES.STREAMING));
+  }, [sessionId, mediaStream]);
 
   // Attach WebRTC media stream (if any) to the video element.
+  // Include `state` so we rerun when the <video> element mounts (it only exists in STREAMING).
   useEffect(() => {
     if (!mediaStream) return;
     const el = videoRef.current;
@@ -64,7 +74,7 @@ export default function EmulatorPanel({
     } catch (_) {
       // ignore
     }
-  }, [mediaStream]);
+  }, [mediaStream, state]);
 
   // If the parent reports a hard failure (e.g. compile promise rejected), surface it.
   useEffect(() => {
@@ -176,7 +186,7 @@ export default function EmulatorPanel({
       case EMULATOR_STATES.NO_APP:
         return 'No app';
       case EMULATOR_STATES.STREAMING:
-        return 'Streaming (placeholder)';
+        return 'Streaming';
       case EMULATOR_STATES.ERROR:
         return 'Error';
       default:

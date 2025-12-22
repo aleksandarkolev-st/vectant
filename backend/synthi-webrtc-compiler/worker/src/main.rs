@@ -23,6 +23,7 @@ mod mobile_routing;
 mod react_native_builder;
 mod android_emulator;
 mod mobile_job;
+mod workspace_reconcile;
 mod env_setup;
 
 use builder::{RebuildScope, ModuleHashes, hash_content, WidgetDetector, WidgetCompiler};

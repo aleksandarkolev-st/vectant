@@ -34,6 +34,7 @@ import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
 import { useCompiler } from '@/hooks/useCompiler';
 import AIChatWindow from '@/components/chat/AIChatWindow';
 import { api } from '@/services/api';
+import { gitClient } from '@/services/gitClient';
 import WorkspaceNotFoundModal from '@/components/WorkspaceNotFoundModal';
 import { fileCache } from '@/services/fileCache';
 import { resolveDependencies } from '@/utils/dependencyResolver';
@@ -67,6 +68,7 @@ export default function EditorPage({ params }) {
     const [emulatorRunNonce, setEmulatorRunNonce] = useState(0);
     const [emulatorSessionId, setEmulatorSessionId] = useState(null);
     const [emulatorForcedError, setEmulatorForcedError] = useState('');
+    const reconcileRef = useRef({});
     const analysisTimeoutRef = useRef(null);
     const lastAnalyzedSignatureRef = useRef('');
     
@@ -377,6 +379,110 @@ export default function EditorPage({ params }) {
     const appendBuildLog = useCallback((line) => {
         setBuildLogs((prev) => [...prev, line].slice(-200));
     }, []);
+
+    // Apply worker-generated Android/Gradle artifacts back into the real workspace.
+    // This is session-scoped and only runs for the active emulator session.
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+
+        const handler = async (e) => {
+            const msg = e?.detail;
+            if (!msg || typeof msg !== 'object') return;
+            const sid = msg.sessionId;
+            if (!sid) return;
+
+            // Only apply patches for the active mobile session to avoid cross-talk.
+            if (emulatorSessionId && sid !== emulatorSessionId) return;
+
+            const state = reconcileRef.current;
+            if (!state[sid]) {
+                state[sid] = { files: new Map(), ready: [], summary: null };
+            }
+            const s = state[sid];
+
+            if (msg.type === 'workspace-reconcile-begin') {
+                s.files = new Map();
+                s.ready = [];
+                s.summary = msg.summary || null;
+                appendBuildLog('[sync] Capturing generated Android/Gradle artifacts...');
+                return;
+            }
+
+            if (msg.type === 'workspace-file-begin') {
+                const totalChunks = Number(msg.total_chunks) || 0;
+                if (!msg.path || totalChunks <= 0) return;
+                s.files.set(msg.path, {
+                    totalChunks,
+                    chunks: new Array(totalChunks),
+                    received: 0,
+                    mode: msg.mode,
+                    sha256: msg.sha256,
+                    kind: msg.data,
+                });
+                return;
+            }
+
+            if (msg.type === 'workspace-file-chunk') {
+                if (!msg.path) return;
+                const entry = s.files.get(msg.path);
+                if (!entry) return;
+                const idx = Number(msg.idx);
+                if (!Number.isFinite(idx) || idx < 0 || idx >= entry.totalChunks) return;
+                if (typeof msg.data !== 'string') return;
+                if (entry.chunks[idx] === undefined) {
+                    entry.chunks[idx] = msg.data;
+                    entry.received += 1;
+                }
+                return;
+            }
+
+            if (msg.type === 'workspace-file-end') {
+                if (!msg.path) return;
+                const entry = s.files.get(msg.path);
+                if (!entry) return;
+                if (entry.received !== entry.totalChunks) {
+                    appendBuildLog(`[sync] Skipping incomplete file: ${msg.path}`);
+                    return;
+                }
+                const base64 = entry.chunks.join('');
+                s.ready.push({ path: msg.path, encoding: 'base64', content: base64 });
+                return;
+            }
+
+            if (msg.type === 'workspace-reconcile-end') {
+                const files = s.ready || [];
+                const count = files.length;
+                if (count === 0) {
+                    appendBuildLog('[sync] No generated files to persist.');
+                    return;
+                }
+
+                appendBuildLog(`[sync] Persisting ${count} generated file(s) into workspace...`);
+                try {
+                    const result = await gitClient.writeFilesBatch(slug, files, { syncToGcs: true });
+
+                    // Invalidate caches for any text-ish files we may display.
+                    for (const f of files) {
+                        if (typeof f.path === 'string') fileCache.delete(f.path);
+                    }
+
+                    await dispatch(fetchFilesThunk(slug));
+
+                    const writtenCount = Array.isArray(result?.written) ? result.written.length : 0;
+                    const skippedCount = Array.isArray(result?.skipped) ? result.skipped.length : 0;
+                    const errorCount = Array.isArray(result?.errors) ? result.errors.length : 0;
+                    appendBuildLog(`[sync] Applied: ${writtenCount}, skipped: ${skippedCount}, errors: ${errorCount}`);
+                } catch (err) {
+                    console.error('Workspace reconciliation apply failed', err);
+                    appendBuildLog(`[sync] Apply failed: ${err?.message || String(err)}`);
+                }
+                return;
+            }
+        };
+
+        window.addEventListener('synthi:workspace-reconcile', handler);
+        return () => window.removeEventListener('synthi:workspace-reconcile', handler);
+    }, [appendBuildLog, dispatch, emulatorSessionId, slug]);
 
     // Helper to detect if source code contains React Native imports
     const detectReactNativeInSource = useCallback((source) => {

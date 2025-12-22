@@ -26,6 +26,7 @@ use crate::react_native_builder::{
     detect_react_native_project, build_apk_for_emulator, check_android_sdk,
     EmulatorBuildConfig, BuildVariant,
 };
+use crate::workspace_reconcile::{reconcile_and_stream, take_snapshot, Snapshot};
 
 // ============================================================
 // JOB STATUS MESSAGES
@@ -208,6 +209,15 @@ pub async fn handle_react_native_emulator_job(
     }
     
     send_log(&log_dc, &session_id, &format!("Android SDK ready at {:?}", sdk_root), "system").await;
+
+    // Phase 1: snapshot the workspace before Gradle mutates it.
+    let pre_build_snapshot: Option<Snapshot> = match take_snapshot(&workspace_path).await {
+        Ok(s) => Some(s),
+        Err(e) => {
+            send_log(&log_dc, &session_id, &format!("Workspace snapshot failed (will skip reconciliation): {e:#}"), "system").await;
+            None
+        }
+    };
     
     // Step 3: Build APK
     send_status(&log_dc, &session_id, "building", "Building APK...", None).await;
@@ -283,6 +293,14 @@ pub async fn handle_react_native_emulator_job(
             send_status(&log_dc, &session_id, "build-failed", "APK build failed", Some(json!({
                 "error": format!("{:#}", e),
             }))).await;
+
+            // Phase 2: reconcile any partial Gradle/Android artifacts created before failure.
+            if let Some(snapshot) = pre_build_snapshot {
+                send_status(&log_dc, &session_id, "reconciling", "Syncing generated Android/Gradle files back to workspace...", None).await;
+                if let Err(sync_err) = reconcile_and_stream(log_dc.clone(), &session_id, &workspace_path, snapshot).await {
+                    send_log(&log_dc, &session_id, &format!("Workspace reconciliation failed (non-fatal): {sync_err:#}"), "system").await;
+                }
+            }
             return Err(e).context("APK build failed");
         }
     };
@@ -309,6 +327,14 @@ pub async fn handle_react_native_emulator_job(
             "diagnostics": build_result.diagnostics,
             "error": snippet,
         }))).await;
+
+        // Phase 2: reconcile any partial artifacts from a failed build.
+        if let Some(snapshot) = pre_build_snapshot {
+            send_status(&log_dc, &session_id, "reconciling", "Syncing generated Android/Gradle files back to workspace...", None).await;
+            if let Err(sync_err) = reconcile_and_stream(log_dc.clone(), &session_id, &workspace_path, snapshot).await {
+                send_log(&log_dc, &session_id, &format!("Workspace reconciliation failed (non-fatal): {sync_err:#}"), "system").await;
+            }
+        }
         bail!("APK build failed");
     }
     
@@ -319,6 +345,14 @@ pub async fn handle_react_native_emulator_job(
         "apk_path": apk_path.display().to_string(),
         "build_duration_ms": build_result.build_duration_ms,
     }))).await;
+
+    // Phase 2: reconcile generated wrapper/config (and optional build outputs) back to the real workspace.
+    if let Some(snapshot) = pre_build_snapshot {
+        send_status(&log_dc, &session_id, "reconciling", "Syncing generated Android/Gradle files back to workspace...", None).await;
+        if let Err(sync_err) = reconcile_and_stream(log_dc.clone(), &session_id, &workspace_path, snapshot).await {
+            send_log(&log_dc, &session_id, &format!("Workspace reconciliation failed (non-fatal): {sync_err:#}"), "system").await;
+        }
+    }
     
     // Step 4: Boot emulator
     send_status(&log_dc, &session_id, "booting-emulator", "Booting Android emulator...", None).await;

@@ -115,6 +115,14 @@ export class CompilerClient {
         // Check for GUI control messages
         try {
             const parsed = JSON.parse(text);
+            // Workspace reconciliation messages (generated file sync).
+            if (parsed && typeof parsed.type === 'string' && parsed.type.startsWith('workspace-')) {
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    window.dispatchEvent(new CustomEvent('synthi:workspace-reconcile', { detail: parsed }));
+                }
+                // Do not forward these payloads to build log handlers (they can be large / base64).
+                return;
+            }
             if (parsed && parsed.type === 'run-gui-start') {
                 console.log('[CompilerClient] Dispatching synthi:gui-start', parsed);
                 if (typeof window !== 'undefined' && window.dispatchEvent) {

@@ -1113,9 +1113,28 @@ class GitService {
         }
     }
 
+    _sanitizeRelativePath(filePath) {
+        if (typeof filePath !== 'string') return null;
+        const raw = filePath.replace(/\\/g, '/').trim();
+        if (!raw) return null;
+        const stripped = raw.replace(/^\/+/, '');
+        const parts = stripped.split('/').filter(Boolean);
+        if (parts.length === 0) return null;
+        // Prevent traversal
+        for (const p of parts) {
+            if (p === '..' || p === '.') return null;
+            if (p.includes('\u0000')) return null;
+        }
+        return parts.join('/');
+    }
+
     async writeFile(slug, filePath, content) {
         const repoPath = this.getRepoPath(slug);
-        const fullPath = path.join(repoPath, filePath);
+        const safeRel = this._sanitizeRelativePath(filePath);
+        if (!safeRel) {
+            throw new Error('Invalid file path');
+        }
+        const fullPath = path.join(repoPath, safeRel);
         try {
             // Ensure directory exists
             const dirPath = path.dirname(fullPath);
@@ -1124,6 +1143,75 @@ class GitService {
         } catch (e) {
             throw new Error(`Failed to write file: ${e.message}`);
         }
+    }
+
+    async writeFilesBatch(slug, files, options = {}) {
+        const syncToGcs = options.syncToGcs !== false;
+
+        return this.withLock(slug, async () => {
+            const repoPath = this.getRepoPath(slug);
+            if (!Array.isArray(files)) {
+                throw new Error('files must be an array');
+            }
+
+            const written = [];
+            const skipped = [];
+            const errors = [];
+
+            for (const f of files) {
+                try {
+                    const rel = this._sanitizeRelativePath(f?.path);
+                    if (!rel) {
+                        skipped.push({ path: f?.path, reason: 'invalid_path' });
+                        continue;
+                    }
+
+                    // NOTE: we intentionally do NOT allow folder markers here.
+                    if (rel.endsWith('/')) {
+                        skipped.push({ path: rel, reason: 'folders_not_supported' });
+                        continue;
+                    }
+
+                    const encoding = (f?.encoding || 'utf8').toLowerCase();
+                    const content = (typeof f?.content === 'string') ? f.content : (typeof f?.contentBase64 === 'string' ? f.contentBase64 : null);
+                    if (typeof content !== 'string') {
+                        skipped.push({ path: rel, reason: 'missing_content' });
+                        continue;
+                    }
+
+                    const fullPath = path.join(repoPath, rel);
+                    await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
+
+                    if (encoding === 'base64') {
+                        const buf = Buffer.from(content, 'base64');
+                        await fs.promises.writeFile(fullPath, buf);
+                    } else {
+                        await fs.promises.writeFile(fullPath, content, 'utf-8');
+                    }
+
+                    written.push({ path: rel, bytes: (encoding === 'base64') ? Buffer.byteLength(content, 'base64') : Buffer.byteLength(content, 'utf-8') });
+
+                    if (syncToGcs && gcsSync.isGcsConfigured()) {
+                        const gcsPath = `workspaces/${slug}/${rel}`;
+                        try {
+                            await gcsSync.uploadFile(fullPath, gcsPath);
+                        } catch (e) {
+                            // Non-fatal: file is still written to repo, but storage may lag.
+                            errors.push({ path: rel, stage: 'gcs_upload', error: e?.message || String(e) });
+                        }
+                    }
+                } catch (e) {
+                    errors.push({ path: f?.path, stage: 'write', error: e?.message || String(e) });
+                }
+            }
+
+            return {
+                success: errors.length === 0,
+                written,
+                skipped,
+                errors,
+            };
+        });
     }
 
     async getFileContent(slug, filePath, ref = 'HEAD') {

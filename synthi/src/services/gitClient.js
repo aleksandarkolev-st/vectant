@@ -179,6 +179,13 @@ export const gitClient = {
     async writeFile(slug, path, content) {
         return this.request(slug, 'write-file', { path, content });
     },
+
+    async writeFilesBatch(slug, files, options = {}) {
+        return this.request(slug, 'write-files-batch', {
+            files,
+            syncToGcs: options.syncToGcs !== false,
+        });
+    },
     
     /**
      * Clear Yjs collaboration persistence for specified files.
