@@ -602,6 +602,18 @@ async fn ensure_android_gradle_project(
         .await
         .with_context(|| format!("Failed to create {}", temp_root.display()))?;
 
+    #[derive(Clone, Copy, Debug)]
+    enum RnInitStrategy {
+        /// Uses the exact form: `npx react-native@<ver> init <name> ...`
+        PackagePinned,
+        /// Uses `npx react-native init <name> --version <ver> ...`.
+        /// This is still React Native CLI-only, but avoids cases where package-pinning
+        /// doesn't actually result in the desired template/version being generated.
+        VersionFlagPinned,
+        /// Uses `npx --package react-native@<ver> -- react-native init <name> ...`.
+        PackageFlagPinned,
+    }
+
     async fn try_rn_init(
         temp_root: &Path,
         rn_ver: &str,
@@ -609,6 +621,7 @@ async fn ensure_android_gradle_project(
         flags: &[&str],
         log_callback: Option<&LogCallback>,
         label: &str,
+        strategy: RnInitStrategy,
     ) -> Result<std::process::ExitStatus> {
         let temp_project_root = temp_root.join(temp_project_name);
         if temp_project_root.exists() {
@@ -619,30 +632,74 @@ async fn ensure_android_gradle_project(
         cmd.current_dir(temp_root)
             .env("CI", "1")
             .env("GIT_TERMINAL_PROMPT", "0")
-            .args([
-                &format!("react-native@{}", rn_ver),
-                "init",
-                temp_project_name,
-            ])
-            .args(flags);
+            // Non-interactive: prevent npx prompts (important for worker/CI).
+            .arg("--yes");
+
+        match strategy {
+            RnInitStrategy::PackagePinned => {
+                cmd.args([
+                    &format!("react-native@{}", rn_ver),
+                    "init",
+                    temp_project_name,
+                ]);
+            }
+            RnInitStrategy::VersionFlagPinned => {
+                cmd.args([
+                    "react-native",
+                    "init",
+                    temp_project_name,
+                    "--version",
+                    rn_ver,
+                ]);
+            }
+            RnInitStrategy::PackageFlagPinned => {
+                cmd.args([
+                    "--package",
+                    &format!("react-native@{}", rn_ver),
+                    "--",
+                    "react-native",
+                    "init",
+                    temp_project_name,
+                ]);
+            }
+        }
+
+        cmd.args(flags);
         run_command_and_log_output(cmd, log_callback, label).await
     }
 
-    // Retry with decreasing flags only if generation fails.
-    let init_attempts: Vec<(&'static str, Vec<&'static str>)> = vec![
+    // We intentionally try a small number of well-known React Native CLI forms.
+    // Some environments appear to exit 0 but fail to generate `android/`.
+    // In those cases, a different invocation style can succeed without user intervention.
+    let common_flags: Vec<&'static str> = vec!["--skip-install", "--skip-git-init", "--verbose"];
+    let fallback_flags: Vec<&'static str> = vec!["--skip-git-init", "--verbose"];
+
+    let init_attempts: Vec<(&'static str, RnInitStrategy, Vec<&'static str>)> = vec![
         (
-            "npx react-native init (skip-install, skip-git-init)",
-            vec!["--skip-install", "--skip-git-init", "--verbose"],
+            "npx react-native@<ver> init (skip-install, skip-git-init)",
+            RnInitStrategy::PackagePinned,
+            common_flags.clone(),
         ),
         (
-            "npx react-native init (skip-install)",
-            vec!["--skip-install", "--verbose"],
+            "npx react-native init --version <ver> (skip-install, skip-git-init)",
+            RnInitStrategy::VersionFlagPinned,
+            common_flags.clone(),
         ),
         (
-            "npx react-native init (skip-git-init)",
-            vec!["--skip-git-init", "--verbose"],
+            "npx --package react-native@<ver> -- react-native init (skip-install, skip-git-init)",
+            RnInitStrategy::PackageFlagPinned,
+            common_flags.clone(),
         ),
-        ("npx react-native init", vec!["--verbose"]),
+        (
+            "npx react-native@<ver> init (skip-git-init)",
+            RnInitStrategy::PackagePinned,
+            fallback_flags.clone(),
+        ),
+        (
+            "npx react-native init --version <ver> (skip-git-init)",
+            RnInitStrategy::VersionFlagPinned,
+            fallback_flags.clone(),
+        ),
     ];
 
     if let Some(cb) = log_callback {
@@ -655,7 +712,7 @@ async fn ensure_android_gradle_project(
     }
 
     let mut last_status: Option<std::process::ExitStatus> = None;
-    for (label, flags) in init_attempts {
+    for (label, strategy, flags) in init_attempts {
         let status = try_rn_init(
             &temp_root,
             &rn_ver,
@@ -663,6 +720,7 @@ async fn ensure_android_gradle_project(
             &flags,
             log_callback,
             label,
+            strategy,
         )
         .await?;
         last_status = Some(status);
@@ -672,8 +730,16 @@ async fn ensure_android_gradle_project(
         if android_dir_is_ready_for_first_gradle_invocation(&generated_android_dir) {
             break;
         }
-        if status.success() {
-            break;
+
+        if let Some(cb) = log_callback {
+            cb(format!(
+                "react-native init attempt did not yield a ready android/. status={:?}",
+                status.code()
+            ));
+            list_dir_for_debug(&generated_project_root, Some(cb), "generated project root").await;
+            if generated_android_dir.exists() {
+                list_dir_for_debug(&generated_android_dir, Some(cb), "generated android/").await;
+            }
         }
     }
 
@@ -694,7 +760,7 @@ async fn ensure_android_gradle_project(
         let missing_gen = android_dir_missing_required_files(&generated_android_dir);
         bail!(
             "Failed to generate android/ via React Native CLI. Missing in generated android/: {}. \
-Ensure `npx` can download react-native@{}` and that Node/npm are available in the worker.",
+Ensure `npx` can download react-native@{} and that Node/npm are available in the worker.",
             missing_gen.join(", "),
             rn_ver
         );
