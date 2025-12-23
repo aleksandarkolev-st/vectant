@@ -506,6 +506,206 @@ async fn run_command_and_log_output(
     Ok(output.status)
 }
 
+#[derive(Debug, Clone)]
+struct NodeInfo {
+    version: String,
+    major: u64,
+    exec_path: Option<String>,
+}
+
+fn parse_node_major(version: &str) -> Option<u64> {
+    let v = version.trim();
+    let v = v.strip_prefix('v').unwrap_or(v);
+    v.split('.').next()?.parse::<u64>().ok()
+}
+
+async fn detect_node_info() -> Option<NodeInfo> {
+    // Prefer `process.version` + `process.execPath` so we know *which* Node binary is used.
+    let output = Command::new("node")
+        .args(["-p", "process.version + '\\n' + (process.execPath || '')"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .ok()?;
+    if output.status.success() {
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut lines = text.lines();
+        let version = lines.next()?.trim().to_string();
+        let exec = lines.next().unwrap_or("").trim().to_string();
+        let major = parse_node_major(&version)?;
+        let exec_path = if exec.is_empty() { None } else { Some(exec) };
+        return Some(NodeInfo {
+            version,
+            major,
+            exec_path,
+        });
+    }
+
+    // Fallback: `node -v`.
+    let output = Command::new("node")
+        .arg("-v")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let major = parse_node_major(&version)?;
+    Some(NodeInfo {
+        version,
+        major,
+        exec_path: None,
+    })
+}
+
+async fn list_child_dirs(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let Ok(mut rd) = tokio::fs::read_dir(dir).await else {
+        return out;
+    };
+    while let Ok(Some(ent)) = rd.next_entry().await {
+        if ent
+            .file_type()
+            .await
+            .ok()
+            .map(|t| t.is_dir())
+            .unwrap_or(false)
+        {
+            if let Some(name) = ent.file_name().to_str() {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+async fn find_generated_project_root(
+    temp_root: &Path,
+    expected: &Path,
+    before_dirs: &[String],
+    log_callback: Option<&LogCallback>,
+) -> PathBuf {
+    async fn discover_by_android_sentinels(
+        temp_root: &Path,
+        log_callback: Option<&LogCallback>,
+    ) -> Option<PathBuf> {
+        // Some init implementations can create nested paths or different folder names.
+        // As a last-resort, scan the temp_root for a valid android/ directory and
+        // infer the project root from it.
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        let _ = find_files_recursive(
+            temp_root,
+            &["settings.gradle", "settings.gradle.kts"],
+            &mut candidates,
+        )
+        .await;
+
+        for settings in candidates {
+            let Some(android_dir) = settings.parent() else {
+                continue;
+            };
+            if android_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n == "android")
+                .unwrap_or(false)
+                && android_dir_is_ready_for_first_gradle_invocation(android_dir)
+            {
+                let Some(root) = android_dir.parent() else {
+                    continue;
+                };
+                if let Some(cb) = log_callback {
+                    cb(format!(
+                        "Discovered RN project root via android/ sentinels: {}",
+                        root.display()
+                    ));
+                }
+                return Some(root.to_path_buf());
+            }
+        }
+
+        None
+    }
+
+    if expected.exists() {
+        return expected.to_path_buf();
+    }
+
+    let after_dirs = list_child_dirs(temp_root).await;
+    let mut new_dirs: Vec<String> = after_dirs
+        .into_iter()
+        .filter(|d| !before_dirs.contains(d))
+        .collect();
+    new_dirs.sort();
+
+    if let Some(cb) = log_callback {
+        cb(format!(
+            "Expected RN project dir missing; discovered new dirs: {:?}",
+            new_dirs
+        ));
+    }
+
+    // If nothing obvious was created at the top-level, attempt a sentinel scan.
+    if new_dirs.is_empty() {
+        if let Some(root) = discover_by_android_sentinels(temp_root, log_callback).await {
+            return root;
+        }
+    }
+
+    // Prefer a directory that actually has android/.
+    for d in &new_dirs {
+        let candidate = temp_root.join(d);
+        if candidate.join("android").exists() {
+            if let Some(cb) = log_callback {
+                cb(format!(
+                    "Using discovered RN project dir: {}",
+                    candidate.display()
+                ));
+            }
+            return candidate;
+        }
+    }
+
+    // Next: a directory that has package.json.
+    for d in &new_dirs {
+        let candidate = temp_root.join(d);
+        if candidate.join("package.json").exists() {
+            if let Some(cb) = log_callback {
+                cb(format!(
+                    "Using discovered RN project dir: {}",
+                    candidate.display()
+                ));
+            }
+            return candidate;
+        }
+    }
+
+    // If there's exactly one new dir, use it.
+    if new_dirs.len() == 1 {
+        let candidate = temp_root.join(&new_dirs[0]);
+        if let Some(cb) = log_callback {
+            cb(format!(
+                "Using discovered RN project dir: {}",
+                candidate.display()
+            ));
+        }
+        return candidate;
+    }
+
+    // Last-resort scan even if there were multiple new dirs.
+    if let Some(root) = discover_by_android_sentinels(temp_root, log_callback).await {
+        return root;
+    }
+
+    // Fall back to the expected path even if it doesn't exist, so callers can log it.
+    expected.to_path_buf()
+}
+
 async fn ensure_android_gradle_project(
     project_root: &Path,
     android_dir: &Path,
@@ -522,7 +722,7 @@ async fn ensure_android_gradle_project(
             "Android Gradle project is missing required files: {}",
             missing.join(", ")
         ));
-        cb("Generating android/ via React Native CLI (npx react-native init)".to_string());
+        cb("Generating android/ via React Native CLI".to_string());
     }
 
     let package_json_path = project_root.join("package.json");
@@ -604,6 +804,9 @@ async fn ensure_android_gradle_project(
 
     #[derive(Clone, Copy, Debug)]
     enum RnInitStrategy {
+        /// Uses `npx @react-native-community/cli init <name> ...`.
+        /// This is the recommended replacement for the deprecated `react-native init`.
+        CommunityCli,
         /// Uses the exact form: `npx react-native@<ver> init <name> ...`
         PackagePinned,
         /// Uses `npx react-native init <name> --version <ver> ...`.
@@ -636,6 +839,17 @@ async fn ensure_android_gradle_project(
             .arg("--yes");
 
         match strategy {
+            RnInitStrategy::CommunityCli => {
+                // `react-native init` is deprecated and can exit early in modern CLIs.
+                // Use the community CLI directly.
+                cmd.args([
+                    "@react-native-community/cli",
+                    "init",
+                    temp_project_name,
+                    "--version",
+                    rn_ver,
+                ]);
+            }
             RnInitStrategy::PackagePinned => {
                 cmd.args([
                     &format!("react-native@{}", rn_ver),
@@ -674,15 +888,55 @@ async fn ensure_android_gradle_project(
     let common_flags: Vec<&'static str> = vec!["--skip-install", "--skip-git-init", "--verbose"];
     let fallback_flags: Vec<&'static str> = vec!["--skip-git-init", "--verbose"];
 
-    let init_attempts: Vec<(&'static str, RnInitStrategy, Vec<&'static str>)> = vec![
+    let node_info = detect_node_info().await;
+    let node_major = node_info.as_ref().map(|n| n.major);
+    if let Some(cb) = log_callback {
+        let version_str = node_info
+            .as_ref()
+            .map(|n| n.version.clone())
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let exec_str = node_info
+            .as_ref()
+            .and_then(|n| n.exec_path.clone())
+            .unwrap_or_else(|| "<unknown>".to_string());
+        cb(format!("Worker node version: {version_str}"));
+        cb(format!("Worker node execPath: {exec_str}"));
+
+        if let Ok(path) = std::env::var("PATH") {
+            // Keep logs readable; show only the first chunk.
+            let snippet: String = path.chars().take(300).collect();
+            cb(format!("Worker PATH (prefix): {snippet}"));
+        }
+    }
+
+    // React Native tooling has increasingly strict Node requirements.
+    // In practice, init can "succeed" (exit 0) while not generating android/ when Node is too old.
+    // Your logs show dependencies requiring Node >= 20.19.4.
+    if node_major.unwrap_or(0) < 20 {
+        let version_str = node_info
+            .as_ref()
+            .map(|n| n.version.clone())
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let exec_str = node_info
+            .as_ref()
+            .and_then(|n| n.exec_path.clone())
+            .unwrap_or_else(|| "<unknown>".to_string());
+        bail!(
+            "React Native CLI requires Node.js >= 20.19.4 in the worker (detected {version_str} at {exec_str}). \
+This usually means the worker process is using a different Node than your interactive shell (PATH/service/container). \
+Ensure Node 20.19.4+ is on PATH for the worker process and restart the worker, then retry."
+        );
+    }
+
+    let mut init_attempts: Vec<(&'static str, RnInitStrategy, Vec<&'static str>)> = vec![
         (
-            "npx react-native@<ver> init (skip-install, skip-git-init)",
-            RnInitStrategy::PackagePinned,
+            "npx @react-native-community/cli init --version <ver> (skip-install, skip-git-init)",
+            RnInitStrategy::CommunityCli,
             common_flags.clone(),
         ),
         (
-            "npx react-native init --version <ver> (skip-install, skip-git-init)",
-            RnInitStrategy::VersionFlagPinned,
+            "npx react-native@<ver> init (skip-install, skip-git-init)",
+            RnInitStrategy::PackagePinned,
             common_flags.clone(),
         ),
         (
@@ -695,16 +949,29 @@ async fn ensure_android_gradle_project(
             RnInitStrategy::PackagePinned,
             fallback_flags.clone(),
         ),
-        (
+    ];
+
+    // The `react-native init --version <ver>` form is known to crash on Node 18
+    // (`util.styleText` is Node 20+). Only attempt it on Node >= 20.
+    if node_major.unwrap_or(0) >= 20 {
+        init_attempts.insert(
+            1,
+            (
+                "npx react-native init --version <ver> (skip-install, skip-git-init)",
+                RnInitStrategy::VersionFlagPinned,
+                common_flags.clone(),
+            ),
+        );
+        init_attempts.push((
             "npx react-native init --version <ver> (skip-git-init)",
             RnInitStrategy::VersionFlagPinned,
             fallback_flags.clone(),
-        ),
-    ];
+        ));
+    }
 
     if let Some(cb) = log_callback {
         cb(format!(
-            "Running: npx react-native@{} init {} (cwd={})",
+            "Running: RN init into temp dir (rn_ver={}, name={}, cwd={})",
             rn_ver,
             temp_project_name,
             temp_root.display()
@@ -713,6 +980,7 @@ async fn ensure_android_gradle_project(
 
     let mut last_status: Option<std::process::ExitStatus> = None;
     for (label, strategy, flags) in init_attempts {
+        let before_dirs = list_child_dirs(&temp_root).await;
         let status = try_rn_init(
             &temp_root,
             &rn_ver,
@@ -725,7 +993,14 @@ async fn ensure_android_gradle_project(
         .await?;
         last_status = Some(status);
 
-        let generated_project_root = temp_root.join(&temp_project_name);
+        let expected_project_root = temp_root.join(&temp_project_name);
+        let generated_project_root = find_generated_project_root(
+            &temp_root,
+            &expected_project_root,
+            &before_dirs,
+            log_callback,
+        )
+        .await;
         let generated_android_dir = generated_project_root.join("android");
         if android_dir_is_ready_for_first_gradle_invocation(&generated_android_dir) {
             break;
@@ -733,7 +1008,7 @@ async fn ensure_android_gradle_project(
 
         if let Some(cb) = log_callback {
             cb(format!(
-                "react-native init attempt did not yield a ready android/. status={:?}",
+                "RN init attempt did not yield a ready android/. status={:?}",
                 status.code()
             ));
             list_dir_for_debug(&generated_project_root, Some(cb), "generated project root").await;
@@ -743,12 +1018,19 @@ async fn ensure_android_gradle_project(
         }
     }
 
-    let generated_project_root = temp_root.join(&temp_project_name);
+    let expected_project_root = temp_root.join(&temp_project_name);
+    let generated_project_root = find_generated_project_root(
+        &temp_root,
+        &expected_project_root,
+        &list_child_dirs(&temp_root).await,
+        log_callback,
+    )
+    .await;
     let generated_android_dir = generated_project_root.join("android");
     if !android_dir_is_ready_for_first_gradle_invocation(&generated_android_dir) {
         if let Some(cb) = log_callback {
             cb(format!(
-                "react-native init did not produce a valid Android Gradle project (exit_code={:?}).",
+                "RN init did not produce a valid Android Gradle project (exit_code={:?}).",
                 last_status.and_then(|s| s.code())
             ));
             list_dir_for_debug(&generated_project_root, Some(cb), "generated project root").await;

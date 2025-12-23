@@ -23,8 +23,11 @@ impl Default for ReconcileConfig {
     fn default() -> Self {
         Self {
             include_build_outputs: false,
-            max_files: 200,
-            max_total_bytes: 25 * 1024 * 1024,
+            // Android Gradle projects routinely contain hundreds of small files.
+            // Keep the default high enough to persist generated `android/` once,
+            // but still bounded.
+            max_files: 2500,
+            max_total_bytes: 50 * 1024 * 1024,
             max_file_bytes: 5 * 1024 * 1024,
             chunk_chars: 24_000,
         }
@@ -142,6 +145,11 @@ impl Default for SyncRules {
                 ("settings.gradle.kts".into(), OverwritePolicy::CreateOnly),
                 ("build.gradle".into(), OverwritePolicy::CreateOnly),
                 ("build.gradle.kts".into(), OverwritePolicy::CreateOnly),
+                // React Native can generate a full Android project tree on first build.
+                // Persist it back so subsequent builds don't re-run RN init.
+                // Use CreateOnly to avoid clobbering user-authored Android changes.
+                ("gradle.properties".into(), OverwritePolicy::CreateOnly),
+                ("app".into(), OverwritePolicy::CreateOnly),
             ],
             optional_dirs: vec!["build".into(), "app/build".into()],
         }
@@ -195,6 +203,26 @@ fn normalize_rel_path(rel: &str) -> Option<String> {
     }
 }
 
+fn should_skip_dir_name(name: &str, include_build_outputs: bool) -> bool {
+    // Never attempt to sync dependency trees back to the workspace.
+    // They are enormous and can stall reconciliation / overwhelm the data channel.
+    if name == "node_modules" {
+        return true;
+    }
+
+    // Always skip tool/cache dirs.
+    if matches!(name, ".gradle" | ".cxx" | ".idea" | ".git") {
+        return true;
+    }
+
+    // Build outputs are huge. Only include them when explicitly enabled.
+    if !include_build_outputs && name == "build" {
+        return true;
+    }
+
+    false
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
@@ -226,6 +254,13 @@ async fn snapshot_paths(
         if abs.is_file() {
             candidates.push((abs, rel));
         } else if abs.is_dir() {
+            if abs
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| should_skip_dir_name(n, include_optional_dirs))
+            {
+                continue;
+            }
             // capture all files under directory
             let mut stack = vec![abs.clone()];
             while let Some(dir) = stack.pop() {
@@ -234,6 +269,13 @@ async fn snapshot_paths(
                     let ft = ent.file_type().await?;
                     let ent_path = ent.path();
                     if ft.is_dir() {
+                        if ent
+                            .file_name()
+                            .to_str()
+                            .is_some_and(|n| should_skip_dir_name(n, include_optional_dirs))
+                        {
+                            continue;
+                        }
                         stack.push(ent_path);
                     } else if ft.is_file() {
                         if let Ok(relpath) = ent_path.strip_prefix(workspace_root) {
@@ -254,6 +296,13 @@ async fn snapshot_paths(
             if !abs.is_dir() {
                 continue;
             }
+            if abs
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| should_skip_dir_name(n, include_optional_dirs))
+            {
+                continue;
+            }
             let mut stack = vec![abs];
             while let Some(d) = stack.pop() {
                 let mut rd = fs::read_dir(&d).await?;
@@ -261,6 +310,13 @@ async fn snapshot_paths(
                     let ft = ent.file_type().await?;
                     let ent_path = ent.path();
                     if ft.is_dir() {
+                        if ent
+                            .file_name()
+                            .to_str()
+                            .is_some_and(|n| should_skip_dir_name(n, include_optional_dirs))
+                        {
+                            continue;
+                        }
                         stack.push(ent_path);
                     } else if ft.is_file() {
                         if let Ok(relpath) = ent_path.strip_prefix(workspace_root) {

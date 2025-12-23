@@ -30,10 +30,16 @@ use tokio::time::timeout;
 // CONSTANTS
 // ============================================================
 
-/// Default emulator boot timeout (180 seconds)
-const EMULATOR_BOOT_TIMEOUT_SECS: u64 = 180;
+/// Default emulator boot timeout.
+///
+/// NOTE: Cold boots for modern system images (especially without hardware accel)
+/// can exceed 10 minutes. Keep this conservative to reduce flaky CI.
+const EMULATOR_BOOT_TIMEOUT_SECS: u64 = 1200;
 
-/// Maximum time to wait for adb to connect (30 seconds)
+/// Maximum time to wait for adb to connect.
+///
+/// Note: we primarily rely on the overall emulator boot timeout now; this value
+/// is kept only for legacy callers.
 const ADB_CONNECT_TIMEOUT_SECS: u64 = 30;
 
 /// Maximum time for APK installation (120 seconds)
@@ -594,23 +600,104 @@ impl EmulatorSession {
         let adb = self.config.android_sdk_root.join("platform-tools/adb");
         let boot_timeout = Duration::from_secs(self.config.boot_timeout_secs);
 
-        // Step 1: Wait for adb to see the device
-        let connect_timeout = Duration::from_secs(ADB_CONNECT_TIMEOUT_SECS);
-        let serial = timeout(connect_timeout, self.wait_for_adb_device(&adb))
-            .await
-            .context("Timeout waiting for adb device")?
-            .context("Failed to detect emulator device")?;
+        // Best-effort: ensure the adb server is running.
+        let _ = Command::new(&adb).arg("start-server").output().await;
 
-        // Step 2: Wait for boot completion
-        let remaining =
-            boot_timeout.saturating_sub(self.started_at.map(|s| s.elapsed()).unwrap_or_default());
+        // Treat the entire "device appears + boot completes" flow as one bounded operation.
+        let wait_fut = async {
+            let serial = self
+                .wait_for_adb_device(&adb)
+                .await
+                .context("Failed to detect emulator device")?;
+            self.wait_for_boot_complete(&adb, &serial)
+                .await
+                .context("Failed to complete boot")?;
+            Ok::<String, anyhow::Error>(serial)
+        };
 
-        timeout(remaining, self.wait_for_boot_complete(&adb, &serial))
-            .await
-            .context("Timeout waiting for boot completion")?
-            .context("Failed to complete boot")?;
+        match timeout(boot_timeout, wait_fut).await {
+            Ok(res) => res,
+            Err(_) => {
+                let devices = Command::new(&adb)
+                    .args(["devices", "-l"])
+                    .output()
+                    .await
+                    .ok()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                    .unwrap_or_else(|| "<failed to run `adb devices -l`>".to_string());
 
-        Ok(serial)
+                // Prefer extracting the serial from `adb devices -l` if present.
+                let serial = devices
+                    .lines()
+                    .find_map(|l| {
+                        let cols: Vec<&str> = l.split_whitespace().collect();
+                        if cols.len() >= 2
+                            && (cols[0].starts_with("emulator-")
+                                || cols[0].starts_with("127.0.0.1:")
+                                || cols[0].starts_with("localhost:"))
+                        {
+                            Some(cols[0].to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_else(|| "emulator-5554".to_string());
+
+                let sys_out = Command::new(&adb)
+                    .args(["-s", &serial, "shell", "getprop", "sys.boot_completed"])
+                    .output()
+                    .await
+                    .ok();
+                let dev_out = Command::new(&adb)
+                    .args(["-s", &serial, "shell", "getprop", "dev.bootcomplete"])
+                    .output()
+                    .await
+                    .ok();
+                let bootanim_out = Command::new(&adb)
+                    .args(["-s", &serial, "shell", "getprop", "init.svc.bootanim"])
+                    .output()
+                    .await
+                    .ok();
+
+                let sys_boot = sys_out
+                    .as_ref()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_else(|| "<error>".to_string());
+                let sys_err = sys_out
+                    .as_ref()
+                    .map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string())
+                    .unwrap_or_else(|| "".to_string());
+                let dev_boot = dev_out
+                    .as_ref()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_else(|| "<error>".to_string());
+                let dev_err = dev_out
+                    .as_ref()
+                    .map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string())
+                    .unwrap_or_else(|| "".to_string());
+                let bootanim = bootanim_out
+                    .as_ref()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_else(|| "<error>".to_string());
+                let bootanim_err = bootanim_out
+                    .as_ref()
+                    .map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string())
+                    .unwrap_or_else(|| "".to_string());
+
+                bail!(
+                    "Timeout waiting for emulator to become ready (boot_timeout_secs={}). `adb devices -l`:\n{}\n\nBoot props for {}: sys.boot_completed='{}' dev.bootcomplete='{}' init.svc.bootanim='{}'\n\nboot prop stderr (if any): sys.boot_completed: '{}' dev.bootcomplete: '{}' init.svc.bootanim: '{}'",
+                    self.config.boot_timeout_secs,
+                    devices.trim_end(),
+                    serial,
+                    sys_boot,
+                    dev_boot,
+                    bootanim,
+                    sys_err,
+                    dev_err,
+                    bootanim_err
+                );
+            }
+        }
     }
 
     /// Waits for adb to detect an emulator device
@@ -620,15 +707,39 @@ impl EmulatorSession {
 
             let stdout = String::from_utf8_lossy(&output.stdout);
 
+            // Prefer a fully connected emulator device. Sometimes the emulator first shows as
+            // `offline` for a while; in that case keep waiting rather than timing out early.
+            let mut saw_emulator_serial: Option<String> = None;
+
             // Look for emulator-XXXX in device list
             for line in stdout.lines() {
-                if line.starts_with("emulator-") && line.contains("device") {
-                    let serial = line.split_whitespace().next().unwrap_or("");
-                    if !serial.is_empty() {
-                        return Ok(serial.to_string());
-                    }
+                let cols: Vec<&str> = line.split_whitespace().collect();
+                if cols.len() < 2 {
+                    continue;
+                }
+
+                let serial = cols[0];
+                let state = cols[1];
+
+                let looks_like_emulator = serial.starts_with("emulator-")
+                    || serial.starts_with("127.0.0.1:")
+                    || serial.starts_with("localhost:");
+                if !looks_like_emulator {
+                    continue;
+                }
+
+                // Record that we saw an emulator at all (even if not ready).
+                if saw_emulator_serial.is_none() {
+                    saw_emulator_serial = Some(serial.to_string());
+                }
+
+                if state == "device" {
+                    return Ok(serial.to_string());
                 }
             }
+
+            // If we saw an emulator but it's not yet in `device` state, keep polling.
+            // If we never saw one, also keep polling; boot might still be starting.
 
             tokio::time::sleep(Duration::from_millis(BOOT_POLL_INTERVAL_MS)).await;
         }
@@ -637,14 +748,16 @@ impl EmulatorSession {
     /// Waits for Android to finish booting
     async fn wait_for_boot_complete(&self, adb: &Path, serial: &str) -> Result<()> {
         loop {
-            // Check sys.boot_completed property
+            // Check sys.boot_completed property. Note: `adb shell` can return a non-zero exit
+            // with details in stderr while stdout is empty; treat that as "not ready yet".
             let output = Command::new(adb)
                 .args(["-s", serial, "shell", "getprop", "sys.boot_completed"])
                 .output()
                 .await?;
 
             let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if value == "1" {
+            let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if output.status.success() && value == "1" {
                 // Also check dev.bootcomplete for older devices
                 let output2 = Command::new(adb)
                     .args(["-s", serial, "shell", "getprop", "dev.bootcomplete"])
@@ -652,10 +765,38 @@ impl EmulatorSession {
                     .await?;
 
                 let value2 = String::from_utf8_lossy(&output2.stdout).trim().to_string();
-                if value2 == "1" || value2.is_empty() {
-                    // Boot complete!
+
+                // Additional readiness signal: boot animation has stopped.
+                // Some images report sys.boot_completed but still aren't interactive yet.
+                let bootanim_out = Command::new(adb)
+                    .args(["-s", serial, "shell", "getprop", "init.svc.bootanim"])
+                    .output()
+                    .await
+                    .ok();
+                let bootanim = bootanim_out
+                    .as_ref()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_default();
+
+                // Extra check: ensure package manager is responsive.
+                // This avoids rare cases where sys.boot_completed flips early but `pm` isn't ready.
+                let pm_ok = Command::new(adb)
+                    .args(["-s", serial, "shell", "pm", "path", "android"])
+                    .output()
+                    .await
+                    .map(|o| o.status.success() && !o.stdout.is_empty())
+                    .unwrap_or(false);
+
+                if (value2 == "1" || value2.is_empty())
+                    && (bootanim.is_empty() || bootanim == "stopped")
+                    && pm_ok
+                {
                     return Ok(());
                 }
+            } else if !output.status.success() {
+                // If adb is still settling, stderr often contains helpful hints like "device offline".
+                // Don't fail the boot for that; just keep polling until the overall timeout.
+                let _ = err;
             }
 
             tokio::time::sleep(Duration::from_millis(BOOT_POLL_INTERVAL_MS)).await;
@@ -702,12 +843,24 @@ impl EmulatorSession {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
-        if !output.status.success() || stderr.contains("Failure") {
+        let out = stdout.trim();
+        let err = stderr.trim();
+        let combined = format!("stdout: {}\nstderr: {}", out, err);
+
+        // `adb install` reports success/failure primarily on stdout.
+        // Examples:
+        //   Success
+        //   Failure [INSTALL_FAILED_...]
+        // Exit codes are not fully reliable across adb versions, so we check both streams.
+        let looks_like_failure = out.contains("Failure") || err.contains("Failure");
+        let looks_like_success = out.contains("Success") && !looks_like_failure;
+
+        if !output.status.success() || looks_like_failure || !looks_like_success {
             return Ok(AppInstallResult {
                 success: false,
                 install_time_ms: start.elapsed().as_millis() as u64,
                 package_name: None,
-                error: Some(format!("Install failed: {}", stderr)),
+                error: Some(format!("Install failed. {}", combined)),
             });
         }
 
@@ -724,10 +877,7 @@ impl EmulatorSession {
 
     /// Gets package name from APK using aapt2
     async fn get_package_name(&self, apk_path: &Path) -> Result<String> {
-        let aapt2 = self
-            .config
-            .android_sdk_root
-            .join("build-tools/34.0.0/aapt2");
+        let aapt2 = self.find_aapt2().await?;
 
         let output = Command::new(&aapt2)
             .args(["dump", "packagename"])
@@ -742,6 +892,51 @@ impl EmulatorSession {
         }
 
         Ok(package)
+    }
+
+    async fn find_aapt2(&self) -> Result<PathBuf> {
+        let build_tools_dir = self.config.android_sdk_root.join("build-tools");
+        let mut entries = tokio::fs::read_dir(&build_tools_dir)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to read build-tools dir at {}",
+                    build_tools_dir.display()
+                )
+            })?;
+
+        let mut candidates: Vec<(Vec<u32>, PathBuf)> = Vec::new();
+
+        while let Some(entry) = entries.next_entry().await? {
+            if !entry.file_type().await?.is_dir() {
+                continue;
+            }
+
+            let name = entry.file_name();
+            let version_str = name.to_string_lossy();
+            let version = version_str
+                .split('.')
+                .filter_map(|p| p.parse::<u32>().ok())
+                .collect::<Vec<_>>();
+            if version.is_empty() {
+                continue;
+            }
+
+            let candidate = entry.path().join("aapt2");
+            if candidate.exists() {
+                candidates.push((version, candidate));
+            }
+        }
+
+        candidates.sort_by(|(a, _), (b, _)| b.cmp(a));
+
+        candidates
+            .into_iter()
+            .next()
+            .map(|(_, p)| p)
+            .ok_or_else(|| {
+                anyhow::anyhow!("Could not find aapt2 under {}", build_tools_dir.display())
+            })
     }
 
     // ============================================================
@@ -787,12 +982,25 @@ impl EmulatorSession {
 
         let stderr = String::from_utf8_lossy(&output.stderr);
 
-        if !output.status.success() || stderr.contains("Error") {
+        let out = String::from_utf8_lossy(&output.stdout);
+        let out_trim = out.trim();
+        let err_trim = stderr.trim();
+        let combined = format!("stdout: {}\nstderr: {}", out_trim, err_trim);
+
+        // `am start` errors can appear on either stdout or stderr depending on Android version.
+        let combined_lower = combined.to_lowercase();
+        let looks_like_error = combined_lower.contains("error")
+            || combined_lower.contains("exception")
+            || combined_lower.contains("does not exist")
+            || combined_lower.contains("not started")
+            || combined_lower.contains("unable to find");
+
+        if !output.status.success() || looks_like_error {
             return Ok(AppLaunchResult {
                 success: false,
                 launch_time_ms: start.elapsed().as_millis() as u64,
                 activity: None,
-                error: Some(format!("Launch failed: {}", stderr)),
+                error: Some(format!("Launch failed. {}", combined)),
             });
         }
 
@@ -825,14 +1033,35 @@ impl EmulatorSession {
             .await
             .context("Failed to resolve main activity")?;
 
+        if !output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "Failed to resolve main activity for package {}. stdout: {} stderr: {}",
+                package,
+                stdout.trim(),
+                stderr.trim()
+            );
+        }
+
         let stdout = String::from_utf8_lossy(&output.stdout);
 
-        // Parse output like "com.example.app/.MainActivity"
+        // Parse output like:
+        //   com.example.app/.MainActivity
+        // or sometimes:
+        //   name=com.example.app/.MainActivity
         for line in stdout.lines() {
-            if line.contains('/') {
-                let parts: Vec<&str> = line.trim().split('/').collect();
-                if parts.len() == 2 {
-                    return Ok(parts[1].to_string());
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let component = line.strip_prefix("name=").unwrap_or(line).trim();
+
+            if component.contains('/') {
+                let parts: Vec<&str> = component.split('/').collect();
+                if parts.len() == 2 && !parts[1].trim().is_empty() {
+                    return Ok(parts[1].trim().to_string());
                 }
             }
         }

@@ -554,7 +554,38 @@ pub async fn handle_react_native_emulator_job(
             None,
         )
         .await;
-        if let Err(sync_err) = reconcile_and_stream_with_rules(
+
+        // Heartbeat while reconciling so the frontend doesn't assume the worker died
+        // if hashing/streaming takes a while.
+        let (sync_done_tx, mut sync_done_rx) = watch::channel(false);
+        {
+            let dc = log_dc.clone();
+            let sid = session_id.clone();
+            tokio::spawn(async move {
+                let start = Instant::now();
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            if *sync_done_rx.borrow() {
+                                break;
+                            }
+                            send_status(&dc, &sid, "reconciling", "Syncing generated Android/Gradle files back to workspace...", Some(json!({
+                                "elapsed_ms": start.elapsed().as_millis() as u64,
+                            }))).await;
+                        }
+                        changed = sync_done_rx.changed() => {
+                            if changed.is_ok() && *sync_done_rx.borrow() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        let sync_res = reconcile_and_stream_with_rules(
             log_dc.clone(),
             &session_id,
             &workspace_path,
@@ -562,8 +593,10 @@ pub async fn handle_react_native_emulator_job(
             rules,
             cfg,
         )
-        .await
-        {
+        .await;
+        let _ = sync_done_tx.send(true);
+
+        if let Err(sync_err) = sync_res {
             send_log(
                 &log_dc,
                 &session_id,
@@ -587,9 +620,48 @@ pub async fn handle_react_native_emulator_job(
     let mut emulator_config = EmulatorConfig::default();
     emulator_config.android_sdk_root = sdk_root;
 
+    // If the worker has KVM available, enable hardware acceleration.
+    // This dramatically reduces emulator boot time and flakiness.
+    #[cfg(target_os = "linux")]
+    {
+        if std::path::Path::new("/dev/kvm").exists() {
+            emulator_config.use_hw_accel = true;
+        }
+    }
+
     let mut emulator = EmulatorSession::new(emulator_config);
 
+    // Heartbeat while booting; cold boots can take many minutes.
+    let (boot_done_tx, mut boot_done_rx) = watch::channel(false);
+    {
+        let dc = log_dc.clone();
+        let sid = session_id.clone();
+        tokio::spawn(async move {
+            let start = Instant::now();
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        if *boot_done_rx.borrow() {
+                            break;
+                        }
+                        send_status(&dc, &sid, "booting-emulator", "Booting Android emulator...", Some(json!({
+                            "elapsed_ms": start.elapsed().as_millis() as u64,
+                        }))).await;
+                    }
+                    changed = boot_done_rx.changed() => {
+                        if changed.is_ok() && *boot_done_rx.borrow() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     let boot_result = emulator.boot().await.context("Failed to boot emulator")?;
+    let _ = boot_done_tx.send(true);
 
     if !boot_result.success {
         send_status(
