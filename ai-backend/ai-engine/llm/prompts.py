@@ -34,18 +34,98 @@ def _coerce_mapping(entry: Any) -> Optional[Mapping[str, Any]]:
     return None
 
 
-def _trim_file_block(content: str, max_chars: int = FILE_CONTEXT_MAX_CHARS) -> str:
+def _trim_file_block(
+    content: str, 
+    max_chars: int = FILE_CONTEXT_MAX_CHARS,
+    cursor_line: Optional[int] = None,
+    context_window: int = 50,  # Lines around cursor to preserve
+) -> str:
+    """
+    Trim file content intelligently, preserving:
+    1. Head and tail for context
+    2. Area around cursor if specified (most important for edits)
+    
+    Args:
+        content: Full file content
+        max_chars: Maximum characters to return
+        cursor_line: Line number where user's cursor is (1-indexed)
+        context_window: Number of lines around cursor to preserve
+    
+    Returns:
+        Trimmed content with [...] markers for omitted sections
+    """
     if not content:
         return ""
     if len(content) <= max_chars:
         return content
+    
+    lines = content.split('\n')
+    total_lines = len(lines)
+    
+    # If cursor is specified, use three-part trimming: head + cursor area + tail
+    if cursor_line is not None and 1 <= cursor_line <= total_lines:
+        cursor_idx = cursor_line - 1  # 0-indexed
+        
+        # Calculate regions
+        cursor_start = max(0, cursor_idx - context_window)
+        cursor_end = min(total_lines, cursor_idx + context_window + 1)
+        
+        # Budget: split between head, cursor area, and tail
+        cursor_lines = lines[cursor_start:cursor_end]
+        cursor_chars = sum(len(l) for l in cursor_lines) + len(cursor_lines)  # +newlines
+        
+        remaining = max_chars - cursor_chars - 50  # Reserve 50 for markers
+        if remaining > 0:
+            head_budget = remaining // 3
+            tail_budget = remaining // 3
+            
+            # Build head (from start to before cursor region)
+            head_lines = []
+            head_chars = 0
+            for i in range(cursor_start):
+                line_len = len(lines[i]) + 1
+                if head_chars + line_len > head_budget:
+                    break
+                head_lines.append(lines[i])
+                head_chars += line_len
+            
+            # Build tail (from after cursor region to end)
+            tail_lines = []
+            tail_chars = 0
+            for i in range(total_lines - 1, cursor_end - 1, -1):
+                line_len = len(lines[i]) + 1
+                if tail_chars + line_len > tail_budget:
+                    break
+                tail_lines.insert(0, lines[i])
+                tail_chars += line_len
+            
+            # Assemble with markers
+            parts = []
+            if head_lines:
+                parts.append('\n'.join(head_lines))
+            if len(head_lines) < cursor_start:
+                parts.append(f"[... {cursor_start - len(head_lines)} lines omitted ...]")
+            
+            parts.append('\n'.join(cursor_lines))
+            
+            omitted_after = (total_lines - cursor_end) - len(tail_lines)
+            if omitted_after > 0:
+                parts.append(f"[... {omitted_after} lines omitted ...]")
+            if tail_lines:
+                parts.append('\n'.join(tail_lines))
+            
+            return '\n'.join(parts)
+    
+    # Fallback: simple head + tail trimming
     head = content[:FILE_CONTEXT_HEAD_CHARS]
     tail = content[-FILE_CONTEXT_TAIL_CHARS:]
-    return f"{head}\n...\n{tail}"
+    omitted = len(content) - FILE_CONTEXT_HEAD_CHARS - FILE_CONTEXT_TAIL_CHARS
+    return f"{head}\n[... {omitted} characters omitted ...]\n{tail}"
 
 
 def _format_files_context(
     files: Optional[Sequence[Mapping[str, Any]]],
+    cursor_info: Optional[Mapping[str, Any]] = None,  # {"file": path, "line": int}
 ) -> Tuple[str, Optional[str]]:
     if not files:
         return ("", None)
@@ -56,10 +136,19 @@ def _format_files_context(
         data = _coerce_mapping(raw)
         if not data:
             continue
-        content = _trim_file_block(str(data.get("content", "") or ""))
+        
+        raw_content = str(data.get("content", "") or "")
+        path = data.get("path") or data.get("name") or f"file-{idx}"
+        
+        # Check if this is the focused file with cursor info
+        cursor_line = None
+        if cursor_info and cursor_info.get("file") == path:
+            cursor_line = cursor_info.get("line")
+        
+        content = _trim_file_block(raw_content, cursor_line=cursor_line)
         if not content.strip():
             continue
-        path = data.get("path") or data.get("name") or f"file-{idx}"
+        
         if not focus_path:
             focus_path = path
         segments.append(
@@ -77,7 +166,6 @@ def _file_guidance(focus_path: Optional[str]) -> str:
     if focus_path:
         guidance += f" Focus primarily on `{focus_path}` when making edits."
     return guidance
-
 
 def _response_format_instructions(mode: str, focus_path: Optional[str]) -> str:
     focus_clause = (
@@ -173,6 +261,141 @@ Your job is to (1) split code into separate files and (2) apply ONLY the minimal
 to compile and run inside the Synthi SDL-only runner (see SPLIT CONTRACT).
 You are NOT a code improver. You are NOT a refactorer. You are NOT a linter.
 
+# ABSOLUTE PROHIBITIONS (VIOLATION = HMR FAILURE)
+
+## MALLOC PROHIBITION (CRITICAL)
+**DO NOT USE malloc() TO ALLOCATE STATE. USE STATIC STORAGE.**
+
+The Synthi runner manages state lifetime. Using malloc breaks Hot Module Replacement because:
+1. The runner passes prev_state which already points to valid memory
+2. malloc creates NEW memory, orphaning the preserved state
+3. Even with prev_state checks, malloc patterns are error-prone
+
+**FORBIDDEN PATTERNS:**
+```cpp
+// ❌ WRONG - malloc breaks HMR
+AppState* state = (AppState*)malloc(sizeof(AppState));
+if (!prev_state) state = (AppState*)malloc(sizeof(AppState));
+```
+
+**REQUIRED PATTERN - STATIC STORAGE:**
+```cpp
+// ✅ CORRECT - static storage, runner manages lifetime
+static AppState app_state = {0};
+
+extern "C" void* on_load(void* prev_state, void* window_ptr) {
+    if (prev_state) {
+        AppState* old = (AppState*)prev_state;
+        if (old->magic == 0xDEADBEEF && old->struct_size == sizeof(AppState)) {
+            app_state = *old;  // Copy preserved state
+        }
+    } else {
+        // First load - initialize fields individually
+        app_state.magic = 0xDEADBEEF;
+        app_state.struct_size = sizeof(AppState);
+        app_state.abi_version = 1;
+        app_state.running = 1;
+        // ... other fields ...
+    }
+    app_state.renderer = (SDL_Renderer*)window_ptr;
+    return &app_state;
+}
+```
+
+## MEMSET PROHIBITION (CRITICAL)
+**DO NOT USE memset() TO INITIALIZE STATE. INITIALIZE FIELDS INDIVIDUALLY.**
+
+memset wipes ALL memory including:
+- The magic number used for ABI validation
+- The preserved state copied from prev_state
+- Hidden metadata the runner may use
+
+**FORBIDDEN PATTERNS:**
+```cpp
+// ❌ WRONG - memset wipes preserved state
+memset(state, 0, sizeof(AppState));
+memset(&app_state, 0, sizeof(AppState));
+bzero(state, sizeof(AppState));
+```
+
+**REQUIRED PATTERN - FIELD-BY-FIELD INITIALIZATION:**
+```cpp
+// ✅ CORRECT - initialize only what you need
+app_state.magic = 0xDEADBEEF;
+app_state.struct_size = sizeof(AppState);
+app_state.abi_version = 1;
+app_state.running = 1;
+app_state.paused = 0;
+app_state.x = 0;
+app_state.y = 200;
+app_state.dx = 5;
+// CRITICAL: Initialize button fields from original code values!
+app_state.btn_x = 200;  // From original: int btn_x = 200
+app_state.btn_y = 10;   // From original: int btn_y = 10
+app_state.btn_w = 120;  // From original: int btn_w = 120  
+app_state.btn_h = 40;   // From original: int btn_h = 40
+// ... other fields explicitly set ...
+```
+
+## BUTTON/UI FIELD INITIALIZATION (CRITICAL - COMMON MISTAKE)
+**ALL UI fields (btn_x, btn_y, btn_w, btn_h) MUST be initialized in EVERY state init block.**
+
+If the original code has `int btn_x = 200, btn_y = 10, btn_w = 120, btn_h = 40;`, you MUST initialize these in:
+1. The `prev_state` valid path (copy from prev_state)
+2. The ABI mismatch path (field-by-field init)
+3. The first load path (field-by-field init)
+
+**Failure to initialize button fields = invisible buttons at (0,0) with size 0x0!**
+
+## INCLUDE SHARED.H - DO NOT REDEFINE STRUCTS (CRITICAL)
+**core.cpp and gui.cpp MUST include shared.h and MUST NOT redefine AppState.**
+
+The AppState struct is defined ONLY in shared.h. If you redefine it in core.cpp or gui.cpp:
+1. You get "conflicting declaration" compiler errors
+2. Changes to shared.h don't propagate
+3. State layout mismatches cause crashes
+
+**FORBIDDEN PATTERNS in core.cpp and gui.cpp:**
+```cpp
+// ❌ WRONG - Do NOT redefine AppState in implementation files!
+typedef struct AppState {
+    uint32_t magic;
+    // ... fields ...
+} AppState;
+
+// ❌ WRONG - Do NOT redefine struct either!
+struct AppState {
+    uint32_t magic;
+    // ...
+};
+```
+
+**REQUIRED PATTERN - Include shared.h:**
+```cpp
+// ✅ CORRECT - core.cpp
+#include "shared.h"  // AppState is defined here, DO NOT REDEFINE!
+
+static AppState app_state = {0};
+
+extern "C" void* on_load(void* prev_state, void* window_ptr) {
+    // Use AppState from shared.h
+    // ...
+}
+```
+
+```cpp
+// ✅ CORRECT - gui.cpp  
+#include "shared.h"  // AppState is defined here, DO NOT REDEFINE!
+#include <SDL2/SDL.h>
+
+static AppState gui_app_state = {0};
+
+extern "C" void* gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr) {
+    // Use AppState from shared.h
+    // ...
+}
+```
+
 # SPLIT CONTRACT (AUTHORITATIVE; OVERRIDES OTHER SECTIONS)
 
 If instructions conflict, follow this precedence order:
@@ -186,6 +409,16 @@ If instructions conflict, follow this precedence order:
 - Your OUTPUT MUST NOT contain X11 headers, X11 types, or X11 function calls.
 - Treat X11 only as a semantic description of what to draw / how to react to input.
 
+### STRIP ALL X11 HELPER FUNCTIONS (CRITICAL)
+If the user's input contains X11 helper functions like:
+- `Display* initialize_display(void)` - DO NOT OUTPUT THIS
+- `void cleanup_display(Display* d)` - DO NOT OUTPUT THIS
+- `Window create_window(Display* d, ...)` - DO NOT OUTPUT THIS
+- Any function with X11 types in its signature (Display, Window, Atom, GC, Pixmap, XIM, XIC, Colormap, etc.)
+
+You MUST completely remove these functions from your output. They are X11-specific and incompatible with the SDL2 runtime.
+The runner handles window creation and cleanup - plugins must not contain these functions.
+
 ### Module compile/link contract (must satisfy all)
 - shared.h:
     - Must be self-contained.
@@ -196,11 +429,18 @@ If instructions conflict, follow this precedence order:
     - Must compile/link WITHOUT `-lX11` and WITHOUT `-lSDL2`.
     - Contains business logic only - NO dynamic loading of gui.so.
     - The Synthi Runner loads both core.so and gui.so independently.
+    - MUST NOT contain any functions with X11 types in their signature.
+    - MUST include "shared.h" to define AppState.
+    - DO NOT redefine struct AppState, HostKvApiV1, SynthiHostContextV1, or SynthiNamespaceSchemaV1.
+    - DO NOT forward declare struct AppState.
 - gui.cpp:
     - Must compile/link with `-lSDL2`.
     - Must not include X11.
     - Must not call `SDL_RenderPresent`.
     - Must not call `SDL_Init` / `SDL_CreateWindow` / `SDL_CreateRenderer` (runner owns SDL lifecycle).
+    - Must not call `SDL_GetKeyboardWindow` (it does not exist in SDL2; use `SDL_GetKeyboardFocus` if you need the focused window).
+    - MUST include "shared.h" to define AppState.
+    - DO NOT redefine struct AppState, HostKvApiV1, SynthiHostContextV1, or SynthiNamespaceSchemaV1.
 
 ### Input model (SDL only)
 - All input comes from `SDL_Event*` passed to `on_event`.
@@ -273,11 +513,82 @@ Glyph mapping rules (CRITICAL):
 
 MANDATORY FOR THIS PROJECT (override):
 - DO NOT generate a full 95-glyph ASCII font table. Models frequently hallucinate incorrect glyph tables which renders garbage.
-- You MUST generate a minimal font with `glyph8x8_for(char c)` + `switch` covering exactly the characters used by the program's string literals.
-    - Scan the source and collect all string literals passed to XDrawString (or equivalent) and include every distinct character.
-    - You must include both uppercase/lowercase letters that appear (e.g. for this test: `Resume`, `dsadsadsa`, `HUIIII`).
-    - Include space, and a '?' fallback glyph.
-    - Any unsupported character MUST render as '?' (not blank, not random).
+- You MUST use the EXACT reference font implementation provided below. Do not invent glyph data.
+
+### REFERENCE FONT IMPLEMENTATION (COPY THIS EXACTLY INTO gui.cpp)
+```cpp
+#define FONT_W 8
+#define FONT_H 8
+
+// Verified 8x8 bitmap glyphs - DO NOT MODIFY THESE VALUES
+static const uint8_t font_A[8] = {0x18,0x24,0x42,0x42,0x7E,0x42,0x42,0x00};
+static const uint8_t font_D[8] = {0x7C,0x42,0x42,0x42,0x42,0x42,0x7C,0x00};
+static const uint8_t font_E[8] = {0x7E,0x40,0x40,0x7C,0x40,0x40,0x7E,0x00};
+static const uint8_t font_H[8] = {0x42,0x42,0x42,0x7E,0x42,0x42,0x42,0x00};
+static const uint8_t font_I[8] = {0x3E,0x08,0x08,0x08,0x08,0x08,0x3E,0x00};
+static const uint8_t font_P[8] = {0x7C,0x42,0x42,0x7C,0x40,0x40,0x40,0x00};
+static const uint8_t font_R[8] = {0x7C,0x42,0x42,0x7C,0x48,0x44,0x42,0x00};
+static const uint8_t font_S[8] = {0x3C,0x42,0x40,0x3C,0x02,0x42,0x3C,0x00};
+static const uint8_t font_U[8] = {0x42,0x42,0x42,0x42,0x42,0x42,0x3C,0x00};
+static const uint8_t font_a[8] = {0x00,0x00,0x3C,0x02,0x3E,0x42,0x3E,0x00};
+static const uint8_t font_d[8] = {0x02,0x02,0x3E,0x42,0x42,0x42,0x3E,0x00};
+static const uint8_t font_e[8] = {0x00,0x00,0x3C,0x42,0x7E,0x40,0x3C,0x00};
+static const uint8_t font_f[8] = {0x0C,0x12,0x10,0x7C,0x10,0x10,0x10,0x00};
+static const uint8_t font_m[8] = {0x00,0x00,0x76,0x49,0x49,0x49,0x49,0x00};
+static const uint8_t font_s[8] = {0x00,0x00,0x3E,0x40,0x3C,0x02,0x7C,0x00};
+static const uint8_t font_u[8] = {0x00,0x00,0x42,0x42,0x42,0x46,0x3A,0x00};
+static const uint8_t font_space[8] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
+static const uint8_t font_qmark[8] = {0x3C,0x42,0x02,0x0C,0x10,0x00,0x10,0x00};
+
+static const uint8_t* get_glyph(char c) {
+    switch(c) {
+        case 'A': return font_A; case 'D': return font_D; case 'E': return font_E;
+        case 'H': return font_H; case 'I': return font_I; case 'P': return font_P;
+        case 'R': return font_R; case 'S': return font_S; case 'U': return font_U;
+        case 'a': return font_a; case 'd': return font_d; case 'e': return font_e;
+        case 'f': return font_f; case 'm': return font_m; case 's': return font_s;
+        case 'u': return font_u; case ' ': return font_space;
+        default: return font_qmark;
+    }
+}
+
+static void draw_text(SDL_Renderer* r, int x, int y, const char* text, int len) {
+    Uint8 cr, cg, cb, ca;
+    SDL_GetRenderDrawColor(r, &cr, &cg, &cb, &ca);
+    for (int i = 0; i < len; i++) {
+        const uint8_t* g = get_glyph(text[i]);
+        for (int row = 0; row < FONT_H; row++) {
+            for (int col = 0; col < FONT_W; col++) {
+                if ((g[row] >> (7 - col)) & 1) {
+                    // NOTE: Original X11 code used `y` as baseline
+                    // For SDL: if original y was btn_y+25, text renders correctly
+                    // If original y was btn_y+10, add FONT_H to make text visible
+                    SDL_Rect px = {x + i * FONT_W + col, y + row, 1, 1};
+                    SDL_RenderFillRect(r, &px);
+                }
+            }
+        }
+    }
+}
+```
+
+**TEXT POSITION RULE (CRITICAL):**
+- The original X11 code used `XDrawString(dpy, win, gc, btn_x + 40, btn_y + 25, label, len)`
+- In SDL: `draw_text(renderer, btn_x + 40, btn_y + 25 - FONT_H, label, len)` preserves baseline
+- BUT if the original button height is 40 and btn_y is 10, then text at btn_y+10 would be off-screen
+- BETTER: Use `draw_text(renderer, btn_x + 10, btn_y + 15, label, len)` for clarity (no baseline math)
+
+**TEXT COLOR RULE (CRITICAL):**
+- Text on blue button background MUST use BLACK (0,0,0) or WHITE (255,255,255) for contrast
+- NEVER draw white text on white button - it's invisible!
+- Set color BEFORE calling draw_text:
+  ```cpp
+  SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);  // Black text
+  draw_text(renderer, btn_x + 10, btn_y + 15, label, strlen(label));
+  ```
+
+If the program uses characters not in this list, add them using the same 8x8 bitmap format.
+The bit order is MSB-first: bit 7 is the leftmost pixel, bit 0 is the rightmost.
 
 This is the #1 reason button text "disappears" or becomes junk.
 
@@ -338,6 +649,134 @@ If you emit X11 symbols, the build will fail.
     `SDL_Event` is a `union` in SDL2 and forward-declaring it as a `struct` causes compile errors.
 - If any file uses `SDL_Event`, you MUST `#include <SDL2/SDL.h>` in that file (preferably in `shared.h` if `AppState` stores SDL types).
 - If you include `<SDL2/SDL.h>`, do NOT add any forward declarations for SDL types at all.
+
+# EXACT FUNCTION SIGNATURES (CRITICAL - MUST MATCH EXACTLY)
+
+## NEVER DUPLICATE AppState DEFINITION! (CRITICAL - CAUSES REDEFINITION ERROR)
+
+**❌ ABSOLUTELY FORBIDDEN:**
+- NEVER define `typedef struct AppState { ... } AppState;` in core.cpp or gui.cpp
+- NEVER forward declare `struct AppState;` when shared.h exists  
+- AppState is ONLY defined in shared.h - period!
+
+**✅ CORRECT:** Include shared.h and use AppState directly:
+```cpp
+#include "shared.h"  // This defines AppState - DO NOT redefine it!
+static AppState app_state = {0};  // Use it directly, never redefine
+```
+
+## DO NOT USE malloc/memset FOR STATE! (CRITICAL - BREAKS HMR)
+
+**❌ FORBIDDEN PATTERNS - NEVER USE THESE:**
+```cpp
+// WRONG - malloc breaks hot reload!
+AppState* state = (AppState*)malloc(sizeof(AppState));
+if (!state) { /* error */ }
+
+// WRONG - memset wipes preserved state from prev_state!
+// NEVER CALL memset ON STATE IN on_load - NOT EVEN IN ERROR PATHS!
+memset(state, 0, sizeof(AppState));
+memset(&app_state, 0, sizeof(AppState));
+memset(&core_state, 0, sizeof(CoreState));
+memset(&gui_state, 0, sizeof(GuiState));
+
+// WRONG - Even in ABI mismatch handling!
+if (old_state->magic != EXPECTED_MAGIC) {
+    fprintf(stderr, "ABI mismatch\n");
+    memset(&app_state, 0, sizeof(AppState));  // FORBIDDEN!
+}
+
+// WRONG - free causes crashes, runner manages lifecycle!
+if (state->running == 0) {
+    free(state);
+}
+```
+
+**WHY memset IS FORBIDDEN:**
+- `memset(&app_state, 0, ...)` wipes ALL fields including preserved HMR state
+- HMR works by copying prev_state's fields - memset erases them
+- Even in error paths (ABI mismatch), use field-by-field initialization instead
+
+**✅ CORRECT PATTERN - Static variable WITHOUT memset:**
+```cpp
+// RIGHT - State preserved across hot reloads
+static AppState app_state = {0};
+
+extern "C" void* on_load(void* prev_state, void* window_ptr) {
+    if (prev_state) {
+        // CRITICAL: Always check prev_state FIRST and reuse if valid!
+        AppState* old = (AppState*)prev_state;
+        if (old->magic == CORE_STATE_MAGIC && old->struct_size == sizeof(AppState)) {
+            app_state = *old;  // Copy previous state - preserves HMR state!
+        } else {
+            // ABI mismatch: Initialize fresh BUT NO memset!
+            // Use field-by-field initialization instead:
+            app_state.magic = CORE_STATE_MAGIC;
+            app_state.struct_size = sizeof(AppState);
+            app_state.abi_version = 1;
+            app_state.running = 1;
+            app_state.paused = 0;
+            app_state.x = 0;
+            app_state.y = 200;
+            app_state.dx = 5;
+            // CRITICAL: Initialize ALL UI fields from original code!
+            app_state.btn_x = 200;
+            app_state.btn_y = 10;
+            app_state.btn_w = 120;
+            app_state.btn_h = 40;
+        }
+    } else {
+        // First load: Initialize fresh BUT NO memset!
+        app_state.magic = CORE_STATE_MAGIC;
+        app_state.struct_size = sizeof(AppState);
+        app_state.abi_version = 1;
+        app_state.running = 1;
+        app_state.paused = 0;
+        app_state.x = 0;
+        app_state.y = 200;
+        app_state.dx = 5;
+        // CRITICAL: Initialize ALL UI fields from original code!
+        app_state.btn_x = 200;
+        app_state.btn_y = 10;
+        app_state.btn_w = 120;
+        app_state.btn_h = 40;
+    }
+    
+    // Always update renderer (may change between reloads)
+    app_state.renderer = (SDL_Renderer*)window_ptr;
+    return &app_state;  // MUST return &app_state, NEVER a malloc'd pointer!
+}
+
+extern "C" void on_unload(void* state_ptr) {
+    // Do NOT free - runner manages state lifecycle
+    // Do NOT memset - state must be preserved for next on_load
+}
+```
+
+## on_load RETURN VALUE RULES (CRITICAL)
+- on_load MUST return &app_state (address of static variable)
+- on_load MUST NOT return malloc'd memory  
+- When prev_state is valid, the returned state MUST preserve prev_state data
+- The runner validates that on_load returns a consistent pointer
+
+## These are the ONLY valid signatures. shared.h declarations MUST match implementations.
+
+### CORE MODULE (core.cpp):
+```cpp
+extern "C" void* on_load(void* prev_state, void* window_ptr);           // 2 params
+extern "C" void on_update(void* state_ptr, double dt);                  // 2 params
+extern "C" void on_event(void* state_ptr, void* event_ptr);             // 2 params
+extern "C" void on_unload(void* state_ptr);                             // 1 param
+```
+
+### GUI MODULE (gui.cpp):
+```cpp
+extern "C" void* gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr);  // 3 params!
+extern "C" void gui_on_render(void* state_ptr);                         // 1 param (uses AppState*)
+extern "C" void gui_cleanup(void* state_ptr);                           // 1 param
+```
+
+### shared.h MUST declare these EXACTLY as shown above. Do NOT change parameter counts!
 
 # TASK OVERVIEW
 Analyze the provided source code and split it into THREE distinct modules:
@@ -400,26 +839,48 @@ if (ptr_gui_render) ptr_gui_render(state);
 
 ### CORRECT CORE.CPP PATTERN:
 ```cpp
-// Core module ONLY handles business logic
-// It does NOT interact with GUI at all - runner manages rendering
+// core.cpp - MUST include shared.h, MUST NOT redefine AppState!
+#include "shared.h"  // AppState defined here - DO NOT REDEFINE IT!
+#include <SDL2/SDL.h>
+
+// CRITICAL: Use STATIC storage - NEVER use malloc!
 static AppState app_state = {0};
+
+// STATE SERIALIZATION EXPORTS (Required for Full HMR capability)
+extern "C" char* on_save_state(void* state_ptr) {
+    (void)state_ptr;
+    return NULL;  // Binary state preservation used
+}
+
+extern "C" int on_load_from_json(void* state_ptr, const char* json) {
+    (void)state_ptr; (void)json;
+    return 0;  // Binary state preservation used
+}
 
 extern "C" void* on_load(void* prev_state, void* window_ptr) {
     if (prev_state) {
         AppState* old = (AppState*)prev_state;
-        if (old->magic == 0xDEADBEEF) app_state = *old;
+        if (old->magic == 0xDEADBEEF && old->struct_size == sizeof(AppState)) {
+            app_state = *old;  // Copy preserved state - NO malloc, NO memset!
+        }
     } else {
+        // First load - initialize fields individually (NO memset!)
         app_state.magic = 0xDEADBEEF;
         app_state.struct_size = sizeof(AppState);
         app_state.abi_version = 1;
-        // Initialize state fields...
+        app_state.running = 1;
+        app_state.paused = 0;
+        app_state.x = 0;
+        app_state.y = 200;
+        app_state.dx = 5;
     }
-    return &app_state;
+    app_state.renderer = (SDL_Renderer*)window_ptr;
+    return &app_state;  // Return STATIC address, NOT malloc!
 }
 
 extern "C" void on_update(void* state_ptr, double dt) {
     AppState* state = (AppState*)state_ptr;
-    // Update business logic only - NO rendering here
+    if (!state) return;
     if (!state->paused) {
         state->x += state->dx;
         if (state->x > 590 || state->x < 0) state->dx = -state->dx;
@@ -430,6 +891,45 @@ extern "C" void on_event(void* state_ptr, void* event_ptr) {
     AppState* state = (AppState*)state_ptr;
     SDL_Event* ev = (SDL_Event*)event_ptr;
     // Handle events...
+}
+
+extern "C" void on_unload(void* state_ptr) {
+    (void)state_ptr;  // Runner manages state lifetime
+}
+```
+
+### CORRECT GUI.CPP PATTERN:
+```cpp
+// gui.cpp - MUST include shared.h, MUST NOT redefine AppState!
+#include "shared.h"  // AppState defined here - DO NOT REDEFINE IT!
+#include <SDL2/SDL.h>
+#include <string.h>
+
+// Static storage for GUI-only mode fallback
+static AppState gui_app_state = {0};
+
+extern "C" void* gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr) {
+    AppState* state = (AppState*)prev_state;
+    if (!state) {
+        state = &gui_app_state;  // Use static, NOT malloc!
+        state->magic = 0x60108EEF;
+        state->struct_size = sizeof(AppState);
+        state->abi_version = 1;
+        state->running = 1;
+    }
+    state->renderer = (SDL_Renderer*)window_ptr;
+    return state;
+}
+
+extern "C" void gui_on_render(void* state_ptr) {
+    AppState* state = (AppState*)state_ptr;
+    if (!state || !state->renderer) return;
+    // Render using state->renderer...
+    // DO NOT call SDL_RenderPresent!
+}
+
+extern "C" void gui_cleanup(void* state_ptr) {
+    (void)state_ptr;  // Runner manages renderer
 }
 ```
 
@@ -623,31 +1123,44 @@ extern "C" void on_unload(void* state_ptr) {
 **GUI.CPP PATTERN (RUNNER-COMPATIBLE):**
 
 ```cpp
-// gui.cpp - Rendering only, receives state from runner
+// gui.cpp - Rendering only, receives CORE STATE from runner
+// IMPORTANT: In split mode, the runner passes core's state to gui_on_render.
+// Core owns: x, y, dx, paused, running, renderer (set via on_load)
+// GUI just reads core's state and renders it.
 #include "shared.h"
 #include <SDL2/SDL.h>
 
+// GUI module state - stores GUI-specific data (preserved across GUI hot-reloads)
 static AppState gui_app_state = {0};
 
-// CRITICAL: on_load MUST properly initialize state with renderer
-extern "C" void* on_load(void* prev_state, void* window_ptr) {
+// CRITICAL: gui_on_load has 3 PARAMETERS! (prev_state, renderer, core_api)
+// IMPORTANT: DO NOT use memset on gui_app_state - same rules as core!
+extern "C" void* gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr) {
     if (prev_state) {
         AppState* old = (AppState*)prev_state;
-        if (old->magic == 0xDEADBEEF && old->struct_size == sizeof(AppState)) {
-            gui_app_state = *old;
+        if (old->magic == 0x60108EEF && old->struct_size == sizeof(AppState)) {
+            gui_app_state = *old;  // Preserve across GUI hot-reloads
+        } else {
+            // ABI mismatch: Initialize fresh BUT NO memset!
+            gui_app_state.magic = 0x60108EEF;
+            gui_app_state.struct_size = sizeof(AppState);
+            gui_app_state.abi_version = 1;
         }
     } else {
-        gui_app_state.magic = 0xDEADBEEF;
+        // First load: Initialize fresh BUT NO memset!
+        gui_app_state.magic = 0x60108EEF;  // GUI magic
         gui_app_state.struct_size = sizeof(AppState);
         gui_app_state.abi_version = 1;
     }
     
-    // CRITICAL: Always store the renderer provided by runner
+    // Store renderer in gui_app_state too (for GUI-only mode)
     gui_app_state.renderer = (SDL_Renderer*)window_ptr;
     
     return &gui_app_state;
 }
 
+// IMPORTANT: In split mode (core+gui), state_ptr is CORE's state!
+// Core's state has x, y, dx, paused, AND the renderer pointer.
 extern "C" void gui_on_render(void* state_ptr) {
     AppState* state = (AppState*)state_ptr;
     if (!state || !state->renderer) {
@@ -659,7 +1172,8 @@ extern "C" void gui_on_render(void* state_ptr) {
     SDL_SetRenderDrawColor(state->renderer, 255, 255, 255, 255);
     SDL_RenderClear(state->renderer);
     
-    // Draw based on state
+    // Draw based on state - in split mode, this is CORE's state
+    // Core's on_update animates x, y, and gui_on_render just draws it
     SDL_SetRenderDrawColor(state->renderer, 0, 0, 0, 255);
     SDL_Rect rect = {state->x, state->y, 50, 50};
     SDL_RenderFillRect(state->renderer, &rect);
@@ -667,10 +1181,22 @@ extern "C" void gui_on_render(void* state_ptr) {
     // DO NOT call SDL_RenderPresent - runner does this
 }
 
-extern "C" void on_unload(void* state_ptr) {
+extern "C" void gui_cleanup(void* state_ptr) {
     // Cleanup textures/resources but NOT the renderer
 }
 ```
+
+### CRITICAL: GUI STATE vs CORE STATE (SPLIT MODE)
+
+In split mode (core.so + gui.so):
+- **Core owns application state**: x, y, dx, paused, running, renderer
+- **Runner passes CORE's state to gui_on_render** so GUI renders core's data
+- **GUI's gui_app_state** is only used in GUI-only mode (no core module)
+
+This design ensures:
+1. GUI-only hot-reload: core continues running, gui.so replaced
+2. Animation state preserved: Core's x, y, dx survive GUI hot-reloads
+3. Renderer always available: Core's on_load stores renderer in state
 
 ### 3.1 State Definition Location
 - AppState is defined in shared.h and shared by both modules
@@ -1037,6 +1563,25 @@ The runner checks ABI version to ensure compatibility. Include in your state str
 #define SYNTHI_KV_INTERNAL_ERROR  4
 ```
 
+3.8 SCHEMA HASHING (CRITICAL)
+
+    To prevent memory corruption during hot-reloads when the state structure changes, you MUST implement a schema hashing function.
+    
+    The Runner calls this function to verify if the incoming state layout matches the new code's expectation.
+    If the hash differs, the Runner will perform a "Cold Reload" (reset state) instead of crashing.
+    
+    You MUST generate a unique 64-bit hash based on the `AppState` structure definition.
+    The hash should change if:
+    - A field is added or removed
+    - A field type changes
+    - The order of fields changes
+    
+    You can use a simple polynomial hash of the field names and types, or a hardcoded constant that you change whenever you modify the struct.
+    
+    REQUIRED EXPORT:
+    extern "C" uint64_t core_get_state_schema_hash(void); // In core.cpp
+    extern "C" uint64_t gui_get_state_schema_hash(void);  // In gui.cpp
+
 4. SHARED MODULE REQUIREMENTS (C/C++)
 
 The shared.h file MUST contain:
@@ -1310,6 +1855,12 @@ void* gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr) {
     return state;  // NEVER return NULL!
 }
 
+// REQUIRED: Schema Hash for Cold Reload safety
+// You MUST generate a unique hash based on AppState fields
+uint64_t gui_get_state_schema_hash(void) {
+    return 0x1234567890ABCDEF; // REPLACE WITH ACTUAL HASH OF STRUCT
+}
+
 } // extern "C"
 
 6.2 State Access Pattern
@@ -1422,6 +1973,12 @@ extern "C" void on_unload(void* state_ptr) {
     // Core module cleanup - state is managed by the runner
     // NO dlclose needed - Runner handles module lifecycle
     (void)state_ptr;
+}
+
+// REQUIRED: Schema Hash for Cold Reload safety
+// You MUST generate a unique hash based on AppState fields
+extern "C" uint64_t core_get_state_schema_hash(void) {
+    return 0x1234567890ABCDEF; // REPLACE WITH ACTUAL HASH OF STRUCT
 }
 
 7.4 HMR LIFECYCLE SAFETY (CRITICAL - PREVENT FREEZING)
@@ -1889,9 +2446,18 @@ extern "C" void* core_on_load_host(void* prev_state, const SynthiHostContextV1* 
     AppState* state = (AppState*)prev_state;
     if (!state) {
         state = (AppState*)malloc(sizeof(AppState));
-        memset(state, 0, sizeof(AppState));
+        // CRITICAL: DO NOT USE MEMSET!
+        // memset(state, 0, sizeof(AppState)); <-- THIS IS FORBIDDEN
+        // Initialize fields individually to avoid wiping hidden runner metadata
+        
         state->magic = 0xDEADBEEF;
         state->struct_size = sizeof(AppState);
+        state->abi_version = 1;
+        state->running = 1;
+        state->paused = 0;
+        state->x = 0;
+        state->y = 0;
+        // ... initialize other fields ...
         
         // Try to restore from KV storage
         uint8_t* data;
@@ -1922,9 +2488,14 @@ extern "C" void* core_on_load(void* prev_state, void* renderer) {
     AppState* state = (AppState*)prev_state;
     if (!state) {
         state = (AppState*)malloc(sizeof(AppState));
-        memset(state, 0, sizeof(AppState));
+        // CRITICAL: DO NOT USE MEMSET!
+        // memset(state, 0, sizeof(AppState)); <-- THIS IS FORBIDDEN
+        
         state->magic = 0xDEADBEEF;
         state->struct_size = sizeof(AppState);
+        state->abi_version = 1;
+        state->running = 1;
+        // ... initialize other fields ...
     }
     state->renderer = (SDL_Renderer*)renderer;
     return state;
@@ -1956,9 +2527,13 @@ extern "C" void* gui_on_load_host(void* prev_state, const SynthiHostContextV1* h
     GuiState* state = (GuiState*)prev_state;
     if (!state) {
         state = (GuiState*)malloc(sizeof(GuiState));
-        memset(state, 0, sizeof(GuiState));
+        // CRITICAL: DO NOT USE MEMSET!
+        // memset(state, 0, sizeof(GuiState)); <-- THIS IS FORBIDDEN
+        
         state->magic = 0x60108EEF;
         state->struct_size = sizeof(GuiState);
+        state->abi_version = 1;
+        // ... initialize other fields ...
         
         // Restore UI state
         uint8_t* data;

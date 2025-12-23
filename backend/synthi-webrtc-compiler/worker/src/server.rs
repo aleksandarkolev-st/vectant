@@ -1,10 +1,8 @@
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use futures_util::{SinkExt, StreamExt};
+use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use tokio_tungstenite::accept_async;
-use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
 pub async fn start_server(
@@ -45,7 +43,9 @@ async fn accept_connection(
             Ok(Message::Text(text)) => {
                 if text.trim() != *session_hash {
                     println!("Invalid session hash: {}", text);
-                    let _ = write.send(Message::Text("Error: Invalid session hash".to_string())).await;
+                    let _ = write
+                        .send(Message::Text("Error: Invalid session hash".to_string()))
+                        .await;
                     return;
                 }
                 let _ = write.send(Message::Text("Connected".to_string())).await;

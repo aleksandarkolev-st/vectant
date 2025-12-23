@@ -1145,6 +1145,16 @@ class GitService {
         }
     }
 
+    async createDirectory(slug, dirPath) {
+        const repoPath = this.getRepoPath(slug);
+        const fullPath = path.join(repoPath, dirPath);
+        try {
+            await fs.promises.mkdir(fullPath, { recursive: true });
+        } catch (e) {
+            throw new Error(`Failed to create directory: ${e.message}`);
+        }
+    }
+
     async writeFilesBatch(slug, files, options = {}) {
         const syncToGcs = options.syncToGcs !== false;
 

@@ -180,6 +180,11 @@ export const gitClient = {
         return this.request(slug, 'write-file', { path, content });
     },
 
+    async createDirectory(slug, path) {
+        return this.request(slug, 'create-directory', { path });
+    },
+    
+
     async writeFilesBatch(slug, files, options = {}) {
         return this.request(slug, 'write-files-batch', {
             files,

@@ -1,15 +1,15 @@
+use futures_util::StreamExt;
+use object_store::{
+    gcp::{GoogleCloudStorageBuilder, GoogleConfigKey},
+    path::Path,
+    ObjectStore,
+};
 use serde_json::json;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use tokio::sync::mpsc;
-use futures_util::StreamExt;
-use object_store::{
-    gcp::{GoogleCloudStorageBuilder, GoogleConfigKey},
-    ObjectStore, path::Path,
-};
 use std::sync::Arc;
-use std::collections::HashSet;
+use tokio::sync::mpsc;
 
 // Helper function to send progress updates
 async fn send_progress_update(
@@ -25,13 +25,16 @@ async fn send_progress_update(
 }
 
 pub async fn download(
-    slug: &str, 
-    mut progress_tx: Option<mpsc::UnboundedSender<String>>
+    slug: &str,
+    mut progress_tx: Option<mpsc::UnboundedSender<String>>,
 ) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
     // Check if directory already exists
     let local_dir = PathBuf::from("/synthi").join(slug);
     if local_dir.exists() {
-        println!("Directory already exists: {}, skipping download", local_dir.display());
+        println!(
+            "Directory already exists: {}, skipping download",
+            local_dir.display()
+        );
         return Ok(local_dir);
     }
 
@@ -59,118 +62,126 @@ pub async fn download(
 
     std::env::remove_var("GCLOUD_PROJECT");
     std::env::remove_var("CLOUDSDK_CORE_PROJECT");
-    
+
     // Build the GCS object store with explicit service account key
     let mut builder = GoogleCloudStorageBuilder::new();
     builder = builder.with_bucket_name(bucket_name);
-    
+
     // Try multiple approaches to force use of service account key
     builder = builder.with_config(GoogleConfigKey::ServiceAccountKey, &credentials_json);
-    
-    let store_impl = builder.build()
+
+    let store_impl = builder
+        .build()
         .map_err(|e| format!("Failed to build GCS store: {}", e))?;
 
     let store: Arc<dyn ObjectStore> = Arc::new(store_impl);
-    
+
     // List objects with workspaces/slug prefix
     let prefix = Path::from(format!("workspaces/{}/", slug.trim_matches('/')));
-    
+
     let mut list_stream = store.list(Some(&prefix));
     let mut objects: Vec<Path> = Vec::new();
     while let Some(meta_res) = list_stream.next().await {
         let meta = meta_res?;
         let location_str = meta.location.as_ref();
-        
+
         // Skip if doesn't match prefix
         if !location_str.starts_with(prefix.as_ref()) {
             continue;
         }
-        
+
         let stripped = location_str.strip_prefix(prefix.as_ref()).unwrap();
-        
+
         // Skip empty paths (top-level directory marker)
         if stripped.is_empty() {
             println!("skipped top-level directory marker: {}", location_str);
             continue;
         }
-        
+
         // Skip directory markers (paths ending with '/')
         if location_str.ends_with('/') {
             println!("skipped directory marker: {}", location_str);
             continue;
         }
-        
+
         // Additional check: skip objects with size 0 that look like directories
         if meta.size == 0 && stripped.contains('/') && !stripped.contains('.') {
             continue;
         }
-        
+
         objects.push(meta.location.clone());
     }
-    
+
     if objects.is_empty() {
         return Err("No objects found in the specified folder".into());
     }
-    
 
     // -------------------------
     // Local directory for downloads - Write to /synthi/
     // -------------------------
     let local_dir = PathBuf::from("/synthi").join(slug);
-    
+
     // Create the directory structure
     if !local_dir.exists() {
-        fs::create_dir_all(&local_dir)
-            .map_err(|e| {
-                eprintln!("   Path: {}", local_dir.display());
-                eprintln!("   Error: {}", e);
-                eprintln!("   Current working dir: {:?}", std::env::current_dir());
-                format!("Failed to create directory {}: {}", local_dir.display(), e)
-            })?;
+        fs::create_dir_all(&local_dir).map_err(|e| {
+            eprintln!("   Path: {}", local_dir.display());
+            eprintln!("   Error: {}", e);
+            eprintln!("   Current working dir: {:?}", std::env::current_dir());
+            format!("Failed to create directory {}: {}", local_dir.display(), e)
+        })?;
         println!("Created local directory: {}", local_dir.display());
     } else {
         println!("Directory already exists: {}", local_dir.display());
     }
-    
+
     // Download each object
     for (index, object_path) in objects.iter().enumerate() {
         let object_name: &str = object_path.as_ref();
         println!("📥 Downloading object: {}", object_name);
-        
-        send_progress_update(&mut progress_tx, &format!("Downloading ({}/{})", index + 1, objects.len())).await;
+
+        send_progress_update(
+            &mut progress_tx,
+            &format!("Downloading ({}/{})", index + 1, objects.len()),
+        )
+        .await;
 
         // Construct the local file path (strip workspaces/slug prefix)
-        let stripped = object_name.strip_prefix(prefix.as_ref())
+        let stripped = object_name
+            .strip_prefix(prefix.as_ref())
             .ok_or_else(|| format!("Failed to strip prefix from: {}", object_name))?;
-        
+
         // Additional safety: remove any leading slashes from stripped path
         let stripped_clean = stripped.trim_start_matches('/');
-        
+
         println!("🔧 Processing: {} -> {}", object_name, stripped_clean);
         let local_path = local_dir.join(stripped_clean);
         let parent_dir = local_path.parent().ok_or("Invalid path")?;
-        
+
         // Create parent directories if they don't exist
         if !parent_dir.exists() {
-            fs::create_dir_all(parent_dir)
-                .map_err(|e| format!("Failed to create directory {}: {}", parent_dir.display(), e))?;
+            fs::create_dir_all(parent_dir).map_err(|e| {
+                format!("Failed to create directory {}: {}", parent_dir.display(), e)
+            })?;
             println!("Created directory: {}", parent_dir.display());
         }
 
         // Download the full object into memory then write to disk
-        let get_result = store.get(object_path).await
+        let get_result = store
+            .get(object_path)
+            .await
             .map_err(|e| format!("Failed to download {}: {}", object_name, e))?;
-        let data = get_result.bytes().await
+        let data = get_result
+            .bytes()
+            .await
             .map_err(|e| format!("Failed to read bytes from {}: {}", object_name, e))?;
-        
+
         let mut file = fs::File::create(&local_path)
             .map_err(|e| format!("Failed to create file {}: {}", local_path.display(), e))?;
         file.write_all(&data)
             .map_err(|e| format!("Failed to write to file {}: {}", local_path.display(), e))?;
-        
+
         println!("Saved to: {}", local_path.display());
     }
-    
 
     // Return the local directory path so the caller can navigate to it
     Ok(local_dir)

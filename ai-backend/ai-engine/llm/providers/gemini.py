@@ -86,13 +86,30 @@ class GeminiProvider(AiProvider):
                 if getattr(chunk, "prompt_feedback", None):
                     prompt_feedback = chunk.prompt_feedback
                 
+                # Safely extract text from chunk - accessing .text throws if no valid parts
+                # This can happen when finish_reason is STOP (1) but no content was generated
                 try:
+                    # Check for candidates with content first (safer approach)
+                    candidates = getattr(chunk, "candidates", None)
+                    if candidates and len(candidates) > 0:
+                        candidate = candidates[0]
+                        content = getattr(candidate, "content", None)
+                        if content:
+                            parts = getattr(content, "parts", None)
+                            if parts:
+                                for part in parts:
+                                    part_text = getattr(part, "text", None)
+                                    if part_text:
+                                        chunks.append(part_text)
+                                continue
+                    
+                    # Fallback: try the .text accessor
                     text = chunk.text
                     if text:
                         chunks.append(text)
-                except Exception as e:
-                    print(f"Gemini chunk error: {e}")
-                    # If blocked, we might get an exception accessing .text
+                except (ValueError, AttributeError):
+                    # .text accessor throws ValueError if no valid parts
+                    # This is expected when finish_reason is STOP without content
                     pass
 
             combined = "".join(chunks).strip()

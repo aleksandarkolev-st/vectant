@@ -196,6 +196,9 @@ mod tests {
 
         assert!(run_ok("adb", &["version"]), "adb not runnable");
         assert!(run_ok("emulator", &["-list-avds"]), "emulator not runnable");
-        assert!(run_ok("avdmanager", &["list", "avd"]), "avdmanager not runnable");
+        assert!(
+            run_ok("avdmanager", &["list", "avd"]),
+            "avdmanager not runnable"
+        );
     }
 }

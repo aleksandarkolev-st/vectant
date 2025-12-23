@@ -1,3 +1,6 @@
+// Source map is actively used by crash_recovery for source-mapped stack traces
+// #![allow(dead_code)] - REMOVED: This module is now wired up
+
 // ============================================================
 // SOURCE MAP MODULE
 // ============================================================
@@ -11,10 +14,10 @@
 // - Integration with crash_recovery.rs for source-mapped errors
 // ============================================================
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
-use serde::{Serialize, Deserialize};
+use std::sync::RwLock;
 
 // ============================================================
 // SOURCE LOCATION TYPES
@@ -43,17 +46,17 @@ impl SourceLocation {
             function: None,
         }
     }
-    
+
     pub fn with_column(mut self, column: u32) -> Self {
         self.column = column;
         self
     }
-    
+
     pub fn with_function(mut self, function: impl Into<String>) -> Self {
         self.function = Some(function.into());
         self
     }
-    
+
     /// Format as "file:line" or "file:line:column"
     pub fn to_string(&self) -> String {
         if self.column > 0 {
@@ -62,7 +65,7 @@ impl SourceLocation {
             format!("{}:{}", self.file, self.line)
         }
     }
-    
+
     /// Format with function name
     pub fn to_string_with_function(&self) -> String {
         if let Some(ref func) = self.function {
@@ -107,14 +110,14 @@ impl SourceMappedTrace {
             has_debug_info: false,
         }
     }
-    
+
     /// Format as human-readable stack trace
     pub fn to_string(&self) -> String {
         let mut result = format!("Stack trace for {}:\n", self.module);
-        
+
         for frame in &self.frames {
             result.push_str(&format!("  #{} ", frame.index));
-            
+
             if let Some(ref loc) = frame.location {
                 result.push_str(&loc.to_string_with_function());
             } else if let Some(ref sym) = frame.raw_symbol {
@@ -122,14 +125,15 @@ impl SourceMappedTrace {
             } else {
                 result.push_str(&format!("0x{:016x}", frame.address));
             }
-            
+
             result.push('\n');
         }
-        
+
         if !self.has_debug_info {
-            result.push_str("\n  (No debug info available. Compile with -g for source locations.)\n");
+            result
+                .push_str("\n  (No debug info available. Compile with -g for source locations.)\n");
         }
-        
+
         result
     }
 }
@@ -163,17 +167,17 @@ impl SourceMapCache {
             cache: RwLock::new(HashMap::new()),
         }
     }
-    
+
     /// Load debug info for a library (or get from cache)
     pub fn load(&self, lib_path: &Path) -> Result<(), String> {
         let path_str = lib_path.to_string_lossy().to_string();
-        
+
         // Check cache validity
         let mtime = std::fs::metadata(lib_path)
             .and_then(|m| m.modified())
             .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs())
             .unwrap_or(0);
-        
+
         {
             let cache = self.cache.read().unwrap();
             if let Some(info) = cache.get(&path_str) {
@@ -182,34 +186,39 @@ impl SourceMapCache {
                 }
             }
         }
-        
+
         // Parse debug info
         let debug_info = parse_debug_info(lib_path)?;
-        
+
         // Update cache
         let mut cache = self.cache.write().unwrap();
-        cache.insert(path_str, CachedDebugInfo {
-            lib_path: lib_path.to_path_buf(),
-            mtime,
-            line_table: debug_info.line_table,
-            function_table: debug_info.function_table,
-        });
-        
+        cache.insert(
+            path_str,
+            CachedDebugInfo {
+                lib_path: lib_path.to_path_buf(),
+                mtime,
+                line_table: debug_info.line_table,
+                function_table: debug_info.function_table,
+            },
+        );
+
         Ok(())
     }
-    
+
     /// Resolve an address to source location
     pub fn resolve(&self, lib_path: &Path, address: u64) -> Option<SourceLocation> {
         let path_str = lib_path.to_string_lossy().to_string();
-        
+
         let cache = self.cache.read().unwrap();
         let info = cache.get(&path_str)?;
-        
+
         // Find function containing this address
-        let function = info.function_table.iter()
+        let function = info
+            .function_table
+            .iter()
             .find(|(start, end, _)| address >= *start && address < *end)
             .map(|(_, _, name)| name.clone());
-        
+
         // Look up line info
         if let Some((file, line)) = info.line_table.get(&address) {
             let mut loc = SourceLocation::new(file.clone(), *line);
@@ -234,25 +243,22 @@ impl SourceMapCache {
             }
         }
     }
-    
+
     /// Resolve a full stack trace
-    pub fn resolve_trace(
-        &self,
-        lib_path: &Path,
-        addresses: &[u64],
-    ) -> SourceMappedTrace {
-        let module = lib_path.file_name()
+    pub fn resolve_trace(&self, lib_path: &Path, addresses: &[u64]) -> SourceMappedTrace {
+        let module = lib_path
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string();
-        
+
         let mut trace = SourceMappedTrace::new(&module);
-        
+
         // Try to load debug info
         if self.load(lib_path).is_ok() {
             trace.has_debug_info = true;
         }
-        
+
         for (i, &addr) in addresses.iter().enumerate() {
             let location = self.resolve(lib_path, addr);
             trace.frames.push(StackFrame {
@@ -262,17 +268,17 @@ impl SourceMapCache {
                 raw_symbol: None,
             });
         }
-        
+
         trace
     }
-    
+
     /// Clear cache for a specific library
     pub fn invalidate(&self, lib_path: &Path) {
         let path_str = lib_path.to_string_lossy().to_string();
         let mut cache = self.cache.write().unwrap();
         cache.remove(&path_str);
     }
-    
+
     /// Clear entire cache
     pub fn clear(&self) {
         let mut cache = self.cache.write().unwrap();
@@ -298,7 +304,7 @@ fn parse_debug_info(lib_path: &Path) -> Result<ParsedDebugInfo, String> {
     if let Ok(info) = parse_with_addr2line(lib_path) {
         return Ok(info);
     }
-    
+
     // Fallback: minimal parsing using nm + objdump
     parse_with_nm_objdump(lib_path)
 }
@@ -306,31 +312,31 @@ fn parse_debug_info(lib_path: &Path) -> Result<ParsedDebugInfo, String> {
 /// Parse using external addr2line tool
 fn parse_with_addr2line(lib_path: &Path) -> Result<ParsedDebugInfo, String> {
     use std::process::Command;
-    
+
     // Get all symbols with nm
     let nm_output = Command::new("nm")
         .arg("-n") // Sort by address
         .arg(lib_path)
         .output()
         .map_err(|e| format!("Failed to run nm: {}", e))?;
-    
+
     if !nm_output.status.success() {
         return Err("nm failed".to_string());
     }
-    
+
     let nm_str = String::from_utf8_lossy(&nm_output.stdout);
-    
+
     // Parse function addresses
     let mut function_table = Vec::new();
     let mut addresses: Vec<u64> = Vec::new();
-    
+
     for line in nm_str.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 3 {
             if let Ok(addr) = u64::from_str_radix(parts[0], 16) {
                 let sym_type = parts[1];
                 let name = parts[2];
-                
+
                 // T/t = text (code), W/w = weak
                 if sym_type == "T" || sym_type == "t" || sym_type == "W" || sym_type == "w" {
                     addresses.push(addr);
@@ -340,7 +346,7 @@ fn parse_with_addr2line(lib_path: &Path) -> Result<ParsedDebugInfo, String> {
             }
         }
     }
-    
+
     // Sort and compute function end addresses
     function_table.sort_by_key(|(start, _, _)| *start);
     for i in 0..function_table.len() - 1 {
@@ -349,28 +355,26 @@ fn parse_with_addr2line(lib_path: &Path) -> Result<ParsedDebugInfo, String> {
     if let Some(last) = function_table.last_mut() {
         last.1 = last.0 + 0x10000; // Assume max function size
     }
-    
+
     // Use addr2line to resolve addresses to lines
     let mut line_table = HashMap::new();
-    
+
     if !addresses.is_empty() {
         // Query addr2line for each address (batched)
-        let addr_args: Vec<String> = addresses.iter()
-            .map(|a| format!("0x{:x}", a))
-            .collect();
-        
+        let addr_args: Vec<String> = addresses.iter().map(|a| format!("0x{:x}", a)).collect();
+
         let a2l_output = Command::new("addr2line")
             .arg("-e")
             .arg(lib_path)
             .arg("-f") // Show function names
             .args(&addr_args)
             .output();
-        
+
         if let Ok(output) = a2l_output {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let lines: Vec<&str> = stdout.lines().collect();
-                
+
                 // addr2line outputs: function\nfile:line for each address
                 for (i, addr) in addresses.iter().enumerate() {
                     let line_idx = i * 2 + 1; // Skip function name line
@@ -385,7 +389,7 @@ fn parse_with_addr2line(lib_path: &Path) -> Result<ParsedDebugInfo, String> {
             }
         }
     }
-    
+
     Ok(ParsedDebugInfo {
         line_table,
         function_table,
@@ -407,27 +411,27 @@ fn parse_addr2line_location(s: &str) -> Option<(String, u32)> {
 /// Fallback parsing using nm and objdump
 fn parse_with_nm_objdump(lib_path: &Path) -> Result<ParsedDebugInfo, String> {
     use std::process::Command;
-    
+
     let mut function_table = Vec::new();
     let line_table = HashMap::new();
-    
+
     // Get symbols with nm
     let nm_output = Command::new("nm")
         .arg("-n")
         .arg(lib_path)
         .output()
         .map_err(|e| format!("Failed to run nm: {}", e))?;
-    
+
     if nm_output.status.success() {
         let nm_str = String::from_utf8_lossy(&nm_output.stdout);
-        
+
         for line in nm_str.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 3 {
                 if let Ok(addr) = u64::from_str_radix(parts[0], 16) {
                     let sym_type = parts[1];
                     let name = parts[2];
-                    
+
                     if sym_type == "T" || sym_type == "t" {
                         function_table.push((addr, addr + 0x1000, demangle_symbol(name)));
                     }
@@ -435,7 +439,7 @@ fn parse_with_nm_objdump(lib_path: &Path) -> Result<ParsedDebugInfo, String> {
             }
         }
     }
-    
+
     Ok(ParsedDebugInfo {
         line_table,
         function_table,
@@ -446,17 +450,14 @@ fn parse_with_nm_objdump(lib_path: &Path) -> Result<ParsedDebugInfo, String> {
 fn demangle_symbol(name: &str) -> String {
     // Try c++filt for proper demangling
     use std::process::Command;
-    
-    if let Ok(output) = Command::new("c++filt")
-        .arg(name)
-        .output()
-    {
+
+    if let Ok(output) = Command::new("c++filt").arg(name).output() {
         if output.status.success() {
             let demangled = String::from_utf8_lossy(&output.stdout);
             return demangled.trim().to_string();
         }
     }
-    
+
     // Fallback: basic Itanium ABI demangling
     if name.starts_with("_Z") {
         // Very basic: strip common prefixes
@@ -469,7 +470,7 @@ fn demangle_symbol(name: &str) -> String {
 /// Find nearest address in line table (for approximate matching)
 fn find_nearest_address(table: &HashMap<u64, (String, u32)>, target: u64) -> Option<(String, u32)> {
     let mut best: Option<(u64, &(String, u32))> = None;
-    
+
     for (addr, loc) in table {
         if *addr <= target {
             match best {
@@ -479,7 +480,7 @@ fn find_nearest_address(table: &HashMap<u64, (String, u32)>, target: u64) -> Opt
             }
         }
     }
-    
+
     best.map(|(_, loc)| (loc.0.clone(), loc.1))
 }
 
@@ -490,8 +491,8 @@ fn find_nearest_address(table: &HashMap<u64, (String, u32)>, target: u64) -> Opt
 /// Get compiler flags for generating debug info
 pub fn debug_compile_flags() -> Vec<&'static str> {
     vec![
-        "-g",           // Generate debug info
-        "-gdwarf-4",    // Use DWARF 4 format (widely supported)
+        "-g",                      // Generate debug info
+        "-gdwarf-4",               // Use DWARF 4 format (widely supported)
         "-fno-omit-frame-pointer", // Keep frame pointers for better stack traces
     ]
 }
@@ -499,7 +500,7 @@ pub fn debug_compile_flags() -> Vec<&'static str> {
 /// Get linker flags for preserving debug info
 pub fn debug_link_flags() -> Vec<&'static str> {
     vec![
-        "-rdynamic",    // Export symbols for backtracing
+        "-rdynamic", // Export symbols for backtracing
     ]
 }
 
@@ -518,24 +519,27 @@ lazy_static::lazy_static! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_source_location_format() {
         let loc = SourceLocation::new("main.cpp", 42)
             .with_column(15)
             .with_function("my_function");
-        
+
         assert_eq!(loc.to_string(), "main.cpp:42:15");
-        assert_eq!(loc.to_string_with_function(), "my_function at main.cpp:42:15");
+        assert_eq!(
+            loc.to_string_with_function(),
+            "my_function at main.cpp:42:15"
+        );
     }
-    
+
     #[test]
     fn test_demangle_simple() {
         // Basic symbols should pass through
         assert_eq!(demangle_symbol("main"), "main");
         assert_eq!(demangle_symbol("on_load"), "on_load");
     }
-    
+
     #[test]
     fn test_parse_addr2line_location() {
         assert_eq!(

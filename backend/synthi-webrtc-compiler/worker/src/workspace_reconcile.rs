@@ -35,7 +35,12 @@ impl ReconcileConfig {
     pub fn from_env() -> Self {
         let mut cfg = Self::default();
 
-        let truthy = |v: &str| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "y" | "on");
+        let truthy = |v: &str| {
+            matches!(
+                v.trim().to_lowercase().as_str(),
+                "1" | "true" | "yes" | "y" | "on"
+            )
+        };
 
         if let Ok(v) = std::env::var("SYNTHI_SYNC_BUILD_OUTPUTS") {
             cfg.include_build_outputs = truthy(&v);
@@ -97,6 +102,31 @@ pub enum OverwritePolicy {
 pub struct SyncRules {
     pub always: Vec<(String, OverwritePolicy)>,
     pub optional_dirs: Vec<String>,
+}
+
+impl SyncRules {
+    /// Prefixes all rule paths with a workspace-relative directory (e.g. "android" or "apps/mobile/android").
+    ///
+    /// This is used for React Native projects where the Android Gradle project lives at
+    /// `<project_root>/android` rather than at the workspace root.
+    pub fn with_prefix(&self, prefix: &str) -> Self {
+        let prefix = prefix.replace('\\', "/");
+        let prefix = prefix.trim().trim_matches('/');
+        if prefix.is_empty() {
+            return self.clone();
+        }
+
+        let join = |p: &str| {
+            let p = p.replace('\\', "/");
+            let p = p.trim().trim_start_matches('/');
+            format!("{}/{}", prefix, p)
+        };
+
+        Self {
+            always: self.always.iter().map(|(p, pol)| (join(p), *pol)).collect(),
+            optional_dirs: self.optional_dirs.iter().map(|d| join(d)).collect(),
+        }
+    }
 }
 
 impl Default for SyncRules {
@@ -172,7 +202,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 async fn read_file_bytes(path: &Path) -> Result<Vec<u8>> {
-    let bytes = fs::read(path).await.with_context(|| format!("read failed: {}", path.display()))?;
+    let bytes = fs::read(path)
+        .await
+        .with_context(|| format!("read failed: {}", path.display()))?;
     Ok(bytes)
 }
 
@@ -181,7 +213,11 @@ async fn file_sha256(path: &Path) -> Result<String> {
     Ok(sha256_hex(&bytes))
 }
 
-async fn snapshot_paths(workspace_root: &Path, rules: &SyncRules, include_optional_dirs: bool) -> Result<Snapshot> {
+async fn snapshot_paths(
+    workspace_root: &Path,
+    rules: &SyncRules,
+    include_optional_dirs: bool,
+) -> Result<Snapshot> {
     let mut candidates: Vec<(PathBuf, String)> = Vec::new();
 
     for (p, _) in &rules.always {
@@ -355,8 +391,17 @@ fn is_probably_text(path: &str, bytes: &[u8]) -> bool {
     // quick heuristic: treat common gradle/android textual extensions as text
     let lower = path.to_lowercase();
     let text_exts = [
-        ".gradle", ".kts", ".properties", ".xml", ".json", ".txt", ".md", ".kt", ".java",
-        ".sh", ".bat",
+        ".gradle",
+        ".kts",
+        ".properties",
+        ".xml",
+        ".json",
+        ".txt",
+        ".md",
+        ".kt",
+        ".java",
+        ".sh",
+        ".bat",
     ];
     if text_exts.iter().any(|e| lower.ends_with(e)) {
         return true;
@@ -380,6 +425,17 @@ pub async fn reconcile_and_stream(
     let cfg = ReconcileConfig::from_env();
     let rules = SyncRules::default();
 
+    reconcile_and_stream_with_rules(log_dc, session_id, workspace_root, snapshot, rules, cfg).await
+}
+
+pub async fn reconcile_and_stream_with_rules(
+    log_dc: Arc<RTCDataChannel>,
+    session_id: &str,
+    workspace_root: &Path,
+    snapshot: Snapshot,
+    rules: SyncRules,
+    cfg: ReconcileConfig,
+) -> Result<()> {
     let (changes, summary) = collect_changes(workspace_root, &snapshot, &rules, &cfg).await?;
 
     send_json(
@@ -408,7 +464,11 @@ pub async fn reconcile_and_stream(
         }
 
         let is_text = is_probably_text(&ch.path, &ch.bytes);
-        let mode = if ch.existed_before { "overwrite" } else { "create" };
+        let mode = if ch.existed_before {
+            "overwrite"
+        } else {
+            "create"
+        };
 
         let b64 = base64::engine::general_purpose::STANDARD.encode(&ch.bytes);
         let chunk_chars = cfg.chunk_chars.max(4096);
@@ -492,5 +552,10 @@ pub async fn reconcile_and_stream(
 pub async fn take_snapshot(workspace_root: &Path) -> Result<Snapshot> {
     let cfg = ReconcileConfig::from_env();
     let rules = SyncRules::default();
+    snapshot_paths(workspace_root, &rules, cfg.include_build_outputs).await
+}
+
+pub async fn take_snapshot_with_rules(workspace_root: &Path, rules: SyncRules) -> Result<Snapshot> {
+    let cfg = ReconcileConfig::from_env();
     snapshot_paths(workspace_root, &rules, cfg.include_build_outputs).await
 }

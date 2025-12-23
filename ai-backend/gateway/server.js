@@ -14,6 +14,9 @@ const backendStaticAnalyzeUrl = new URL("/analyze/static", backendUrl).toString(
 const backendAiAnalyzeUrl = new URL("/analyze/ai", backendUrl).toString();
 const backendProactiveAnalyzeUrl = new URL("/analyze/proactive", backendUrl).toString();
 const backendProactiveQuickUrl = new URL("/analyze/proactive/quick", backendUrl).toString();
+// Workspace-level analysis endpoints
+const backendWorkspaceAnalyzeUrl = new URL("/analyze/workspace", backendUrl).toString();
+const backendWorkspaceIncrementalUrl = new URL("/analyze/workspace/incremental", backendUrl).toString();
 
 const server = http.createServer(handleHttpRequest);
 const wss = new WebSocketServer({
@@ -113,6 +116,12 @@ async function handleClientMessage(socket, raw) {
       break;
     case "analyze/proactive/quick":
       await forwardProactiveQuickAnalysis(socket, data, requestId);
+      break;
+    case "analyze/workspace":
+      await forwardWorkspaceAnalysis(socket, data, requestId);
+      break;
+    case "analyze/workspace/incremental":
+      await forwardWorkspaceIncrementalAnalysis(socket, data, requestId);
       break;
     default:
       sendError(socket, `Unsupported action: ${action}`, { requestId });
@@ -297,6 +306,7 @@ async function forwardProactiveAnalysis(socket, data, requestId) {
 
   // Optional: related files for cross-file analysis
   if (Array.isArray(data?.relatedFiles) && data.relatedFiles.length) {
+    // console.log(`[Gateway] Related files received: ${data.relatedFiles.length}`);
     const sanitized = data.relatedFiles
       .map((file) => {
         if (!file || typeof file !== "object") return null;
@@ -304,13 +314,25 @@ async function forwardProactiveAnalysis(socket, data, requestId) {
         const name = typeof file.name === "string" ? file.name : null;
         const content = typeof file.content === "string" ? file.content : "";
         if (!content.trim()) return null;
+        // console.log(`[Gateway]   Related file: ${path || name} (${content.length} chars)`);
         return { path, name, content };
       })
       .filter(Boolean);
     if (sanitized.length) {
       forwardBody.related_files = sanitized;
+      // console.log(`[Gateway] Forwarding ${sanitized.length} related files to backend`);
     }
+  } else {
+    // console.log(`[Gateway] No related files in request`);
   }
+
+  // console.log(`[Gateway] === PROACTIVE ANALYSIS REQUEST ===`);
+  // console.log(`[Gateway] File: ${forwardBody.file_path}`);
+  // console.log(`[Gateway] Language: ${forwardBody.lang}`);
+  // console.log(`[Gateway] Code length: ${forwardBody.code?.length || 0} chars`);
+  // console.log(`[Gateway] Tiers: ${forwardBody.tiers || 'default'}`);
+  // console.log(`[Gateway] Include AI: ${forwardBody.include_ai || false}`);
+  // console.log(`[Gateway] Related files count: ${forwardBody.related_files?.length || 0}`);
 
   let backendResponse;
   try {
@@ -320,7 +342,7 @@ async function forwardProactiveAnalysis(socket, data, requestId) {
       body: JSON.stringify(forwardBody),
     });
   } catch (err) {
-    console.error("Proactive analysis backend request failed", err);
+    console.error("[Gateway] Proactive analysis backend request failed", err);
     sendError(socket, "Failed to reach proactive analysis backend", {
       requestId,
       detail: err.message,
@@ -329,14 +351,31 @@ async function forwardProactiveAnalysis(socket, data, requestId) {
   }
 
   const responseText = await backendResponse.text();
+  // console.log(`[Gateway] Backend response status: ${backendResponse.status}`);
 
   if (!backendResponse.ok) {
+    console.error(`[Gateway] Backend error: ${responseText}`);
     sendError(socket, "Proactive analysis backend returned an error", {
       requestId,
       detail: responseText,
       status: backendResponse.status,
     });
     return;
+  }
+  
+  // Log response diagnostics
+  try {
+    const respData = JSON.parse(responseText);
+    // console.log(`[Gateway] === PROACTIVE ANALYSIS RESPONSE ===`);
+    // console.log(`[Gateway] Diagnostics count: ${respData.diagnostics?.length || 0}`);
+    if (respData.diagnostics?.length > 0) {
+      respData.diagnostics.forEach((d, i) => {
+        // console.log(`[Gateway]   [${i}] ${d.tier}: ${d.message} @ line ${d.location?.line}`);
+      });
+    }
+  } catch (e) {
+    // Ignore parse error, just log raw
+    // console.log(`[Gateway] Response preview: ${responseText.substring(0, 200)}...`);
   }
 
   let responseJson;
@@ -441,6 +480,266 @@ async function forwardProactiveQuickAnalysis(socket, data, requestId) {
   safeSend(socket, {
     type: "response",
     action: "analyze/proactive/quick",
+    requestId,
+    data: responseJson,
+  });
+}
+
+/**
+ * Forward workspace analysis request to backend.
+ * Workspace analysis handles multiple files with:
+ * - Incremental analysis (only changed files + dependents)
+ * - Cross-file issue detection
+ * - Multi-file suggestions
+ */
+async function forwardWorkspaceAnalysis(socket, data, requestId) {
+  const workspaceId = data?.workspaceId || data?.workspace_id;
+
+  if (typeof workspaceId !== "string" || !workspaceId.trim()) {
+    sendError(socket, "`workspaceId` must be a non-empty string", { requestId });
+    return;
+  }
+
+  // Build the request body
+  const forwardBody = {
+    workspace_id: workspaceId.trim(),
+  };
+
+  // Changed files (for incremental analysis)
+  if (Array.isArray(data?.changedFiles) && data.changedFiles.length) {
+    forwardBody.changed_files = data.changedFiles.map((f) => ({
+      path: f.path || "",
+      content_hash: f.contentHash || f.content_hash || "",
+      change_type: f.changeType || f.change_type || "modified",
+      content: f.content || null,
+      language: f.language || null,
+    }));
+  }
+
+  // All files in workspace
+  if (Array.isArray(data?.allFiles) && data.allFiles.length) {
+    forwardBody.all_files = data.allFiles
+      .filter((f) => f && typeof f === "object" && typeof f.content === "string")
+      .map((f) => ({
+        path: f.path || "untitled",
+        content: f.content,
+        language: f.language || "plaintext",
+      }));
+  }
+
+  // Focus file (currently being edited)
+  if (typeof data?.focusFile === "string" && data.focusFile.trim()) {
+    forwardBody.focus_file = data.focusFile.trim();
+  }
+
+  // Analysis configuration
+  if (Array.isArray(data?.tiers) && data.tiers.length) {
+    forwardBody.tiers = data.tiers;
+  }
+
+  if (typeof data?.includeAi === "boolean") {
+    forwardBody.include_ai = data.includeAi;
+  }
+
+  if (typeof data?.maxDiagnosticsPerFile === "number") {
+    forwardBody.max_diagnostics_per_file = data.maxDiagnosticsPerFile;
+  }
+
+  if (typeof data?.maxTotalDiagnostics === "number") {
+    forwardBody.max_total_diagnostics = data.maxTotalDiagnostics;
+  }
+
+  if (typeof data?.incremental === "boolean") {
+    forwardBody.incremental = data.incremental;
+  }
+
+  if (typeof data?.analyzeDependents === "boolean") {
+    forwardBody.analyze_dependents = data.analyzeDependents;
+  }
+
+  // Custom model/API key
+  if (typeof data?.model === "string" && data.model.trim()) {
+    forwardBody.model = data.model.trim();
+  }
+  if (typeof data?.apiKey === "string" && data.apiKey.trim()) {
+    forwardBody.api_key = data.apiKey.trim();
+  }
+
+  let backendResponse;
+  try {
+    backendResponse = await fetch(backendWorkspaceAnalyzeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(forwardBody),
+    });
+  } catch (err) {
+    console.error("Workspace analysis backend request failed", err);
+    sendError(socket, "Failed to reach workspace analysis backend", {
+      requestId,
+      detail: err.message,
+    });
+    return;
+  }
+
+  const responseText = await backendResponse.text();
+
+  if (!backendResponse.ok) {
+    sendError(socket, "Workspace analysis backend returned an error", {
+      requestId,
+      detail: responseText,
+      status: backendResponse.status,
+    });
+    return;
+  }
+
+  let responseJson;
+  try {
+    responseJson = JSON.parse(responseText);
+  } catch (err) {
+    sendError(socket, "Workspace analysis response was not valid JSON", {
+      requestId,
+      detail: err.message,
+    });
+    return;
+  }
+
+  // Send per-file updates for progressive UI
+  const files = responseJson?.files || {};
+  for (const [filePath, fileData] of Object.entries(files)) {
+    safeSend(socket, {
+      type: "stream",
+      streamId: requestId,
+      action: "workspace.file",
+      data: {
+        filePath,
+        diagnostics: fileData.diagnostics || [],
+        fromCache: fileData.fromCache || false,
+      },
+    });
+  }
+
+  // Send suggestions
+  const suggestions = responseJson?.suggestions || [];
+  if (suggestions.length > 0) {
+    safeSend(socket, {
+      type: "stream",
+      streamId: requestId,
+      action: "workspace.suggestions",
+      data: { suggestions },
+    });
+  }
+
+  // Send final complete response
+  safeSend(socket, {
+    type: "response",
+    action: "analyze/workspace",
+    requestId,
+    data: responseJson,
+  });
+}
+
+/**
+ * Forward incremental workspace analysis request.
+ * Optimized for real-time editing - only analyzes changed files + dependents.
+ */
+async function forwardWorkspaceIncrementalAnalysis(socket, data, requestId) {
+  // Force incremental mode and forward to main handler
+  const modifiedData = { ...data, incremental: true };
+  
+  // Use the same logic but with forced incremental flag
+  const workspaceId = data?.workspaceId || data?.workspace_id;
+
+  if (typeof workspaceId !== "string" || !workspaceId.trim()) {
+    sendError(socket, "`workspaceId` must be a non-empty string", { requestId });
+    return;
+  }
+
+  const forwardBody = {
+    workspace_id: workspaceId.trim(),
+    incremental: true,  // Force incremental
+  };
+
+  // Changed files (required for incremental)
+  if (Array.isArray(data?.changedFiles) && data.changedFiles.length) {
+    forwardBody.changed_files = data.changedFiles.map((f) => ({
+      path: f.path || "",
+      content_hash: f.contentHash || f.content_hash || "",
+      change_type: f.changeType || f.change_type || "modified",
+      content: f.content || null,
+      language: f.language || null,
+    }));
+  }
+
+  // All files (for context and dependency resolution)
+  if (Array.isArray(data?.allFiles) && data.allFiles.length) {
+    forwardBody.all_files = data.allFiles
+      .filter((f) => f && typeof f === "object" && typeof f.content === "string")
+      .map((f) => ({
+        path: f.path || "untitled",
+        content: f.content,
+        language: f.language || "plaintext",
+      }));
+  }
+
+  // Focus file
+  if (typeof data?.focusFile === "string" && data.focusFile.trim()) {
+    forwardBody.focus_file = data.focusFile.trim();
+  }
+
+  // Include AI only if explicitly requested
+  if (typeof data?.includeAi === "boolean") {
+    forwardBody.include_ai = data.includeAi;
+  }
+
+  // Custom model/API key
+  if (typeof data?.model === "string" && data.model.trim()) {
+    forwardBody.model = data.model.trim();
+  }
+  if (typeof data?.apiKey === "string" && data.apiKey.trim()) {
+    forwardBody.api_key = data.apiKey.trim();
+  }
+
+  let backendResponse;
+  try {
+    backendResponse = await fetch(backendWorkspaceIncrementalUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(forwardBody),
+    });
+  } catch (err) {
+    console.error("Incremental workspace analysis backend request failed", err);
+    sendError(socket, "Failed to reach incremental analysis backend", {
+      requestId,
+      detail: err.message,
+    });
+    return;
+  }
+
+  const responseText = await backendResponse.text();
+
+  if (!backendResponse.ok) {
+    sendError(socket, "Incremental analysis backend returned an error", {
+      requestId,
+      detail: responseText,
+      status: backendResponse.status,
+    });
+    return;
+  }
+
+  let responseJson;
+  try {
+    responseJson = JSON.parse(responseText);
+  } catch (err) {
+    sendError(socket, "Incremental analysis response was not valid JSON", {
+      requestId,
+      detail: err.message,
+    });
+    return;
+  }
+
+  safeSend(socket, {
+    type: "response",
+    action: "analyze/workspace/incremental",
     requestId,
     data: responseJson,
   });

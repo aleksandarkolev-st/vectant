@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Button } from '@/components/ui/button';
 import EmulatorControls from './EmulatorControls';
 import EmulatorFrame from './EmulatorFrame';
 import EmulatorScreen from './EmulatorScreen';
@@ -232,16 +233,19 @@ export default function EmulatorPanel({
           <div className="text-[11px] text-gray-500">
             {sessionId ? (streamConnected ? 'Connected' : 'Connecting…') : 'UI-only'}
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              if (typeof onClose === 'function') onClose();
-            }}
-            className="text-[11px] text-gray-400 hover:text-gray-200 px-2 py-1 rounded"
-            aria-label="Close emulator"
-          >
-            Close
-          </button>
+          <div className="text-[11px] text-gray-500">UI-only</div>
+          {typeof onClose === 'function' ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 border-[#4b4b4b] bg-[#262626] hover:bg-[#2e2e2e] hover:border-emerald-500 hover:text-emerald-400 text-gray-200 transition-colors"
+              onClick={onClose}
+              aria-label="Close emulator preview"
+            >
+              Close
+            </Button>
+          ) : null}
         </div>
       </div>
 

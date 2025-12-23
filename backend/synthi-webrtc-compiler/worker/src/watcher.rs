@@ -1,10 +1,12 @@
+#![allow(dead_code)]
+
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::time::{Duration, Instant};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 /// Debounce delay in milliseconds (for actual compilation trigger)
 const DEBOUNCE_MS: u64 = 300;
@@ -16,14 +18,20 @@ const SPECULATIVE_DEBOUNCE_MS: u64 = 150;
 /// Keystroke detection threshold (fast consecutive changes)
 const KEYSTROKE_THRESHOLD_MS: u64 = 100;
 
+/// Maximum debounce extension during burst typing
+const MAX_EXTENDED_DEBOUNCE_MS: u64 = 2000;
+
+/// Minimum time between consecutive events to consider "typing stopped"
+const TYPING_STOPPED_MS: u64 = 500;
+
 /// File change types for rebuild decision
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileChangeType {
-    SharedHeader,  // shared.h changed - rebuild both
-    CoreSource,    // core.cpp changed - rebuild core (+ gui if ABI changed)
-    GuiSource,     // gui.cpp changed - rebuild gui only
-    MainSource,    // main source changed - rebuild main
-    Other,         // other file - needs analysis
+    SharedHeader, // shared.h changed - rebuild both
+    CoreSource,   // core.cpp changed - rebuild core (+ gui if ABI changed)
+    GuiSource,    // gui.cpp changed - rebuild gui only
+    MainSource,   // main source changed - rebuild main
+    Other,        // other file - needs analysis
 }
 
 impl FileChangeType {
@@ -31,9 +39,13 @@ impl FileChangeType {
         let lower = path.to_lowercase();
         if lower.ends_with("shared.h") || lower.ends_with("shared.hpp") {
             FileChangeType::SharedHeader
-        } else if lower.contains("core") && (lower.ends_with(".cpp") || lower.ends_with(".c") || lower.ends_with(".rs")) {
+        } else if lower.contains("core")
+            && (lower.ends_with(".cpp") || lower.ends_with(".c") || lower.ends_with(".rs"))
+        {
             FileChangeType::CoreSource
-        } else if lower.contains("gui") && (lower.ends_with(".cpp") || lower.ends_with(".c") || lower.ends_with(".rs")) {
+        } else if lower.contains("gui")
+            && (lower.ends_with(".cpp") || lower.ends_with(".c") || lower.ends_with(".rs"))
+        {
             FileChangeType::GuiSource
         } else if lower.ends_with(".cpp") || lower.ends_with(".c") || lower.ends_with(".rs") {
             FileChangeType::MainSource
@@ -62,37 +74,36 @@ pub fn setup_watcher(path: &Path, tx: Sender<String>) -> notify::Result<Recommen
         // Debounce state: track pending changes per file
         let mut pending: HashMap<String, Instant> = HashMap::new();
         let mut last_emit = Instant::now();
-        
+
         loop {
             // Use a short timeout to check for debounce expiry
             match notify_rx.recv_timeout(Duration::from_millis(50)) {
                 Ok(Ok(event)) => {
                     let now = Instant::now();
-                    
+
                     // Filter for relevant events (modify/create)
                     use notify::EventKind;
-                    let dominated = matches!(
-                        event.kind,
-                        EventKind::Modify(_) | EventKind::Create(_)
-                    );
-                    
+                    let dominated =
+                        matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_));
+
                     if !dominated {
                         continue;
                     }
-                    
+
                     // Add/update pending files
                     for path in event.paths {
                         if let Some(path_str) = path.to_str() {
                             // Skip build artifacts and temp files
-                            if path_str.contains("/target/") || 
-                               path_str.contains("\\target\\") ||
-                               path_str.contains("/.") ||
-                               path_str.contains("\\.") ||
-                               path_str.ends_with(".so") ||
-                               path_str.ends_with(".dll") ||
-                               path_str.ends_with(".o") ||
-                               path_str.ends_with(".obj") ||
-                               path_str.contains("debug_ai_generated") {
+                            if path_str.contains("/target/")
+                                || path_str.contains("\\target\\")
+                                || path_str.contains("/.")
+                                || path_str.contains("\\.")
+                                || path_str.ends_with(".so")
+                                || path_str.ends_with(".dll")
+                                || path_str.ends_with(".o")
+                                || path_str.ends_with(".obj")
+                                || path_str.contains("debug_ai_generated")
+                            {
                                 continue;
                             }
                             pending.insert(path_str.to_string(), now);
@@ -110,11 +121,11 @@ pub fn setup_watcher(path: &Path, tx: Sender<String>) -> notify::Result<Recommen
                     break;
                 }
             }
-            
+
             // Check for debounce expiry
             let now = Instant::now();
             let debounce_duration = Duration::from_millis(DEBOUNCE_MS);
-            
+
             // Collect files that have passed debounce threshold
             let mut ready: Vec<String> = Vec::new();
             pending.retain(|path, timestamp| {
@@ -125,14 +136,14 @@ pub fn setup_watcher(path: &Path, tx: Sender<String>) -> notify::Result<Recommen
                     true // Keep in pending
                 }
             });
-            
+
             // Emit coalesced changes
             if !ready.is_empty() && now.duration_since(last_emit) >= debounce_duration {
                 // Determine what kind of rebuild is needed
                 let mut has_shared = false;
                 let mut has_core = false;
                 let mut has_gui = false;
-                
+
                 for path in &ready {
                     match FileChangeType::from_path(path) {
                         FileChangeType::SharedHeader => has_shared = true,
@@ -141,7 +152,7 @@ pub fn setup_watcher(path: &Path, tx: Sender<String>) -> notify::Result<Recommen
                         _ => {}
                     }
                 }
-                
+
                 // Send a summary message indicating what changed
                 // Format: "changed:<scope>:<paths>"
                 // scope: "both", "core", "gui", "main"
@@ -156,13 +167,13 @@ pub fn setup_watcher(path: &Path, tx: Sender<String>) -> notify::Result<Recommen
                 } else {
                     "main"
                 };
-                
+
                 let message = format!("changed:{}:{}", scope, ready.join(","));
                 if let Err(e) = tx.send(message) {
                     println!("[Watcher] Failed to send: {:?}", e);
                     break;
                 }
-                
+
                 last_emit = now;
             }
         }
@@ -226,19 +237,11 @@ pub enum PreemptiveMessage {
         timestamp: Instant,
     },
     /// Cancel current speculative compile (new changes arrived)
-    CancelSpeculative {
-        reason: String,
-    },
+    CancelSpeculative { reason: String },
     /// Commit the speculative compile result
-    CommitSpeculative {
-        paths: Vec<String>,
-        scope: String,
-    },
+    CommitSpeculative { paths: Vec<String>, scope: String },
     /// Regular change notification (backwards compatible)
-    Changed {
-        scope: String,
-        paths: Vec<String>,
-    },
+    Changed { scope: String, paths: Vec<String> },
 }
 
 /// Preemptive watcher with speculative compilation support
@@ -262,6 +265,12 @@ pub struct PreemptiveWatcher {
     last_speculative: Instant,
     /// Last commit time
     last_commit: Instant,
+    /// Burst typing detection: track rapid consecutive changes
+    burst_start: Option<Instant>,
+    /// Number of changes in current burst
+    burst_count: u32,
+    /// Last change time (for burst detection)
+    last_change: Instant,
 }
 
 impl PreemptiveWatcher {
@@ -277,18 +286,66 @@ impl PreemptiveWatcher {
             pending: HashMap::new(),
             last_speculative: Instant::now(),
             last_commit: Instant::now(),
+            burst_start: None,
+            burst_count: 0,
+            last_change: Instant::now(),
         }
     }
-    
+
     /// Get the cancellation flag for sharing with compiler
     pub fn get_cancel_flag(&self) -> Arc<AtomicBool> {
         self.cancel_flag.clone()
     }
-    
+
+    /// Check if user is in a typing burst (rapid consecutive changes)
+    fn is_burst_typing(&self) -> bool {
+        if let Some(burst_start) = self.burst_start {
+            // User is burst typing if: we're in a burst, haven't exceeded max time,
+            // and had recent changes
+            let burst_duration = burst_start.elapsed();
+            let since_last = self.last_change.elapsed();
+
+            burst_duration < Duration::from_millis(MAX_EXTENDED_DEBOUNCE_MS)
+                && since_last < Duration::from_millis(TYPING_STOPPED_MS)
+                && self.burst_count >= 3 // Need at least 3 rapid changes to be "burst"
+        } else {
+            false
+        }
+    }
+
+    /// Get effective debounce time (extended during burst typing)
+    fn effective_debounce(&self) -> Duration {
+        if self.is_burst_typing() {
+            // During burst typing, wait longer before committing
+            // Scale up based on burst intensity, but cap at MAX_EXTENDED_DEBOUNCE_MS
+            let base = self.config.commit_delay_ms;
+            let extension = (self.burst_count as u64 * 50).min(500); // +50ms per burst event, max +500ms
+            Duration::from_millis((base + extension).min(MAX_EXTENDED_DEBOUNCE_MS))
+        } else {
+            Duration::from_millis(self.config.commit_delay_ms)
+        }
+    }
+
     /// Record a file change
     pub fn record_change(&mut self, path: String) {
         let now = Instant::now();
-        
+        let since_last = now.duration_since(self.last_change);
+
+        // Detect burst typing
+        if since_last < Duration::from_millis(KEYSTROKE_THRESHOLD_MS) {
+            // Rapid change - we're in a burst
+            if self.burst_start.is_none() {
+                self.burst_start = Some(now);
+            }
+            self.burst_count += 1;
+        } else if since_last > Duration::from_millis(TYPING_STOPPED_MS) {
+            // Gap in typing - reset burst state
+            self.burst_start = None;
+            self.burst_count = 0;
+        }
+
+        self.last_change = now;
+
         // If we have an active speculative compile, check if we should cancel it
         if self.state == SpeculativeState::Compiling {
             // Check if this is a different file than what we're compiling
@@ -300,10 +357,10 @@ impl PreemptiveWatcher {
                 self.cancel_speculative("File modified again");
             }
         }
-        
+
         self.pending.insert(path, now);
     }
-    
+
     /// Cancel the current speculative compilation
     fn cancel_speculative(&mut self, reason: &str) {
         if self.state == SpeculativeState::Compiling {
@@ -312,44 +369,47 @@ impl PreemptiveWatcher {
             println!("[Preemptive] Cancelled speculative compile: {}", reason);
         }
     }
-    
+
     /// Check timers and return any messages to send
     pub fn check_timers(&mut self) -> Vec<PreemptiveMessage> {
         let now = Instant::now();
         let mut messages = Vec::new();
-        
+
         if !self.config.enabled {
             // Fall back to simple debounce behavior
             return self.check_simple_debounce();
         }
-        
+
         let speculative_duration = Duration::from_millis(self.config.speculative_delay_ms);
-        let commit_duration = Duration::from_millis(self.config.commit_delay_ms);
-        
+        let commit_duration = self.effective_debounce(); // Use adaptive debounce
+
+        // Don't start speculative compiles during burst typing
+        let allow_speculative = !self.is_burst_typing();
+
         // Collect files ready for speculative compile
         let mut speculative_ready: Vec<String> = Vec::new();
         let mut commit_ready: Vec<String> = Vec::new();
-        
+
         for (path, timestamp) in &self.pending {
             let elapsed = now.duration_since(*timestamp);
-            
+
             if elapsed >= commit_duration {
                 commit_ready.push(path.clone());
             } else if elapsed >= speculative_duration {
                 speculative_ready.push(path.clone());
             }
         }
-        
+
         // Priority: commit over speculative
         if !commit_ready.is_empty() && now.duration_since(self.last_commit) >= commit_duration {
             // Ready to commit
             let scope = self.determine_scope(&commit_ready);
-            
+
             // Remove committed files from pending
             for path in &commit_ready {
                 self.pending.remove(path);
             }
-            
+
             // If we have a ready speculative compile, commit it
             if self.state == SpeculativeState::Ready {
                 messages.push(PreemptiveMessage::CommitSpeculative {
@@ -363,20 +423,21 @@ impl PreemptiveWatcher {
                     paths: commit_ready.clone(),
                 });
             }
-            
+
             self.state = SpeculativeState::Idle;
             self.speculative_count = 0;
             self.last_commit = now;
             self.cancel_flag.store(false, Ordering::SeqCst);
-            
-        } else if !speculative_ready.is_empty() 
-            && self.state == SpeculativeState::Idle 
+        } else if !speculative_ready.is_empty()
+            && self.state == SpeculativeState::Idle
             && now.duration_since(self.last_speculative) >= speculative_duration
             && self.speculative_count < self.config.max_speculative_count
+            && allow_speculative
+        // Don't speculate during burst typing
         {
             // Start speculative compile
             let scope = self.determine_scope(&speculative_ready);
-            
+
             self.state = SpeculativeState::Compiling;
             self.speculative_files = speculative_ready.clone();
             self.speculative_scope = scope.clone();
@@ -384,17 +445,17 @@ impl PreemptiveWatcher {
             self.speculative_count += 1;
             self.last_speculative = now;
             self.cancel_flag.store(false, Ordering::SeqCst);
-            
+
             messages.push(PreemptiveMessage::StartSpeculative {
                 paths: speculative_ready,
                 scope,
                 timestamp: now,
             });
         }
-        
+
         messages
     }
-    
+
     /// Mark speculative compile as complete
     pub fn speculative_complete(&mut self, success: bool) {
         if self.state == SpeculativeState::Compiling {
@@ -407,13 +468,13 @@ impl PreemptiveWatcher {
             }
         }
     }
-    
+
     /// Simple debounce fallback when preemptive is disabled
     fn check_simple_debounce(&mut self) -> Vec<PreemptiveMessage> {
         let now = Instant::now();
         let debounce_duration = Duration::from_millis(self.config.commit_delay_ms);
         let mut messages = Vec::new();
-        
+
         let mut ready: Vec<String> = Vec::new();
         self.pending.retain(|path, timestamp| {
             if now.duration_since(*timestamp) >= debounce_duration {
@@ -423,7 +484,7 @@ impl PreemptiveWatcher {
                 true
             }
         });
-        
+
         if !ready.is_empty() && now.duration_since(self.last_commit) >= debounce_duration {
             let scope = self.determine_scope(&ready);
             messages.push(PreemptiveMessage::Changed {
@@ -432,16 +493,16 @@ impl PreemptiveWatcher {
             });
             self.last_commit = now;
         }
-        
+
         messages
     }
-    
+
     /// Determine compilation scope from changed files
     fn determine_scope(&self, paths: &[String]) -> String {
         let mut has_shared = false;
         let mut has_core = false;
         let mut has_gui = false;
-        
+
         for path in paths {
             match FileChangeType::from_path(path) {
                 FileChangeType::SharedHeader => has_shared = true,
@@ -450,7 +511,7 @@ impl PreemptiveWatcher {
                 _ => {}
             }
         }
-        
+
         if has_shared {
             "both".to_string()
         } else if has_core && has_gui {
@@ -472,40 +533,39 @@ pub fn setup_preemptive_watcher(
     config: PreemptiveConfig,
 ) -> notify::Result<(RecommendedWatcher, Arc<AtomicBool>)> {
     let (notify_tx, notify_rx) = std::sync::mpsc::channel();
-    
+
     let mut watcher = RecommendedWatcher::new(notify_tx, Config::default())?;
     watcher.watch(path, RecursiveMode::Recursive)?;
-    
+
     let mut preemptive = PreemptiveWatcher::new(config);
     let cancel_flag = preemptive.get_cancel_flag();
-    
+
     std::thread::spawn(move || {
         loop {
             // Short timeout for responsive timer checks
             match notify_rx.recv_timeout(Duration::from_millis(25)) {
                 Ok(Ok(event)) => {
                     use notify::EventKind;
-                    let dominated = matches!(
-                        event.kind,
-                        EventKind::Modify(_) | EventKind::Create(_)
-                    );
-                    
+                    let dominated =
+                        matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_));
+
                     if !dominated {
                         continue;
                     }
-                    
+
                     for path in event.paths {
                         if let Some(path_str) = path.to_str() {
                             // Skip build artifacts
-                            if path_str.contains("/target/") || 
-                               path_str.contains("\\target\\") ||
-                               path_str.contains("/.") ||
-                               path_str.contains("\\.") ||
-                               path_str.ends_with(".so") ||
-                               path_str.ends_with(".dll") ||
-                               path_str.ends_with(".o") ||
-                               path_str.ends_with(".obj") ||
-                               path_str.contains("debug_ai_generated") {
+                            if path_str.contains("/target/")
+                                || path_str.contains("\\target\\")
+                                || path_str.contains("/.")
+                                || path_str.contains("\\.")
+                                || path_str.ends_with(".so")
+                                || path_str.ends_with(".dll")
+                                || path_str.ends_with(".o")
+                                || path_str.ends_with(".obj")
+                                || path_str.contains("debug_ai_generated")
+                            {
                                 continue;
                             }
                             preemptive.record_change(path_str.to_string());
@@ -523,7 +583,7 @@ pub fn setup_preemptive_watcher(
                     break;
                 }
             }
-            
+
             // Check timers and send messages
             for message in preemptive.check_timers() {
                 if let Err(e) = tx.send(message) {
@@ -533,7 +593,7 @@ pub fn setup_preemptive_watcher(
             }
         }
     });
-    
+
     Ok((watcher, cancel_flag))
 }
 
@@ -567,27 +627,29 @@ impl SpeculativeCache {
             max_entries,
         }
     }
-    
+
     /// Store a speculative compilation result
     pub fn store(&mut self, hash: u64, entry: SpeculativeCacheEntry) {
         // Evict oldest if at capacity
         if self.results.len() >= self.max_entries {
-            if let Some(oldest_key) = self.results.iter()
+            if let Some(oldest_key) = self
+                .results
+                .iter()
                 .min_by_key(|(_, e)| e.timestamp)
                 .map(|(k, _)| *k)
             {
                 self.results.remove(&oldest_key);
             }
         }
-        
+
         self.results.insert(hash, entry);
     }
-    
+
     /// Try to get a cached speculative result
     pub fn get(&self, hash: u64) -> Option<&SpeculativeCacheEntry> {
         self.results.get(&hash)
     }
-    
+
     /// Check if we have a valid cached result
     pub fn has_valid(&self, hash: u64, max_age: Duration) -> bool {
         if let Some(entry) = self.results.get(&hash) {
@@ -596,14 +658,15 @@ impl SpeculativeCache {
             false
         }
     }
-    
+
     /// Clear all cached results
     pub fn clear(&mut self) {
         self.results.clear();
     }
-    
+
     /// Remove entries older than max_age
     pub fn cleanup(&mut self, max_age: Duration) {
-        self.results.retain(|_, entry| entry.timestamp.elapsed() < max_age);
+        self.results
+            .retain(|_, entry| entry.timestamp.elapsed() < max_age);
     }
 }

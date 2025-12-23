@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 // ============================================================
 // CAPABILITY DETECTION MODULE
 // ============================================================
@@ -10,9 +12,9 @@
 // - We can also generate shims to make non-HMR code HMR-capable
 // ============================================================
 
-use std::path::Path;
 use libloading::{Library, Symbol};
 use std::ffi::c_void;
+use std::path::Path;
 
 /// HMR capability level detected from exports
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,14 +37,17 @@ pub enum HmrCapability {
 impl HmrCapability {
     /// Whether this capability level supports hot module replacement
     pub fn supports_hmr(&self) -> bool {
-        matches!(self, HmrCapability::Full | HmrCapability::Partial | HmrCapability::RenderOnly)
+        matches!(
+            self,
+            HmrCapability::Full | HmrCapability::Partial | HmrCapability::RenderOnly
+        )
     }
-    
+
     /// Whether state can be preserved across reloads
     pub fn preserves_state(&self) -> bool {
         matches!(self, HmrCapability::Full)
     }
-    
+
     /// Human-readable description for frontend
     pub fn description(&self) -> &'static str {
         match self {
@@ -97,7 +102,7 @@ pub struct ExportSet {
     pub core_on_load_host: bool,
     pub core_host_kv_schemas_len: bool,
     pub core_host_kv_schemas: bool,
-    
+
     // GUI module exports
     pub gui_on_load: bool,
     pub gui_on_render: bool,
@@ -110,7 +115,7 @@ pub struct ExportSet {
     pub gui_on_load_host: bool,
     pub gui_host_kv_schemas_len: bool,
     pub gui_host_kv_schemas: bool,
-    
+
     // Legacy exports
     pub on_load: bool,
     pub entrypoint: bool,
@@ -125,9 +130,9 @@ pub struct ExportSet {
     pub on_load_host: bool,
     pub host_kv_schemas_len: bool,
     pub host_kv_schemas: bool,
-    
+
     // Blocking app indicators
-    pub main: bool,  // Has `main` symbol (C/C++ entry point)
+    pub main: bool, // Has `main` symbol (C/C++ entry point)
 }
 
 impl ExportSet {
@@ -135,54 +140,56 @@ impl ExportSet {
     pub fn is_core_module(&self) -> bool {
         self.core_on_load && self.core_on_update
     }
-    
+
     /// Check if this is a new-style GUI module
     pub fn is_gui_module(&self) -> bool {
         self.gui_on_load && self.gui_on_render
     }
-    
+
     /// Check if this has any HMR hooks
     pub fn has_hmr_hooks(&self) -> bool {
         self.on_update || self.core_on_update || self.gui_on_render
     }
-    
+
     /// Check if this has state serialization
     pub fn has_state_serialization(&self) -> bool {
-        (self.on_save_state && self.on_load_from_json) ||
-        (self.core_on_save_state && self.core_on_load_from_json) ||
-        (self.gui_on_save_state && self.gui_on_load_from_json)
+        (self.on_save_state && self.on_load_from_json)
+            || (self.core_on_save_state && self.core_on_load_from_json)
+            || (self.gui_on_save_state && self.gui_on_load_from_json)
     }
-    
+
     /// Check if this is a blocking/one-shot app
     pub fn is_blocking(&self) -> bool {
         // Has main/entrypoint but no on_update
         (self.main || self.entrypoint) && !self.on_update && !self.core_on_update
     }
-    
+
     /// Check if this module supports Host KV
     pub fn has_host_kv(&self) -> bool {
         // Has on_load_host OR has schema exports
-        self.core_on_load_host || self.gui_on_load_host || self.on_load_host ||
-        (self.core_host_kv_schemas_len && self.core_host_kv_schemas) ||
-        (self.gui_host_kv_schemas_len && self.gui_host_kv_schemas) ||
-        (self.host_kv_schemas_len && self.host_kv_schemas)
+        self.core_on_load_host
+            || self.gui_on_load_host
+            || self.on_load_host
+            || (self.core_host_kv_schemas_len && self.core_host_kv_schemas)
+            || (self.gui_host_kv_schemas_len && self.gui_host_kv_schemas)
+            || (self.host_kv_schemas_len && self.host_kv_schemas)
     }
-    
+
     /// Check if this module uses host context loading (preferred path)
     pub fn uses_host_context(&self) -> bool {
         self.core_on_load_host || self.gui_on_load_host || self.on_load_host
     }
-    
+
     /// Check if this module has schema table exports
     pub fn has_schema_table(&self) -> bool {
-        (self.core_host_kv_schemas_len && self.core_host_kv_schemas) ||
-        (self.gui_host_kv_schemas_len && self.gui_host_kv_schemas) ||
-        (self.host_kv_schemas_len && self.host_kv_schemas)
+        (self.core_host_kv_schemas_len && self.core_host_kv_schemas)
+            || (self.gui_host_kv_schemas_len && self.gui_host_kv_schemas)
+            || (self.host_kv_schemas_len && self.host_kv_schemas)
     }
 }
 
 /// Inspect a compiled library and detect its capabilities
-/// 
+///
 /// This is the main entry point for capability detection.
 /// Call this AFTER compilation succeeds to determine HMR behavior.
 pub fn detect_capabilities(lib_path: &Path) -> Result<CapabilityReport, String> {
@@ -191,18 +198,17 @@ pub fn detect_capabilities(lib_path: &Path) -> Result<CapabilityReport, String> 
     let lib = unsafe {
         #[cfg(unix)]
         {
-            use libloading::os::unix::{Library as UnixLib, RTLD_NOW, RTLD_LOCAL};
+            use libloading::os::unix::{Library as UnixLib, RTLD_LOCAL, RTLD_NOW};
             UnixLib::open(Some(lib_path), RTLD_NOW | RTLD_LOCAL)
                 .map(|l| Library::from(l))
                 .map_err(|e| format!("Failed to load library: {}", e))?
         }
         #[cfg(not(unix))]
         {
-            Library::new(lib_path)
-                .map_err(|e| format!("Failed to load library: {}", e))?
+            Library::new(lib_path).map_err(|e| format!("Failed to load library: {}", e))?
         }
     };
-    
+
     let exports = probe_exports(&lib);
     let abi_version = probe_abi_version(&lib, &exports);
     let (module_type, hmr_capability) = classify_module(&exports);
@@ -210,7 +216,7 @@ pub fn detect_capabilities(lib_path: &Path) -> Result<CapabilityReport, String> 
     let can_shim = can_generate_shim(&exports);
     let has_host_kv = exports.has_host_kv();
     let uses_host_context = exports.uses_host_context();
-    
+
     Ok(CapabilityReport {
         module_type,
         hmr_capability,
@@ -226,7 +232,7 @@ pub fn detect_capabilities(lib_path: &Path) -> Result<CapabilityReport, String> 
 /// Probe all known symbols in the library
 fn probe_exports(lib: &Library) -> ExportSet {
     let mut exports = ExportSet::default();
-    
+
     // Type aliases for cleaner probing
     type VoidFn = unsafe extern "C" fn();
     type LoadFn = unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void;
@@ -243,7 +249,7 @@ fn probe_exports(lib: &Library) -> ExportSet {
     type GuiLoadFn = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> *mut c_void;
     type SchemaLenFn = unsafe extern "C" fn() -> u32;
     type SchemasFn = unsafe extern "C" fn() -> *const c_void;
-    
+
     unsafe {
         // Core module exports
         exports.core_on_load = lib.get::<Symbol<LoadFn>>(b"core_on_load").is_ok();
@@ -252,13 +258,21 @@ fn probe_exports(lib: &Library) -> ExportSet {
         exports.core_on_unload = lib.get::<Symbol<UnloadFn>>(b"core_on_unload").is_ok();
         exports.core_get_api = lib.get::<Symbol<GetApiFn>>(b"core_get_api").is_ok();
         exports.core_get_abi_version = lib.get::<Symbol<GetAbiFn>>(b"core_get_abi_version").is_ok();
-        exports.core_on_save_state = lib.get::<Symbol<SaveStateFn>>(b"core_on_save_state").is_ok();
-        exports.core_on_load_from_json = lib.get::<Symbol<LoadFromJsonFn>>(b"core_on_load_from_json").is_ok();
+        exports.core_on_save_state = lib
+            .get::<Symbol<SaveStateFn>>(b"core_on_save_state")
+            .is_ok();
+        exports.core_on_load_from_json = lib
+            .get::<Symbol<LoadFromJsonFn>>(b"core_on_load_from_json")
+            .is_ok();
         // Core Host KV exports
         exports.core_on_load_host = lib.get::<Symbol<LoadHostFn>>(b"core_on_load_host").is_ok();
-        exports.core_host_kv_schemas_len = lib.get::<Symbol<SchemaLenFn>>(b"core_host_kv_schemas_len").is_ok();
-        exports.core_host_kv_schemas = lib.get::<Symbol<SchemasFn>>(b"core_host_kv_schemas").is_ok();
-        
+        exports.core_host_kv_schemas_len = lib
+            .get::<Symbol<SchemaLenFn>>(b"core_host_kv_schemas_len")
+            .is_ok();
+        exports.core_host_kv_schemas = lib
+            .get::<Symbol<SchemasFn>>(b"core_host_kv_schemas")
+            .is_ok();
+
         // GUI module exports
         exports.gui_on_load = lib.get::<Symbol<GuiLoadFn>>(b"gui_on_load").is_ok();
         exports.gui_on_render = lib.get::<Symbol<RenderFn>>(b"gui_on_render").is_ok();
@@ -266,12 +280,16 @@ fn probe_exports(lib: &Library) -> ExportSet {
         exports.gui_on_unload = lib.get::<Symbol<UnloadFn>>(b"gui_on_unload").is_ok();
         exports.gui_get_abi_version = lib.get::<Symbol<GetAbiFn>>(b"gui_get_abi_version").is_ok();
         exports.gui_on_save_state = lib.get::<Symbol<SaveStateFn>>(b"gui_on_save_state").is_ok();
-        exports.gui_on_load_from_json = lib.get::<Symbol<LoadFromJsonFn>>(b"gui_on_load_from_json").is_ok();
+        exports.gui_on_load_from_json = lib
+            .get::<Symbol<LoadFromJsonFn>>(b"gui_on_load_from_json")
+            .is_ok();
         // GUI Host KV exports
         exports.gui_on_load_host = lib.get::<Symbol<LoadHostFn>>(b"gui_on_load_host").is_ok();
-        exports.gui_host_kv_schemas_len = lib.get::<Symbol<SchemaLenFn>>(b"gui_host_kv_schemas_len").is_ok();
+        exports.gui_host_kv_schemas_len = lib
+            .get::<Symbol<SchemaLenFn>>(b"gui_host_kv_schemas_len")
+            .is_ok();
         exports.gui_host_kv_schemas = lib.get::<Symbol<SchemasFn>>(b"gui_host_kv_schemas").is_ok();
-        
+
         // Legacy exports
         exports.on_load = lib.get::<Symbol<LoadFn>>(b"on_load").is_ok();
         exports.entrypoint = lib.get::<Symbol<EntrypointFn>>(b"entrypoint").is_ok();
@@ -279,18 +297,22 @@ fn probe_exports(lib: &Library) -> ExportSet {
         exports.on_event = lib.get::<Symbol<EventFn>>(b"on_event").is_ok();
         exports.on_unload = lib.get::<Symbol<UnloadFn>>(b"on_unload").is_ok();
         exports.on_save_state = lib.get::<Symbol<SaveStateFn>>(b"on_save_state").is_ok();
-        exports.on_load_from_json = lib.get::<Symbol<LoadFromJsonFn>>(b"on_load_from_json").is_ok();
+        exports.on_load_from_json = lib
+            .get::<Symbol<LoadFromJsonFn>>(b"on_load_from_json")
+            .is_ok();
         exports.gui_render = lib.get::<Symbol<RenderFn>>(b"gui_render").is_ok();
         exports.on_render = lib.get::<Symbol<RenderFn>>(b"on_render").is_ok();
         // Legacy Host KV exports
         exports.on_load_host = lib.get::<Symbol<LoadHostFn>>(b"on_load_host").is_ok();
-        exports.host_kv_schemas_len = lib.get::<Symbol<SchemaLenFn>>(b"host_kv_schemas_len").is_ok();
+        exports.host_kv_schemas_len = lib
+            .get::<Symbol<SchemaLenFn>>(b"host_kv_schemas_len")
+            .is_ok();
         exports.host_kv_schemas = lib.get::<Symbol<SchemasFn>>(b"host_kv_schemas").is_ok();
-        
+
         // Blocking app indicator
         exports.main = lib.get::<Symbol<VoidFn>>(b"main").is_ok();
     }
-    
+
     exports
 }
 
@@ -298,12 +320,14 @@ fn probe_exports(lib: &Library) -> ExportSet {
 fn probe_abi_version(lib: &Library, exports: &ExportSet) -> Option<u32> {
     unsafe {
         if exports.core_get_abi_version {
-            if let Ok(f) = lib.get::<Symbol<unsafe extern "C" fn() -> u32>>(b"core_get_abi_version") {
+            if let Ok(f) = lib.get::<Symbol<unsafe extern "C" fn() -> u32>>(b"core_get_abi_version")
+            {
                 return Some(f());
             }
         }
         if exports.gui_get_abi_version {
-            if let Ok(f) = lib.get::<Symbol<unsafe extern "C" fn() -> u32>>(b"gui_get_abi_version") {
+            if let Ok(f) = lib.get::<Symbol<unsafe extern "C" fn() -> u32>>(b"gui_get_abi_version")
+            {
                 return Some(f());
             }
         }
@@ -322,7 +346,7 @@ fn classify_module(exports: &ExportSet) -> (ModuleType, HmrCapability) {
         };
         return (ModuleType::Core, capability);
     }
-    
+
     // New-style GUI module
     if exports.is_gui_module() {
         let capability = if exports.gui_on_save_state && exports.gui_on_load_from_json {
@@ -332,7 +356,7 @@ fn classify_module(exports: &ExportSet) -> (ModuleType, HmrCapability) {
         };
         return (ModuleType::Gui, capability);
     }
-    
+
     // Legacy main module with on_update (HMR-capable)
     if (exports.on_load || exports.entrypoint) && exports.on_update {
         let capability = if exports.on_save_state && exports.on_load_from_json {
@@ -342,56 +366,73 @@ fn classify_module(exports: &ExportSet) -> (ModuleType, HmrCapability) {
         };
         return (ModuleType::Main, capability);
     }
-    
+
     // Legacy main module with render but no update (render-only)
     if (exports.on_load || exports.entrypoint) && (exports.gui_render || exports.on_render) {
         return (ModuleType::Main, HmrCapability::RenderOnly);
     }
-    
+
     // Blocking app (has entry but no update)
     if exports.entrypoint || exports.main {
         return (ModuleType::Main, HmrCapability::Blocking);
     }
-    
+
     // Invalid - missing essential exports
     (ModuleType::Unknown, HmrCapability::Invalid)
 }
 
 /// Generate warnings based on module analysis
-fn generate_warnings(exports: &ExportSet, module_type: &ModuleType, capability: &HmrCapability) -> Vec<String> {
+fn generate_warnings(
+    exports: &ExportSet,
+    module_type: &ModuleType,
+    capability: &HmrCapability,
+) -> Vec<String> {
     let mut warnings = Vec::new();
-    
+
     // Warn about missing state serialization
     if *capability == HmrCapability::Partial {
         warnings.push("Missing state serialization (on_save_state/on_load_from_json). State will reset on hot reload.".to_string());
     }
-    
+
     // Warn about blocking apps
     if *capability == HmrCapability::Blocking {
-        warnings.push("Blocking app detected (no on_update). Requires full restart on code changes.".to_string());
+        warnings.push(
+            "Blocking app detected (no on_update). Requires full restart on code changes."
+                .to_string(),
+        );
     }
-    
+
     // Warn about render-only
     if *capability == HmrCapability::RenderOnly {
-        warnings.push("Render-only module (no on_update). Consider adding update loop for interactive apps.".to_string());
+        warnings.push(
+            "Render-only module (no on_update). Consider adding update loop for interactive apps."
+                .to_string(),
+        );
     }
-    
+
     // Warn about missing event handler
     if !exports.on_event && !exports.core_on_event && !exports.gui_on_event {
         if *capability != HmrCapability::Blocking && *capability != HmrCapability::Invalid {
-            warnings.push("No event handler exported. Input events will not be processed.".to_string());
+            warnings
+                .push("No event handler exported. Input events will not be processed.".to_string());
         }
     }
-    
+
     // Warn about missing ABI version
     if !exports.core_get_abi_version && !exports.gui_get_abi_version {
         match module_type {
-            ModuleType::Core => warnings.push("Core module missing core_get_abi_version. ABI compatibility cannot be verified.".to_string()),
-            ModuleType::Gui => warnings.push("GUI module missing gui_get_abi_version. ABI compatibility cannot be verified.".to_string()),
+            ModuleType::Core => warnings.push(
+                "Core module missing core_get_abi_version. ABI compatibility cannot be verified."
+                    .to_string(),
+            ),
+            ModuleType::Gui => warnings.push(
+                "GUI module missing gui_get_abi_version. ABI compatibility cannot be verified."
+                    .to_string(),
+            ),
             _ => {}
         }
     }
-    
+
     warnings
 }
 
@@ -422,7 +463,7 @@ pub fn is_blocking(lib_path: &Path) -> bool {
 // Protocol for sending HMR status to the frontend
 // ============================================================
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// HMR operation result
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -441,14 +482,9 @@ pub enum HmrStatus {
         fallback: String,
     },
     /// Compilation failed
-    CompileError {
-        module: String,
-        errors: Vec<String>,
-    },
+    CompileError { module: String, errors: Vec<String> },
     /// Full reload required
-    FullReloadRequired {
-        reason: String,
-    },
+    FullReloadRequired { reason: String },
     /// Capability detection result
     CapabilityDetected {
         module: String,
@@ -485,13 +521,23 @@ pub enum HmrStatus {
         key: String,
         reason: String,
     },
+    // ============================================================
+    // STATE MIGRATION STATUS EVENTS
+    // ============================================================
+    /// Field-level state migration applied (like Next.js Fast Refresh)
+    StateMigrated {
+        module: String,
+        preserved_count: usize,
+        reset_count: usize,
+        new_count: usize,
+    },
 }
 
 impl HmrStatus {
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
     }
-    
+
     pub fn applied(module: &str, report: &CapabilityReport) -> Self {
         HmrStatus::Applied {
             module: module.to_string(),
@@ -499,7 +545,7 @@ impl HmrStatus {
             state_preserved: report.hmr_capability.preserves_state(),
         }
     }
-    
+
     pub fn rejected(module: &str, reason: &str) -> Self {
         HmrStatus::Rejected {
             module: module.to_string(),
@@ -507,7 +553,7 @@ impl HmrStatus {
             fallback: "Full restart".to_string(),
         }
     }
-    
+
     /// Create a rejected status with custom fallback action
     pub fn rejected_with_fallback(module: &str, reason: &str, fallback: &str) -> Self {
         HmrStatus::Rejected {
@@ -516,7 +562,7 @@ impl HmrStatus {
             fallback: fallback.to_string(),
         }
     }
-    
+
     /// Create a compile error status
     pub fn compile_error(module: &str, errors: Vec<String>) -> Self {
         HmrStatus::CompileError {
@@ -524,14 +570,14 @@ impl HmrStatus {
             errors,
         }
     }
-    
+
     /// Create a full reload required status
     pub fn full_reload(reason: &str) -> Self {
         HmrStatus::FullReloadRequired {
             reason: reason.to_string(),
         }
     }
-    
+
     pub fn capability_detected(module: &str, report: &CapabilityReport) -> Self {
         HmrStatus::CapabilityDetected {
             module: module.to_string(),
@@ -542,7 +588,7 @@ impl HmrStatus {
             has_host_kv: report.has_host_kv,
         }
     }
-    
+
     /// Create host KV ready status
     pub fn host_kv_ready(session_id: &str, module_slot: &str) -> Self {
         HmrStatus::HostKvReady {
@@ -550,7 +596,7 @@ impl HmrStatus {
             module_slot: module_slot.to_string(),
         }
     }
-    
+
     /// Create host KV preserved status
     pub fn host_kv_preserved(module: &str, namespaces: Vec<String>) -> Self {
         HmrStatus::HostKvPreserved {
@@ -558,9 +604,14 @@ impl HmrStatus {
             namespaces,
         }
     }
-    
+
     /// Create host KV schema mismatch reset status
-    pub fn host_kv_reset_schema(module: &str, namespace: &str, old_schema: u64, new_schema: u64) -> Self {
+    pub fn host_kv_reset_schema(
+        module: &str,
+        namespace: &str,
+        old_schema: u64,
+        new_schema: u64,
+    ) -> Self {
         HmrStatus::HostKvResetSchemaMismatch {
             module: module.to_string(),
             namespace: namespace.to_string(),
@@ -568,7 +619,7 @@ impl HmrStatus {
             new_schema,
         }
     }
-    
+
     /// Create host KV write rejected status
     pub fn host_kv_write_rejected(module: &str, namespace: &str, key: &str, reason: &str) -> Self {
         HmrStatus::HostKvWriteRejected {
@@ -578,44 +629,59 @@ impl HmrStatus {
             reason: reason.to_string(),
         }
     }
+
+    /// Create state migrated status (field-level diffing applied)
+    pub fn state_migrated(
+        module: &str,
+        preserved_count: usize,
+        reset_count: usize,
+        new_count: usize,
+    ) -> Self {
+        HmrStatus::StateMigrated {
+            module: module.to_string(),
+            preserved_count,
+            reset_count,
+            new_count,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_export_set_classification() {
         let mut exports = ExportSet::default();
-        
+
         // Empty exports -> not HMR capable
         assert!(!exports.has_hmr_hooks());
         assert!(!exports.has_state_serialization());
         assert!(!exports.is_blocking());
-        
+
         // With on_update -> HMR capable
         exports.on_update = true;
         assert!(exports.has_hmr_hooks());
-        
+
         // With state serialization
         exports.on_save_state = true;
         exports.on_load_from_json = true;
         assert!(exports.has_state_serialization());
-        
+
         // With main but no on_update -> blocking
         exports.on_update = false;
         exports.main = true;
         assert!(exports.is_blocking());
     }
-    
+
     #[test]
     fn test_hmr_capability_properties() {
         assert!(HmrCapability::Full.supports_hmr());
         assert!(HmrCapability::Full.preserves_state());
-        
+
         assert!(HmrCapability::Partial.supports_hmr());
         assert!(!HmrCapability::Partial.preserves_state());
-        
+
         assert!(!HmrCapability::Blocking.supports_hmr());
         assert!(!HmrCapability::Blocking.preserves_state());
     }

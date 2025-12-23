@@ -1,11 +1,13 @@
+#![allow(dead_code)]
+
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use serde::{Serialize, Deserialize};
-use uuid::Uuid;
 use std::fs;
-use std::time::SystemTime;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::sync::Semaphore;
+use uuid::Uuid;
 
 // ============================================================
 // PARALLEL COMPILATION SUPPORT
@@ -70,7 +72,7 @@ impl ParallelCompiler {
         let semaphore = Arc::new(Semaphore::new(config.max_parallel));
         Self { config, semaphore }
     }
-    
+
     /// Compile multiple units in parallel, respecting dependencies
     pub async fn compile_parallel(
         &self,
@@ -80,47 +82,50 @@ impl ParallelCompiler {
         base_flags: &[&str],
         headers: &[(&str, &str)],
     ) -> Vec<CompilationResult> {
-        use tokio::task::JoinHandle;
         use std::time::Instant;
-        
+        use tokio::task::JoinHandle;
+
         if !self.config.enabled || units.len() <= 1 {
             // Fall back to sequential
-            return self.compile_sequential(units, output_dir, compiler, base_flags, headers).await;
+            return self
+                .compile_sequential(units, output_dir, compiler, base_flags, headers)
+                .await;
         }
-        
+
         // Build dependency graph
         let dep_graph = self.build_dependency_graph(&units);
-        
+
         // Topological sort to find compilation order
         let ordered = self.topological_sort(&units, &dep_graph);
-        
+
         // Group units by dependency level for parallel execution
         let levels = self.group_by_level(&ordered, &dep_graph);
-        
+
         let mut all_results = Vec::new();
-        
+
         // Process each level in parallel
         for level in levels {
             let mut handles: Vec<JoinHandle<CompilationResult>> = Vec::new();
-            
+
             for unit_id in level {
                 let unit = units.iter().find(|u| u.id == unit_id).unwrap().clone();
                 let sem = self.semaphore.clone();
                 let output = output_dir.to_path_buf();
                 let comp = compiler.to_string();
                 let flags: Vec<String> = base_flags.iter().map(|s| s.to_string()).collect();
-                let hdrs: Vec<(String, String)> = headers.iter()
+                let hdrs: Vec<(String, String)> = headers
+                    .iter()
                     .map(|(n, c)| (n.to_string(), c.to_string()))
                     .collect();
-                
+
                 let handle = tokio::spawn(async move {
                     // Acquire semaphore permit
                     let _permit = sem.acquire().await.unwrap();
-                    
+
                     let start = Instant::now();
                     let result = compile_single_unit(&unit, &output, &comp, &flags, &hdrs).await;
                     let duration = start.elapsed().as_millis() as u64;
-                    
+
                     match result {
                         Ok((path, cached)) => CompilationResult {
                             id: unit.id,
@@ -142,26 +147,26 @@ impl ParallelCompiler {
                         },
                     }
                 });
-                
+
                 handles.push(handle);
             }
-            
+
             // Wait for this level to complete before moving to next
             for handle in handles {
                 if let Ok(result) = handle.await {
                     all_results.push(result);
                 }
             }
-            
+
             // Check for failures - stop if any unit failed
             if all_results.iter().any(|r| !r.success) {
                 break;
             }
         }
-        
+
         all_results
     }
-    
+
     /// Sequential compilation fallback
     async fn compile_sequential(
         &self,
@@ -172,18 +177,19 @@ impl ParallelCompiler {
         headers: &[(&str, &str)],
     ) -> Vec<CompilationResult> {
         use std::time::Instant;
-        
+
         let mut results = Vec::new();
         let flags: Vec<String> = base_flags.iter().map(|s| s.to_string()).collect();
-        let hdrs: Vec<(String, String)> = headers.iter()
+        let hdrs: Vec<(String, String)> = headers
+            .iter()
             .map(|(n, c)| (n.to_string(), c.to_string()))
             .collect();
-        
+
         for unit in units {
             let start = Instant::now();
             let result = compile_single_unit(&unit, output_dir, compiler, &flags, &hdrs).await;
             let duration = start.elapsed().as_millis() as u64;
-            
+
             let comp_result = match result {
                 Ok((path, cached)) => CompilationResult {
                     id: unit.id,
@@ -204,29 +210,29 @@ impl ParallelCompiler {
                     was_cached: false,
                 },
             };
-            
+
             let failed = !comp_result.success;
             results.push(comp_result);
-            
+
             if failed {
                 break;
             }
         }
-        
+
         results
     }
-    
+
     /// Build dependency graph from units
     fn build_dependency_graph(&self, units: &[CompilationUnit]) -> HashMap<String, Vec<String>> {
         let mut graph = HashMap::new();
-        
+
         for unit in units {
             graph.insert(unit.id.clone(), unit.dependencies.clone());
         }
-        
+
         graph
     }
-    
+
     /// Topological sort of compilation units
     fn topological_sort(
         &self,
@@ -236,7 +242,7 @@ impl ParallelCompiler {
         let mut result = Vec::new();
         let mut visited = HashSet::new();
         let mut temp_visited = HashSet::new();
-        
+
         fn visit(
             id: &str,
             graph: &HashMap<String, Vec<String>>,
@@ -251,27 +257,33 @@ impl ParallelCompiler {
                 // Cycle detected - skip
                 return;
             }
-            
+
             temp_visited.insert(id.to_string());
-            
+
             if let Some(deps) = graph.get(id) {
                 for dep in deps {
                     visit(dep, graph, visited, temp_visited, result);
                 }
             }
-            
+
             temp_visited.remove(id);
             visited.insert(id.to_string());
             result.push(id.to_string());
         }
-        
+
         for unit in units {
-            visit(&unit.id, graph, &mut visited, &mut temp_visited, &mut result);
+            visit(
+                &unit.id,
+                graph,
+                &mut visited,
+                &mut temp_visited,
+                &mut result,
+            );
         }
-        
+
         result
     }
-    
+
     /// Group units by dependency level for parallel execution
     fn group_by_level(
         &self,
@@ -280,10 +292,10 @@ impl ParallelCompiler {
     ) -> Vec<Vec<String>> {
         let mut levels: Vec<Vec<String>> = Vec::new();
         let mut assigned: HashMap<String, usize> = HashMap::new();
-        
+
         for id in ordered {
             let deps = graph.get(id).map(|d| d.as_slice()).unwrap_or(&[]);
-            
+
             // Find the max level of dependencies
             let max_dep_level = deps
                 .iter()
@@ -291,19 +303,23 @@ impl ParallelCompiler {
                 .max()
                 .copied()
                 .unwrap_or(0);
-            
+
             // This unit goes in the next level
-            let level = if deps.is_empty() { 0 } else { max_dep_level + 1 };
+            let level = if deps.is_empty() {
+                0
+            } else {
+                max_dep_level + 1
+            };
             assigned.insert(id.clone(), level);
-            
+
             // Ensure we have enough levels
             while levels.len() <= level {
                 levels.push(Vec::new());
             }
-            
+
             levels[level].push(id.clone());
         }
-        
+
         levels
     }
 }
@@ -316,10 +332,10 @@ async fn compile_single_unit(
     flags: &[String],
     _headers: &[(String, String)],
 ) -> Result<(PathBuf, bool), String> {
-    use tokio::process::Command;
-    use std::hash::{Hash, Hasher};
     use std::collections::hash_map::DefaultHasher;
-    
+    use std::hash::{Hash, Hasher};
+    use tokio::process::Command;
+
     // Generate object file name from content hash
     let mut hasher = DefaultHasher::new();
     unit.content.hash(&mut hasher);
@@ -327,37 +343,40 @@ async fn compile_single_unit(
         flag.hash(&mut hasher);
     }
     let hash = hasher.finish();
-    
+
     let object_path = output_dir.join(format!("{}_{:016x}.o", unit.module, hash));
-    
+
     // Check if already exists (simple cache check)
     if object_path.exists() {
         return Ok((object_path, true));
     }
-    
+
     // Write source to temp file
     let source_path = output_dir.join(format!("{}.cpp", unit.id));
-    tokio::fs::write(&source_path, &unit.content).await
+    tokio::fs::write(&source_path, &unit.content)
+        .await
         .map_err(|e| format!("Failed to write source: {}", e))?;
-    
+
     // Compile
     let mut cmd = Command::new(compiler);
     cmd.arg("-c")
-       .arg("-fPIC")
-       .args(flags)
-       .arg(&source_path)
-       .arg("-o")
-       .arg(&object_path)
-       .current_dir(output_dir);
-    
-    let output = cmd.output().await
+        .arg("-fPIC")
+        .args(flags)
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&object_path)
+        .current_dir(output_dir);
+
+    let output = cmd
+        .output()
+        .await
         .map_err(|e| format!("Failed to run compiler: {}", e))?;
-    
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(stderr.to_string());
     }
-    
+
     Ok((object_path, false))
 }
 
@@ -368,7 +387,7 @@ pub fn compile_summary(results: &[CompilationResult]) -> CompileSummary {
     let cached = results.iter().filter(|r| r.was_cached).count();
     let total_time_ms: u64 = results.iter().map(|r| r.duration_ms).sum();
     let max_time_ms = results.iter().map(|r| r.duration_ms).max().unwrap_or(0);
-    
+
     CompileSummary {
         total_units: total,
         succeeded,
@@ -436,33 +455,114 @@ impl ModuleGraph {
             path: path.clone(),
             parents: Vec::new(),
             children: children.clone(),
-            last_modified: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
+            last_modified: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
         };
         self.modules.insert(id.clone(), module);
 
-        // Update parents
+        // Update parents of child modules
+        for child in children {
+            if let Some(child_module) = self.modules.get_mut(&child) {
+                // Child exists, add parent reference
+                if !child_module.parents.contains(&id) {
+                    child_module.parents.push(id.clone());
+                }
+            } else {
+                // Child doesn't exist yet - create a placeholder module
+                // This handles forward references where a module imports another
+                // that hasn't been scanned yet. The placeholder will be updated
+                // when the actual module is scanned.
+                let placeholder = ModuleInfo {
+                    id: child.clone(),
+                    path: child.clone(),
+                    parents: vec![id.clone()],
+                    children: Vec::new(),
+                    last_modified: 0, // Mark as unscanned with timestamp 0
+                };
+                self.modules.insert(child.clone(), placeholder);
+            }
+        }
+    }
+
+    /// Check if a module is a placeholder (not yet fully scanned)
+    pub fn is_placeholder(&self, id: &str) -> bool {
+        self.modules
+            .get(id)
+            .map(|m| m.last_modified == 0)
+            .unwrap_or(true)
+    }
+
+    /// Update a placeholder module with actual information
+    pub fn update_module(&mut self, path: String, children: Vec<String>) {
+        let id = path.clone();
+
+        if let Some(existing) = self.modules.get_mut(&id) {
+            // Preserve existing parents (from forward references)
+            let existing_parents = existing.parents.clone();
+
+            // Update module info
+            existing.path = path;
+            existing.children = children.clone();
+            existing.last_modified = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            // Ensure parents are preserved
+            for parent in existing_parents {
+                if !existing.parents.contains(&parent) {
+                    existing.parents.push(parent);
+                }
+            }
+        } else {
+            // No placeholder exists, just add normally
+            self.add_module(path, children.clone());
+            return;
+        }
+
+        // Update parent references for children
         for child in children {
             if let Some(child_module) = self.modules.get_mut(&child) {
                 if !child_module.parents.contains(&id) {
                     child_module.parents.push(id.clone());
                 }
             } else {
-                // Child doesn't exist yet, create a placeholder or handle later
-                // For now, we assume we process files in an order or handle this in a second pass
-                // But simpler: just store the relationship
+                // Create placeholder for unknown child
+                let placeholder = ModuleInfo {
+                    id: child.clone(),
+                    path: child.clone(),
+                    parents: vec![id.clone()],
+                    children: Vec::new(),
+                    last_modified: 0,
+                };
+                self.modules.insert(child.clone(), placeholder);
             }
         }
     }
-    
+
+    /// Get all placeholder modules that need scanning
+    pub fn get_unscanned_modules(&self) -> Vec<String> {
+        self.modules
+            .iter()
+            .filter(|(_, m)| m.last_modified == 0)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
     // Rebuild parents from children
     pub fn rebuild_parents(&mut self) {
         let mut parent_map: HashMap<String, Vec<String>> = HashMap::new();
         for (id, module) in &self.modules {
             for child in &module.children {
-                parent_map.entry(child.clone()).or_default().push(id.clone());
+                parent_map
+                    .entry(child.clone())
+                    .or_default()
+                    .push(id.clone());
             }
         }
-        
+
         for (id, module) in self.modules.iter_mut() {
             if let Some(parents) = parent_map.get(id) {
                 module.parents = parents.clone();
@@ -511,10 +611,10 @@ impl BuildSession {
         // This is a simplified dependency scanner.
         // In a real world, we'd use a proper parser for the language.
         // Here we just look for #include "..." or import ...
-        
+
         let mut visited = HashSet::new();
         let mut queue = vec![entry_file.to_string()];
-        
+
         self.graph.entry_point = entry_file.to_string();
         self.graph.modules.clear();
 
@@ -528,7 +628,7 @@ impl BuildSession {
             if let Ok(content) = fs::read_to_string(&full_path) {
                 let children = self.parse_imports(&content, &file_path);
                 self.graph.add_module(file_path.clone(), children.clone());
-                
+
                 for child in children {
                     if !visited.contains(&child) {
                         queue.push(child);
@@ -536,20 +636,20 @@ impl BuildSession {
                 }
             }
         }
-        
+
         self.graph.rebuild_parents();
     }
 
-    fn parse_imports(&self, content: &str, current_file: &str) -> Vec<String> {
+    fn parse_imports(&self, content: &str, _current_file: &str) -> Vec<String> {
         let mut imports = Vec::new();
         // Very basic parser
         for line in content.lines() {
             let line = line.trim();
             if line.starts_with("#include \"") {
                 if let Some(end) = line[10..].find('"') {
-                    let import = &line[10..10+end];
+                    let import = &line[10..10 + end];
                     // Resolve relative path
-                    // For simplicity, assume flat or relative to root for now, 
+                    // For simplicity, assume flat or relative to root for now,
                     // or implement basic relative path resolution
                     imports.push(import.to_string());
                 }
@@ -561,9 +661,9 @@ impl BuildSession {
 
     pub fn incremental_compile(&mut self, changed_files: Vec<String>) -> Option<UpdatePayload> {
         // 1. Identify affected modules
-        // For now, we just take the changed files. 
+        // For now, we just take the changed files.
         // In a real system, we'd traverse up the parents to see what needs recompilation.
-        
+
         let mut reload_needed = false;
         let mut affected_modules = HashSet::new();
         for file in &changed_files {
@@ -590,7 +690,10 @@ impl BuildSession {
 
         let manifest = UpdateManifest {
             session_id: self.session_id.clone(),
-            timestamp: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
+            timestamp: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
             changed_modules: affected_modules.into_iter().collect(),
             removed_modules: Vec::new(), // Handle deletions later
             reload_needed,
@@ -601,7 +704,7 @@ impl BuildSession {
             modules: modules_content,
         })
     }
-    
+
     pub fn validate_session(&self, hash: &str) -> bool {
         self.session_hash == hash
     }
@@ -633,7 +736,9 @@ impl RebuildScope {
     pub fn merge(&self, other: &RebuildScope) -> RebuildScope {
         match (self, other) {
             (RebuildScope::None, x) | (x, RebuildScope::None) => x.clone(),
-            (RebuildScope::FullReload, _) | (_, RebuildScope::FullReload) => RebuildScope::FullReload,
+            (RebuildScope::FullReload, _) | (_, RebuildScope::FullReload) => {
+                RebuildScope::FullReload
+            }
             (RebuildScope::Both, _) | (_, RebuildScope::Both) => RebuildScope::Both,
             (RebuildScope::CoreOnly, _) | (_, RebuildScope::CoreOnly) => RebuildScope::Both,
             (RebuildScope::GuiOnly, RebuildScope::GuiOnly) => RebuildScope::GuiOnly,
@@ -663,10 +768,10 @@ pub fn determine_rebuild_scope(
     new_hashes: &ModuleHashes,
 ) -> RebuildScope {
     let mut scope = RebuildScope::None;
-    
+
     for file in changed_files {
         let file_lower = file.to_lowercase();
-        
+
         // Check file type and merge scopes
         let file_scope = if file_lower.ends_with("shared.h") || file_lower.ends_with("shared.hpp") {
             // Shared header changed - need to rebuild both
@@ -688,27 +793,27 @@ pub fn determine_rebuild_scope(
         } else {
             RebuildScope::None
         };
-        
+
         scope = scope.merge(&file_scope);
     }
-    
+
     // Additional hash-based checks
     if prev_hashes.shared_hash != new_hashes.shared_hash {
         scope = RebuildScope::FullReload;
     }
-    
+
     scope
 }
 
 fn is_source_file(path: &str) -> bool {
-    path.ends_with(".cpp") || 
-    path.ends_with(".c") || 
-    path.ends_with(".h") || 
-    path.ends_with(".hpp") ||
-    path.ends_with(".rs") ||
-    path.ends_with(".py") ||
-    path.ends_with(".js") ||
-    path.ends_with(".ts")
+    path.ends_with(".cpp")
+        || path.ends_with(".c")
+        || path.ends_with(".h")
+        || path.ends_with(".hpp")
+        || path.ends_with(".rs")
+        || path.ends_with(".py")
+        || path.ends_with(".js")
+        || path.ends_with(".ts")
 }
 
 // ============================================================
@@ -827,22 +932,22 @@ impl WidgetDetector {
             patterns: WidgetPatterns::default(),
         }
     }
-    
+
     /// Analyze GUI source code and detect widget boundaries
     pub fn analyze(&self, source_code: &str, source_file: &str) -> WidgetAnalysis {
         let lines: Vec<&str> = source_code.lines().collect();
         let mut widgets = Vec::new();
         let mut shared_vars: Vec<(String, String)> = Vec::new();
-        
+
         // Phase 1: Find widget class/struct definitions
         let widget_regions = self.find_widget_regions(&lines);
-        
+
         // Phase 2: Extract each widget's code and analyze dependencies
         for (class_name, start_line, end_line, is_class_based, original_func) in &widget_regions {
             let widget_code = lines[*start_line..=*end_line].join("\n");
             let id = self.generate_widget_id(class_name);
             let entry_point = format!("{}_on_render", id);
-            
+
             // Find state variable accesses
             let state_vars = self.extract_state_accesses(&widget_code);
             for var in &state_vars {
@@ -852,13 +957,21 @@ impl WidgetDetector {
                     shared_vars.push((var.clone(), var_type));
                 }
             }
-            
+
             // Find dependencies on other widgets
             let dependencies = self.extract_widget_dependencies(&widget_code, class_name);
-            
+
             // Generate the component code with entry point wrapper
-            let component_code = self.generate_widget_module(class_name, &widget_code, &entry_point, &state_vars, *is_class_based, original_func.as_deref());
-            
+            let component_code = self.generate_widget_module(
+                class_name,
+                &widget_code,
+                &entry_point,
+                &[] as &[String],
+                &state_vars,
+                *is_class_based,
+                original_func.as_deref(),
+            );
+
             widgets.push(WidgetComponent {
                 id,
                 class_name: class_name.clone(),
@@ -872,27 +985,28 @@ impl WidgetDetector {
                 original_function: original_func.clone(),
             });
         }
-        
+
         // Build dependency graph
         let mut dependency_graph = HashMap::new();
         for widget in &widgets {
             dependency_graph.insert(widget.id.clone(), widget.dependencies.clone());
         }
-        
+
         // Generate shared state header
         let shared_state = SharedWidgetState {
             variables: shared_vars.clone(),
             header_code: self.generate_shared_state_header(&shared_vars),
         };
-        
+
         // Phase 3: Extract shared context code (non-widget functions, includes, typedefs)
         // This is everything in the source that ISN'T a widget - helper functions, type definitions, etc.
         // Convert widget_regions to the format expected by extract_shared_context
-        let regions_for_context: Vec<(String, usize, usize)> = widget_regions.iter()
+        let regions_for_context: Vec<(String, usize, usize)> = widget_regions
+            .iter()
             .map(|(name, start, end, _, _)| (name.clone(), *start, *end))
             .collect();
         let shared_context_code = self.extract_shared_context(&lines, &regions_for_context);
-        
+
         WidgetAnalysis {
             widgets,
             shared_state,
@@ -900,25 +1014,45 @@ impl WidgetDetector {
             shared_context_code,
         }
     }
-    
+
     /// Find regions in code that define widgets
     /// Returns: Vec<(class_name, start_line, end_line, is_class_based, original_function_name)>
-    fn find_widget_regions(&self, lines: &[&str]) -> Vec<(String, usize, usize, bool, Option<String>)> {
+    fn find_widget_regions(
+        &self,
+        lines: &[&str],
+    ) -> Vec<(String, usize, usize, bool, Option<String>)> {
         let mut regions = Vec::new();
         let mut i = 0;
-        
+
         // Functions that should NOT be treated as widgets (they're helpers or lifecycle hooks)
         let excluded_functions = [
-            "draw_text", "get_glyph", "init", "setup", "cleanup", "destroy",
-            "gui_on_load", "gui_on_unload", "gui_on_event", "gui_on_save_state",
-            "core_on_load", "core_on_unload", "core_on_update", "core_on_event",
-            "on_load", "on_unload", "on_update", "on_event", "on_save_state",
-            "main", "_user_main", "SDL_main",
+            "draw_text",
+            "get_glyph",
+            "init",
+            "setup",
+            "cleanup",
+            "destroy",
+            "gui_on_load",
+            "gui_on_unload",
+            "gui_on_event",
+            "gui_on_save_state",
+            "core_on_load",
+            "core_on_unload",
+            "core_on_update",
+            "core_on_event",
+            "on_load",
+            "on_unload",
+            "on_update",
+            "on_event",
+            "on_save_state",
+            "main",
+            "_user_main",
+            "SDL_main",
         ];
-        
+
         while i < lines.len() {
             let line = lines[i].trim();
-            
+
             // Check for class/struct definition
             if let Some(class_name) = self.extract_class_name(line) {
                 // Verify it's a widget by checking patterns
@@ -930,20 +1064,27 @@ impl WidgetDetector {
                     }
                 }
             }
-            
+
             // Also look for standalone render functions - but be more selective
             if let Some(func_name) = self.extract_function_name(line) {
                 // Skip excluded functions
-                let is_excluded = excluded_functions.iter().any(|ex| func_name.to_lowercase() == ex.to_lowercase());
-                
+                let is_excluded = excluded_functions
+                    .iter()
+                    .any(|ex| func_name.to_lowercase() == ex.to_lowercase());
+
                 // Only consider functions that look like top-level widget entry points
                 // They should have "widget" in the name OR be gui_on_render specifically
-                let is_widget_entry = func_name.to_lowercase().contains("widget") 
+                let is_widget_entry = func_name.to_lowercase().contains("widget")
                     || func_name == "gui_on_render"
                     || (func_name.to_lowercase().ends_with("_on_render") && !is_excluded);
-                
+
                 if is_widget_entry && !is_excluded {
-                    if self.patterns.render_func_patterns.iter().any(|p| func_name.to_lowercase().contains(p)) {
+                    if self
+                        .patterns
+                        .render_func_patterns
+                        .iter()
+                        .any(|p| func_name.to_lowercase().contains(p))
+                    {
                         // Check if this function contains SDL rendering calls
                         if let Some(end_line) = self.find_function_end(lines, i) {
                             let func_code: String = lines[i..=end_line].join("\n");
@@ -957,28 +1098,31 @@ impl WidgetDetector {
                     }
                 }
             }
-            
+
             i += 1;
         }
-        
+
         regions
     }
-    
+
     /// Extract class name from a line
     fn extract_class_name(&self, line: &str) -> Option<String> {
         // Match: class ClassName ... or struct StructName ...
-        let patterns = [
+        let _patterns = [
             (r"class\s+(\w+)", 6),  // "class " prefix
             (r"struct\s+(\w+)", 7), // "struct " prefix
         ];
-        
+
         let patterns: &[(&[u8], usize)] = &[(b"class ", 6), (b"struct ", 7)];
         for (prefix, skip) in patterns {
             let bytes = line.as_bytes();
             if let Some(pos) = bytes.windows(prefix.len()).position(|w| w == *prefix) {
                 let rest = &line[pos + skip..];
                 // Extract word
-                let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
                 if !name.is_empty() {
                     return Some(name);
                 }
@@ -986,7 +1130,7 @@ impl WidgetDetector {
         }
         None
     }
-    
+
     /// Extract function name from a line
     fn extract_function_name(&self, line: &str) -> Option<String> {
         // Simple heuristic: look for pattern like "type function_name(" or "function_name("
@@ -1002,18 +1146,20 @@ impl WidgetDetector {
         }
         None
     }
-    
+
     /// Check if class name looks like a widget
     fn is_widget_class(&self, class_name: &str) -> bool {
-        self.patterns.widget_class_patterns.iter()
+        self.patterns
+            .widget_class_patterns
+            .iter()
             .any(|pattern| class_name.contains(pattern))
     }
-    
+
     /// Find the end of a class definition
     fn find_class_end(&self, lines: &[&str], start: usize) -> Option<usize> {
         let mut brace_count = 0;
         let mut found_open = false;
-        
+
         for i in start..lines.len() {
             for ch in lines[i].chars() {
                 if ch == '{' {
@@ -1023,33 +1169,35 @@ impl WidgetDetector {
                     brace_count -= 1;
                 }
             }
-            
+
             if found_open && brace_count == 0 {
                 return Some(i);
             }
         }
         None
     }
-    
+
     /// Find the end of a function definition
     fn find_function_end(&self, lines: &[&str], start: usize) -> Option<usize> {
         self.find_class_end(lines, start) // Same logic
     }
-    
+
     /// Check if code contains SDL render calls
     fn contains_render_calls(&self, code: &str) -> bool {
-        self.patterns.sdl2_render_patterns.iter()
+        self.patterns
+            .sdl2_render_patterns
+            .iter()
             .any(|pattern| code.contains(pattern))
     }
-    
+
     /// Extract state variable accesses from code
     fn extract_state_accesses(&self, code: &str) -> Vec<String> {
         let mut vars = Vec::new();
-        
+
         // Look for state->varname or state.varname patterns
         for pattern in &self.patterns.state_patterns {
-            let base = pattern.trim_end_matches(|c| c == '-' || c == '>' || c == '.');
-            
+            let _base = pattern.trim_end_matches(|c| c == '-' || c == '>' || c == '.');
+
             // Find all occurrences
             let mut search_start = 0;
             while let Some(pos) = code[search_start..].find(pattern) {
@@ -1057,10 +1205,11 @@ impl WidgetDetector {
                 if abs_pos < code.len() {
                     // Extract variable name
                     let rest = &code[abs_pos..];
-                    let var_name: String = rest.chars()
+                    let var_name: String = rest
+                        .chars()
                         .take_while(|c| c.is_alphanumeric() || *c == '_')
                         .collect();
-                    
+
                     if !var_name.is_empty() && !vars.contains(&var_name) {
                         vars.push(var_name);
                     }
@@ -1068,39 +1217,50 @@ impl WidgetDetector {
                 search_start = abs_pos;
             }
         }
-        
+
         vars
     }
-    
+
     /// Infer variable type from usage (simplified)
-    fn infer_state_type(&self, var_name: &str, code: &str) -> String {
+    fn infer_state_type(&self, var_name: &str, _code: &str) -> String {
         // Very simplified type inference
         let var_lower = var_name.to_lowercase();
-        
+
         if var_lower.contains("count") || var_lower.contains("num") || var_lower.contains("index") {
             "int".to_string()
-        } else if var_lower.contains("value") || var_lower.contains("position") || var_lower.contains("slider") {
+        } else if var_lower.contains("value")
+            || var_lower.contains("position")
+            || var_lower.contains("slider")
+        {
             "float".to_string()
-        } else if var_lower.contains("enabled") || var_lower.contains("visible") || var_lower.contains("active") {
+        } else if var_lower.contains("enabled")
+            || var_lower.contains("visible")
+            || var_lower.contains("active")
+        {
             "bool".to_string()
-        } else if var_lower.contains("text") || var_lower.contains("label") || var_lower.contains("name") {
+        } else if var_lower.contains("text")
+            || var_lower.contains("label")
+            || var_lower.contains("name")
+        {
             "std::string".to_string()
         } else {
             // Default to int
             "int".to_string()
         }
     }
-    
+
     /// Extract dependencies on other widgets
     fn extract_widget_dependencies(&self, code: &str, self_class: &str) -> Vec<String> {
         let mut deps = Vec::new();
-        
+
         for pattern in &self.patterns.widget_class_patterns {
             // Look for references to other widget types
             let search = format!("{}", pattern);
             if code.contains(&search) && !self_class.contains(pattern) {
                 // Find actual class names
-                let words: Vec<&str> = code.split(|c: char| !c.is_alphanumeric() && c != '_').collect();
+                let words: Vec<&str> = code
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .collect();
                 for word in words {
                     if word.contains(pattern) && word != self_class {
                         let dep_id = self.generate_widget_id(word);
@@ -1111,10 +1271,10 @@ impl WidgetDetector {
                 }
             }
         }
-        
+
         deps
     }
-    
+
     /// Generate widget ID from class name
     fn generate_widget_id(&self, class_name: &str) -> String {
         // Convert PascalCase/CamelCase to snake_case
@@ -1127,12 +1287,12 @@ impl WidgetDetector {
         }
         result
     }
-    
+
     /// Convert to PascalCase
     fn to_pascal_case(&self, name: &str) -> String {
         let mut result = String::new();
         let mut capitalize_next = true;
-        
+
         for ch in name.chars() {
             if ch == '_' || ch == '-' {
                 capitalize_next = true;
@@ -1143,22 +1303,23 @@ impl WidgetDetector {
                 result.push(ch);
             }
         }
-        
+
         result
     }
-    
+
     /// Generate widget module code with entry point
     fn generate_widget_module(
         &self,
         class_name: &str,
         original_code: &str,
         entry_point: &str,
+        _state_vars: &[String],
         state_vars: &[String],
         is_class_based: bool,
         original_function: Option<&str>,
     ) -> String {
         let mut code = String::new();
-        
+
         // Header with includes - include shared.h for AppState and other shared types
         code.push_str("// Auto-generated widget module\n");
         code.push_str("#include <SDL2/SDL.h>\n");
@@ -1166,31 +1327,31 @@ impl WidgetDetector {
         code.push_str("#include <string.h>\n");
         code.push_str("#include <stdio.h>\n");
         code.push_str("#include <stdlib.h>\n\n");
-        
+
         // Try to include shared.h if it exists (for AppState definition)
         code.push_str("// Include shared state definitions\n");
         code.push_str("#if __has_include(\"shared.h\")\n");
         code.push_str("#include \"shared.h\"\n");
         code.push_str("#endif\n\n");
-        
+
         // Include widget shared state header
         code.push_str("#include \"widget_shared_state.h\"\n\n");
-        
+
         // Include the shared context header with helper functions (get_glyph, draw_text, etc.)
         code.push_str("// Include shared context for widget dependencies\n");
         code.push_str("#include \"widget_context.h\"\n\n");
-        
+
         // Include the full GUI header for any additional types
         code.push_str("// Include full GUI header if available\n");
         code.push_str("#if __has_include(\"gui.h\")\n");
         code.push_str("#include \"gui.h\"\n");
         code.push_str("#endif\n\n");
-        
+
         // Original widget code
         code.push_str("// Original widget code\n");
         code.push_str(original_code);
         code.push_str("\n\n");
-        
+
         // Generate entry point wrapper
         code.push_str("// Widget entry point\n");
         code.push_str(&format!(
@@ -1198,7 +1359,7 @@ impl WidgetDetector {
             entry_point
         ));
         code.push_str("    (void)renderer; (void)state; // Suppress unused warnings\n");
-        
+
         if is_class_based {
             // For class-based widgets, instantiate the class and call render
             code.push_str(&format!("    static {} widget;\n", class_name));
@@ -1208,18 +1369,22 @@ impl WidgetDetector {
             // Check if the function takes (void* state_ptr) - the gui_on_render signature
             let code_lower = original_code.to_lowercase();
             let func_lower = func_name.to_lowercase();
-            
-            if code_lower.contains(&format!("void {}(void*", func_lower)) 
-               || code_lower.contains(&format!("{} (void*", func_lower))
-               || original_code.contains("void* state_ptr") {
+
+            if code_lower.contains(&format!("void {}(void*", func_lower))
+                || code_lower.contains(&format!("{} (void*", func_lower))
+                || original_code.contains("void* state_ptr")
+            {
                 // gui_on_render style: void gui_on_render(void* state_ptr)
                 code.push_str(&format!("    // Function takes void* state_ptr\n"));
                 code.push_str(&format!("    {}((void*)state);\n", func_name));
             } else if code_lower.contains(&format!("void {}(sdl_renderer*", func_lower))
-                    || original_code.contains("SDL_Renderer* renderer") {
+                || original_code.contains("SDL_Renderer* renderer")
+            {
                 // Check if it takes (SDL_Renderer*, WidgetSharedState*)
                 if original_code.contains("WidgetSharedState*") {
-                    code.push_str(&format!("    // Function takes SDL_Renderer*, WidgetSharedState*\n"));
+                    code.push_str(&format!(
+                        "    // Function takes SDL_Renderer*, WidgetSharedState*\n"
+                    ));
                     code.push_str(&format!("    {}(renderer, state);\n", func_name));
                 } else {
                     // Just takes SDL_Renderer*
@@ -1228,38 +1393,41 @@ impl WidgetDetector {
                 }
             } else {
                 // Unknown signature - call with state cast to void*
-                code.push_str(&format!("    // Unknown signature - passing state as void*\n"));
+                code.push_str(&format!(
+                    "    // Unknown signature - passing state as void*\n"
+                ));
                 code.push_str(&format!("    {}((void*)state);\n", func_name));
             }
         }
-        
+
         code.push_str("}\n\n");
-        
+
         // Export symbol
         code.push_str(&format!(
             "extern \"C\" const char* widget_name() {{ return \"{}\"; }}\n",
             class_name
         ));
-        
+
         code
     }
-    
+
     /// Generate shared state header
     fn generate_shared_state_header(&self, variables: &[(String, String)]) -> String {
         let mut code = String::new();
-        
+
         code.push_str("// Auto-generated widget shared state\n");
         code.push_str("#pragma once\n\n");
         code.push_str("#include <string>\n\n");
         code.push_str("struct WidgetSharedState {\n");
-        
+
         for (name, var_type) in variables {
             code.push_str(&format!("    {} {};\n", var_type, name));
         }
-        
+
         // Default constructor
         code.push_str("\n    WidgetSharedState() :\n");
-        let init_list: Vec<String> = variables.iter()
+        let init_list: Vec<String> = variables
+            .iter()
             .map(|(name, var_type)| {
                 let default_val = match var_type.as_str() {
                     "int" => "0",
@@ -1274,34 +1442,38 @@ impl WidgetDetector {
         code.push_str(&init_list.join(",\n"));
         code.push_str("\n    {}\n");
         code.push_str("};\n");
-        
+
         code
     }
-    
+
     /// Extract shared context code (non-widget code) that widgets depend on.
     /// This includes: includes, typedefs, helper functions, structs that aren't widgets
-    fn extract_shared_context(&self, lines: &[&str], widget_regions: &[(String, usize, usize)]) -> String {
+    fn extract_shared_context(
+        &self,
+        lines: &[&str],
+        widget_regions: &[(String, usize, usize)],
+    ) -> String {
         let mut context_code = String::new();
-        
+
         // Header for the shared context
         context_code.push_str("// Auto-generated shared context for widgets\n");
         context_code.push_str("// Contains helper functions, includes, and non-widget code\n");
         context_code.push_str("#pragma once\n\n");
-        
+
         // CRITICAL: Add ABI version constants that widgets depend on
         context_code.push_str("// Synthi ABI version constants\n");
         context_code.push_str("#ifndef SYNTHI_ABI_VERSION\n");
         context_code.push_str("#define SYNTHI_ABI_VERSION 1\n");
         context_code.push_str("#endif\n\n");
-        
+
         context_code.push_str("#ifndef CORE_STATE_MAGIC\n");
         context_code.push_str("#define CORE_STATE_MAGIC 0xDEADBEEF\n");
         context_code.push_str("#endif\n\n");
-        
+
         context_code.push_str("#ifndef GUI_STATE_MAGIC\n");
         context_code.push_str("#define GUI_STATE_MAGIC 0x60108EEF\n");
         context_code.push_str("#endif\n\n");
-        
+
         // Standard includes that widgets commonly need
         context_code.push_str("#include <SDL2/SDL.h>\n");
         context_code.push_str("#include <stdint.h>\n");
@@ -1309,7 +1481,7 @@ impl WidgetDetector {
         context_code.push_str("#include <stdio.h>\n");
         context_code.push_str("#include <stdlib.h>\n");
         context_code.push_str("#include <stdbool.h>\n\n");
-        
+
         // Add fallback AppState definition if not defined elsewhere
         // This ensures widgets that reference AppState can compile
         context_code.push_str("// Fallback AppState definition for widget compatibility\n");
@@ -1326,18 +1498,19 @@ impl WidgetDetector {
         context_code.push_str("    void* user_data;\n");
         context_code.push_str("} AppState;\n");
         context_code.push_str("#endif\n\n");
-        
+
         // Create a set of line ranges that are widgets (to exclude them)
-        let mut widget_line_set: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut widget_line_set: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
         for (_, start, end) in widget_regions {
             for line_num in *start..=*end {
                 widget_line_set.insert(line_num);
             }
         }
-        
+
         // Track which functions we're skipping (gui_on_load should NOT be in widget context)
         let excluded_functions = ["gui_on_load", "core_on_load", "on_load"];
-        
+
         // Extract non-widget code
         let mut i = 0;
         while i < lines.len() {
@@ -1345,16 +1518,16 @@ impl WidgetDetector {
                 i += 1;
                 continue;
             }
-            
+
             let line = lines[i];
             let trimmed = line.trim();
-            
+
             // Skip empty lines at this phase
             if trimmed.is_empty() {
                 i += 1;
                 continue;
             }
-            
+
             // Include #include directives
             if trimmed.starts_with("#include") {
                 context_code.push_str(line);
@@ -1362,16 +1535,19 @@ impl WidgetDetector {
                 i += 1;
                 continue;
             }
-            
+
             // Include #define directives
-            if trimmed.starts_with("#define") || trimmed.starts_with("#ifndef") || 
-               trimmed.starts_with("#ifdef") || trimmed.starts_with("#endif") {
+            if trimmed.starts_with("#define")
+                || trimmed.starts_with("#ifndef")
+                || trimmed.starts_with("#ifdef")
+                || trimmed.starts_with("#endif")
+            {
                 context_code.push_str(line);
                 context_code.push('\n');
                 i += 1;
                 continue;
             }
-            
+
             // Include typedef
             if trimmed.starts_with("typedef") {
                 context_code.push_str(line);
@@ -1392,9 +1568,11 @@ impl WidgetDetector {
                 i += 1;
                 continue;
             }
-            
+
             // Include struct/class definitions that aren't widgets
-            if (trimmed.starts_with("struct") || trimmed.starts_with("class")) && !widget_line_set.contains(&i) {
+            if (trimmed.starts_with("struct") || trimmed.starts_with("class"))
+                && !widget_line_set.contains(&i)
+            {
                 if let Some(class_name) = self.extract_class_name(trimmed) {
                     if !self.is_widget_class(&class_name) {
                         // Include this struct/class
@@ -1409,18 +1587,20 @@ impl WidgetDetector {
                     }
                 }
             }
-            
+
             // Include function definitions (helper functions like get_glyph, draw_text)
             // BUT skip lifecycle functions like gui_on_load that have complex dependencies
             if self.looks_like_function_def(trimmed) && !widget_line_set.contains(&i) {
                 // Check if this is an excluded function
                 let should_exclude = excluded_functions.iter().any(|f| trimmed.contains(f));
-                
+
                 if !should_exclude {
                     // Check it's not inside a widget
                     if let Some(end) = self.find_function_end(lines, i) {
                         // Verify this function is not part of any widget region
-                        let is_in_widget = widget_regions.iter().any(|(_, ws, we)| i >= *ws && i <= *we);
+                        let is_in_widget = widget_regions
+                            .iter()
+                            .any(|(_, ws, we)| i >= *ws && i <= *we);
                         if !is_in_widget {
                             for j in i..=end {
                                 context_code.push_str(lines[j]);
@@ -1438,7 +1618,7 @@ impl WidgetDetector {
                     }
                 }
             }
-            
+
             // Include global variables - handle multi-line array initializations
             if self.looks_like_global_var(trimmed) && !widget_line_set.contains(&i) {
                 // Check if this is a multi-line array initialization
@@ -1467,47 +1647,63 @@ impl WidgetDetector {
                     context_code.push('\n');
                 }
             }
-            
+
             i += 1;
         }
-        
+
         context_code
     }
-    
+
     /// Check if a line looks like a function definition
     fn looks_like_function_def(&self, line: &str) -> bool {
         // Simple heuristic: has a '(' and ends with '{' or has return type before name(
-        if line.contains('(') && !line.starts_with("if") && !line.starts_with("while") &&
-           !line.starts_with("for") && !line.starts_with("switch") && !line.starts_with("//") {
+        if line.contains('(')
+            && !line.starts_with("if")
+            && !line.starts_with("while")
+            && !line.starts_with("for")
+            && !line.starts_with("switch")
+            && !line.starts_with("//")
+        {
             // Check for common function patterns
             let has_brace = line.ends_with('{') || line.ends_with(')');
-            let has_type = line.contains("void") || line.contains("int") || line.contains("bool") ||
-                          line.contains("char") || line.contains("float") || line.contains("double") ||
-                          line.contains("uint") || line.contains("const");
+            let has_type = line.contains("void")
+                || line.contains("int")
+                || line.contains("bool")
+                || line.contains("char")
+                || line.contains("float")
+                || line.contains("double")
+                || line.contains("uint")
+                || line.contains("const");
             return has_brace || has_type;
         }
         false
     }
-    
+
     /// Check if a line looks like a global variable declaration
     fn looks_like_global_var(&self, line: &str) -> bool {
         // Simple heuristic: starts with type keywords and has = or ;
         let trimmed = line.trim();
-        
+
         // Skip lines that look like function definitions
         if trimmed.contains('(') && !trimmed.contains("= {") {
             return false;
         }
-        
+
         // Check for common global variable patterns
-        let has_storage_class = trimmed.starts_with("static") || trimmed.starts_with("const") ||
-                                trimmed.starts_with("extern");
-        let has_type = trimmed.contains("int ") || trimmed.contains("bool ") ||
-                       trimmed.contains("float ") || trimmed.contains("char ") ||
-                       trimmed.contains("uint8_t") || trimmed.contains("uint16_t") ||
-                       trimmed.contains("uint32_t") || trimmed.contains("int8_t") ||
-                       trimmed.contains("size_t") || trimmed.contains("double ");
-        
+        let has_storage_class = trimmed.starts_with("static")
+            || trimmed.starts_with("const")
+            || trimmed.starts_with("extern");
+        let has_type = trimmed.contains("int ")
+            || trimmed.contains("bool ")
+            || trimmed.contains("float ")
+            || trimmed.contains("char ")
+            || trimmed.contains("uint8_t")
+            || trimmed.contains("uint16_t")
+            || trimmed.contains("uint32_t")
+            || trimmed.contains("int8_t")
+            || trimmed.contains("size_t")
+            || trimmed.contains("double ");
+
         if has_storage_class || has_type {
             return trimmed.contains('=') || trimmed.ends_with(';');
         }
@@ -1528,7 +1724,7 @@ impl WidgetCompiler {
             output_dir,
         }
     }
-    
+
     /// Compile GUI code into separate widget modules
     pub async fn compile_widgets(
         &self,
@@ -1539,32 +1735,36 @@ impl WidgetCompiler {
     ) -> Result<Vec<WidgetCompilationResult>, String> {
         // Analyze the GUI source
         let analysis = self.detector.analyze(gui_source, source_file);
-        
+
         if analysis.widgets.is_empty() {
             return Ok(Vec::new());
         }
-        
+
         // Write shared state header
         let shared_header_path = self.output_dir.join("widget_shared_state.h");
-        tokio::fs::write(&shared_header_path, &analysis.shared_state.header_code).await
+        tokio::fs::write(&shared_header_path, &analysis.shared_state.header_code)
+            .await
             .map_err(|e| format!("Failed to write shared state header: {}", e))?;
-        
+
         // Write shared context header (helper functions, non-widget code)
         let context_header_path = self.output_dir.join("widget_context.h");
-        tokio::fs::write(&context_header_path, &analysis.shared_context_code).await
+        tokio::fs::write(&context_header_path, &analysis.shared_context_code)
+            .await
             .map_err(|e| format!("Failed to write shared context header: {}", e))?;
-        
+
         // Compile each widget
         let mut results = Vec::new();
-        
+
         for widget in &analysis.widgets {
-            let result = self.compile_single_widget(widget, compiler, base_flags).await;
+            let result = self
+                .compile_single_widget(widget, compiler, base_flags)
+                .await;
             results.push(result);
         }
-        
+
         Ok(results)
     }
-    
+
     /// Compile a single widget module
     async fn compile_single_widget(
         &self,
@@ -1572,11 +1772,11 @@ impl WidgetCompiler {
         compiler: &str,
         base_flags: &[&str],
     ) -> WidgetCompilationResult {
-        use tokio::process::Command;
         use std::time::Instant;
-        
+        use tokio::process::Command;
+
         let start = Instant::now();
-        
+
         // Write widget source
         let source_path = self.output_dir.join(format!("{}.cpp", widget.id));
         if let Err(e) = tokio::fs::write(&source_path, &widget.code).await {
@@ -1588,7 +1788,7 @@ impl WidgetCompiler {
                 duration_ms: start.elapsed().as_millis() as u64,
             };
         }
-        
+
         // Compile to object file
         let obj_path = self.output_dir.join(format!("{}.o", widget.id));
         let mut compile_cmd = Command::new(compiler);
@@ -1596,11 +1796,13 @@ impl WidgetCompiler {
             .arg("-c")
             .arg("-fPIC")
             .args(base_flags)
-            .arg("-I").arg(&self.output_dir) // For shared state header
+            .arg("-I")
+            .arg(&self.output_dir) // For shared state header
             .arg(&source_path)
-            .arg("-o").arg(&obj_path)
+            .arg("-o")
+            .arg(&obj_path)
             .current_dir(&self.output_dir);
-        
+
         let compile_output = match compile_cmd.output().await {
             Ok(o) => o,
             Err(e) => {
@@ -1613,7 +1815,7 @@ impl WidgetCompiler {
                 };
             }
         };
-        
+
         if !compile_output.status.success() {
             return WidgetCompilationResult {
                 widget_id: widget.id.clone(),
@@ -1623,7 +1825,7 @@ impl WidgetCompiler {
                 duration_ms: start.elapsed().as_millis() as u64,
             };
         }
-        
+
         // Link to .so
         let so_path = self.output_dir.join(format!("lib{}_widget.so", widget.id));
         let mut link_cmd = Command::new(compiler);
@@ -1631,10 +1833,11 @@ impl WidgetCompiler {
             .arg("-shared")
             .arg("-fPIC")
             .arg(&obj_path)
-            .arg("-o").arg(&so_path)
+            .arg("-o")
+            .arg(&so_path)
             .arg("-lSDL2")
             .current_dir(&self.output_dir);
-        
+
         let link_output = match link_cmd.output().await {
             Ok(o) => o,
             Err(e) => {
@@ -1647,7 +1850,7 @@ impl WidgetCompiler {
                 };
             }
         };
-        
+
         if !link_output.status.success() {
             return WidgetCompilationResult {
                 widget_id: widget.id.clone(),
@@ -1657,7 +1860,7 @@ impl WidgetCompiler {
                 duration_ms: start.elapsed().as_millis() as u64,
             };
         }
-        
+
         WidgetCompilationResult {
             widget_id: widget.id.clone(),
             success: true,
@@ -1702,7 +1905,7 @@ impl WidgetCompileSummary {
 pub fn hash_content(content: &str) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-    
+
     let mut hasher = DefaultHasher::new();
     content.hash(&mut hasher);
     hasher.finish()
@@ -1711,7 +1914,7 @@ pub fn hash_content(content: &str) -> u64 {
 /// Analyze workspace and compute hashes for all relevant files
 pub fn compute_module_hashes(workspace_root: &Path) -> ModuleHashes {
     let mut hashes = ModuleHashes::new();
-    
+
     // Check each file type separately to avoid multiple mutable borrows
     for filename in ["shared.h", "shared.hpp"] {
         let path = workspace_root.join(filename);
@@ -1719,27 +1922,27 @@ pub fn compute_module_hashes(workspace_root: &Path) -> ModuleHashes {
             hashes.shared_hash = hash_content(&content);
         }
     }
-    
+
     for filename in ["core.cpp", "core.c"] {
         let path = workspace_root.join(filename);
         if let Ok(content) = fs::read_to_string(&path) {
             hashes.core_hash = hash_content(&content);
         }
     }
-    
+
     for filename in ["gui.cpp", "gui.c"] {
         let path = workspace_root.join(filename);
         if let Ok(content) = fs::read_to_string(&path) {
             hashes.gui_hash = hash_content(&content);
         }
     }
-    
+
     for filename in ["main.cpp", "main.c"] {
         let path = workspace_root.join(filename);
         if let Ok(content) = fs::read_to_string(&path) {
             hashes.main_hash = hash_content(&content);
         }
     }
-    
+
     hashes
 }

@@ -292,6 +292,68 @@ export function useProactiveAnalysis({
   }, []);
   
   /**
+   * Remove a specific diagnostic by its location (called after applying a fix)
+   * This immediately removes the diagnostic from state without waiting for re-analysis
+   */
+  const removeDiagnosticByLocation = useCallback((location) => {
+    if (!location) return;
+    
+    setDiagnostics(prev => prev.filter(d => {
+      const loc = d.location || {};
+      // Remove if exact location match
+      const sameStart = loc.line === location.line && loc.column === location.column;
+      const sameEnd = loc.endLine === location.endLine && loc.endColumn === location.endColumn;
+      return !(sameStart && sameEnd);
+    }));
+    
+    // Also invalidate the content hash so next analysis runs fresh
+    lastContentHashRef.current = null;
+  }, []);
+  
+  /**
+   * Remove diagnostics that are now stale (original text no longer matches)
+   * Called after any code edit to clean up outdated diagnostics
+   */
+  const removeStaleDignostics = useCallback((currentCode) => {
+    if (!currentCode) return;
+    
+    setDiagnostics(prev => prev.filter(d => {
+      // Keep diagnostics without originalText (can't verify staleness)
+      if (!d.originalText) return true;
+      
+      // Check if the original text still exists at the expected location
+      const lines = currentCode.split('\n');
+      const loc = d.location || {};
+      const line = loc.line ?? 0;
+      const endLine = loc.endLine ?? line;
+      const col = loc.column ?? 0;
+      const endCol = loc.endColumn ?? col;
+      
+      // Extract text at diagnostic location
+      let currentText = '';
+      try {
+        if (line === endLine && line < lines.length) {
+          currentText = lines[line].substring(col, endCol);
+        } else if (line < lines.length) {
+          // Multi-line
+          const textParts = [];
+          for (let i = line; i <= Math.min(endLine, lines.length - 1); i++) {
+            if (i === line) textParts.push(lines[i].substring(col));
+            else if (i === endLine) textParts.push(lines[i].substring(0, endCol));
+            else textParts.push(lines[i]);
+          }
+          currentText = textParts.join('\n');
+        }
+      } catch (e) {
+        return true; // Keep on error
+      }
+      
+      // If text changed, diagnostic is stale
+      return currentText === d.originalText;
+    }));
+  }, []);
+  
+  /**
    * Get diagnostics for a specific line
    */
   const getDiagnosticsForLine = useCallback((lineNumber) => {
@@ -353,6 +415,8 @@ export function useProactiveAnalysis({
     analyzeFull,
     cancelAnalysis,
     clearDiagnostics,
+    removeDiagnosticByLocation,
+    removeStaleDignostics,
     
     // Utilities
     getDiagnosticsForLine,
