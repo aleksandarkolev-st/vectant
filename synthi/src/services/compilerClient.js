@@ -429,8 +429,6 @@ export class CompilerClient {
         if (!effectiveTarget && !lang) throw new SynthiException('Unsupported language for compilation', 'The file extension is not supported by the compiler.');
         await this.connect();
 
-        if (onLog) this.logHandlers.add(onLog);
-
         return new Promise((resolve, reject) => {
             // Unique session id for this compile - allows streaming and session-scoped events
             const sessionId = (typeof providedSessionId === 'string' && providedSessionId.length > 0)
@@ -465,7 +463,6 @@ export class CompilerClient {
                 // Check for mobile job completion
                 if (parsed && parsed.type === 'mobile-status' && parsed.status === 'done') {
                     this.logHandlers.delete(handleLog);
-                    if (onLog) this.logHandlers.delete(onLog);
                     if (parsed.data?.success) {
                         resolve(parsed);
                     } else {
@@ -477,7 +474,6 @@ export class CompilerClient {
                 // Check for mobile job error
                 if (parsed && parsed.type === 'mobile-status' && parsed.status === 'error') {
                     this.logHandlers.delete(handleLog);
-                    if (onLog) this.logHandlers.delete(onLog);
                     reject(new SynthiException('Mobile build failed', parsed.message || 'Mobile emulator job failed'));
                     return;
                 }
@@ -486,7 +482,6 @@ export class CompilerClient {
                 if (parsed && parsed.status === 'done') {
                     // cleanup
                     this.logHandlers.delete(handleLog);
-                    if (onLog) this.logHandlers.delete(onLog);
                     if (parsed.success) {
                         resolve(parsed);
                     } else {

@@ -162,15 +162,18 @@ export default function EmulatorPanel({
   // Stream health check: if we haven't received any events recently while a job is active, show an error.
   useEffect(() => {
     if (!sessionId) return;
+    // Gradle (especially Kotlin compile + dependency resolution) can be silent for minutes.
+    // Treat silence as "possibly disconnected" but don't hard-fail the panel.
+    const STREAM_SILENCE_TIMEOUT_MS = 5 * 60 * 1000;
     const id = window.setInterval(() => {
       const last = lastEventAtRef.current;
       if (!last) return;
       const ageMs = Date.now() - last;
       const active = workerStatus && workerStatus !== 'done' && workerStatus !== 'error' && workerStatus !== 'build-failed';
-      if (active && ageMs > 15000) {
+      if (active && ageMs > STREAM_SILENCE_TIMEOUT_MS) {
         setErrorMessage('Lost connection to the worker log stream. Try running the build again.');
-        setState(EMULATOR_STATES.ERROR);
         setStreamConnected(false);
+        setState((prev) => (prev === EMULATOR_STATES.ERROR ? prev : EMULATOR_STATES.BOOTING));
       }
     }, 1000);
     return () => window.clearInterval(id);

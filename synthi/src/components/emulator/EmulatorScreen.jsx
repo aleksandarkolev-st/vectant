@@ -85,9 +85,14 @@ export default function EmulatorScreen({
     return <div className="h-full w-full bg-black" />;
   }
 
-  // If a MediaStream exists, always prefer rendering the real streaming surface.
-  // This avoids falling back to mock UI during real mobile sessions.
-  if (mediaStream && state !== EMULATOR_STATES.ERROR) {
+  const hasVideoTrack =
+    !!mediaStream &&
+    typeof mediaStream.getVideoTracks === 'function' &&
+    mediaStream.getVideoTracks().length > 0;
+
+  // If a MediaStream exists AND it has a video track, prefer rendering the real streaming surface.
+  // Otherwise we show an explicit placeholder (instead of a confusing black screen).
+  if (hasVideoTrack && state !== EMULATOR_STATES.ERROR) {
     return (
       <div className="h-full w-full bg-black relative">
         <video
@@ -122,13 +127,13 @@ export default function EmulatorScreen({
       <div className="h-full w-full bg-black relative">
         <video
           ref={videoRef}
-          className={mediaStream ? "absolute inset-0 h-full w-full object-contain" : "hidden"}
+          className={hasVideoTrack ? "absolute inset-0 h-full w-full object-contain" : "hidden"}
           muted
           playsInline
           autoPlay
         />
 
-        {!mediaStream ? (
+        {!hasVideoTrack ? (
           <MessageScreen title="Waiting for device stream…" subtitle="Streaming connected; no video track yet." />
         ) : null}
 
