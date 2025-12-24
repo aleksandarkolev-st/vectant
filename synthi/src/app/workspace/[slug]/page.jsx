@@ -504,6 +504,10 @@ export default function EditorPage({ params }) {
             
             // Increment version counter for stale detection
             docVersionRef.current++;
+
+            // Clear ONLY AI diagnostics to prevent stale logic errors
+            // Keep static/semantic for shifting as they are more robust to small edits
+            setDiagnostics(prev => prev.filter(d => d.tier !== 'ai'));
         }
         
         // Update the last analyzed hash map immediately so we don't re-trigger if effect runs again
