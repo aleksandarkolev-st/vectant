@@ -231,9 +231,6 @@ export const useEditorProviders = ({
                 let firstFixRange = null;
                 
                 for (const m of hits) {
-                    const severity = m.severity === 8 ? 'Error' : m.severity === 4 ? 'Warning' : 'Info';
-                    contents.push({ value: `**${severity}**: ${m.message}` });
-                    
                     // Find diagnostic with fixes for this marker
                     if (!firstFixDiagnostic) {
                         const matchingDiag = currentDiagnostics.find(d => {
