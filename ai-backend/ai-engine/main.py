@@ -703,10 +703,7 @@ async def analyze_unified(req: UnifiedAnalysisRequest):
             if diag.explanation:
                 diag_dict["explanation"] = diag.explanation
             if diag.fixes:
-                diag_dict["fixes"] = [
-                    {"description": f.description, "replacement": f.replacement_text}
-                    for f in diag.fixes
-                ]
+                diag_dict["fixes"] = [f.to_dict() for f in diag.fixes]
             
             diagnostics_list.append(diag_dict)
         
