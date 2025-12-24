@@ -310,7 +310,7 @@ export function useAnalyzerGateway({
       }
       
       // Include version for stale detection
-      if (typeof version === 'number') {
+      if (typeof version === 'number' || typeof version === 'string') {
         payload.version = version;
       }
       

@@ -551,12 +551,16 @@ export default function EditorPage({ params }) {
                 layers: ['static', 'semantic'], // Include semantic layer for full analysis
                 triggerAiOnErrors: true,        // Auto-trigger AI if errors found
                 includeAi: false,               // Don't force AI, let it trigger automatically
-                version: requestVersion,        // For stale detection
+                version: contentHash,           // Use content hash for robust stale detection
             })
                 .then((result) => {
-                    // STALE DETECTION: Check if version matches current
-                    if (result?.version !== undefined && result.version !== docVersionRef.current) {
-                        console.log(`[page.jsx] Ignoring stale diagnostics (version ${result.version} != current ${docVersionRef.current})`);
+                    // STALE DETECTION: Check if version (hash) matches current content hash
+                    // We re-compute hash from current editor content to be absolutely sure
+                    const currentEditorContent = editor ? editor.getValue() : (typeof currentContent === 'string' ? currentContent : '');
+                    const currentEditorHash = computeContentHash(currentEditorContent);
+                    
+                    if (result?.version !== undefined && result.version !== currentEditorHash) {
+                        console.log(`[page.jsx] Ignoring stale diagnostics (hash ${result.version} != current ${currentEditorHash})`);
                         setIsAnalyzingProactive(false);
                         return;
                     }

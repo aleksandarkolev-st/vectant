@@ -1,7 +1,7 @@
 # PROTOTYPING AI ENGINE WITH PYTHON, LATER SWITCH TO RUST
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Optional, Union
 import requests
 import json
 import sys
@@ -460,7 +460,7 @@ class UnifiedAnalysisRequest(BaseModel):
     file_path: str  # File path within workspace
     lang: str
     # Version for stale detection - client increments on each keystroke
-    version: int  # Client-side version counter (MANDATORY)
+    version: Union[int, str]  # Client-side version counter or hash (MANDATORY)
     # Optional content override (for unsaved changes)
     content: Optional[str] = None
     # Layer control

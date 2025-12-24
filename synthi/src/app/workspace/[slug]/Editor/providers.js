@@ -315,16 +315,6 @@ export const useEditorProviders = ({
                     removeDiagnosticByLocation(diagnostic.location);
                 }
                 
-                // Clear Monaco markers for this specific range
-                const currentMarkers = monacoInstance.editor.getModelMarkers({ resource: model.uri });
-                const remainingMarkers = currentMarkers.filter(m => {
-                    return !(m.startLineNumber === range.startLineNumber &&
-                             m.startColumn === range.startColumn &&
-                             m.endLineNumber === range.endLineNumber &&
-                             m.endColumn === range.endColumn);
-                });
-                monacoInstance.editor.setModelMarkers(model, 'synthi-proactive', remainingMarkers.filter(m => m.owner === 'synthi-proactive'));
-                
                 return;
             }
             
@@ -397,39 +387,13 @@ export const useEditorProviders = ({
         
         // Register command to apply fix
         const applyFixCommandId = editorInstance.addCommand(0, (ctx, fix, range, diagnosticLocation) => {
-            if (!fix || !range) return;
-            const model = editorInstance.getModel();
-            if (!model) return;
-            
-            editorInstance.executeEdits('synthi-quick-fix', [{
-                range: range,
-                text: fix.replacementText || '',
-                forceMoveMarkers: true,
-            }]);
-            
-            // Clear pending fix state
-            pendingFixRef.current = null;
-            isPreviewingRef.current = false;
-            hideFixPreview();
+            applyFix(fix, range);
             
             // IMPORTANT: Remove the diagnostic from state immediately
             // This prevents the error from persisting after the fix is applied
             if (removeDiagnosticByLocation && diagnosticLocation) {
                 removeDiagnosticByLocation(diagnosticLocation);
             }
-            
-            // Also clear Monaco markers for this specific range
-            const currentMarkers = monacoInstance.editor.getModelMarkers({ resource: model.uri });
-            const remainingMarkers = currentMarkers.filter(m => {
-                // Keep markers that don't match the fixed range
-                return !(m.startLineNumber === range.startLineNumber &&
-                         m.startColumn === range.startColumn &&
-                         m.endLineNumber === range.endLineNumber &&
-                         m.endColumn === range.endColumn);
-            });
-            
-            // Re-apply only remaining markers (filtering out the fixed one)
-            monacoInstance.editor.setModelMarkers(model, 'synthi-proactive', remainingMarkers.filter(m => m.owner === 'synthi-proactive'));
         });
         
         // Helper to find diagnostics for a given range

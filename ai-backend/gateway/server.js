@@ -604,7 +604,7 @@ async function forwardUnifiedAnalysis(socket, data, requestId) {
   };
 
   // Optional: version for stale detection
-  if (typeof data?.version === "number") {
+  if (typeof data?.version === "number" || typeof data?.version === "string") {
     forwardBody.version = data.version;
   }
 

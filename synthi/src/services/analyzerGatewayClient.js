@@ -252,7 +252,7 @@ export class AnalyzerGatewayClient {
     };
     
     // Include version for stale detection
-    if (typeof payload.version === 'number') {
+    if (typeof payload.version === 'number' || typeof payload.version === 'string') {
       backendPayload.version = payload.version;
     }
 
