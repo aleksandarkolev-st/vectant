@@ -104,6 +104,9 @@ Find bugs and design issues. Only report:
 5. Only report bugs you can PROVE with input → expected → actual
 6. For design issues, explain WHY the current design is problematic
 7. **Do NOT suggest adding #include when the symbol is already available via transitive includes**
+8. Do not report type mismatches if a conversion function (like `std::stoi`, `atoi`, casts) is used to match the expected type.
+9. Do not be misled by comments claiming an error exists; verify the code logic and types yourself.
+10. Report missing return statements at the function definition, not at the call site.
 
 ## RESPONSE FORMAT
 Return ONLY a JSON array:
