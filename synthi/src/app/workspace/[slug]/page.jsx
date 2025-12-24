@@ -62,6 +62,8 @@ export default function EditorPage({ params }) {
     const [guiConfig, setGuiConfig] = useState(null);
     const [isGuiRunning, setIsGuiRunning] = useState(false);
     const [editor, setEditor] = useState(null);
+    // Track editor content version to force re-analysis on every change (including remote/undo)
+    const [editorVersion, setEditorVersion] = useState(0);
     const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway } = useAnalyzerGateway();
     const { compile, mediaStream } = useCompiler();
     useHMR();
@@ -443,11 +445,23 @@ export default function EditorPage({ params }) {
         }
     }, [activeFile, rawFiles, currentContent, slug, fileCacheEntries]);
 
+    // Subscribe to editor changes to force re-analysis even for remote changes or undo/redo
+    useEffect(() => {
+        if (!editor) return;
+        
+        const disposable = editor.onDidChangeModelContent(() => {
+            setEditorVersion(v => v + 1);
+        });
+        
+        return () => disposable.dispose();
+    }, [editor]);
+
     useEffect(() => {
         if (!activeFile || !hasLoadedInitialFile || !slug) return;
         
         // Ensure content is available
-        const contentToAnalyze = typeof currentContent === 'string' ? currentContent : '';
+        // Use editor content if available to catch remote changes that don't update Redux
+        const contentToAnalyze = editor ? editor.getValue() : (typeof currentContent === 'string' ? currentContent : '');
         
         // GUARD: Skip analysis if content is empty - this likely means Y.js hasn't synced yet
         // or the file content hasn't been loaded from Redux. We'll re-trigger when content updates.
@@ -665,7 +679,7 @@ export default function EditorPage({ params }) {
                 clearTimeout(proactiveTimeoutRef.current);
             }
         };
-    }, [currentContent, activeFile, hasLoadedInitialFile, slug, analyzeUnified, computeContentHash]);
+    }, [currentContent, activeFile, hasLoadedInitialFile, slug, analyzeUnified, computeContentHash, editorVersion, editor]);
 
     // Track focused file and content changes for workspace analysis
     useEffect(() => {
