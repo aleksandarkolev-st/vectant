@@ -2,17 +2,35 @@
 // The dead_code warning is a false positive since these are FFI constants
 #![allow(dead_code)]
 
-use std::ffi::{c_void, c_double, c_char, c_uint};
+use core::ffi::c_void;
+use std::ffi::{c_double, c_char, c_uint};
 
 // ============================================================
-// SYNTHI PLUGIN ABI v1.0
+// SYNTHI PLUGIN ABI v2.0 - SINGLE-EXPORT ABI
 // ============================================================
 // This module defines the frozen ABI contract between the runner
-// and dynamically loaded plugin modules (core, gui, main).
+// and dynamically loaded hot modules.
+// 
+// KEY CHANGES IN v2.0:
+// - Single export: hot_get_api() returns pointer to static HotApi table
+// - All structs are #[repr(C)] for stable ABI
+// - No SDL types - events are runner-defined POD
+// - Migration uses serialized snapshots (MsgPack), not old struct pointers
+// - Size-then-write pattern for allocation-free serialization
+//
 // See PLUGIN_ABI.md for the full specification.
 // ============================================================
 
-/// ABI version constants
+/// Runner API version - bump when adding new runner services
+pub const RUNNER_API_VERSION: u32 = 1;
+
+/// Module API version - bump when HotApi structure changes
+pub const HOT_API_VERSION: u32 = 2;
+
+/// Minimum supported API version for backward compatibility
+pub const HOT_API_MIN_VERSION: u32 = 2;
+
+/// Legacy ABI version constants (for backward compat detection)
 pub const SYNTHI_CORE_ABI_VERSION: u32 = 1;
 pub const SYNTHI_GUI_ABI_VERSION: u32 = 1;
 pub const SYNTHI_MIN_SUPPORTED_ABI: u32 = 1;
@@ -23,6 +41,10 @@ pub const SYNTHI_HOST_KV_VERSION: u32 = 1;
 /// Magic numbers for struct validation
 pub const CORE_STATE_MAGIC: u32 = 0xDEADBEEF;
 pub const GUI_STATE_MAGIC: u32 = 0x60108EEF; // "GUI BEEF"
+pub const HOT_API_MAGIC: u64 = 0x484F5441_50495632; // "HOTAPIV2"
+
+/// Maximum sane alignment (reject if state_align_bytes > this)
+pub const MAX_STATE_ALIGNMENT: usize = 128;
 
 /// Opaque state pointers
 pub type StatePtr = *mut c_void;
@@ -30,6 +52,352 @@ pub type RendererPtr = *mut c_void;
 pub type CoreApiPtr = *mut c_void;
 pub type SdlEventPtr = *mut c_void;
 pub type HostContextPtr = *const c_void;
+
+// ============================================================
+// RUNNER API - Services provided by the host to the module
+// ============================================================
+
+/// Log levels for runner logging service
+pub const LOG_TRACE: u32 = 0;
+pub const LOG_DEBUG: u32 = 1;
+pub const LOG_INFO: u32 = 2;
+pub const LOG_WARN: u32 = 3;
+pub const LOG_ERROR: u32 = 4;
+
+/// Runner-provided services available to modules
+/// All services are allocation-free
+#[repr(C)]
+pub struct RunnerApi {
+    /// Size of this struct (for versioning)
+    pub struct_size: u32,
+    /// Runner API version
+    pub api_version: u32,
+    /// Log a message (level, msg bytes, length)
+    pub log: Option<unsafe extern "C" fn(level: u32, msg: *const u8, len: usize)>,
+    /// Get monotonic time in nanoseconds
+    pub get_time_ns: Option<unsafe extern "C" fn() -> u64>,
+    /// Reserved for future use
+    pub _reserved: [usize; 8],
+}
+
+impl RunnerApi {
+    pub const fn new() -> Self {
+        Self {
+            struct_size: core::mem::size_of::<RunnerApi>() as u32,
+            api_version: RUNNER_API_VERSION,
+            log: None,
+            get_time_ns: None,
+            _reserved: [0; 8],
+        }
+    }
+}
+
+// ============================================================
+// EVENT - Runner-defined POD for input events
+// ============================================================
+
+/// Event kinds (runner defines the semantics)
+pub const EVENT_NONE: u32 = 0;
+pub const EVENT_KEY_DOWN: u32 = 1;
+pub const EVENT_KEY_UP: u32 = 2;
+pub const EVENT_MOUSE_MOVE: u32 = 3;
+pub const EVENT_MOUSE_DOWN: u32 = 4;
+pub const EVENT_MOUSE_UP: u32 = 5;
+pub const EVENT_QUIT: u32 = 6;
+pub const EVENT_RESIZE: u32 = 7;
+pub const EVENT_CUSTOM: u32 = 1000;
+
+/// POD event structure - no SDL types
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Event {
+    /// Event type (EVENT_* constants)
+    pub kind: u32,
+    /// First parameter (key code, mouse button, etc.)
+    pub a: u32,
+    /// Second parameter (x coordinate, modifier flags, etc.)
+    pub b: u32,
+    /// Third parameter (y coordinate, etc.)
+    pub c: u32,
+    /// Optional payload pointer (must be valid for event lifetime)
+    pub payload_ptr: *const c_void,
+    /// Payload length in bytes
+    pub payload_len: usize,
+}
+
+impl Default for Event {
+    fn default() -> Self {
+        Self {
+            kind: EVENT_NONE,
+            a: 0,
+            b: 0,
+            c: 0,
+            payload_ptr: core::ptr::null(),
+            payload_len: 0,
+        }
+    }
+}
+
+// ============================================================
+// FUNCTION POINTER TYPES FOR HotApi
+// ============================================================
+
+/// Initialize state. Called once when module is first loaded.
+/// state: pointer to allocated state memory (state_size_bytes, aligned to state_align_bytes)
+/// host: runner services
+/// Returns true on success
+pub type InitFn = unsafe extern "C" fn(
+    state: *mut c_void,
+    host: *const RunnerApi,
+) -> bool;
+
+/// Shutdown/cleanup state. Called before module unload.
+pub type ShutdownFn = unsafe extern "C" fn(
+    state: *mut c_void,
+    host: *const RunnerApi,
+);
+
+/// Per-frame tick/update
+pub type TickFn = unsafe extern "C" fn(
+    state: *mut c_void,
+    host: *const RunnerApi,
+    dt: f32,
+);
+
+/// Render frame
+pub type RenderFn = unsafe extern "C" fn(
+    state: *mut c_void,
+    host: *const RunnerApi,
+);
+
+/// Handle input event
+pub type EventFn = unsafe extern "C" fn(
+    state: *mut c_void,
+    e: *const Event,
+    host: *const RunnerApi,
+);
+
+/// Get serialized state size (for size-then-write pattern)
+/// state: current state
+/// state_version: module's state_version
+/// host: runner services
+/// Returns: number of bytes needed to serialize state
+pub type SaveSizeFn = unsafe extern "C" fn(
+    state: *const c_void,
+    state_version: u32,
+    host: *const RunnerApi,
+) -> usize;
+
+/// Write state as MsgPack to provided buffer (size-then-write pattern)
+/// state: current state
+/// state_version: module's state_version  
+/// host: runner services
+/// out: output buffer (caller allocated, at least save_state_msgpack_size bytes)
+/// out_cap: capacity of output buffer
+/// out_written: receives actual bytes written
+/// Returns: true on success
+pub type SaveWriteMsgpackFn = unsafe extern "C" fn(
+    state: *const c_void,
+    state_version: u32,
+    host: *const RunnerApi,
+    out: *mut u8,
+    out_cap: usize,
+    out_written: *mut usize,
+) -> bool;
+
+/// Write state as JSON to provided buffer (debug/fallback)
+pub type SaveWriteJsonFn = unsafe extern "C" fn(
+    state: *const c_void,
+    state_version: u32,
+    host: *const RunnerApi,
+    out: *mut u8,
+    out_cap: usize,
+    out_written: *mut usize,
+) -> bool;
+
+/// Migrate state from old version to new version
+/// 
+/// CRITICAL: old_blob is OPAQUE - do NOT cast to old struct type!
+/// Use old_msgpack or old_json as the canonical source for migration.
+///
+/// old_blob: pointer to old state memory (opaque, for size reference only)
+/// old_ver: version of old state
+/// new_blob: pointer to new state memory (write migrated state here)
+/// new_ver: version of new state (this module's state_version)
+/// host: runner services
+/// old_msgpack: serialized old state in MsgPack format (preferred)
+/// old_msgpack_len: length of MsgPack data
+/// old_json: serialized old state in JSON format (fallback)
+/// old_json_len: length of JSON data
+/// Returns: true if migration succeeded
+pub type MigrateFn = unsafe extern "C" fn(
+    old_blob: *const c_void,
+    old_ver: u32,
+    new_blob: *mut c_void,
+    new_ver: u32,
+    host: *const RunnerApi,
+    old_msgpack: *const u8,
+    old_msgpack_len: usize,
+    old_json: *const u8,
+    old_json_len: usize,
+) -> bool;
+
+// ============================================================
+// HotApi - THE SINGLE EXPORT TABLE
+// ============================================================
+
+/// The main API table exported by hot modules.
+/// Single export: hot_get_api() returns pointer to this static table.
+#[repr(C)]
+pub struct HotApi {
+    /// Size of this struct in bytes (for version detection)
+    pub struct_size: u32,
+    
+    /// API version (must be >= HOT_API_MIN_VERSION)
+    pub api_version: u32,
+    
+    /// State version (module-defined, for migration)
+    pub state_version: u32,
+    
+    /// ABI fingerprint for fast compatibility check
+    /// Should be stable hash of state layout + function signatures
+    pub abi_fingerprint: u64,
+    
+    /// Size of state struct in bytes
+    pub state_size_bytes: usize,
+    
+    /// Required alignment of state struct (must be power of 2, <= MAX_STATE_ALIGNMENT)
+    pub state_align_bytes: usize,
+    
+    /// Minimum size for partial compatibility (0 if unused)
+    pub state_min_size_bytes: usize,
+    
+    // === Lifecycle functions ===
+    
+    /// Initialize state (required)
+    pub init: Option<InitFn>,
+    
+    /// Shutdown/cleanup (optional)
+    pub shutdown: Option<ShutdownFn>,
+    
+    /// Per-frame tick (optional, but usually needed)
+    pub tick: Option<TickFn>,
+    
+    /// Render frame (optional)
+    pub render: Option<RenderFn>,
+    
+    /// Handle event (optional)
+    pub event: Option<EventFn>,
+    
+    /// Migrate from old state version (optional but recommended)
+    pub migrate: Option<MigrateFn>,
+    
+    // === State serialization (size-then-write pattern) ===
+    
+    /// Get MsgPack serialization size
+    pub save_state_msgpack_size: Option<SaveSizeFn>,
+    
+    /// Write state as MsgPack
+    pub save_state_msgpack_write: Option<SaveWriteMsgpackFn>,
+    
+    /// Get JSON serialization size (debug/fallback)
+    pub save_state_json_size: Option<SaveSizeFn>,
+    
+    /// Write state as JSON (debug/fallback)
+    pub save_state_json_write: Option<SaveWriteJsonFn>,
+}
+
+impl HotApi {
+    /// Create a new HotApi with default values
+    pub const fn new() -> Self {
+        Self {
+            struct_size: core::mem::size_of::<HotApi>() as u32,
+            api_version: HOT_API_VERSION,
+            state_version: 1,
+            abi_fingerprint: 0,
+            state_size_bytes: 0,
+            state_align_bytes: 8,
+            state_min_size_bytes: 0,
+            init: None,
+            shutdown: None,
+            tick: None,
+            render: None,
+            event: None,
+            migrate: None,
+            save_state_msgpack_size: None,
+            save_state_msgpack_write: None,
+            save_state_json_size: None,
+            save_state_json_write: None,
+        }
+    }
+    
+    /// Validate that this HotApi meets minimum requirements
+    pub fn validate(&self) -> Result<(), &'static str> {
+        // Check struct_size is reasonable
+        if (self.struct_size as usize) < core::mem::offset_of!(HotApi, migrate) {
+            return Err("struct_size too small - missing required fields");
+        }
+        
+        // Check API version
+        if self.api_version < HOT_API_MIN_VERSION {
+            return Err("api_version too old");
+        }
+        
+        // Check alignment is power of 2
+        if self.state_align_bytes == 0 || !self.state_align_bytes.is_power_of_two() {
+            return Err("state_align_bytes must be a power of 2");
+        }
+        
+        // Check alignment is sane
+        if self.state_align_bytes > MAX_STATE_ALIGNMENT {
+            return Err("state_align_bytes exceeds maximum");
+        }
+        
+        // Check state size is aligned
+        if self.state_size_bytes % self.state_align_bytes != 0 {
+            return Err("state_size_bytes must be multiple of state_align_bytes");
+        }
+        
+        // Must have init function
+        if self.init.is_none() {
+            return Err("init function is required");
+        }
+        
+        Ok(())
+    }
+    
+    /// Check if this module supports state serialization
+    pub fn has_serialization(&self) -> bool {
+        self.save_state_msgpack_size.is_some() && self.save_state_msgpack_write.is_some()
+    }
+    
+    /// Check if this module supports migration
+    pub fn has_migration(&self) -> bool {
+        self.migrate.is_some()
+    }
+}
+
+// ============================================================
+// SINGLE EXPORT FUNCTION TYPE
+// ============================================================
+
+/// The single export that hot modules must provide
+pub type HotGetApiFn = unsafe extern "C" fn() -> *const HotApi;
+
+/// Symbol name for the single export
+pub const HOT_GET_API_SYMBOL: &[u8] = b"hot_get_api\0";
+
+// ============================================================
+// PLACEHOLDER EXPORT (modules override this)
+// ============================================================
+
+/// Default implementation - modules should replace this with their static table
+#[no_mangle]
+pub extern "C" fn hot_get_api() -> *const HotApi {
+    // Return null to indicate no implementation
+    // Real modules return &THEIR_HOT_API
+    core::ptr::null()
+}
 
 /// Module slot identifiers
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
