@@ -78,19 +78,25 @@ export default function EditorPage({ params }) {
     // Proactive analysis state - keyed by file path
     const [diagnostics, setDiagnostics] = useState([]);
     const [isAnalyzingProactive, setIsAnalyzingProactive] = useState(false);
+    // FAST analysis: static + semantic
     const proactiveTimeoutRef = useRef(null);
-    const lastProactiveSignatureRef = useRef('');
-    // Tracks a scheduled (debounced) analysis so fast re-renders don't cancel it and
-    // then incorrectly skip analysis thinking it already ran.
-    const pendingProactiveSignatureRef = useRef('');
+    const lastFastSignatureRef = useRef('');
+    const pendingFastSignatureRef = useRef('');
+
+    // AI analysis: slower and runs separately
+    const aiTimeoutRef = useRef(null);
+    const lastAiSignatureRef = useRef('');
+    const pendingAiSignatureRef = useRef('');
     const currentAnalysisFileRef = useRef(null); // Track which file diagnostics belong to
     const aiAnalysisRef = useRef(null);
     const lastContentHashRef = useRef('');
-    // Map to track last analyzed hash per file to prevent re-analysis on tab switch
-    const lastAnalyzedHashMapRef = useRef(new Map());
+    // Track last analyzed hash per file per tier
+    const lastFastHashMapRef = useRef(new Map());
+    const lastAiHashMapRef = useRef(new Map());
     // Version counter for stale detection - increments on each edit
     const docVersionRef = useRef(0);
     const lastActiveFilePathRef = useRef('');
+    const proactiveInFlightRef = useRef(0);
 
     const normalizePath = useCallback((p) => {
         if (!p) return '';
@@ -317,9 +323,15 @@ export default function EditorPage({ params }) {
         // has propagated to Redux (Editor uses rAF to batch content updates)
         requestAnimationFrame(() => {
             setTimeout(() => {
-                lastProactiveSignatureRef.current = '';
+                lastFastSignatureRef.current = '';
+                lastAiSignatureRef.current = '';
                 // Also clear the content hash to ensure fresh analysis
                 lastContentHashRef.current = '';
+                const target = filePath || activeFile?.path || activeFile?.name;
+                if (target) {
+                    lastFastHashMapRef.current.delete(target);
+                    lastAiHashMapRef.current.delete(target);
+                }
             }, 50); // Small delay to ensure Redux state is updated
         });
     }, [activeFile]);
@@ -357,11 +369,17 @@ export default function EditorPage({ params }) {
         // If we're switching files, reset analysis state but keep diagnostics from other files
         if (currentFilePath && previousFilePath && currentFilePath !== previousFilePath) {
             // Reset analysis signature so new file gets analyzed
-            lastProactiveSignatureRef.current = '';
+            lastFastSignatureRef.current = '';
+            lastAiSignatureRef.current = '';
             lastContentHashRef.current = '';
             // Cancel any pending analysis for the old file
             if (proactiveTimeoutRef.current) {
                 clearTimeout(proactiveTimeoutRef.current);
+                proactiveTimeoutRef.current = null;
+            }
+            if (aiTimeoutRef.current) {
+                clearTimeout(aiTimeoutRef.current);
+                aiTimeoutRef.current = null;
             }
             if (aiAnalysisRef.current) {
                 aiAnalysisRef.current.cancelled = true;
@@ -534,23 +552,18 @@ export default function EditorPage({ params }) {
         // Capture the content/file snapshot we're about to (re)analyze.
         const contentHash = computeContentHash(contentToAnalyze);
         const currentFilePath = activeFile?.path || activeFile?.name || 'untitled';
-        
-        // If we already scheduled analysis for this exact snapshot, don't cancel it.
-        const scheduledSignature = `unified::${slug}::${currentFilePath}::${contentHash}`;
-        if (proactiveTimeoutRef.current && pendingProactiveSignatureRef.current === scheduledSignature) {
-            return;
-        }
 
-        if (proactiveTimeoutRef.current) {
-            clearTimeout(proactiveTimeoutRef.current);
-            proactiveTimeoutRef.current = null;
-        }
-        pendingProactiveSignatureRef.current = scheduledSignature;
-
-        // Cancel any pending AI analysis when content changes
-        if (aiAnalysisRef.current) {
-            aiAnalysisRef.current.cancelled = true;
-        }
+        // Helper: keep the spinner accurate across fast+AI requests
+        const beginProactive = () => {
+            proactiveInFlightRef.current += 1;
+            setIsAnalyzingProactive(true);
+        };
+        const endProactive = () => {
+            proactiveInFlightRef.current = Math.max(0, proactiveInFlightRef.current - 1);
+            if (proactiveInFlightRef.current === 0) {
+                setIsAnalyzingProactive(false);
+            }
+        };
 
         // Always analyze when a file is opened / becomes active, even if its content hash
         // matches the last analysis. This avoids stale/ghost diagnostics across refresh/tab switches.
@@ -570,29 +583,30 @@ export default function EditorPage({ params }) {
             }));
 
             // Force a fresh analysis even if we previously analyzed the same hash.
-            lastAnalyzedHashMapRef.current.delete(currentFilePath);
-            lastProactiveSignatureRef.current = '';
+            lastFastHashMapRef.current.delete(currentFilePath);
+            lastAiHashMapRef.current.delete(currentFilePath);
+            lastFastSignatureRef.current = '';
+            lastAiSignatureRef.current = '';
         }
         
         // DEBUG: Log content hash and preview to trace stale content issues
         // console.log(`[page.jsx] Content changed - Hash: ${contentHash}, Length: ${contentToAnalyze.length}`);
         
         // Check if content actually changed for this file compared to last analysis
-        const lastAnalyzedHash = lastAnalyzedHashMapRef.current.get(currentFilePath);
+        const lastFastHash = lastFastHashMapRef.current.get(currentFilePath);
+        const lastAiHash = lastAiHashMapRef.current.get(currentFilePath);
         
         // If content hasn't changed since last analysis (e.g. just switched tabs back),
         // DO NOT clear diagnostics and DO NOT trigger new analysis.
-        if (lastAnalyzedHash === contentHash && !isFileSwitch) {
-            // console.log(`[page.jsx] Skipping analysis - content hash matches last analysis for ${currentFilePath}`);
-            return;
-        }
+        const shouldRunFast = !(lastFastHash === contentHash && !isFileSwitch);
+        const shouldRunAi = !(lastAiHash === contentHash && !isFileSwitch);
         
         // Secure behavior: diagnostics are tied to a specific file snapshot.
         // Monaco markers do NOT reliably "shift" with text edits, so keeping them after edits
         // can pin errors to the wrong lines/columns (ghost underlines).
         // We clear diagnostics for the active file immediately and rely on the next analysis
         // result (validated via content-hash staleness checks) to repopulate them.
-        if (lastAnalyzedHash !== contentHash) {
+        if (lastFastHash !== contentHash) {
             // Increment version counter for stale detection
             docVersionRef.current++;
 
@@ -620,9 +634,17 @@ export default function EditorPage({ params }) {
         // Capture version at request time for stale detection
         const requestVersion = docVersionRef.current;
 
-        // Debounce proactive analysis.
-        // Using 100ms to allow Y.js to sync before analysis runs.
-        proactiveTimeoutRef.current = setTimeout(async () => {
+        // If we already scheduled FAST analysis for this exact snapshot, don't cancel it.
+        const scheduledFastSignature = `fast::${slug}::${currentFilePath}::${contentHash}`;
+        if (shouldRunFast) {
+            if (!(proactiveTimeoutRef.current && pendingFastSignatureRef.current === scheduledFastSignature)) {
+                if (proactiveTimeoutRef.current) {
+                    clearTimeout(proactiveTimeoutRef.current);
+                    proactiveTimeoutRef.current = null;
+                }
+                pendingFastSignatureRef.current = scheduledFastSignature;
+
+                proactiveTimeoutRef.current = setTimeout(async () => {
             // RE-READ CONTENT AT ANALYSIS TIME
             // This is crucial: content might have changed (e.g., Y.js sync) since
             // the effect started. Always use the LATEST Monaco content.
@@ -647,20 +669,21 @@ export default function EditorPage({ params }) {
                 (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
                 'plaintext';
             const normalizedLang = langSource.toLowerCase();
-            const signature = `unified::${slug}::${currentFilePath}::${freshContentHash}`;
+            const signature = `fast::${slug}::${currentFilePath}::${freshContentHash}`;
 
-            if (lastProactiveSignatureRef.current === signature) {
+            if (lastFastSignatureRef.current === signature) {
+                proactiveTimeoutRef.current = null;
                 return;
             }
 
-            setIsAnalyzingProactive(true);
+            beginProactive();
             
             // DEBUG: Log content preview to trace stale content issues
             const contentLines = freshContent.split('\n');
             const leadingBlankCount = contentLines.findIndex(l => l.trim() !== '');
             const effectiveLeadingBlank = leadingBlankCount === -1 ? contentLines.length : leadingBlankCount;
             
-            console.log('[page.jsx] === UNIFIED INTELLIGENCE ANALYSIS START ===');
+            console.log('[page.jsx] === FAST (STATIC+SEMANTIC) ANALYSIS START ===');
             console.log('[page.jsx] Slug:', slug);
             console.log('[page.jsx] File:', currentFilePath);
             console.log('[page.jsx] Language:', normalizedLang);
@@ -669,7 +692,7 @@ export default function EditorPage({ params }) {
             console.log('[page.jsx] Content lines:', contentLines.length);
             console.log('[page.jsx] Leading blank lines:', effectiveLeadingBlank);
             console.log('[page.jsx] First non-blank line:', contentLines[effectiveLeadingBlank]?.substring(0, 50) || 'N/A');
-            console.log('[page.jsx] NOTE: Using unified pipeline with semantic analysis');
+            console.log('[page.jsx] NOTE: Fast pipeline (static+semantic only)');
             
             // Use the new unified intelligence pipeline
             // - Layer A: Static analysis (syntax patterns)
@@ -680,12 +703,13 @@ export default function EditorPage({ params }) {
                 filePath: currentFilePath,
                 lang: normalizedLang,
                 content: freshContent,
-                layers: ['static', 'semantic', 'ai'],
+                layers: ['static', 'semantic'],
                 triggerAiOnErrors: false,
-                includeAi: true,
+                includeAi: false,
                 version: freshContentHash,           // Use content hash for robust stale detection
             })
                 .then((result) => {
+                    if (proactiveTimeoutRef.current) proactiveTimeoutRef.current = null;
                     // STALE DETECTION: Check if version (hash) matches current content hash
                     // We re-compute hash from current editor content to be absolutely sure
                     const currentEditorContent = editor ? editor.getValue() : (typeof currentContent === 'string' ? currentContent : '');
@@ -693,14 +717,14 @@ export default function EditorPage({ params }) {
                     
                     if (result?.version !== undefined && result.version !== currentEditorHash) {
                         console.log(`[page.jsx] Ignoring stale diagnostics (hash ${result.version} != current ${currentEditorHash})`);
-                        setIsAnalyzingProactive(false);
+                        endProactive();
                         return;
                     }
                     
                     // Note: Content hash comparison removed - client and server use different algorithms
                     // Version-based staleness detection is sufficient and more reliable
                     
-                    console.log('[page.jsx] === UNIFIED ANALYSIS RESULT ===');
+                    console.log('[page.jsx] === FAST ANALYSIS RESULT ===');
                     console.log('[page.jsx] Layers run:', result?.layers_run);
                     console.log('[page.jsx] Summary:', result?.summary);
                     console.log('[page.jsx] Time:', result?.analysis_time_ms, 'ms');
@@ -736,8 +760,8 @@ export default function EditorPage({ params }) {
                         console.warn('[page.jsx]   Monaco:', { line_count: sourceLines.length, leading_blank_lines: editorLeadingEmpty });
                         console.warn('[page.jsx]   Backend:', backendDebug);
                         // Allow retry on next tick
-                        lastAnalyzedHashMapRef.current.delete(currentFilePath);
-                        setIsAnalyzingProactive(false);
+                        lastFastHashMapRef.current.delete(currentFilePath);
+                        endProactive();
                         setTimeout(() => setEditorVersion(v => v + 1), 50);
                         return;
                     }
@@ -760,8 +784,8 @@ export default function EditorPage({ params }) {
                     if (codeMismatchCount > 0) {
                         console.warn(`[page.jsx] Rejecting diagnostics due to ${codeMismatchCount} codeAtLine mismatches`);
                         // Allow retry; current snapshot should win
-                        lastAnalyzedHashMapRef.current.delete(currentFilePath);
-                        setIsAnalyzingProactive(false);
+                        lastFastHashMapRef.current.delete(currentFilePath);
+                        endProactive();
                         setTimeout(() => setEditorVersion(v => v + 1), 50);
                         return;
                     }
@@ -842,49 +866,247 @@ export default function EditorPage({ params }) {
                         tier: d.tier || (d.source?.toLowerCase().includes('ai') ? 'ai' :
                               d.source?.toLowerCase().includes('semantic') ? 'semantic' : 'static'),
                     }));
-                    
-                    // Replace diagnostics for this file only
-                    setDiagnostics(prev => {
-                        const normalizePath = (p) => {
-                            if (!p) return '';
-                            return p.replace(/^[./\\]+/, '').replace(/\\/g, '/').toLowerCase();
-                        };
 
-                        // Use same robust normalization for filtering
-                        const otherFileDiags = prev.filter(d => {
-                            const p1 = normalizePath(d.filePath || '');
-                            const p2 = normalizePath(currentFilePath || '');
-                            return p1 !== p2;
+                    // Replace NON-AI diagnostics for this file only (keep AI until AI pass arrives)
+                    setDiagnostics(prev => {
+                        const currentNorm = normalizePath(currentFilePath || '');
+                        const otherFileDiags = prev.filter(d => normalizePath(d.filePath || '') !== currentNorm);
+                        const sameFileAi = prev.filter(d => {
+                            const isSameFile = normalizePath(d.filePath || '') === currentNorm;
+                            if (!isSameFile) return false;
+                            const isAi = d.tier === 'ai' || (d.source && String(d.source).toLowerCase().includes('ai'));
+                            return isAi;
                         });
                         console.log('[page.jsx] Setting', normalizedDiags.length, 'diagnostics for', currentFilePath);
-                        return [...otherFileDiags, ...normalizedDiags];
+                        return [...otherFileDiags, ...sameFileAi, ...normalizedDiags];
                     });
-                    
+
                     // Update hash map with the content we actually analyzed
-                    lastAnalyzedHashMapRef.current.set(currentFilePath, freshContentHash);
+                    lastFastHashMapRef.current.set(currentFilePath, freshContentHash);
 
                     // Clear pending schedule marker (only if it matches what we scheduled).
-                    if (pendingProactiveSignatureRef.current === scheduledSignature) {
-                        pendingProactiveSignatureRef.current = '';
+                    if (pendingFastSignatureRef.current === scheduledFastSignature) {
+                        pendingFastSignatureRef.current = '';
                     }
-                    
-                    lastProactiveSignatureRef.current = signature;
-                    setIsAnalyzingProactive(false);
+
+                    lastFastSignatureRef.current = signature;
+                    endProactive();
                 })
                 .catch((err) => {
-                    console.error('[page.jsx] Unified analysis failed:', err);
+                    if (proactiveTimeoutRef.current) proactiveTimeoutRef.current = null;
+                    console.error('[page.jsx] Fast analysis failed:', err);
                     // Allow retry if a transient/network error happened
-                    lastAnalyzedHashMapRef.current.delete(currentFilePath);
-                    if (pendingProactiveSignatureRef.current === scheduledSignature) {
-                        pendingProactiveSignatureRef.current = '';
+                    lastFastHashMapRef.current.delete(currentFilePath);
+                    if (pendingFastSignatureRef.current === scheduledFastSignature) {
+                        pendingFastSignatureRef.current = '';
                     }
-                    setIsAnalyzingProactive(false);
+                    endProactive();
                 });
-        }, 100); // 100ms debounce for responsiveness
+                }, 100); // 100ms debounce for responsiveness
+            }
+        }
+
+        // AI analysis is scheduled separately and later.
+        const scheduledAiSignature = `ai::${slug}::${currentFilePath}::${contentHash}`;
+        if (shouldRunAi) {
+            if (!(aiTimeoutRef.current && pendingAiSignatureRef.current === scheduledAiSignature)) {
+                if (aiTimeoutRef.current) {
+                    clearTimeout(aiTimeoutRef.current);
+                    aiTimeoutRef.current = null;
+                }
+                pendingAiSignatureRef.current = scheduledAiSignature;
+
+                // Cancel any in-flight AI processing when content changes
+                if (aiAnalysisRef.current) {
+                    aiAnalysisRef.current.cancelled = true;
+                }
+
+                aiTimeoutRef.current = setTimeout(async () => {
+                    const freshContent = getContentToAnalyze();
+                    const freshContentHash = computeContentHash(freshContent);
+
+                    if (freshContent.length === 0) {
+                        console.log('[page.jsx] Skipping AI analysis - content became empty, waiting for sync');
+                        aiTimeoutRef.current = null;
+                        return;
+                    }
+
+                    const langSource =
+                        activeFile.language ||
+                        (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
+                        'plaintext';
+                    const normalizedLang = langSource.toLowerCase();
+                    const signature = `ai::${slug}::${currentFilePath}::${freshContentHash}`;
+
+                    if (lastAiSignatureRef.current === signature) {
+                        aiTimeoutRef.current = null;
+                        return;
+                    }
+
+                    const token = { cancelled: false };
+                    aiAnalysisRef.current = token;
+
+                    beginProactive();
+
+                    console.log('[page.jsx] === AI ANALYSIS START ===');
+                    console.log('[page.jsx] Slug:', slug);
+                    console.log('[page.jsx] File:', currentFilePath);
+                    console.log('[page.jsx] Language:', normalizedLang);
+                    console.log('[page.jsx] Version:', requestVersion);
+
+                    analyzeUnified({
+                        slug,
+                        filePath: currentFilePath,
+                        lang: normalizedLang,
+                        content: freshContent,
+                        layers: ['ai'],
+                        triggerAiOnErrors: false,
+                        includeAi: true,
+                        version: freshContentHash,
+                    })
+                        .then((result) => {
+                            aiTimeoutRef.current = null;
+                            if (token.cancelled) {
+                                endProactive();
+                                return;
+                            }
+
+                            const currentEditorContent = editor ? editor.getValue() : (typeof currentContent === 'string' ? currentContent : '');
+                            const currentEditorHash = computeContentHash(currentEditorContent);
+
+                            if (result?.version !== undefined && result.version !== currentEditorHash) {
+                                console.log(`[page.jsx] Ignoring stale AI diagnostics (hash ${result.version} != current ${currentEditorHash})`);
+                                endProactive();
+                                return;
+                            }
+
+                            console.log('[page.jsx] === AI ANALYSIS RESULT ===');
+                            const diags = result?.diagnostics || [];
+
+                            const sourceLines = (typeof currentEditorContent === 'string' ? currentEditorContent : '').split('\n');
+                            const countLeadingEmpty = (lines) => {
+                                let n = 0;
+                                while (n < lines.length && lines[n] === '') n++;
+                                return n;
+                            };
+                            const editorLeadingEmpty = countLeadingEmpty(sourceLines);
+                            const backendDebug = result?.content_debug;
+                            if (
+                                backendDebug &&
+                                (backendDebug.line_count !== sourceLines.length || backendDebug.leading_blank_lines !== editorLeadingEmpty)
+                            ) {
+                                console.warn('[page.jsx] Rejecting AI diagnostics: backend analyzed different content fingerprint than Monaco shows');
+                                lastAiHashMapRef.current.delete(currentFilePath);
+                                endProactive();
+                                setTimeout(() => setEditorVersion(v => v + 1), 50);
+                                return;
+                            }
+
+                            let codeMismatchCount = 0;
+                            diags.forEach((d) => {
+                                const lineIdx = d.range?.start ?? d.location?.line ?? 0;
+                                const codeLine = sourceLines[lineIdx] ?? "";
+                                if (codeLine.trim() !== (d.codeAtLine || '').trim()) {
+                                    codeMismatchCount++;
+                                }
+                            });
+                            if (codeMismatchCount > 0) {
+                                console.warn(`[page.jsx] Rejecting AI diagnostics due to ${codeMismatchCount} codeAtLine mismatches`);
+                                lastAiHashMapRef.current.delete(currentFilePath);
+                                endProactive();
+                                setTimeout(() => setEditorVersion(v => v + 1), 50);
+                                return;
+                            }
+
+                            const filteredDiags = diags.filter(d => {
+                                if (!d.originalText) return true;
+
+                                const loc = d.location || {};
+                                const lineNum = loc.line ?? 0;
+                                const endLineNum = loc.endLine ?? lineNum;
+                                const col = loc.column ?? 0;
+                                const endCol = loc.endColumn ?? col;
+
+                                let currentTextAtLocation = '';
+                                try {
+                                    if (lineNum === endLineNum && lineNum < sourceLines.length) {
+                                        currentTextAtLocation = sourceLines[lineNum].substring(col, endCol);
+                                    } else if (lineNum < sourceLines.length) {
+                                        const textParts = [];
+                                        for (let i = lineNum; i <= Math.min(endLineNum, sourceLines.length - 1); i++) {
+                                            if (i === lineNum) textParts.push(sourceLines[i].substring(col));
+                                            else if (i === endLineNum) textParts.push(sourceLines[i].substring(0, endCol));
+                                            else textParts.push(sourceLines[i]);
+                                        }
+                                        currentTextAtLocation = textParts.join('\n');
+                                    }
+                                } catch (e) {
+                                    return true;
+                                }
+
+                                // Filter ghost AI diagnostics on whitespace
+                                if (!currentTextAtLocation.trim()) {
+                                    return false;
+                                }
+
+                                const isStale = currentTextAtLocation !== d.originalText;
+                                return !isStale;
+                            });
+
+                            const normalizedDiags = filteredDiags.map((d, idx) => ({
+                                ...d,
+                                __analysisVersion: result?.version ?? freshContentHash,
+                                __id: d.__id || d.id || `${freshContentHash}::ai::${idx}`,
+                                filePath: d.filePath || d.file || currentFilePath,
+                                location: d.location || {
+                                    line: d.range?.start ?? 0,
+                                    column: d.range?.startColumn ?? 0,
+                                    endLine: d.range?.end ?? d.range?.start ?? 0,
+                                    endColumn: d.range?.endColumn ?? 0,
+                                },
+                                tier: 'ai',
+                            }));
+
+                            setDiagnostics(prev => {
+                                const currentNorm = normalizePath(currentFilePath || '');
+                                const otherFileDiags = prev.filter(d => normalizePath(d.filePath || '') !== currentNorm);
+                                const sameFileNonAi = prev.filter(d => {
+                                    const isSameFile = normalizePath(d.filePath || '') === currentNorm;
+                                    if (!isSameFile) return false;
+                                    const isAi = d.tier === 'ai' || (d.source && String(d.source).toLowerCase().includes('ai'));
+                                    return !isAi;
+                                });
+                                return [...otherFileDiags, ...sameFileNonAi, ...normalizedDiags];
+                            });
+
+                            lastAiHashMapRef.current.set(currentFilePath, freshContentHash);
+                            if (pendingAiSignatureRef.current === scheduledAiSignature) {
+                                pendingAiSignatureRef.current = '';
+                            }
+                            lastAiSignatureRef.current = signature;
+                            endProactive();
+                        })
+                        .catch((err) => {
+                            aiTimeoutRef.current = null;
+                            console.error('[page.jsx] AI analysis failed:', err);
+                            lastAiHashMapRef.current.delete(currentFilePath);
+                            if (pendingAiSignatureRef.current === scheduledAiSignature) {
+                                pendingAiSignatureRef.current = '';
+                            }
+                            endProactive();
+                        });
+                }, 900); // AI debounce (slower)
+            }
+        }
 
         return () => {
             if (proactiveTimeoutRef.current) {
                 clearTimeout(proactiveTimeoutRef.current);
+                proactiveTimeoutRef.current = null;
+            }
+            if (aiTimeoutRef.current) {
+                clearTimeout(aiTimeoutRef.current);
+                aiTimeoutRef.current = null;
             }
         };
     }, [currentContent, activeFile, hasLoadedInitialFile, slug, analyzeUnified, computeContentHash, editorVersion, editor]);
