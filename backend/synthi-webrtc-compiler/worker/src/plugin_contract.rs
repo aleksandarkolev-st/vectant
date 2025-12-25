@@ -6,19 +6,82 @@ use core::ffi::c_void;
 use std::ffi::{c_double, c_char, c_uint};
 
 // ============================================================
-// SYNTHI PLUGIN ABI v2.0 - SINGLE-EXPORT ABI
+// SYNTHI PLUGIN ABI v2.1 - SINGLE-EXPORT ABI
 // ============================================================
 // This module defines the frozen ABI contract between the runner
 // and dynamically loaded hot modules.
 // 
-// KEY CHANGES IN v2.0:
+// KEY CHANGES IN v2.1:
 // - Single export: hot_get_api() returns pointer to static HotApi table
 // - All structs are #[repr(C)] for stable ABI
 // - No SDL types - events are runner-defined POD
 // - Migration uses serialized snapshots (MsgPack), not old struct pointers
 // - Size-then-write pattern for allocation-free serialization
+// - Added semantic_hash for reload safety (v2.1)
+// - Added can_reuse_state hook (v2.1)
+// - Explicit quiescence callbacks (v2.1)
 //
 // See PLUGIN_ABI.md for the full specification.
+//
+// ============================================================
+// ABI OWNERSHIP AND ALLOCATION RULES
+// ============================================================
+//
+// MEMORY OWNERSHIP RULES:
+//
+// 1. STATE MEMORY
+//    - Runner allocates state memory (state_size_bytes, aligned to state_align_bytes)
+//    - Runner owns state memory lifetime
+//    - Module MUST NOT free state memory
+//    - Module MUST NOT reallocate state memory
+//    - On shutdown: runner calls shutdown(), then frees state
+//
+// 2. SNAPSHOT DATA (save_state_msgpack_write)
+//    - Runner allocates output buffer
+//    - Runner provides buffer capacity via out_cap
+//    - Module writes directly to provided buffer (zero-copy)
+//    - Module sets *out_written to actual bytes written
+//    - Runner owns buffer - module MUST NOT free it
+//
+// 3. ERROR STRINGS
+//    - Module allocates error strings via static buffers or module-owned heap
+//    - Error strings are valid until next module call
+//    - Runner MUST NOT free error strings
+//    - Runner should copy if needed beyond next call
+//
+// 4. RUNNER API POINTERS
+//    - RunnerApi pointer is valid for module lifetime
+//    - Module MUST NOT free RunnerApi
+//    - Module MUST NOT cache RunnerApi beyond shutdown
+//
+// ALIGNMENT RULES:
+//    - state_align_bytes MUST be power of 2
+//    - state_align_bytes MUST be <= MAX_STATE_ALIGNMENT (128)
+//    - state_size_bytes MUST be multiple of state_align_bytes
+//    - Runner guarantees state pointer meets alignment
+//
+// ERROR REPORTING:
+//    - Functions return bool: true = success, false = error
+//    - Error details via hot_get_last_error() (if provided)
+//    - Or via error_message field in HotApi (v2.1+)
+//
+// VERSIONING RULES:
+//    - struct_size field enables forward compatibility
+//    - New fields MUST be added at end of struct
+//    - Removed fields MUST be replaced with reserved padding
+//    - api_version bump required for:
+//      * Adding new required callbacks
+//      * Changing existing callback signatures
+//      * Changing struct layout
+//    - state_version bump required for:
+//      * Adding/removing state fields
+//      * Changing state field types
+//      * Changing state field semantics
+//    - semantic_hash change required for:
+//      * Changing field invariants (even if layout matches)
+//      * Changing pointer ownership semantics
+//      * Changing array size semantics
+//
 // ============================================================
 
 /// Runner API version - bump when adding new runner services
@@ -243,14 +306,116 @@ pub type MigrateFn = unsafe extern "C" fn(
 ) -> bool;
 
 // ============================================================
-// HotApi - THE SINGLE EXPORT TABLE
+// v2.1 NEW FUNCTION TYPES
+// ============================================================
+
+/// Check if state can be reused between old and new module versions.
+/// This is SEPARATE from layout compatibility - even if layout matches,
+/// semantic changes may require migration.
+///
+/// old_fingerprint: ABI fingerprint of old module
+/// new_fingerprint: ABI fingerprint of new module (this module)
+/// old_semantic_hash: semantic hash of old module state
+/// Returns: true if state can be reused directly (memcpy-safe AND semantically compatible)
+pub type CanReuseStateFn = unsafe extern "C" fn(
+    old_fingerprint: u64,
+    new_fingerprint: u64,
+    old_semantic_hash: u64,
+) -> bool;
+
+/// Get the semantic hash for this module's state.
+/// Semantic hash should change when:
+/// - Field invariants change (even if layout matches)
+/// - Pointer ownership semantics change
+/// - Array size semantics change
+/// - Any behavioral change that affects state interpretation
+///
+/// Returns: 64-bit semantic hash
+pub type GetSemanticHashFn = unsafe extern "C" fn() -> u64;
+
+/// Get the state type identifier string.
+/// This should be a stable, unique identifier for the state type.
+/// Format: "module::TypeName" (e.g., "synthi::core::CoreState")
+///
+/// Returns: pointer to null-terminated UTF-8 string (static lifetime)
+pub type GetStateTypeIdFn = unsafe extern "C" fn() -> *const c_char;
+
+/// Get precomputed layout hash.
+/// This should be computed at build time from actual struct layout.
+///
+/// Returns: 64-bit layout hash
+pub type GetLayoutHashFn = unsafe extern "C" fn() -> u64;
+
+/// Enter quiescence mode. Called before hot reload.
+/// Module must:
+/// - Stop all callbacks and timers
+/// - Join or cancel owned threads
+/// - Drain message queues
+/// - Flush pending I/O
+///
+/// state: current state
+/// host: runner services
+/// timeout_ms: hard timeout - MUST complete before this
+/// Returns: true if quiescence achieved, false if failed
+pub type EnterQuiescenceFn = unsafe extern "C" fn(
+    state: *mut c_void,
+    host: *const RunnerApi,
+    timeout_ms: u32,
+) -> bool;
+
+/// Exit quiescence mode. Called after hot reload if reload was cancelled.
+///
+/// state: current state
+/// host: runner services
+pub type ExitQuiescenceFn = unsafe extern "C" fn(
+    state: *mut c_void,
+    host: *const RunnerApi,
+);
+
+/// Quiescence report structure
+#[repr(C)]
+pub struct QuiescenceReport {
+    /// Number of timers stopped
+    pub timers_stopped: u32,
+    /// Number of callbacks unregistered
+    pub callbacks_unregistered: u32,
+    /// Number of threads joined
+    pub threads_joined: u32,
+    /// Number of queue items drained
+    pub queue_items_drained: u32,
+    /// Time taken to quiesce (microseconds)
+    pub quiesce_time_us: u64,
+    /// Error message if failed (null-terminated, or null if success)
+    pub error_message: *const c_char,
+}
+
+/// Get detailed quiescence report.
+///
+/// state: current state
+/// host: runner services
+/// out_report: receives quiescence report
+/// Returns: true if quiescent, false if not
+pub type GetQuiescenceReportFn = unsafe extern "C" fn(
+    state: *const c_void,
+    host: *const RunnerApi,
+    out_report: *mut QuiescenceReport,
+) -> bool;
+
+// ============================================================
+// HotApi - THE SINGLE EXPORT TABLE (v2.1)
 // ============================================================
 
 /// The main API table exported by hot modules.
 /// Single export: hot_get_api() returns pointer to this static table.
+///
+/// VERSIONING:
+/// - struct_size allows forward compatibility
+/// - New fields added at end for backward compatibility
+/// - api_version bumped for breaking changes
 #[repr(C)]
 pub struct HotApi {
     /// Size of this struct in bytes (for version detection)
+    /// CRITICAL: Check this before accessing fields added in later versions
     pub struct_size: u32,
     
     /// API version (must be >= HOT_API_MIN_VERSION)
@@ -305,7 +470,55 @@ pub struct HotApi {
     
     /// Write state as JSON (debug/fallback)
     pub save_state_json_write: Option<SaveWriteJsonFn>,
+    
+    // ============================================================
+    // v2.1 ADDITIONS - Check struct_size before accessing
+    // ============================================================
+    
+    /// Semantic hash for reload safety (v2.1+)
+    /// Changes when state semantics change, even if layout matches.
+    /// 0 = not provided (forces migration on any change)
+    pub semantic_hash: u64,
+    
+    /// Check if state can be reused (v2.1+, optional)
+    /// Called to verify both layout AND semantic compatibility.
+    pub can_reuse_state: Option<CanReuseStateFn>,
+    
+    /// Get semantic hash (v2.1+, optional)
+    /// Alternative to static semantic_hash field - can compute at runtime.
+    pub get_semantic_hash: Option<GetSemanticHashFn>,
+    
+    /// Get state type identifier (v2.1+, optional but recommended)
+    /// Returns stable type name for DWARF lookup.
+    pub get_state_type_id: Option<GetStateTypeIdFn>,
+    
+    /// Get precomputed layout hash (v2.1+, optional)
+    /// Should be computed at build time from actual struct layout.
+    pub get_layout_hash: Option<GetLayoutHashFn>,
+    
+    /// Enter quiescence mode (v2.1+, optional but recommended)
+    /// Called before hot reload to stop all activity.
+    pub enter_quiescence: Option<EnterQuiescenceFn>,
+    
+    /// Exit quiescence mode (v2.1+, optional)
+    /// Called if reload is cancelled.
+    pub exit_quiescence: Option<ExitQuiescenceFn>,
+    
+    /// Get quiescence report (v2.1+, optional)
+    /// Returns details about quiescence state.
+    pub get_quiescence_report: Option<GetQuiescenceReportFn>,
+    
+    /// Error message from last failed operation (v2.1+)
+    /// Pointer to static or thread-local null-terminated string.
+    /// NULL if no error or not supported.
+    pub error_message: *const c_char,
+    
+    /// Reserved for future expansion
+    pub _reserved: [usize; 4],
 }
+
+/// Size of HotApi v2.0 (without v2.1 fields)
+pub const HOT_API_V20_SIZE: usize = 136; // Approximate, adjust based on actual
 
 impl HotApi {
     /// Create a new HotApi with default values
@@ -328,6 +541,55 @@ impl HotApi {
             save_state_msgpack_write: None,
             save_state_json_size: None,
             save_state_json_write: None,
+            // v2.1 fields
+            semantic_hash: 0,
+            can_reuse_state: None,
+            get_semantic_hash: None,
+            get_state_type_id: None,
+            get_layout_hash: None,
+            enter_quiescence: None,
+            exit_quiescence: None,
+            get_quiescence_report: None,
+            error_message: core::ptr::null(),
+            _reserved: [0; 4],
+        }
+    }
+    
+    /// Check if this HotApi has v2.1 fields
+    pub fn has_v21_fields(&self) -> bool {
+        (self.struct_size as usize) >= core::mem::size_of::<HotApi>()
+    }
+    
+    /// Get semantic hash (from field or function)
+    pub unsafe fn get_semantic_hash_value(&self) -> u64 {
+        if !self.has_v21_fields() {
+            return 0;
+        }
+        if let Some(func) = self.get_semantic_hash {
+            func()
+        } else {
+            self.semantic_hash
+        }
+    }
+    
+    /// Check if state can be reused
+    pub unsafe fn check_can_reuse_state(
+        &self,
+        old_fingerprint: u64,
+        new_fingerprint: u64,
+        old_semantic_hash: u64,
+    ) -> bool {
+        if !self.has_v21_fields() {
+            // v2.0 modules: only allow reuse if fingerprints match exactly
+            return old_fingerprint == new_fingerprint;
+        }
+        
+        if let Some(func) = self.can_reuse_state {
+            func(old_fingerprint, new_fingerprint, old_semantic_hash)
+        } else {
+            // Default: require both fingerprint and semantic hash to match
+            old_fingerprint == new_fingerprint 
+                && old_semantic_hash == self.get_semantic_hash_value()
         }
     }
     
