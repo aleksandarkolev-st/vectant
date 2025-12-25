@@ -421,11 +421,11 @@ fn extract_build_id_from_elf(obj: &object::File) -> Option<String> {
 
 #[cfg(unix)]
 fn extract_layout_hash_from_dwarf(
-    mmap: &memmap2::Mmap,
+    _mmap: &memmap2::Mmap,
     obj: &object::File,
     state_size: usize,
 ) -> Option<u64> {
-    use gimli::{RunTimeEndian, EndianSlice};
+    use gimli::{EndianSlice, Reader, RunTimeEndian};
     use object::{Object, ObjectSection};
     
     // Find DWARF sections
@@ -506,7 +506,7 @@ fn extract_layout_hash_from_dwarf(
 #[cfg(unix)]
 fn try_extract_struct_layout<R: gimli::Reader>(
     dwarf: &gimli::Dwarf<R>,
-    unit: &gimli::Unit<R>,
+    _unit: &gimli::Unit<R>,
     entry: &gimli::DebuggingInformationEntry<R>,
     target_size: usize,
 ) -> Option<u64> {
@@ -533,7 +533,10 @@ fn try_extract_struct_layout<R: gimli::Reader>(
         .and_then(|v| {
             if let gimli::AttributeValue::DebugStrRef(offset) = v {
                 dwarf.debug_str.get_str(offset).ok()
-                    .and_then(|s| s.to_string_lossy().ok().map(|cow| cow.into_owned()))
+                    .and_then(|s| {
+                        s.to_slice().ok()
+                            .map(|bytes| String::from_utf8_lossy(bytes.as_ref()).into_owned())
+                    })
             } else {
                 None
             }

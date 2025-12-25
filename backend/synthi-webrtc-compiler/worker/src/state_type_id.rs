@@ -573,7 +573,7 @@ pub fn lookup_type_layout_in_dwarf(
     path: &Path,
     type_name: &str,
 ) -> Option<TypeLayoutInfo> {
-    use gimli::{RunTimeEndian, EndianSlice};
+    use gimli::{EndianSlice, Reader, RunTimeEndian};
     use object::{Object, ObjectSection};
     use std::fs::File;
     
@@ -633,7 +633,10 @@ pub fn lookup_type_layout_in_dwarf(
                     .and_then(|v| {
                         if let gimli::AttributeValue::DebugStrRef(offset) = v {
                             dwarf.debug_str.get_str(offset).ok()
-                                .and_then(|s| s.to_string_lossy().ok().map(|cow| cow.into_owned()))
+                                .and_then(|s| {
+                                    s.to_slice().ok()
+                                        .map(|bytes| String::from_utf8_lossy(bytes.as_ref()).into_owned())
+                                })
                         } else {
                             None
                         }

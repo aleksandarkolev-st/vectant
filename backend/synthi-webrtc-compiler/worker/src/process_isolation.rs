@@ -753,7 +753,7 @@ impl ProcessSupervisor {
             }
             RestartDecision::WaitThenRestart { delay, module_path, reason } => {
                 self.logger.log(&LogEntry::new(LogLevel::Info, "supervisor",
-                    format!("Restart decision: wait {:?} - {}", delay, reason)));
+                    format!("Restart decision: wait {:?} then restart {:?} - {}", delay, module_path, reason)));
                 std::thread::sleep(delay);
             }
             RestartDecision::FallbackToKnownGood { module_path, reason } => {
