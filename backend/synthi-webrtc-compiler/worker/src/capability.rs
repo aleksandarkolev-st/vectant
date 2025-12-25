@@ -588,6 +588,30 @@ pub fn validate_hot_api(lib: &Library) -> HotApiValidation {
     result
 }
 
+/// Check if a library supports Host KV by looking for relevant exports
+fn check_host_kv_support(lib: &Library) -> bool {
+    type LoadHostFn = unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_void) -> *mut std::ffi::c_void;
+    type SchemaLenFn = unsafe extern "C" fn() -> u32;
+    type SchemasFn = unsafe extern "C" fn() -> *const std::ffi::c_void;
+    
+    unsafe {
+        // Check for any of the on_load_host variants
+        let has_on_load_host = lib.get::<Symbol<LoadHostFn>>(b"core_on_load_host").is_ok()
+            || lib.get::<Symbol<LoadHostFn>>(b"gui_on_load_host").is_ok()
+            || lib.get::<Symbol<LoadHostFn>>(b"on_load_host").is_ok();
+        
+        // Check for schema exports
+        let has_core_schemas = lib.get::<Symbol<SchemaLenFn>>(b"core_host_kv_schemas_len").is_ok()
+            && lib.get::<Symbol<SchemasFn>>(b"core_host_kv_schemas").is_ok();
+        let has_gui_schemas = lib.get::<Symbol<SchemaLenFn>>(b"gui_host_kv_schemas_len").is_ok()
+            && lib.get::<Symbol<SchemasFn>>(b"gui_host_kv_schemas").is_ok();
+        let has_legacy_schemas = lib.get::<Symbol<SchemaLenFn>>(b"host_kv_schemas_len").is_ok()
+            && lib.get::<Symbol<SchemasFn>>(b"host_kv_schemas").is_ok();
+        
+        has_on_load_host || has_core_schemas || has_gui_schemas || has_legacy_schemas
+    }
+}
+
 /// Detect capabilities including new-style HotApi
 pub fn detect_capabilities_v2(lib_path: &Path) -> Result<(CapabilityReport, Option<HotApiValidation>), String> {
     let lib = unsafe {
@@ -612,6 +636,10 @@ pub fn detect_capabilities_v2(lib_path: &Path) -> Result<(CapabilityReport, Opti
         // New-style module - create capability report from HotApiInfo
         let api_info = hot_validation.api.as_ref().unwrap();
         
+        // Check for host_kv capability by looking for the on_load_host export
+        let has_host_kv = check_host_kv_support(&lib);
+        let uses_host_context = has_host_kv; // If it has host_kv, it uses host context
+        
         let report = CapabilityReport {
             module_type: ModuleType::Main, // New API doesn't distinguish core/gui
             hmr_capability: if api_info.has_msgpack_serialization {
@@ -623,8 +651,8 @@ pub fn detect_capabilities_v2(lib_path: &Path) -> Result<(CapabilityReport, Opti
             exports: ExportSet::default(), // Legacy exports not used
             warnings: hot_validation.warnings.clone(),
             can_shim: false,
-            has_host_kv: false, // TODO: Add to HotApi
-            uses_host_context: false,
+            has_host_kv,
+            uses_host_context,
         };
         
         return Ok((report, Some(hot_validation)));

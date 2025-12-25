@@ -26,6 +26,9 @@
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
+// Import libloading for dynamic symbol extraction
+// Note: memmap2 and object are used conditionally in unix builds
+
 // ============================================================
 // TYPE EQUIVALENCE RESULT
 // ============================================================
@@ -136,21 +139,133 @@ impl StateTypeId {
 
 /// Extract StateTypeId from a loaded module
 pub fn extract_state_type_id(module_path: &Path) -> Result<StateTypeId, String> {
-    // Try to read exported symbol first
-    // Fallback to ELF note section
-    // This is a stub - real implementation would dlopen and read symbol
-    
     let module_name = module_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown");
     
-    // For now, create a default - real impl would read from module
+    // Try method 1: Load library and read exported symbol
+    if let Some(type_id) = try_extract_from_symbol(module_path, module_name) {
+        return Ok(type_id);
+    }
+    
+    // Try method 2: Read from ELF note section
+    #[cfg(unix)]
+    if let Some(type_id) = try_extract_from_elf_note(module_path, module_name) {
+        return Ok(type_id);
+    }
+    
+    // Fallback: Generate a default (warns that type equivalence can't be trusted)
+    eprintln!("[StateTypeId] WARNING: Could not extract real type ID from {}", module_path.display());
+    eprintln!("[StateTypeId] Using fallback - type equivalence checks may not be reliable");
     Ok(StateTypeId {
         type_name: format!("{}::State", module_name),
         module: module_name.to_string(),
         type_version: 1,
     })
+}
+
+/// Try to extract type ID from exported symbol using libloading
+fn try_extract_from_symbol(module_path: &Path, module_name: &str) -> Option<StateTypeId> {
+    // Safety: We're loading the library just to read symbols, then immediately unloading
+    let lib = unsafe {
+        libloading::Library::new(module_path).ok()?
+    };
+    
+    // Try to get hot_state_type_id function
+    let type_id_fn: Result<libloading::Symbol<StateTypeIdFn>, _> = unsafe {
+        lib.get(STATE_TYPE_ID_SYMBOL)
+    };
+    
+    if let Ok(func) = type_id_fn {
+        let type_name_ptr = unsafe { func() };
+        if !type_name_ptr.is_null() {
+            let type_name = unsafe {
+                std::ffi::CStr::from_ptr(type_name_ptr)
+                    .to_str()
+                    .ok()?
+                    .to_string()
+            };
+            
+            // Try to get layout hash
+            let layout_hash: Option<u64> = unsafe {
+                lib.get::<StateLayoutHashFn>(STATE_LAYOUT_HASH_SYMBOL)
+                    .ok()
+                    .map(|f| f())
+            };
+            
+            // Try to get semantic hash for version
+            let semantic_hash: Option<u64> = unsafe {
+                lib.get::<StateSemanticHashFn>(STATE_SEMANTIC_HASH_SYMBOL)
+                    .ok()
+                    .map(|f| f())
+            };
+            
+            // Use semantic hash as version if available, otherwise default to 1
+            let type_version = semantic_hash
+                .map(|h| (h & 0xFFFFFFFF) as u32)
+                .unwrap_or(1);
+            
+            eprintln!("[StateTypeId] Extracted from symbol: type={}, version={}, layout_hash={:?}",
+                      type_name, type_version, layout_hash);
+            
+            return Some(StateTypeId {
+                type_name,
+                module: module_name.to_string(),
+                type_version,
+            });
+        }
+    }
+    
+    None
+}
+
+/// Try to extract type ID from ELF note section
+#[cfg(unix)]
+fn try_extract_from_elf_note(module_path: &Path, module_name: &str) -> Option<StateTypeId> {
+    use std::fs::File;
+    use object::{Object, ObjectSection};
+    
+    let file = File::open(module_path).ok()?;
+    let mmap = unsafe { memmap2::Mmap::map(&file).ok()? };
+    let obj = object::File::parse(&*mmap).ok()?;
+    
+    // Look for .note.synthi.state section
+    for section in obj.sections() {
+        if let Ok(name) = section.name() {
+            if name == ".note.synthi.state" {
+                if let Ok(data) = section.data() {
+                    // Parse note format
+                    if data.len() >= 16 {
+                        let namesz = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+                        let descsz = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+                        let note_type = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
+                        
+                        if note_type == NOTE_TYPE_STATE_INFO {
+                            let name_offset = 12;
+                            let aligned_namesz = (namesz + 3) & !3;
+                            let desc_offset = name_offset + aligned_namesz;
+                            
+                            if data.len() >= desc_offset + descsz {
+                                let payload_data = &data[desc_offset..desc_offset + descsz];
+                                if let Some((payload, type_name)) = StateNotePayload::from_bytes(payload_data) {
+                                    eprintln!("[StateTypeId] Extracted from ELF note: type={}, version={}",
+                                              type_name, payload.note_version);
+                                    return Some(StateTypeId {
+                                        type_name,
+                                        module: module_name.to_string(),
+                                        type_version: payload.note_version,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    None
 }
 
 // ============================================================

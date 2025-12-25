@@ -1172,12 +1172,157 @@ static inline void write_map_header(uint8_t* out, size_t cap, size_t* pos, size_
     }}
 }}
 
-// Simple field decoder (placeholder - real impl would parse MsgPack)
+// MsgPack field decoder - parses fixmap/map16 to find field by name
 static inline int32_t decode_field_or_default(const uint8_t* data, size_t len, const char* name, int32_t def) {{
-    // TODO: Implement actual MsgPack map lookup
-    // For now, return default
-    (void)data; (void)len; (void)name;
-    return def;
+    if (!data || len == 0 || !name) return def;
+    
+    size_t pos = 0;
+    size_t name_len = 0;
+    while (name[name_len]) name_len++;
+    
+    // Parse map header
+    uint32_t map_count = 0;
+    if (pos >= len) return def;
+    
+    uint8_t header = data[pos++];
+    if ((header & 0xf0) == 0x80) {{
+        // fixmap: 1000xxxx where xxxx is count (0-15)
+        map_count = header & 0x0f;
+    }} else if (header == 0xde) {{
+        // map16: 0xde followed by 2 bytes count
+        if (pos + 2 > len) return def;
+        map_count = ((uint32_t)data[pos] << 8) | data[pos + 1];
+        pos += 2;
+    }} else if (header == 0xdf) {{
+        // map32: 0xdf followed by 4 bytes count
+        if (pos + 4 > len) return def;
+        map_count = ((uint32_t)data[pos] << 24) | ((uint32_t)data[pos+1] << 16) |
+                    ((uint32_t)data[pos+2] << 8) | data[pos+3];
+        pos += 4;
+    }} else {{
+        return def;  // Not a map
+    }}
+    
+    // Iterate through map entries
+    for (uint32_t i = 0; i < map_count && pos < len; i++) {{
+        // Parse key (expecting string)
+        size_t key_len = 0;
+        const uint8_t* key_data = NULL;
+        
+        uint8_t key_header = data[pos++];
+        if ((key_header & 0xe0) == 0xa0) {{
+            // fixstr: 101xxxxx where xxxxx is length (0-31)
+            key_len = key_header & 0x1f;
+        }} else if (key_header == 0xd9) {{
+            // str8
+            if (pos >= len) return def;
+            key_len = data[pos++];
+        }} else if (key_header == 0xda) {{
+            // str16
+            if (pos + 2 > len) return def;
+            key_len = ((size_t)data[pos] << 8) | data[pos + 1];
+            pos += 2;
+        }} else {{
+            // Skip this entry - key is not a string
+            continue;
+        }}
+        
+        if (pos + key_len > len) return def;
+        key_data = &data[pos];
+        pos += key_len;
+        
+        // Check if this is our field
+        int match = (key_len == name_len);
+        if (match) {{
+            for (size_t j = 0; j < name_len; j++) {{
+                if (key_data[j] != (uint8_t)name[j]) {{
+                    match = 0;
+                    break;
+                }}
+            }}
+        }}
+        
+        // Parse value
+        if (pos >= len) return def;
+        uint8_t val_header = data[pos++];
+        
+        if (match) {{
+            // Decode value as int32
+            if (val_header <= 0x7f) {{
+                // positive fixint
+                return (int32_t)val_header;
+            }} else if (val_header >= 0xe0) {{
+                // negative fixint
+                return (int32_t)(int8_t)val_header;
+            }} else if (val_header == 0xd0) {{
+                // int8
+                if (pos >= len) return def;
+                return (int32_t)(int8_t)data[pos];
+            }} else if (val_header == 0xd1) {{
+                // int16
+                if (pos + 2 > len) return def;
+                int16_t v = (int16_t)(((uint16_t)data[pos] << 8) | data[pos + 1]);
+                return (int32_t)v;
+            }} else if (val_header == 0xd2) {{
+                // int32
+                if (pos + 4 > len) return def;
+                return (int32_t)(((uint32_t)data[pos] << 24) | ((uint32_t)data[pos+1] << 16) |
+                                 ((uint32_t)data[pos+2] << 8) | data[pos+3]);
+            }} else if (val_header == 0xcc) {{
+                // uint8
+                if (pos >= len) return def;
+                return (int32_t)data[pos];
+            }} else if (val_header == 0xcd) {{
+                // uint16
+                if (pos + 2 > len) return def;
+                return (int32_t)(((uint16_t)data[pos] << 8) | data[pos + 1]);
+            }} else if (val_header == 0xce) {{
+                // uint32 - truncate to int32
+                if (pos + 4 > len) return def;
+                uint32_t v = ((uint32_t)data[pos] << 24) | ((uint32_t)data[pos+1] << 16) |
+                             ((uint32_t)data[pos+2] << 8) | data[pos+3];
+                return (int32_t)v;
+            }}
+            return def;  // Unsupported type
+        }}
+        
+        // Skip value if not matching
+        // We need to skip based on type
+        if (val_header <= 0x7f || val_header >= 0xe0) {{
+            // fixint - already consumed
+        }} else if ((val_header & 0xe0) == 0xa0) {{
+            // fixstr
+            pos += (val_header & 0x1f);
+        }} else if ((val_header & 0xf0) == 0x90) {{
+            // fixarray - skip elements (simplified: assumes flat values)
+            pos += (val_header & 0x0f);
+        }} else if ((val_header & 0xf0) == 0x80) {{
+            // fixmap - skip entries (simplified)
+            pos += (val_header & 0x0f) * 2;
+        }} else if (val_header == 0xc0 || val_header == 0xc2 || val_header == 0xc3) {{
+            // nil, false, true - no additional bytes
+        }} else if (val_header == 0xcc || val_header == 0xd0) {{
+            pos += 1;  // uint8/int8
+        }} else if (val_header == 0xcd || val_header == 0xd1) {{
+            pos += 2;  // uint16/int16
+        }} else if (val_header == 0xce || val_header == 0xd2 || val_header == 0xca) {{
+            pos += 4;  // uint32/int32/float32
+        }} else if (val_header == 0xcf || val_header == 0xd3 || val_header == 0xcb) {{
+            pos += 8;  // uint64/int64/float64
+        }} else if (val_header == 0xd9) {{
+            if (pos >= len) return def;
+            pos += 1 + data[pos];  // str8
+        }} else if (val_header == 0xda) {{
+            if (pos + 2 > len) return def;
+            size_t slen = ((size_t)data[pos] << 8) | data[pos + 1];
+            pos += 2 + slen;  // str16
+        }} else {{
+            // Unknown type - can't safely skip
+            return def;
+        }}
+    }}
+    
+    return def;  // Field not found
 }}
 
 // ============================================================

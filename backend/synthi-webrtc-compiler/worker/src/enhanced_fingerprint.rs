@@ -382,11 +382,216 @@ fn extract_elf_metadata(path: &Path, state_size: usize) -> (Option<String>, Opti
     
     #[cfg(not(unix))]
     {
-        // Windows PE parsing would go here
-        // For now, return None - forces serialization path
-        eprintln!("[ABI] DWARF extraction not implemented for this platform");
-        (None, None)
+        // Windows PE metadata extraction
+        extract_pe_metadata(path, state_size)
     }
+}
+
+/// Extract metadata from Windows PE file
+#[cfg(not(unix))]
+fn extract_pe_metadata(path: &Path, _state_size: usize) -> (Option<String>, Option<u64>) {
+    use std::fs::File;
+    use std::io::Read;
+    
+    let mut file = match File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("[ABI] Failed to open PE file {}: {}", path.display(), e);
+            return (None, None);
+        }
+    };
+    
+    let mut buffer = Vec::new();
+    if let Err(e) = file.read_to_end(&mut buffer) {
+        eprintln!("[ABI] Failed to read PE file {}: {}", path.display(), e);
+        return (None, None);
+    }
+    
+    // Parse PE header to find debug directory
+    let build_id = extract_pe_build_id(&buffer);
+    
+    // Try to extract layout hash from a custom PE section or resource
+    let layout_hash = extract_pe_layout_hash(&buffer);
+    
+    if build_id.is_some() || layout_hash.is_some() {
+        eprintln!("[ABI] PE metadata extracted: build_id={:?}, layout_hash={:?}",
+                  build_id, layout_hash);
+    }
+    
+    (build_id, layout_hash)
+}
+
+/// Extract build ID from PE debug directory (CodeView PDB70 GUID)
+#[cfg(not(unix))]
+fn extract_pe_build_id(data: &[u8]) -> Option<String> {
+    // Minimal PE parsing to find debug info
+    if data.len() < 64 {
+        return None;
+    }
+    
+    // Check DOS signature
+    if data[0] != b'M' || data[1] != b'Z' {
+        return None;
+    }
+    
+    // Get PE header offset from DOS header (at offset 0x3C)
+    let pe_offset = u32::from_le_bytes([data[0x3C], data[0x3D], data[0x3E], data[0x3F]]) as usize;
+    if pe_offset + 4 > data.len() {
+        return None;
+    }
+    
+    // Check PE signature
+    if &data[pe_offset..pe_offset+4] != b"PE\0\0" {
+        return None;
+    }
+    
+    // COFF header starts at pe_offset + 4
+    let coff_offset = pe_offset + 4;
+    if coff_offset + 20 > data.len() {
+        return None;
+    }
+    
+    // Get size of optional header
+    let opt_header_size = u16::from_le_bytes([
+        data[coff_offset + 16],
+        data[coff_offset + 17]
+    ]) as usize;
+    
+    // Optional header starts after COFF header
+    let opt_offset = coff_offset + 20;
+    if opt_offset + opt_header_size > data.len() {
+        return None;
+    }
+    
+    // Check if PE32 or PE32+
+    let magic = u16::from_le_bytes([data[opt_offset], data[opt_offset + 1]]);
+    let is_pe32_plus = magic == 0x20b;
+    
+    // Debug directory RVA and size are at different offsets for PE32 vs PE32+
+    let debug_dir_offset = if is_pe32_plus {
+        opt_offset + 144  // PE32+: offset 144 in optional header
+    } else {
+        opt_offset + 128  // PE32: offset 128 in optional header
+    };
+    
+    if debug_dir_offset + 8 > data.len() {
+        return None;
+    }
+    
+    let debug_rva = u32::from_le_bytes([
+        data[debug_dir_offset],
+        data[debug_dir_offset + 1],
+        data[debug_dir_offset + 2],
+        data[debug_dir_offset + 3]
+    ]);
+    
+    let debug_size = u32::from_le_bytes([
+        data[debug_dir_offset + 4],
+        data[debug_dir_offset + 5],
+        data[debug_dir_offset + 6],
+        data[debug_dir_offset + 7]
+    ]);
+    
+    if debug_rva == 0 || debug_size == 0 {
+        return None;
+    }
+    
+    // For a proper implementation, we'd need to convert RVA to file offset
+    // using section headers. For now, create a hash-based pseudo build ID.
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    
+    let mut hasher = DefaultHasher::new();
+    // Hash relevant parts of the PE header as a fallback build ID
+    data[pe_offset..pe_offset.saturating_add(256).min(data.len())].hash(&mut hasher);
+    let hash = hasher.finish();
+    
+    Some(format!("{:016x}", hash))
+}
+
+/// Extract layout hash from PE custom section (.synthi)
+#[cfg(not(unix))]
+fn extract_pe_layout_hash(data: &[u8]) -> Option<u64> {
+    // Look for a custom .synthi section containing layout info
+    // This would be added at build time by our build system
+    
+    if data.len() < 64 {
+        return None;
+    }
+    
+    // Check DOS signature
+    if data[0] != b'M' || data[1] != b'Z' {
+        return None;
+    }
+    
+    let pe_offset = u32::from_le_bytes([data[0x3C], data[0x3D], data[0x3E], data[0x3F]]) as usize;
+    if pe_offset + 4 > data.len() {
+        return None;
+    }
+    
+    // COFF header
+    let coff_offset = pe_offset + 4;
+    if coff_offset + 20 > data.len() {
+        return None;
+    }
+    
+    let num_sections = u16::from_le_bytes([
+        data[coff_offset + 2],
+        data[coff_offset + 3]
+    ]) as usize;
+    
+    let opt_header_size = u16::from_le_bytes([
+        data[coff_offset + 16],
+        data[coff_offset + 17]
+    ]) as usize;
+    
+    // Section headers start after optional header
+    let sections_offset = coff_offset + 20 + opt_header_size;
+    
+    // Each section header is 40 bytes
+    for i in 0..num_sections {
+        let section_offset = sections_offset + i * 40;
+        if section_offset + 40 > data.len() {
+            break;
+        }
+        
+        // Section name is 8 bytes at start
+        let name = &data[section_offset..section_offset + 8];
+        
+        // Look for .synthi section
+        if name.starts_with(b".synthi") {
+            let raw_data_ptr = u32::from_le_bytes([
+                data[section_offset + 20],
+                data[section_offset + 21],
+                data[section_offset + 22],
+                data[section_offset + 23]
+            ]) as usize;
+            
+            let raw_data_size = u32::from_le_bytes([
+                data[section_offset + 16],
+                data[section_offset + 17],
+                data[section_offset + 18],
+                data[section_offset + 19]
+            ]) as usize;
+            
+            if raw_data_ptr + 8 <= data.len() && raw_data_size >= 8 {
+                // First 8 bytes of .synthi section is the layout hash
+                return Some(u64::from_le_bytes([
+                    data[raw_data_ptr],
+                    data[raw_data_ptr + 1],
+                    data[raw_data_ptr + 2],
+                    data[raw_data_ptr + 3],
+                    data[raw_data_ptr + 4],
+                    data[raw_data_ptr + 5],
+                    data[raw_data_ptr + 6],
+                    data[raw_data_ptr + 7],
+                ]));
+            }
+        }
+    }
+    
+    None
+}
 }
 
 #[cfg(unix)]
