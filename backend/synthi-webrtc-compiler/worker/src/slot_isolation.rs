@@ -28,7 +28,7 @@
 // This module supports both models with explicit configuration.
 // ============================================================
 
-#![allow(dead_code)]
+// #![allow(dead_code)] - REMOVED: This module is now wired up in main.rs
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

@@ -16,7 +16,7 @@
 // 5. Timeout on all reads (no infinite blocking)
 // ============================================================
 
-#![allow(dead_code)]
+// #![allow(dead_code)] - REMOVED: This module is now wired up in main.rs
 
 use std::io::{Read, Write, BufReader};
 use std::time::{Duration, Instant};
