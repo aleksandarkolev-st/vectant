@@ -40,17 +40,16 @@ use std::time::{Duration, Instant};
 // v2.1 integrations
 use crate::hardened_ipc::{
     write_frame_with_checksum, read_frame_validated, IpcConfig,
-    HARDENED_FRAME_HEADER_SIZE, validate_msgpack_limits, IpcError,
+    validate_msgpack_limits, IpcError,
 };
 use crate::restart_control::{
     RestartController, RestartDecision, BackoffConfig, KnownGoodStore, SlotRestartStats,
 };
 use crate::observability::{
     ReloadId, LogLevel, LogEntry, StructuredLogger, LogFormat,
-    CrashReason, CrashEvent as ObsCrashEvent,
 };
 use crate::slot_isolation::{
-    IsolationModel, IsolationManager, SlotConfig, ModuleType, WorkerLifecycleState,
+    IsolationModel, IsolationManager, SlotConfig,
 };
 
 /// Execution mode for hot modules
@@ -178,6 +177,13 @@ pub enum IpcMessage {
         timeout_ms: u32,  // Hard timeout
     },
     SendEvent {
+        kind: u32,
+        a: u32,
+        b: u32,
+        c: u32,
+    },
+    /// Forward input event to worker (alias for SendEvent)
+    InputEvent {
         kind: u32,
         a: u32,
         b: u32,
@@ -519,6 +525,7 @@ impl ProcessSupervisor {
         // Set read timeout on the underlying file descriptor
         #[cfg(unix)]
         {
+            #[allow(unused_imports)]
             use std::os::unix::io::AsRawFd;
             // Would set SO_RCVTIMEO here in production
         }
@@ -597,6 +604,7 @@ impl ProcessSupervisor {
         // First, request a snapshot of current state
         self.send_message(&IpcMessage::RequestSnapshot {
             slot: slot.to_string(),
+            timeout_ms: SNAPSHOT_TIMEOUT.as_millis() as u32,
         })?;
         
         // Wait for snapshot WITH HARD TIMEOUT
@@ -682,6 +690,7 @@ impl ProcessSupervisor {
             // SIGKILL - no graceful shutdown, just die
             #[cfg(unix)]
             {
+                #[allow(unused_imports)]
                 use std::os::unix::process::CommandExt;
                 unsafe {
                     libc::kill(worker.pid as i32, libc::SIGKILL);
@@ -802,34 +811,40 @@ impl ProcessSupervisor {
     pub fn shutdown(&mut self, timeout: Duration) -> Result<(), String> {
         self.shutdown_requested.store(true, Ordering::SeqCst);
         
-        if let Some(ref mut worker) = self.worker {
-            // Request graceful shutdown with timeout
-            let _ = self.send_message(&IpcMessage::Shutdown {
-                timeout_ms: timeout.as_millis() as u32,
-            });
-            
-            // Wait for shutdown acknowledgment with HARD DEADLINE
-            let deadline = Instant::now() + timeout;
-            let mut got_ack = false;
-            
-            while Instant::now() < deadline {
-                if let Ok(Some(IpcMessage::ShuttingDown)) = 
-                    self.recv_message(Duration::from_millis(100)) 
-                {
-                    got_ack = true;
-                    break;
-                }
+        // Check if we have a worker
+        if self.worker.is_none() {
+            return Ok(());
+        }
+        
+        // Request graceful shutdown with timeout
+        let _ = self.send_message(&IpcMessage::Shutdown {
+            timeout_ms: timeout.as_millis() as u32,
+        });
+        
+        // Wait for shutdown acknowledgment with HARD DEADLINE
+        let deadline = Instant::now() + timeout;
+        let mut got_ack = false;
+        
+        while Instant::now() < deadline {
+            if let Ok(Some(IpcMessage::ShuttingDown)) = 
+                self.recv_message(Duration::from_millis(100)) 
+            {
+                got_ack = true;
+                break;
             }
-            
-            if !got_ack {
-                eprintln!("[Supervisor] Worker did not acknowledge shutdown in {}ms, forcing kill",
-                    timeout.as_millis());
-            }
-            
-            // Wait a brief moment for clean exit
-            let final_wait = Duration::from_millis(500);
-            std::thread::sleep(final_wait.min(deadline.saturating_duration_since(Instant::now())));
-            
+        }
+        
+        if !got_ack {
+            eprintln!("[Supervisor] Worker did not acknowledge shutdown in {}ms, forcing kill",
+                timeout.as_millis());
+        }
+        
+        // Wait a brief moment for clean exit
+        let final_wait = Duration::from_millis(500);
+        std::thread::sleep(final_wait.min(deadline.saturating_duration_since(Instant::now())));
+        
+        // Now take ownership of worker for final cleanup
+        if let Some(mut worker) = self.worker.take() {
             // Check if still running
             match worker.child.try_wait() {
                 Ok(Some(_)) => {
@@ -857,7 +872,6 @@ impl ProcessSupervisor {
             }
         }
         
-        self.worker = None;
         Ok(())
     }
     
@@ -1023,6 +1037,7 @@ impl ProcessSupervisor {
                 let name = parts[1];
                 self.send_message(&IpcMessage::RequestSnapshot {
                     slot: name.to_string(),
+                    timeout_ms: 5000, // 5 second default timeout
                 })?;
             }
             "input" => {

@@ -121,11 +121,11 @@ const SDL_TEXTUREACCESS_STREAMING: c_int = 1;
 
 // Import new HotApi types for v2 ABI
 use plugin_contract::{
-    HotApi, HotGetApiFn, HOT_GET_API_SYMBOL, RunnerApi, Event,
-    HOT_API_VERSION, HOT_API_MIN_VERSION, MAX_STATE_ALIGNMENT, RUNNER_API_VERSION,
+    HotApi, HotGetApiFn, RunnerApi,
+    MAX_STATE_ALIGNMENT, RUNNER_API_VERSION,
     LOG_INFO, LOG_WARN, LOG_ERROR,
 };
-use capability::{validate_hot_api, HotApiValidation, HotApiInfo};
+use capability::{validate_hot_api, HotApiInfo};
 
 // Legacy state container - used for backward compatibility with "main" module
 // Now actively used in the main loop for app_state tracking
@@ -245,7 +245,7 @@ unsafe extern "C" fn runner_log(level: u32, msg: *const u8, len: usize) {
 
 /// Get monotonic time in nanoseconds
 unsafe extern "C" fn runner_get_time_ns() -> u64 {
-    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+    use std::time::Instant;
     static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     START.get_or_init(Instant::now).elapsed().as_nanos() as u64
 }

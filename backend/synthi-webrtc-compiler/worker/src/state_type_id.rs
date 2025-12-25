@@ -23,7 +23,6 @@
 
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
@@ -624,17 +623,18 @@ pub fn lookup_type_layout_in_dwarf(
     let mut iter = dwarf.units();
     while let Ok(Some(header)) = iter.next() {
         let unit = dwarf.unit(header).ok()?;
-        let abbrevs = dwarf.abbreviations(&unit).ok()?;
         
-        let mut entries = unit.entries(&abbrevs);
+        // Note: abbreviations are already loaded in the unit, no need to fetch separately
+        let mut entries = unit.entries();
         while let Ok(Some((_, entry))) = entries.next_dfs() {
             if entry.tag() == gimli::DW_TAG_structure_type {
                 // Get the name of this struct
-                let name = entry.attr_value(gimli::DW_AT_name).ok().flatten()
+                let name: Option<String> = entry.attr_value(gimli::DW_AT_name).ok().flatten()
                     .and_then(|v| {
                         if let gimli::AttributeValue::DebugStrRef(offset) = v {
                             dwarf.debug_str.get_str(offset).ok()
-                                .map(|s| s.to_string_lossy().to_string())
+                                .and_then(|s| s.to_string_lossy().ok())
+                                .map(|cow| cow.into_owned())
                         } else {
                             None
                         }

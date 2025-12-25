@@ -36,10 +36,10 @@ use crate::reload_manager::{
 };
 use crate::observability::{
     ReloadId, LogLevel, LogEntry, StructuredLogger, LogFormat,
-    ReloadMetricsTracker, MetricsAggregator, CrashReason, CrashEvent,
+    ReloadMetricsTracker, MetricsAggregator,
 };
-use crate::quiescence::{QuiescenceManager, QuiescenceConfig, SubsystemId};
-use crate::reload_protocol::{ReloadState, ReloadOperation, ReloadConfig};
+use crate::quiescence::{QuiescenceManager, QuiescenceConfig};
+use crate::reload_protocol::{ReloadOperation, ReloadConfig};
 use crate::state_manager::{MigrationResult, MigrationSchema, SchemaVersion, StateManager};
 use crate::state_diff::{migrate_state_with_config, DiffConfig};
 use crate::supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};

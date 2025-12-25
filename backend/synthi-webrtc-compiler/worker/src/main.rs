@@ -33,16 +33,16 @@ mod enhanced_fingerprint;
 mod strict_contract;
 
 // HMR v2.1 hardening modules (requirements #1-10)
-mod reload_protocol;       // #1: Deterministic reload state machine
-mod state_type_id;         // #2: Explicit DWARF type identification (not size-based)
+pub mod reload_protocol;       // #1: Deterministic reload state machine
+pub mod state_type_id;         // #2: Explicit DWARF type identification (not size-based)
                            // #3: Semantic hash for reload safety (in state_type_id)
-mod hardened_ipc;          // #4: IPC hardening (size limits, CRC32, decode limits)
+pub mod hardened_ipc;          // #4: IPC hardening (size limits, CRC32, decode limits)
                            // #5: ABI ownership rules (documented in plugin_contract.rs)
-mod quiescence;            // #6: Per-subsystem quiescence rules
-mod slot_isolation;        // #7: Worker isolation model options
-mod restart_control;       // #8: Backoff, fallback, circuit breaker
+pub mod quiescence;            // #6: Per-subsystem quiescence rules
+pub mod slot_isolation;        // #7: Worker isolation model options
+pub mod restart_control;       // #8: Backoff, fallback, circuit breaker
 mod security;              // #9: Honest security documentation
-mod observability;         // #10: Structured logging, metrics, crash classification
+pub mod observability;         // #10: Structured logging, metrics, crash classification
 
 // Re-export orchestrator for external use
 pub use hmr_orchestrator::{
@@ -52,10 +52,9 @@ pub use hmr_orchestrator::{
 
 // Import v2.1 hardening modules for active use
 use observability::{StructuredLogger, LogFormat, LogLevel, LogEntry, MetricsAggregator, ReloadMetricsTracker, ReloadId};
-use slot_isolation::{IsolationModel, IsolationManager, SlotConfig};
+use slot_isolation::{IsolationModel, IsolationManager};
 use restart_control::{RestartController, BackoffConfig, KnownGoodStore};
 use hardened_ipc::IpcConfig;
-use state_type_id::StateTypeId;
 use quiescence::QuiescenceConfig;
 
 use builder::{RebuildScope, ModuleHashes, hash_content, hash_shared_header_semantic, WidgetDetector, WidgetCompiler};

@@ -18,8 +18,8 @@
 
 // #![allow(dead_code)] - REMOVED: This module is now wired up in main.rs
 
-use std::io::{Read, Write, BufReader};
-use std::time::{Duration, Instant};
+use std::io::{Read, Write};
+use std::time::Duration;
 
 use crate::reload_protocol::{crc32_checksum, MsgPackDecodeLimits};
 

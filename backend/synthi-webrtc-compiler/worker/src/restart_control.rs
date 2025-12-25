@@ -282,58 +282,70 @@ impl RestartController {
         new_module_path: &PathBuf,
         error: &str,
     ) -> RestartDecision {
-        let state = self.get_state(slot_id);
+        // Copy config values to avoid borrow conflicts
+        let circuit_breaker_timeout = self.config.circuit_breaker_timeout;
+        let circuit_breaker_threshold = self.config.circuit_breaker_threshold;
+        let fallback_threshold = self.config.fallback_threshold;
+        
         let now = Instant::now();
         
+        // Get state and update failure counts
+        let state = self.get_state(slot_id);
         state.failure_count += 1;
         state.total_failures += 1;
         state.last_failure = Some(now);
         
+        let failure_count = state.failure_count;
+        let circuit_state = state.circuit_state;
+        
         eprintln!(
             "[RestartControl] Slot '{}' failure #{}: {}",
-            slot_id, state.failure_count, error
+            slot_id, failure_count, error
         );
         
         // Check circuit breaker
-        match state.circuit_state {
+        match circuit_state {
             CircuitBreakerState::Open { opened_at } => {
                 let elapsed = now.duration_since(opened_at);
-                if elapsed >= self.config.circuit_breaker_timeout {
+                if elapsed >= circuit_breaker_timeout {
                     // Try half-open
+                    let state = self.get_state(slot_id);
                     state.circuit_state = CircuitBreakerState::HalfOpen;
                     eprintln!("[RestartControl] Circuit breaker half-open for '{}'", slot_id);
                 } else {
-                    let retry_after = self.config.circuit_breaker_timeout - elapsed;
+                    let retry_after = circuit_breaker_timeout - elapsed;
                     return RestartDecision::CircuitOpen {
                         retry_after,
                         reason: format!(
                             "Circuit breaker open after {} failures. Retry in {:?}",
-                            state.failure_count, retry_after
+                            failure_count, retry_after
                         ),
                     };
                 }
             }
             CircuitBreakerState::HalfOpen => {
                 // Failed during half-open, go back to open
+                let state = self.get_state(slot_id);
                 state.circuit_state = CircuitBreakerState::Open { opened_at: now };
                 return RestartDecision::CircuitOpen {
-                    retry_after: self.config.circuit_breaker_timeout,
+                    retry_after: circuit_breaker_timeout,
                     reason: "Failed during circuit breaker test".to_string(),
                 };
             }
             CircuitBreakerState::Closed => {
                 // Check if we should open circuit breaker
-                if state.failure_count >= self.config.circuit_breaker_threshold {
+                if failure_count >= circuit_breaker_threshold {
+                    let state = self.get_state(slot_id);
                     state.circuit_state = CircuitBreakerState::Open { opened_at: now };
                     eprintln!(
                         "[RestartControl] Circuit breaker OPEN for '{}' after {} failures",
-                        slot_id, state.failure_count
+                        slot_id, failure_count
                     );
                     return RestartDecision::CircuitOpen {
-                        retry_after: self.config.circuit_breaker_timeout,
+                        retry_after: circuit_breaker_timeout,
                         reason: format!(
                             "Circuit breaker opened after {} consecutive failures",
-                            state.failure_count
+                            failure_count
                         ),
                     };
                 }
@@ -341,20 +353,23 @@ impl RestartController {
         }
         
         // Check if we should fallback
-        if state.failure_count >= self.config.fallback_threshold {
+        if failure_count >= fallback_threshold {
             if let Some(known_good) = self.known_good.get(slot_id) {
                 if known_good.path.exists() && known_good.path != *new_module_path {
+                    let fallback_path = known_good.path.clone();
+                    let marked_at = known_good.marked_at;
+                    let state = self.get_state(slot_id);
                     state.in_fallback = true;
                     eprintln!(
                         "[RestartControl] Falling back to known good for '{}': {:?}",
-                        slot_id, known_good.path
+                        slot_id, fallback_path
                     );
                     return RestartDecision::FallbackToKnownGood {
-                        module_path: known_good.path.clone(),
+                        module_path: fallback_path,
                         reason: format!(
                             "Auto-fallback after {} failures. Using build from {}",
-                            state.failure_count,
-                            format_timestamp(known_good.marked_at)
+                            failure_count,
+                            format_timestamp(marked_at)
                         ),
                     };
                 }
@@ -362,8 +377,9 @@ impl RestartController {
         }
         
         // Calculate backoff
-        let base_backoff = self.calculate_backoff(state.failure_count);
+        let base_backoff = self.calculate_backoff(failure_count);
         let jittered_backoff = self.apply_jitter(base_backoff);
+        let state = self.get_state(slot_id);
         state.current_backoff = jittered_backoff;
         
         RestartDecision::WaitThenRestart {
@@ -371,37 +387,45 @@ impl RestartController {
             module_path: new_module_path.clone(),
             reason: format!(
                 "Backoff after failure #{}: waiting {:?}",
-                state.failure_count, jittered_backoff
+                failure_count, jittered_backoff
             ),
         }
     }
     
     /// Record a successful start
     pub fn record_success(&mut self, slot_id: &str, module_path: &PathBuf) {
-        let state = self.get_state(slot_id);
+        // Copy config values to avoid borrow conflicts
+        let success_reset_duration = self.config.success_reset_duration;
+        let initial_backoff = self.config.initial_backoff;
+        
         let now = Instant::now();
         
+        // Get initial state values
+        let state = self.get_state(slot_id);
+        let last_success = state.last_success;
+        let circuit_state = state.circuit_state;
+        
         // Check if this counts as "stable" (ran for success_reset_duration)
-        let should_mark_good = if let Some(last_success) = state.last_success {
-            now.duration_since(last_success) >= self.config.success_reset_duration
+        let should_mark_good = if let Some(last_success_time) = last_success {
+            now.duration_since(last_success_time) >= success_reset_duration
         } else {
             true
         };
         
-        // Reset failure count
+        // Reset failure count and update state
         state.failure_count = 0;
         state.last_success = Some(now);
-        state.current_backoff = self.config.initial_backoff;
+        state.current_backoff = initial_backoff;
         state.in_fallback = false;
         state.total_restarts += 1;
         
         // Close circuit breaker
-        if state.circuit_state != CircuitBreakerState::Closed {
+        if circuit_state != CircuitBreakerState::Closed {
             eprintln!("[RestartControl] Circuit breaker CLOSED for '{}'", slot_id);
             state.circuit_state = CircuitBreakerState::Closed;
         }
         
-        // Mark as known good if stable
+        // Mark as known good if stable (drop the mutable borrow first)
         if should_mark_good {
             // Note: In real implementation, get these from the actual module
             self.known_good.mark_good(
@@ -410,7 +434,7 @@ impl RestartController {
                 0, // content_hash
                 0, // abi_version
                 0, // state_version
-                self.config.success_reset_duration.as_secs(),
+                success_reset_duration.as_secs(),
             );
             eprintln!(
                 "[RestartControl] Marked '{}' as known good: {:?}",

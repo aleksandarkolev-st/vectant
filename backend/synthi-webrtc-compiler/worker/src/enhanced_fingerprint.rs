@@ -170,7 +170,7 @@ impl CompatibilityResult {
 }
 
 /// Compiler identification
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CompilerInfo {
     /// Compiler name (rustc, gcc, clang, msvc)
     pub name: String,
@@ -344,8 +344,7 @@ pub fn extract_fingerprint_from_module(
 fn extract_elf_metadata(path: &Path, state_size: usize) -> (Option<String>, Option<u64>) {
     #[cfg(unix)]
     {
-        use object::{Object, ObjectSection};
-        use std::io::Read;
+        use object::Object;
         
         // Memory map the file for efficient parsing
         let file = match File::open(path) {
@@ -428,7 +427,6 @@ fn extract_layout_hash_from_dwarf(
 ) -> Option<u64> {
     use gimli::{RunTimeEndian, EndianSlice};
     use object::{Object, ObjectSection};
-    use std::collections::hash_map::DefaultHasher;
     
     // Find DWARF sections
     let endian = if obj.is_little_endian() {
@@ -482,12 +480,8 @@ fn extract_layout_hash_from_dwarf(
             Err(_) => continue,
         };
         
-        let abbrevs = match dwarf.abbreviations(&unit) {
-            Ok(a) => a,
-            Err(_) => continue,
-        };
-        
-        let mut entries = unit.entries(&abbrevs);
+        // Note: abbreviations are already loaded in the unit, no need to fetch separately
+        let mut entries = unit.entries();
         while let Ok(Some((_, entry))) = entries.next_dfs() {
             // Look for structure types
             if entry.tag() == gimli::DW_TAG_structure_type {
@@ -535,10 +529,12 @@ fn try_extract_struct_layout<R: gimli::Reader>(
     }
     
     // Get struct name (optional)
-    let name = entry.attr_value(gimli::DW_AT_name).ok().flatten()
+    let name: Option<String> = entry.attr_value(gimli::DW_AT_name).ok().flatten()
         .and_then(|v| {
             if let gimli::AttributeValue::DebugStrRef(offset) = v {
-                dwarf.debug_str.get_str(offset).ok().map(|s| s.to_string_lossy().to_string())
+                dwarf.debug_str.get_str(offset).ok()
+                    .and_then(|s| s.to_string_lossy().ok())
+                    .map(|cow| cow.into_owned())
             } else {
                 None
             }
