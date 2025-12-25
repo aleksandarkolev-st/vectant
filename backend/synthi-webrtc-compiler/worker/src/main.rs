@@ -2504,7 +2504,7 @@ async fn perform_structural_ai_update(
     });
 
     let backend_url = std::env::var("AI_BACKEND_URL")
-        .unwrap_or_else(|_| "http://172.19.224.1:8000".to_string());
+        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
     let url = format!("{}/refactor/delta", backend_url);
 
     eprintln!("[AI Split] Calling fast delta endpoint: {}", url);
@@ -2612,7 +2612,7 @@ async fn perform_delta_deletion(
     });
 
     let backend_url = std::env::var("AI_BACKEND_URL")
-        .unwrap_or_else(|_| "http://172.19.224.1:8000".to_string());
+        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
     let url = format!("{}/refactor/delta", backend_url);
 
     eprintln!("[AI Split] Calling delta deletion endpoint: {}", url);
@@ -2676,7 +2676,7 @@ async fn perform_incremental_ai_update(
     });
 
     let backend_url = std::env::var("AI_BACKEND_URL")
-        .unwrap_or_else(|_| "http://172.19.224.1:8000".to_string());
+        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
     let url = format!("{}/refactor/structural", backend_url);
 
     eprintln!("[AI Split] Calling fast incremental endpoint: {}", url);
@@ -3029,7 +3029,7 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
     });
 
     let backend_url = std::env::var("AI_BACKEND_URL")
-        .unwrap_or_else(|_| "http://172.19.224.1:8000".to_string());
+        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
     let url = format!("{}/refactor/split", backend_url);
 
     let res = client.post(&url)
