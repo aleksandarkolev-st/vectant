@@ -127,6 +127,110 @@ export class AnalyzerGatewayClient {
     return this._sendRequest('analyze/ai', payload, options);
   }
 
+  /**
+   * Run proactive analysis (static + semantic + optional AI)
+   * @param {Object} payload - Analysis request
+   * @param {string} payload.code - Code to analyze
+   * @param {string} payload.lang - Language identifier
+   * @param {string} [payload.filePath] - File path for context
+   * @param {string[]} [payload.tiers] - Tiers to run: 'static', 'semantic', 'ai'
+   * @param {boolean} [payload.includeAi] - Include AI analysis tier
+   * @param {number} [payload.maxDiagnostics] - Max diagnostics to return
+   * @param {Array} [payload.relatedFiles] - Related files for context
+   * @param {Object} [options] - Request options
+   * @param {Function} [options.onTierComplete] - Callback when a tier completes
+   * @returns {Promise<Object>} Analysis result with diagnostics
+   */
+  analyzeProactive(payload, options = {}) {
+    return this._sendRequest('analyze/proactive', payload, {
+      ...options,
+      onStream: (data) => {
+        // Handle tier completion events
+        if (data?.tier && typeof options.onTierComplete === 'function') {
+          options.onTierComplete({
+            tier: data.tier,
+            diagnostics: data.diagnostics || [],
+            elapsedMs: data.elapsedMs || 0,
+            fromCache: data.fromCache || false,
+          });
+        }
+        // Also forward to generic stream handler if provided
+        if (typeof options.onStream === 'function') {
+          options.onStream(data);
+        }
+      },
+    });
+  }
+
+  /**
+   * Run quick proactive analysis (static + semantic only, optimized for real-time)
+   * @param {Object} payload - Analysis request
+   * @param {string} payload.code - Code to analyze  
+   * @param {string} payload.lang - Language identifier
+   * @param {string} [payload.filePath] - File path for context
+   * @returns {Promise<Object>} Quick analysis result
+   */
+  analyzeProactiveQuick(payload) {
+    return this._sendRequest('analyze/proactive/quick', payload);
+  }
+
+  /**
+   * Run workspace-level multi-file analysis
+   * @param {Object} payload - Workspace analysis request
+   * @param {string} payload.workspaceId - Unique workspace identifier
+   * @param {Array} [payload.changedFiles] - Files that changed (for incremental)
+   * @param {Array} [payload.allFiles] - All workspace files
+   * @param {string} [payload.focusFile] - Currently focused file path
+   * @param {boolean} [payload.includeAi] - Include AI analysis
+   * @param {number} [payload.maxDiagnosticsPerFile] - Max diagnostics per file
+   * @param {boolean} [payload.incremental] - Use incremental mode
+   * @param {Object} [options] - Request options
+   * @param {Function} [options.onFileComplete] - Callback when a file analysis completes
+   * @param {Function} [options.onSuggestions] - Callback when suggestions are received
+   * @returns {Promise<Object>} Workspace analysis result
+   */
+  analyzeWorkspace(payload, options = {}) {
+    return this._sendRequest('analyze/workspace', payload, {
+      ...options,
+      onStream: (data) => {
+        // Handle per-file completion events
+        if (data?.filePath && typeof options.onFileComplete === 'function') {
+          options.onFileComplete({
+            filePath: data.filePath,
+            diagnostics: data.diagnostics || [],
+            fromCache: data.fromCache || false,
+          });
+        }
+        // Handle suggestions
+        if (data?.suggestions && typeof options.onSuggestions === 'function') {
+          options.onSuggestions(data.suggestions);
+        }
+        // Forward to generic stream handler
+        if (typeof options.onStream === 'function') {
+          options.onStream(data);
+        }
+      },
+    });
+  }
+
+  /**
+   * Run incremental workspace analysis (only changed files + dependents)
+   * @param {Object} payload - Analysis request
+   * @param {string} payload.workspaceId - Unique workspace identifier
+   * @param {Array} payload.changedFiles - Files that changed
+   * @param {Array} [payload.allFiles] - All workspace files for context
+   * @param {string} [payload.focusFile] - Currently focused file path
+   * @param {boolean} [payload.includeAi] - Include AI analysis
+   * @param {Object} [options] - Request options
+   * @returns {Promise<Object>} Incremental analysis result
+   */
+  analyzeWorkspaceIncremental(payload, options = {}) {
+    return this._sendRequest('analyze/workspace/incremental', {
+      ...payload,
+      incremental: true,
+    }, options);
+  }
+
   _sendRequest(action, data, options = {}) {
     if (this.isDisposed) {
       return Promise.reject(new SynthiException('Gateway client has been disposed', 'The analyzer gateway client has been disposed and can no longer process requests.'));

@@ -194,12 +194,66 @@ def _response_format_instructions(mode: str, focus_path: Optional[str]) -> str:
         return (
             "Respond ONLY with a valid JSON object containing the split modules. Do not include any conversational text outside the JSON."
         )
+    if mode == "fix":
+        return (
+            "Respond ONLY with the fixed full file content inside a fenced code block. "
+            "Do not include explanations unless the fix is ambiguous."
+        )
+    if mode == "migration":
+        return (
+            "Respond ONLY with the C++ migration function inside a fenced code block."
+        )
     return (
         base
         + " When sharing code, still follow the `FILE: <path>` + fenced block pattern so the user knows which file "
           "to update."
     )
 
+
+FIX_COMPILE_ERROR_PROMPT = """
+You are an expert C/C++ debugger and compiler assistant.
+
+# TASK
+The user has provided Source Code and a Compiler Error Message.
+Your goal is to analyze the error and FIX the source code to make it compile successfully.
+
+# INPUT
+1. Source Code (C/C++)
+2. Compiler Error (stderr output)
+
+# RULES
+1. Fix ONLY the error reported. Do not refactor unrelated code.
+2. If a header is missing, add the include.
+3. If a symbol is undefined, check for typos or missing declarations.
+4. If a type mismatch occurs, add a cast or fix the type if obvious.
+5. Maintain the existing coding style.
+
+# OUTPUT
+Return the COMPLETE corrected file content.
+"""
+
+STATE_MIGRATION_PROMPT = """
+You are an expert C++ state management assistant.
+
+# TASK
+You are given two versions of a C++ struct: `OldState` and `NewState`.
+Generate a C++ function that migrates data from the old memory layout to the new one, preserving as much data as possible.
+
+# INPUT
+1. Old Struct Definition
+2. New Struct Definition
+
+# REQUIREMENTS
+1. Function signature: `extern "C" void migrate_state(void* old_ptr, void* new_ptr)`
+2. Cast pointers to `OldState*` and `NewState*`.
+3. Copy fields with matching names.
+4. Handle type conversions (int -> float, double -> float) automatically.
+5. Initialize NEW fields (that didn't exist before) to safe defaults (0, false, etc.).
+6. Do NOT copy fields that have been removed.
+
+# OUTPUT
+Return ONLY the C++ code for the migration function and the struct definitions if needed for context.
+"""
 
 SPLIT_GUI_PROMPT = """
 You are a "Splitter+Adapter" bot.

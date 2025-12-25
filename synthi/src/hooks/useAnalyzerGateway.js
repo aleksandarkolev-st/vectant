@@ -78,7 +78,7 @@ export function useAnalyzerGateway({
     } finally {
       setIsAnalyzing(false);
     }
-  }, []);
+  }, [SUPPORTED_ANALYZER_LANGS]);
 
   const askAi = useCallback(async ({ code, lang, prompt, mode, files, focusPath, onProgress, model, apiKey } = {}) => {
     if (!clientRef.current) {
@@ -115,11 +115,74 @@ export function useAnalyzerGateway({
         } catch (e) {}
       };
       const response = await clientRef.current.analyzeAi(payload, options);
-      console.log(`AI Response is ${JSON.stringify(response)}`)
+      // console.log(`AI Response is ${JSON.stringify(response)}`)
       const result = response?.data ?? response;
       setLastResult(result);
       return result;
     } catch (error) {
+      setLastError(error);
+      throw error;
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }, []);
+
+  /**
+   * Run proactive analysis (static + semantic + optional AI)
+   * Returns diagnostics for potential errors before compilation
+   * @param {Object} options - Analysis options
+   * @param {string} options.code - The code to analyze
+   * @param {string} options.lang - The programming language
+   * @param {string} [options.filePath] - The file path
+   * @param {boolean} [options.includeAi] - Whether to include AI analysis
+   * @param {Array} [options.relatedFiles] - Related files for cross-file analysis (includes, imports)
+   * @param {Function} [options.onTierComplete] - Callback when a tier completes
+   */
+  const analyzeProactive = useCallback(async ({ code, lang, filePath, includeAi = false, relatedFiles, onTierComplete } = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet', 'The analyzer gateway client has not been initialized.');
+    }
+    if (typeof code !== 'string') {
+      throw new SynthiException('`code` must be a string', 'The provided code for proactive analysis is invalid.');
+    }
+    if (!lang) {
+      throw new SynthiException('`lang` is required for proactive analysis', 'The programming language must be specified.');
+    }
+    
+    setIsAnalyzing(true);
+    setLastError(null);
+    
+    try {
+      const payload = {
+        code,
+        lang: lang.toLowerCase(),
+        filePath: filePath || 'untitled',
+        includeAi,
+        tiers: includeAi ? ['static', 'semantic', 'ai'] : ['static', 'semantic'],
+      };
+      
+      // Add related files for cross-file analysis (e.g., resolving includes/imports)
+      if (Array.isArray(relatedFiles) && relatedFiles.length > 0) {
+        payload.relatedFiles = relatedFiles.map(f => ({
+          path: f.path || f.name,
+          content: f.content,
+          language: f.language || lang.toLowerCase(),
+        }));
+      }
+      
+      const options = {};
+      if (typeof onTierComplete === 'function') {
+        options.onTierComplete = onTierComplete;
+      }
+      
+      const response = await clientRef.current.analyzeProactive(payload, options);
+      console.log('[analyzeProactive] Raw response:', response);
+      const result = response?.data ?? response;
+      console.log('[analyzeProactive] Parsed result:', result);
+      setLastResult(result);
+      return result;
+    } catch (error) {
+      console.error('[analyzeProactive] Error:', error);
       setLastError(error);
       throw error;
     } finally {
@@ -147,8 +210,12 @@ export function useAnalyzerGateway({
     lastError,
     analyzeCode,
     askAi,
+    analyzeProactive,
     resetResult,
     resetError,
     clientReady: Boolean(clientRef.current),
+    // Expose client for advanced use cases (e.g., workspace analysis)
+    client: clientRef.current,
+    clientRef,
   };
 }
