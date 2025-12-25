@@ -633,7 +633,7 @@ pub fn lookup_type_layout_in_dwarf(
                     .and_then(|v| {
                         if let gimli::AttributeValue::DebugStrRef(offset) = v {
                             dwarf.debug_str.get_str(offset).ok()
-                                .map(|s| s.to_string_lossy().into_owned())
+                                .and_then(|s| s.to_string_lossy().ok().map(|cow| cow.into_owned()))
                         } else {
                             None
                         }
