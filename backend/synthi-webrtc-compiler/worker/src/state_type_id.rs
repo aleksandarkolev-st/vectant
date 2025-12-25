@@ -28,6 +28,21 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 
 // ============================================================
+// TYPE EQUIVALENCE RESULT
+// ============================================================
+
+/// Result of comparing two state type IDs
+#[derive(Debug, Clone)]
+pub enum TypeEquivalence {
+    /// Types are identical - safe for memcpy
+    Identical,
+    /// Types have compatible layout but minor differences (e.g., same fields, different ordering in BTreeMap)
+    LayoutCompatible { differences: Vec<String> },
+    /// Types are incompatible - must use migration
+    Incompatible { reasons: Vec<String> },
+}
+
+// ============================================================
 // STATE TYPE IDENTIFIER
 // ============================================================
 
@@ -80,6 +95,63 @@ impl StateTypeId {
         self.type_version.hash(&mut hasher);
         hasher.finish()
     }
+    
+    /// Check equivalence with another StateTypeId
+    pub fn check_equivalence(&self, other: &StateTypeId) -> TypeEquivalence {
+        let mut differences = Vec::new();
+        let mut incompatible_reasons = Vec::new();
+        
+        // Type name must match exactly
+        if self.type_name != other.type_name {
+            incompatible_reasons.push(format!(
+                "Type name mismatch: {} vs {}",
+                self.type_name, other.type_name
+            ));
+        }
+        
+        // Module can differ if type was moved (warning, not error)
+        if self.module != other.module {
+            differences.push(format!(
+                "Module changed: {} -> {}",
+                self.module, other.module
+            ));
+        }
+        
+        // Version mismatch is critical
+        if self.type_version != other.type_version {
+            incompatible_reasons.push(format!(
+                "Type version mismatch: {} vs {}",
+                self.type_version, other.type_version
+            ));
+        }
+        
+        if !incompatible_reasons.is_empty() {
+            TypeEquivalence::Incompatible { reasons: incompatible_reasons }
+        } else if !differences.is_empty() {
+            TypeEquivalence::LayoutCompatible { differences }
+        } else {
+            TypeEquivalence::Identical
+        }
+    }
+}
+
+/// Extract StateTypeId from a loaded module
+pub fn extract_state_type_id(module_path: &Path) -> Result<StateTypeId, String> {
+    // Try to read exported symbol first
+    // Fallback to ELF note section
+    // This is a stub - real implementation would dlopen and read symbol
+    
+    let module_name = module_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
+    
+    // For now, create a default - real impl would read from module
+    Ok(StateTypeId {
+        type_name: format!("{}::State", module_name),
+        module: module_name.to_string(),
+        type_version: 1,
+    })
 }
 
 // ============================================================

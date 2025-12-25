@@ -21,6 +21,9 @@ use std::time::{Duration, Instant};
 
 use crate::crash_recovery::{CrashInfo, ProtectionMode};
 use crate::plugin_contract::ModuleSlot;
+use crate::observability::{
+    CrashReason, CrashEvent as ObsCrashEvent, LogLevel, LogEntry, StructuredLogger, LogFormat,
+};
 
 /// Crash event for tracking
 #[derive(Debug, Clone)]

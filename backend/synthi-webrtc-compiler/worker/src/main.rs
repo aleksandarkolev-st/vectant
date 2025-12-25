@@ -362,6 +362,17 @@ fn make_chunks(data: &[u8], msg_id: u32) -> Vec<Vec<u8>> {
 async fn main() -> Result<()> {
     println!("Worker starting...");
     println!("Operating System: {}", std::env::consts::OS);
+    
+    // v2.1: Print security audit at startup (requirement #9)
+    if std::env::var("SYNTHI_SECURITY_AUDIT").map(|v| v == "1").unwrap_or(false) {
+        security::print_security_audit();
+    } else {
+        // Brief security notice
+        let audit = security::audit_security();
+        eprintln!("[Security] Status: {} enforced, {} partial, {} stub (set SYNTHI_SECURITY_AUDIT=1 for details)",
+            audit.enforced_count, audit.partial_count, audit.stub_count);
+    }
+    
     gst::init()?;
     verify_tooling().await?;
     let (ws_stream, _) = connect_async("ws://localhost:9000").await?;

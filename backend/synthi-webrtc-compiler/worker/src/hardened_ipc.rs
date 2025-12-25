@@ -178,6 +178,16 @@ impl From<std::io::Error> for IpcError {
     }
 }
 
+impl From<IpcError> for std::io::Error {
+    fn from(e: IpcError) -> Self {
+        match e {
+            IpcError::ConnectionClosed => std::io::Error::new(std::io::ErrorKind::UnexpectedEof, e),
+            IpcError::ReadTimeout { .. } => std::io::Error::new(std::io::ErrorKind::TimedOut, e),
+            IpcError::WriteTimeout { .. } => std::io::Error::new(std::io::ErrorKind::TimedOut, e),
+            _ => std::io::Error::new(std::io::ErrorKind::Other, e),
+        }
+    }
+}
 // ============================================================
 // FRAME READING (HARDENED)
 // ============================================================
@@ -271,6 +281,17 @@ pub fn write_frame<W: Write>(
     Ok(())
 }
 
+/// Alias for write_frame (same function, clearer name for external use)
+pub fn write_frame_with_checksum<W: Write>(
+    writer: &mut W,
+    payload: &[u8],
+) -> std::io::Result<()> {
+    write_frame(writer, payload).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+}
+
+/// Constant for header size (for external use)
+pub const HARDENED_FRAME_HEADER_SIZE: usize = FRAME_HEADER_SIZE;
+
 // ============================================================
 // MSGPACK DECODING WITH LIMITS
 // ============================================================
@@ -306,7 +327,7 @@ pub fn decode_msgpack_limited<T: serde::de::DeserializeOwned>(
 }
 
 /// Pre-scan MsgPack data to validate limits
-fn validate_msgpack_limits(data: &[u8], limits: &MsgPackDecodeLimits) -> Result<(), IpcError> {
+pub fn validate_msgpack_limits(data: &[u8], limits: &MsgPackDecodeLimits) -> Result<(), IpcError> {
     let mut cursor = 0;
     let mut depth = 0u32;
     

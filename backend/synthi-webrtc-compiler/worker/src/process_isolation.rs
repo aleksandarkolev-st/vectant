@@ -37,6 +37,22 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+// v2.1 integrations
+use crate::hardened_ipc::{
+    write_frame_with_checksum, read_frame_validated, IpcConfig,
+    HARDENED_FRAME_HEADER_SIZE, validate_msgpack_limits, IpcError,
+};
+use crate::restart_control::{
+    RestartController, RestartDecision, BackoffConfig, KnownGoodStore, SlotRestartStats,
+};
+use crate::observability::{
+    ReloadId, LogLevel, LogEntry, StructuredLogger, LogFormat,
+    CrashReason, CrashEvent as ObsCrashEvent,
+};
+use crate::slot_isolation::{
+    IsolationModel, IsolationManager, SlotConfig, ModuleType, WorkerLifecycleState,
+};
+
 /// Execution mode for hot modules
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionMode {
@@ -295,10 +311,21 @@ pub struct ProcessSupervisor {
     state_snapshots: HashMap<String, Vec<u8>>,
     pending_loads: Vec<(String, PathBuf)>,
     shutdown_requested: AtomicBool,
+    // v2.1 integrations
+    restart_controller: RestartController,
+    logger: StructuredLogger,
+    ipc_config: IpcConfig,
+    current_reload_id: Option<ReloadId>,
+    // Slot isolation (v2.1)
+    isolation_model: IsolationModel,
+    isolation_manager: Option<IsolationManager>,
 }
 
 impl ProcessSupervisor {
     pub fn new(config: IsolationConfig) -> Self {
+        let backoff_config = BackoffConfig::default();
+        let known_good_store = KnownGoodStore::new();
+        
         Self {
             config,
             worker: None,
@@ -307,7 +334,56 @@ impl ProcessSupervisor {
             state_snapshots: HashMap::new(),
             pending_loads: Vec::new(),
             shutdown_requested: AtomicBool::new(false),
+            // v2.1 integrations
+            restart_controller: RestartController::new(backoff_config, known_good_store),
+            logger: StructuredLogger::new(LogFormat::Human, LogLevel::Info),
+            ipc_config: IpcConfig::default(),
+            current_reload_id: None,
+            // Slot isolation - default to SingleWorker model
+            isolation_model: IsolationModel::default(),
+            isolation_manager: None,
         }
+    }
+    
+    /// Create with custom restart controller (for persistence)
+    pub fn with_restart_controller(config: IsolationConfig, restart_controller: RestartController) -> Self {
+        Self {
+            config,
+            worker: None,
+            restart_count: 0,
+            last_restart: None,
+            state_snapshots: HashMap::new(),
+            pending_loads: Vec::new(),
+            shutdown_requested: AtomicBool::new(false),
+            restart_controller,
+            logger: StructuredLogger::new(LogFormat::Human, LogLevel::Info),
+            ipc_config: IpcConfig::default(),
+            current_reload_id: None,
+            isolation_model: IsolationModel::default(),
+            isolation_manager: None,
+        }
+    }
+    
+    /// Create with specific isolation model
+    pub fn with_isolation_model(config: IsolationConfig, model: IsolationModel) -> Self {
+        let mut sup = Self::new(config);
+        sup.isolation_model = model;
+        if model != IsolationModel::SingleWorker {
+            sup.isolation_manager = Some(IsolationManager::new(model));
+        }
+        sup
+    }
+    
+    /// Register a slot for isolation management
+    pub fn register_slot(&mut self, slot_config: SlotConfig) {
+        if let Some(ref mut manager) = self.isolation_manager {
+            manager.register_slot(slot_config);
+        }
+    }
+    
+    /// Get the current isolation model
+    pub fn isolation_model(&self) -> IsolationModel {
+        self.isolation_model
     }
     
     /// Start the worker process
@@ -399,9 +475,10 @@ impl ProcessSupervisor {
         Ok(())
     }
     
-    /// Send a message to the worker using binary framing protocol.
+    /// Send a message to the worker using HARDENED binary framing protocol (v2.1).
     /// 
-    /// Wire format: [4-byte big-endian length][msgpack payload]
+    /// Wire format: [4-byte magic][4-byte length][4-byte CRC32][msgpack payload]
+    /// The CRC32 is validated by the receiver before processing.
     pub fn send_message(&mut self, msg: &IpcMessage) -> Result<(), String> {
         let worker = self.worker.as_mut()
             .ok_or("Worker not running")?;
@@ -411,11 +488,12 @@ impl ProcessSupervisor {
             .map_err(|e| format!("Failed to serialize: {}", e))?;
         
         if self.config.debug_ipc {
-            eprintln!("[Supervisor->Worker] {:?} ({} bytes)", msg, payload.len());
+            self.logger.log(&LogEntry::new(LogLevel::Trace, "ipc", 
+                format!("Supervisor->Worker: {:?} ({} bytes)", msg, payload.len())));
         }
         
-        // Write using binary frame protocol
-        write_frame(&mut worker.stdin, &payload)
+        // Write using HARDENED frame protocol with CRC32 (v2.1)
+        write_frame_with_checksum(&mut worker.stdin, &payload)
             .map_err(|e| format!("Failed to write frame: {}", e))?;
         
         worker.stdin.flush()
@@ -424,8 +502,9 @@ impl ProcessSupervisor {
         Ok(())
     }
     
-    /// Receive a message from the worker using binary framing protocol.
+    /// Receive a message from the worker using HARDENED binary framing protocol (v2.1).
     /// 
+    /// SECURITY: Validates CRC32 checksum and frame size BEFORE allocation.
     /// HARD TIMEOUT: If timeout is reached, returns None.
     /// The caller is responsible for deciding whether to kill the worker.
     pub fn recv_message(&mut self, timeout: Duration) -> Result<Option<IpcMessage>, String> {
@@ -444,10 +523,19 @@ impl ProcessSupervisor {
             // Would set SO_RCVTIMEO here in production
         }
         
-        match read_frame(worker.stdout.get_mut()) {
+        // Use HARDENED frame reading with CRC32 validation (v2.1)
+        match read_frame_validated(worker.stdout.get_mut(), &self.ipc_config, None) {
             Ok(payload) => {
                 if self.config.debug_ipc {
-                    eprintln!("[Worker->Supervisor] {} bytes received", payload.len());
+                    self.logger.log(&LogEntry::new(LogLevel::Trace, "ipc",
+                        format!("Worker->Supervisor: {} bytes received", payload.len())));
+                }
+                
+                // Validate MsgPack structure before deserializing (v2.1 hardening)
+                if let Err(e) = validate_msgpack_limits(&payload, &self.ipc_config.decode_limits) {
+                    self.logger.log(&LogEntry::new(LogLevel::Warn, "ipc",
+                        format!("MsgPack validation failed: {}", e)));
+                    return Err(format!("MsgPack validation failed: {}", e));
                 }
                 
                 let msg: IpcMessage = rmp_serde::from_slice(&payload)
@@ -458,19 +546,28 @@ impl ProcessSupervisor {
                 
                 Ok(Some(msg))
             }
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+            Err(IpcError::ConnectionClosed) => {
                 Err("Worker closed connection".to_string())
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock 
-                   || e.kind() == std::io::ErrorKind::TimedOut => {
+            Err(IpcError::ReadTimeout { .. }) => {
                 // Timeout - check if we should return None or error
                 if start.elapsed() >= timeout {
                     Ok(None)  // Timeout, caller decides what to do
                 } else {
-                    Err(format!("Read error: {}", e))
+                    Err("Read timeout".to_string())
                 }
             }
-            Err(e) => Err(format!("Read error: {}", e)),
+            Err(IpcError::ChecksumMismatch { expected, got }) => {
+                self.logger.log(&LogEntry::new(LogLevel::Error, "ipc",
+                    format!("CRC32 checksum mismatch: expected 0x{:08x}, got 0x{:08x}", expected, got)));
+                Err(format!("Frame corruption detected (CRC32 mismatch)"))
+            }
+            Err(IpcError::FrameTooLarge { size, max, .. }) => {
+                self.logger.log(&LogEntry::new(LogLevel::Error, "ipc",
+                    format!("Frame too large: {} > {} bytes", size, max)));
+                Err(format!("Frame too large: {} > {} bytes", size, max))
+            }
+            Err(e) => Err(format!("IPC error: {}", e)),
         }
     }
     
@@ -487,9 +584,10 @@ impl ProcessSupervisor {
         })
     }
     
-    /// Hot reload a module with HARD TIMEOUT enforcement.
+    /// Hot reload a module with HARD TIMEOUT enforcement (v2.1: uses restart controller).
     /// 
     /// If the worker doesn't respond within the timeout, it is KILLED.
+    /// On failure, consults RestartController for backoff/fallback decisions.
     /// This is critical for safety - we cannot leave a worker in an
     /// unknown state holding locks or resources.
     pub fn reload_module(&mut self, slot: &str, path: &Path) -> Result<(), String> {
@@ -618,23 +716,54 @@ impl ProcessSupervisor {
         Ok(true)
     }
     
-    /// Handle worker crash - restart with state restoration
+    /// Handle worker crash - restart with state restoration (v2.1: uses RestartController)
+    /// 
+    /// The RestartController manages:
+    /// - Exponential backoff with jitter
+    /// - Circuit breaker (stops retrying after too many failures)
+    /// - Last-known-good fallback
     pub fn handle_crash(&mut self) -> Result<(), String> {
-        eprintln!("[Supervisor] Worker crashed, attempting restart...");
+        self.logger.log(&LogEntry::new(LogLevel::Warn, "supervisor", "Worker crashed, consulting restart controller"));
         
-        // Save any pending state before restart
-        // (state_snapshots should already have the latest)
+        // Get the module path for restart decision
+        let module_path = self.pending_loads.last()
+            .map(|(_, p)| p.clone())
+            .unwrap_or_else(|| self.config.worker_binary.clone());
         
-        // Check restart limit
-        if self.restart_count >= self.config.max_restarts {
-            return Err("Maximum restart attempts exceeded".to_string());
-        }
+        // Consult restart controller (v2.1)
+        let decision = self.restart_controller.record_failure(
+            "worker",
+            &module_path,
+            "Worker process crashed or timed out"
+        );
         
-        // Apply backoff
-        if let Some(last) = self.last_restart {
-            let backoff = self.config.restart_backoff * (1 << self.restart_count.min(4));
-            if last.elapsed() < backoff {
-                std::thread::sleep(backoff - last.elapsed());
+        match decision {
+            RestartDecision::RestartNow { module_path } => {
+                self.logger.log(&LogEntry::new(LogLevel::Info, "supervisor", 
+                    format!("Restart decision: immediate restart with {:?}", module_path)));
+            }
+            RestartDecision::WaitThenRestart { delay, module_path, reason } => {
+                self.logger.log(&LogEntry::new(LogLevel::Info, "supervisor",
+                    format!("Restart decision: wait {:?} - {}", delay, reason)));
+                std::thread::sleep(delay);
+            }
+            RestartDecision::FallbackToKnownGood { module_path, reason } => {
+                self.logger.log(&LogEntry::new(LogLevel::Warn, "supervisor",
+                    format!("Restart decision: fallback to known good {:?} - {}", module_path, reason)));
+                // Update pending loads to use fallback
+                if let Some((slot, _)) = self.pending_loads.last_mut() {
+                    *self.pending_loads.last_mut().unwrap() = (slot.clone(), module_path);
+                }
+            }
+            RestartDecision::CircuitOpen { retry_after, reason } => {
+                self.logger.log(&LogEntry::new(LogLevel::Error, "supervisor",
+                    format!("Restart decision: CIRCUIT OPEN - {}", reason)));
+                return Err(format!("Circuit breaker open. Retry after {:?}. {}", retry_after, reason));
+            }
+            RestartDecision::ManualIntervention { reason } => {
+                self.logger.log(&LogEntry::new(LogLevel::Error, "supervisor",
+                    format!("Restart decision: MANUAL INTERVENTION REQUIRED - {}", reason)));
+                return Err(format!("Manual intervention required: {}", reason));
             }
         }
         
@@ -649,9 +778,21 @@ impl ProcessSupervisor {
         // Spawn new worker
         self.spawn_worker()?;
         
-        eprintln!("[Supervisor] Worker restarted (attempt {})", self.restart_count);
+        self.logger.log(&LogEntry::new(LogLevel::Info, "supervisor",
+            format!("Worker restarted (attempt {})", self.restart_count)));
         
         Ok(())
+    }
+    
+    /// Record successful operation (resets restart controller state)
+    pub fn record_success(&mut self, slot: &str, module_path: &Path) {
+        self.restart_controller.record_success(slot, &module_path.to_path_buf());
+        self.restart_count = 0; // Reset legacy counter too
+    }
+    
+    /// Get restart statistics for a slot
+    pub fn get_restart_stats(&self, slot: &str) -> Option<SlotRestartStats> {
+        self.restart_controller.get_stats(slot)
     }
     
     /// Graceful shutdown with HARD TIMEOUT.

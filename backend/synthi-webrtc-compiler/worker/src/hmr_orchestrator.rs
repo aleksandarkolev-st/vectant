@@ -34,6 +34,12 @@ use crate::reload_manager::{
     AsyncTaskRegistry, ReloadChanges, ReloadClass, ReloadClassifier, 
     SnapshotManager, ReloadSnapshot,
 };
+use crate::observability::{
+    ReloadId, LogLevel, LogEntry, StructuredLogger, LogFormat,
+    ReloadMetricsTracker, MetricsAggregator, CrashReason, CrashEvent,
+};
+use crate::quiescence::{QuiescenceManager, QuiescenceConfig, SubsystemId};
+use crate::reload_protocol::{ReloadState, ReloadOperation, ReloadConfig};
 use crate::state_manager::{MigrationResult, MigrationSchema, SchemaVersion, StateManager};
 use crate::state_diff::{migrate_state_with_config, DiffConfig};
 use crate::supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
@@ -234,6 +240,16 @@ pub struct HmrOrchestrator {
     strict_abi_validation: bool,
     snapshot_enabled: bool,
     fast_refresh_enabled: bool,
+    
+    // Observability (v2.1)
+    logger: StructuredLogger,
+    metrics_aggregator: MetricsAggregator,
+    
+    // Quiescence management (v2.1)
+    quiescence_manager: Option<QuiescenceManager>,
+    
+    // Current reload operation (v2.1 state machine)
+    current_reload: Option<ReloadOperation>,
 }
 
 /// Orchestrator configuration
@@ -278,6 +294,12 @@ pub struct OrchestratorStats {
     pub snapshots_reverted: u64,
     pub crashes_recovered: u64,
     pub total_preserved_fields: u64,
+    /// Average reload time in microseconds
+    pub avg_reload_time_us: u64,
+    /// Max reload time in microseconds
+    pub max_reload_time_us: u64,
+    /// Current reload ID (for correlation)
+    pub current_reload_id: Option<u64>,
 }
 
 impl HmrOrchestrator {
@@ -312,6 +334,12 @@ impl HmrOrchestrator {
             strict_abi_validation: config.strict_abi,
             snapshot_enabled: true,
             fast_refresh_enabled: true,
+            // Observability (v2.1)
+            logger: StructuredLogger::new(LogFormat::Human, LogLevel::Info),
+            metrics_aggregator: MetricsAggregator::new(),
+            // Quiescence and state machine (v2.1)
+            quiescence_manager: None, // Initialized on first use
+            current_reload: None,
         }
     }
 
@@ -366,7 +394,28 @@ impl HmrOrchestrator {
         new_field_names: &[String],
     ) -> HmrResult {
         let start = Instant::now();
+        
+        // Generate unique reload ID for correlation (v2.1 observability)
+        let reload_id = ReloadId::new();
+        self.stats.current_reload_id = Some(reload_id.as_u64());
         self.stats.total_reloads += 1;
+        
+        // v2.1: Create ReloadOperation for state machine tracking
+        let reload_op = ReloadOperation::new(
+            slot.as_str().to_string(),
+            new_path.display().to_string(),
+            ReloadConfig::default(),
+        );
+        self.current_reload = Some(reload_op);
+        
+        // Start metrics tracking
+        let mut metrics_tracker = ReloadMetricsTracker::start(reload_id, slot.as_str());
+
+        // Log reload start
+        self.logger.log(&LogEntry::new(LogLevel::Info, "hmr", format!("Starting reload for {:?}", slot))
+            .with_reload_id(reload_id)
+            .with_slot_id(slot.as_str())
+            .with_field("path", new_path.display().to_string()));
 
         // 1. Classify the reload
         let reload_class = self.reload_classifier.classify_with_context(
@@ -375,7 +424,8 @@ impl HmrOrchestrator {
             changes.file_path.as_deref(),
         );
 
-        eprintln!("[Orchestrator] Hot reload {:?}: class={:?}", slot, reload_class);
+        self.logger.log(&LogEntry::new(LogLevel::Debug, "hmr", format!("Reload class: {:?}", reload_class))
+            .with_reload_id(reload_id));
 
         // 2. Create pre-reload snapshot (if needed)
         let snapshot_id = if reload_class.requires_snapshot() && self.snapshot_enabled {
@@ -461,6 +511,7 @@ impl HmrOrchestrator {
                         result = result.with_migration(&schema_result);
                         self.stats.binary_migrations += 1;
                         self.stats.total_preserved_fields += schema_result.preserved.len() as u64;
+                        metrics_tracker.record_snapshot(start.elapsed(), _bytes.len());
                     }
                     MigratedState::Json(json_result) => {
                         result = result.with_json_migration(&json_result);
@@ -476,20 +527,45 @@ impl HmrOrchestrator {
                 self.crash_supervisor.exit_context();
                 self.stats.failed_reloads += 1;
 
-                let mut result = HmrResult::failure(slot, e);
+                let mut result = HmrResult::failure(slot, e.clone());
                 result.snapshot_id = snapshot_id;
                 result.duration_ms = start.elapsed().as_millis() as u64;
+                
+                // Log failure with observability
+                self.logger.log(&LogEntry::new(LogLevel::Error, "hmr", format!("Reload failed: {}", e))
+                    .with_reload_id(reload_id)
+                    .with_slot_id(slot.as_str()));
+                
                 result
             }
         };
 
-        // 8. Log status
-        eprintln!("[Orchestrator] HMR complete: success={}, binary={}, preserved={}, duration={}ms",
-            result.success,
-            result.used_binary_serialization,
-            result.preserved_fields.len(),
-            result.duration_ms
-        );
+        // 8. Record metrics and log completion (v2.1 observability)
+        self.metrics_aggregator.record(&metrics_tracker, result.success);
+        
+        // Update timing stats
+        let duration_us = start.elapsed().as_micros() as u64;
+        self.stats.max_reload_time_us = self.stats.max_reload_time_us.max(duration_us);
+        if self.stats.avg_reload_time_us == 0 {
+            self.stats.avg_reload_time_us = duration_us;
+        } else {
+            self.stats.avg_reload_time_us = (self.stats.avg_reload_time_us + duration_us) / 2;
+        }
+        
+        self.logger.log(&LogEntry::new(
+            if result.success { LogLevel::Info } else { LogLevel::Warn }, 
+            "hmr", 
+            format!("Reload complete: success={}, binary={}, preserved={}", 
+                result.success, result.used_binary_serialization, result.preserved_fields.len())
+        )
+            .with_reload_id(reload_id)
+            .with_slot_id(slot.as_str())
+            .with_field("duration_ms", result.duration_ms)
+            .with_field("reload_class", format!("{:?}", reload_class)));
+
+        // Clear the current reload operation (v2.1)
+        self.current_reload = None;
+        self.stats.current_reload_id = None;
 
         result
     }
@@ -1176,6 +1252,33 @@ impl HmrOrchestrator {
     /// Set reload class override for a boundary
     pub fn set_reload_class_override(&mut self, boundary_id: BoundaryId, class: ReloadClass) {
         self.reload_classifier.set_boundary_override(boundary_id, class);
+    }
+    
+    // ============================================================
+    // OBSERVABILITY ACCESSORS (v2.1)
+    // ============================================================
+    
+    /// Get reload metrics
+    pub fn get_reload_metrics(&self) -> &crate::observability::ReloadMetrics {
+        self.metrics_aggregator.get_metrics()
+    }
+    
+    /// Get current reload ID (if a reload is in progress)
+    pub fn current_reload_id(&self) -> Option<u64> {
+        self.stats.current_reload_id
+    }
+    
+    /// Initialize quiescence manager if needed (v2.1)
+    pub fn init_quiescence(&mut self) {
+        if self.quiescence_manager.is_none() {
+            self.quiescence_manager = Some(QuiescenceManager::new(QuiescenceConfig::default()));
+            self.logger.log(&LogEntry::new(LogLevel::Info, "orchestrator", "Quiescence manager initialized"));
+        }
+    }
+    
+    /// Get quiescence manager reference (v2.1)
+    pub fn quiescence_manager(&mut self) -> Option<&mut QuiescenceManager> {
+        self.quiescence_manager.as_mut()
     }
 }
 

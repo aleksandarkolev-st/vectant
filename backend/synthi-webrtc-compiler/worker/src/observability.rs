@@ -21,37 +21,11 @@ use std::time::{Duration, Instant, SystemTime};
 
 // ============================================================
 // RELOAD ID GENERATION
+// Re-export from reload_protocol to avoid duplication
 // ============================================================
 
-static RELOAD_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-/// Unique identifier for a reload operation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ReloadId(pub u64);
-
-impl ReloadId {
-    /// Generate a new unique reload ID
-    pub fn new() -> Self {
-        Self(RELOAD_ID_COUNTER.fetch_add(1, Ordering::SeqCst))
-    }
-    
-    /// Get the raw ID value
-    pub fn as_u64(&self) -> u64 {
-        self.0
-    }
-}
-
-impl Default for ReloadId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Display for ReloadId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "reload-{:08x}", self.0)
-    }
-}
+// v2.1: Use ReloadId from reload_protocol for consistency
+pub use crate::reload_protocol::ReloadId;
 
 // ============================================================
 // STRUCTURED LOGGING

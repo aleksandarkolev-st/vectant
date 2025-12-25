@@ -41,6 +41,11 @@ impl ReloadId {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
         ReloadId(COUNTER.fetch_add(1, Ordering::SeqCst))
     }
+    
+    /// Get the raw ID value
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
 }
 
 impl Default for ReloadId {

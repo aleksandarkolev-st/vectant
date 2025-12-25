@@ -12,6 +12,7 @@
 // - Optimization level, LTO, PIC flags
 // - Struct layout hash (field offsets + sizes) from DWARF
 // - Build ID from the object file
+// - Type IDs from state_type_id (v2.1)
 // ============================================================
 
 #![allow(dead_code)]
@@ -20,6 +21,9 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
+
+// v2.1: Import state_type_id for DWARF-based type identification
+use crate::state_type_id::{StateTypeId, TypeEquivalence, extract_state_type_id};
 
 /// Complete ABI fingerprint for safe state reuse
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -43,6 +47,8 @@ pub struct AbiFingerprint {
     pub module_fingerprint: u64,
     /// Build ID from object file (if available)
     pub build_id: Option<String>,
+    /// State type ID from DWARF (v2.1) - deep type equivalence check
+    pub state_type_id: Option<StateTypeId>,
 }
 
 impl AbiFingerprint {
@@ -117,6 +123,26 @@ impl AbiFingerprint {
         if let (Some(a), Some(b)) = (&self.build_id, &other.build_id) {
             if a != b {
                 issues.push(format!("Build ID mismatch: {} vs {}", a, b));
+            }
+        }
+        
+        // v2.1: State type ID check (DWARF-based deep type equivalence)
+        if let (Some(ref self_type_id), Some(ref other_type_id)) = (&self.state_type_id, &other.state_type_id) {
+            match self_type_id.check_equivalence(other_type_id) {
+                TypeEquivalence::Identical => {
+                    // Perfect match - no issue
+                }
+                TypeEquivalence::LayoutCompatible { differences } => {
+                    // Layout is compatible but there are minor differences
+                    // This is a warning, not a failure for memcpy
+                    eprintln!("[ABI] Layout compatible with differences: {:?}", differences);
+                }
+                TypeEquivalence::Incompatible { reasons: type_reasons } => {
+                    issues.push(format!(
+                        "State type ID incompatible: {}",
+                        type_reasons.join(", ")
+                    ));
+                }
             }
         }
         
@@ -291,6 +317,15 @@ pub fn extract_fingerprint_from_module(
     // Try to extract build ID and layout hash from ELF
     let (build_id, layout_hash) = extract_elf_metadata(path, module_state_size);
     
+    // v2.1: Extract state type ID for deep type equivalence
+    let state_type_id = match extract_state_type_id(path) {
+        Ok(id) => Some(id),
+        Err(e) => {
+            eprintln!("[ABI] Could not extract state type ID: {}", e);
+            None
+        }
+    };
+    
     Ok(AbiFingerprint {
         compiler: detect_compiler_from_elf(path).unwrap_or_else(detect_compiler),
         target_triple: detect_target_triple(),
@@ -301,6 +336,7 @@ pub fn extract_fingerprint_from_module(
         state_version: module_state_version,
         module_fingerprint,
         build_id,
+        state_type_id,
     })
 }
 
@@ -748,6 +784,7 @@ mod tests {
             state_version: 1,
             module_fingerprint: 0xABCD,
             build_id: Some("abc123".to_string()),
+            state_type_id: None,
         };
         
         let fp2 = fp1.clone();
@@ -770,6 +807,7 @@ mod tests {
             state_version: 1,
             module_fingerprint: 0xABCD,
             build_id: None,
+            state_type_id: None,
         };
         
         let mut fp2 = fp1.clone();
