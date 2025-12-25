@@ -38,6 +38,10 @@ mod boundary;
 mod reload_manager;
 mod fast_refresh;
 mod hmr_orchestrator;
+// New safety-critical modules
+mod process_isolation;
+mod enhanced_fingerprint;
+mod strict_contract;
 
 use plugin_contract::{ModuleSlot, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
 use capability::{HmrCapability, detect_capabilities, HmrStatus};
@@ -51,6 +55,7 @@ use loader::{ModuleLoader, LoadResult};
 use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 use state_manager::StateManager;
 use hmr_orchestrator::{HmrOrchestrator, SavedState};
+use enhanced_fingerprint::{AbiFingerprint, extract_fingerprint_from_module};
 
 // SDL2 Definitions
 #[cfg(target_os = "linux")]
@@ -173,6 +178,11 @@ struct HotModuleState {
     build_id: u64,
     /// Whether state has been initialized
     initialized: bool,
+    /// Enhanced ABI fingerprint for safe state reuse
+    /// CRITICAL: Used for robust SameVersion check
+    full_fingerprint: Option<AbiFingerprint>,
+    /// Path to the loaded library (for fingerprint extraction)
+    lib_path: Option<String>,
 }
 
 impl HotModuleState {
@@ -242,11 +252,13 @@ unsafe extern "C" fn runner_get_time_ns() -> u64 {
 
 /// Perform the 3-mode hot reload algorithm for new HotApi modules
 /// 
-/// Mode 1: Same state_version + same abi_fingerprint -> reuse state pointer
+/// Mode 1: Same ABI fingerprint (ROBUST CHECK) -> reuse state pointer
+///         CRITICAL: Now uses full AbiFingerprint including compiler, target, layout hash
 /// Mode 2: Different version -> save via MsgPack, migrate, restore
 /// Mode 3: Cold reload -> init fresh state
 fn hot_reload_v2(
     new_lib: &Library,
+    new_lib_path: Option<&str>,
     old_hot_state: Option<&mut HotModuleState>,
     old_msgpack: Option<&[u8]>,
     old_json: Option<&str>,
@@ -291,16 +303,73 @@ fn hot_reload_v2(
         return Err(format!("state_align_bytes {} exceeds maximum {}", api.state_align_bytes, MAX_STATE_ALIGNMENT));
     }
     
-    // 3. Allocate state memory
+    // 3. Extract FULL ABI fingerprint for robust compatibility check
+    let new_fingerprint = if let Some(path) = new_lib_path {
+        match extract_fingerprint_from_module(
+            std::path::Path::new(path),
+            api.state_version,
+            api.abi_fingerprint,
+            api.state_size_bytes,
+        ) {
+            Ok(fp) => Some(fp),
+            Err(e) => {
+                eprintln!("[HMR] Warning: Could not extract full fingerprint: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    
+    // 4. Allocate state memory
     let (state_memory, state_ptr) = HotModuleState::allocate_state(api)?;
     
-    // 4. Determine reload mode
+    // 5. Determine reload mode using STRICT fingerprint comparison
+    // CRITICAL: NO MEMCPY WITHOUT LAYOUT HASH
+    // If we don't have a layout hash, we CANNOT safely memcpy state between versions.
+    // The only options are: serialized migration or cold reload.
     let (reload_result, needs_init) = if let Some(old) = old_hot_state {
-        // Check if same version + same fingerprint
-        if old.api_info.state_version == api_info.state_version 
+        // First: Check if we can even consider memcpy (same version, same everything)
+        let basic_match = old.api_info.state_version == api_info.state_version 
             && old.api_info.abi_fingerprint == api_info.abi_fingerprint
-            && old.api_info.state_size_bytes == api_info.state_size_bytes {
-            // Mode 1: Same version hot swap - can reuse state memory
+            && old.api_info.state_size_bytes == api_info.state_size_bytes;
+        
+        // ENHANCED CHECK: Use full AbiFingerprint if available
+        let can_memcpy = match (&old.full_fingerprint, &new_fingerprint) {
+            (Some(old_fp), Some(new_fp)) => {
+                // MUST have layout_hash to memcpy
+                if old_fp.layout_hash.is_none() || new_fp.layout_hash.is_none() {
+                    eprintln!("[HMR] Cannot memcpy: layout_hash missing");
+                    eprintln!("[HMR]   Old layout_hash: {:?}", old_fp.layout_hash);
+                    eprintln!("[HMR]   New layout_hash: {:?}", new_fp.layout_hash);
+                    false
+                } else {
+                    // Robust check using full fingerprint
+                    let result = old_fp.is_compatible_for_memcpy(new_fp);
+                    if !result.is_compatible() {
+                        if let enhanced_fingerprint::CompatibilityResult::Incompatible { reasons } = &result {
+                            eprintln!("[HMR] Fingerprint mismatch - memcpy BLOCKED:");
+                            for reason in reasons {
+                                eprintln!("[HMR]   - {}", reason);
+                            }
+                        }
+                    }
+                    result.is_compatible()
+                }
+            }
+            _ => {
+                // NO FALLBACK TO BASIC CHECK
+                // This is the critical change - without full fingerprints, NO memcpy.
+                eprintln!("[HMR] BLOCKED: Cannot memcpy without full fingerprint");
+                eprintln!("[HMR]   Old fingerprint present: {}", old.full_fingerprint.is_some());
+                eprintln!("[HMR]   New fingerprint present: {}", new_fingerprint.is_some());
+                eprintln!("[HMR]   Will use serialized migration or cold reload");
+                false
+            }
+        };
+        
+        if can_memcpy && basic_match {
+            // Mode 1: Same version hot swap - ONLY if fingerprints fully match
             // Copy old state to new location
             if !old.state_ptr.is_null() && !state_ptr.is_null() {
                 unsafe {
@@ -314,7 +383,7 @@ fn hot_reload_v2(
             (HotReloadResult::SameVersion, false)
         } else if api.migrate.is_some() && (old_msgpack.is_some() || old_json.is_some()) {
             // Mode 2: Migration via serialized snapshot
-            // CRITICAL: Use serialized data, NOT old struct pointer casting
+            // This is the SAFE path - uses structured data, not raw memory
             let migrate_fn = api.migrate.unwrap();
             
             let msgpack_ptr = old_msgpack.map(|b| b.as_ptr()).unwrap_or(std::ptr::null());
@@ -337,20 +406,24 @@ fn hot_reload_v2(
             };
             
             if success {
+                eprintln!("[HMR] Migration via serialization succeeded");
                 (HotReloadResult::Migrated { preserved_fields: 0, new_fields: 0 }, false)
             } else {
                 // Migration failed, fall through to cold reload
+                eprintln!("[HMR] Migration failed, falling back to cold reload");
                 (HotReloadResult::ColdReload { reason: "Migration failed".to_string() }, true)
             }
         } else {
-            // Mode 3: Cold reload
-            (HotReloadResult::ColdReload { 
-                reason: if api.migrate.is_none() { 
-                    "No migrate function".to_string() 
-                } else { 
-                    "No serialized state".to_string() 
-                }
-            }, true)
+            // Mode 3: Cold reload - SAFE fallback
+            let reason = if !can_memcpy && basic_match {
+                "Cannot verify memory layout compatibility (no layout_hash)"
+            } else if api.migrate.is_none() { 
+                "No migrate function" 
+            } else { 
+                "No serialized state available"
+            };
+            eprintln!("[HMR] Cold reload required: {}", reason);
+            (HotReloadResult::ColdReload { reason: reason.to_string() }, true)
         }
     } else {
         // First load - need init
@@ -382,6 +455,9 @@ fn hot_reload_v2(
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0),
         initialized: true,
+        // Store the full fingerprint for future comparisons
+        full_fingerprint: new_fingerprint,
+        lib_path: new_lib_path.map(|s| s.to_string()),
     };
     
     Ok((hot_state, reload_result))
@@ -467,6 +543,62 @@ fn create_shm_segment(size: usize) -> Option<(i32, *mut u8)> {
 }
 
 fn main() {
+    // ============================================================
+    // EXECUTION MODE CHECK - PROCESS ISOLATION IS DEFAULT
+    // ============================================================
+    // This runner operates in one of two modes:
+    // 1. PROCESS-ISOLATED (default): Run as a supervised child process
+    //    - Safe: dlclose UB is contained in disposable process
+    //    - Automatic restart on crash
+    //    - State preserved via IPC snapshots
+    // 
+    // 2. UNSAFE IN-PROCESS (legacy, deprecated): Direct library loading
+    //    - DANGEROUS: dlclose UB can corrupt parent process
+    //    - Only enabled with SYNTHI_UNSAFE_INPROCESS=1
+    //    - Exists only for debugging/profiling where isolation overhead is unacceptable
+    // ============================================================
+    let execution_mode = process_isolation::ExecutionMode::from_env();
+    
+    match execution_mode {
+        process_isolation::ExecutionMode::ProcessIsolated => {
+            // This is the SAFE path - we should be running under a supervisor.
+            // If we're the top-level process, we need to spawn a supervisor.
+            if std::env::var("SYNTHI_SUPERVISED").is_err() {
+                // We are the top-level process - start the supervisor
+                eprintln!("[Runner] Starting in PROCESS-ISOLATED mode (safe default)");
+                eprintln!("[Runner] Spawning supervisor to manage worker process...");
+                
+                // Mark that we're now supervising
+                std::env::set_var("SYNTHI_SUPERVISED", "1");
+                
+                let config = process_isolation::IsolationConfig::default();
+                let mut supervisor = process_isolation::ProcessSupervisor::new(config);
+                
+                if let Err(e) = supervisor.start() {
+                    eprintln!("[Runner] FATAL: Failed to start supervisor: {}", e);
+                    std::process::exit(1);
+                }
+                
+                // Run supervisor event loop (not implemented yet - fall through for now)
+                // TODO: Implement full supervisor event loop
+                eprintln!("[Runner] [WARN] Supervisor event loop not fully implemented");
+                eprintln!("[Runner] [WARN] Falling through to in-process execution for now");
+            } else {
+                eprintln!("[Runner] Running as supervised worker process");
+            }
+        }
+        #[allow(deprecated)]
+        process_isolation::ExecutionMode::UnsafeInProcess => {
+            // UNSAFE PATH - User explicitly opted in
+            eprintln!("[Runner] ============================================================");
+            eprintln!("[Runner] WARNING: Running in UNSAFE IN-PROCESS mode");
+            eprintln!("[Runner] This mode is DEPRECATED and may cause process corruption");
+            eprintln!("[Runner] dlclose UB can corrupt memory, leak resources, crash randomly");
+            eprintln!("[Runner] Use SYNTHI_UNSAFE_INPROCESS=1 only for debugging");
+            eprintln!("[Runner] ============================================================");
+        }
+    }
+    
     // Install crash handlers for runtime error recovery
     if let Err(e) = install_crash_handlers() {
         eprintln!("[Runner] Warning: Failed to install crash handlers: {}", e);

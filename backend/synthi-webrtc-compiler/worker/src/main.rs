@@ -27,6 +27,10 @@ mod supervisor;
 mod state_manager;
 mod reload_manager;
 mod hmr_orchestrator;
+// New safety-critical modules
+mod process_isolation;
+mod enhanced_fingerprint;
+mod strict_contract;
 
 // Re-export orchestrator for external use
 pub use hmr_orchestrator::{
@@ -2369,6 +2373,69 @@ fn try_local_deletion_patch(
     Some(result)
 }
 
+/// Detect GUI-related modifications (position, color, size changes)
+/// Returns modified lines as X11 code for translation to SDL2
+fn detect_gui_modifications(old_source: &str, new_source: &str) -> Option<String> {
+    let old_lines: Vec<&str> = old_source.lines().collect();
+    let new_lines: Vec<&str> = new_source.lines().collect();
+    
+    // GUI-related keywords that indicate drawable/interactive elements
+    let gui_keywords = [
+        "XFillRectangle", "XDrawRectangle", "XDrawString", "XDrawLine",
+        "XSetForeground", "XSetBackground", "XDrawArc", "XFillArc",
+        "SDL_Rect", "SDL_RenderFillRect", "SDL_RenderDrawRect",
+        "btn_x", "btn_y", "btn_w", "btn_h", "button",
+        "color", "Color", "width", "height", "position",
+    ];
+    
+    let mut modifications = Vec::new();
+    
+    // Find modified lines (lines that have similar structure but different values)
+    for new_line in &new_lines {
+        let trimmed_new = new_line.trim();
+        if trimmed_new.is_empty() || trimmed_new.starts_with("//") {
+            continue;
+        }
+        
+        // Check if this line contains GUI keywords
+        let is_gui_line = gui_keywords.iter().any(|kw| trimmed_new.contains(kw));
+        if !is_gui_line {
+            continue;
+        }
+        
+        // Check if a SIMILAR line exists in old (same function call, different args)
+        let has_similar_in_old = old_lines.iter().any(|old_line| {
+            let trimmed_old = old_line.trim();
+            // Check if they share the same function call or variable name
+            if trimmed_old == trimmed_new {
+                return true; // Exact match - not a modification
+            }
+            // Check for similar structure (e.g., same function name)
+            for kw in &gui_keywords {
+                if trimmed_old.contains(kw) && trimmed_new.contains(kw) {
+                    // Same keyword, likely a modification if values differ
+                    return true;
+                }
+            }
+            false
+        });
+        
+        // If this GUI line doesn't have an exact match in old, it's new or modified
+        let exists_exactly_in_old = old_lines.iter().any(|old_line| old_line.trim() == trimmed_new);
+        
+        if is_gui_line && has_similar_in_old && !exists_exactly_in_old {
+            modifications.push(trimmed_new.to_string());
+        }
+    }
+    
+    if modifications.is_empty() {
+        return None;
+    }
+    
+    eprintln!("[AI Split] Detected {} GUI modifications", modifications.len());
+    Some(modifications.join("\n"))
+}
+
 /// Detect structural additions between old and new source code
 /// Returns a description of what was added (new buttons, new elements, etc.)
 fn detect_structural_additions(old_source: &str, new_source: &str) -> Option<String> {
@@ -3014,6 +3081,37 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
                 }
             }
         }
+        // Level 2.8: Check for GUI modifications (position, color, size changes)
+        // These are lines that exist in both but with different values
+        else if let Some(gui_changes) = detect_gui_modifications(&cached.original_source, &req.source) {
+            eprintln!("[AI Split] ╔═══════════════════════════════════════════════════════════╗");
+            eprintln!("[AI Split] ║  GUI MODIFICATION DETECTED - Using fast delta path       ║");
+            eprintln!("[AI Split] ╚═══════════════════════════════════════════════════════════╝");
+            eprintln!("[AI Split] Delta type: GUI MODIFICATION (position/color/size change)");
+            eprintln!("[AI Split] Modified GUI code:\n{}", gui_changes.lines().take(5).collect::<Vec<_>>().join("\n"));
+            
+            match perform_structural_ai_update(&cached.result, &cached.original_source, &req.source, &gui_changes, &req.language).await {
+                Ok(updated_result) => {
+                    let cached_entry = CachedSplit {
+                        result: updated_result.clone(),
+                        original_source: req.source.clone(),
+                    };
+                    {
+                        let mut cache = get_ai_split_cache().lock().await;
+                        cache.insert(source_hash, cached_entry.clone());
+                    }
+                    {
+                        let mut structural_cache = get_ai_split_structural_cache().lock().await;
+                        structural_cache.insert(structural_hash, cached_entry);
+                    }
+                    eprintln!("[AI Split] ✓ GUI modification delta complete - fast HMR!");
+                    return Ok(updated_result);
+                }
+                Err(e) => {
+                    eprintln!("[AI Split] ✗ GUI modification update failed: {} - falling back to full regen", e);
+                }
+            }
+        }
     }
     
     // Level 3: Cache miss - call AI backend (full regeneration)
@@ -3376,6 +3474,17 @@ async fn handle_compile(
         // DEBUG: Print hashes to help diagnose "Full build" issues
         eprintln!("[Main] Hashes (post-guardrail) - Prev: s={}, c={}, g={}", prev_hashes.shared_hash, prev_hashes.core_hash, prev_hashes.gui_hash);
         eprintln!("[Main] Hashes (post-guardrail) - New:  s={}, c={}, g={}", new_hashes.shared_hash, new_hashes.core_hash, new_hashes.gui_hash);
+
+        // Enhanced debug: show which hashes changed
+        if prev_hashes.shared_hash != 0 && prev_hashes.shared_hash != new_hashes.shared_hash {
+            eprintln!("[Main] DEBUG: shared.h hash CHANGED - check for field order changes or AI rewriting struct fields");
+        }
+        if prev_hashes.core_hash != 0 && prev_hashes.core_hash != new_hashes.core_hash {
+            eprintln!("[Main] DEBUG: core.cpp hash changed");
+        }
+        if prev_hashes.gui_hash != 0 && prev_hashes.gui_hash != new_hashes.gui_hash {
+            eprintln!("[Main] DEBUG: gui.cpp hash changed");
+        }
 
         let rebuild_scope = if prev_hashes.shared_hash == 0 && prev_hashes.core_hash == 0 && prev_hashes.gui_hash == 0 {
             eprintln!("[Main] First build detected - full build");

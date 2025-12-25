@@ -319,7 +319,8 @@ def inject_delta_into_code(
                     print(f"[Delta Inject] Injected {len(new_field_lines)} struct_fields before __attribute__")
     
     # 2. Inject initialization into core.cpp (DYNAMICALLY find LAST button init)
-    # Deduplicate: skip init lines that already appear in core_content
+    # Deduplicate: skip init lines that already appear EXACTLY in core_content
+    # (Do NOT skip if variable exists but value is different - that's an update!)
     if delta.get("core_init"):
         # First, try dynamic detection of the LAST button
         last_idx, last_end_idx = _find_last_button_init(core_content)
@@ -331,12 +332,15 @@ def inject_delta_into_code(
             line_stripped = line.strip()
             if not line_stripped:
                 continue
-            # Check if this exact init (or very similar) already exists
-            # e.g., "app_state.btn2_x = 330;" - look for "btn2_x" assignment
-            var_match = _extract_assignment_var(line_stripped)
-            if var_match and f"{var_match} =" in core_content:
-                print(f"[Delta Inject] Skipping duplicate init: {var_match}")
-                continue
+            
+            # Only skip if the EXACT line already exists (ignoring whitespace)
+            # This allows updates (e.g. "x = 10;" -> "x = 20;") to proceed
+            if line_stripped in core_content:
+                 # Check if it's a real match (surrounded by whitespace/semicolons)
+                 # Simple substring check is usually enough for "var = val;" lines
+                 print(f"[Delta Inject] Skipping exact duplicate init line: {line_stripped}")
+                 continue
+                 
             new_init_lines.append(line_stripped)
         
         if new_init_lines:

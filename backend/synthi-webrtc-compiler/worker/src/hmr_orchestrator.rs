@@ -637,6 +637,11 @@ impl HmrOrchestrator {
 
     /// Load module state with automatic migration
     /// 
+    /// MIGRATION PRIORITY (highest to lowest):
+    /// 1. Module-provided binary migration (hot_migrate in HotApi)
+    /// 2. Module-provided JSON migration (on_load_from_json with version param)
+    /// 3. Worker diff-and-merge (fallback, least reliable)
+    /// 
     /// # Arguments
     /// * `slot` - Module slot (Core, Gui, Main)
     /// * `new_lib` - Reference to the NEW library to load into
@@ -658,8 +663,39 @@ impl HmrOrchestrator {
             migration_result: None,
         };
 
-        // Try binary load first if we have binary data
+        // PRIORITY 1: Try module-provided binary migration first (fastest, most reliable)
+        // The module's migrate function understands its own schema best
         if let Some(ref binary_data) = saved.binary {
+            let migrate_symbol = match slot {
+                ModuleSlot::Core => b"core_migrate_state\0".as_slice(),
+                ModuleSlot::Gui => b"gui_migrate_state\0".as_slice(),
+                ModuleSlot::Main => b"migrate_state\0".as_slice(),
+            };
+
+            unsafe {
+                // Try module-provided migrate first
+                let migrate_fn: Result<Symbol<unsafe extern "C" fn(*const u8, usize, u32, u32) -> *mut c_void>, _> = 
+                    new_lib.get(&migrate_symbol[..migrate_symbol.len()-1]);
+                
+                if let Ok(f) = migrate_fn {
+                    // Module-provided migration is PREFERRED
+                    eprintln!("[Orchestrator] Using module-provided binary migration for {:?}", slot);
+                    result.state_ptr = f(binary_data.as_ptr(), binary_data.len(), 0, 0);
+                    if !result.state_ptr.is_null() {
+                        result.was_binary = true;
+                        result.migration_result = Some(MigrationSummary {
+                            preserved_fields: vec!["<module-provided>".to_string()],
+                            reset_fields: vec![],
+                            new_fields: vec![],
+                        });
+                        eprintln!("[Orchestrator] Module-provided migration succeeded for {:?}", slot);
+                        return result;
+                    }
+                    eprintln!("[Orchestrator] Module-provided migration returned null, falling back");
+                }
+            }
+            
+            // Fallback: standard binary load (no migration)
             let load_symbol = match slot {
                 ModuleSlot::Core => b"core_on_load_from_binary\0".as_slice(),
                 ModuleSlot::Gui => b"gui_on_load_from_binary\0".as_slice(),
@@ -681,9 +717,40 @@ impl HmrOrchestrator {
             }
         }
 
-        // Fall back to JSON load with optional migration
+        // PRIORITY 2: Try module-provided JSON migration
         if let Some(ref json_str) = saved.json {
-            // Perform field-level diff if template provided
+            // Check if module has versioned JSON migration
+            let migrate_json_symbol = match slot {
+                ModuleSlot::Core => b"core_migrate_from_json\0".as_slice(),
+                ModuleSlot::Gui => b"gui_migrate_from_json\0".as_slice(),
+                ModuleSlot::Main => b"migrate_from_json\0".as_slice(),
+            };
+
+            unsafe {
+                let migrate_json: Result<Symbol<unsafe extern "C" fn(*const i8, u32, u32) -> *mut c_void>, _> = 
+                    new_lib.get(&migrate_json_symbol[..migrate_json_symbol.len()-1]);
+                
+                if let Ok(f) = migrate_json {
+                    eprintln!("[Orchestrator] Using module-provided JSON migration for {:?}", slot);
+                    if let Ok(cstring) = CString::new(json_str.as_str()) {
+                        result.state_ptr = f(cstring.as_ptr(), 0, 0);
+                        if !result.state_ptr.is_null() {
+                            result.migration_result = Some(MigrationSummary {
+                                preserved_fields: vec!["<module-provided>".to_string()],
+                                reset_fields: vec![],
+                                new_fields: vec![],
+                            });
+                            eprintln!("[Orchestrator] Module-provided JSON migration succeeded for {:?}", slot);
+                            return result;
+                        }
+                    }
+                }
+            }
+
+            // PRIORITY 3 (FALLBACK): Worker diff-and-merge
+            // This is LESS RELIABLE because the worker guesses at field semantics
+            eprintln!("[Orchestrator] WARNING: Using worker diff-merge for {:?} (module migration unavailable)", slot);
+            
             let final_json = if let Some(template) = template_json {
                 match self.diff_and_migrate_json(slot, json_str, template) {
                     Ok((migrated, summary)) => {
@@ -691,7 +758,7 @@ impl HmrOrchestrator {
                         migrated
                     }
                     Err(e) => {
-                        eprintln!("[Orchestrator] JSON migration failed: {}, using original", e);
+                        eprintln!("[Orchestrator] Worker diff failed: {}, using original JSON", e);
                         json_str.clone()
                     }
                 }
