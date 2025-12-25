@@ -59,6 +59,42 @@ Return ONLY JSON:
 }}"""
 
 
+def _extract_field_name(field_line: str) -> str | None:
+    """
+    Extract the field name from a C struct field declaration.
+    E.g., "int btn2_x;" -> "btn2_x", "float* ptr;" -> "ptr"
+    """
+    import re
+    # Remove trailing semicolon and whitespace
+    line = field_line.rstrip().rstrip(';').strip()
+    if not line:
+        return None
+    # Split by whitespace, take the last token (the variable name)
+    # Handle pointers: "int* foo" or "int *foo" or "int * foo"
+    parts = line.replace('*', ' * ').split()
+    if not parts:
+        return None
+    name = parts[-1].lstrip('*')
+    # Remove array brackets if present: "int arr[10]" -> "arr"
+    if '[' in name:
+        name = name.split('[')[0]
+    return name if name else None
+
+
+def _extract_assignment_var(line: str) -> str | None:
+    """
+    Extract the variable being assigned from an assignment statement.
+    E.g., "app_state.btn2_x = 330;" -> "btn2_x"
+          "state->btn2_x = 330;" -> "btn2_x"
+    """
+    import re
+    # Match patterns like "app_state.VAR =" or "state->VAR ="
+    match = re.search(r'(?:app_state\.|state->)(\w+)\s*=', line)
+    if match:
+        return match.group(1)
+    return None
+
+
 def extract_existing_patterns(shared: str, core: str, gui: str) -> str:
     """Extract existing button/element patterns to show AI as examples.
     Now less important since we're translating X11 code directly."""
@@ -240,48 +276,89 @@ def inject_delta_into_code(
     shared_content = result.get("shared", {}).get("content", "")
     
     # 1. Inject struct fields into shared.h (before closing brace of AppState)
+    # IMPORTANT: Deduplicate to avoid re-adding fields that already exist (prevents hash churn)
     if delta.get("struct_fields"):
         # Find the AppState struct and add fields before the closing brace
         if "} AppState;" in shared_content or "}AppState;" in shared_content:
             marker = "} AppState;" if "} AppState;" in shared_content else "}AppState;"
             indent = "    "  # Standard indent
-            new_fields = "\n".join(f"{indent}{line}" for line in delta["struct_fields"].split("\\n") if line.strip())
-            shared_content = shared_content.replace(marker, f"{new_fields}\n{marker}")
-            print(f"[Delta Inject] Injected struct_fields before '{marker}'")
+            # Filter out fields that already exist in shared_content
+            new_field_lines = []
+            for line in delta["struct_fields"].split("\\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                # Extract the field name (e.g., "int btn2_x;" -> "btn2_x")
+                field_name = _extract_field_name(line)
+                if field_name and field_name in shared_content:
+                    print(f"[Delta Inject] Skipping duplicate field: {field_name}")
+                    continue
+                new_field_lines.append(f"{indent}{line}")
+            if new_field_lines:
+                new_fields = "\n".join(new_field_lines)
+                shared_content = shared_content.replace(marker, f"{new_fields}\n{marker}")
+                print(f"[Delta Inject] Injected {len(new_field_lines)} struct_fields before '{marker}'")
         elif "} __attribute__" in shared_content:
             idx = shared_content.find("} __attribute__")
             if idx > 0:
                 indent = "    "
-                new_fields = "\n".join(f"{indent}{line}" for line in delta["struct_fields"].split("\\n") if line.strip())
-                shared_content = shared_content[:idx] + new_fields + "\n" + shared_content[idx:]
-                print(f"[Delta Inject] Injected struct_fields before __attribute__")
+                # Also deduplicate for __attribute__ case
+                new_field_lines = []
+                for line in delta["struct_fields"].split("\\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    field_name = _extract_field_name(line)
+                    if field_name and field_name in shared_content:
+                        print(f"[Delta Inject] Skipping duplicate field: {field_name}")
+                        continue
+                    new_field_lines.append(f"{indent}{line}")
+                if new_field_lines:
+                    new_fields = "\n".join(new_field_lines)
+                    shared_content = shared_content[:idx] + new_fields + "\n" + shared_content[idx:]
+                    print(f"[Delta Inject] Injected {len(new_field_lines)} struct_fields before __attribute__")
     
     # 2. Inject initialization into core.cpp (DYNAMICALLY find LAST button init)
+    # Deduplicate: skip init lines that already appear in core_content
     if delta.get("core_init"):
         # First, try dynamic detection of the LAST button
         last_idx, last_end_idx = _find_last_button_init(core_content)
         
-        if last_idx >= 0 and last_end_idx > 0:
-            indent = "        "  # Match existing indentation
-            init_lines = delta["core_init"].replace("\\n", "\n").split("\n")
-            new_init = "\n".join(f"{indent}{line.strip()}" for line in init_lines if line.strip())
-            core_content = core_content[:last_end_idx] + "\n" + new_init + core_content[last_end_idx:]
-            print(f"[Delta Inject] Injected core_init after LAST button init (idx={last_idx})")
-        else:
-            # Fallback to static markers
-            fallback_markers = [
-                "state->dx =", "app_state.dx =",
-                "state->running = 1;", "app_state.running = 1;",
-            ]
-            _, end_idx, pattern = _find_last_occurrence(core_content, fallback_markers)
-            if end_idx > 0:
-                indent = "        "
-                init_lines = delta["core_init"].replace("\\n", "\n").split("\n")
-                new_init = "\n".join(f"{indent}{line.strip()}" for line in init_lines if line.strip())
-                core_content = core_content[:end_idx] + "\n" + new_init + core_content[end_idx:]
-                print(f"[Delta Inject] Injected core_init after fallback '{pattern}'")
+        init_lines = delta["core_init"].replace("\\n", "\n").split("\n")
+        # Filter out duplicate initializations
+        new_init_lines = []
+        for line in init_lines:
+            line_stripped = line.strip()
+            if not line_stripped:
+                continue
+            # Check if this exact init (or very similar) already exists
+            # e.g., "app_state.btn2_x = 330;" - look for "btn2_x" assignment
+            var_match = _extract_assignment_var(line_stripped)
+            if var_match and f"{var_match} =" in core_content:
+                print(f"[Delta Inject] Skipping duplicate init: {var_match}")
+                continue
+            new_init_lines.append(line_stripped)
+        
+        if new_init_lines:
+            if last_idx >= 0 and last_end_idx > 0:
+                indent = "        "  # Match existing indentation
+                new_init = "\n".join(f"{indent}{line}" for line in new_init_lines)
+                core_content = core_content[:last_end_idx] + "\n" + new_init + core_content[last_end_idx:]
+                print(f"[Delta Inject] Injected {len(new_init_lines)} core_init after LAST button init")
             else:
-                print(f"[Delta Inject] WARNING: Could not find injection point for core_init")
+                # Fallback to static markers
+                fallback_markers = [
+                    "state->dx =", "app_state.dx =",
+                    "state->running = 1;", "app_state.running = 1;",
+                ]
+                _, end_idx, pattern = _find_last_occurrence(core_content, fallback_markers)
+                if end_idx > 0:
+                    indent = "        "
+                    new_init = "\n".join(f"{indent}{line}" for line in new_init_lines)
+                    core_content = core_content[:end_idx] + "\n" + new_init + core_content[end_idx:]
+                    print(f"[Delta Inject] Injected {len(new_init_lines)} core_init after fallback '{pattern}'")
+                else:
+                    print(f"[Delta Inject] WARNING: Could not find injection point for core_init")
     
     # 3. Inject draw code into gui.cpp (DYNAMICALLY find LAST button draw)
     if delta.get("gui_draw"):

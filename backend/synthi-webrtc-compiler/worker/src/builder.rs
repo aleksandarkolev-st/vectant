@@ -1783,6 +1783,186 @@ pub fn hash_content(content: &str) -> u64 {
     hasher.finish()
 }
 
+fn strip_cpp_comments_preserve_strings(input: &str) -> String {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum State {
+        Normal,
+        LineComment,
+        BlockComment,
+        String,
+        Char,
+    }
+
+    let mut out = String::with_capacity(input.len());
+    let mut state = State::Normal;
+    let mut chars = input.chars().peekable();
+    let mut prev_was_escape = false;
+
+    while let Some(ch) = chars.next() {
+        match state {
+            State::Normal => {
+                if ch == '/' {
+                    match chars.peek().copied() {
+                        Some('/') => {
+                            let _ = chars.next();
+                            state = State::LineComment;
+                        }
+                        Some('*') => {
+                            let _ = chars.next();
+                            state = State::BlockComment;
+                        }
+                        _ => out.push(ch),
+                    }
+                } else if ch == '"' {
+                    out.push(ch);
+                    state = State::String;
+                    prev_was_escape = false;
+                } else if ch == '\'' {
+                    out.push(ch);
+                    state = State::Char;
+                    prev_was_escape = false;
+                } else {
+                    out.push(ch);
+                }
+            }
+            State::LineComment => {
+                if ch == '\n' {
+                    out.push('\n');
+                    state = State::Normal;
+                }
+            }
+            State::BlockComment => {
+                if ch == '*' {
+                    if let Some('/') = chars.peek().copied() {
+                        let _ = chars.next();
+                        state = State::Normal;
+                    }
+                }
+            }
+            State::String => {
+                out.push(ch);
+                if prev_was_escape {
+                    prev_was_escape = false;
+                } else if ch == '\\' {
+                    prev_was_escape = true;
+                } else if ch == '"' {
+                    state = State::Normal;
+                }
+            }
+            State::Char => {
+                out.push(ch);
+                if prev_was_escape {
+                    prev_was_escape = false;
+                } else if ch == '\\' {
+                    prev_was_escape = true;
+                } else if ch == '\'' {
+                    state = State::Normal;
+                }
+            }
+        }
+    }
+
+    out
+}
+
+fn collapse_ws_outside_strings(input: &str) -> String {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum State {
+        Normal,
+        String,
+        Char,
+    }
+
+    let mut out = String::with_capacity(input.len());
+    let mut state = State::Normal;
+    let mut prev_was_escape = false;
+    let mut pending_space = false;
+
+    for ch in input.chars() {
+        match state {
+            State::Normal => {
+                if ch == '"' {
+                    if pending_space {
+                        out.push(' ');
+                        pending_space = false;
+                    }
+                    out.push(ch);
+                    state = State::String;
+                    prev_was_escape = false;
+                } else if ch == '\'' {
+                    if pending_space {
+                        out.push(' ');
+                        pending_space = false;
+                    }
+                    out.push(ch);
+                    state = State::Char;
+                    prev_was_escape = false;
+                } else if ch.is_whitespace() {
+                    pending_space = true;
+                } else {
+                    if pending_space {
+                        out.push(' ');
+                        pending_space = false;
+                    }
+                    out.push(ch);
+                }
+            }
+            State::String => {
+                out.push(ch);
+                if prev_was_escape {
+                    prev_was_escape = false;
+                } else if ch == '\\' {
+                    prev_was_escape = true;
+                } else if ch == '"' {
+                    state = State::Normal;
+                }
+            }
+            State::Char => {
+                out.push(ch);
+                if prev_was_escape {
+                    prev_was_escape = false;
+                } else if ch == '\\' {
+                    prev_was_escape = true;
+                } else if ch == '\'' {
+                    state = State::Normal;
+                }
+            }
+        }
+    }
+
+    out
+}
+
+fn normalize_cpp_like_for_semantic_hash(content: &str) -> String {
+    let normalized_newlines = content.replace("\r\n", "\n").replace('\r', "\n");
+    let without_comments = strip_cpp_comments_preserve_strings(&normalized_newlines);
+
+    let mut out = String::with_capacity(without_comments.len());
+    for line in without_comments.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let collapsed = collapse_ws_outside_strings(trimmed);
+        let collapsed = collapsed.trim();
+        if collapsed.is_empty() {
+            continue;
+        }
+        out.push_str(collapsed);
+        out.push('\n');
+    }
+    out
+}
+
+/// Calculate a semantic-ish hash for shared C/C++ headers.
+///
+/// This intentionally ignores purely cosmetic diffs (comments + whitespace),
+/// because `shared.h` churn can otherwise trigger full rebuilds and watcher loops.
+pub fn hash_shared_header_semantic(content: &str) -> u64 {
+    let normalized = normalize_cpp_like_for_semantic_hash(content);
+    hash_content(&normalized)
+}
+
 /// Analyze workspace and compute hashes for all relevant files
 pub fn compute_module_hashes(workspace_root: &Path) -> ModuleHashes {
     let mut hashes = ModuleHashes::new();
@@ -1791,7 +1971,7 @@ pub fn compute_module_hashes(workspace_root: &Path) -> ModuleHashes {
     for filename in ["shared.h", "shared.hpp"] {
         let path = workspace_root.join(filename);
         if let Ok(content) = fs::read_to_string(&path) {
-            hashes.shared_hash = hash_content(&content);
+            hashes.shared_hash = hash_shared_header_semantic(&content);
         }
     }
     

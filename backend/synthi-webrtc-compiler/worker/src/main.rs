@@ -34,7 +34,7 @@ pub use hmr_orchestrator::{
     SavedState, LoadedState, MigrationSummary, SchemaCompatibility,
 };
 
-use builder::{RebuildScope, ModuleHashes, hash_content, WidgetDetector, WidgetCompiler};
+use builder::{RebuildScope, ModuleHashes, hash_content, hash_shared_header_semantic, WidgetDetector, WidgetCompiler};
 use fast_refresh::{BoundaryChecker, RefreshAction, BoundaryViolationEvent};
 use watcher::{PreemptiveConfig, PreemptiveMessage, SpeculativeCache};
 use error_parser::{parse_compiler_output, CompilerType, DiagnosticEvent};
@@ -3355,7 +3355,8 @@ async fn handle_compile(
         // ============================================================
         // PHASE 2: COMPUTE HASHES FROM POST-GUARDRAIL CONTENT
         // ============================================================
-        new_hashes.shared_hash = hash_content(&processed_shared);
+        // Use semantic hashing for shared.h so comment/whitespace churn doesn't force full rebuilds.
+        new_hashes.shared_hash = hash_shared_header_semantic(&processed_shared);
         new_hashes.core_hash = hash_content(&processed_core);
         new_hashes.gui_hash = hash_content(&processed_gui);
         
@@ -3523,13 +3524,26 @@ async fn handle_compile(
         }
 
         // Write shared.h (already processed by guardrails in Phase 1)
+        // IMPORTANT: avoid rewriting when semantically unchanged, otherwise a file-watcher can
+        // see generated `shared.h` churn and trigger redundant builds/restarts.
         if split_data.get("shared").is_some() {
-            let fname = split_data.get("shared")
+            let fname = split_data
+                .get("shared")
                 .and_then(|s| s["filename"].as_str())
                 .unwrap_or("shared.h");
-            
-            println!("Writing shared library file: {}", fname);
-            tokio::fs::write(dir_path.join(fname), &processed_shared).await?;
+
+            let shared_path = dir_path.join(fname);
+            let shared_exists = tokio::fs::try_exists(&shared_path).await.unwrap_or(false);
+
+            let shared_semantically_changed = prev_hashes.shared_hash == 0
+                || prev_hashes.shared_hash != new_hashes.shared_hash;
+
+            if !shared_exists || shared_semantically_changed {
+                println!("Writing shared library file: {}", fname);
+                tokio::fs::write(shared_path, &processed_shared).await?;
+            } else {
+                eprintln!("[Main] shared.h unchanged (semantic) - skipping write");
+            }
         }
 
         // Skip core compilation if GUI-only rebuild (reuse existing core.so)
