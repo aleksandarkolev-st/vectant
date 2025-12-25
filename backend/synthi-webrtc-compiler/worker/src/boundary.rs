@@ -1,5 +1,6 @@
 // Boundary module now actively used via HmrOrchestrator
 // Advanced manifest features are infrastructure for future use
+#![allow(dead_code)]
 
 // ============================================================
 // SUB-MODULE HMR BOUNDARIES WITH EXPLICIT MANIFESTS
@@ -24,7 +25,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
 
 /// Maximum boundaries per module to prevent explosion
 pub const MAX_BOUNDARIES_PER_MODULE: usize = 20;

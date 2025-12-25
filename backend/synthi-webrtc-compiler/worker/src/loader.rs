@@ -1,5 +1,6 @@
 // Module loader is actively used in runner_bin.rs for ABI validation
 // #![allow(dead_code)] - REMOVED: This module is now wired up
+#![allow(dead_code)]
 #![allow(mismatched_lifetime_syntaxes)]
 
 // ============================================================
@@ -16,11 +17,9 @@
 // ============================================================
 
 use std::collections::HashMap;
-use std::ffi::c_void;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use crate::abi_version::{AbiVersionManager, SymbolManifest, CompatibilityResult};
+use crate::abi_version::AbiVersionManager;
 use crate::plugin_contract::ModuleSlot;
 
 /// Result of a module load operation

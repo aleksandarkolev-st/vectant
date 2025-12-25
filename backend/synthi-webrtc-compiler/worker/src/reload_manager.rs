@@ -1,6 +1,7 @@
 // Reload manager now actively used via HmrOrchestrator
 // Some advanced features (canary reload, circuit breakers) are still infrastructure
 // for future integration - keeping dead_code allow for those
+#![allow(dead_code)]
 
 // ============================================================
 // RELOAD MANAGER - COMPREHENSIVE HMR ORCHESTRATION
@@ -318,6 +319,29 @@ pub struct ReloadChanges {
 // ============================================================
 // Snapshot everything before reload for instant crash revert
 // OPTIMIZED: Validity tracking is O(1), not O(n)
+// 
+// STATE FORMAT: Snapshots store (build_id, bytes, format, state_version)
+// - build_id: unique identifier for the module build
+// - bytes: serialized state data (MsgPack preferred)
+// - format: serialization format used (MsgPack/JSON)
+// - state_version: module's state_version for migration
+
+/// State snapshot format
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SnapshotFormat {
+    /// MessagePack binary format (preferred, faster)
+    MsgPack,
+    /// JSON text format (fallback, debuggable)
+    Json,
+    /// Raw memory copy (only valid for same-version hot swap)
+    RawMemory,
+}
+
+impl Default for SnapshotFormat {
+    fn default() -> Self {
+        SnapshotFormat::MsgPack
+    }
+}
 
 /// Complete system snapshot for crash recovery
 #[derive(Debug, Clone)]
@@ -355,16 +379,97 @@ impl ReloadSnapshot {
     }
 }
 
+/// State snapshot with new format (build_id, bytes, format, state_version)
+/// This replaces symbol-based state operations with serialized snapshot data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateSnapshot {
     pub boundary_id: BoundaryId,
-    /// Lazy: only serialize on revert, not on create
-    /// Store pointer/handle instead of full JSON
+    
+    /// Unique identifier for the module build that created this state
+    pub build_id: u64,
+    
+    /// Serialized state bytes (MsgPack or JSON)
+    /// None if state was captured as handle only (lazy serialization)
+    pub bytes: Option<Vec<u8>>,
+    
+    /// Format of the serialized bytes
+    pub format: SnapshotFormat,
+    
+    /// Module's state_version when this snapshot was created
+    /// Used for migration decisions
+    pub state_version: u32,
+    
+    /// Legacy: state handle for lazy serialization
+    /// Deprecated: prefer `bytes` for cross-version compatibility
+    #[serde(skip)]
     pub state_handle: u64,
+    
     /// Hash for quick equality check without deserialize
     pub state_hash: u64,
+    
+    /// ABI version of the module
     pub abi_version: u32,
+    
+    /// Hash of the source code
     pub source_hash: u64,
+}
+
+impl StateSnapshot {
+    /// Create a new state snapshot with serialized bytes
+    pub fn new(
+        boundary_id: BoundaryId,
+        build_id: u64,
+        bytes: Vec<u8>,
+        format: SnapshotFormat,
+        state_version: u32,
+    ) -> Self {
+        // Compute hash of the bytes
+        let state_hash = {
+            use std::hash::{Hash, Hasher};
+            use std::collections::hash_map::DefaultHasher;
+            let mut hasher = DefaultHasher::new();
+            bytes.hash(&mut hasher);
+            hasher.finish()
+        };
+        
+        Self {
+            boundary_id,
+            build_id,
+            bytes: Some(bytes),
+            format,
+            state_version,
+            state_handle: 0,
+            state_hash,
+            abi_version: 0,
+            source_hash: 0,
+        }
+    }
+    
+    /// Create a lazy snapshot (handle only, serialize on revert)
+    /// Deprecated: Use new() with serialized bytes instead
+    pub fn new_lazy(boundary_id: BoundaryId, state_handle: u64) -> Self {
+        Self {
+            boundary_id,
+            build_id: 0,
+            bytes: None,
+            format: SnapshotFormat::RawMemory,
+            state_version: 0,
+            state_handle,
+            state_hash: 0,
+            abi_version: 0,
+            source_hash: 0,
+        }
+    }
+    
+    /// Check if this snapshot has serialized bytes
+    pub fn has_bytes(&self) -> bool {
+        self.bytes.is_some() && !self.bytes.as_ref().unwrap().is_empty()
+    }
+    
+    /// Get the serialized bytes if available
+    pub fn get_bytes(&self) -> Option<&[u8]> {
+        self.bytes.as_deref()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -425,6 +530,7 @@ impl SnapshotManager {
     
     /// Create a new snapshot before reload
     /// OPTIMIZED: Only stores handles, not full state
+    /// For proper HMR, use create_snapshot_with_bytes instead
     pub fn create_snapshot(
         &mut self,
         reload_class: ReloadClass,
@@ -437,15 +543,52 @@ impl SnapshotManager {
         // Collect state snapshots - LAZY: only store handles
         let mut state_snapshots = HashMap::new();
         for boundary_id in boundaries {
-            // Store handle + hash, not serialized state
-            // Actual serialization happens only on revert
-            state_snapshots.insert(boundary_id.clone(), StateSnapshot {
-                boundary_id: boundary_id.clone(),
-                state_handle: snapshot_id, // Would be actual handle
-                state_hash: 0, // Would compute hash
-                abi_version: 1,
-                source_hash: 0,
-            });
+            // Store handle only, no serialized bytes
+            // For proper cross-version migration, use create_snapshot_with_bytes
+            state_snapshots.insert(
+                boundary_id.clone(), 
+                StateSnapshot::new_lazy(boundary_id.clone(), snapshot_id)
+            );
+        }
+        
+        let snapshot = ReloadSnapshot {
+            snapshot_id,
+            created_at: Instant::now(),
+            reload_class,
+            state_snapshots,
+            module_hashes: HashMap::new(),
+            in_flight_requests: Vec::new(),
+            task_states: Vec::new(),
+            generation,
+            invalidation_reason: None,
+        };
+        
+        self.snapshots.push_back(snapshot);
+        
+        // Enforce retention
+        while self.snapshots.len() > self.max_snapshots {
+            self.snapshots.pop_front();
+        }
+        
+        snapshot_id
+    }
+    
+    /// Create a snapshot with serialized state bytes (preferred for HMR)
+    /// This is the recommended method for cross-version migration
+    pub fn create_snapshot_with_bytes(
+        &mut self,
+        reload_class: ReloadClass,
+        boundary_states: Vec<(BoundaryId, u64, Vec<u8>, SnapshotFormat, u32)>, // (boundary_id, build_id, bytes, format, state_version)
+    ) -> u64 {
+        let snapshot_id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let generation = self.current_generation.fetch_add(1, Ordering::SeqCst);
+        
+        let mut state_snapshots = HashMap::new();
+        for (boundary_id, build_id, bytes, format, state_version) in boundary_states {
+            state_snapshots.insert(
+                boundary_id.clone(),
+                StateSnapshot::new(boundary_id, build_id, bytes, format, state_version),
+            );
         }
         
         let snapshot = ReloadSnapshot {

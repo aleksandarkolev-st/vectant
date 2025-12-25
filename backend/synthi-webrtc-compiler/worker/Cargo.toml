@@ -48,3 +48,7 @@ rmp-serde = "1.1"
 rmp = "0.8"
 byteorder = "1.5"
 hex = "0.4"
+# ELF/DWARF parsing for layout hash extraction
+object = { version = "0.36", default-features = false, features = ["read", "elf"] }
+gimli = { version = "0.31", default-features = false, features = ["read", "std"] }
+memmap2 = "0.9"
