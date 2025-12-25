@@ -533,8 +533,7 @@ fn try_extract_struct_layout<R: gimli::Reader>(
         .and_then(|v| {
             if let gimli::AttributeValue::DebugStrRef(offset) = v {
                 dwarf.debug_str.get_str(offset).ok()
-                    .and_then(|s| s.to_string_lossy().ok())
-                    .map(|cow| cow.into_owned())
+                    .map(|s| s.to_string_lossy().into_owned())
             } else {
                 None
             }

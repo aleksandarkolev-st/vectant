@@ -43,6 +43,15 @@ mod process_isolation;
 mod enhanced_fingerprint;
 mod strict_contract;
 
+// HMR v2.1 hardening modules (required by orchestrator + isolation layers)
+pub mod reload_protocol;
+pub mod state_type_id;
+pub mod hardened_ipc;
+pub mod quiescence;
+pub mod slot_isolation;
+pub mod restart_control;
+pub mod observability;
+
 use plugin_contract::{ModuleSlot, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
 use capability::{HmrCapability, detect_capabilities, HmrStatus};
 use host_kv::{
