@@ -80,6 +80,9 @@ export default function EditorPage({ params }) {
     const [isAnalyzingProactive, setIsAnalyzingProactive] = useState(false);
     const proactiveTimeoutRef = useRef(null);
     const lastProactiveSignatureRef = useRef('');
+    // Tracks a scheduled (debounced) analysis so fast re-renders don't cancel it and
+    // then incorrectly skip analysis thinking it already ran.
+    const pendingProactiveSignatureRef = useRef('');
     const currentAnalysisFileRef = useRef(null); // Track which file diagnostics belong to
     const aiAnalysisRef = useRef(null);
     const lastContentHashRef = useRef('');
@@ -527,19 +530,27 @@ export default function EditorPage({ params }) {
             console.log('[page.jsx] Skipping analysis - content is empty, waiting for Y.js sync or Redux update');
             return;
         }
+
+        // Capture the content/file snapshot we're about to (re)analyze.
+        const contentHash = computeContentHash(contentToAnalyze);
+        const currentFilePath = activeFile?.path || activeFile?.name || 'untitled';
         
+        // If we already scheduled analysis for this exact snapshot, don't cancel it.
+        const scheduledSignature = `unified::${slug}::${currentFilePath}::${contentHash}`;
+        if (proactiveTimeoutRef.current && pendingProactiveSignatureRef.current === scheduledSignature) {
+            return;
+        }
+
         if (proactiveTimeoutRef.current) {
             clearTimeout(proactiveTimeoutRef.current);
+            proactiveTimeoutRef.current = null;
         }
+        pendingProactiveSignatureRef.current = scheduledSignature;
 
         // Cancel any pending AI analysis when content changes
         if (aiAnalysisRef.current) {
             aiAnalysisRef.current.cancelled = true;
         }
-
-        // Capture the content we're analyzing (for freshness checks)
-        const contentHash = computeContentHash(contentToAnalyze);
-        const currentFilePath = activeFile?.path || activeFile?.name || 'untitled';
 
         // Always analyze when a file is opened / becomes active, even if its content hash
         // matches the last analysis. This avoids stale/ghost diagnostics across refresh/tab switches.
@@ -601,10 +612,9 @@ export default function EditorPage({ params }) {
             });
         }
         
-        // Update the last analyzed hash map immediately so we don't re-trigger if effect runs again
-        // Note: We update it here to prevent re-entry, but if analysis fails we might want to revert?
-        // For now, assume we want to attempt analysis once per content change.
-        lastAnalyzedHashMapRef.current.set(currentFilePath, contentHash);
+        // IMPORTANT: Do NOT mark this hash as "analyzed" yet.
+        // Fast re-renders (editorVersion bumps, Yjs sync) can cancel the debounce timer.
+        // We only record the analyzed hash after a successful response.
         lastContentHashRef.current = contentHash;
         
         // Capture version at request time for stale detection
@@ -852,6 +862,11 @@ export default function EditorPage({ params }) {
                     
                     // Update hash map with the content we actually analyzed
                     lastAnalyzedHashMapRef.current.set(currentFilePath, freshContentHash);
+
+                    // Clear pending schedule marker (only if it matches what we scheduled).
+                    if (pendingProactiveSignatureRef.current === scheduledSignature) {
+                        pendingProactiveSignatureRef.current = '';
+                    }
                     
                     lastProactiveSignatureRef.current = signature;
                     setIsAnalyzingProactive(false);
@@ -860,6 +875,9 @@ export default function EditorPage({ params }) {
                     console.error('[page.jsx] Unified analysis failed:', err);
                     // Allow retry if a transient/network error happened
                     lastAnalyzedHashMapRef.current.delete(currentFilePath);
+                    if (pendingProactiveSignatureRef.current === scheduledSignature) {
+                        pendingProactiveSignatureRef.current = '';
+                    }
                     setIsAnalyzingProactive(false);
                 });
         }, 100); // 100ms debounce for responsiveness

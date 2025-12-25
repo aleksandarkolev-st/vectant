@@ -902,15 +902,17 @@ const EditorPanel = ({
     // Handle updates from analysis (Markers)
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
-        const model = editorInstance.getModel?.();
-        if (!model) return; // Guard against disposed editor
 
-        // Strict VFS gating: only show diagnostics computed for the current model snapshot.
-        const currentHash = computeContentHash(model.getValue?.() ?? '');
+        const applyNonAiMarkers = () => {
+            const model = editorInstance.getModel?.();
+            if (!model) return; // Guard against disposed editor
+
+            // Strict VFS gating: only show diagnostics computed for the current model snapshot.
+            const currentHash = computeContentHash(model.getValue?.() ?? '');
         
-        // Use only proactive diagnostics - they include static analysis tier
-        // and are properly invalidated when content changes
-        const proactiveDiagnostics = diagnostics || [];
+            // Use only proactive diagnostics - they include static analysis tier
+            // and are properly invalidated when content changes
+            const proactiveDiagnostics = diagnostics || [];
 
         // IMPORTANT: Filter to only show diagnostics for the CURRENT FILE
         // This prevents test.cpp errors from showing in test.h editor
@@ -925,17 +927,17 @@ const EditorPanel = ({
 
         const getDiagPath = (diag) => diag?.filePath || diag?.file || diag?.path || '';
 
-        const currentFileDiagnostics = proactiveDiagnostics.filter(diag => {
-            const diagPath = getDiagPath(diag);
-            if (!diagPath) return false;
+            const currentFileDiagnostics = proactiveDiagnostics.filter(diag => {
+                const diagPath = getDiagPath(diag);
+                if (!diagPath) return false;
 
-            // Snapshot gate: refuse diagnostics from other snapshots.
-            if (!diag?.__analysisVersion || diag.__analysisVersion !== currentHash) return false;
+                // Snapshot gate: refuse diagnostics from other snapshots.
+                if (!diag?.__analysisVersion || diag.__analysisVersion !== currentHash) return false;
 
-            const p1 = normalizePath(diagPath);
-            const p2 = normalizePath(currentFilePath);
-            return p1 === p2;
-        });
+                const p1 = normalizePath(diagPath);
+                const p2 = normalizePath(currentFilePath);
+                return p1 === p2;
+            });
 
         // Non-AI diagnostics are rendered as Monaco markers (but we clear markers on every edit).
         const nonAiDiagnostics = currentFileDiagnostics.filter(d => {
@@ -947,34 +949,50 @@ const EditorPanel = ({
         // console.log(`[Editor] Filtering diagnostics for "${currentFilePath}": ${proactiveDiagnostics.length} total -> ${currentFileDiagnostics.length} for current file`);
         
         // Convert proactive diagnostics format to markers
-        const proactiveMarkers = nonAiDiagnostics.map(diag => {
-            const location = diag.location || {};
-            const column = location.column ?? 0;
-            const endColumn = location.endColumn ?? column;
-            const startCol = Math.max(1, column + 1);
-            // Ensure at least 1 character width for the marker
-            const endCol = Math.max(endColumn + 1, startCol + 1);
+            const proactiveMarkers = nonAiDiagnostics.map(diag => {
+                const location = diag.location || {};
+                const column = location.column ?? 0;
+                const endColumn = location.endColumn ?? column;
+                const startCol = Math.max(1, column + 1);
+                // Ensure at least 1 character width for the marker
+                const endCol = Math.max(endColumn + 1, startCol + 1);
+                
+                return {
+                    startLineNumber: (location.line ?? 0) + 1,
+                    startColumn: startCol,
+                    endLineNumber: (location.endLine ?? location.line ?? 0) + 1,
+                    endColumn: endCol,
+                    message: `[${(diag.tier || 'STATIC').toUpperCase()}] ${diag.message}`,
+                    severity: diag.severity === 'error' ? monacoInstance.MarkerSeverity.Error :
+                             diag.severity === 'warning' ? monacoInstance.MarkerSeverity.Warning :
+                             diag.severity === 'hint' ? monacoInstance.MarkerSeverity.Hint :
+                             monacoInstance.MarkerSeverity.Info,
+                    source: `synthi-${diag.tier || 'static'}`,
+                    code: diag.code,
+                };
+            });
             
-            return {
-                startLineNumber: (location.line ?? 0) + 1,
-                startColumn: startCol,
-                endLineNumber: (location.endLine ?? location.line ?? 0) + 1,
-                endColumn: endCol,
-                message: `[${(diag.tier || 'STATIC').toUpperCase()}] ${diag.message}`,
-                severity: diag.severity === 'error' ? monacoInstance.MarkerSeverity.Error :
-                         diag.severity === 'warning' ? monacoInstance.MarkerSeverity.Warning :
-                         diag.severity === 'hint' ? monacoInstance.MarkerSeverity.Hint :
-                         monacoInstance.MarkerSeverity.Info,
-                source: `synthi-${diag.tier || 'static'}`,
-                code: diag.code,
-            };
+            try {
+                monacoInstance.editor.setModelMarkers(model, 'synthi-analysis', proactiveMarkers);
+            } catch (e) {
+                // Editor may have been disposed
+            }
+        };
+
+        // Apply immediately on diagnostics/model change.
+        applyNonAiMarkers();
+
+        // Also re-apply after any model content change.
+        // Collab/Yjs rebinds can trigger a content event that clears markers;
+        // snapshot gating keeps this safe (real edits will yield empty markers).
+        const disposable = editorInstance.onDidChangeModelContent(() => {
+            // Defer to allow any immediate clear() calls to run first.
+            requestAnimationFrame(() => applyNonAiMarkers());
         });
-        
-        try {
-            monacoInstance.editor.setModelMarkers(model, 'synthi-analysis', proactiveMarkers);
-        } catch (e) {
-            // Editor may have been disposed
-        }
+
+        return () => {
+            try { disposable?.dispose?.(); } catch (_) {}
+        };
     }, [editorInstance, monacoInstance, diagnostics, activeFile?.path, computeContentHash]);
 
     // Track AI diagnostics with Monaco decorations so they shift with edits.
