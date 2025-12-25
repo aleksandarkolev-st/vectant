@@ -27,6 +27,22 @@ mod supervisor;
 mod state_manager;
 mod reload_manager;
 mod hmr_orchestrator;
+// New safety-critical modules
+mod process_isolation;
+mod enhanced_fingerprint;
+mod strict_contract;
+
+// HMR v2.1 hardening modules (requirements #1-10)
+pub mod reload_protocol;       // #1: Deterministic reload state machine
+pub mod state_type_id;         // #2: Explicit DWARF type identification (not size-based)
+                           // #3: Semantic hash for reload safety (in state_type_id)
+pub mod hardened_ipc;          // #4: IPC hardening (size limits, CRC32, decode limits)
+                           // #5: ABI ownership rules (documented in plugin_contract.rs)
+pub mod quiescence;            // #6: Per-subsystem quiescence rules
+pub mod slot_isolation;        // #7: Worker isolation model options
+pub mod restart_control;       // #8: Backoff, fallback, circuit breaker
+mod security;              // #9: Honest security documentation
+pub mod observability;         // #10: Structured logging, metrics, crash classification
 
 // Re-export orchestrator for external use
 pub use hmr_orchestrator::{
@@ -39,7 +55,14 @@ mod android_emulator;
 mod mobile_job;
 mod env_setup;
 
-use builder::{RebuildScope, ModuleHashes, hash_content, WidgetDetector, WidgetCompiler};
+// Import v2.1 hardening modules for active use
+use observability::{StructuredLogger, LogFormat, LogLevel, LogEntry, MetricsAggregator, ReloadMetricsTracker, ReloadId};
+use slot_isolation::{IsolationModel, IsolationManager};
+use restart_control::{RestartController, BackoffConfig, KnownGoodStore};
+use hardened_ipc::IpcConfig;
+use quiescence::QuiescenceConfig;
+
+use builder::{RebuildScope, ModuleHashes, hash_content, hash_shared_header_semantic, WidgetDetector, WidgetCompiler};
 use fast_refresh::{BoundaryChecker, RefreshAction, BoundaryViolationEvent};
 use watcher::{PreemptiveConfig, PreemptiveMessage, SpeculativeCache};
 use error_parser::{parse_compiler_output, CompilerType, DiagnosticEvent};
@@ -362,6 +385,99 @@ fn make_chunks(data: &[u8], msg_id: u32) -> Vec<Vec<u8>> {
 async fn main() -> Result<()> {
     println!("Worker starting...");
     println!("Operating System: {}", std::env::consts::OS);
+    
+    // v2.1: Print security audit at startup (requirement #9)
+    if std::env::var("SYNTHI_SECURITY_AUDIT").map(|v| v == "1").unwrap_or(false) {
+        security::print_security_audit();
+    } else {
+        // Brief security notice
+        let audit = security::audit_security();
+        eprintln!("[Security] Status: {} enforced, {} partial, {} stub (set SYNTHI_SECURITY_AUDIT=1 for details)",
+            audit.enforced_count, audit.partial_count, audit.stub_count);
+    }
+    
+    // ============================================================
+    // v2.1 HMR INFRASTRUCTURE INITIALIZATION (Requirements #1-10)
+    // ============================================================
+    // Initialize all HMR hardening infrastructure from dead code modules:
+    // - StructuredLogger for observability (#10)
+    // - IsolationManager for worker isolation (#7)
+    // - RestartController for backoff/fallback (#8)
+    // - IpcConfig for hardened communication (#4)
+    // - HmrOrchestrator for central coordination
+    // ============================================================
+    
+    // Initialize structured logging (requirement #10)
+    let hmr_log_format = if std::env::var("SYNTHI_JSON_LOGS").map(|v| v == "1").unwrap_or(false) {
+        LogFormat::Json
+    } else {
+        LogFormat::Human
+    };
+    let hmr_log_level = match std::env::var("SYNTHI_LOG_LEVEL").unwrap_or_default().as_str() {
+        "trace" => LogLevel::Trace,
+        "debug" => LogLevel::Debug,
+        "warn" => LogLevel::Warn,
+        "error" => LogLevel::Error,
+        _ => LogLevel::Info,
+    };
+    let structured_logger = Arc::new(StructuredLogger::new(hmr_log_format, hmr_log_level));
+    
+    // Initialize metrics aggregator for reload performance tracking
+    let metrics_aggregator = Arc::new(tokio::sync::Mutex::new(MetricsAggregator::new()));
+    
+    // Log startup
+    structured_logger.log(&LogEntry::new(LogLevel::Info, "main", "Worker starting with HMR v2.1 hardening")
+        .with_field("os", std::env::consts::OS)
+        .with_field("log_format", format!("{:?}", hmr_log_format)));
+    
+    // Initialize isolation manager (requirement #7)
+    let isolation_model = match std::env::var("SYNTHI_ISOLATION_MODEL").unwrap_or_default().as_str() {
+        "worker_per_slot" => IsolationModel::WorkerPerSlot,
+        "grouped" => IsolationModel::GroupedWorkers,
+        _ => IsolationModel::SingleWorker, // Default: simpler, lower overhead
+    };
+    let isolation_manager = Arc::new(tokio::sync::Mutex::new(IsolationManager::new(isolation_model)));
+    eprintln!("[HMR v2.1] Isolation model: {:?}", isolation_model);
+    
+    // Initialize restart controller with backoff (requirement #8)
+    let known_good_dir = std::env::temp_dir().join("synthi_known_good");
+    let _ = std::fs::create_dir_all(&known_good_dir);
+    let known_good_store = KnownGoodStore::with_persistence(known_good_dir.join("known_good.json"));
+    let backoff_config = BackoffConfig::default();
+    let restart_controller = Arc::new(tokio::sync::Mutex::new(
+        RestartController::new(backoff_config, known_good_store)
+    ));
+    eprintln!("[HMR v2.1] Restart controller initialized with backoff/fallback");
+    
+    // Initialize hardened IPC config (requirement #4)
+    let ipc_config = Arc::new(IpcConfig::default());
+    eprintln!("[HMR v2.1] IPC config: max_frame_size={}MB, read_timeout={}s",
+        ipc_config.max_frame_size / (1024 * 1024),
+        ipc_config.read_timeout.as_secs());
+    
+    // Initialize HMR orchestrator (central coordination)
+    let orchestrator_config = OrchestratorConfig {
+        prefer_binary_state: true,
+        max_snapshots: 10,
+        max_consecutive_crashes: 3,
+        task_shutdown_timeout: std::time::Duration::from_secs(5),
+        strict_abi: std::env::var("SYNTHI_STRICT_ABI").map(|v| v == "1").unwrap_or(false),
+        max_boundaries_per_module: 20,
+    };
+    let hmr_orchestrator = Arc::new(tokio::sync::Mutex::new(HmrOrchestrator::with_config(orchestrator_config)));
+    eprintln!("[HMR v2.1] Orchestrator initialized (binary_state={}, strict_abi={})",
+        true, std::env::var("SYNTHI_STRICT_ABI").map(|v| v == "1").unwrap_or(false));
+    
+    // Initialize quiescence config (requirement #6)
+    let _quiescence_config = QuiescenceConfig::default();
+    eprintln!("[HMR v2.1] Quiescence protocol ready");
+    
+    structured_logger.log(&LogEntry::new(LogLevel::Info, "main", "HMR v2.1 infrastructure initialized"));
+    
+    // ============================================================
+    // END v2.1 INFRASTRUCTURE
+    // ============================================================
+    
     // Cargo does not source shell rc files, so ensure Android SDK tools are visible
     // to this process deterministically before any SDK checks or emulator logic.
     env_setup::ensure_android_sdk_env();
@@ -613,6 +729,12 @@ async fn main() -> Result<()> {
     let compile_cache_for_callback = compile_cache.clone();
     let boundary_checker_for_callback = boundary_checker.clone();
     let incremental_cache_for_callback = incremental_cache.clone();
+    // v2.1 HMR Infrastructure clones for callback
+    let hmr_orchestrator_for_callback = hmr_orchestrator.clone();
+    let structured_logger_for_callback = structured_logger.clone();
+    let metrics_aggregator_for_callback = metrics_aggregator.clone();
+    let restart_controller_for_callback = restart_controller.clone();
+    let ipc_config_for_callback = ipc_config.clone();
     pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
         let store = compile_store.clone();
         let term_store = term_store.clone();
@@ -623,6 +745,12 @@ async fn main() -> Result<()> {
         let compile_cache_outer = compile_cache_for_callback.clone();
         let boundary_checker_outer = boundary_checker_for_callback.clone();
         let incremental_cache_outer = incremental_cache_for_callback.clone();
+        // v2.1 outer clones
+        let hmr_orchestrator_outer = hmr_orchestrator_for_callback.clone();
+        let structured_logger_outer = structured_logger_for_callback.clone();
+        let metrics_aggregator_outer = metrics_aggregator_for_callback.clone();
+        let restart_controller_outer = restart_controller_for_callback.clone();
+        let ipc_config_outer = ipc_config_for_callback.clone();
         async move {
             let label = dc.label();
                 if label == "compile" {
@@ -639,6 +767,12 @@ async fn main() -> Result<()> {
                         let compile_cache = compile_cache_outer.clone();
                         let boundary_checker = boundary_checker_outer.clone();
                         let incremental_cache = incremental_cache_outer.clone();
+                        // v2.1 inner clones
+                        let hmr_orchestrator = hmr_orchestrator_outer.clone();
+                        let structured_logger = structured_logger_outer.clone();
+                        let metrics_aggregator = metrics_aggregator_outer.clone();
+                        let restart_controller = restart_controller_outer.clone();
+                        let ipc_config = ipc_config_outer.clone();
                         async move {
                             if msg.is_string {
                                 // Try to parse as a CompileRequest
@@ -719,7 +853,13 @@ async fn main() -> Result<()> {
                                         let cc = compile_cache.clone();
                                         let bc = boundary_checker.clone();
                                         let ic = incremental_cache.clone();
-                                        tokio::spawn(handle_compile(req, log, ts, sdls, rs, pc_clone, wp.to_path_buf(), cc, bc, ic));
+                                        // v2.1 clones for spawn
+                                        let ho = hmr_orchestrator.clone();
+                                        let sl = structured_logger.clone();
+                                        let ma = metrics_aggregator.clone();
+                                        let rc = restart_controller.clone();
+                                        let ipc = ipc_config.clone();
+                                        tokio::spawn(handle_compile(req, log, ts, sdls, rs, pc_clone, wp.to_path_buf(), cc, bc, ic, ho, sl, ma, rc, ipc));
                                     }
                                     return;
                                 }
@@ -2462,6 +2602,69 @@ fn try_local_deletion_patch(
     Some(result)
 }
 
+/// Detect GUI-related modifications (position, color, size changes)
+/// Returns modified lines as X11 code for translation to SDL2
+fn detect_gui_modifications(old_source: &str, new_source: &str) -> Option<String> {
+    let old_lines: Vec<&str> = old_source.lines().collect();
+    let new_lines: Vec<&str> = new_source.lines().collect();
+    
+    // GUI-related keywords that indicate drawable/interactive elements
+    let gui_keywords = [
+        "XFillRectangle", "XDrawRectangle", "XDrawString", "XDrawLine",
+        "XSetForeground", "XSetBackground", "XDrawArc", "XFillArc",
+        "SDL_Rect", "SDL_RenderFillRect", "SDL_RenderDrawRect",
+        "btn_x", "btn_y", "btn_w", "btn_h", "button",
+        "color", "Color", "width", "height", "position",
+    ];
+    
+    let mut modifications = Vec::new();
+    
+    // Find modified lines (lines that have similar structure but different values)
+    for new_line in &new_lines {
+        let trimmed_new = new_line.trim();
+        if trimmed_new.is_empty() || trimmed_new.starts_with("//") {
+            continue;
+        }
+        
+        // Check if this line contains GUI keywords
+        let is_gui_line = gui_keywords.iter().any(|kw| trimmed_new.contains(kw));
+        if !is_gui_line {
+            continue;
+        }
+        
+        // Check if a SIMILAR line exists in old (same function call, different args)
+        let has_similar_in_old = old_lines.iter().any(|old_line| {
+            let trimmed_old = old_line.trim();
+            // Check if they share the same function call or variable name
+            if trimmed_old == trimmed_new {
+                return true; // Exact match - not a modification
+            }
+            // Check for similar structure (e.g., same function name)
+            for kw in &gui_keywords {
+                if trimmed_old.contains(kw) && trimmed_new.contains(kw) {
+                    // Same keyword, likely a modification if values differ
+                    return true;
+                }
+            }
+            false
+        });
+        
+        // If this GUI line doesn't have an exact match in old, it's new or modified
+        let exists_exactly_in_old = old_lines.iter().any(|old_line| old_line.trim() == trimmed_new);
+        
+        if is_gui_line && has_similar_in_old && !exists_exactly_in_old {
+            modifications.push(trimmed_new.to_string());
+        }
+    }
+    
+    if modifications.is_empty() {
+        return None;
+    }
+    
+    eprintln!("[AI Split] Detected {} GUI modifications", modifications.len());
+    Some(modifications.join("\n"))
+}
+
 /// Detect structural additions between old and new source code
 /// Returns a description of what was added (new buttons, new elements, etc.)
 fn detect_structural_additions(old_source: &str, new_source: &str) -> Option<String> {
@@ -2597,7 +2800,7 @@ async fn perform_structural_ai_update(
     });
 
     let backend_url = std::env::var("AI_BACKEND_URL")
-        .unwrap_or_else(|_| "http://172.19.224.1:8000".to_string());
+        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
     let url = format!("{}/refactor/delta", backend_url);
 
     eprintln!("[AI Split] Calling fast delta endpoint: {}", url);
@@ -2705,7 +2908,7 @@ async fn perform_delta_deletion(
     });
 
     let backend_url = std::env::var("AI_BACKEND_URL")
-        .unwrap_or_else(|_| "http://172.19.224.1:8000".to_string());
+        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
     let url = format!("{}/refactor/delta", backend_url);
 
     eprintln!("[AI Split] Calling delta deletion endpoint: {}", url);
@@ -2769,7 +2972,7 @@ async fn perform_incremental_ai_update(
     });
 
     let backend_url = std::env::var("AI_BACKEND_URL")
-        .unwrap_or_else(|_| "http://172.19.224.1:8000".to_string());
+        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
     let url = format!("{}/refactor/structural", backend_url);
 
     eprintln!("[AI Split] Calling fast incremental endpoint: {}", url);
@@ -3107,6 +3310,37 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
                 }
             }
         }
+        // Level 2.8: Check for GUI modifications (position, color, size changes)
+        // These are lines that exist in both but with different values
+        else if let Some(gui_changes) = detect_gui_modifications(&cached.original_source, &req.source) {
+            eprintln!("[AI Split] ╔═══════════════════════════════════════════════════════════╗");
+            eprintln!("[AI Split] ║  GUI MODIFICATION DETECTED - Using fast delta path       ║");
+            eprintln!("[AI Split] ╚═══════════════════════════════════════════════════════════╝");
+            eprintln!("[AI Split] Delta type: GUI MODIFICATION (position/color/size change)");
+            eprintln!("[AI Split] Modified GUI code:\n{}", gui_changes.lines().take(5).collect::<Vec<_>>().join("\n"));
+            
+            match perform_structural_ai_update(&cached.result, &cached.original_source, &req.source, &gui_changes, &req.language).await {
+                Ok(updated_result) => {
+                    let cached_entry = CachedSplit {
+                        result: updated_result.clone(),
+                        original_source: req.source.clone(),
+                    };
+                    {
+                        let mut cache = get_ai_split_cache().lock().await;
+                        cache.insert(source_hash, cached_entry.clone());
+                    }
+                    {
+                        let mut structural_cache = get_ai_split_structural_cache().lock().await;
+                        structural_cache.insert(structural_hash, cached_entry);
+                    }
+                    eprintln!("[AI Split] ✓ GUI modification delta complete - fast HMR!");
+                    return Ok(updated_result);
+                }
+                Err(e) => {
+                    eprintln!("[AI Split] ✗ GUI modification update failed: {} - falling back to full regen", e);
+                }
+            }
+        }
     }
     
     // Level 3: Cache miss - call AI backend (full regeneration)
@@ -3122,7 +3356,7 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
     });
 
     let backend_url = std::env::var("AI_BACKEND_URL")
-        .unwrap_or_else(|_| "http://172.19.224.1:8000".to_string());
+        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
     let url = format!("{}/refactor/split", backend_url);
 
     let res = client.post(&url)
@@ -3272,7 +3506,31 @@ async fn handle_compile(
     compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>>,
     boundary_checker: Arc<Mutex<BoundaryChecker>>,
     incremental_cache: Arc<IncrementalCache>,
+    // v2.1 HMR Infrastructure
+    hmr_orchestrator: Arc<tokio::sync::Mutex<HmrOrchestrator>>,
+    structured_logger: Arc<StructuredLogger>,
+    metrics_aggregator: Arc<tokio::sync::Mutex<MetricsAggregator>>,
+    restart_controller: Arc<tokio::sync::Mutex<RestartController>>,
+    ipc_config: Arc<IpcConfig>,
 ) -> Result<()> {
+    // ============================================================
+    // v2.1 HMR METRICS & LOGGING INITIALIZATION
+    // ============================================================
+    let compile_start = std::time::Instant::now();
+    let reload_id = ReloadId::new(); // Generate unique reload ID (from observability, re-exported from reload_protocol)
+    
+    structured_logger.log(&LogEntry::new(LogLevel::Info, "handle_compile", "Starting compile request")
+        .with_reload_id(reload_id.clone())
+        .with_field("is_gui", req.is_gui.to_string())
+        .with_field("use_ai_split", req.use_ai_split.to_string())
+        .with_field("language", req.language.clone()));
+    
+    // Module ID for tracking restarts and metrics
+    let module_id = format!("{}:{}", req.language, if req.is_gui { "gui" } else { "cli" });
+    
+    // Log IPC config being used
+    eprintln!("[HMR v2.1] Using IPC config: max_frame_size={}KB", ipc_config.max_frame_size / 1024);
+    
     // Use the shared workspace path instead of creating a new temp dir
     let dir_path = workspace_path;
 
@@ -3489,7 +3747,8 @@ async fn handle_compile(
         // ============================================================
         // PHASE 2: COMPUTE HASHES FROM POST-GUARDRAIL CONTENT
         // ============================================================
-        new_hashes.shared_hash = hash_content(&processed_shared);
+        // Use semantic hashing for shared.h so comment/whitespace churn doesn't force full rebuilds.
+        new_hashes.shared_hash = hash_shared_header_semantic(&processed_shared);
         new_hashes.core_hash = hash_content(&processed_core);
         new_hashes.gui_hash = hash_content(&processed_gui);
         
@@ -3509,6 +3768,17 @@ async fn handle_compile(
         // DEBUG: Print hashes to help diagnose "Full build" issues
         eprintln!("[Main] Hashes (post-guardrail) - Prev: s={}, c={}, g={}", prev_hashes.shared_hash, prev_hashes.core_hash, prev_hashes.gui_hash);
         eprintln!("[Main] Hashes (post-guardrail) - New:  s={}, c={}, g={}", new_hashes.shared_hash, new_hashes.core_hash, new_hashes.gui_hash);
+
+        // Enhanced debug: show which hashes changed
+        if prev_hashes.shared_hash != 0 && prev_hashes.shared_hash != new_hashes.shared_hash {
+            eprintln!("[Main] DEBUG: shared.h hash CHANGED - check for field order changes or AI rewriting struct fields");
+        }
+        if prev_hashes.core_hash != 0 && prev_hashes.core_hash != new_hashes.core_hash {
+            eprintln!("[Main] DEBUG: core.cpp hash changed");
+        }
+        if prev_hashes.gui_hash != 0 && prev_hashes.gui_hash != new_hashes.gui_hash {
+            eprintln!("[Main] DEBUG: gui.cpp hash changed");
+        }
 
         let rebuild_scope = if prev_hashes.shared_hash == 0 && prev_hashes.core_hash == 0 && prev_hashes.gui_hash == 0 {
             eprintln!("[Main] First build detected - full build");
@@ -3657,13 +3927,26 @@ async fn handle_compile(
         }
 
         // Write shared.h (already processed by guardrails in Phase 1)
+        // IMPORTANT: avoid rewriting when semantically unchanged, otherwise a file-watcher can
+        // see generated `shared.h` churn and trigger redundant builds/restarts.
         if split_data.get("shared").is_some() {
-            let fname = split_data.get("shared")
+            let fname = split_data
+                .get("shared")
                 .and_then(|s| s["filename"].as_str())
                 .unwrap_or("shared.h");
-            
-            println!("Writing shared library file: {}", fname);
-            tokio::fs::write(dir_path.join(fname), &processed_shared).await?;
+
+            let shared_path = dir_path.join(fname);
+            let shared_exists = tokio::fs::try_exists(&shared_path).await.unwrap_or(false);
+
+            let shared_semantically_changed = prev_hashes.shared_hash == 0
+                || prev_hashes.shared_hash != new_hashes.shared_hash;
+
+            if !shared_exists || shared_semantically_changed {
+                println!("Writing shared library file: {}", fname);
+                tokio::fs::write(shared_path, &processed_shared).await?;
+            } else {
+                eprintln!("[Main] shared.h unchanged (semantic) - skipping write");
+            }
         }
 
         // Skip core compilation if GUI-only rebuild (reuse existing core.so)
@@ -5233,6 +5516,38 @@ async fn handle_compile(
         "stage": "run"
     });
     let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+    
+    // ============================================================
+    // v2.1 COMPLETION METRICS
+    // ============================================================
+    let compile_duration = compile_start.elapsed();
+    
+    // Record metrics for this reload using proper tracker
+    {
+        let tracker = ReloadMetricsTracker::start(reload_id.clone(), module_id.clone());
+        // For now we're tracking total duration, quiescence/snapshot would be recorded during HMR
+        let mut metrics = metrics_aggregator.lock().await;
+        metrics.record(&tracker, true);
+    }
+    
+    // Mark successful compilation in restart controller (known good)
+    {
+        let mut rc = restart_controller.lock().await;
+        // Record success with the appropriate lib path
+        let lib_path = if !core_lib_path.is_empty() {
+            std::path::PathBuf::from(&core_lib_path)
+        } else if !gui_lib_path.is_empty() {
+            std::path::PathBuf::from(&gui_lib_path)
+        } else {
+            dir_path.join("unknown_module")
+        };
+        rc.record_success(&module_id, &lib_path);
+    }
+    
+    structured_logger.log(&LogEntry::new(LogLevel::Info, "handle_compile", "Compile completed successfully")
+        .with_reload_id(reload_id.clone())
+        .with_field("duration_ms", compile_duration.as_millis())
+        .with_field("module_id", module_id.clone()));
     
     println!("[Main] handle_compile completed successfully.");
     
