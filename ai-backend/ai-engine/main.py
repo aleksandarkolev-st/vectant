@@ -531,11 +531,22 @@ async def analyze_unified(req: UnifiedAnalysisRequest):
     
     # Compute content hash for client-side caching
     content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+
+    # Content fingerprinting for stale/shift debugging (no code is returned, only counts)
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    split_lines = normalized.split("\n")
+    leading_blank_lines = 0
+    while leading_blank_lines < len(split_lines) and split_lines[leading_blank_lines] == "":
+        leading_blank_lines += 1
+
     lines = content.splitlines()
     first_line = lines[0] if lines else ''
-    
+    used_content_override = req.content is not None
+
     # Condensed request logging
-    logger.info(f"[UNIFIED] {req.file_path} | v={req.version} | {len(content)} chars | hash={content_hash} | layers={req.layers or ['static', 'semantic']} | first=\"{first_line[:50]}\"")
+    logger.info(
+        f"[UNIFIED] {req.file_path} | v={req.version} | {len(content)} chars | hash={content_hash} | lines={len(split_lines)} | lead_blank={leading_blank_lines} | override={used_content_override} | layers={req.layers or ['static', 'semantic']} | first=\"{first_line[:50]}\""
+    )
     
     # Determine which tiers to run (map layers to proactive tiers)
     layers = list(req.layers or ["static", "semantic"])
@@ -757,6 +768,11 @@ async def analyze_unified(req: UnifiedAnalysisRequest):
             "layers_run": layers_run,
             "content_hash": content_hash,
             "version": req.version,  # Echo back for stale detection
+            "content_debug": {
+                "line_count": len(split_lines),
+                "leading_blank_lines": leading_blank_lines,
+                "used_content_override": used_content_override,
+            },
         }
         
     except Exception as e:

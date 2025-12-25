@@ -690,7 +690,19 @@ Do NOT report missing includes for these symbols:
         
         # If snippet not found exactly, highlight the full line range
         if not snippet_found:
+            # If the line number from LLM is 0-based, it might be referring to a trimmed version
+            # But we are working with full_code here.
+            # If the line is empty, try to find the nearest non-empty line?
+            # No, that's dangerous. Better to just validate if the line has content.
+            
             start_line_content = lines[line_num] if line_num < len(lines) else ""
+            
+            # CRITICAL FIX: If the target line is empty/whitespace, do NOT attach an error to it.
+            # This happens when LLM sees a trimmed version or gets line numbers wrong.
+            if not start_line_content.strip():
+                print(f"[AIErrorPredictor] Skipping diagnostic on empty line {line_num}: {message}")
+                return None
+
             end_line_content = lines[end_line_num] if end_line_num < len(lines) else ""
             
             # Start at first non-whitespace character
@@ -724,6 +736,12 @@ Do NOT report missing includes for these symbols:
                     original_text = '\n'.join(text_parts)
             except Exception:
                 original_text = None
+        
+        # CRITICAL: Filter out diagnostics that point to purely whitespace
+        # This prevents "ghost errors" on blank lines where code used to be
+        if original_text and not original_text.strip():
+            print(f"[AIErrorPredictor] Skipping diagnostic on whitespace: {message}")
+            return None
         
         # Build diagnostic
         diagnostic = Diagnostic(

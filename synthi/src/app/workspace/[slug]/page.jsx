@@ -87,6 +87,48 @@ export default function EditorPage({ params }) {
     const lastAnalyzedHashMapRef = useRef(new Map());
     // Version counter for stale detection - increments on each edit
     const docVersionRef = useRef(0);
+    const lastActiveFilePathRef = useRef('');
+
+    const normalizePath = useCallback((p) => {
+        if (!p) return '';
+        return p.replace(/^[./\\]+/, '').replace(/\\/g, '/').toLowerCase();
+    }, []);
+
+    const handleAiDiagnosticsRecalibrated = useCallback((filePath, updates) => {
+        if (!filePath || !Array.isArray(updates) || updates.length === 0) return;
+
+        const target = normalizePath(filePath);
+        const updateMap = new Map(
+            updates
+                .filter(u => u && (u.__id || u.id) && u.location)
+                .map(u => [u.__id || u.id, u.location])
+        );
+
+        if (updateMap.size === 0) return;
+
+        setDiagnostics(prev => {
+            let changed = false;
+            const next = prev.map(d => {
+                const dPath = normalizePath(d.filePath || d.file || '');
+                if (dPath !== target) return d;
+                const isAi = d.tier === 'ai' || (d.source && String(d.source).toLowerCase().includes('ai'));
+                if (!isAi) return d;
+                const key = d.__id || d.id;
+                if (!key) return d;
+                const nextLoc = updateMap.get(key);
+                if (!nextLoc) return d;
+                changed = true;
+                return {
+                    ...d,
+                    location: {
+                        ...(d.location || {}),
+                        ...nextLoc,
+                    },
+                };
+            });
+            return changed ? next : prev;
+        });
+    }, [normalizePath]);
     
     // Multi-file workspace analysis (cross-file issue detection)
     const {
@@ -448,20 +490,36 @@ export default function EditorPage({ params }) {
     // Subscribe to editor changes to force re-analysis even for remote changes or undo/redo
     useEffect(() => {
         if (!editor) return;
-        
+
         const disposable = editor.onDidChangeModelContent(() => {
             setEditorVersion(v => v + 1);
         });
-        
-        return () => disposable.dispose();
+
+        // Important: Monaco/Yjs may apply an initial sync update immediately after the editor instance
+        // is created, before we can attach onDidChangeModelContent. Force a short re-check to avoid
+        // analyzing an old snapshot and pinning diagnostics to the wrong lines.
+        setEditorVersion(v => v + 1);
+        const recheckTimer = setTimeout(() => {
+            setEditorVersion(v => v + 1);
+        }, 250);
+
+        return () => {
+            disposable.dispose();
+            clearTimeout(recheckTimer);
+        };
     }, [editor]);
 
     useEffect(() => {
         if (!activeFile || !hasLoadedInitialFile || !slug) return;
         
-        // Ensure content is available
-        // Use editor content if available to catch remote changes that don't update Redux
-        const contentToAnalyze = editor ? editor.getValue() : (typeof currentContent === 'string' ? currentContent : '');
+        // Get content from Monaco if available, falling back to Redux
+        // IMPORTANT: On initial load, Monaco might not have Y.js synced changes yet.
+        // We use a small delay to allow Y.js to sync before running analysis.
+        const getContentToAnalyze = () => {
+            return editor ? editor.getValue() : (typeof currentContent === 'string' ? currentContent : '');
+        };
+        
+        let contentToAnalyze = getContentToAnalyze();
         
         // GUARD: Skip analysis if content is empty - this likely means Y.js hasn't synced yet
         // or the file content hasn't been loaded from Redux. We'll re-trigger when content updates.
@@ -482,6 +540,28 @@ export default function EditorPage({ params }) {
         // Capture the content we're analyzing (for freshness checks)
         const contentHash = computeContentHash(contentToAnalyze);
         const currentFilePath = activeFile?.path || activeFile?.name || 'untitled';
+
+        // Always analyze when a file is opened / becomes active, even if its content hash
+        // matches the last analysis. This avoids stale/ghost diagnostics across refresh/tab switches.
+        const prevPath = lastActiveFilePathRef.current;
+        const isFileSwitch = prevPath !== currentFilePath;
+        lastActiveFilePathRef.current = currentFilePath;
+
+        // VFS correctness: when a file becomes active, never show cached/stale diagnostics
+        // that were computed for an older Monaco/Yjs snapshot. Clear this file's diagnostics
+        // immediately and let the next unified analysis repopulate.
+        if (isFileSwitch) {
+            const currentNorm = normalizePath(currentFilePath);
+            setDiagnostics(prev => prev.filter(d => {
+                const diagPath = d?.filePath || d?.file || d?.path || '';
+                if (!diagPath) return true;
+                return normalizePath(diagPath) !== currentNorm;
+            }));
+
+            // Force a fresh analysis even if we previously analyzed the same hash.
+            lastAnalyzedHashMapRef.current.delete(currentFilePath);
+            lastProactiveSignatureRef.current = '';
+        }
         
         // DEBUG: Log content hash and preview to trace stale content issues
         // console.log(`[page.jsx] Content changed - Hash: ${contentHash}, Length: ${contentToAnalyze.length}`);
@@ -491,23 +571,34 @@ export default function EditorPage({ params }) {
         
         // If content hasn't changed since last analysis (e.g. just switched tabs back),
         // DO NOT clear diagnostics and DO NOT trigger new analysis.
-        if (lastAnalyzedHash === contentHash) {
+        if (lastAnalyzedHash === contentHash && !isFileSwitch) {
             // console.log(`[page.jsx] Skipping analysis - content hash matches last analysis for ${currentFilePath}`);
             return;
         }
         
-        // If content changed (or first load), we used to clear diagnostics immediately.
-        // BUT, to support "shifting errors" (where markers move with text), we must NOT clear them here.
-        // Instead, we let Monaco handle the marker positions until the new analysis arrives.
+        // Secure behavior: diagnostics are tied to a specific file snapshot.
+        // Monaco markers do NOT reliably "shift" with text edits, so keeping them after edits
+        // can pin errors to the wrong lines/columns (ghost underlines).
+        // We clear diagnostics for the active file immediately and rely on the next analysis
+        // result (validated via content-hash staleness checks) to repopulate them.
         if (lastAnalyzedHash !== contentHash) {
-            // console.log(`[page.jsx] Content changed for ${currentFilePath} (Hash: ${lastAnalyzedHash?.substring(0,8)} -> ${contentHash.substring(0,8)}) - keeping diagnostics for shifting`);
-            
             // Increment version counter for stale detection
             docVersionRef.current++;
 
-            // Clear ONLY AI diagnostics to prevent stale logic errors
-            // Keep static/semantic for shifting as they are more robust to small edits
-            setDiagnostics(prev => prev.filter(d => d.tier !== 'ai'));
+            // On any edit, immediately clear *non-AI* diagnostics for the active file.
+            // AI diagnostics are kept and visually tracked to the underlying content
+            // until the next AI analysis result arrives.
+            setDiagnostics(prev => {
+                const currentNorm = normalizePath(currentFilePath);
+                return prev.filter(d => {
+                    const diagPath = d.filePath || d.file || '';
+                    if (!diagPath) return false;
+                    const isSameFile = normalizePath(diagPath) === currentNorm;
+                    if (!isSameFile) return true;
+                    const isAi = d.tier === 'ai' || (d.source && String(d.source).toLowerCase().includes('ai'));
+                    return isAi;
+                });
+            });
         }
         
         // Update the last analyzed hash map immediately so we don't re-trigger if effect runs again
@@ -520,15 +611,33 @@ export default function EditorPage({ params }) {
         const requestVersion = docVersionRef.current;
 
         // Debounce proactive analysis.
-        // Since we now send content explicitly, we don't need to wait for Y.js flush (150ms).
-        // Using 50ms to be very responsive ("on any code change").
+        // Using 100ms to allow Y.js to sync before analysis runs.
         proactiveTimeoutRef.current = setTimeout(async () => {
+            // RE-READ CONTENT AT ANALYSIS TIME
+            // This is crucial: content might have changed (e.g., Y.js sync) since
+            // the effect started. Always use the LATEST Monaco content.
+            const freshContent = getContentToAnalyze();
+            const freshContentHash = computeContentHash(freshContent);
+            
+            // If content is empty now, skip (Y.js might still be syncing)
+            if (freshContent.length === 0) {
+                console.log('[page.jsx] Skipping analysis - content became empty, waiting for sync');
+                return;
+            }
+            
+            // DEBUG: Detect if content changed significantly during debounce (indicates Y.js sync race)
+            if (contentHash !== freshContentHash) {
+                const initialLines = contentToAnalyze.split('\n').length;
+                const freshLines = freshContent.split('\n').length;
+                console.log(`[page.jsx] Content changed during debounce: initial ${initialLines} lines -> fresh ${freshLines} lines (using fresh)`);
+            }
+            
             const langSource =
                 activeFile.language ||
                 (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
                 'plaintext';
             const normalizedLang = langSource.toLowerCase();
-            const signature = `unified::${slug}::${currentFilePath}::${contentHash}`;
+            const signature = `unified::${slug}::${currentFilePath}::${freshContentHash}`;
 
             if (lastProactiveSignatureRef.current === signature) {
                 return;
@@ -536,11 +645,20 @@ export default function EditorPage({ params }) {
 
             setIsAnalyzingProactive(true);
             
+            // DEBUG: Log content preview to trace stale content issues
+            const contentLines = freshContent.split('\n');
+            const leadingBlankCount = contentLines.findIndex(l => l.trim() !== '');
+            const effectiveLeadingBlank = leadingBlankCount === -1 ? contentLines.length : leadingBlankCount;
+            
             console.log('[page.jsx] === UNIFIED INTELLIGENCE ANALYSIS START ===');
             console.log('[page.jsx] Slug:', slug);
             console.log('[page.jsx] File:', currentFilePath);
             console.log('[page.jsx] Language:', normalizedLang);
             console.log('[page.jsx] Version:', requestVersion);
+            console.log('[page.jsx] Content chars:', freshContent.length);
+            console.log('[page.jsx] Content lines:', contentLines.length);
+            console.log('[page.jsx] Leading blank lines:', effectiveLeadingBlank);
+            console.log('[page.jsx] First non-blank line:', contentLines[effectiveLeadingBlank]?.substring(0, 50) || 'N/A');
             console.log('[page.jsx] NOTE: Using unified pipeline with semantic analysis');
             
             // Use the new unified intelligence pipeline
@@ -551,11 +669,11 @@ export default function EditorPage({ params }) {
                 slug,
                 filePath: currentFilePath,
                 lang: normalizedLang,
-                content: contentToAnalyze,
-                layers: ['static', 'semantic'], // Include semantic layer for full analysis
-                triggerAiOnErrors: true,        // Auto-trigger AI if errors found
-                includeAi: false,               // Don't force AI, let it trigger automatically
-                version: contentHash,           // Use content hash for robust stale detection
+                content: freshContent,
+                layers: ['static', 'semantic', 'ai'],
+                triggerAiOnErrors: false,
+                includeAi: true,
+                version: freshContentHash,           // Use content hash for robust stale detection
             })
                 .then((result) => {
                     // STALE DETECTION: Check if version (hash) matches current content hash
@@ -577,14 +695,44 @@ export default function EditorPage({ params }) {
                     console.log('[page.jsx] Summary:', result?.summary);
                     console.log('[page.jsx] Time:', result?.analysis_time_ms, 'ms');
                     console.log('[page.jsx] Content hash from server:', result?.content_hash);
+
+                    // DEBUG: Backend echo of what it actually analyzed
+                    if (result?.content_debug) {
+                        console.log('[page.jsx] Backend content_debug:', result.content_debug);
+                    }
                     
                     const diags = result?.diagnostics || [];
                     console.log('[page.jsx] Diagnostics count:', diags.length);
                     
                     // DEBUG: Print every error and the code line it refers to
-                    // Use currentContent which is what was being edited
-                    const sourceLines = (typeof currentContent === 'string' ? currentContent : '').split('\n');
+                    // Use currentEditorContent which is the most up-to-date content from Monaco
+                    const sourceLines = (typeof currentEditorContent === 'string' ? currentEditorContent : '').split('\n');
                     console.log('[page.jsx] Current content lines:', sourceLines.length);
+
+                    // SECURITY GATE: If backend didn't analyze the same snapshot Monaco is showing,
+                    // do NOT apply any diagnostics. This avoids ghost/stale markers.
+                    const countLeadingEmpty = (lines) => {
+                        let n = 0;
+                        while (n < lines.length && lines[n] === '') n++;
+                        return n;
+                    };
+                    const editorLeadingEmpty = countLeadingEmpty(sourceLines);
+                    const backendDebug = result?.content_debug;
+                    if (
+                        backendDebug &&
+                        (backendDebug.line_count !== sourceLines.length || backendDebug.leading_blank_lines !== editorLeadingEmpty)
+                    ) {
+                        console.warn('[page.jsx] Rejecting diagnostics: backend analyzed different content fingerprint than Monaco shows');
+                        console.warn('[page.jsx]   Monaco:', { line_count: sourceLines.length, leading_blank_lines: editorLeadingEmpty });
+                        console.warn('[page.jsx]   Backend:', backendDebug);
+                        // Allow retry on next tick
+                        lastAnalyzedHashMapRef.current.delete(currentFilePath);
+                        setIsAnalyzingProactive(false);
+                        setTimeout(() => setEditorVersion(v => v + 1), 50);
+                        return;
+                    }
+
+                    let codeMismatchCount = 0;
                     diags.forEach((d, i) => {
                         const lineIdx = d.range?.start ?? d.location?.line ?? 0;
                         // Adjust for 0-based vs 1-based if needed (usually 0-based in API)
@@ -594,9 +742,19 @@ export default function EditorPage({ params }) {
                         console.log(`[page.jsx]     Backend code at line ${lineIdx}: "${d.codeAtLine || 'N/A'}"`);
                         if (codeLine.trim() !== (d.codeAtLine || '').trim()) {
                             console.warn(`[page.jsx]     ⚠️ CODE MISMATCH! Frontend and backend see different content!`);
+                            codeMismatchCount++;
                         }
                         console.log(`[page.jsx]     Source: ${d.source || d.tier}`);
                     });
+
+                    if (codeMismatchCount > 0) {
+                        console.warn(`[page.jsx] Rejecting diagnostics due to ${codeMismatchCount} codeAtLine mismatches`);
+                        // Allow retry; current snapshot should win
+                        lastAnalyzedHashMapRef.current.delete(currentFilePath);
+                        setIsAnalyzingProactive(false);
+                        setTimeout(() => setEditorVersion(v => v + 1), 50);
+                        return;
+                    }
                     
                     // Filter out stale diagnostics where originalText no longer matches current code
                     const filteredDiags = diags.filter(d => {
@@ -627,6 +785,20 @@ export default function EditorPage({ params }) {
                         } catch (e) {
                             return true; // Keep on error
                         }
+
+                        // FORCE FILTER: If an AI diagnostic points to purely whitespace, it is almost certainly a ghost error.
+                        // This overrides any other check because AI logic errors should not attach to empty space.
+                        // We check for 'ai' tier or source containing 'ai'.
+                        const isAiDiagnostic = d.tier === 'ai' || (d.source && d.source.toLowerCase().includes('ai'));
+                        if (isAiDiagnostic && !currentTextAtLocation.trim()) {
+                            console.log(`[page.jsx] Filtering ghost AI diagnostic on whitespace at line ${lineNum}`);
+                            return false;
+                        }
+                        
+                        // If originalText is missing, we can't verify staleness strictly.
+                        if (!d.originalText) {
+                            return true;
+                        }
                         
                         // If text changed, diagnostic is stale
                         const isStale = currentTextAtLocation !== d.originalText;
@@ -641,8 +813,12 @@ export default function EditorPage({ params }) {
                     console.log(`[page.jsx] After staleness filter: ${filteredDiags.length} diagnostics (removed ${diags.length - filteredDiags.length} stale)`);
                     
                     // Normalize diagnostics to consistent format
-                    const normalizedDiags = filteredDiags.map(d => ({
+                    const normalizedDiags = filteredDiags.map((d, idx) => ({
                         ...d,
+                        // Strict VFS snapshot gating: only render diagnostics that match
+                        // the exact Monaco snapshot the backend analyzed.
+                        __analysisVersion: result?.version ?? freshContentHash,
+                        __id: d.__id || d.id || `${contentHash}::${idx}`,
                         filePath: d.filePath || d.file || currentFilePath,
                         // Normalize location field for ProblemsPanel compatibility
                         // IMPORTANT: Use ?? instead of || to handle 0 as valid value
@@ -673,11 +849,17 @@ export default function EditorPage({ params }) {
                         console.log('[page.jsx] Setting', normalizedDiags.length, 'diagnostics for', currentFilePath);
                         return [...otherFileDiags, ...normalizedDiags];
                     });
+                    
+                    // Update hash map with the content we actually analyzed
+                    lastAnalyzedHashMapRef.current.set(currentFilePath, freshContentHash);
+                    
                     lastProactiveSignatureRef.current = signature;
                     setIsAnalyzingProactive(false);
                 })
                 .catch((err) => {
                     console.error('[page.jsx] Unified analysis failed:', err);
+                    // Allow retry if a transient/network error happened
+                    lastAnalyzedHashMapRef.current.delete(currentFilePath);
                     setIsAnalyzingProactive(false);
                 });
         }, 100); // 100ms debounce for responsiveness
@@ -997,6 +1179,7 @@ export default function EditorPage({ params }) {
             onEditorMount={handleEditorMount}
             analysisResult={lastResult}
             diagnostics={mergedDiagnostics}
+            onAiDiagnosticsRecalibrated={handleAiDiagnosticsRecalibrated}
             removeDiagnosticByLocation={removeDiagnosticByLocation}
             latestCompletion={latestCompletion}
             aiBusy={aiBusy}
