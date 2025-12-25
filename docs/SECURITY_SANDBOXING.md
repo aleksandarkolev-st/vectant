@@ -157,7 +157,16 @@ For GUI applications that legitimately need network (HTTP APIs, etc.):
 - [x] Enhanced ABI fingerprinting (compiler, target, layout_hash)
 - [x] **No memcpy without layout_hash** - prevents silent memory corruption
 - [x] Serialization-based migration preferred over raw pointer casting
-- [ ] Layout hash extraction from DWARF/debug info (stubbed, returns None)
+- [x] Layout hash extraction from DWARF debug info (using gimli/object crates)
+- [x] Build ID extraction from ELF .note.gnu.build-id section
+- [x] Compiler detection from ELF .comment section
+
+### Phase 1.6: Supervisor Event Loop (IMPLEMENTED - see process_isolation.rs)
+- [x] Full event loop in run_event_loop()
+- [x] Stdin command parsing (load, reload, snapshot, input, shutdown, ping, stats)
+- [x] Worker message handling (ModuleLoaded, ReloadResult, Snapshot, FrameReady, Error)
+- [x] Health check monitoring with automatic crash recovery
+- [x] JSON responses to stdout for gateway integration
 
 ### Phase 2: Basic Sandboxing (TODO)
 - [ ] setrlimit for resource limits

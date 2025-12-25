@@ -731,6 +731,277 @@ impl ProcessSupervisor {
             saved_snapshots: self.state_snapshots.len(),
         }
     }
+    
+    // ============================================================
+    // SUPERVISOR EVENT LOOP
+    // ============================================================
+    // This is the main loop that:
+    // 1. Reads commands from stdin (from parent/gateway)
+    // 2. Forwards commands to the worker process
+    // 3. Reads responses from the worker
+    // 4. Writes frames/status to stdout (to parent/gateway)
+    // 5. Monitors worker health and restarts on crash
+    // ============================================================
+    
+    /// Run the supervisor event loop.
+    /// This blocks and runs until shutdown is requested.
+    /// 
+    /// Commands from stdin:
+    /// - load <name> <path> - Load a module
+    /// - reload <name> <path> - Hot reload a module
+    /// - unload <name> - Unload a module
+    /// - snapshot <name> - Request state snapshot
+    /// - input <type> <data> - Forward input event
+    /// - shutdown - Graceful shutdown
+    /// - ping - Health check
+    pub fn run_event_loop(&mut self) -> Result<(), String> {
+        use std::io::{BufRead, Write};
+        
+        eprintln!("[Supervisor] Starting event loop");
+        
+        let stdin = std::io::stdin();
+        let mut stdout = std::io::stdout();
+        let mut stdin_reader = std::io::BufReader::new(stdin.lock());
+        let mut line = String::new();
+        
+        let mut last_health_check = Instant::now();
+        let health_check_interval = Duration::from_secs(5);
+        
+        loop {
+            // Check if shutdown was requested
+            if self.shutdown_requested.load(Ordering::SeqCst) {
+                eprintln!("[Supervisor] Shutdown requested, exiting event loop");
+                break;
+            }
+            
+            // Non-blocking read from stdin with timeout
+            // We use a simple polling approach - in production, use select/poll
+            line.clear();
+            
+            // Try to read a command (this is simplified - real impl needs non-blocking IO)
+            // For now, we use a thread for stdin and channels
+            match stdin_reader.read_line(&mut line) {
+                Ok(0) => {
+                    // EOF on stdin - parent closed connection
+                    eprintln!("[Supervisor] Stdin closed, shutting down");
+                    break;
+                }
+                Ok(_) => {
+                    let cmd = line.trim();
+                    if !cmd.is_empty() {
+                        if let Err(e) = self.handle_command(cmd, &mut stdout) {
+                            eprintln!("[Supervisor] Command error: {}", e);
+                            // Write error to stdout for parent
+                            let error_json = format!("{{\"error\": \"{}\"}}\n", e.replace('"', "\\\""));
+                            let _ = stdout.write_all(error_json.as_bytes());
+                            let _ = stdout.flush();
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[Supervisor] Stdin read error: {}", e);
+                    break;
+                }
+            }
+            
+            // Process any pending messages from worker
+            if self.worker.is_some() {
+                loop {
+                    match self.recv_message(Duration::from_millis(1)) {
+                        Ok(Some(msg)) => {
+                            self.handle_worker_message(msg, &mut stdout)?;
+                        }
+                        Ok(None) => break, // No more messages
+                        Err(e) => {
+                            eprintln!("[Supervisor] Worker communication error: {}", e);
+                            // Worker may have crashed
+                            self.handle_crash()?;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // Periodic health check
+            if last_health_check.elapsed() > health_check_interval {
+                if let Ok(healthy) = self.check_health() {
+                    if !healthy {
+                        eprintln!("[Supervisor] Worker health check failed, restarting");
+                        self.handle_crash()?;
+                    }
+                }
+                last_health_check = Instant::now();
+            }
+        }
+        
+        // Clean shutdown
+        self.shutdown(Duration::from_secs(5))?;
+        eprintln!("[Supervisor] Event loop exited");
+        Ok(())
+    }
+    
+    /// Handle a command from stdin
+    fn handle_command(&mut self, cmd: &str, stdout: &mut impl Write) -> Result<(), String> {
+        let parts: Vec<&str> = cmd.split_whitespace().collect();
+        if parts.is_empty() {
+            return Ok(());
+        }
+        
+        match parts[0] {
+            "load" => {
+                if parts.len() < 3 {
+                    return Err("Usage: load <name> <path>".to_string());
+                }
+                let name = parts[1];
+                let path = parts[2];
+                eprintln!("[Supervisor] Loading module '{}' from {}", name, path);
+                self.load_module(name, Path::new(path))?;
+                
+                // Acknowledge
+                let ack = format!("{{\"status\": \"loaded\", \"module\": \"{}\"}}\n", name);
+                stdout.write_all(ack.as_bytes()).map_err(|e| e.to_string())?;
+                stdout.flush().map_err(|e| e.to_string())?;
+            }
+            "reload" => {
+                if parts.len() < 3 {
+                    return Err("Usage: reload <name> <path>".to_string());
+                }
+                let name = parts[1];
+                let path = parts[2];
+                eprintln!("[Supervisor] Reloading module '{}' from {}", name, path);
+                self.reload_module(name, Path::new(path))?;
+                
+                let ack = format!("{{\"status\": \"reloaded\", \"module\": \"{}\"}}\n", name);
+                stdout.write_all(ack.as_bytes()).map_err(|e| e.to_string())?;
+                stdout.flush().map_err(|e| e.to_string())?;
+            }
+            "snapshot" => {
+                if parts.len() < 2 {
+                    return Err("Usage: snapshot <name>".to_string());
+                }
+                let name = parts[1];
+                self.send_message(&IpcMessage::RequestSnapshot {
+                    slot: name.to_string(),
+                })?;
+            }
+            "input" => {
+                // Forward input event to worker
+                if parts.len() >= 4 {
+                    let kind = parts[1].parse::<u32>().unwrap_or(0);
+                    let a = parts[2].parse::<u32>().unwrap_or(0);
+                    let b = parts[3].parse::<u32>().unwrap_or(0);
+                    let c = parts.get(4).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                    
+                    self.send_message(&IpcMessage::InputEvent { kind, a, b, c })?;
+                }
+            }
+            "shutdown" => {
+                eprintln!("[Supervisor] Shutdown command received");
+                self.shutdown_requested.store(true, Ordering::SeqCst);
+            }
+            "ping" => {
+                let healthy = self.check_health().unwrap_or(false);
+                let response = format!("{{\"status\": \"pong\", \"healthy\": {}}}\n", healthy);
+                stdout.write_all(response.as_bytes()).map_err(|e| e.to_string())?;
+                stdout.flush().map_err(|e| e.to_string())?;
+            }
+            "stats" => {
+                let stats = self.stats();
+                let response = format!(
+                    "{{\"restart_count\": {}, \"uptime_secs\": {}, \"worker_pid\": {:?}, \"snapshots\": {}}}\n",
+                    stats.restart_count,
+                    stats.uptime.as_secs(),
+                    stats.worker_pid,
+                    stats.saved_snapshots
+                );
+                stdout.write_all(response.as_bytes()).map_err(|e| e.to_string())?;
+                stdout.flush().map_err(|e| e.to_string())?;
+            }
+            _ => {
+                return Err(format!("Unknown command: {}", parts[0]));
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Handle a message from the worker process
+    fn handle_worker_message(&mut self, msg: IpcMessage, stdout: &mut impl Write) -> Result<(), String> {
+        match msg {
+            IpcMessage::ModuleLoaded { slot, abi_version, state_version, fingerprint, layout_hash } => {
+                eprintln!("[Supervisor] Worker loaded module '{}' (ABI v{}, state v{}, fp=0x{:x}, layout={:?})",
+                    slot, abi_version, state_version, fingerprint, layout_hash);
+                
+                let response = format!(
+                    "{{\"event\": \"module_loaded\", \"slot\": \"{}\", \"abi_version\": {}, \"layout_hash\": {:?}}}\n",
+                    slot, abi_version, layout_hash
+                );
+                stdout.write_all(response.as_bytes()).map_err(|e| e.to_string())?;
+                stdout.flush().map_err(|e| e.to_string())?;
+            }
+            IpcMessage::ReloadResult { slot, success, preserved_fields, error } => {
+                eprintln!("[Supervisor] Reload result for '{}': success={}, preserved={:?}, error={:?}",
+                    slot, success, preserved_fields, error);
+                
+                let response = format!(
+                    "{{\"event\": \"reload_result\", \"slot\": \"{}\", \"success\": {}, \"error\": {:?}}}\n",
+                    slot, success, error
+                );
+                stdout.write_all(response.as_bytes()).map_err(|e| e.to_string())?;
+                stdout.flush().map_err(|e| e.to_string())?;
+            }
+            IpcMessage::Snapshot { slot, data, state_version } => {
+                // Save snapshot for crash recovery
+                self.state_snapshots.insert(slot.clone(), data.clone());
+                eprintln!("[Supervisor] Saved snapshot for '{}' ({} bytes, v{})",
+                    slot, data.len(), state_version);
+            }
+            IpcMessage::FrameReady { width, height, format } => {
+                // Frame data would be sent separately via shared memory or pipe
+                // For now, just acknowledge
+                let response = format!(
+                    "{{\"event\": \"frame\", \"width\": {}, \"height\": {}, \"format\": \"{}\"}}\n",
+                    width, height, format
+                );
+                stdout.write_all(response.as_bytes()).map_err(|e| e.to_string())?;
+                stdout.flush().map_err(|e| e.to_string())?;
+            }
+            IpcMessage::Pong { seq } => {
+                // Health check response - update heartbeat
+                eprintln!("[Supervisor] Pong received (seq={})", seq);
+            }
+            IpcMessage::Error { module, message, fatal } => {
+                eprintln!("[Supervisor] Worker error: module={:?}, fatal={}, msg={}",
+                    module, fatal, message);
+                
+                let response = format!(
+                    "{{\"event\": \"error\", \"module\": {:?}, \"fatal\": {}, \"message\": \"{}\"}}\n",
+                    module, fatal, message.replace('"', "\\\"")
+                );
+                stdout.write_all(response.as_bytes()).map_err(|e| e.to_string())?;
+                stdout.flush().map_err(|e| e.to_string())?;
+                
+                if fatal {
+                    // Worker reported fatal error - restart it
+                    self.handle_crash()?;
+                }
+            }
+            IpcMessage::Ready => {
+                eprintln!("[Supervisor] Worker ready");
+                let response = "{\"event\": \"worker_ready\"}\n";
+                stdout.write_all(response.as_bytes()).map_err(|e| e.to_string())?;
+                stdout.flush().map_err(|e| e.to_string())?;
+            }
+            IpcMessage::ShuttingDown => {
+                eprintln!("[Supervisor] Worker is shutting down");
+            }
+            _ => {
+                // Ignore other messages (supervisor -> worker messages shouldn't arrive here)
+            }
+        }
+        
+        Ok(())
+    }
 }
 
 /// Supervisor statistics

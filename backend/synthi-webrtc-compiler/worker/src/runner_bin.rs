@@ -579,10 +579,15 @@ fn main() {
                     std::process::exit(1);
                 }
                 
-                // Run supervisor event loop (not implemented yet - fall through for now)
-                // TODO: Implement full supervisor event loop
-                eprintln!("[Runner] [WARN] Supervisor event loop not fully implemented");
-                eprintln!("[Runner] [WARN] Falling through to in-process execution for now");
+                // Run the full supervisor event loop
+                eprintln!("[Runner] Supervisor started, entering event loop");
+                if let Err(e) = supervisor.run_event_loop() {
+                    eprintln!("[Runner] Supervisor event loop error: {}", e);
+                    std::process::exit(1);
+                }
+                
+                eprintln!("[Runner] Supervisor event loop completed, exiting");
+                std::process::exit(0);
             } else {
                 eprintln!("[Runner] Running as supervised worker process");
             }
