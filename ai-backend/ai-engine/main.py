@@ -564,10 +564,23 @@ async def analyze_unified(req: UnifiedAnalysisRequest):
     
     tiers = initial_tiers.copy()
     
+    # For FAST analysis (static/semantic), ignore comments but preserve all line/column
+    # positions by masking comment characters with spaces (newlines preserved).
+    # IMPORTANT: Keep the original `content` for debug/codeAtLine snapshot checks.
+    analysis_content = content
+    if AnalysisTier.AI not in tiers:
+        try:
+            from analyzer.comment_masker import mask_comments_for_analysis
+
+            analysis_content = mask_comments_for_analysis(content, req.lang)
+        except Exception:
+            # Never fail analysis due to comment masking.
+            analysis_content = content
+
     # Build file context for ProactiveAnalyzer
     file_context = FileContext(
         path=req.file_path,
-        content=content,
+        content=analysis_content,
         language=req.lang,
     )
     
@@ -633,8 +646,15 @@ async def analyze_unified(req: UnifiedAnalysisRequest):
                 ai_provider = select_provider()
                 ai_analyzer = get_proactive_analyzer(llm_provider=ai_provider)
                 
+                # AI analysis should see original source (comments included).
+                ai_file_context = FileContext(
+                    path=req.file_path,
+                    content=content,
+                    language=req.lang,
+                )
+
                 ai_request = AnalysisRequest(
-                    file=file_context,
+                    file=ai_file_context,
                     related_files=[],
                     tiers=[AnalysisTier.AI],
                     max_diagnostics=req.max_diagnostics or 50,
