@@ -104,6 +104,9 @@ Find bugs and design issues. Only report:
 5. Only report bugs you can PROVE with input → expected → actual
 6. For design issues, explain WHY the current design is problematic
 7. **Do NOT suggest adding #include when the symbol is already available via transitive includes**
+8. Do not report type mismatches if a conversion function (like `std::stoi`, `atoi`, casts) is used to match the expected type.
+9. Do not be misled by comments claiming an error exists; verify the code logic and types yourself.
+10. Report missing return statements at the function definition, not at the call site.
 
 ## RESPONSE FORMAT
 Return ONLY a JSON array:
@@ -322,7 +325,18 @@ class AIErrorPredictor:
         Returns:
             TierResult containing AI-generated diagnostics
         """
+        import hashlib
+        
         start_time = time.perf_counter()
+        
+        # === CONTENT VERIFICATION LOGGING (condensed) ===
+        content_hash = hashlib.md5(file.content.encode()).hexdigest()[:16]
+        content_length = len(file.content)
+        lines = file.content.splitlines()
+        first_line = lines[0] if lines else ''
+        last_line = lines[-1] if len(lines) > 1 else first_line
+        print(f"[AIPredictor] {file.path} | {content_length} chars | hash={content_hash} | lines={len(lines)} | first=\"{first_line[:60]}\" | last=\"{last_line[:60]}\"")
+        # === END CONTENT VERIFICATION LOGGING ===
         
         if self._provider is None:
             # No provider configured, skip AI analysis
@@ -454,6 +468,12 @@ Do NOT report missing includes for these symbols:
         existing_diagnostics: Optional[List[Diagnostic]],
     ) -> List[Diagnostic]:
         """Run the actual AI analysis."""
+        import hashlib
+        
+        # Condensed pre-LLM logging
+        content_hash = hashlib.md5(file.content.encode()).hexdigest()[:16]
+        lines = file.content.splitlines()
+        print(f"[AIPredictor._run_analysis] Sending to LLM: {file.path} | hash={content_hash} | {len(file.content)} chars | {len(lines)} lines")
         
         # Build include context for the prompt
         include_context = self._build_include_context(file, related_files)
@@ -478,6 +498,8 @@ Do NOT report missing includes for these symbols:
             mode="analyze",
         )
         
+        print(f"[AIPredictor] LLM response: {len(response)} chars")
+        
         # Parse the response
         diagnostics = self._parse_response(response, file)
         
@@ -487,6 +509,9 @@ Do NOT report missing includes for these symbols:
         
         # Filter by confidence
         diagnostics = [d for d in diagnostics if d.confidence >= self._min_confidence]
+        
+        # Validate diagnostics against actual code (catch LLM hallucinations)
+        diagnostics = self._validate_diagnostics(diagnostics, file.content)
         
         return diagnostics
     
@@ -520,6 +545,61 @@ Do NOT report missing includes for these symbols:
         
         return diagnostics
     
+    def _find_snippet_in_code(self, full_code: str, snippet: str) -> int:
+        """
+        Find the start index of a snippet in the code, ignoring whitespace differences.
+        Returns -1 if not found.
+        """
+        if not snippet:
+            return -1
+            
+        # 1. Try exact match first
+        idx = full_code.find(snippet)
+        if idx != -1:
+            return idx
+            
+        # 2. Try matching stripped lines
+        snippet_lines = [line.strip() for line in snippet.splitlines() if line.strip()]
+        if not snippet_lines:
+            return -1
+            
+        # Find the first line of the snippet in the code
+        first_line = snippet_lines[0]
+        start_pos = 0
+        
+        while True:
+            # Find next occurrence of the first line
+            # We search for the content, but we need to be careful about partial matches
+            found_idx = full_code.find(first_line, start_pos)
+            if found_idx == -1:
+                return -1
+                
+            # Verify the rest of the snippet matches
+            # We construct a "normalized" version of the candidate section in the code
+            # and compare it with the normalized snippet
+            
+            # Heuristic: Extract a chunk of code starting from found_idx
+            # The chunk size should be roughly the size of the snippet + some buffer for whitespace
+            chunk_size = len(snippet) * 2 
+            candidate_chunk = full_code[found_idx : found_idx + chunk_size]
+            
+            # Normalize both
+            norm_snippet = " ".join(snippet.split())
+            norm_candidate = " ".join(candidate_chunk.split())
+            
+            if norm_candidate.startswith(norm_snippet):
+                # Found it!
+                # Now we need to adjust found_idx to include the leading indentation of the line
+                # Walk backwards from found_idx while it's whitespace and not newline
+                actual_start = found_idx
+                while actual_start > 0 and full_code[actual_start-1] in ' \t':
+                    actual_start -= 1
+                return actual_start
+            
+            start_pos = found_idx + 1
+            
+        return -1
+
     def _parse_diagnostic_item(
         self,
         item: Dict[str, Any],
@@ -567,23 +647,33 @@ Do NOT report missing includes for these symbols:
         snippet = snippet.replace("\\n", "\n").replace("\\t", "\t")
         fix_snippet = fix_snippet.replace("\\n", "\n").replace("\\t", "\t")
         
+        print(f"[AIErrorPredictor] Parsing diagnostic: {message}")
+        print(f"  Snippet to find: {repr(snippet)}")
+        
         # Try to find the exact position of the snippet in the code
         column = 0
         end_column = 0
         snippet_found = False
         
         if snippet:
-            # First, try to find in the full code
-            snippet_idx = full_code.find(snippet)
+            # First, try to find in the full code using robust search
+            snippet_idx = self._find_snippet_in_code(full_code, snippet)
+            print(f"  Snippet found at index: {snippet_idx}")
+            
             if snippet_idx != -1:
-                # Found exact match - calculate line and column
-                lines_before = full_code[:snippet_idx].splitlines()
-                if lines_before:
-                    line_num = len(lines_before) - 1
-                    column = len(lines_before[-1]) if lines_before else 0
-                else:
-                    line_num = 0
+                # Found match - calculate line and column
+                # Count newlines to determine line number (more accurate than splitlines)
+                text_before = full_code[:snippet_idx]
+                line_num = text_before.count('\n')
+                
+                # Calculate column: find the position after the last newline
+                last_newline_idx = text_before.rfind('\n')
+                if last_newline_idx == -1:
+                    # No newline before snippet - it's on the first line
                     column = snippet_idx
+                else:
+                    # Column is distance from last newline to snippet
+                    column = snippet_idx - last_newline_idx - 1
                 
                 # Calculate end position
                 snippet_lines = snippet.splitlines()
@@ -596,17 +686,23 @@ Do NOT report missing includes for these symbols:
                 
                 snippet_found = True
             else:
-                # Try case-insensitive or normalized whitespace search
-                normalized_code = " ".join(full_code.split())
-                normalized_snippet = " ".join(snippet.split())
-                
-                if normalized_snippet in normalized_code:
-                    # Found with normalized whitespace - fall back to line-based
-                    snippet_found = False  # Will use line-based highlighting
+                print(f"  Snippet NOT found")
         
         # If snippet not found exactly, highlight the full line range
         if not snippet_found:
+            # If the line number from LLM is 0-based, it might be referring to a trimmed version
+            # But we are working with full_code here.
+            # If the line is empty, try to find the nearest non-empty line?
+            # No, that's dangerous. Better to just validate if the line has content.
+            
             start_line_content = lines[line_num] if line_num < len(lines) else ""
+            
+            # CRITICAL FIX: If the target line is empty/whitespace, do NOT attach an error to it.
+            # This happens when LLM sees a trimmed version or gets line numbers wrong.
+            if not start_line_content.strip():
+                print(f"[AIErrorPredictor] Skipping diagnostic on empty line {line_num}: {message}")
+                return None
+
             end_line_content = lines[end_line_num] if end_line_num < len(lines) else ""
             
             # Start at first non-whitespace character
@@ -640,6 +736,12 @@ Do NOT report missing includes for these symbols:
                     original_text = '\n'.join(text_parts)
             except Exception:
                 original_text = None
+        
+        # CRITICAL: Filter out diagnostics that point to purely whitespace
+        # This prevents "ghost errors" on blank lines where code used to be
+        if original_text and not original_text.strip():
+            print(f"[AIErrorPredictor] Skipping diagnostic on whitespace: {message}")
+            return None
         
         # Build diagnostic
         diagnostic = Diagnostic(
@@ -703,6 +805,98 @@ Do NOT report missing includes for these symbols:
             ))
         
         return diagnostic
+    
+    def _validate_diagnostics(
+        self,
+        diagnostics: List[Diagnostic],
+        full_code: str,
+    ) -> List[Diagnostic]:
+        """
+        Validate diagnostics against actual code to catch LLM hallucinations.
+        
+        This is critical for catching cases where the LLM reports issues that
+        don't actually exist in the code, such as:
+        - "Missing return statement" when the function has return 0;
+        - "Missing semicolon" when the line ends with ;
+        - "Undefined function" when the function is defined locally
+        """
+        validated = []
+        lines = full_code.splitlines()
+        
+        for diag in diagnostics:
+            message_lower = diag.message.lower()
+            loc = diag.location
+            should_reject = False
+            
+            # Get the actual code at the diagnostic location
+            line_num = loc.line
+            end_line = loc.end_line
+            
+            if line_num >= len(lines):
+                # Line doesn't exist - hallucination
+                print(f"[AI VALIDATION] Rejecting: line {line_num} doesn't exist (max {len(lines)-1})")
+                continue
+            
+            # Get the function context around the diagnostic location
+            # Look backwards to find function definition
+            context_lines = []
+            for i in range(max(0, line_num - 10), min(len(lines), end_line + 3)):
+                context_lines.append(lines[i])
+            context_code = '\n'.join(context_lines)
+            
+            # === VALIDATION RULES ===
+            
+            # Rule 1: "Missing return" but function has return statement
+            if 'missing return' in message_lower or 'no return' in message_lower:
+                # Look for return statement in the function context
+                has_return = any('return' in line and ';' in line for line in context_lines)
+                if has_return:
+                    print(f"[AI VALIDATION] Rejecting 'missing return': function has return statement")
+                    should_reject = True
+            
+            # Rule 2: "Missing semicolon" but line ends with semicolon
+            if not should_reject and ('missing semicolon' in message_lower or 'missing ;' in message_lower):
+                if line_num < len(lines):
+                    line_content = lines[line_num].rstrip()
+                    if line_content.endswith(';'):
+                        print(f"[AI VALIDATION] Rejecting 'missing semicolon': line ends with ;")
+                        should_reject = True
+            
+            # Rule 3: "Incomplete statement" - check if it's actually incomplete
+            if not should_reject and 'incomplete' in message_lower and 'statement' in message_lower:
+                if line_num < len(lines):
+                    line_content = lines[line_num].strip()
+                    # A complete statement typically ends with ; } or {
+                    if line_content.endswith((';', '{', '}')):
+                        print(f"[AI VALIDATION] Rejecting 'incomplete statement': line is complete")
+                        should_reject = True
+            
+            # Rule 4: Check if the snippet is a very short return-related fragment
+            # When the LLM reports something like snippet='return' with 'missing return value'
+            # but the code actually has 'return 0;', this is a hallucination
+            if not should_reject and diag.originalText:
+                snippet = diag.originalText.strip()
+                if len(snippet) < 10 and 'return' in snippet.lower():
+                    # Check if this is about a missing return value
+                    if 'missing' in message_lower and ('return' in message_lower or 'value' in message_lower):
+                        # Look for a complete return statement in context
+                        for line in context_lines:
+                            stripped = line.strip()
+                            if stripped.startswith('return ') and stripped.endswith(';'):
+                                print(f"[AI VALIDATION] Rejecting short return snippet: function has complete return statement")
+                                should_reject = True
+                                break
+            
+            if should_reject:
+                continue
+            
+            # Diagnostic passed validation
+            validated.append(diag)
+        
+        if len(validated) < len(diagnostics):
+            print(f"[AI VALIDATION] Filtered {len(diagnostics) - len(validated)} hallucinated diagnostics")
+        
+        return validated
     
     def _extract_json(self, text: str) -> Optional[str]:
         """Extract JSON array from LLM response."""
@@ -1019,10 +1213,19 @@ Do NOT report missing includes for these symbols:
             full_code = file.content
             snippet_idx = full_code.find(snippet)
             if snippet_idx != -1:
-                lines_before = full_code[:snippet_idx].splitlines()
-                if lines_before:
-                    line_num = len(lines_before) - 1
-                    column = len(lines_before[-1]) if lines_before else 0
+                # Count newlines to determine line number (more accurate than splitlines)
+                text_before = full_code[:snippet_idx]
+                line_num = text_before.count('\n')
+                
+                # Calculate column: find the position after the last newline
+                last_newline_idx = text_before.rfind('\n')
+                if last_newline_idx == -1:
+                    # No newline before snippet - it's on the first line
+                    column = snippet_idx
+                else:
+                    # Column is distance from last newline to snippet
+                    column = snippet_idx - last_newline_idx - 1
+                
                 snippet_lines = snippet.splitlines()
                 if len(snippet_lines) > 1:
                     end_line_num = line_num + len(snippet_lines) - 1

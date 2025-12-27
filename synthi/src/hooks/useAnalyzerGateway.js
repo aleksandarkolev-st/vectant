@@ -189,6 +189,153 @@ export function useAnalyzerGateway({
       setIsAnalyzing(false);
     }
   }, []);
+
+  /**
+   * Container-First proactive analysis (RECOMMENDED)
+   * 
+   * This endpoint does NOT send content from the client.
+   * The server fetches content directly from the container filesystem,
+   * ensuring the AI analyzes exactly what the compiler sees.
+   * 
+   * @param {Object} options - Analysis options
+   * @param {string} options.slug - Workspace slug (container ID)
+   * @param {string} options.filePath - File path within workspace
+   * @param {string} options.lang - The programming language
+   * @param {string[]} [options.relatedPaths] - Related file paths for cross-file analysis
+   * @param {boolean} [options.includeAi] - Whether to include AI analysis
+   * @param {string[]} [options.tiers] - Analysis tiers: 'static', 'semantic', 'ai'
+   * @param {Function} [options.onTierComplete] - Callback when a tier completes
+   */
+  const analyzeContainer = useCallback(async ({ slug, filePath, lang, relatedPaths, includeAi = false, tiers, onTierComplete, model, apiKey } = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet', 'The analyzer gateway client has not been initialized.');
+    }
+    if (!slug) {
+      throw new SynthiException('`slug` is required for container analysis', 'The workspace slug must be specified.');
+    }
+    if (!filePath) {
+      throw new SynthiException('`filePath` is required for container analysis', 'The file path must be specified.');
+    }
+    if (!lang) {
+      throw new SynthiException('`lang` is required for container analysis', 'The programming language must be specified.');
+    }
+    
+    setIsAnalyzing(true);
+    setLastError(null);
+    
+    try {
+      const payload = {
+        slug,
+        filePath,
+        lang: lang.toLowerCase(),
+        relatedPaths: relatedPaths || [],
+        includeAi,
+        tiers: tiers || (includeAi ? ['static', 'semantic', 'ai'] : ['static', 'semantic']),
+      };
+      
+      if (model) payload.model = model;
+      if (apiKey) payload.apiKey = apiKey;
+      
+      const options = {};
+      if (typeof onTierComplete === 'function') {
+        options.onTierComplete = onTierComplete;
+      }
+      
+      const response = await clientRef.current.analyzeContainer(payload, options);
+      console.log('[analyzeContainer] Raw response:', response);
+      const result = response?.data ?? response;
+      console.log('[analyzeContainer] Parsed result:', result);
+      setLastResult(result);
+      return result;
+    } catch (error) {
+      console.error('[analyzeContainer] Error:', error);
+      setLastError(error);
+      throw error;
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }, []);
+
+  /**
+   * Unified Intelligence Pipeline analysis (RECOMMENDED)
+   * 
+   * This is the preferred endpoint that combines:
+   * - Layer A: Static analysis (syntax patterns)
+   * - Layer B: Semantic analysis (CppSemanticAnalyzer, etc.)
+   * - Layer C: AI analysis (on-demand, triggered when errors found)
+   * 
+   * Content is fetched from the container filesystem - the client sends only paths.
+   * This ensures the AI analyzes exactly what the compiler sees.
+   * 
+   * @param {Object} options - Analysis options
+   * @param {string} options.slug - Workspace slug (container ID)
+   * @param {string} options.filePath - File path within workspace
+   * @param {string} options.lang - The programming language
+   * @param {string} [options.content] - The file content (optional, for unsaved changes)
+   * @param {number} [options.version] - Document version for stale detection
+   * @param {string[]} [options.layers] - Analysis layers: 'static', 'semantic', 'ai'
+   * @param {boolean} [options.includeAi] - Force include AI layer
+   * @param {boolean} [options.triggerAiOnErrors] - Auto-trigger AI if errors found (default: true)
+   * @param {Function} [options.onLayerComplete] - Callback when a layer completes
+   */
+  const analyzeUnified = useCallback(async ({ slug, filePath, lang, content, version, layers, includeAi = false, triggerAiOnErrors = true, onLayerComplete, model, apiKey } = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet', 'The analyzer gateway client has not been initialized.');
+    }
+    if (!slug) {
+      throw new SynthiException('`slug` is required for unified analysis', 'The workspace slug must be specified.');
+    }
+    if (!filePath) {
+      throw new SynthiException('`filePath` is required for unified analysis', 'The file path must be specified.');
+    }
+    if (!lang) {
+      throw new SynthiException('`lang` is required for unified analysis', 'The programming language must be specified.');
+    }
+    
+    setIsAnalyzing(true);
+    setLastError(null);
+    
+    try {
+      const payload = {
+        slug,
+        filePath,
+        lang: lang.toLowerCase(),
+        layers: layers || ['static', 'semantic'],
+        includeAi,
+        triggerAiOnErrors,
+      };
+      
+      if (content !== undefined) {
+        payload.content = content;
+      }
+      
+      // Include version for stale detection
+      if (typeof version === 'number' || typeof version === 'string') {
+        payload.version = version;
+      }
+      
+      if (model) payload.model = model;
+      if (apiKey) payload.apiKey = apiKey;
+      
+      const options = {};
+      if (typeof onLayerComplete === 'function') {
+        options.onLayerComplete = onLayerComplete;
+      }
+      
+      const response = await clientRef.current.analyzeUnified(payload, options);
+      console.log('[analyzeUnified] Raw response:', response);
+      const result = response?.data ?? response;
+      console.log('[analyzeUnified] Parsed result:', result);
+      setLastResult(result);
+      return result;
+    } catch (error) {
+      console.error('[analyzeUnified] Error:', error);
+      setLastError(error);
+      throw error;
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }, []);
   
 
   const resetResult = useCallback(() => setLastResult(null), []);
@@ -211,6 +358,8 @@ export function useAnalyzerGateway({
     analyzeCode,
     askAi,
     analyzeProactive,
+    analyzeContainer, // Container-First analysis
+    analyzeUnified,   // Unified Intelligence Pipeline (RECOMMENDED)
     resetResult,
     resetError,
     clientReady: Boolean(clientRef.current),

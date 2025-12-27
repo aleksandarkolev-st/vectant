@@ -126,6 +126,7 @@ const EditorPanel = ({
     onEditorMount,
     analysisResult,
     diagnostics = [],
+    onAiDiagnosticsRecalibrated,
     removeDiagnosticByLocation = null,
     latestCompletion,
     aiBusy = false,
@@ -176,6 +177,24 @@ const EditorPanel = ({
     // Track which file path the editor is currently bound to
     // This prevents stale onChange handlers from writing to the wrong file
     const boundFilePathRef = useRef(null);
+
+    // AI diagnostics are displayed as tracked decorations so they move with edits.
+    const aiDecorationIdsRef = useRef([]);
+    const aiDiagnosticKeysRef = useRef([]);
+    const aiRecalcRafRef = useRef(null);
+    const markerPruneInProgressRef = useRef(false);
+
+    // Same lightweight content hash as `page.jsx` (FNV-1a-ish).
+    // Used to gate diagnostics to the exact Monaco snapshot they were produced for.
+    const computeContentHash = useCallback((content) => {
+        if (typeof content !== 'string') return '00000000';
+        let hash = 2166136261;
+        for (let i = 0; i < content.length; i++) {
+            hash ^= content.charCodeAt(i);
+            hash = (hash * 16777619) >>> 0;
+        }
+        return hash.toString(16).padStart(8, '0');
+    }, []);
 
     // Animated tab indicator state - simple underline that slides
     const [tabIndicator, setTabIndicator] = useState({ left: 0, width: 0, visible: false });
@@ -519,6 +538,7 @@ const EditorPanel = ({
 
     // Hook up Yjs-based collaboration when an editor and activeFile are present.
     useEffect(() => {
+        console.log(`[Editor DEBUG] Collab effect triggered. ActiveFile: ${activeFile?.path}, Slug: ${slug}`);
         if (!editorInstance || !monacoInstance || !activeFile || !slug || isPrivateMode) {
             // Clear collab connected state if dependencies are missing
             setCollabConnected(false);
@@ -556,6 +576,8 @@ const EditorPanel = ({
             // Get content specifically for this file from the cache
             const cachedContent = fileCacheEntries.find(([path]) => path === activeFile.path)?.[1];
             const initialContent = typeof cachedContent === 'string' ? cachedContent : (typeof code === 'string' ? code : '');
+            
+            console.log(`[Editor DEBUG] Attaching editor to collab session for ${activeFile.path}`);
             const bindingHandle = collabClient.attachEditor({ 
                 editor: editorInstance, 
                 monaco: monacoInstance, 
@@ -587,6 +609,7 @@ const EditorPanel = ({
         }
 
         return () => {
+            console.log(`[Editor DEBUG] Detaching editor from collab session for ${activeFile?.path}`);
             try { collabBindingRef.current?._awarenessUnsub?.(); } catch (e) { /* ignore */ }
             try { collabBindingRef.current?.dispose(); } catch (e) { /* ignore */ }
             collabBindingRef.current = null;
@@ -794,7 +817,13 @@ const EditorPanel = ({
                 requestAiCompletion(true, latestCodeRef.current, { reason: 'pause', pauseTrigger: true, recentEditSnippet: takeLastChars(latestCodeRef.current, 512) });
             }
         }, 900);
-    }, [aiAutoEnabled, activeDiffCheck, cancelActiveCompletion, dispatch, requestAiCompletion]);
+    }, [activeFile, aiAutoEnabled, activeDiffCheck, cancelActiveCompletion, dispatch, requestAiCompletion]);
+
+    // Keep a ref to the latest handleCodeChange to avoid stale closures in the editor onMount listener
+    const handleCodeChangeRef = useRef(handleCodeChange);
+    useEffect(() => {
+        handleCodeChangeRef.current = handleCodeChange;
+    }, [handleCodeChange]);
 
     const handleSave = useCallback(() => {
         if (activeFile && isUnsaved) dispatch(saveFileContentThunk());
@@ -873,58 +902,452 @@ const EditorPanel = ({
     // Handle updates from analysis (Markers)
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
-        const model = editorInstance.getModel?.();
-        if (!model) return; // Guard against disposed editor
+
+        const applyNonAiMarkers = () => {
+            const model = editorInstance.getModel?.();
+            if (!model) return; // Guard against disposed editor
+
+            // Strict VFS gating: only show diagnostics computed for the current model snapshot.
+            const currentHash = computeContentHash(model.getValue?.() ?? '');
         
-        // Use only proactive diagnostics - they include static analysis tier
-        // and are properly invalidated when content changes
-        const proactiveDiagnostics = diagnostics || [];
-        
+            // Use only proactive diagnostics - they include static analysis tier
+            // and are properly invalidated when content changes
+            const proactiveDiagnostics = diagnostics || [];
+
         // IMPORTANT: Filter to only show diagnostics for the CURRENT FILE
         // This prevents test.cpp errors from showing in test.h editor
         const currentFilePath = activeFile?.path || activeFile?.name || '';
-        const currentFileDiagnostics = proactiveDiagnostics.filter(diag => {
-            const diagPath = diag.filePath || '';
-            // Match if same path or if diagnostic has no path (legacy)
-            // Also handle cases where path might be relative vs absolute or have different separators
-            if (!diagPath) return true;
-            
-            const normalize = p => p.replace(/\\/g, '/').toLowerCase();
-            return normalize(diagPath) === normalize(currentFilePath);
+
+        // Robust normalization function
+        const normalizePath = (p) => {
+            if (!p) return '';
+            // Remove leading ./ or / or \ and normalize slashes
+            return p.replace(/^[./\\]+/, '').replace(/\\/g, '/').toLowerCase();
+        };
+
+        const getDiagPath = (diag) => diag?.filePath || diag?.file || diag?.path || '';
+
+            const currentFileDiagnostics = proactiveDiagnostics.filter(diag => {
+                const diagPath = getDiagPath(diag);
+                if (!diagPath) return false;
+
+                // Snapshot gate: refuse diagnostics from other snapshots.
+                if (!diag?.__analysisVersion || diag.__analysisVersion !== currentHash) return false;
+
+                const p1 = normalizePath(diagPath);
+                const p2 = normalizePath(currentFilePath);
+                return p1 === p2;
+            });
+
+        // Non-AI diagnostics are rendered as Monaco markers (but we clear markers on every edit).
+        const nonAiDiagnostics = currentFileDiagnostics.filter(d => {
+            const tier = d.tier || '';
+            const source = (d.source || '').toString().toLowerCase();
+            return tier !== 'ai' && !source.includes('ai');
         });
         
-        console.log(`[Editor] Filtering diagnostics for "${currentFilePath}": ${proactiveDiagnostics.length} total -> ${currentFileDiagnostics.length} for current file`);
+        // console.log(`[Editor] Filtering diagnostics for "${currentFilePath}": ${proactiveDiagnostics.length} total -> ${currentFileDiagnostics.length} for current file`);
         
         // Convert proactive diagnostics format to markers
-        const proactiveMarkers = currentFileDiagnostics.map(diag => {
+            const proactiveMarkers = nonAiDiagnostics.map(diag => {
+                const location = diag.location || {};
+                const column = location.column ?? 0;
+                const endColumn = location.endColumn ?? column;
+                const startCol = Math.max(1, column + 1);
+                // Ensure at least 1 character width for the marker
+                const endCol = Math.max(endColumn + 1, startCol + 1);
+                
+                return {
+                    startLineNumber: (location.line ?? 0) + 1,
+                    startColumn: startCol,
+                    endLineNumber: (location.endLine ?? location.line ?? 0) + 1,
+                    endColumn: endCol,
+                    message: `[${(diag.tier || 'STATIC').toUpperCase()}] ${diag.message}`,
+                    severity: diag.severity === 'error' ? monacoInstance.MarkerSeverity.Error :
+                             diag.severity === 'warning' ? monacoInstance.MarkerSeverity.Warning :
+                             diag.severity === 'hint' ? monacoInstance.MarkerSeverity.Hint :
+                             monacoInstance.MarkerSeverity.Info,
+                    source: `synthi-${diag.tier || 'static'}`,
+                    code: diag.code,
+                };
+            });
+            
+            try {
+                monacoInstance.editor.setModelMarkers(model, 'synthi-analysis', proactiveMarkers);
+            } catch (e) {
+                // Editor may have been disposed
+            }
+        };
+
+        // Apply immediately on diagnostics/model change.
+        applyNonAiMarkers();
+
+        // Also re-apply after any model content change.
+        // Collab/Yjs rebinds can trigger a content event that clears markers;
+        // snapshot gating keeps this safe (real edits will yield empty markers).
+        const disposable = editorInstance.onDidChangeModelContent(() => {
+            // Defer to allow any immediate clear() calls to run first.
+            requestAnimationFrame(() => applyNonAiMarkers());
+        });
+
+        return () => {
+            try { disposable?.dispose?.(); } catch (_) {}
+        };
+    }, [editorInstance, monacoInstance, diagnostics, activeFile?.path, computeContentHash]);
+
+    // Track AI diagnostics with Monaco decorations so they shift with edits.
+    useEffect(() => {
+        if (!editorInstance || !monacoInstance) return;
+        const model = editorInstance.getModel?.();
+        if (!model) return;
+
+        // Strict VFS gating: only show diagnostics computed for the current model snapshot.
+        const currentHash = computeContentHash(model.getValue?.() ?? '');
+
+        const currentFilePath = activeFile?.path || activeFile?.name || '';
+        const normalizePath = (p) => {
+            if (!p) return '';
+            return p.replace(/^[./\\]+/, '').replace(/\\/g, '/').toLowerCase();
+        };
+        const getDiagPath = (diag) => diag?.filePath || diag?.file || diag?.path || '';
+
+        const fileDiagnostics = (diagnostics || []).filter(diag => {
+            const diagPath = getDiagPath(diag);
+            if (!diagPath) return false;
+            if (!diag?.__analysisVersion || diag.__analysisVersion !== currentHash) return false;
+            return normalizePath(diagPath) === normalizePath(currentFilePath);
+        });
+
+        const aiDiagnostics = fileDiagnostics.filter(d => {
+            const tier = d.tier || '';
+            const source = (d.source || '').toString().toLowerCase();
+            return tier === 'ai' || source.includes('ai');
+        });
+
+        const keys = aiDiagnostics.map((d, idx) => d.__id || d.id || `${idx}`);
+        const keysChanged =
+            keys.length !== aiDiagnosticKeysRef.current.length ||
+            keys.some((k, i) => k !== aiDiagnosticKeysRef.current[i]);
+
+        const decorationDefs = aiDiagnostics.map(d => {
+            const loc = d.location || {};
+            const column = loc.column ?? 0;
+            const endColumn = loc.endColumn ?? column;
+            const startLine = (loc.line ?? 0) + 1;
+            const endLine = (loc.endLine ?? loc.line ?? 0) + 1;
+            const startCol = Math.max(1, column + 1);
+            const endCol = Math.max(endColumn + 1, startCol + 1);
+
+            return {
+                range: new monacoInstance.Range(startLine, startCol, endLine, endCol),
+                options: {
+                    // Invisible tracked range: we only use it to keep AI diagnostics anchored
+                    // to the underlying content across edits.
+                    stickiness: monacoInstance.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+                },
+            };
+        });
+
+        // Classic Monaco markers for AI diagnostics.
+        const aiMarkers = aiDiagnostics.map((diag) => {
             const location = diag.location || {};
             const column = location.column ?? 0;
             const endColumn = location.endColumn ?? column;
             const startCol = Math.max(1, column + 1);
-            // Ensure at least 1 character width for the marker
             const endCol = Math.max(endColumn + 1, startCol + 1);
-            
+
             return {
                 startLineNumber: (location.line ?? 0) + 1,
                 startColumn: startCol,
                 endLineNumber: (location.endLine ?? location.line ?? 0) + 1,
                 endColumn: endCol,
-                message: `[${(diag.tier || 'STATIC').toUpperCase()}] ${diag.message}`,
+                message: `[AI] ${diag.message}`,
                 severity: diag.severity === 'error' ? monacoInstance.MarkerSeverity.Error :
-                         diag.severity === 'warning' ? monacoInstance.MarkerSeverity.Warning :
-                         diag.severity === 'hint' ? monacoInstance.MarkerSeverity.Hint :
-                         monacoInstance.MarkerSeverity.Info,
-                source: `synthi-${diag.tier || 'static'}`,
+                    diag.severity === 'warning' ? monacoInstance.MarkerSeverity.Warning :
+                        diag.severity === 'hint' ? monacoInstance.MarkerSeverity.Hint :
+                            monacoInstance.MarkerSeverity.Info,
+                source: 'synthi-ai',
                 code: diag.code,
             };
         });
-        
+
         try {
-            monacoInstance.editor.setModelMarkers(model, 'synthi-analysis', proactiveMarkers);
-        } catch (e) {
-            // Editor may have been disposed
+            if (keysChanged) {
+                aiDiagnosticKeysRef.current = keys;
+            }
+            aiDecorationIdsRef.current = editorInstance.deltaDecorations(aiDecorationIdsRef.current, decorationDefs);
+            // Replace AI markers immediately on analysis arrival.
+            monacoInstance.editor.setModelMarkers(model, 'synthi-ai', aiMarkers);
+        } catch (_) {
+            // ignore (disposed)
         }
-    }, [editorInstance, monacoInstance, diagnostics, activeFile]);
+        // Intentionally re-run when file changes, editor changes, or diagnostics set changes
+    }, [editorInstance, monacoInstance, diagnostics, activeFile?.path, computeContentHash]);
+
+    // Clear AI decorations when the editor instance changes/unmounts.
+    useEffect(() => {
+        if (!editorInstance) return;
+        return () => {
+            try {
+                const model = editorInstance.getModel?.();
+                if (model && monacoInstance?.editor) {
+                    monacoInstance.editor.setModelMarkers(model, 'synthi-ai', []);
+                }
+            } catch (_) {
+                // ignore
+            }
+            try {
+                aiDecorationIdsRef.current = editorInstance.deltaDecorations(aiDecorationIdsRef.current, []);
+            } catch (_) {
+                // ignore
+            }
+            aiDecorationIdsRef.current = [];
+            aiDiagnosticKeysRef.current = [];
+        };
+    }, [editorInstance, monacoInstance]);
+
+    // On any edit, recompute AI diagnostic locations from decoration ranges and report back.
+    useEffect(() => {
+        if (!editorInstance || !monacoInstance) return;
+        if (typeof onAiDiagnosticsRecalibrated !== 'function') return;
+
+        const model = editorInstance.getModel?.();
+        if (!model) return;
+
+        const currentFilePath = activeFile?.path || activeFile?.name || '';
+
+        const normalizePath = (p) => {
+            if (!p) return '';
+            return p.replace(/^[./\\]+/, '').replace(/\\/g, '/').toLowerCase();
+        };
+        const getDiagPath = (diag) => diag?.filePath || diag?.file || diag?.path || '';
+
+        const schedule = () => {
+            if (aiRecalcRafRef.current) return;
+            aiRecalcRafRef.current = requestAnimationFrame(() => {
+                aiRecalcRafRef.current = null;
+                try {
+                    const ids = aiDecorationIdsRef.current || [];
+                    const keys = aiDiagnosticKeysRef.current || [];
+                    if (ids.length === 0 || keys.length === 0) {
+                        // If there are no tracked ranges (e.g. new analysis removed all AI diags),
+                        // ensure we clear the AI marker owner.
+                        try {
+                            monacoInstance.editor.setModelMarkers(model, 'synthi-ai', []);
+                        } catch (_) {
+                            // ignore
+                        }
+                        return;
+                    }
+
+                    const currentNorm = normalizePath(currentFilePath);
+                    const fileAiDiags = (diagnostics || []).filter(d => {
+                        const diagPath = getDiagPath(d);
+                        if (!diagPath) return false;
+                        return normalizePath(diagPath) === currentNorm;
+                    }).filter(d => {
+                        const tier = d.tier || '';
+                        const source = (d.source || '').toString().toLowerCase();
+                        return tier === 'ai' || source.includes('ai');
+                    });
+
+                    const diagByKey = new Map(
+                        fileAiDiags.map((d, idx) => [d.__id || d.id || `${idx}`, d])
+                    );
+
+                    const updates = [];
+                    const markers = [];
+                    for (let i = 0; i < ids.length; i++) {
+                        const decId = ids[i];
+                        const key = keys[i];
+                        const r = model.getDecorationRange(decId);
+                        if (!r) continue;
+                        updates.push({
+                            __id: key,
+                            location: {
+                                line: r.startLineNumber - 1,
+                                column: r.startColumn - 1,
+                                endLine: r.endLineNumber - 1,
+                                endColumn: r.endColumn - 1,
+                            },
+                        });
+
+                        const d = diagByKey.get(key);
+                        if (d) {
+                            markers.push({
+                                startLineNumber: r.startLineNumber,
+                                startColumn: r.startColumn,
+                                endLineNumber: r.endLineNumber,
+                                endColumn: r.endColumn,
+                                message: `[AI] ${d.message}`,
+                                severity: d.severity === 'error' ? monacoInstance.MarkerSeverity.Error :
+                                    d.severity === 'warning' ? monacoInstance.MarkerSeverity.Warning :
+                                        d.severity === 'hint' ? monacoInstance.MarkerSeverity.Hint :
+                                            monacoInstance.MarkerSeverity.Info,
+                                source: 'synthi-ai',
+                                code: d.code,
+                            });
+                        }
+                    }
+
+                    if (updates.length) {
+                        onAiDiagnosticsRecalibrated(currentFilePath, updates);
+                    }
+
+                    // Render AI diagnostics using Monaco markers (old squiggly UI).
+                    try {
+                        monacoInstance.editor.setModelMarkers(model, 'synthi-ai', markers);
+                    } catch (_) {
+                        // ignore
+                    }
+                } catch (_) {
+                    // ignore
+                }
+            });
+        };
+
+        const disposable = editorInstance.onDidChangeModelContent(() => {
+            schedule();
+        });
+
+        // Also schedule once on mount/model switch to align state.
+        schedule();
+
+        return () => {
+            try {
+                disposable?.dispose?.();
+            } catch (_) {}
+            if (aiRecalcRafRef.current) {
+                cancelAnimationFrame(aiRecalcRafRef.current);
+                aiRecalcRafRef.current = null;
+            }
+        };
+    }, [editorInstance, monacoInstance, diagnostics, activeFile?.path, onAiDiagnosticsRecalibrated]);
+
+    // Suppress external marker owners (Monaco language services / LSP) so syntax/semantic markers
+    // do not reappear while editing. We only allow Synthi-owned marker sets.
+    useEffect(() => {
+        if (!editorInstance || !monacoInstance) return;
+        const model = editorInstance.getModel?.();
+        if (!model) return;
+
+        // Only allow Synthi-owned marker sets. NOTE: We intentionally do NOT allow
+        // the legacy 'synthi-proactive' owner because it can keep stale markers alive
+        // even when the new unified pipeline has cleared diagnostics.
+        const allowedOwners = new Set(['synthi-analysis', 'synthi-ai']);
+
+        const prune = () => {
+            if (markerPruneInProgressRef.current) return;
+            markerPruneInProgressRef.current = true;
+            try {
+                const markers = monacoInstance.editor.getModelMarkers({ resource: model.uri }) || [];
+                const ownersToClear = new Set();
+                for (const m of markers) {
+                    if (m && m.owner && !allowedOwners.has(m.owner)) ownersToClear.add(m.owner);
+                }
+                ownersToClear.forEach((owner) => {
+                    try {
+                        monacoInstance.editor.setModelMarkers(model, owner, []);
+                    } catch (_) {
+                        // ignore
+                    }
+                });
+            } catch (_) {
+                // ignore
+            } finally {
+                // Release on next tick to avoid re-entrancy loops.
+                setTimeout(() => {
+                    markerPruneInProgressRef.current = false;
+                }, 0);
+            }
+        };
+
+        // Run once after mount/model switch.
+        prune();
+
+        // Some publishers re-apply diagnostics asynchronously after startup.
+        // Keep pruning briefly to ensure stale external markers don't stick.
+        const pruneInterval = setInterval(prune, 200);
+        const pruneTimeout = setTimeout(() => {
+            clearInterval(pruneInterval);
+        }, 2000);
+
+        // Monaco API: onDidChangeMarkers(listener) where listener receives an array of changed resources.
+        const disposable = monacoInstance.editor.onDidChangeMarkers((resources) => {
+            try {
+                const modelUriStr = model?.uri?.toString?.() || '';
+                if (!modelUriStr) {
+                    prune();
+                    return;
+                }
+                const list = Array.isArray(resources) ? resources : [];
+                const touched = list.some((u) => (u?.toString?.() || '') === modelUriStr);
+                if (touched || list.length === 0) prune();
+            } catch (_) {
+                prune();
+            }
+        });
+
+        return () => {
+            try { disposable?.dispose?.(); } catch (_) {}
+            clearInterval(pruneInterval);
+            clearTimeout(pruneTimeout);
+        };
+    }, [editorInstance, monacoInstance, activeFile?.path]);
+
+    // Hard guarantee: clear stale markers immediately on any edit.
+    // We maintain multiple marker "owners" (AI/proactive + extension host).
+    // If the user edits text, any existing diagnostics are for an older snapshot and
+    // can appear pinned to the wrong lines/columns (ghost markers).
+    useEffect(() => {
+        if (!editorInstance || !monacoInstance) return;
+
+        const clearAllKnownOwners = () => {
+            const model = editorInstance.getModel?.();
+            if (!model) return;
+            try {
+                const owners = new Set([
+                    'synthi-analysis',
+                    'synthi-proactive',
+                    'synthi-ai',
+                    'extension',
+                ]);
+
+                // Extension bridge registers every marker owner it uses here.
+                const tracked = monacoInstance.__synthiMarkerOwners;
+                if (tracked && typeof tracked.forEach === 'function') {
+                    tracked.forEach((o) => owners.add(o));
+                }
+
+                // Also clear any markers created by built-in Monaco language services
+                // or LSP clients that use their own owner strings.
+                try {
+                    const existing = monacoInstance.editor.getModelMarkers({ resource: model.uri }) || [];
+                    for (const m of existing) {
+                        if (m && m.owner) owners.add(m.owner);
+                    }
+                } catch (_) {
+                    // ignore
+                }
+
+                owners.forEach((owner) => {
+                    monacoInstance.editor.setModelMarkers(model, owner, []);
+                });
+            } catch (e) {
+                // ignore (disposed)
+            }
+        };
+
+        // Clear immediately once when model changes (tab switch) to avoid showing
+        // diagnostics from a previous model while new analysis/diagnostics load.
+        clearAllKnownOwners();
+
+        const disposable = editorInstance.onDidChangeModelContent(() => {
+            clearAllKnownOwners();
+        });
+
+        return () => disposable?.dispose?.();
+    }, [editorInstance, monacoInstance, activeFile?.path]);
 
     // Handle external completion triggering (e.g. from Chat UI)
     useEffect(() => {
@@ -1331,6 +1754,46 @@ const EditorPanel = ({
                                                     setEditorInstance(editor);
                                                     setMonacoInstance(monaco);
                                                     if (onEditorMount) onEditorMount(editor);
+
+                                                    // Hard reset: clear any pre-existing markers on initial mount.
+                                                    // Some language services may publish diagnostics immediately.
+                                                    try {
+                                                        const model = editor.getModel?.();
+                                                        if (model) {
+                                                            const existing = monaco.editor.getModelMarkers({ resource: model.uri }) || [];
+                                                            const owners = new Set(existing.map(m => m?.owner).filter(Boolean));
+                                                            owners.add('synthi-analysis');
+                                                            owners.add('synthi-proactive');
+                                                            owners.add('synthi-ai');
+                                                            owners.add('extension');
+                                                            owners.forEach((owner) => {
+                                                                try { monaco.editor.setModelMarkers(model, owner, []); } catch (_) {}
+                                                            });
+
+                                                            // Catch late marker publishers (e.g. extension host) right after mount.
+                                                            const clearLate = () => {
+                                                                try {
+                                                                    const late = monaco.editor.getModelMarkers({ resource: model.uri }) || [];
+                                                                    const lateOwners = new Set(late.map(m => m?.owner).filter(Boolean));
+                                                                    lateOwners.add('synthi-analysis');
+                                                                    lateOwners.add('synthi-proactive');
+                                                                    lateOwners.add('synthi-ai');
+                                                                    lateOwners.add('extension');
+
+                                                                    const tracked = monaco.__synthiMarkerOwners;
+                                                                    if (tracked && typeof tracked.forEach === 'function') {
+                                                                        tracked.forEach((o) => lateOwners.add(o));
+                                                                    }
+
+                                                                    lateOwners.forEach((owner) => {
+                                                                        try { monaco.editor.setModelMarkers(model, owner, []); } catch (_) {}
+                                                                    });
+                                                                } catch (_) {}
+                                                            };
+                                                            setTimeout(clearLate, 0);
+                                                            setTimeout(clearLate, 200);
+                                                        }
+                                                    } catch (_) {}
                                                     editor.onDidChangeCursorPosition(e => {
                                                         const nextPos = e.position;
                                                         if (pendingPositionFrameRef.current) return;
@@ -1345,8 +1808,49 @@ const EditorPanel = ({
                                                     // This ensures ALL changes are captured, including whitespace/enter
                                                     // that @monaco-editor/react's onChange might skip
                                                     editor.onDidChangeModelContent(() => {
+                                                        // Hard-clear markers synchronously on every edit.
+                                                        // This runs even before React effects register listeners,
+                                                        // preventing the "markers never clear" race after file open.
+                                                        try {
+                                                            const model = editor.getModel?.();
+                                                            if (model) {
+                                                                const owners = new Set([
+                                                                    'synthi-analysis',
+                                                                    'synthi-proactive',
+                                                                    'synthi-ai',
+                                                                    'extension',
+                                                                ]);
+
+                                                                // Extension bridge registers owners here.
+                                                                const tracked = monaco.__synthiMarkerOwners;
+                                                                if (tracked && typeof tracked.forEach === 'function') {
+                                                                    tracked.forEach((o) => owners.add(o));
+                                                                }
+
+                                                                // Also clear any existing owners currently present on this model.
+                                                                try {
+                                                                    const existing = monaco.editor.getModelMarkers({ resource: model.uri }) || [];
+                                                                    for (const m of existing) {
+                                                                        if (m && m.owner) owners.add(m.owner);
+                                                                    }
+                                                                } catch (_) {
+                                                                    // ignore
+                                                                }
+
+                                                                owners.forEach((owner) => {
+                                                                    try {
+                                                                        monaco.editor.setModelMarkers(model, owner, []);
+                                                                    } catch (_) {
+                                                                        // ignore
+                                                                    }
+                                                                });
+                                                            }
+                                                        } catch (_) {
+                                                            // ignore
+                                                        }
+
                                                         const newCode = editor.getModel()?.getValue() ?? '';
-                                                        handleCodeChange(newCode);
+                                                        handleCodeChangeRef.current(newCode);
                                                     });
 
                                                     // Ensure layout refreshes on mount

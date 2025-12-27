@@ -1,7 +1,7 @@
 # PROTOTYPING AI ENGINE WITH PYTHON, LATER SWITCH TO RUST
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Optional, Union
 import requests
 import json
 import sys
@@ -25,7 +25,7 @@ for module in ['analyzer.proactive', 'analyzer.proactive.semantic_analyzer', 'an
     logging.getLogger(module).setLevel(logging.INFO)
 import time
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from analyzer import get_analyzer
@@ -66,10 +66,41 @@ from analyzer.proactive import (
     WorkspaceAnalysisResult,
     FileChange,
 )
-from analyzer.proactive.types import AnalysisRequest, FileContext
+from analyzer.proactive.types import AnalysisRequest, FileContext, Severity
 from analyzer.proactive.cache import AnalysisCache
 
+# Intelligence Aggregator - Unified Pipeline
+from intelligence import (
+    IntelligenceAggregator,
+    AggregatedResult,
+    get_aggregator,
+    create_aggregator_with_ai,
+    DiagnosticSource,
+    UnifiedDiagnostic,
+    StaticAnalysisProvider,
+    AIAnalysisProvider,
+    CompilerProvider,
+    get_compiler_provider,
+    FileWatcher,
+    get_file_watcher,
+    FileChangeEvent,
+    FileChangeType,
+)
+
 app = FastAPI()
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    import time
+    start_time = time.time()
+    
+    response = await call_next(request)
+    
+    # Condensed request/response logging
+    process_time = time.time() - start_time
+    logger.info(f"[AI-ENGINE] {request.method} {request.url.path} -> {response.status_code} ({process_time:.3f}s)")
+    
+    return response
 
 # Initialize proactive analyzer with shared cache
 _analysis_cache = AnalysisCache(max_entries=2000, max_age_seconds=3600)
@@ -142,6 +173,58 @@ class ProactiveAnalysisRequest(BaseModel):
     api_key: Optional[str] = None
 
 
+class ContainerAnalysisRequest(BaseModel):
+    """
+    Container-First analysis request.
+    Content is fetched from the server filesystem, NOT sent by client.
+    This ensures analysis always sees the same content as the compiler.
+    """
+    slug: str  # Workspace slug
+    file_path: str  # File path within workspace
+    lang: str
+    related_paths: Optional[List[str]] = None  # Paths to related files
+    tiers: Optional[List[str]] = None
+    include_ai: Optional[bool] = True
+    max_diagnostics: Optional[int] = 50
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+
+
+# Collab server URL for fetching file content
+COLLAB_SERVER_URL = os.environ.get('COLLAB_SERVER_URL', 'http://localhost:1234')
+
+
+async def fetch_file_from_container(slug: str, file_path: str) -> Optional[str]:
+    """
+    Fetch file content from the collab server (container filesystem).
+    This is the Source of Truth for all analysis.
+    
+    The collab server auto-flushes Y.js changes to disk (150ms debounce),
+    so this always returns the latest content.
+    """
+    import aiohttp
+    
+    try:
+        # Use the /file-content endpoint which reads directly from disk
+        url = f"{COLLAB_SERVER_URL}/file-content/{slug}/{file_path}"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    content = await resp.text()
+                    return content
+                elif resp.status == 404:
+                    logger.warning(f"[Container] File not found: {slug}/{file_path}")
+                    return None
+                else:
+                    error_body = await resp.text()
+                    logger.warning(f"[Container] Failed to fetch {file_path}: {resp.status}")
+                    return None
+    except Exception as e:
+        logger.error(f"[Container] Error fetching {file_path}: {e}")
+        return None
+
+
 @app.post("/analyze/static")
 def analyze_code(req: AnalyzeRequest):
     try:
@@ -199,28 +282,20 @@ async def analyze_proactive(req: ProactiveAnalysisRequest):
         language=req.lang,
     )
     
-    logger.info(f"=== PROACTIVE ANALYSIS START ===")
-    logger.info(f"File: {file_context.path}")
-    logger.info(f"Language: {file_context.language}")
-    logger.info(f"Content length: {len(file_context.content)} chars")
-    logger.info(f"Content preview: {file_context.content[:200]}...")
-    logger.info(f"Tiers requested: {tiers}")
+    import hashlib
+    content_hash = hashlib.md5(req.code.encode()).hexdigest()[:16]
+    logger.info(f"[PROACTIVE] {file_context.path} | {len(file_context.content)} chars | hash={content_hash} | tiers={tiers}")
     
     # Build related files context
     related_files = []
     if req.related_files:
-        logger.info(f"Related files count from request: {len(req.related_files)}")
         for rf in req.related_files:
             rf_path = rf.path or rf.name or f"file-{len(related_files)}"
-            logger.info(f"  Related file: {rf_path} ({len(rf.content)} chars)")
-            logger.info(f"    Content preview: {rf.content[:100]}...")
             related_files.append(FileContext(
                 path=rf_path,
                 content=rf.content,
                 language=req.lang,
             ))
-    else:
-        logger.info("No related files in request")
     
     # Create analysis request
     analysis_request = AnalysisRequest(
@@ -237,11 +312,7 @@ async def analyze_proactive(req: ProactiveAnalysisRequest):
     
     try:
         result = await analyzer.analyze(analysis_request)
-        logger.info(f"=== PROACTIVE ANALYSIS RESULT ===")
-        logger.info(f"Total diagnostics: {len(result.all_diagnostics)}")
-        for d in result.all_diagnostics:
-            logger.info(f"  [{d.tier.value}] {d.severity.value}: {d.message} @ line {d.location.line}")
-        logger.info(f"=== PROACTIVE ANALYSIS END ===")
+        logger.info(f"[PROACTIVE] Result: {len(result.all_diagnostics)} diags")
         return result.to_dict()
     except Exception as e:
         logger.error(f"Analysis failed: {str(e)}", exc_info=True)
@@ -284,6 +355,463 @@ async def clear_cache():
     analyzer = get_proactive_analyzer()
     await analyzer.clear_cache()
     return {"status": "ok", "message": "Cache cleared"}
+
+
+@app.post("/analyze/container")
+async def analyze_from_container(req: ContainerAnalysisRequest):
+    """
+    Container-First proactive analysis endpoint.
+    
+    This endpoint fetches file content directly from the server filesystem
+    (via collab server), ensuring the AI analyzes exactly what the compiler sees.
+    
+    This is the RECOMMENDED endpoint for production use.
+    The client should NOT send content - only file paths.
+    """
+    import hashlib
+    
+    # Fetch main file content from container
+    content = await fetch_file_from_container(req.slug, req.file_path)
+    if content is None:
+        raise HTTPException(status_code=404, detail=f"File not found: {req.file_path}")
+    
+    content_hash = hashlib.md5(content.encode()).hexdigest()[:16]
+    logger.info(f"[CONTAINER] {req.file_path} | {len(content)} chars | hash={content_hash}")
+    
+    # Build file context
+    file_context = FileContext(
+        path=req.file_path,
+        content=content,
+        language=req.lang,
+    )
+    
+    # Fetch related files from container
+    related_files = []
+    if req.related_paths:
+        for rpath in req.related_paths:
+            rcontent = await fetch_file_from_container(req.slug, rpath)
+            if rcontent is not None:
+                related_files.append(FileContext(
+                    path=rpath,
+                    content=rcontent,
+                    language=req.lang,
+                ))
+    
+    # Determine tiers
+    tiers = []
+    if req.tiers:
+        tier_map = {
+            'static': AnalysisTier.STATIC,
+            'semantic': AnalysisTier.SEMANTIC,
+            'ai': AnalysisTier.AI,
+        }
+        tiers = [tier_map[t.lower()] for t in req.tiers if t.lower() in tier_map]
+    else:
+        tiers = [AnalysisTier.STATIC, AnalysisTier.SEMANTIC]
+        if req.include_ai:
+            tiers.append(AnalysisTier.AI)
+    
+    # Create analysis request
+    analysis_request = AnalysisRequest(
+        file=file_context,
+        related_files=related_files,
+        tiers=tiers,
+        max_diagnostics=req.max_diagnostics or 50,
+        include_fixes=True,
+    )
+    
+    # Get analyzer with provider for AI tier
+    def select_provider():
+        if req.api_key:
+            model_name = (req.model or '').lower()
+            if 'gemini' in model_name:
+                return get_provider(provider_name='gemini', use_custom=True)
+            return get_provider(provider_name='chatgpt', use_custom=True)
+        return get_provider()
+    
+    provider = select_provider() if AnalysisTier.AI in tiers else None
+    analyzer = get_proactive_analyzer(llm_provider=provider)
+    
+    try:
+        result = await analyzer.analyze(analysis_request)
+        logger.info(f"[CONTAINER] Result: {len(result.all_diagnostics)} diags")
+        return result.to_dict()
+    except Exception as e:
+        logger.error(f"Container analysis failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+# ============================================================================
+# Unified Intelligence Pipeline
+# ============================================================================
+
+class UnifiedAnalysisRequest(BaseModel):
+    """
+    Request for unified intelligence analysis.
+    
+    This is the recommended endpoint that combines:
+    - Layer A: Static/LSP analysis (< 200ms)
+    - Layer B: Compiler semantic analysis (500ms-1s)
+    - Layer C: AI analysis (on-demand, triggered by Layer B errors)
+    
+    Content is fetched from container filesystem - NOT sent by client.
+    """
+    slug: str  # Workspace slug
+    file_path: str  # File path within workspace
+    lang: str
+    # Version for stale detection - client increments on each keystroke
+    version: Union[int, str]  # Client-side version counter or hash (MANDATORY)
+    # Optional content override (for unsaved changes)
+    content: Optional[str] = None
+    # Layer control
+    layers: Optional[List[str]] = None  # ["static", "compiler", "ai"]
+    # AI configuration
+    trigger_ai_on_errors: Optional[bool] = True  # Auto-trigger AI if compiler finds errors
+    include_ai: Optional[bool] = False  # Force include AI layer
+    # Limits
+    max_diagnostics: Optional[int] = 50
+    # API config
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+
+
+class UnifiedAnalysisResponse(BaseModel):
+    """Unified response combining all diagnostic sources."""
+    file_path: str
+    diagnostics: List[dict]
+    summary: dict  # error/warning/info counts per source
+    analysis_time_ms: float
+    layers_run: List[str]
+
+
+# Aggregator instance (created on first use)
+_aggregator_instance: Optional[IntelligenceAggregator] = None
+
+
+def get_intelligence_aggregator() -> IntelligenceAggregator:
+    """Get or create the Intelligence Aggregator singleton."""
+    global _aggregator_instance
+    if _aggregator_instance is None:
+        logger.info("[Intelligence] Creating aggregator with providers...")
+        # Create with default providers and AI
+        _aggregator_instance = create_aggregator_with_ai(
+            llm_provider=get_provider()
+        )
+        logger.info("[Intelligence] Aggregator initialized with Static + AI providers")
+    return _aggregator_instance
+
+
+@app.post("/analyze/unified")
+async def analyze_unified(req: UnifiedAnalysisRequest):
+    """
+    Unified Intelligence Pipeline endpoint.
+    
+    This is the RECOMMENDED endpoint for all code analysis.
+    It uses the ProactiveAnalyzer which includes:
+    - Static analysis (syntax patterns)
+    - Semantic analysis (CppSemanticAnalyzer, etc.)
+    - Optional AI analysis (auto-triggered on errors if trigger_ai_on_errors=True)
+    
+    Content is fetched from container filesystem - client sends only paths.
+    
+    Version field enables stale detection: if response.version != current version,
+    the client should discard the diagnostics.
+    """
+    import time
+    import hashlib
+    start_time = time.time()
+    
+    # Fetch content from container OR use provided content
+    if req.content is not None:
+        content = req.content
+    else:
+        content = await fetch_file_from_container(req.slug, req.file_path)
+        if content is None:
+            raise HTTPException(status_code=404, detail=f"File not found: {req.file_path}")
+    
+    # Compute content hash for client-side caching
+    content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+
+    # Content fingerprinting for stale/shift debugging (no code is returned, only counts)
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    split_lines = normalized.split("\n")
+    leading_blank_lines = 0
+    while leading_blank_lines < len(split_lines) and split_lines[leading_blank_lines] == "":
+        leading_blank_lines += 1
+
+    lines = content.splitlines()
+    first_line = lines[0] if lines else ''
+    used_content_override = req.content is not None
+
+    # Condensed request logging
+    logger.info(
+        f"[UNIFIED] {req.file_path} | v={req.version} | {len(content)} chars | hash={content_hash} | lines={len(split_lines)} | lead_blank={leading_blank_lines} | override={used_content_override} | layers={req.layers or ['static', 'semantic']} | first=\"{first_line[:50]}\""
+    )
+    
+    # Determine which tiers to run (map layers to proactive tiers)
+    layers = list(req.layers or ["static", "semantic"])
+    initial_tiers = []
+    if "static" in layers:
+        initial_tiers.append(AnalysisTier.STATIC)
+    if "semantic" in layers or "compiler" in layers:
+        initial_tiers.append(AnalysisTier.SEMANTIC)
+    if "ai" in layers or req.include_ai:
+        initial_tiers.append(AnalysisTier.AI)
+    
+    # Default to static + semantic if nothing specified
+    if not initial_tiers:
+        initial_tiers = [AnalysisTier.STATIC, AnalysisTier.SEMANTIC]
+    
+    tiers = initial_tiers.copy()
+    
+    # For FAST analysis (static/semantic), ignore comments but preserve all line/column
+    # positions by masking comment characters with spaces (newlines preserved).
+    # IMPORTANT: Keep the original `content` for debug/codeAtLine snapshot checks.
+    analysis_content = content
+    if AnalysisTier.AI not in tiers:
+        try:
+            from analyzer.comment_masker import mask_comments_for_analysis
+
+            analysis_content = mask_comments_for_analysis(content, req.lang)
+        except Exception:
+            # Never fail analysis due to comment masking.
+            analysis_content = content
+
+    # Build file context for ProactiveAnalyzer
+    file_context = FileContext(
+        path=req.file_path,
+        content=analysis_content,
+        language=req.lang,
+    )
+    
+    # Create analysis request
+    analysis_request = AnalysisRequest(
+        file=file_context,
+        related_files=[],
+        tiers=tiers,
+        max_diagnostics=req.max_diagnostics or 50,
+        include_fixes=True,
+    )
+    
+    # Get proactive analyzer with optional AI
+    def select_provider():
+        if req.api_key:
+            model_name = (req.model or '').lower()
+            if 'gemini' in model_name:
+                return get_provider(provider_name='gemini', use_custom=True)
+            return get_provider(provider_name='chatgpt', use_custom=True)
+        return get_provider()
+    
+    # First pass: Run static + semantic analysis
+    provider = select_provider() if AnalysisTier.AI in tiers else None
+    analyzer = get_proactive_analyzer(llm_provider=provider)
+    
+    try:
+        # Run the actual analysis using ProactiveAnalyzer
+        result = await analyzer.analyze(analysis_request)
+        
+        # AUTO-TRIGGER AI: If trigger_ai_on_errors is True and we found errors, run AI analysis
+        ai_triggered = False
+        should_run_ai = False
+        
+        if req.trigger_ai_on_errors and AnalysisTier.AI not in initial_tiers:
+            # Count errors from static + semantic analysis
+            error_count = sum(
+                1 for d in result.all_diagnostics 
+                if d.severity == Severity.ERROR or (hasattr(d.severity, 'value') and d.severity.value == 'error')
+            )
+            warning_count = sum(
+                1 for d in result.all_diagnostics 
+                if d.severity == Severity.WARNING or (hasattr(d.severity, 'value') and d.severity.value == 'warning')
+            )
+            info_count = sum(
+                1 for d in result.all_diagnostics
+                if d.severity == Severity.INFO or (hasattr(d.severity, 'value') and d.severity.value == 'info')
+            )
+            
+            logger.info(f"[AUTO-AI] Static/Semantic analysis found: {error_count} errors, {warning_count} warnings, {info_count} infos")
+            
+            # Trigger AI if:
+            # 1. Any errors found, OR
+            # 2. Multiple warnings, OR  
+            # 3. Any diagnostics at all (be proactive)
+            if error_count > 0 or warning_count >= 1 or (info_count > 0 and req.lang in ['cpp', 'c++', 'c']):
+                should_run_ai = True
+                logger.info(f"[AUTO-AI] Triggering AI analysis due to {error_count} errors, {warning_count} warnings, {info_count} infos")
+        
+        if should_run_ai:
+            try:
+                
+                # Run AI analysis
+                ai_provider = select_provider()
+                ai_analyzer = get_proactive_analyzer(llm_provider=ai_provider)
+                
+                # AI analysis should see original source (comments included).
+                ai_file_context = FileContext(
+                    path=req.file_path,
+                    content=content,
+                    language=req.lang,
+                )
+
+                ai_request = AnalysisRequest(
+                    file=ai_file_context,
+                    related_files=[],
+                    tiers=[AnalysisTier.AI],
+                    max_diagnostics=req.max_diagnostics or 50,
+                    include_fixes=True,
+                )
+                
+                logger.info(f"[AUTO-AI] Running AI analysis on {file_context.path}...")
+                ai_result = await ai_analyzer.analyze(ai_request)
+                
+                # Merge AI diagnostics into result
+                if ai_result.tiers.get(AnalysisTier.AI):
+                    result.tiers[AnalysisTier.AI] = ai_result.tiers[AnalysisTier.AI]
+                    tiers.append(AnalysisTier.AI)
+                    ai_triggered = True
+                    ai_diag_count = len(ai_result.tiers[AnalysisTier.AI].diagnostics)
+                    logger.info(f"[AUTO-AI] Added {ai_diag_count} AI diagnostics")
+            except Exception as ai_err:
+                logger.error(f"[AUTO-AI] AI analysis failed: {ai_err}", exc_info=True)
+        
+        elapsed_ms = (time.time() - start_time) * 1000
+        
+        # Build summary from result
+        summary = {
+            "static": {"errors": 0, "warnings": 0, "info": 0},
+            "semantic": {"errors": 0, "warnings": 0, "info": 0},
+            "ai": {"errors": 0, "warnings": 0, "info": 0},
+        }
+        
+        # Collect diagnostics from result
+        diagnostics_list = []
+        for diag in result.all_diagnostics:
+            # Map tier to layer name
+            tier_name = diag.tier.value.lower() if hasattr(diag.tier, 'value') else str(diag.tier).lower()
+            
+            # Map severity
+            sev = diag.severity.value.lower() if hasattr(diag.severity, 'value') else str(diag.severity).lower()
+            if sev == 'information':
+                sev = 'info'
+            
+            # Update summary
+            if tier_name in summary and sev in summary[tier_name]:
+                summary[tier_name][sev] += 1
+            
+            # Build diagnostic dict
+            # Generate a deterministic ID if missing
+            diag_id = getattr(diag, "id", None)
+            if not diag_id:
+                # Create a hash of the diagnostic content for deduplication
+                content_str = f"{req.file_path}:{diag.location.line}:{diag.message}:{tier_name}"
+                diag_id = hashlib.md5(content_str.encode()).hexdigest()[:12]
+
+            # Get the actual code at this location for verification
+            source_lines = content.splitlines()
+            line_idx = diag.location.line
+            code_at_line = source_lines[line_idx].strip() if 0 <= line_idx < len(source_lines) else ""
+            
+            diag_dict = {
+                "id": diag_id,
+                "source": tier_name.capitalize(),
+                "severity": diag.severity.value if hasattr(diag.severity, 'value') else str(diag.severity),
+                "message": diag.message,
+                "file": req.file_path,
+                "range": {
+                    "start": diag.location.line,
+                    "startColumn": diag.location.column,
+                    "end": diag.location.end_line if diag.location.end_line is not None else diag.location.line,
+                    "endColumn": diag.location.end_column if diag.location.end_column is not None else diag.location.column + 1,
+                },
+                "tier": tier_name,
+                "codeAtLine": code_at_line,  # Actual code at this line for debugging
+            }
+            
+            if diag.code:
+                diag_dict["code"] = diag.code
+            if diag.category:
+                diag_dict["category"] = diag.category
+            if diag.explanation:
+                diag_dict["explanation"] = diag.explanation
+            if diag.fixes:
+                diag_dict["fixes"] = [f.to_dict() for f in diag.fixes]
+            
+            diagnostics_list.append(diag_dict)
+        
+        # Deduplicate diagnostics
+        # Strategy: Keep unique (line, message, severity). If duplicates exist, prefer SEMANTIC over STATIC.
+        unique_diags = {}
+        for d in diagnostics_list:
+            # Create a signature key
+            key = f"{d['range']['start']}:{d['message']}:{d['severity']}"
+            
+            if key not in unique_diags:
+                unique_diags[key] = d
+            else:
+                # If we already have this diagnostic, check if the new one is from a "better" tier
+                existing = unique_diags[key]
+                if existing['tier'] == 'static' and d['tier'] == 'semantic':
+                    unique_diags[key] = d
+        
+        diagnostics_list = list(unique_diags.values())
+        
+        # Determine which layers actually ran
+        layers_run = []
+        for tier in tiers:
+            tier_name = tier.value.lower() if hasattr(tier, 'value') else str(tier).lower()
+            if tier_name not in layers_run:
+                layers_run.append(tier_name)
+        
+        logger.info(f"=== UNIFIED ANALYSIS RESULT ===")
+        logger.info(f"Total diagnostics: {len(diagnostics_list)}")
+        
+        # DEBUG: Print every error and the code line it refers to
+        source_lines = content.splitlines()
+        for i, d in enumerate(diagnostics_list):
+            line_idx = d['range']['start']
+            # Handle 0-based vs 1-based indexing (diagnostics are usually 0-based internally but might be 1-based in output)
+            # Assuming 0-based for array access
+            code_line = source_lines[line_idx] if 0 <= line_idx < len(source_lines) else "<LINE OUT OF BOUNDS>"
+            logger.info(f"  [DIAG #{i}] Line {line_idx}: {d['message']}")
+            logger.info(f"    Code: {code_line.strip()}")
+            logger.info(f"    Source: {d['source']} | Severity: {d['severity']}")
+
+        logger.info(f"Summary: {summary}")
+        logger.info(f"Time: {elapsed_ms:.1f}ms")
+        logger.info(f"=== UNIFIED ANALYSIS END ===")
+        
+        return {
+            "file_path": req.file_path,
+            "diagnostics": diagnostics_list,
+            "summary": summary,
+            "analysis_time_ms": elapsed_ms,
+            "layers_run": layers_run,
+            "content_hash": content_hash,
+            "version": req.version,  # Echo back for stale detection
+            "content_debug": {
+                "line_count": len(split_lines),
+                "leading_blank_lines": leading_blank_lines,
+                "used_content_override": used_content_override,
+            },
+        }
+        
+    except Exception as e:
+        logger.error(f"Unified analysis failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@app.get("/analyze/unified/status")
+async def get_unified_status():
+    """Get the status of the Intelligence Aggregator."""
+    aggregator = get_intelligence_aggregator()
+    providers = [p.source.value for p in aggregator._providers]
+    if aggregator._ai_provider:
+        providers.append(aggregator._ai_provider.source.value)
+    return {
+        "status": "active",
+        "providers": providers,
+        "ai_auto_trigger": aggregator._enable_ai_auto_trigger,
+    }
 
 
 # ============================================================================

@@ -14,6 +14,8 @@ const backendStaticAnalyzeUrl = new URL("/analyze/static", backendUrl).toString(
 const backendAiAnalyzeUrl = new URL("/analyze/ai", backendUrl).toString();
 const backendProactiveAnalyzeUrl = new URL("/analyze/proactive", backendUrl).toString();
 const backendProactiveQuickUrl = new URL("/analyze/proactive/quick", backendUrl).toString();
+const backendContainerAnalyzeUrl = new URL("/analyze/container", backendUrl).toString();
+const backendUnifiedAnalyzeUrl = new URL("/analyze/unified", backendUrl).toString();
 // Workspace-level analysis endpoints
 const backendWorkspaceAnalyzeUrl = new URL("/analyze/workspace", backendUrl).toString();
 const backendWorkspaceIncrementalUrl = new URL("/analyze/workspace/incremental", backendUrl).toString();
@@ -84,6 +86,7 @@ function handleHttpRequest(req, res) {
 
 async function handleClientMessage(socket, raw) {
   const payloadText = raw.toString("utf8").trim();
+  console.log(`[Gateway DEBUG] Received from client: ${payloadText.substring(0, 200)}...`);
   if (!payloadText) {
     sendError(socket, "Empty payload received");
     return;
@@ -116,6 +119,12 @@ async function handleClientMessage(socket, raw) {
       break;
     case "analyze/proactive/quick":
       await forwardProactiveQuickAnalysis(socket, data, requestId);
+      break;
+    case "analyze/container":
+      await forwardContainerAnalysis(socket, data, requestId);
+      break;
+    case "analyze/unified":
+      await forwardUnifiedAnalysis(socket, data, requestId);
       break;
     case "analyze/workspace":
       await forwardWorkspaceAnalysis(socket, data, requestId);
@@ -410,6 +419,299 @@ async function forwardProactiveAnalysis(socket, data, requestId) {
   safeSend(socket, {
     type: "response",
     action: "analyze/proactive",
+    requestId,
+    data: responseJson,
+  });
+}
+
+/**
+ * Container-First proactive analysis (RECOMMENDED).
+ * 
+ * This endpoint does NOT receive content from the client.
+ * The backend fetches content directly from the container filesystem,
+ * ensuring the AI analyzes exactly what the compiler sees.
+ * 
+ * This is the preferred analysis method for eliminating ghost errors.
+ */
+async function forwardContainerAnalysis(socket, data, requestId) {
+  const slug = data?.slug;
+  const filePath = data?.file_path || data?.filePath;
+  const lang = data?.lang;
+
+  if (typeof slug !== "string" || !slug.trim()) {
+    sendError(socket, "`slug` must be a non-empty string", { requestId });
+    return;
+  }
+
+  if (typeof filePath !== "string" || !filePath.trim()) {
+    sendError(socket, "`file_path` must be a non-empty string", { requestId });
+    return;
+  }
+
+  if (typeof lang !== "string" || !lang.trim()) {
+    sendError(socket, "`lang` must be a non-empty string", { requestId });
+    return;
+  }
+
+  // Build request body - note: NO code field!
+  const forwardBody = {
+    slug: slug.trim(),
+    file_path: filePath.trim(),
+    lang: lang.trim(),
+  };
+
+  // Optional: related file paths (NOT content!)
+  if (Array.isArray(data?.related_paths) && data.related_paths.length) {
+    forwardBody.related_paths = data.related_paths.filter(
+      (p) => typeof p === "string" && p.trim()
+    );
+  }
+
+  // Optional: specify which tiers to run
+  if (Array.isArray(data?.tiers) && data.tiers.length) {
+    forwardBody.tiers = data.tiers;
+  }
+
+  // Optional: include AI tier
+  if (typeof data?.include_ai === "boolean") {
+    forwardBody.include_ai = data.include_ai;
+  }
+
+  // Optional: max diagnostics limit
+  if (typeof data?.max_diagnostics === "number") {
+    forwardBody.max_diagnostics = data.max_diagnostics;
+  }
+
+  // Optional: custom model/API key for AI tier
+  if (typeof data?.model === "string" && data.model.trim()) {
+    forwardBody.model = data.model.trim();
+  }
+  if (typeof data?.api_key === "string" && data.api_key.trim()) {
+    forwardBody.api_key = data.api_key.trim();
+  }
+
+  console.log(`[Gateway] === CONTAINER ANALYSIS REQUEST ===`);
+  console.log(`[Gateway] Slug: ${forwardBody.slug}`);
+  console.log(`[Gateway] File: ${forwardBody.file_path}`);
+  console.log(`[Gateway] Language: ${forwardBody.lang}`);
+  console.log(`[Gateway] Related paths: ${forwardBody.related_paths?.length || 0}`);
+  console.log(`[Gateway] NOTE: Content will be fetched by backend from container`);
+
+  let backendResponse;
+  try {
+    backendResponse = await fetch(backendContainerAnalyzeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(forwardBody),
+    });
+  } catch (err) {
+    console.error("[Gateway] Container analysis backend request failed", err);
+    sendError(socket, "Failed to reach container analysis backend", {
+      requestId,
+      detail: err.message,
+    });
+    return;
+  }
+
+  const responseText = await backendResponse.text();
+  console.log(`[Gateway] Container analysis response status: ${backendResponse.status}`);
+
+  if (!backendResponse.ok) {
+    console.error(`[Gateway] Container analysis error: ${responseText}`);
+    sendError(socket, "Container analysis backend returned an error", {
+      requestId,
+      detail: responseText,
+      status: backendResponse.status,
+    });
+    return;
+  }
+
+  let responseJson;
+  try {
+    responseJson = JSON.parse(responseText);
+  } catch (err) {
+    sendError(socket, "Container analysis response was not valid JSON", {
+      requestId,
+      detail: err.message,
+    });
+    return;
+  }
+
+  // Log diagnostics
+  console.log(`[Gateway] === CONTAINER ANALYSIS RESPONSE ===`);
+  console.log(`[Gateway] Diagnostics count: ${responseJson.diagnostics?.length || 0}`);
+
+  // Send tier updates for streaming experience
+  const tiers = responseJson?.tiers || {};
+  for (const [tierName, tierData] of Object.entries(tiers)) {
+    safeSend(socket, {
+      type: "stream",
+      streamId: requestId,
+      action: "container.tier",
+      data: {
+        tier: tierName,
+        diagnostics: tierData.diagnostics || [],
+        elapsedMs: tierData.elapsedMs || 0,
+        fromCache: tierData.fromCache || false,
+      },
+    });
+  }
+
+  // Send final response
+  safeSend(socket, {
+    type: "response",
+    action: "analyze/container",
+    requestId,
+    data: responseJson,
+  });
+}
+
+/**
+ * Forward unified intelligence pipeline analysis request.
+ * 
+ * This is the RECOMMENDED endpoint that combines:
+ * - Layer A: Static/LSP analysis (< 200ms)
+ * - Layer B: Compiler semantic analysis (500ms-1s)
+ * - Layer C: AI analysis (on-demand, auto-triggered when errors found)
+ * 
+ * Content is fetched from container filesystem - NOT sent by client.
+ */
+async function forwardUnifiedAnalysis(socket, data, requestId) {
+  const slug = data?.slug;
+  const filePath = data?.file_path || data?.filePath;
+  const lang = data?.lang;
+
+  if (typeof slug !== "string" || !slug.trim()) {
+    sendError(socket, "`slug` must be a non-empty string", { requestId });
+    return;
+  }
+
+  if (typeof filePath !== "string" || !filePath.trim()) {
+    sendError(socket, "`file_path` must be a non-empty string", { requestId });
+    return;
+  }
+
+  if (typeof lang !== "string" || !lang.trim()) {
+    sendError(socket, "`lang` must be a non-empty string", { requestId });
+    return;
+  }
+
+  // Build request body for unified pipeline
+  const forwardBody = {
+    slug: slug.trim(),
+    file_path: filePath.trim(),
+    lang: lang.trim(),
+  };
+
+  // Optional: version for stale detection
+  if (typeof data?.version === "number" || typeof data?.version === "string") {
+    forwardBody.version = data.version;
+  }
+
+  // Optional: content override
+  if (typeof data?.content === "string") {
+    forwardBody.content = data.content;
+  }
+
+  // Optional: specify which layers to run (static, semantic, ai)
+  if (Array.isArray(data?.layers) && data.layers.length) {
+    forwardBody.layers = data.layers;
+  }
+
+  // Optional: auto-trigger AI on errors (default true)
+  if (typeof data?.trigger_ai_on_errors === "boolean") {
+    forwardBody.trigger_ai_on_errors = data.trigger_ai_on_errors;
+  }
+
+  // Optional: force include AI layer
+  if (typeof data?.include_ai === "boolean") {
+    forwardBody.include_ai = data.include_ai;
+  }
+
+  // Optional: max diagnostics limit
+  if (typeof data?.max_diagnostics === "number") {
+    forwardBody.max_diagnostics = data.max_diagnostics;
+  }
+
+  // Optional: custom model/API key for AI layer
+  if (typeof data?.model === "string" && data.model.trim()) {
+    forwardBody.model = data.model.trim();
+  }
+  if (typeof data?.api_key === "string" && data.api_key.trim()) {
+    forwardBody.api_key = data.api_key.trim();
+  }
+
+  // Compute content hash for debugging
+  const crypto = require('crypto');
+  const contentHash = forwardBody.content 
+    ? crypto.createHash('md5').update(forwardBody.content).digest('hex').substring(0, 16)
+    : 'N/A (fetching from disk)';
+
+  console.log(`[Gateway] UNIFIED: ${forwardBody.file_path} | v=${forwardBody.version || 'N/A'} | hash=${contentHash} | content=${forwardBody.content?.length || 0} chars`);
+
+  let backendResponse;
+  try {
+    backendResponse = await fetch(backendUnifiedAnalyzeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(forwardBody),
+    });
+  } catch (err) {
+    console.error("[Gateway] Unified analysis backend request failed", err);
+    sendError(socket, "Failed to reach unified analysis backend", {
+      requestId,
+      detail: err.message,
+    });
+    return;
+  }
+
+  const responseText = await backendResponse.text();
+  console.log(`[Gateway] Unified analysis response status: ${backendResponse.status}`);
+
+  if (!backendResponse.ok) {
+    console.error(`[Gateway] Unified analysis error: ${responseText}`);
+    sendError(socket, "Unified analysis backend returned an error", {
+      requestId,
+      detail: responseText,
+      status: backendResponse.status,
+    });
+    return;
+  }
+
+  let responseJson;
+  try {
+    responseJson = JSON.parse(responseText);
+  } catch (err) {
+    sendError(socket, "Unified analysis response was not valid JSON", {
+      requestId,
+      detail: err.message,
+    });
+    return;
+  }
+
+  // Condensed response logging
+  console.log(`[Gateway] UNIFIED RESULT: ${responseJson.diagnostics?.length || 0} diags | layers=${responseJson.layers_run?.join(",") || "none"} | ${responseJson.analysis_time_ms?.toFixed(0) || 0}ms | hash=${responseJson.content_hash || 'N/A'}`);
+
+  // Send layer updates for streaming experience (if available)
+  if (responseJson?.layer_results) {
+    for (const [layerName, layerData] of Object.entries(responseJson.layer_results)) {
+      safeSend(socket, {
+        type: "stream",
+        streamId: requestId,
+        action: "unified.layer",
+        data: {
+          layer: layerName,
+          diagnostics: layerData.diagnostics || [],
+          elapsedMs: layerData.elapsedMs || 0,
+        },
+      });
+    }
+  }
+
+  // Send final response
+  safeSend(socket, {
+    type: "response",
+    action: "analyze/unified",
     requestId,
     data: responseJson,
   });
@@ -759,7 +1061,9 @@ function safeSend(socket, payload) {
   }
 
   try {
-    socket.send(JSON.stringify(payload));
+    const str = JSON.stringify(payload);
+    console.log(`[Gateway DEBUG] Sending to client: ${str.substring(0, 200)}...`);
+    socket.send(str);
   } catch (err) {
     console.error("Failed to send payload", err);
   }
