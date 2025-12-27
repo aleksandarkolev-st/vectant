@@ -367,6 +367,12 @@ class AIOutputVerifier:
         Returns:
             VerificationResult with status and any violations
         """
+        import logging
+        logger = logging.getLogger('ai-engine.verifier')
+        logger.info(f"[Verifier DEBUG] Starting verification for {lang} code ({len(ai_output)} chars)")
+        if original_code:
+            logger.info(f"[Verifier DEBUG] Original code provided ({len(original_code)} chars)")
+
         start_time = time.time()
         violations: List[Violation] = []
         repaired_output = ai_output
@@ -468,6 +474,11 @@ class AIOutputVerifier:
             repair_capped=repair_capped,
         )
         
+        # Log result
+        logger.info(f"[Verifier DEBUG] Verification result: {result.status} with {len(result.violations)} violations")
+        for v in result.violations:
+            logger.info(f"[Verifier DEBUG] Violation: {v.type} - {v.message}")
+
         # HARD GATE: Raise fatal error if verification failed and raise_on_failure is True
         if result.is_fatal and self.raise_on_failure:
             raise VerificationFatalError(

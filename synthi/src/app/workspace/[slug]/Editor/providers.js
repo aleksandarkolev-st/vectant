@@ -53,10 +53,13 @@ export const useEditorProviders = ({
         const model = editorInstance.getModel();
         if (!model) return;
         
+        // Handle both camelCase and snake_case (backend compatibility)
+        const text = fix.replacementText ?? fix.replacement_text ?? '';
+        
         // Apply the fix as an edit
         editorInstance.executeEdits('synthi-quick-fix', [{
             range: range,
-            text: fix.replacementText || '',
+            text: text,
             forceMoveMarkers: true,
         }]);
         
@@ -76,7 +79,8 @@ export const useEditorProviders = ({
         const model = editorInstance.getModel();
         if (!model) return;
         
-        const replacementText = fix.replacementText ?? '';
+        // Handle both camelCase and snake_case (backend compatibility)
+        const replacementText = fix.replacementText ?? fix.replacement_text ?? '';
         const isDelete = replacementText === '';
         
         if (isDelete) return; // Don't show preview for deletions
@@ -227,9 +231,6 @@ export const useEditorProviders = ({
                 let firstFixRange = null;
                 
                 for (const m of hits) {
-                    const severity = m.severity === 8 ? 'Error' : m.severity === 4 ? 'Warning' : 'Info';
-                    contents.push({ value: `**${severity}**: ${m.message}` });
-                    
                     // Find diagnostic with fixes for this marker
                     if (!firstFixDiagnostic) {
                         const matchingDiag = currentDiagnostics.find(d => {
@@ -314,16 +315,6 @@ export const useEditorProviders = ({
                     removeDiagnosticByLocation(diagnostic.location);
                 }
                 
-                // Clear Monaco markers for this specific range
-                const currentMarkers = monacoInstance.editor.getModelMarkers({ resource: model.uri });
-                const remainingMarkers = currentMarkers.filter(m => {
-                    return !(m.startLineNumber === range.startLineNumber &&
-                             m.startColumn === range.startColumn &&
-                             m.endLineNumber === range.endLineNumber &&
-                             m.endColumn === range.endColumn);
-                });
-                monacoInstance.editor.setModelMarkers(model, 'synthi-proactive', remainingMarkers.filter(m => m.owner === 'synthi-proactive'));
-                
                 return;
             }
             
@@ -396,39 +387,13 @@ export const useEditorProviders = ({
         
         // Register command to apply fix
         const applyFixCommandId = editorInstance.addCommand(0, (ctx, fix, range, diagnosticLocation) => {
-            if (!fix || !range) return;
-            const model = editorInstance.getModel();
-            if (!model) return;
-            
-            editorInstance.executeEdits('synthi-quick-fix', [{
-                range: range,
-                text: fix.replacementText || '',
-                forceMoveMarkers: true,
-            }]);
-            
-            // Clear pending fix state
-            pendingFixRef.current = null;
-            isPreviewingRef.current = false;
-            hideFixPreview();
+            applyFix(fix, range);
             
             // IMPORTANT: Remove the diagnostic from state immediately
             // This prevents the error from persisting after the fix is applied
             if (removeDiagnosticByLocation && diagnosticLocation) {
                 removeDiagnosticByLocation(diagnosticLocation);
             }
-            
-            // Also clear Monaco markers for this specific range
-            const currentMarkers = monacoInstance.editor.getModelMarkers({ resource: model.uri });
-            const remainingMarkers = currentMarkers.filter(m => {
-                // Keep markers that don't match the fixed range
-                return !(m.startLineNumber === range.startLineNumber &&
-                         m.startColumn === range.startColumn &&
-                         m.endLineNumber === range.endLineNumber &&
-                         m.endColumn === range.endColumn);
-            });
-            
-            // Re-apply only remaining markers (filtering out the fixed one)
-            monacoInstance.editor.setModelMarkers(model, 'synthi-proactive', remainingMarkers.filter(m => m.owner === 'synthi-proactive'));
         });
         
         // Helper to find diagnostics for a given range
@@ -467,8 +432,14 @@ export const useEditorProviders = ({
                         if (!diagnostic.fixes?.length) continue;
                         
                         for (const fix of diagnostic.fixes) {
+                            // DEBUG: Log fix object to check replacementText
+                            // console.log('[providers.js] Processing fix:', fix);
+
+                            // Handle both camelCase and snake_case (backend compatibility)
+                            const text = fix.replacementText ?? fix.replacement_text ?? '';
+
                             // Create a unique key for this fix to avoid duplicates
-                            const fixKey = `${fix.description}:${fix.replacementText}:${fix.location?.line}`;
+                            const fixKey = `${fix.description}:${text}:${fix.location?.line}`;
                             if (seenFixes.has(fixKey)) continue;
                             seenFixes.add(fixKey);
                             
