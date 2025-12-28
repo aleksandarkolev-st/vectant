@@ -15,8 +15,6 @@
 // - Type IDs from state_type_id (v2.1)
 // ============================================================
 
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::hash::{Hash, Hasher};

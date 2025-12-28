@@ -482,7 +482,8 @@ impl HmrOrchestrator {
                 }
             }
             // Unload from module_loader since actual loading happens elsewhere
-            self.module_loader.unload(slot);
+            // self.module_loader.unload(slot);
+            // KEEP LOADED to enable fingerprint comparison on next reload!
         }
 
         // 6. Migrate state (prefer binary over JSON)

@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 
 use crate::abi_version::AbiVersionManager;
 use crate::plugin_contract::ModuleSlot;
+use crate::enhanced_fingerprint::{AbiFingerprint, extract_fingerprint_from_module};
 
 /// Result of a module load operation
 #[derive(Debug)]
@@ -52,6 +53,7 @@ pub struct ModuleInfo {
     pub content_hash: u64,
     pub loaded_at: std::time::Instant,
     pub symbols: Vec<String>,
+    pub fingerprint: Option<AbiFingerprint>,
 }
 
 /// Module loader with ABI management
@@ -116,6 +118,52 @@ impl ModuleLoader {
             crate::abi_version::extract_manifest_from_library(&library, module_name)
         };
 
+        // Try to get state size for fingerprinting
+        let state_size = unsafe {
+            get_module_state_size(&library, module_name)
+        };
+
+        // Extract fingerprint
+        let fingerprint = if state_size > 0 {
+            match extract_fingerprint_from_module(
+                path,
+                manifest.abi_version.major, // Use major version as state version proxy for v1
+                0, // No module fingerprint in v1
+                state_size
+            ) {
+                Ok(fp) => Some(fp),
+                Err(e) => {
+                    eprintln!("[Loader] Failed to extract fingerprint: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Check Fingerprint compatibility with previous version
+        if let Some(old_info) = self.loaded_modules.get(&slot) {
+            if let (Some(old_fp), Some(new_fp)) = (&old_info.fingerprint, &fingerprint) {
+                use crate::enhanced_fingerprint::CompatibilityResult;
+                match old_fp.is_compatible_for_memcpy(new_fp) {
+                    CompatibilityResult::Compatible => {
+                        // OK
+                    },
+                    CompatibilityResult::Incompatible { reasons } => {
+                        let reason = format!("Fingerprint mismatch: {}", reasons.join(", "));
+                        self.record_load(path.to_string_lossy().to_string(), LoadResult::LoadError {
+                            reason: reason.clone(),
+                        });
+                        return LoadResult::AbiMismatch {
+                            expected: old_info.abi_version,
+                            found: manifest.abi_version.major,
+                            details: reason,
+                        };
+                    }
+                }
+            }
+        }
+
         // Check ABI compatibility
         let compat = self.abi_manager.check_compatibility(module_name, &manifest);
         if !compat.compatible {
@@ -145,6 +193,7 @@ impl ModuleLoader {
             content_hash,
             loaded_at: start,
             symbols: manifest.symbols.iter().map(|s| s.name.clone()).collect(),
+            fingerprint,
         };
 
         // Move previous to rollback if exists
@@ -229,6 +278,53 @@ impl ModuleLoader {
             self.load_history.remove(0);
         }
     }
+
+    /// Validate fingerprint compatibility between loaded module and new module
+    pub fn validate_fingerprint(
+        &self,
+        slot: ModuleSlot,
+        new_fingerprint: &Option<AbiFingerprint>,
+    ) -> crate::enhanced_fingerprint::CompatibilityResult {
+        if let Some(old_info) = self.get_info(slot) {
+            match (&old_info.fingerprint, new_fingerprint) {
+                (Some(old), Some(new)) => old.is_compatible_for_memcpy(new),
+                (None, None) => crate::enhanced_fingerprint::CompatibilityResult::Compatible, // Both missing, assume compatible (legacy behavior)
+                (Some(_), None) => crate::enhanced_fingerprint::CompatibilityResult::Incompatible { 
+                    reasons: vec!["New module missing fingerprint".to_string()] 
+                },
+                (None, Some(_)) => crate::enhanced_fingerprint::CompatibilityResult::Incompatible { 
+                    reasons: vec!["Old module missing fingerprint".to_string()] 
+                },
+            }
+        } else {
+            // No old module, always compatible
+            crate::enhanced_fingerprint::CompatibilityResult::Compatible
+        }
+    }
+}
+
+/// Helper to extract state size from loaded library
+unsafe fn get_module_state_size(lib: &libloading::Library, module_name: &str) -> usize {
+    // Try v2.1 HotApi first
+    if let Ok(func) = lib.get::<unsafe extern "C" fn() -> *const crate::plugin_contract::HotApi>(b"hot_get_api\0") {
+        let api = func();
+        if !api.is_null() {
+            return (*api).state_size_bytes;
+        }
+    }
+
+    // Try v1 specific symbols
+    let symbol_name = match module_name {
+        "core" => b"core_get_state_size\0",
+        "gui" => b"gui_get_state_size\0",
+        _ => b"get_state_size\0",
+    };
+
+    if let Ok(func) = lib.get::<unsafe extern "C" fn() -> usize>(symbol_name) {
+        return func();
+    }
+
+    0
 }
 
 impl Default for ModuleLoader {

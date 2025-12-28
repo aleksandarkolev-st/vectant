@@ -1070,7 +1070,9 @@ fn main() {
                                     }
                                 }
                                 // Unload from module_loader since we'll use legacy loading
-                                module_loader.unload(slot);
+                                // module_loader.unload(slot);
+                                // KEEP LOADED in module_loader to enable fingerprint comparison on next reload!
+                                // Since we use unique filenames per build, holding the handle is safe.
                             }
                         }
                         
