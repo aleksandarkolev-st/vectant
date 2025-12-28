@@ -28,8 +28,6 @@
 // - Hard timeouts on all operations (quiescence, snapshot, shutdown)
 // ============================================================
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
