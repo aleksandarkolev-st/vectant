@@ -11,14 +11,17 @@
 // ============================================================
 
 use anyhow::{bail, Context, Result};
+use base64::engine::general_purpose::STANDARD as BASE64_STD;
+use base64::Engine;
 use serde_json::json;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::sync::Mutex;
+use tokio::time::{sleep, timeout};
 use webrtc::data_channel::RTCDataChannel;
 
 use crate::android_emulator::{EmulatorConfig, EmulatorSession, LogcatEntry};
@@ -77,6 +80,54 @@ async fn send_logcat(log_dc: &Arc<RTCDataChannel>, session_id: &str, entry: &Log
     let _ = log_dc
         .send_text(serde_json::to_string(&payload).unwrap_or_default())
         .await;
+}
+
+/// Sends a single emulator frame (PNG, base64) to the frontend.
+async fn send_emulator_frame(
+    log_dc: &Arc<RTCDataChannel>,
+    session_id: &str,
+    png_b64: &str,
+    bytes: usize,
+) {
+    let payload = json!({
+        "sessionId": session_id,
+        "type": "emulator-frame",
+        "data": {
+            "mime": "image/png",
+            "png_b64": png_b64,
+            "bytes": bytes,
+        }
+    });
+    let _ = log_dc
+        .send_text(serde_json::to_string(&payload).unwrap_or_default())
+        .await;
+}
+
+async fn capture_screencap_png(adb: &PathBuf, serial: &str) -> Result<Vec<u8>> {
+    // `exec-out` returns raw bytes on stdout. This is the simplest way to capture
+    // pixels without needing shared folders, framebuffer access, or a video pipeline.
+    let out = timeout(
+        Duration::from_secs(10),
+        tokio::process::Command::new(adb)
+            .args(["-s", serial, "exec-out", "screencap", "-p"])
+            .output(),
+    )
+    .await
+    .context("screencap timeout")?
+    .context("Failed to run adb exec-out screencap")?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        bail!("adb screencap failed (status={:?}) stderr={}", out.status.code(), stderr);
+    }
+
+    // Basic PNG signature check.
+    const PNG_SIG: &[u8] = b"\x89PNG\r\n\x1a\n";
+    if out.stdout.len() < PNG_SIG.len() || &out.stdout[..PNG_SIG.len()] != PNG_SIG {
+        bail!("adb screencap did not return PNG bytes (len={})", out.stdout.len());
+    }
+
+    Ok(out.stdout)
 }
 
 // ============================================================
@@ -618,7 +669,7 @@ pub async fn handle_react_native_emulator_job(
     .await;
 
     let mut emulator_config = EmulatorConfig::default();
-    emulator_config.android_sdk_root = sdk_root;
+    emulator_config.android_sdk_root = sdk_root.clone();
 
     // If the worker has KVM available, enable hardware acceleration.
     // This dramatically reduces emulator boot time and flakiness.
@@ -793,6 +844,59 @@ pub async fn handle_react_native_emulator_job(
     tokio::spawn(async move {
         while let Some(entry) = logcat_rx.recv().await {
             send_logcat(&log_dc_for_logcat, &session_id_for_logcat, &entry).await;
+        }
+    });
+
+    // Step 8: Stream emulator frames (PNG screenshots) for a short window.
+    // This is a minimal, portable preview mechanism that works even when we do not
+    // have a WebRTC video track carrying emulator pixels.
+    let log_dc_for_frames = log_dc.clone();
+    let session_id_for_frames = session_id.clone();
+    let adb_for_frames = sdk_root.join("platform-tools/adb");
+    let serial_for_frames = emulator_serial.clone();
+
+    tokio::spawn(async move {
+        // Conservative defaults to avoid overwhelming the datachannel.
+        const MAX_PNG_BYTES: usize = 600_000;
+        const FRAME_INTERVAL: Duration = Duration::from_secs(2);
+        const STREAM_DURATION: Duration = Duration::from_secs(120);
+
+        let start = Instant::now();
+        let mut last_error_at: Option<Instant> = None;
+
+        while start.elapsed() < STREAM_DURATION {
+            match capture_screencap_png(&adb_for_frames, &serial_for_frames).await {
+                Ok(png) => {
+                    if png.len() <= MAX_PNG_BYTES {
+                        let b64 = BASE64_STD.encode(&png);
+                        send_emulator_frame(
+                            &log_dc_for_frames,
+                            &session_id_for_frames,
+                            &b64,
+                            png.len(),
+                        )
+                        .await;
+                    }
+                }
+                Err(e) => {
+                    // Avoid spamming logs if screencap fails repeatedly.
+                    let should_log = last_error_at
+                        .map(|t| t.elapsed() > Duration::from_secs(15))
+                        .unwrap_or(true);
+                    if should_log {
+                        send_log(
+                            &log_dc_for_frames,
+                            &session_id_for_frames,
+                            &format!("[frames] screencap failed: {}", e),
+                            "emulator",
+                        )
+                        .await;
+                        last_error_at = Some(Instant::now());
+                    }
+                }
+            }
+
+            sleep(FRAME_INTERVAL).await;
         }
     });
 

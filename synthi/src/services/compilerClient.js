@@ -110,7 +110,13 @@ export class CompilerClient {
             text = String(msg);
         }
 
-        console.log('[CompilerClient] Received log:', text);
+        // Some messages (e.g. emulator-frame screenshots) can be very large.
+        // Logging them verbatim can freeze DevTools and slow the UI.
+        if (typeof text === 'string' && text.length > 2000) {
+            console.log('[CompilerClient] Received log (truncated):', `${text.slice(0, 2000)}…`);
+        } else {
+            console.log('[CompilerClient] Received log:', text);
+        }
 
         // Check for GUI control messages
         try {

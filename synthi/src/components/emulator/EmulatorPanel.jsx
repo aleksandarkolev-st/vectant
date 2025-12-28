@@ -35,6 +35,7 @@ export default function EmulatorPanel({
   const [workerStatus, setWorkerStatus] = useState(null);
   const [workerMessage, setWorkerMessage] = useState('');
   const [streamConnected, setStreamConnected] = useState(false);
+  const [frameDataUrl, setFrameDataUrl] = useState('');
   const lastEventAtRef = useRef(0);
 
   // Future-proof: keep refs ready for real streaming.
@@ -142,6 +143,17 @@ export default function EmulatorPanel({
         // Any other mobile status means we're still in the job pipeline.
         setErrorMessage('');
         setState(EMULATOR_STATES.BOOTING);
+        return;
+      }
+
+      // Emulator pixel stream (minimal screenshot-based preview)
+      if (parsed.type === 'emulator-frame') {
+        const b64 = parsed?.data?.png_b64;
+        if (typeof b64 === 'string' && b64.length > 0) {
+          setFrameDataUrl(`data:image/png;base64,${b64}`);
+          // Ensure we are in a visual state.
+          setState((prev) => (prev === EMULATOR_STATES.ERROR ? prev : EMULATOR_STATES.STREAMING));
+        }
         return;
       }
 
@@ -262,6 +274,7 @@ export default function EmulatorPanel({
               videoRef={videoRef}
               canvasRef={canvasRef}
               mediaStream={mediaStream}
+              frameDataUrl={frameDataUrl}
             />
           </div>
         </EmulatorFrame>

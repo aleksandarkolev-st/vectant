@@ -76,6 +76,7 @@ export default function EmulatorScreen({
   videoRef,
   canvasRef,
   mediaStream,
+  frameDataUrl,
 }) {
   // Future-proofing:
   // - When real streaming is added, the backend will supply frames via WebRTC.
@@ -125,6 +126,13 @@ export default function EmulatorScreen({
   if (state === EMULATOR_STATES.STREAMING) {
     return (
       <div className="h-full w-full bg-black relative">
+        {frameDataUrl ? (
+          <img
+            src={frameDataUrl}
+            alt="Emulator preview"
+            className="absolute inset-0 h-full w-full object-contain"
+          />
+        ) : null}
         <video
           ref={videoRef}
           className={hasVideoTrack ? "absolute inset-0 h-full w-full object-contain" : "hidden"}
@@ -133,7 +141,7 @@ export default function EmulatorScreen({
           autoPlay
         />
 
-        {!hasVideoTrack ? (
+        {!hasVideoTrack && !frameDataUrl ? (
           <MessageScreen title="Waiting for device stream…" subtitle="Streaming connected; no video track yet." />
         ) : null}
 
