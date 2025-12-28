@@ -590,7 +590,6 @@ fn extract_pe_layout_hash(data: &[u8]) -> Option<u64> {
     
     None
 }
-}
 
 #[cfg(unix)]
 fn extract_build_id_from_elf(obj: &object::File) -> Option<String> {
