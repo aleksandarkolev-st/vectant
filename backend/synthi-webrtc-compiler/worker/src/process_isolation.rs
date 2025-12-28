@@ -1126,11 +1126,46 @@ impl ProcessSupervisor {
             }
             "input" => {
                 // Forward input event to worker
-                if parts.len() >= 4 {
-                    let kind = parts[1].parse::<u32>().unwrap_or(0);
-                    let a = parts[2].parse::<u32>().unwrap_or(0);
-                    let b = parts[3].parse::<u32>().unwrap_or(0);
-                    let c = parts.get(4).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                if parts.len() >= 3 {
+                    let kind_str = parts[1];
+                    let kind = match kind_str {
+                        "motion" => 0,
+                        "button" => 1,
+                        "key" => 2,
+                        _ => kind_str.parse::<u32>().unwrap_or(0),
+                    };
+                    
+                    let mut a = 0;
+                    let mut b = 0;
+                    let mut c = 0;
+                    
+                    if kind == 0 { // motion x y
+                        a = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+                        b = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
+                    } else if kind == 1 { // button type btn x y
+                        // Node sends: input button down 1 100 200
+                        let type_str = parts.get(2).unwrap_or(&"up");
+                        let btn = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
+                        let x = parts.get(4).and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+                        let y = parts.get(5).and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+                        
+                        a = btn;
+                        b = if *type_str == "down" { 1 } else { 0 };
+                        // Pack x,y into c (16-bit each)
+                        c = ((x as u32 & 0xFFFF) << 16) | (y as u32 & 0xFFFF);
+                    } else if kind == 2 { // key type keycode
+                        // Node sends: input key down 32
+                        let type_str = parts.get(2).unwrap_or(&"up");
+                        let keycode = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
+                        
+                        a = if *type_str == "down" { 1 } else { 0 };
+                        b = keycode;
+                    } else {
+                        // Fallback for raw numeric
+                        a = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+                        b = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
+                        c = parts.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
+                    }
                     
                     self.send_message(&IpcMessage::InputEvent { kind, a, b, c })?;
                 }

@@ -52,6 +52,8 @@ pub mod slot_isolation;
 pub mod restart_control;
 pub mod observability;
 
+use crate::hardened_ipc::{read_frame_validated, write_frame_with_checksum, IpcConfig};
+
 use plugin_contract::{ModuleSlot, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
 use capability::{HmrCapability, detect_capabilities, HmrStatus};
 use host_kv::{
@@ -551,6 +553,13 @@ fn create_shm_segment(size: usize) -> Option<(i32, *mut u8)> {
     }
 }
 
+// Command enum to handle both legacy text commands and binary IPC messages
+#[derive(Debug)]
+enum RunnerCommand {
+    Legacy(String),
+    Ipc(process_isolation::IpcMessage),
+}
+
 fn main() {
     // ============================================================
     // EXECUTION MODE CHECK - PROCESS ISOLATION IS DEFAULT
@@ -694,7 +703,7 @@ fn main() {
 
     eprintln!("Runner started. Waiting for commands...");
 
-    let (tx, rx) = mpsc::channel::<String>();
+    let (tx, rx) = mpsc::channel::<RunnerCommand>();
 
     // Frame pipe to stdout (non-blocking for the main loop)
     // We keep the channel tiny and drop frames when the pipe is backed up so on_update keeps running.
@@ -704,48 +713,94 @@ fn main() {
     // Dedicated writer so rendering never blocks on stdout backpressure
     #[cfg(target_os = "linux")]
     {
-        std::thread::spawn(move || {
-            let mut stdout = io::stdout();
-            while let Ok(buf) = frame_rx.recv() {
-                if let Err(e) = stdout.write_all(&buf) {
-                    eprintln!("[Runner] stdout writer error: {}", e);
-                    break;
+        // Only spawn video writer if NOT in ProcessIsolated mode to prevent IPC corruption
+        if !matches!(execution_mode, process_isolation::ExecutionMode::ProcessIsolated) {
+            std::thread::spawn(move || {
+                let mut stdout = io::stdout();
+                while let Ok(buf) = frame_rx.recv() {
+                    if let Err(e) = stdout.write_all(&buf) {
+                        eprintln!("[Runner] stdout writer error: {}", e);
+                        break;
+                    }
+                    let _ = stdout.flush();
                 }
-                let _ = stdout.flush();
-            }
-        });
+            });
+        } else {
+            eprintln!("[Runner] Raw video output DISABLED in ProcessIsolated mode (IPC active)");
+        }
     }
     
-    // Spawn stdin reader thread
+    // Spawn input reader thread based on execution mode
+    let tx_clone = tx.clone();
+    let mode_for_thread = execution_mode;
+    
     thread::spawn(move || {
-        eprintln!("Stdin reader thread started");
+        eprintln!("Input reader thread started (Mode: {:?})", mode_for_thread);
         let stdin = io::stdin();
         let mut handle = stdin.lock();
-        let mut line = String::new();
-        loop {
-            match handle.read_line(&mut line) {
-                Ok(0) => {
-                    eprintln!("Stdin closed (EOF)");
-                    break;
-                }
-                Ok(_) => {
-                    let trimmed = line.trim().to_string();
-                    if !trimmed.is_empty() {
-                        eprintln!("Stdin received: {}", trimmed);
-                        if let Err(e) = tx.send(trimmed) {
-                            eprintln!("Failed to send command to main thread: {}", e);
+        
+        match mode_for_thread {
+            process_isolation::ExecutionMode::ProcessIsolated => {
+                // Binary IPC reader (MsgPack frames)
+                // Use default config for now
+                let config = IpcConfig::default();
+                
+                loop {
+                    match read_frame_validated(&mut handle, &config) {
+                        Ok(payload) => {
+                            // Deserialize MsgPack
+                            match rmp_serde::from_slice::<process_isolation::IpcMessage>(&payload) {
+                                Ok(msg) => {
+                                    if let Err(e) = tx_clone.send(RunnerCommand::Ipc(msg)) {
+                                        eprintln!("Failed to send IPC command: {}", e);
+                                        break;
+                                    }
+                                }
+                                Err(e) => eprintln!("IPC Deserialization error: {}", e),
+                            }
+                        }
+                        Err(e) => {
+                            // Check if it's EOF
+                            if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                                eprintln!("IPC connection closed (EOF)");
+                            } else {
+                                eprintln!("IPC Read error: {}", e);
+                            }
                             break;
                         }
                     }
-                    line.clear();
                 }
-                Err(e) => {
-                    eprintln!("Error reading stdin: {}", e);
-                    break;
+            }
+            #[allow(deprecated)]
+            process_isolation::ExecutionMode::UnsafeInProcess => {
+                // Legacy text reader
+                let mut line = String::new();
+                loop {
+                    match handle.read_line(&mut line) {
+                        Ok(0) => {
+                            eprintln!("Stdin closed (EOF)");
+                            break;
+                        }
+                        Ok(_) => {
+                            let trimmed = line.trim().to_string();
+                            if !trimmed.is_empty() {
+                                eprintln!("Stdin received: {}", trimmed);
+                                if let Err(e) = tx_clone.send(RunnerCommand::Legacy(trimmed)) {
+                                    eprintln!("Failed to send command to main thread: {}", e);
+                                    break;
+                                }
+                            }
+                            line.clear();
+                        }
+                        Err(e) => {
+                            eprintln!("Error reading stdin: {}", e);
+                            break;
+                        }
+                    }
                 }
             }
         }
-        eprintln!("Stdin reader thread exited");
+        eprintln!("Input reader thread exited");
     });
 
     let mut modules: HashMap<String, Library> = HashMap::new();
@@ -831,6 +886,20 @@ fn main() {
     #[cfg(not(target_os = "linux"))]
     eprintln!("[Runner] Frame capture DISABLED (non-Linux build)");
 
+    // Notify supervisor that we are ready (if in isolated mode)
+    if let process_isolation::ExecutionMode::ProcessIsolated = execution_mode {
+        let mut stdout = io::stdout();
+        let msg = process_isolation::IpcMessage::Ready;
+        let payload = rmp_serde::to_vec(&msg).unwrap();
+        
+        if let Err(e) = write_frame_with_checksum(&mut stdout, &payload) {
+            eprintln!("[Runner] Failed to send Ready message: {}", e);
+        } else {
+            let _ = stdout.flush();
+            eprintln!("[Runner] Sent Ready message to supervisor");
+        }
+    }
+
     loop {
         // Poll SDL2 events and pass them to loaded modules
         #[cfg(target_os = "linux")]
@@ -873,7 +942,44 @@ fn main() {
         }
 
         // Process all pending commands
-        while let Ok(cmd) = rx.try_recv() {
+        while let Ok(cmd_wrapper) = rx.try_recv() {
+            let cmd = match cmd_wrapper {
+                RunnerCommand::Legacy(c) => c,
+                RunnerCommand::Ipc(msg) => {
+                    match msg {
+                        process_isolation::IpcMessage::LoadModule { slot, path, .. } => {
+                            format!("load {} {}", slot, path)
+                        }
+                        process_isolation::IpcMessage::ReloadModule { slot, path, .. } => {
+                            format!("reload {} {}", slot, path)
+                        }
+                        process_isolation::IpcMessage::InputEvent { kind, a, b, c } => {
+                            // Map numeric events back to legacy string commands
+                            match kind {
+                                0 => format!("input motion {} {}", a, b), // x, y
+                                1 => format!("input button {} {} {} {}", 
+                                    if b == 1 { "down" } else { "up" }, // state
+                                    a, // button
+                                    (c >> 16) as i16, (c & 0xFFFF) as i16), // x, y packed
+                                2 => format!("input key {} {}", 
+                                    if a == 1 { "down" } else { "up" }, b), // state, keycode
+                                _ => String::new()
+                            }
+                        }
+                        process_isolation::IpcMessage::Ping { seq } => {
+                            eprintln!("[Runner] Ping received (seq={})", seq);
+                            String::new()
+                        }
+                        _ => {
+                            eprintln!("[Runner] Unhandled IPC message: {:?}", msg);
+                            String::new()
+                        }
+                    }
+                }
+            };
+
+            if cmd.is_empty() { continue; }
+
             // Route command logs to stderr so stdout stays dedicated to the video stream.
             eprintln!("[Runner] Processing command: {}", cmd);
             let parts: Vec<&str> = cmd.split_whitespace().collect();
