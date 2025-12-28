@@ -61,6 +61,7 @@ export default function EditorPage({ params }) {
     const [showProblemsPanel, setShowProblemsPanel] = useState(false);
     const [guiConfig, setGuiConfig] = useState(null);
     const [isGuiRunning, setIsGuiRunning] = useState(false);
+    const [runInGuiMode, setRunInGuiMode] = useState(false);
     const [editor, setEditor] = useState(null);
     // Track editor content version to force re-analysis on every change (including remote/undo)
     const [editorVersion, setEditorVersion] = useState(0);
@@ -1310,6 +1311,7 @@ export default function EditorPage({ params }) {
                 source,
                 files: additionalFiles,
                 useAiSplit,
+                isGui: runInGuiMode,
                 target,
                 projectRoot,
                 slug, // Pass workspace slug for mobile builds to download synced files
@@ -1323,7 +1325,7 @@ export default function EditorPage({ params }) {
             console.error('Compile failed', err);
             appendBuildLog(`error: ${err?.message || err}`);
         }
-    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, useAiSplit]);
+    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, useAiSplit, runInGuiMode]);
 
     const handleSave = useCallback(async () => {
         if (!activeFile) return;
@@ -1495,6 +1497,10 @@ export default function EditorPage({ params }) {
             <TopNav
                 title={activeFile ? activeFile.name : 'Synthi Workspace'}
                 onRun={handleRun}
+                runInGuiMode={runInGuiMode}
+                setRunInGuiMode={setRunInGuiMode}
+                useAiSplit={useAiSplit}
+                setUseAiSplit={setUseAiSplit}
                 onToggleTerminal={() => dispatch(toggleTerminal())}
                 onUndo={handleUndo}
                 onRedo={handleRedo}
