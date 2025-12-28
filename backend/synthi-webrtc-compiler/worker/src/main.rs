@@ -41,7 +41,7 @@ pub mod hardened_ipc;          // #4: IPC hardening (size limits, CRC32, decode 
 pub mod quiescence;            // #6: Per-subsystem quiescence rules
 pub mod slot_isolation;        // #7: Worker isolation model options
 pub mod restart_control;       // #8: Backoff, fallback, circuit breaker
-mod security;              // #9: Honest security documentation
+pub mod security;              // #9: Honest security documentation
 pub mod observability;         // #10: Structured logging, metrics, crash classification
 
 // Re-export orchestrator for external use
@@ -82,9 +82,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader, AsyncWriteExt};
 use chrono::Utc;
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
-use tokio::process::Command;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use chrono::Utc;
 use webrtc::api::APIBuilder;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
@@ -2800,7 +2798,7 @@ async fn perform_structural_ai_update(
     });
 
     let backend_url = std::env::var("AI_BACKEND_URL")
-        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
+        .unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
     let url = format!("{}/refactor/delta", backend_url);
 
     eprintln!("[AI Split] Calling fast delta endpoint: {}", url);
@@ -2908,7 +2906,7 @@ async fn perform_delta_deletion(
     });
 
     let backend_url = std::env::var("AI_BACKEND_URL")
-        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
+        .unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
     let url = format!("{}/refactor/delta", backend_url);
 
     eprintln!("[AI Split] Calling delta deletion endpoint: {}", url);
@@ -2972,7 +2970,7 @@ async fn perform_incremental_ai_update(
     });
 
     let backend_url = std::env::var("AI_BACKEND_URL")
-        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
+        .unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
     let url = format!("{}/refactor/structural", backend_url);
 
     eprintln!("[AI Split] Calling fast incremental endpoint: {}", url);
@@ -3356,7 +3354,7 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
     });
 
     let backend_url = std::env::var("AI_BACKEND_URL")
-        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
+        .unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
     let url = format!("{}/refactor/split", backend_url);
 
     let res = client.post(&url)
@@ -3463,7 +3461,7 @@ async fn perform_ai_fix(code: &str, error: &str) -> Result<String> {
     });
 
     let backend_url = std::env::var("AI_BACKEND_URL")
-        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
+        .unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
     let url = format!("{}/refactor/fix", backend_url);
 
     let res = client.post(&url)
@@ -3968,7 +3966,7 @@ async fn handle_compile(
                         let path = cached_so.to_string_lossy().to_string();
                         eprintln!("[Cache] HIT for core module (persistent cache)");
                         println!("Using cached core library: {}", path);
-                        return Ok(Some(path));
+                        return Ok::<_, anyhow::Error>(Some(path));
                     } else {
                         // Cache miss - need to compile
                         tokio::fs::write(dir_path.join(fname), &content).await?;
@@ -4012,7 +4010,7 @@ async fn handle_compile(
                         
                         let mut cache = compile_cache.lock().await;
                         cache.insert("core".to_string(), (content_hash, path.clone()));
-                        return Ok(Some(path));
+                        return Ok::<_, anyhow::Error>(Some(path));
                     }
                 }
             }

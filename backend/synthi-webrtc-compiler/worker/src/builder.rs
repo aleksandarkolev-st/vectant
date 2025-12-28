@@ -1228,7 +1228,6 @@ impl WidgetDetector {
         class_name: &str,
         original_code: &str,
         entry_point: &str,
-        _state_vars: &[String],
         state_vars: &[String],
         is_class_based: bool,
         original_function: Option<&str>,

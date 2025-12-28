@@ -142,8 +142,10 @@ impl ModuleLoader {
         };
 
         // Check Fingerprint compatibility with previous version
-        if let Some(old_info) = self.loaded_modules.get(&slot) {
-            if let (Some(old_fp), Some(new_fp)) = (&old_info.fingerprint, &fingerprint) {
+        let old_module_data = self.loaded_modules.get(&slot).map(|info| (info.abi_version, info.fingerprint.clone()));
+        
+        if let Some((old_version, Some(old_fp))) = old_module_data {
+            if let Some(new_fp) = &fingerprint {
                 use crate::enhanced_fingerprint::CompatibilityResult;
                 match old_fp.is_compatible_for_memcpy(new_fp) {
                     CompatibilityResult::Compatible => {
@@ -155,7 +157,7 @@ impl ModuleLoader {
                             reason: reason.clone(),
                         });
                         return LoadResult::AbiMismatch {
-                            expected: old_info.abi_version,
+                            expected: old_version,
                             found: manifest.abi_version.major,
                             details: reason,
                         };
@@ -314,7 +316,7 @@ unsafe fn get_module_state_size(lib: &libloading::Library, module_name: &str) ->
     }
 
     // Try v1 specific symbols
-    let symbol_name = match module_name {
+    let symbol_name: &[u8] = match module_name {
         "core" => b"core_get_state_size\0",
         "gui" => b"gui_get_state_size\0",
         _ => b"get_state_size\0",

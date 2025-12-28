@@ -50,6 +50,7 @@ pub mod hardened_ipc;
 pub mod quiescence;
 pub mod slot_isolation;
 pub mod restart_control;
+pub mod security;
 pub mod observability;
 
 use crate::hardened_ipc::{read_frame_validated, write_frame_with_checksum, IpcConfig};
@@ -746,7 +747,7 @@ fn main() {
                 let config = IpcConfig::default();
                 
                 loop {
-                    match read_frame_validated(&mut handle, &config) {
+                    match read_frame_validated(&mut handle, &config, None) {
                         Ok(payload) => {
                             // Deserialize MsgPack
                             match rmp_serde::from_slice::<process_isolation::IpcMessage>(&payload) {
@@ -761,10 +762,10 @@ fn main() {
                         }
                         Err(e) => {
                             // Check if it's EOF
-                            if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                            if matches!(e, crate::hardened_ipc::IpcError::ConnectionClosed) {
                                 eprintln!("IPC connection closed (EOF)");
                             } else {
-                                eprintln!("IPC Read error: {}", e);
+                                eprintln!("IPC Read error: {:?}", e);
                             }
                             break;
                         }
