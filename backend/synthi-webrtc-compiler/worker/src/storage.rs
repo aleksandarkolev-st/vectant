@@ -28,11 +28,20 @@ pub async fn download(
     slug: &str,
     mut progress_tx: Option<mpsc::UnboundedSender<String>>,
 ) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
-    // Check if directory already exists
+    // Local directory for downloads - Write to /synthi/
+    // We *update in place* so that build artifacts (node_modules, android/app/build, etc.)
+    // can persist between runs for much faster subsequent builds.
     let local_dir = PathBuf::from("/synthi").join(slug);
-    if local_dir.exists() {
+    let skip_if_present = std::env::var("SYNTHI_STORAGE_SKIP_DOWNLOAD_IF_PRESENT")
+        .ok()
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            matches!(v.as_str(), "1" | "true" | "yes" | "y" | "on")
+        })
+        .unwrap_or(false);
+    if skip_if_present && local_dir.exists() {
         println!(
-            "Directory already exists: {}, skipping download",
+            "Directory already exists: {}, skipping download (SYNTHI_STORAGE_SKIP_DOWNLOAD_IF_PRESENT=1)",
             local_dir.display()
         );
         return Ok(local_dir);
@@ -116,11 +125,6 @@ pub async fn download(
         return Err("No objects found in the specified folder".into());
     }
 
-    // -------------------------
-    // Local directory for downloads - Write to /synthi/
-    // -------------------------
-    let local_dir = PathBuf::from("/synthi").join(slug);
-
     // Create the directory structure
     if !local_dir.exists() {
         fs::create_dir_all(&local_dir).map_err(|e| {
@@ -131,10 +135,63 @@ pub async fn download(
         })?;
         println!("Created local directory: {}", local_dir.display());
     } else {
-        println!("Directory already exists: {}", local_dir.display());
+        println!("Directory already exists: {} (updating in place)", local_dir.display());
     }
 
-    // Download each object
+    // Maintain a manifest of previously downloaded paths so we can prune removed upstream files
+    // without deleting build artifacts that are not part of the download (e.g. node_modules).
+    let manifest_path = local_dir.join(".synthi_download_manifest.json");
+    let prev_manifest: Vec<String> = if manifest_path.exists() {
+        match fs::read_to_string(&manifest_path) {
+            Ok(s) => serde_json::from_str::<Vec<String>>(&s).unwrap_or_default(),
+            Err(_) => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+
+    // Build the next manifest (relative paths) from remote object listing.
+    let mut next_manifest: Vec<String> = Vec::with_capacity(objects.len());
+    for object_path in objects.iter() {
+        let object_name: &str = object_path.as_ref();
+        let stripped = object_name
+            .strip_prefix(prefix.as_ref())
+            .ok_or_else(|| format!("Failed to strip prefix from: {}", object_name))?;
+        let stripped_clean = stripped.trim_start_matches('/');
+        next_manifest.push(stripped_clean.to_string());
+    }
+
+    // Prune files that were previously downloaded but are no longer present upstream.
+    // This only touches paths from the manifest, so build artifacts remain intact.
+    if !prev_manifest.is_empty() {
+        let next_set: std::collections::HashSet<&str> =
+            next_manifest.iter().map(|s| s.as_str()).collect();
+        for old_rel in prev_manifest.iter() {
+            if next_set.contains(old_rel.as_str()) {
+                continue;
+            }
+            let old_path = local_dir.join(old_rel);
+            if old_path.is_file() {
+                let _ = fs::remove_file(&old_path);
+                // Best-effort cleanup of empty parent dirs up to local_dir.
+                let mut cur = old_path.parent();
+                while let Some(p) = cur {
+                    if p == local_dir {
+                        break;
+                    }
+                    let is_empty = fs::read_dir(p).map(|mut it| it.next().is_none()).unwrap_or(false);
+                    if is_empty {
+                        let _ = fs::remove_dir(p);
+                        cur = p.parent();
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Download each object (overwriting existing files).
     for (index, object_path) in objects.iter().enumerate() {
         let object_name: &str = object_path.as_ref();
         println!("📥 Downloading object: {}", object_name);
@@ -181,6 +238,11 @@ pub async fn download(
             .map_err(|e| format!("Failed to write to file {}: {}", local_path.display(), e))?;
 
         println!("Saved to: {}", local_path.display());
+    }
+
+    // Write updated manifest.
+    if let Ok(s) = serde_json::to_string_pretty(&next_manifest) {
+        let _ = fs::write(&manifest_path, s);
     }
 
     // Return the local directory path so the caller can navigate to it

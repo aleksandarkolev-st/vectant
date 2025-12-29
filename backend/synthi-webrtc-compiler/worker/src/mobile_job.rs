@@ -13,11 +13,15 @@
 use anyhow::{bail, Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64_STD;
 use base64::Engine;
+use image::GenericImageView;
+use image::imageops::FilterType;
 use serde_json::json;
 use std::collections::{HashMap, VecDeque};
+use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::sync::Mutex;
@@ -82,25 +86,144 @@ async fn send_logcat(log_dc: &Arc<RTCDataChannel>, session_id: &str, entry: &Log
         .await;
 }
 
+/// Announces worker streaming capabilities for this session.
+/// This is intended to let the frontend pick the best available transport
+/// (future: real WebRTC video + input; current: screenshot frames over data channel).
+async fn send_mobile_capabilities(log_dc: &Arc<RTCDataChannel>, session_id: &str) {
+    let payload = json!({
+        "sessionId": session_id,
+        "type": "mobile-capabilities",
+        "data": {
+            "protocol": 1,
+            "pixels": {
+                "screenshot_frames": true,
+                "chunked_frames": true,
+                "webrtc_video": false,
+            },
+            "input": {
+                "supported": false,
+                "methods": [],
+            }
+        }
+    });
+    let _ = log_dc
+        .send_text(serde_json::to_string(&payload).unwrap_or_default())
+        .await;
+}
+
 /// Sends a single emulator frame (PNG, base64) to the frontend.
 async fn send_emulator_frame(
     log_dc: &Arc<RTCDataChannel>,
     session_id: &str,
-    png_b64: &str,
+    mime: &str,
+    b64: &str,
     bytes: usize,
 ) {
     let payload = json!({
         "sessionId": session_id,
         "type": "emulator-frame",
         "data": {
-            "mime": "image/png",
-            "png_b64": png_b64,
+            "mime": mime,
+            // Prefer `b64` going forward, but keep `png_b64` for backwards compatibility.
+            "b64": b64,
+            "png_b64": b64,
             "bytes": bytes,
         }
     });
     let _ = log_dc
         .send_text(serde_json::to_string(&payload).unwrap_or_default())
         .await;
+}
+
+async fn send_emulator_frame_chunked(
+    log_dc: &Arc<RTCDataChannel>,
+    session_id: &str,
+    mime: &str,
+    b64: &str,
+    bytes: usize,
+) {
+    // Keep chunks small so they survive typical RTCDataChannel max message sizes.
+    // This is intentionally conservative.
+    const CHUNK_CHARS: usize = 12_000;
+
+    let frame_id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .to_string();
+
+    let total_chunks = (b64.len() + CHUNK_CHARS - 1) / CHUNK_CHARS;
+    let begin = json!({
+        "sessionId": session_id,
+        "type": "emulator-frame-begin",
+        "data": {
+            "frame_id": frame_id,
+            "mime": mime,
+            "bytes": bytes,
+            "total_chunks": total_chunks,
+        }
+    });
+    let _ = log_dc
+        .send_text(serde_json::to_string(&begin).unwrap_or_default())
+        .await;
+
+    for (idx, chunk) in b64.as_bytes().chunks(CHUNK_CHARS).enumerate() {
+        let s = std::str::from_utf8(chunk).unwrap_or("");
+        let msg = json!({
+            "sessionId": session_id,
+            "type": "emulator-frame-chunk",
+            "data": {
+                "frame_id": frame_id,
+                "idx": idx,
+                "chunk": s,
+            }
+        });
+        let _ = log_dc
+            .send_text(serde_json::to_string(&msg).unwrap_or_default())
+            .await;
+    }
+
+    let end = json!({
+        "sessionId": session_id,
+        "type": "emulator-frame-end",
+        "data": {
+            "frame_id": frame_id,
+        }
+    });
+    let _ = log_dc
+        .send_text(serde_json::to_string(&end).unwrap_or_default())
+        .await;
+}
+
+fn compress_frame_for_preview(png: &[u8]) -> Result<(String, Vec<u8>)> {
+    // Convert PNG -> low-res JPEG to dramatically reduce payload size.
+    // If decoding fails for any reason, fall back to the original PNG bytes.
+    let img = match image::load_from_memory(png) {
+        Ok(i) => i,
+        Err(_) => return Ok(("image/png".to_string(), png.to_vec())),
+    };
+
+    let (w, h) = img.dimensions();
+    if w == 0 || h == 0 {
+        return Ok(("image/png".to_string(), png.to_vec()));
+    }
+
+    // Target a small width so the base64 JSON stays under typical RTC limits.
+    // Keep aspect ratio.
+    let target_w: u32 = 320;
+    let scale = (target_w as f32 / w as f32).min(1.0);
+    let new_w = ((w as f32) * scale).round().max(1.0) as u32;
+    let new_h = ((h as f32) * scale).round().max(1.0) as u32;
+    let resized = img.resize(new_w, new_h, FilterType::Triangle);
+
+    let mut out: Vec<u8> = Vec::with_capacity((png.len() / 4).max(16 * 1024));
+    let mut cur = Cursor::new(&mut out);
+    // Use JPEG for size. Default quality from image crate is fine for preview.
+    resized
+        .write_to(&mut cur, image::ImageFormat::Jpeg)
+        .context("failed to encode jpeg")?;
+
+    Ok(("image/jpeg".to_string(), out))
 }
 
 async fn capture_screencap_png(adb: &PathBuf, serial: &str) -> Result<Vec<u8>> {
@@ -122,12 +245,22 @@ async fn capture_screencap_png(adb: &PathBuf, serial: &str) -> Result<Vec<u8>> {
     }
 
     // Basic PNG signature check.
+    // Note: some adb builds can emit extra text before the binary payload (rare), so we
+    // search for the PNG signature and slice from there.
     const PNG_SIG: &[u8] = b"\x89PNG\r\n\x1a\n";
-    if out.stdout.len() < PNG_SIG.len() || &out.stdout[..PNG_SIG.len()] != PNG_SIG {
-        bail!("adb screencap did not return PNG bytes (len={})", out.stdout.len());
+    if out.stdout.len() >= PNG_SIG.len() {
+        if &out.stdout[..PNG_SIG.len()] == PNG_SIG {
+            return Ok(out.stdout);
+        }
+        if let Some(idx) = out.stdout.windows(PNG_SIG.len()).position(|w| w == PNG_SIG) {
+            return Ok(out.stdout[idx..].to_vec());
+        }
     }
 
-    Ok(out.stdout)
+    bail!(
+        "adb screencap did not return PNG bytes (len={})",
+        out.stdout.len()
+    );
 }
 
 // ============================================================
@@ -231,6 +364,9 @@ pub async fn handle_react_native_emulator_job(
         None,
     )
     .await;
+
+    // Tell the frontend what streaming/input transports are available.
+    send_mobile_capabilities(&log_dc, &session_id).await;
 
     // Step 1: Detect React Native project by searching up from start_path
     send_status(
@@ -852,28 +988,88 @@ pub async fn handle_react_native_emulator_job(
     // have a WebRTC video track carrying emulator pixels.
     let log_dc_for_frames = log_dc.clone();
     let session_id_for_frames = session_id.clone();
-    let adb_for_frames = sdk_root.join("platform-tools/adb");
+    let adb_for_frames = if cfg!(windows) {
+        sdk_root.join("platform-tools/adb.exe")
+    } else {
+        sdk_root.join("platform-tools/adb")
+    };
     let serial_for_frames = emulator_serial.clone();
 
     tokio::spawn(async move {
         // Conservative defaults to avoid overwhelming the datachannel.
-        const MAX_PNG_BYTES: usize = 600_000;
         const FRAME_INTERVAL: Duration = Duration::from_secs(2);
         const STREAM_DURATION: Duration = Duration::from_secs(120);
+        // If base64 is still huge after compression, fall back to chunking.
+        const MAX_B64_INLINE: usize = 45_000;
+        // Hard safety cap after compression (should be rare with resizing).
+        const MAX_BYTES_AFTER_COMPRESS: usize = 2_000_000;
 
         let start = Instant::now();
         let mut last_error_at: Option<Instant> = None;
 
+        // One-time log line so we can diagnose "black screen" reports from the UI.
+        send_log(
+            &log_dc_for_frames,
+            &session_id_for_frames,
+            &format!(
+                "[frames] starting screenshot stream (interval={}ms duration={}s)",
+                FRAME_INTERVAL.as_millis(),
+                STREAM_DURATION.as_secs()
+            ),
+            "emulator",
+        )
+        .await;
+
         while start.elapsed() < STREAM_DURATION {
             match capture_screencap_png(&adb_for_frames, &serial_for_frames).await {
                 Ok(png) => {
-                    if png.len() <= MAX_PNG_BYTES {
-                        let b64 = BASE64_STD.encode(&png);
+                    // IMPORTANT: Do not gate on the raw PNG size.
+                    // Raw screencap PNGs can easily exceed a conservative threshold even though
+                    // the compressed/resized preview is small; gating before compression causes
+                    // "black screen" (no frames ever sent).
+                    let (mime, bytes) = match compress_frame_for_preview(&png) {
+                        Ok(v) => v,
+                        Err(_) => ("image/png".to_string(), png),
+                    };
+
+                    if bytes.len() > MAX_BYTES_AFTER_COMPRESS {
+                        let should_log = last_error_at
+                            .map(|t| t.elapsed() > Duration::from_secs(15))
+                            .unwrap_or(true);
+                        if should_log {
+                            send_log(
+                                &log_dc_for_frames,
+                                &session_id_for_frames,
+                                &format!(
+                                    "[frames] skipping oversized compressed frame ({} bytes)",
+                                    bytes.len()
+                                ),
+                                "emulator",
+                            )
+                            .await;
+                            last_error_at = Some(Instant::now());
+                        }
+                        sleep(FRAME_INTERVAL).await;
+                        continue;
+                    }
+
+                    let b64 = BASE64_STD.encode(&bytes);
+                    if b64.len() <= MAX_B64_INLINE {
                         send_emulator_frame(
                             &log_dc_for_frames,
                             &session_id_for_frames,
+                            &mime,
                             &b64,
-                            png.len(),
+                            bytes.len(),
+                        )
+                        .await;
+                    } else {
+                        send_emulator_frame_chunked(
+                            &log_dc_for_frames,
+                            &session_id_for_frames,
+                            &mime,
+                            &b64,
+                            bytes.len(),
                         )
                         .await;
                     }

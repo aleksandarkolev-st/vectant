@@ -704,19 +704,39 @@ async fn main() -> Result<()> {
                                                 let slug = req.slug.clone();
                                                 let log_clone = log.clone();
                                                 tokio::spawn(async move {
-                                                    // Download the workspace if slug is provided. Force re-download to avoid stale state.
+                                                    // Download/sync the workspace if slug is provided.
+                                                    // IMPORTANT: do NOT delete the workspace by default.
+                                                    // Reusing /synthi/<slug> preserves node_modules, Gradle outputs, and other build artifacts,
+                                                    // dramatically speeding up subsequent mobile builds.
+                                                    // To force a clean slate, set SYNTHI_MOBILE_FORCE_REDOWNLOAD=1.
                                                     let workspace_path = if let Some(s) = &slug {
                                                         let local_dir = std::path::PathBuf::from("/synthi").join(s);
-                                                        if local_dir.exists() {
-                                                            // Remove stale directory to force fresh download
+                                                        let force_redownload = std::env::var("SYNTHI_MOBILE_FORCE_REDOWNLOAD")
+                                                            .ok()
+                                                            .map(|v| {
+                                                                let v = v.trim().to_ascii_lowercase();
+                                                                matches!(v.as_str(), "1" | "true" | "yes" | "y" | "on")
+                                                            })
+                                                            .unwrap_or(false);
+
+                                                        if force_redownload && local_dir.exists() {
                                                             if let Err(e) = std::fs::remove_dir_all(&local_dir) {
-                                                                eprintln!("[Mobile] Failed to clear existing workspace {}: {}", local_dir.display(), e);
+                                                                eprintln!(
+                                                                    "[Mobile] Failed to clear existing workspace {}: {}",
+                                                                    local_dir.display(),
+                                                                    e
+                                                                );
+                                                            } else {
+                                                                eprintln!(
+                                                                    "[Mobile] Cleared existing workspace {} (force redownload)",
+                                                                    local_dir.display()
+                                                                );
                                                             }
                                                         }
 
                                                         match storage::download(&s, None).await {
                                                             Ok(path) => {
-                                                                eprintln!("[Mobile] Downloaded workspace to: {}", path.display());
+                                                                eprintln!("[Mobile] Workspace ready at: {}", path.display());
                                                                 path
                                                             },
                                                             Err(e) => {

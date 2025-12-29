@@ -9,6 +9,7 @@
 use anyhow::{bail, Context, Result};
 use futures_util::StreamExt;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -443,6 +444,35 @@ fn android_dir_is_ready_for_first_gradle_invocation(android_dir: &Path) -> bool 
     android_dir_missing_required_files(android_dir).is_empty()
 }
 
+fn worker_cache_dir() -> PathBuf {
+    if let Ok(p) = std::env::var("SYNTHI_WORKER_CACHE_DIR") {
+        let p = p.trim();
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    std::env::temp_dir().join("synthi-worker-cache")
+}
+
+fn env_var_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            matches!(v.as_str(), "1" | "true" | "yes" | "y" | "on")
+        })
+        .unwrap_or(false)
+}
+
+fn stable_project_cache_key(project_root: &Path) -> String {
+    // Stable across runs for the same project path.
+    // Used to avoid per-build cache misses while still isolating projects.
+    let mut h = Sha256::new();
+    h.update(project_root.to_string_lossy().as_bytes());
+    let hex = format!("{:x}", h.finalize());
+    hex.chars().take(16).collect()
+}
+
 async fn read_package_json(project_root: &Path) -> Option<PackageJson> {
     let package_json_path = project_root.join("package.json");
     let content = tokio::fs::read_to_string(&package_json_path).await.ok()?;
@@ -729,7 +759,7 @@ async fn ensure_android_gradle_project(
             "Android Gradle project is missing required files: {}",
             missing.join(", ")
         ));
-        cb("Generating android/ via React Native CLI".to_string());
+        cb("Attempting to restore android/ from worker cache...".to_string());
     }
 
     let package_json_path = project_root.join("package.json");
@@ -792,6 +822,131 @@ async fn ensure_android_gradle_project(
     let rn_ver = resolve_rn_cli_version(rn_spec).with_context(|| {
         "Cannot generate android/: react-native version is not a valid concrete semver".to_string()
     })?;
+
+    async fn copy_dir_selective(
+        src_root: &Path,
+        dst_root: &Path,
+        should_overwrite: &impl Fn(&str) -> bool,
+    ) -> Result<()> {
+        tokio::fs::create_dir_all(dst_root)
+            .await
+            .with_context(|| format!("Failed to create {}", dst_root.display()))?;
+
+        // Iterative walk to avoid recursive async fn.
+        let mut stack: Vec<(PathBuf, PathBuf, String)> = vec![(
+            src_root.to_path_buf(),
+            dst_root.to_path_buf(),
+            String::new(),
+        )];
+
+        while let Some((src_dir, dst_dir, rel_prefix)) = stack.pop() {
+            let mut rd = tokio::fs::read_dir(&src_dir)
+                .await
+                .with_context(|| format!("Failed to read dir {}", src_dir.display()))?;
+
+            while let Some(ent) = rd.next_entry().await? {
+                let src_path = ent.path();
+                let name = ent.file_name();
+                let name_str = name.to_string_lossy().to_string();
+                let rel = if rel_prefix.is_empty() {
+                    name_str.clone()
+                } else {
+                    format!("{}/{}", rel_prefix, name_str)
+                };
+
+                let ft = ent.file_type().await?;
+                let dst_path = dst_dir.join(&name);
+
+                if ft.is_dir() {
+                    tokio::fs::create_dir_all(&dst_path).await.ok();
+                    stack.push((src_path, dst_path, rel));
+                } else if ft.is_file() {
+                    let overwrite = should_overwrite(&rel);
+                    if dst_path.exists() && !overwrite {
+                        continue;
+                    }
+                    if let Some(parent) = dst_path.parent() {
+                        tokio::fs::create_dir_all(parent).await.ok();
+                    }
+                    tokio::fs::copy(&src_path, &dst_path)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "Failed to copy {} -> {}",
+                                src_path.display(),
+                                dst_path.display()
+                            )
+                        })?;
+
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if rel == "gradlew" {
+                            if let Ok(metadata) = tokio::fs::metadata(&dst_path).await {
+                                let mut perms = metadata.permissions();
+                                perms.set_mode(0o755);
+                                let _ = tokio::fs::set_permissions(&dst_path, perms).await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    // Preserve user-authored build scripts by default; always overwrite wrapper tooling.
+    let should_overwrite_android = |rel: &str| {
+        let rel = rel.replace('\\', "/");
+        rel == "gradlew"
+            || rel == "gradlew.bat"
+            || rel == "local.properties"
+            || rel.starts_with("gradle/wrapper/")
+    };
+
+    // Try to restore from a worker-local cache first (avoids re-running RN init).
+    // Cache key: RN version (already resolved to an exact semver-ish token).
+    let cache_android_dir = worker_cache_dir()
+        .join("rn-android")
+        .join(rn_ver.replace(['/', '\\', ':'], "_"))
+        .join("android");
+
+    if android_dir_missing_required_files(&cache_android_dir).is_empty() {
+        if let Some(cb) = log_callback {
+            cb(format!(
+                "Restoring android/ from cache: {}",
+                cache_android_dir.display()
+            ));
+        }
+
+        copy_dir_selective(&cache_android_dir, android_dir, &should_overwrite_android).await?;
+
+        if android_dir_is_ready_for_first_gradle_invocation(android_dir) {
+            if let Some(cb) = log_callback {
+                cb("android/ restored from cache (skipping RN init)".to_string());
+            }
+            return Ok(());
+        }
+
+        if let Some(cb) = log_callback {
+            let missing_after = android_dir_missing_required_files(android_dir);
+            cb(format!(
+                "Cache restore did not yield a ready android/ (missing: {}); falling back to RN init",
+                missing_after.join(", ")
+            ));
+        }
+    } else if let Some(cb) = log_callback {
+        cb(format!(
+            "No cached android/ found for rn_ver={} (expected {}). Will run RN init.",
+            rn_ver,
+            cache_android_dir.display()
+        ));
+    }
+
+    if let Some(cb) = log_callback {
+        cb("Generating android/ via React Native CLI".to_string());
+    }
 
     let app_name = read_app_json_name(project_root)
         .await
@@ -1055,90 +1210,36 @@ Ensure `npx` can download react-native@{} and that Node/npm are available in the
         );
     }
 
-    async fn copy_dir_selective(
-        src_root: &Path,
-        dst_root: &Path,
-        should_overwrite: &impl Fn(&str) -> bool,
-    ) -> Result<()> {
-        tokio::fs::create_dir_all(dst_root)
-            .await
-            .with_context(|| format!("Failed to create {}", dst_root.display()))?;
+    // Copy only android/ back into the user's project.
+    copy_dir_selective(&generated_android_dir, android_dir, &should_overwrite_android).await?;
 
-        // Iterative walk to avoid recursive async fn.
-        let mut stack: Vec<(PathBuf, PathBuf, String)> = vec![(
-            src_root.to_path_buf(),
-            dst_root.to_path_buf(),
-            String::new(),
-        )];
-
-        while let Some((src_dir, dst_dir, rel_prefix)) = stack.pop() {
-            let mut rd = tokio::fs::read_dir(&src_dir)
-                .await
-                .with_context(|| format!("Failed to read dir {}", src_dir.display()))?;
-
-            while let Some(ent) = rd.next_entry().await? {
-                let src_path = ent.path();
-                let name = ent.file_name();
-                let name_str = name.to_string_lossy().to_string();
-                let rel = if rel_prefix.is_empty() {
-                    name_str.clone()
-                } else {
-                    format!("{}/{}", rel_prefix, name_str)
-                };
-
-                let ft = ent.file_type().await?;
-                let dst_path = dst_dir.join(&name);
-
-                if ft.is_dir() {
-                    tokio::fs::create_dir_all(&dst_path).await.ok();
-                    stack.push((src_path, dst_path, rel));
-                } else if ft.is_file() {
-                    let overwrite = should_overwrite(&rel);
-                    if dst_path.exists() && !overwrite {
-                        continue;
-                    }
-                    if let Some(parent) = dst_path.parent() {
-                        tokio::fs::create_dir_all(parent).await.ok();
-                    }
-                    tokio::fs::copy(&src_path, &dst_path)
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "Failed to copy {} -> {}",
-                                src_path.display(),
-                                dst_path.display()
-                            )
-                        })?;
-
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        if rel == "gradlew" {
-                            if let Ok(metadata) = tokio::fs::metadata(&dst_path).await {
-                                let mut perms = metadata.permissions();
-                                perms.set_mode(0o755);
-                                let _ = tokio::fs::set_permissions(&dst_path, perms).await;
-                            }
-                        }
-                    }
-                }
-            }
+    // Best-effort: populate worker cache for this RN version so future runs can restore instantly.
+    // Write to a staging dir then rename to reduce partial-cache risk.
+    let cache_root = cache_android_dir
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| worker_cache_dir().join("rn-android").join(rn_ver.clone()));
+    let cache_stage = cache_root.join(format!(".staging-{}", Uuid::new_v4().simple()));
+    let cache_target = cache_android_dir.clone();
+    let cache_write_res: Result<()> = async {
+        tokio::fs::create_dir_all(&cache_stage).await.ok();
+        copy_dir_selective(&generated_android_dir, &cache_stage, &|_rel: &str| true).await?;
+        // Replace any existing cache atomically-ish.
+        if cache_target.exists() {
+            let _ = tokio::fs::remove_dir_all(&cache_target).await;
         }
-
+        tokio::fs::create_dir_all(&cache_root).await.ok();
+        let _ = tokio::fs::rename(&cache_stage, &cache_target).await;
         Ok(())
     }
+    .await;
 
-    // Copy only android/ back into the user's project.
-    // Preserve user-authored build scripts by default; always overwrite wrapper tooling.
-    let should_overwrite = |rel: &str| {
-        let rel = rel.replace('\\', "/");
-        rel == "gradlew"
-            || rel == "gradlew.bat"
-            || rel == "local.properties"
-            || rel.starts_with("gradle/wrapper/")
-    };
-
-    copy_dir_selective(&generated_android_dir, android_dir, &should_overwrite).await?;
+    if let Some(cb) = log_callback {
+        match cache_write_res {
+            Ok(_) => cb(format!("Cached android/ template at {}", cache_target.display())),
+            Err(e) => cb(format!("Non-fatal: failed to write android/ cache: {e:#}")),
+        }
+    }
 
     // Cleanup temp folder best-effort.
     let _ = tokio::fs::remove_dir_all(&temp_root).await;
@@ -1292,9 +1393,22 @@ async fn run_gradle_and_collect_diagnostics(
 }
 
 async fn create_isolated_gradle_user_home(project_root: &Path) -> Result<PathBuf> {
-    let home = project_root
-        .join(".synthi/gradle-user-home")
-        .join(Uuid::new_v4().to_string());
+    if let Ok(p) = std::env::var("SYNTHI_GRADLE_USER_HOME") {
+        let p = p.trim();
+        if !p.is_empty() {
+            let home = PathBuf::from(p);
+            tokio::fs::create_dir_all(&home)
+                .await
+                .with_context(|| format!("Failed to create GRADLE_USER_HOME at {}", home.display()))?;
+            return Ok(home);
+        }
+    }
+
+    // Default: stable per-project Gradle user home under the worker cache.
+    // This avoids re-downloading the Gradle distribution + Maven artifacts on every run.
+    let home = worker_cache_dir()
+        .join("gradle-user-home")
+        .join(stable_project_cache_key(project_root));
     tokio::fs::create_dir_all(&home)
         .await
         .with_context(|| format!("Failed to create GRADLE_USER_HOME at {}", home.display()))?;
@@ -1305,8 +1419,14 @@ fn apply_gradle_common_args_and_env(cmd: &mut Command, gradle_user_home: &Path) 
     // Avoid using /root/.gradle (shared across jobs) which can become corrupted/locked.
     cmd.env("GRADLE_USER_HOME", gradle_user_home);
 
-    // Prefer no-daemon for ephemeral worker jobs.
-    cmd.arg("--no-daemon");
+    // Default to no-daemon for ephemeral worker jobs.
+    // Opt in to a persistent Gradle daemon with SYNTHI_ENABLE_GRADLE_DAEMON=1.
+    // This can speed up subsequent builds on the same worker host by keeping a warm JVM.
+    if env_var_truthy("SYNTHI_ENABLE_GRADLE_DAEMON") || env_var_truthy("SYNTHI_GRADLE_DAEMON") {
+        cmd.arg("--daemon");
+    } else {
+        cmd.arg("--no-daemon");
+    }
 
     // Make output line-oriented and stable for log streaming.
     cmd.arg("--console=plain");
@@ -1314,6 +1434,12 @@ fn apply_gradle_common_args_and_env(cmd: &mut Command, gradle_user_home: &Path) 
     // Force Gradle to use this user home even if env isn't honored.
     cmd.arg("--gradle-user-home");
     cmd.arg(gradle_user_home);
+
+    // Enable Gradle build cache by default to speed up subsequent builds.
+    // Opt out with SYNTHI_DISABLE_GRADLE_BUILD_CACHE=1.
+    if !env_var_truthy("SYNTHI_DISABLE_GRADLE_BUILD_CACHE") {
+        cmd.arg("--build-cache");
+    }
 }
 
 // ============================================================
@@ -1766,7 +1892,7 @@ pub async fn build_apk_for_emulator(
         }
         let npm_result = run_npm_install(&config.project_root, log_callback.as_ref()).await?;
         if !npm_result {
-            bail!("npm install failed");
+            bail!("npm dependency install failed");
         }
     }
 
@@ -1804,6 +1930,26 @@ pub async fn build_apk_for_emulator(
 
     // Use a per-build Gradle user home to avoid shared-cache corruption between concurrent jobs.
     let gradle_user_home = create_isolated_gradle_user_home(&config.project_root).await?;
+    if let Some(cb) = log_callback.as_ref() {
+        let caching = if env_var_truthy("SYNTHI_DISABLE_GRADLE_BUILD_CACHE") {
+            "disabled"
+        } else {
+            "enabled"
+        };
+        let daemon = if env_var_truthy("SYNTHI_ENABLE_GRADLE_DAEMON")
+            || env_var_truthy("SYNTHI_GRADLE_DAEMON")
+        {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        cb(format!(
+            "Using GRADLE_USER_HOME: {} (Gradle build cache: {}, Gradle daemon: {})",
+            gradle_user_home.display(),
+            caching,
+            daemon
+        ));
+    }
 
     // If wrapper jar looks missing/corrupt, prefer system gradle immediately (if available).
     let wrapper_health = check_wrapper_jar_health(&android_dir).await;
@@ -1998,29 +2144,81 @@ pub async fn build_apk_for_emulator(
     })
 }
 
-/// Runs `npm install` to install dependencies
+/// Installs JS dependencies using npm.
+///
+/// Prefers `npm ci` when package-lock.json exists; falls back to `npm install` if `npm ci` fails.
 async fn run_npm_install(project_root: &Path, log_callback: Option<&LogCallback>) -> Result<bool> {
-    if let Some(callback) = log_callback {
-        callback("Running: npm install".to_string());
-    }
+    let has_package_lock = project_root.join("package-lock.json").exists();
+    let prefer_ci = has_package_lock && !env_var_truthy("SYNTHI_DISABLE_NPM_CI");
 
-    let output = Command::new("npm")
-        .current_dir(project_root)
-        .args(["install"])
-        .output()
-        .await
-        .context("Failed to run npm install")?;
+    let use_cache = !env_var_truthy("SYNTHI_DISABLE_NPM_CACHE");
 
-    if let Some(callback) = log_callback {
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            callback(line.to_string());
+    async fn run_npm_once(
+        project_root: &Path,
+        args: &[&str],
+        log_callback: Option<&LogCallback>,
+        use_cache: bool,
+    ) -> Result<std::process::Output> {
+        if let Some(callback) = log_callback {
+            callback(format!("Running: npm {}", args.join(" ")));
         }
 
-        for line in String::from_utf8_lossy(&output.stderr).lines() {
-            callback(format!("[stderr] {}", line));
+        let mut cmd = Command::new("npm");
+        cmd.current_dir(project_root).args(args);
+
+        // Shared npm cache to speed up repeated installs.
+        // This does NOT sync node_modules back to the workspace.
+        if use_cache {
+            let cache_dir = std::env::var("SYNTHI_NPM_CACHE_DIR")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| worker_cache_dir().join("npm-cache"));
+            tokio::fs::create_dir_all(&cache_dir)
+                .await
+                .with_context(|| format!("Failed to create npm cache dir at {}", cache_dir.display()))?;
+            cmd.env("npm_config_cache", &cache_dir);
+            cmd.env("npm_config_prefer_offline", "true");
+            cmd.env("npm_config_progress", "false");
+            if let Some(callback) = log_callback {
+                callback(format!("Using npm cache dir: {}", cache_dir.display()));
+            }
+        } else if let Some(callback) = log_callback {
+            callback("npm cache disabled (SYNTHI_DISABLE_NPM_CACHE=1)".to_string());
+        }
+
+        // Reduce noise and time spent on non-essential network calls.
+        cmd.env("npm_config_audit", "false");
+        cmd.env("npm_config_fund", "false");
+
+        let output = cmd.output().await.context("Failed to run npm")?;
+
+        if let Some(callback) = log_callback {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                callback(line.to_string());
+            }
+
+            for line in String::from_utf8_lossy(&output.stderr).lines() {
+                callback(format!("[stderr] {}", line));
+            }
+        }
+
+        Ok(output)
+    }
+
+    if prefer_ci {
+        let output = run_npm_once(project_root, &["ci"], log_callback, use_cache).await?;
+        if output.status.success() {
+            return Ok(true);
+        }
+
+        if let Some(callback) = log_callback {
+            callback("npm ci failed; falling back to npm install".to_string());
         }
     }
 
+    let output = run_npm_once(project_root, &["install"], log_callback, use_cache).await?;
     Ok(output.status.success())
 }
 
