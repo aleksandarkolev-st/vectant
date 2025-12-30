@@ -1,335 +1,33 @@
-// ============================================================
-// MOBILE EMULATOR JOB HANDLER
-// ============================================================
-// Orchestrates the full mobile development workflow:
-// 1. Detect React Native project
-// 2. Build APK via Gradle
-// 3. Boot Android emulator (headless)
-// 4. Install APK
-// 5. Launch app
-// 6. Stream logcat back to frontend
-// ============================================================
-
 use anyhow::{bail, Context, Result};
-use base64::engine::general_purpose::STANDARD as BASE64_STD;
-use base64::Engine;
-use image::GenericImageView;
-use image::imageops::FilterType;
 use serde_json::json;
 use std::collections::{HashMap, VecDeque};
-use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::sync::Mutex;
-use tokio::time::{sleep, timeout};
+use tokio::time::sleep;
 use webrtc::data_channel::RTCDataChannel;
 
-use crate::android_emulator::{EmulatorConfig, EmulatorSession, LogcatEntry};
-use crate::react_native_builder::{
+use crate::android::fs::{
+    reconcile_and_stream_with_rules, take_snapshot_with_rules, ReconcileConfig, SyncRules,
+};
+use crate::android::webrtc::{
+    bytes_to_b64, send_emulator_frame, send_emulator_frame_chunked, send_log, send_logcat,
+    send_mobile_capabilities, send_status,
+};
+use crate::android::emulator::{EmulatorConfig, EmulatorSession, LogcatEntry};
+use crate::android::react_native::{
     build_apk_for_emulator, check_android_sdk, detect_react_native_project, BuildVariant,
     EmulatorBuildConfig,
 };
-use crate::workspace_reconcile::{
-    reconcile_and_stream_with_rules, take_snapshot_with_rules, ReconcileConfig, Snapshot, SyncRules,
-};
 
-// ============================================================
-// JOB STATUS MESSAGES
-// ============================================================
+use super::project_detection::find_react_native_project_root;
 
-/// Sends a status update to the frontend via the build-log channel
-async fn send_status(
-    log_dc: &Arc<RTCDataChannel>,
-    session_id: &str,
-    status: &str,
-    message: &str,
-    data: Option<serde_json::Value>,
-) {
-    let payload = json!({
-        "sessionId": session_id,
-        "type": "mobile-status",
-        "status": status,
-        "message": message,
-        "data": data,
-    });
-    let _ = log_dc
-        .send_text(serde_json::to_string(&payload).unwrap_or_default())
-        .await;
-}
+use crate::android::webrtc::frames::{capture_screencap_png, compress_frame_for_preview};
 
-/// Sends a log line to the frontend
-async fn send_log(log_dc: &Arc<RTCDataChannel>, session_id: &str, line: &str, source: &str) {
-    let payload = json!({
-        "sessionId": session_id,
-        "type": "mobile-log",
-        "source": source,
-        "line": line,
-    });
-    let _ = log_dc
-        .send_text(serde_json::to_string(&payload).unwrap_or_default())
-        .await;
-}
-
-/// Sends logcat entry to frontend
-async fn send_logcat(log_dc: &Arc<RTCDataChannel>, session_id: &str, entry: &LogcatEntry) {
-    let payload = json!({
-        "sessionId": session_id,
-        "type": "logcat",
-        "entry": entry,
-    });
-    let _ = log_dc
-        .send_text(serde_json::to_string(&payload).unwrap_or_default())
-        .await;
-}
-
-/// Announces worker streaming capabilities for this session.
-/// This is intended to let the frontend pick the best available transport
-/// (future: real WebRTC video + input; current: screenshot frames over data channel).
-async fn send_mobile_capabilities(log_dc: &Arc<RTCDataChannel>, session_id: &str) {
-    let payload = json!({
-        "sessionId": session_id,
-        "type": "mobile-capabilities",
-        "data": {
-            "protocol": 1,
-            "pixels": {
-                "screenshot_frames": true,
-                "chunked_frames": true,
-                "webrtc_video": false,
-            },
-            "input": {
-                "supported": false,
-                "methods": [],
-            }
-        }
-    });
-    let _ = log_dc
-        .send_text(serde_json::to_string(&payload).unwrap_or_default())
-        .await;
-}
-
-/// Sends a single emulator frame (PNG, base64) to the frontend.
-async fn send_emulator_frame(
-    log_dc: &Arc<RTCDataChannel>,
-    session_id: &str,
-    mime: &str,
-    b64: &str,
-    bytes: usize,
-) {
-    let payload = json!({
-        "sessionId": session_id,
-        "type": "emulator-frame",
-        "data": {
-            "mime": mime,
-            // Prefer `b64` going forward, but keep `png_b64` for backwards compatibility.
-            "b64": b64,
-            "png_b64": b64,
-            "bytes": bytes,
-        }
-    });
-    let _ = log_dc
-        .send_text(serde_json::to_string(&payload).unwrap_or_default())
-        .await;
-}
-
-async fn send_emulator_frame_chunked(
-    log_dc: &Arc<RTCDataChannel>,
-    session_id: &str,
-    mime: &str,
-    b64: &str,
-    bytes: usize,
-) {
-    // Keep chunks small so they survive typical RTCDataChannel max message sizes.
-    // This is intentionally conservative.
-    const CHUNK_CHARS: usize = 12_000;
-
-    let frame_id = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .to_string();
-
-    let total_chunks = (b64.len() + CHUNK_CHARS - 1) / CHUNK_CHARS;
-    let begin = json!({
-        "sessionId": session_id,
-        "type": "emulator-frame-begin",
-        "data": {
-            "frame_id": frame_id,
-            "mime": mime,
-            "bytes": bytes,
-            "total_chunks": total_chunks,
-        }
-    });
-    let _ = log_dc
-        .send_text(serde_json::to_string(&begin).unwrap_or_default())
-        .await;
-
-    for (idx, chunk) in b64.as_bytes().chunks(CHUNK_CHARS).enumerate() {
-        let s = std::str::from_utf8(chunk).unwrap_or("");
-        let msg = json!({
-            "sessionId": session_id,
-            "type": "emulator-frame-chunk",
-            "data": {
-                "frame_id": frame_id,
-                "idx": idx,
-                "chunk": s,
-            }
-        });
-        let _ = log_dc
-            .send_text(serde_json::to_string(&msg).unwrap_or_default())
-            .await;
-    }
-
-    let end = json!({
-        "sessionId": session_id,
-        "type": "emulator-frame-end",
-        "data": {
-            "frame_id": frame_id,
-        }
-    });
-    let _ = log_dc
-        .send_text(serde_json::to_string(&end).unwrap_or_default())
-        .await;
-}
-
-fn compress_frame_for_preview(png: &[u8]) -> Result<(String, Vec<u8>)> {
-    // Convert PNG -> low-res JPEG to dramatically reduce payload size.
-    // If decoding fails for any reason, fall back to the original PNG bytes.
-    let img = match image::load_from_memory(png) {
-        Ok(i) => i,
-        Err(_) => return Ok(("image/png".to_string(), png.to_vec())),
-    };
-
-    let (w, h) = img.dimensions();
-    if w == 0 || h == 0 {
-        return Ok(("image/png".to_string(), png.to_vec()));
-    }
-
-    // Target a small width so the base64 JSON stays under typical RTC limits.
-    // Keep aspect ratio.
-    let target_w: u32 = 320;
-    let scale = (target_w as f32 / w as f32).min(1.0);
-    let new_w = ((w as f32) * scale).round().max(1.0) as u32;
-    let new_h = ((h as f32) * scale).round().max(1.0) as u32;
-    let resized = img.resize(new_w, new_h, FilterType::Triangle);
-
-    let mut out: Vec<u8> = Vec::with_capacity((png.len() / 4).max(16 * 1024));
-    let mut cur = Cursor::new(&mut out);
-    // Use JPEG for size. Default quality from image crate is fine for preview.
-    resized
-        .write_to(&mut cur, image::ImageFormat::Jpeg)
-        .context("failed to encode jpeg")?;
-
-    Ok(("image/jpeg".to_string(), out))
-}
-
-async fn capture_screencap_png(adb: &PathBuf, serial: &str) -> Result<Vec<u8>> {
-    // `exec-out` returns raw bytes on stdout. This is the simplest way to capture
-    // pixels without needing shared folders, framebuffer access, or a video pipeline.
-    let out = timeout(
-        Duration::from_secs(10),
-        tokio::process::Command::new(adb)
-            .args(["-s", serial, "exec-out", "screencap", "-p"])
-            .output(),
-    )
-    .await
-    .context("screencap timeout")?
-    .context("Failed to run adb exec-out screencap")?;
-
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        bail!("adb screencap failed (status={:?}) stderr={}", out.status.code(), stderr);
-    }
-
-    // Basic PNG signature check.
-    // Note: some adb builds can emit extra text before the binary payload (rare), so we
-    // search for the PNG signature and slice from there.
-    const PNG_SIG: &[u8] = b"\x89PNG\r\n\x1a\n";
-    if out.stdout.len() >= PNG_SIG.len() {
-        if &out.stdout[..PNG_SIG.len()] == PNG_SIG {
-            return Ok(out.stdout);
-        }
-        if let Some(idx) = out.stdout.windows(PNG_SIG.len()).position(|w| w == PNG_SIG) {
-            return Ok(out.stdout[idx..].to_vec());
-        }
-    }
-
-    bail!(
-        "adb screencap did not return PNG bytes (len={})",
-        out.stdout.len()
-    );
-}
-
-// ============================================================
-// PROJECT DETECTION HELPERS
-// ============================================================
-
-/// Searches up from start_path to find the nearest directory containing
-/// a package.json with react-native as a dependency.
-/// Will not search above workspace_root.
-async fn find_react_native_project_root(
-    start_path: &PathBuf,
-    workspace_root: &PathBuf,
-) -> Result<PathBuf> {
-    let mut current = start_path.clone();
-
-    // If start_path is a file, get its parent directory
-    if current.is_file() {
-        if let Some(parent) = current.parent() {
-            current = parent.to_path_buf();
-        }
-    }
-
-    loop {
-        let package_json = current.join("package.json");
-        if package_json.exists() {
-            // Read and check for react-native dependency
-            if let Ok(content) = tokio::fs::read_to_string(&package_json).await {
-                if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
-                    let has_rn = pkg
-                        .get("dependencies")
-                        .and_then(|d| d.get("react-native"))
-                        .is_some()
-                        || pkg
-                            .get("devDependencies")
-                            .and_then(|d| d.get("react-native"))
-                            .is_some();
-
-                    if has_rn {
-                        return Ok(current);
-                    }
-                }
-            }
-        }
-
-        // Don't search above workspace root
-        if current == *workspace_root || current.parent().is_none() {
-            break;
-        }
-
-        // Move up one directory
-        if let Some(parent) = current.parent() {
-            current = parent.to_path_buf();
-        } else {
-            break;
-        }
-    }
-
-    bail!(
-        "No React Native project found. Searched from {} up to {}",
-        start_path.display(),
-        workspace_root.display()
-    )
-}
-
-// ============================================================
-// MAIN JOB HANDLER
-// ============================================================
-
-/// Handles a React Native emulator job
+/// Handles a React Native emulator job.
 ///
 /// This orchestrates the full flow:
 /// 1. Project detection
@@ -505,7 +203,9 @@ pub async fn handle_react_native_emulator_job(
                     send_log(
                         &log_dc,
                         &session_id,
-                        &format!("Workspace snapshot failed (will skip reconciliation): {e:#}"),
+                        &format!(
+                            "Workspace snapshot failed (will skip reconciliation): {e:#}"
+                        ),
                         "system",
                     )
                     .await;
@@ -542,8 +242,7 @@ pub async fn handle_react_native_emulator_job(
 
     // Keep a small rolling buffer of recent Gradle output so we can surface a useful
     // error snippet to the frontend on failure.
-    let recent_lines: Arc<Mutex<VecDeque<String>>> =
-        Arc::new(Mutex::new(VecDeque::with_capacity(200)));
+    let recent_lines: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::with_capacity(200)));
 
     // Create log callback that forwards to the frontend
     let log_dc_for_build = log_dc.clone();
@@ -880,14 +579,7 @@ pub async fn handle_react_native_emulator_job(
     .await;
 
     // Step 5: Install APK
-    send_status(
-        &log_dc,
-        &session_id,
-        "installing",
-        "Installing APK...",
-        None,
-    )
-    .await;
+    send_status(&log_dc, &session_id, "installing", "Installing APK...", None).await;
 
     let install_result = emulator
         .install_apk(&apk_path)
@@ -1053,7 +745,7 @@ pub async fn handle_react_native_emulator_job(
                         continue;
                     }
 
-                    let b64 = BASE64_STD.encode(&bytes);
+                    let b64 = bytes_to_b64(&bytes);
                     if b64.len() <= MAX_B64_INLINE {
                         send_emulator_frame(
                             &log_dc_for_frames,
@@ -1110,28 +802,5 @@ pub async fn handle_react_native_emulator_job(
     )
     .await;
 
-    // Note: The emulator keeps running. In a real implementation, you'd want to:
-    // - Store the EmulatorSession for later shutdown
-    // - Listen for a "stop" command from the frontend
-    // - Implement a timeout/watchdog
-
-    // For now, we keep the emulator running until session timeout or explicit stop
-    // The EmulatorSession will be dropped when this function returns, but the
-    // emulator process continues (it's detached). A proper implementation would
-    // store the session in a global map keyed by session_id.
-
     Ok(())
-}
-
-// ============================================================
-// HELPER: Quick health check
-// ============================================================
-
-/// Quick check if mobile emulator workflow is available
-pub async fn is_mobile_emulator_available() -> bool {
-    if let Ok(health) = check_android_sdk().await {
-        health.is_ready()
-    } else {
-        false
-    }
 }

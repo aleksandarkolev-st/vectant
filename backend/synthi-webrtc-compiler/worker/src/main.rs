@@ -28,17 +28,16 @@ mod storage;
 mod supervisor;
 mod watcher;
 
+mod android;
+
 // Re-export orchestrator for external use
 pub use hmr_orchestrator::{
     HmrOrchestrator, HmrResult, HmrStatus, LoadedState, MigrationSummary, OrchestratorConfig,
     SavedState, SchemaCompatibility,
 };
-mod android_emulator;
-mod env_setup;
-mod mobile_job;
+// Android compilation pipeline is housed under `src/android/*`.
 mod mobile_routing;
-mod react_native_builder;
-mod workspace_reconcile;
+// Android pipeline workspace reconciliation lives under `android::fs`.
 
 use anyhow::{Context, Result};
 use builder::{hash_content, ModuleHashes, RebuildScope, WidgetCompiler, WidgetDetector};
@@ -377,8 +376,8 @@ async fn main() -> Result<()> {
     println!("Operating System: {}", std::env::consts::OS);
     // Cargo does not source shell rc files, so ensure Android SDK tools are visible
     // to this process deterministically before any SDK checks or emulator logic.
-    env_setup::ensure_android_sdk_env();
-    env_setup::log_android_env_diagnostics("startup");
+    android::ensure_android_sdk_env();
+    android::log_android_env_diagnostics("startup");
 
     println!("=== WORKER ENV DIAGNOSTIC (post-bootstrap) ===");
     println!(
@@ -763,7 +762,7 @@ async fn main() -> Result<()> {
                                                         return;
                                                     };
 
-                                                    if let Err(e) = mobile_job::handle_react_native_emulator_job(
+                                                    if let Err(e) = crate::android::job::handle_react_native_emulator_job(
                                                         log_clone,
                                                         session_id.clone(),
                                                         workspace_path,
