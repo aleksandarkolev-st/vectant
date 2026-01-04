@@ -7,7 +7,7 @@ use tokio::process::Command;
 use super::common::{
     android_dir_is_ready_for_first_gradle_invocation, android_dir_missing_required_files,
     check_wrapper_jar_health, env_var_truthy, ensure_gradle_distribution, read_gradle_distribution_url,
-    system_gradle_available, worker_cache_dir,
+    list_child_dirs, list_dir_for_debug, system_gradle_available, worker_cache_dir,
 };
 use super::detection::{detect_react_native_project, extract_android_app_id};
 use super::gradle_runner::{
@@ -118,11 +118,35 @@ pub async fn build_apk_for_emulator(
     // Use a per-build Gradle user home to avoid shared-cache corruption between concurrent jobs.
     let gradle_user_home = create_isolated_gradle_user_home(&config.project_root).await?;
 
+    let wrapper_dists_dir = gradle_user_home.join("wrapper/dists");
+    let wrapper_dists_before = if wrapper_dists_dir.exists() {
+        list_child_dirs(&wrapper_dists_dir).await.len()
+    } else {
+        0
+    };
+
     // Ensure Gradle reads a consistent Java configuration at startup.
     // This avoids noisy "Common Linux Locations" probing of broken /usr/lib/jvm/openjdk-* entries.
     ensure_gradle_user_home_properties(&gradle_user_home).await;
 
     if let Some(cb) = log_callback.as_ref() {
+        let worker_cache = worker_cache_dir();
+        let worker_cache_source = if std::env::var("SYNTHI_WORKER_CACHE_DIR")
+            .ok()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+        {
+            "SYNTHI_WORKER_CACHE_DIR"
+        } else {
+            "default"
+        };
+
+        cb(format!(
+            "Worker cache dir: {} (source: {})",
+            worker_cache.display(),
+            worker_cache_source
+        ));
+
         let caching = if env_var_truthy("SYNTHI_DISABLE_GRADLE_BUILD_CACHE") {
             "disabled"
         } else {
@@ -139,6 +163,27 @@ pub async fn build_apk_for_emulator(
             caching,
             daemon
         ));
+
+        let gradle_home_source = if std::env::var("SYNTHI_GRADLE_USER_HOME")
+            .ok()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+        {
+            "SYNTHI_GRADLE_USER_HOME"
+        } else {
+            "worker cache"
+        };
+        cb(format!("Gradle user home source: {}", gradle_home_source));
+
+        cb(format!(
+            "Gradle wrapper dists: {} (top-level entries before build: {})",
+            wrapper_dists_dir.display(),
+            wrapper_dists_before
+        ));
+
+        if env_var_truthy("SYNTHI_DEBUG_GRADLE_CACHE") {
+            list_dir_for_debug(&wrapper_dists_dir, Some(cb), "Gradle wrapper dists dir").await;
+        }
 
         let autodetect = if env_var_truthy("SYNTHI_ENABLE_GRADLE_JAVA_AUTODETECT") {
             "enabled"
@@ -291,6 +336,26 @@ pub async fn build_apk_for_emulator(
     // Use shared runner that streams output and collects diagnostics.
     let (status, diagnostics, wrapper_main_missing) =
         run_gradle_and_collect_diagnostics(cmd, log_callback.as_ref()).await?;
+
+    if let Some(cb) = log_callback.as_ref() {
+        let wrapper_dists_after = if wrapper_dists_dir.exists() {
+            list_child_dirs(&wrapper_dists_dir).await.len()
+        } else {
+            0
+        };
+
+        if wrapper_dists_after > wrapper_dists_before {
+            cb(format!(
+                "Gradle wrapper dists changed (before={} after={}) -> likely downloaded Gradle distribution",
+                wrapper_dists_before, wrapper_dists_after
+            ));
+        } else {
+            cb(format!(
+                "Gradle wrapper dists unchanged (entries={}) -> likely reused cached Gradle distribution",
+                wrapper_dists_after
+            ));
+        }
+    }
 
     // If the wrapper can't load its main class, fall back to system gradle (if present).
     if wrapper_main_missing && !status.success() && system_gradle_available().await {

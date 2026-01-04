@@ -441,6 +441,46 @@ pub(crate) fn worker_cache_dir() -> PathBuf {
             return PathBuf::from(p);
         }
     }
+
+    // Prefer a stable OS cache directory so artifacts persist across runs.
+    // Fall back to temp_dir() only if we can't determine a better location.
+    #[cfg(windows)]
+    {
+        if let Ok(p) = std::env::var("LOCALAPPDATA") {
+            let p = p.trim();
+            if !p.is_empty() {
+                return PathBuf::from(p).join("synthi-worker-cache");
+            }
+        }
+        if let Ok(p) = std::env::var("USERPROFILE") {
+            let p = p.trim();
+            if !p.is_empty() {
+                return PathBuf::from(p)
+                    .join("AppData")
+                    .join("Local")
+                    .join("synthi-worker-cache");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        if let Ok(p) = std::env::var("XDG_CACHE_HOME") {
+            let p = p.trim();
+            if !p.is_empty() {
+                return PathBuf::from(p).join("synthi-worker-cache");
+            }
+        }
+        if let Ok(p) = std::env::var("HOME") {
+            let p = p.trim();
+            if !p.is_empty() {
+                return PathBuf::from(p)
+                    .join(".cache")
+                    .join("synthi-worker-cache");
+            }
+        }
+    }
+
     std::env::temp_dir().join("synthi-worker-cache")
 }
 
