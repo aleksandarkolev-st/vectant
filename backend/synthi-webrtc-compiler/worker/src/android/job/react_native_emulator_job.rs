@@ -18,7 +18,8 @@ use crate::android::webrtc::{
     send_mobile_capabilities, send_status,
 };
 use crate::android::emulator::{
-    acquire_emulator_daemon, EmulatorConfig, EnsureReadyResult, LogcatEntry,
+    acquire_emulator_daemon, detect_kvm, ensure_emulator_ready, EmulatorConfig, EnsureReadyResult,
+    LogcatEntry,
 };
 use crate::android::react_native::{
     build_apk_for_emulator, check_android_sdk, detect_react_native_project, BuildVariant,
@@ -184,6 +185,79 @@ pub async fn handle_react_native_emulator_job(
     )
     .await;
 
+    // Start emulator prewarm in the background so it can boot while Gradle builds.
+    // IMPORTANT: we do not send status updates here (to avoid UI state churn);
+    // we only emit log lines for verification.
+    let overlap_start = Instant::now();
+
+    let mut emulator_config = EmulatorConfig::default();
+    emulator_config.android_sdk_root = sdk_root.clone();
+
+    // Hardware accel (KVM) detection + logging.
+    // We only enable `-accel on` if /dev/kvm exists AND is accessible.
+    let kvm = detect_kvm();
+    emulator_config.use_hw_accel = kvm.accessible;
+    send_log(
+        &log_dc,
+        &session_id,
+        &format!(
+            "[kvm] exists={} accessible={} -> accel {} ({})",
+            kvm.exists,
+            kvm.accessible,
+            if emulator_config.use_hw_accel { "on" } else { "off" },
+            kvm.reason
+        ),
+        "emulator",
+    )
+    .await;
+
+    let prewarm_config = emulator_config.clone();
+    let log_dc_for_prewarm = log_dc.clone();
+    let session_id_for_prewarm = session_id.clone();
+    let emulator_prewarm = tokio::spawn(async move {
+        let start = Instant::now();
+        send_log(
+            &log_dc_for_prewarm,
+            &session_id_for_prewarm,
+            "[overlap] Starting emulator prewarm in background",
+            "emulator",
+        )
+        .await;
+
+        let res = ensure_emulator_ready(prewarm_config).await;
+        match &res {
+            Ok(info) => {
+                send_log(
+                    &log_dc_for_prewarm,
+                    &session_id_for_prewarm,
+                    &format!(
+                        "[overlap] Emulator prewarm complete (reused={} boot_time_ms={} elapsed_ms={})",
+                        info.reused,
+                        info.boot_time_ms,
+                        start.elapsed().as_millis()
+                    ),
+                    "emulator",
+                )
+                .await;
+            }
+            Err(e) => {
+                send_log(
+                    &log_dc_for_prewarm,
+                    &session_id_for_prewarm,
+                    &format!(
+                        "[overlap] Emulator prewarm failed (elapsed_ms={}): {:#}",
+                        start.elapsed().as_millis(),
+                        e
+                    ),
+                    "emulator",
+                )
+                .await;
+            }
+        }
+
+        res
+    });
+
     // Phase 1: snapshot only the Android Gradle subtree that we intend to persist back.
     // This ensures that when `android/` is first generated, it is included in the diff.
     let (pre_build_snapshot, sync_rules, sync_cfg) =
@@ -229,6 +303,14 @@ pub async fn handle_react_native_emulator_job(
 
     // Step 3: Build APK
     send_status(&log_dc, &session_id, "building", "Building APK...", None).await;
+
+    send_log(
+        &log_dc,
+        &session_id,
+        "[overlap] Gradle build started while emulator prewarm runs",
+        "system",
+    )
+    .await;
 
     // Create build config
     let build_config = EmulatorBuildConfig {
@@ -302,6 +384,10 @@ pub async fn handle_react_native_emulator_job(
         }
         Err(e) => {
             let _ = build_done_tx.send(true);
+
+            // Don't leave a background boot task running for a failed job.
+            emulator_prewarm.abort();
+
             send_status(
                 &log_dc,
                 &session_id,
@@ -351,6 +437,9 @@ pub async fn handle_react_native_emulator_job(
     };
 
     if !build_result.success {
+        // Don't leave a background boot task running for a failed job.
+        emulator_prewarm.abort();
+
         let snapshot: Vec<String> = {
             let buf = recent_lines.lock().await;
             buf.iter().cloned().collect()
@@ -432,6 +521,17 @@ pub async fn handle_react_native_emulator_job(
     )
     .await;
 
+    send_log(
+        &log_dc,
+        &session_id,
+        &format!(
+            "[overlap] Build complete; waiting for reconcile + emulator (elapsed_ms={})",
+            overlap_start.elapsed().as_millis()
+        ),
+        "system",
+    )
+    .await;
+
     // Phase 2: reconcile generated wrapper/config (and optional build outputs) back to the real workspace.
     if let (Some(snapshot), Some(rules), Some(cfg)) = (pre_build_snapshot, sync_rules, sync_cfg) {
         send_status(
@@ -505,17 +605,20 @@ pub async fn handle_react_native_emulator_job(
     )
     .await;
 
-    let mut emulator_config = EmulatorConfig::default();
-    emulator_config.android_sdk_root = sdk_root.clone();
+    // Ensure background prewarm completes before acquiring the daemon lock.
+    // This avoids contention (both paths touch the same global daemon mutex).
+    let _ = emulator_prewarm.await;
 
-    // If the worker has KVM available, enable hardware acceleration.
-    // This dramatically reduces emulator boot time and flakiness.
-    #[cfg(target_os = "linux")]
-    {
-        if std::path::Path::new("/dev/kvm").exists() {
-            emulator_config.use_hw_accel = true;
-        }
-    }
+    send_log(
+        &log_dc,
+        &session_id,
+        &format!(
+            "[overlap] Proceeding to emulator acquire after build/reconcile (elapsed_ms={})",
+            overlap_start.elapsed().as_millis()
+        ),
+        "system",
+    )
+    .await;
 
     // Heartbeat while acquiring; cold boots can take many minutes.
     let (boot_done_tx, mut boot_done_rx) = watch::channel(false);

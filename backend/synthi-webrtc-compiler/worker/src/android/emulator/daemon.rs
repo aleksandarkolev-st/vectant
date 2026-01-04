@@ -57,8 +57,20 @@ impl EmulatorDaemon {
         }
 
         // Otherwise, cold boot.
-        let mut session = EmulatorSession::new(config);
-        let boot = session.boot().await.context("Failed to boot emulator")?;
+        let mut session = EmulatorSession::new(config.clone());
+        let mut boot = session.boot().await.context("Failed to boot emulator")?;
+
+        // Safe fallback: if hw accel was requested but boot failed, retry once with accel off.
+        // This improves reliability on hosts where /dev/kvm exists but is not functional
+        // (or where the emulator cannot use acceleration for other reasons).
+        if !boot.success && config.use_hw_accel {
+            let mut fallback = config.clone();
+            fallback.use_hw_accel = false;
+            let mut session2 = EmulatorSession::new(fallback);
+            boot = session2.boot().await.context("Failed to boot emulator (fallback)")?;
+            session = session2;
+        }
+
         if !boot.success {
             self.session = None;
             self.config_fingerprint = None;
@@ -174,4 +186,22 @@ pub async fn acquire_emulator_daemon(
     let info = daemon.ensure_ready(config).await?;
 
     Ok((daemon, info))
+}
+
+/// Ensure the emulator is ready, but do not retain the global daemon lock.
+///
+/// This is useful for pre-warming/booting the emulator in the background while
+/// other work (e.g. Gradle build) proceeds. Callers should still acquire the
+/// daemon via `acquire_emulator_daemon` when they need exclusive access to run
+/// adb operations.
+pub async fn ensure_emulator_ready(config: EmulatorConfig) -> Result<EnsureReadyResult> {
+    start_reaper_task_once();
+
+    let mut daemon = GLOBAL_DAEMON.lock().await;
+    let info = daemon.ensure_ready(config).await?;
+
+    // Stop any lingering streams and refresh keepalive timestamp.
+    daemon.release_keepalive().await;
+
+    Ok(info)
 }
