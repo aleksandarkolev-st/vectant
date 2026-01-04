@@ -12,6 +12,7 @@ use super::common::{
 use super::detection::{detect_react_native_project, extract_android_app_id};
 use super::gradle_runner::{
     apply_gradle_common_args_and_env, create_isolated_gradle_user_home, run_gradle_and_collect_diagnostics,
+    resolve_java_home,
 };
 use super::project_init::ensure_android_gradle_project;
 use super::LogCallback;
@@ -116,6 +117,11 @@ pub async fn build_apk_for_emulator(
 
     // Use a per-build Gradle user home to avoid shared-cache corruption between concurrent jobs.
     let gradle_user_home = create_isolated_gradle_user_home(&config.project_root).await?;
+
+    // Ensure Gradle reads a consistent Java configuration at startup.
+    // This avoids noisy "Common Linux Locations" probing of broken /usr/lib/jvm/openjdk-* entries.
+    ensure_gradle_user_home_properties(&gradle_user_home).await;
+
     if let Some(cb) = log_callback.as_ref() {
         let caching = if env_var_truthy("SYNTHI_DISABLE_GRADLE_BUILD_CACHE") {
             "disabled"
@@ -133,6 +139,24 @@ pub async fn build_apk_for_emulator(
             caching,
             daemon
         ));
+
+        let autodetect = if env_var_truthy("SYNTHI_ENABLE_GRADLE_JAVA_AUTODETECT") {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        if let Some(java_home) = resolve_java_home() {
+            cb(format!(
+                "Gradle Java: resolved JAVA_HOME={} (toolchain auto-detect: {})",
+                java_home.display(),
+                autodetect
+            ));
+        } else {
+            cb(format!(
+                "Gradle Java: JAVA_HOME unresolved (toolchain auto-detect: {})",
+                autodetect
+            ));
+        }
     }
 
     // If wrapper jar looks missing/corrupt, prefer system gradle immediately (if available).
@@ -413,4 +437,98 @@ pub async fn clean_android(project_root: &Path) -> Result<()> {
         .context("Failed to run gradle clean")?;
 
     Ok(())
+}
+
+async fn ensure_gradle_user_home_properties(gradle_user_home: &Path) {
+    let props_path = gradle_user_home.join("gradle.properties");
+
+    // We keep auto-detect disabled to avoid scanning broken /usr/lib/jvm/openjdk-* directories.
+    // But we enable auto-download by default so Gradle can provision required toolchains (e.g. Java 17).
+    let autodetect_disabled = !env_var_truthy("SYNTHI_ENABLE_GRADLE_JAVA_AUTODETECT");
+    let autodownload_enabled = !env_var_truthy("SYNTHI_DISABLE_GRADLE_JAVA_AUTODOWNLOAD");
+    let java_home = resolve_java_home();
+    let java_homes = discover_java_homes(java_home.as_ref());
+
+    // Only write when we have something useful to enforce.
+    if !autodetect_disabled && !autodownload_enabled && java_home.is_none() {
+        return;
+    }
+
+    let mut lines: Vec<String> = vec![];
+    lines.push("# Managed by synthi-webrtc-compiler worker".to_string());
+
+    if let Some(jh) = java_home {
+        // Forces the JVM Gradle uses to run builds and the daemon.
+        lines.push(format!("org.gradle.java.home={}", jh.display()));
+    }
+
+    if !java_homes.is_empty() {
+        // Restrict installations to known-good JDK homes to avoid broken placeholders.
+        let joined = java_homes
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        lines.push(format!("org.gradle.java.installations.paths={}", joined));
+    }
+
+    if autodetect_disabled {
+        lines.push("org.gradle.java.installations.auto-detect=false".to_string());
+    }
+
+    // Allow Gradle toolchain provisioning (if the build enables toolchain auto-provisioning).
+    lines.push(format!(
+        "org.gradle.java.installations.auto-download={}",
+        if autodownload_enabled { "true" } else { "false" }
+    ));
+
+    let content = lines.join("\n") + "\n";
+
+    // Best-effort write; build will still proceed if this fails.
+    let _ = tokio::fs::write(props_path, content).await;
+}
+
+fn discover_java_homes(preferred: Option<&PathBuf>) -> Vec<PathBuf> {
+    let mut homes: Vec<PathBuf> = vec![];
+
+    if let Some(p) = preferred {
+        if looks_like_java_home_local(p) {
+            homes.push(p.clone());
+        }
+    }
+
+    // Linux/Unix common location.
+    #[cfg(unix)]
+    {
+        let jvm_root = Path::new("/usr/lib/jvm");
+        if let Ok(entries) = std::fs::read_dir(jvm_root) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if looks_like_java_home_local(&p) && !homes.iter().any(|h| h == &p) {
+                    homes.push(p);
+                }
+            }
+        }
+
+        let default_java = PathBuf::from("/usr/lib/jvm/default-java");
+        if looks_like_java_home_local(&default_java) && !homes.iter().any(|h| h == &default_java) {
+            homes.push(default_java);
+        }
+    }
+
+    homes
+}
+
+fn looks_like_java_home_local(p: &Path) -> bool {
+    if !p.exists() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        p.join("bin/java.exe").exists()
+    }
+    #[cfg(not(windows))]
+    {
+        p.join("bin/java").exists()
+    }
 }

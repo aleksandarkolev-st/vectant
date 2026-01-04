@@ -180,6 +180,22 @@ pub(crate) fn apply_gradle_common_args_and_env(cmd: &mut Command, gradle_user_ho
     // Avoid using /root/.gradle (shared across jobs) which can become corrupted/locked.
     cmd.env("GRADLE_USER_HOME", gradle_user_home);
 
+    // Ensure Gradle is launched with a real JDK and avoid noisy toolchain probing.
+    // Some base images include placeholder directories like /usr/lib/jvm/openjdk-17 without bin/java,
+    // which causes Gradle to emit warnings and can add startup overhead.
+    if let Some(java_home) = resolve_java_home() {
+        // Override JAVA_HOME if it's unset or invalid.
+        let override_java_home = match std::env::var_os("JAVA_HOME") {
+            None => true,
+            Some(v) => !looks_like_java_home(Path::new(&v)),
+        };
+        if override_java_home {
+            cmd.env("JAVA_HOME", &java_home);
+        }
+
+        // Gradle will pick this up as default JVM; toolchains are configured via gradle.properties.
+    }
+
     // Default to daemon-enabled so subsequent builds are faster on a warm worker.
     // Opt out with SYNTHI_DISABLE_GRADLE_DAEMON=1.
     if env_var_truthy("SYNTHI_DISABLE_GRADLE_DAEMON") {
@@ -199,5 +215,112 @@ pub(crate) fn apply_gradle_common_args_and_env(cmd: &mut Command, gradle_user_ho
     // Opt out with SYNTHI_DISABLE_GRADLE_BUILD_CACHE=1.
     if !env_var_truthy("SYNTHI_DISABLE_GRADLE_BUILD_CACHE") {
         cmd.arg("--build-cache");
+    }
+}
+
+pub(crate) fn resolve_java_home() -> Option<PathBuf> {
+    // Highest priority: explicit override.
+    if let Ok(v) = std::env::var("SYNTHI_JAVA_HOME") {
+        let p = PathBuf::from(v.trim());
+        if looks_like_java_home(&p) {
+            return Some(p);
+        }
+    }
+
+    // Next: existing JAVA_HOME if valid.
+    if let Ok(v) = std::env::var("JAVA_HOME") {
+        let p = PathBuf::from(v.trim());
+        if looks_like_java_home(&p) {
+            return Some(p);
+        }
+    }
+
+    // Linux/Unix: scan common JVM install roots.
+    #[cfg(unix)]
+    {
+        // If java is on PATH, derive JAVA_HOME from it.
+        if let Some(p) = resolve_java_home_from_path() {
+            if looks_like_java_home(&p) {
+                return Some(p);
+            }
+        }
+
+        let jvm_root = Path::new("/usr/lib/jvm");
+        if let Ok(entries) = std::fs::read_dir(jvm_root) {
+            // Prefer JDK 17+ if multiple are present.
+            let mut candidates: Vec<PathBuf> = entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| looks_like_java_home(p))
+                .collect();
+
+            candidates.sort_by_key(|p| {
+                let s = p.to_string_lossy().to_lowercase();
+                // crude ranking: prefer 21, then 17, then anything else.
+                if s.contains("21") {
+                    0
+                } else if s.contains("17") {
+                    1
+                } else {
+                    2
+                }
+            });
+
+            if let Some(p) = candidates.first() {
+                return Some(p.clone());
+            }
+        }
+
+        // Debian-style default.
+        let default_java = PathBuf::from("/usr/lib/jvm/default-java");
+        if looks_like_java_home(&default_java) {
+            return Some(default_java);
+        }
+    }
+
+    None
+}
+
+fn resolve_java_home_from_path() -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+
+    #[cfg(windows)]
+    let java_name = "java.exe";
+    #[cfg(not(windows))]
+    let java_name = "java";
+
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(java_name);
+        if !candidate.exists() {
+            continue;
+        }
+
+        // Resolve symlinks if possible.
+        let resolved = std::fs::canonicalize(&candidate).unwrap_or(candidate);
+
+        // Expected layout: <JAVA_HOME>/bin/java
+        if let Some(bin_dir) = resolved.parent() {
+            if let Some(java_home) = bin_dir.parent() {
+                let home = java_home.to_path_buf();
+                if looks_like_java_home(&home) {
+                    return Some(home);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn looks_like_java_home(p: &Path) -> bool {
+    if !p.exists() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        return p.join("bin/java.exe").exists();
+    }
+    #[cfg(not(windows))]
+    {
+        return p.join("bin/java").exists();
     }
 }
