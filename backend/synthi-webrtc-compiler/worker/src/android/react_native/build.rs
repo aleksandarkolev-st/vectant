@@ -122,12 +122,10 @@ pub async fn build_apk_for_emulator(
         } else {
             "enabled"
         };
-        let daemon = if env_var_truthy("SYNTHI_ENABLE_GRADLE_DAEMON")
-            || env_var_truthy("SYNTHI_GRADLE_DAEMON")
-        {
-            "enabled"
-        } else {
+        let daemon = if env_var_truthy("SYNTHI_DISABLE_GRADLE_DAEMON") {
             "disabled"
+        } else {
+            "enabled"
         };
         cb(format!(
             "Using GRADLE_USER_HOME: {} (Gradle build cache: {}, Gradle daemon: {})",

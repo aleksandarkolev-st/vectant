@@ -180,13 +180,12 @@ pub(crate) fn apply_gradle_common_args_and_env(cmd: &mut Command, gradle_user_ho
     // Avoid using /root/.gradle (shared across jobs) which can become corrupted/locked.
     cmd.env("GRADLE_USER_HOME", gradle_user_home);
 
-    // Default to no-daemon for ephemeral worker jobs.
-    // Opt in to a persistent Gradle daemon with SYNTHI_ENABLE_GRADLE_DAEMON=1.
-    // This can speed up subsequent builds on the same worker host by keeping a warm JVM.
-    if env_var_truthy("SYNTHI_ENABLE_GRADLE_DAEMON") || env_var_truthy("SYNTHI_GRADLE_DAEMON") {
-        cmd.arg("--daemon");
-    } else {
+    // Default to daemon-enabled so subsequent builds are faster on a warm worker.
+    // Opt out with SYNTHI_DISABLE_GRADLE_DAEMON=1.
+    if env_var_truthy("SYNTHI_DISABLE_GRADLE_DAEMON") {
         cmd.arg("--no-daemon");
+    } else {
+        cmd.arg("--daemon");
     }
 
     // Make output line-oriented and stable for log streaming.

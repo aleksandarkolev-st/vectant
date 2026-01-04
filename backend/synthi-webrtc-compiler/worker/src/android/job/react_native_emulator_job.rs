@@ -17,7 +17,9 @@ use crate::android::webrtc::{
     bytes_to_b64, send_emulator_frame, send_emulator_frame_chunked, send_log, send_logcat,
     send_mobile_capabilities, send_status,
 };
-use crate::android::emulator::{EmulatorConfig, EmulatorSession, LogcatEntry};
+use crate::android::emulator::{
+    acquire_emulator_daemon, EmulatorConfig, EnsureReadyResult, LogcatEntry,
+};
 use crate::android::react_native::{
     build_apk_for_emulator, check_android_sdk, detect_react_native_project, BuildVariant,
     EmulatorBuildConfig,
@@ -493,7 +495,7 @@ pub async fn handle_react_native_emulator_job(
         }
     }
 
-    // Step 4: Boot emulator
+    // Step 4: Boot (or reuse) emulator via daemon
     send_status(
         &log_dc,
         &session_id,
@@ -515,9 +517,7 @@ pub async fn handle_react_native_emulator_job(
         }
     }
 
-    let mut emulator = EmulatorSession::new(emulator_config);
-
-    // Heartbeat while booting; cold boots can take many minutes.
+    // Heartbeat while acquiring; cold boots can take many minutes.
     let (boot_done_tx, mut boot_done_rx) = watch::channel(false);
     {
         let dc = log_dc.clone();
@@ -546,34 +546,23 @@ pub async fn handle_react_native_emulator_job(
         });
     }
 
-    let boot_result = emulator.boot().await.context("Failed to boot emulator")?;
+    let (mut daemon, ready): (tokio::sync::MutexGuard<'static, _>, EnsureReadyResult) =
+        acquire_emulator_daemon(emulator_config)
+            .await
+            .context("Failed to acquire emulator daemon")?;
     let _ = boot_done_tx.send(true);
 
-    if !boot_result.success {
-        send_status(
-            &log_dc,
-            &session_id,
-            "error",
-            "Emulator boot failed",
-            Some(json!({
-                "error": boot_result.error,
-                "boot_time_ms": boot_result.boot_time_ms,
-            })),
-        )
-        .await;
-        bail!("Emulator boot failed: {:?}", boot_result.error);
-    }
-
-    let emulator_serial = boot_result.serial.clone().unwrap_or_default();
+    let emulator_serial = ready.serial.clone();
 
     send_status(
         &log_dc,
         &session_id,
         "emulator-ready",
-        "Emulator booted",
+        if ready.reused { "Emulator reused" } else { "Emulator booted" },
         Some(json!({
             "serial": emulator_serial,
-            "boot_time_ms": boot_result.boot_time_ms,
+            "boot_time_ms": ready.boot_time_ms,
+            "reused": ready.reused,
         })),
     )
     .await;
@@ -581,7 +570,8 @@ pub async fn handle_react_native_emulator_job(
     // Step 5: Install APK
     send_status(&log_dc, &session_id, "installing", "Installing APK...", None).await;
 
-    let install_result = emulator
+    let install_result = daemon
+        .session_mut()
         .install_apk(&apk_path)
         .await
         .context("Failed to install APK")?;
@@ -597,8 +587,8 @@ pub async fn handle_react_native_emulator_job(
             })),
         )
         .await;
-        // Shutdown emulator on failure
-        let _ = emulator.shutdown().await;
+        // Reset emulator on failure (daemon-managed)
+        daemon.shutdown_now().await;
         bail!("APK install failed: {:?}", install_result.error);
     }
 
@@ -623,7 +613,8 @@ pub async fn handle_react_native_emulator_job(
     // Step 6: Launch app
     send_status(&log_dc, &session_id, "launching", "Launching app...", None).await;
 
-    let launch_result = emulator
+    let launch_result = daemon
+        .session_mut()
         .launch_app(&package_name)
         .await
         .context("Failed to launch app")?;
@@ -639,7 +630,7 @@ pub async fn handle_react_native_emulator_job(
             })),
         )
         .await;
-        let _ = emulator.shutdown().await;
+        daemon.shutdown_now().await;
         bail!("App launch failed: {:?}", launch_result.error);
     }
 
@@ -660,7 +651,8 @@ pub async fn handle_react_native_emulator_job(
 
     let (logcat_tx, mut logcat_rx) = mpsc::unbounded_channel::<LogcatEntry>();
 
-    emulator
+    daemon
+        .session_mut()
         .start_logcat(Some(&package_name), logcat_tx)
         .await
         .context("Failed to start logcat")?;
@@ -787,6 +779,9 @@ pub async fn handle_react_native_emulator_job(
             sleep(FRAME_INTERVAL).await;
         }
     });
+
+    // Release the emulator back to the daemon (keep alive for next jobs)
+    daemon.release_keepalive().await;
 
     // Send final success status
     send_status(
