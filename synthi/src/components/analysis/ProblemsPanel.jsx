@@ -10,6 +10,17 @@
  * - Quick navigation to issue location
  * - Filtering by severity/tier
  * - Real-time updates as analysis runs
+ * 
+ * COLOR PALETTE (exact, no deviations):
+ * - Error panel background: #2B0F12 (muted dark red, low eye strain)
+ * - Error text: #E6E6E6 (readable, no pure white)
+ * - Error accent (icon, left bar): #C6362B (confirmed errors only)
+ * - Warning background: #2A1E0A
+ * - Warning accent: #D4A017
+ * - Info/analysis background: #121212
+ * - Info accent: #3A7AFE
+ * - Borders: #3A3A3A (never red borders everywhere)
+ * - Hover: +8% brightness only, no color shift
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
@@ -29,35 +40,74 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-// Severity configuration
+// EXACT COLOR PALETTE - DO NOT DEVIATE
+const COLORS = {
+  // Error colors
+  errorBg: '#2B0F12',        // Muted dark red background
+  errorText: '#E6E6E6',      // Readable text, not pure white
+  errorAccent: '#C6362B',    // Icon/left bar accent
+  errorHoverBg: '#361419',   // +8% brightness
+  
+  // Warning colors
+  warningBg: '#2A1E0A',
+  warningAccent: '#D4A017',
+  warningHoverBg: '#352810', // +8% brightness
+  
+  // Info colors
+  infoBg: '#121212',
+  infoAccent: '#3A7AFE',
+  infoHoverBg: '#1a1a1a',    // +8% brightness
+  
+  // General
+  border: '#3A3A3A',
+  panelBg: '#121212',
+  headerBg: '#1a1a1a',
+  text: '#E6E6E6',
+  textMuted: '#888888',
+  textDim: '#666666',
+};
+
+// Severity configuration with EXACT colors
 const SEVERITY_CONFIG = {
   error: {
     icon: AlertCircle,
     label: 'Error',
-    className: 'text-red-400',
-    bgClass: 'bg-red-500/10 border-red-500/30',
-    dotClass: 'bg-red-500',
+    textClass: 'text-[#E6E6E6]',
+    iconClass: 'text-[#C6362B]',
+    bgClass: 'bg-[#2B0F12] border-l-[#C6362B]',
+    badgeBg: 'bg-[#2B0F12]',
+    dotClass: 'bg-[#C6362B]',
+    hoverBg: 'hover:bg-[#361419]',
   },
   warning: {
     icon: AlertTriangle,
     label: 'Warning',
-    className: 'text-amber-400',
-    bgClass: 'bg-amber-500/10 border-amber-500/30',
-    dotClass: 'bg-amber-500',
+    textClass: 'text-[#E6E6E6]',
+    iconClass: 'text-[#D4A017]',
+    bgClass: 'bg-[#2A1E0A] border-l-[#D4A017]',
+    badgeBg: 'bg-[#2A1E0A]',
+    dotClass: 'bg-[#D4A017]',
+    hoverBg: 'hover:bg-[#352810]',
   },
   info: {
     icon: Info,
     label: 'Info',
-    className: 'text-blue-400',
-    bgClass: 'bg-blue-500/10 border-blue-500/30',
-    dotClass: 'bg-blue-500',
+    textClass: 'text-[#E6E6E6]',
+    iconClass: 'text-[#3A7AFE]',
+    bgClass: 'bg-[#121212] border-l-[#3A7AFE]',
+    badgeBg: 'bg-[#1a1a2a]',
+    dotClass: 'bg-[#3A7AFE]',
+    hoverBg: 'hover:bg-[#1a1a1a]',
   },
   hint: {
     icon: Lightbulb,
     label: 'Hint',
-    className: 'text-emerald-400',
-    bgClass: 'bg-emerald-500/10 border-emerald-500/30',
-    dotClass: 'bg-emerald-500',
+    textClass: 'text-[#E6E6E6]',
+    iconClass: 'text-[#4ade80]',
+    bgClass: 'bg-[#121212] border-l-[#4ade80]',
+    badgeBg: 'bg-[#0f1a14]',
+    dotClass: 'bg-[#4ade80]',
+    hoverBg: 'hover:bg-[#1a1a1a]',
   },
 };
 
@@ -65,15 +115,15 @@ const SEVERITY_CONFIG = {
 const TIER_CONFIG = {
   static: {
     label: 'Static',
-    className: 'bg-slate-700 text-slate-200',
+    className: 'bg-[#2a2a2a] text-[#E6E6E6]',
   },
   semantic: {
     label: 'Semantic',
-    className: 'bg-indigo-900/50 text-indigo-300',
+    className: 'bg-[#1a1a2a] text-[#3A7AFE]',
   },
   ai: {
     label: 'AI',
-    className: 'bg-purple-900/50 text-purple-300',
+    className: 'bg-[#1a1a2a] text-[#3A7AFE]',
     icon: Sparkles,
   },
 };
@@ -105,29 +155,32 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
       onClick={handleClick}
       className={cn(
         'w-full text-left px-3 py-2 flex items-start gap-2 transition-colors',
-        'hover:bg-[#2a2a2a] focus:bg-[#2a2a2a] focus:outline-none',
-        isSelected && 'bg-[#2a2a2a] border-l-2 border-l-blue-500',
+        'border-l-2',
+        severityConfig.bgClass,
+        severityConfig.hoverBg,
+        'focus:outline-none focus:ring-1 focus:ring-[#3A7AFE] focus:ring-inset',
+        isSelected && 'ring-1 ring-[#3A7AFE] ring-inset',
       )}
     >
       {/* Severity Icon */}
-      <SeverityIcon className={cn('h-4 w-4 mt-0.5 flex-shrink-0', severityConfig.className)} />
+      <SeverityIcon className={cn('h-4 w-4 mt-0.5 flex-shrink-0', severityConfig.iconClass)} />
       
       {/* Content */}
       <div className="flex-1 min-w-0">
         {/* Message */}
-        <p className="text-sm text-gray-200 break-words">
+        <p className={cn('text-sm break-words', severityConfig.textClass)}>
           {diagnostic.message}
         </p>
         
         {/* Explanation (AI diagnostics) */}
         {diagnostic.explanation && (
-          <p className="text-xs text-gray-400 mt-1 break-words">
+          <p className="text-xs text-[#888888] mt-1 break-words">
             {diagnostic.explanation}
           </p>
         )}
         
         {/* Meta info */}
-        <div className="flex items-center gap-2 mt-1 text-xs text-gray-500">
+        <div className="flex items-center gap-2 mt-1 text-xs text-[#666666]">
           {/* Location - show range for multi-line diagnostics */}
           <span className="flex items-center gap-1">
             <FileCode className="h-3 w-3" />
@@ -157,7 +210,7 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
           
           {/* Confidence (AI only) */}
           {diagnostic.confidence && diagnostic.confidence < 1 && (
-            <span className="text-purple-400">
+            <span className="text-[#3A7AFE]">
               {Math.round(diagnostic.confidence * 100)}%
             </span>
           )}
@@ -165,8 +218,8 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
         
         {/* Cross-file references */}
         {diagnostic.crossFileRefs?.length > 0 && (
-          <div className="mt-1 text-xs text-gray-500">
-            <span className="text-gray-400">Related: </span>
+          <div className="mt-1 text-xs text-[#666666]">
+            <span className="text-[#888888]">Related: </span>
             {diagnostic.crossFileRefs.map((ref, idx) => (
               <button
                 key={idx}
@@ -180,7 +233,7 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
                     });
                   }
                 }}
-                className="text-blue-400 hover:text-blue-300 hover:underline ml-1"
+                className="text-[#3A7AFE] hover:text-[#5a9aff] hover:underline ml-1"
               >
                 {ref.filePath?.split('/').pop() || ref.file?.split('/').pop()}:{(ref.location?.line ?? ref.line ?? 0) + 1}
               </button>
@@ -190,7 +243,7 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
         
         {/* Quick fixes available indicator */}
         {diagnostic.fixes?.length > 0 && (
-          <div className="flex items-center gap-1 mt-1 text-xs text-emerald-400">
+          <div className="flex items-center gap-1 mt-1 text-xs text-[#4ade80]">
             <Lightbulb className="h-3 w-3" />
             {diagnostic.fixes.length} quick fix{diagnostic.fixes.length > 1 ? 'es' : ''} available
           </div>
@@ -208,33 +261,33 @@ function FileGroup({ filePath, diagnostics, onNavigate, isExpanded, onToggle }) 
   const warningCount = diagnostics.filter(d => d.severity === 'warning').length;
   
   return (
-    <div className="border-b border-[#2a2a2a] last:border-b-0">
+    <div className="border-b border-[#3A3A3A] last:border-b-0">
       {/* File header */}
       <button
         onClick={onToggle}
-        className="w-full px-3 py-2 flex items-center gap-2 hover:bg-[#252525] text-left"
+        className="w-full px-3 py-2 flex items-center gap-2 hover:bg-[#1a1a1a] text-left transition-colors"
       >
         {isExpanded ? (
-          <ChevronDown className="h-4 w-4 text-gray-500" />
+          <ChevronDown className="h-4 w-4 text-[#666666]" />
         ) : (
-          <ChevronRight className="h-4 w-4 text-gray-500" />
+          <ChevronRight className="h-4 w-4 text-[#666666]" />
         )}
         
-        <FileCode className="h-4 w-4 text-gray-400" />
-        <span className="text-sm text-gray-300 truncate flex-1">{filePath}</span>
+        <FileCode className="h-4 w-4 text-[#888888]" />
+        <span className="text-sm text-[#E6E6E6] truncate flex-1">{filePath}</span>
         
         {/* Counts */}
         <div className="flex items-center gap-1.5">
           {errorCount > 0 && (
-            <span className="flex items-center gap-1 text-xs text-red-400">
-              <span className="w-4 h-4 rounded-full bg-red-500/20 flex items-center justify-center">
+            <span className="flex items-center gap-1 text-xs">
+              <span className="w-5 h-5 rounded bg-[#2B0F12] flex items-center justify-center text-[#C6362B] font-medium">
                 {errorCount}
               </span>
             </span>
           )}
           {warningCount > 0 && (
-            <span className="flex items-center gap-1 text-xs text-amber-400">
-              <span className="w-4 h-4 rounded-full bg-amber-500/20 flex items-center justify-center">
+            <span className="flex items-center gap-1 text-xs">
+              <span className="w-5 h-5 rounded bg-[#2A1E0A] flex items-center justify-center text-[#D4A017] font-medium">
                 {warningCount}
               </span>
             </span>
@@ -244,7 +297,7 @@ function FileGroup({ filePath, diagnostics, onNavigate, isExpanded, onToggle }) 
       
       {/* Diagnostics list */}
       {isExpanded && (
-        <div className="bg-[#1a1a1a]">
+        <div className="bg-[#121212]">
           {diagnostics.map((diagnostic, index) => (
             <DiagnosticItem
               key={`${diagnostic.code}-${diagnostic.location?.line}-${index}`}
@@ -264,8 +317,8 @@ function FileGroup({ filePath, diagnostics, onNavigate, isExpanded, onToggle }) 
  */
 function FilterBar({ filters, onFilterChange, summary }) {
   return (
-    <div className="flex items-center gap-2 px-3 py-2 border-b border-[#2a2a2a] bg-[#1a1a1a]">
-      <Filter className="h-3.5 w-3.5 text-gray-500" />
+    <div className="flex items-center gap-2 px-3 py-2 border-b border-[#3A3A3A] bg-[#1a1a1a]">
+      <Filter className="h-3.5 w-3.5 text-[#666666]" />
       
       {/* Severity filters */}
       {Object.entries(SEVERITY_CONFIG).map(([severity, config]) => {
@@ -279,18 +332,18 @@ function FilterBar({ filters, onFilterChange, summary }) {
             className={cn(
               'flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors',
               isActive
-                ? config.bgClass
-                : 'bg-transparent hover:bg-[#2a2a2a] text-gray-500',
+                ? config.badgeBg + ' ' + config.textClass
+                : 'bg-transparent hover:bg-[#2a2a2a] text-[#666666]',
             )}
           >
             <span className={cn('w-2 h-2 rounded-full', config.dotClass)} />
-            <span className={isActive ? config.className : ''}>{count}</span>
+            <span>{count}</span>
           </button>
         );
       })}
       
       {/* Tier filters */}
-      <div className="border-l border-[#3a3a3a] pl-2 ml-1">
+      <div className="border-l border-[#3A3A3A] pl-2 ml-1">
         {Object.entries(TIER_CONFIG).map(([tier, config]) => {
           const isActive = filters.tiers.includes(tier);
           const TierIcon = config.icon;
@@ -303,7 +356,7 @@ function FilterBar({ filters, onFilterChange, summary }) {
                 'px-2 py-0.5 rounded text-xs transition-colors ml-1',
                 isActive
                   ? config.className
-                  : 'bg-transparent hover:bg-[#2a2a2a] text-gray-500',
+                  : 'bg-transparent hover:bg-[#2a2a2a] text-[#666666]',
               )}
             >
               {TierIcon && <TierIcon className="h-3 w-3 inline mr-1" />}
@@ -407,26 +460,26 @@ export function ProblemsPanel({
   
   return (
     <div className={cn(
-      'flex flex-col bg-[#151515] border border-[#2a2a2a] rounded-md overflow-hidden',
+      'flex flex-col bg-[#121212] border border-[#3A3A3A] rounded-md overflow-hidden',
       className,
     )}>
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-[#2a2a2a]">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-[#3A3A3A] bg-[#1a1a1a]">
         <div className="flex items-center gap-2">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-[#888888]">
             Problems
           </h3>
           
           {/* Summary badges */}
           <div className="flex items-center gap-1.5">
             {summary.errors > 0 && (
-              <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-500/20 text-xs text-red-400">
+              <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#2B0F12] text-xs text-[#C6362B]">
                 <AlertCircle className="h-3 w-3" />
                 {summary.errors}
               </span>
             )}
             {summary.warnings > 0 && (
-              <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/20 text-xs text-amber-400">
+              <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#2A1E0A] text-xs text-[#D4A017]">
                 <AlertTriangle className="h-3 w-3" />
                 {summary.warnings}
               </span>
@@ -435,7 +488,7 @@ export function ProblemsPanel({
           
           {/* Analysis status */}
           {isAnalyzing && (
-            <div className="flex items-center gap-1 text-xs text-blue-400">
+            <div className="flex items-center gap-1 text-xs text-[#3A7AFE]">
               <Loader2 className="h-3 w-3 animate-spin" />
               Analyzing...
             </div>
@@ -448,7 +501,7 @@ export function ProblemsPanel({
             <button
               onClick={onRefresh}
               disabled={isAnalyzing}
-              className="p-1 rounded hover:bg-[#2a2a2a] text-gray-400 hover:text-gray-200 disabled:opacity-50"
+              className="p-1 rounded hover:bg-[#2a2a2a] text-[#888888] hover:text-[#E6E6E6] disabled:opacity-50 transition-colors"
               title="Refresh analysis"
             >
               <RefreshCw className={cn('h-4 w-4', isAnalyzing && 'animate-spin')} />
@@ -457,7 +510,7 @@ export function ProblemsPanel({
           {onClose && (
             <button
               onClick={onClose}
-              className="p-1 rounded hover:bg-[#2a2a2a] text-gray-400 hover:text-gray-200"
+              className="p-1 rounded hover:bg-[#2a2a2a] text-[#888888] hover:text-[#E6E6E6] transition-colors"
               title="Close panel"
             >
               <X className="h-4 w-4" />
@@ -475,25 +528,25 @@ export function ProblemsPanel({
       
       {/* Tier progress indicators */}
       {isAnalyzing && (
-        <div className="flex items-center gap-2 px-3 py-1 bg-[#1a1a1a] border-b border-[#2a2a2a] text-xs">
+        <div className="flex items-center gap-2 px-3 py-1 bg-[#1a1a1a] border-b border-[#3A3A3A] text-xs">
           {Object.entries(tierStatus).map(([tier, status]) => {
             const config = TIER_CONFIG[tier];
             if (!config) return null;
             
             return (
-              <span key={tier} className="flex items-center gap-1 text-gray-400">
+              <span key={tier} className="flex items-center gap-1 text-[#888888]">
                 {status.status === 'running' ? (
-                  <Loader2 className="h-3 w-3 animate-spin text-blue-400" />
+                  <Loader2 className="h-3 w-3 animate-spin text-[#3A7AFE]" />
                 ) : status.status === 'completed' ? (
-                  <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                  <span className="w-2 h-2 rounded-full bg-[#4ade80]" />
                 ) : status.status === 'error' ? (
-                  <span className="w-2 h-2 rounded-full bg-red-500" />
+                  <span className="w-2 h-2 rounded-full bg-[#C6362B]" />
                 ) : (
-                  <span className="w-2 h-2 rounded-full bg-gray-600" />
+                  <span className="w-2 h-2 rounded-full bg-[#666666]" />
                 )}
                 {config.label}
                 {status.elapsed > 0 && (
-                  <span className="text-gray-600">({Math.round(status.elapsed)}ms)</span>
+                  <span className="text-[#666666]">({Math.round(status.elapsed)}ms)</span>
                 )}
               </span>
             );
@@ -504,18 +557,18 @@ export function ProblemsPanel({
       {/* Diagnostics list */}
       <div className="flex-1 overflow-auto">
         {filteredDiagnostics.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-8 text-gray-500">
+          <div className="flex flex-col items-center justify-center py-8 text-[#666666]">
             {diagnostics.length === 0 ? (
               <>
-                <AlertCircle className="h-8 w-8 mb-2 text-emerald-500/50" />
-                <p className="text-sm">No problems detected</p>
-                <p className="text-xs text-gray-600 mt-1">Your code looks good!</p>
+                <AlertCircle className="h-8 w-8 mb-2 text-[#4ade80]/50" />
+                <p className="text-sm text-[#E6E6E6]">No problems detected</p>
+                <p className="text-xs text-[#666666] mt-1">Your code looks good!</p>
               </>
             ) : (
               <>
                 <Filter className="h-8 w-8 mb-2" />
-                <p className="text-sm">No problems match filters</p>
-                <p className="text-xs text-gray-600 mt-1">Adjust filters to see results</p>
+                <p className="text-sm text-[#E6E6E6]">No problems match filters</p>
+                <p className="text-xs text-[#666666] mt-1">Adjust filters to see results</p>
               </>
             )}
           </div>
