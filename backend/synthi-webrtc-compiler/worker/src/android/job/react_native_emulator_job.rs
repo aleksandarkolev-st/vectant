@@ -13,10 +13,8 @@ use webrtc::data_channel::RTCDataChannel;
 use crate::android::fs::{
     reconcile_and_stream_with_rules, take_snapshot_with_rules, ReconcileConfig, SyncRules,
 };
-use crate::android::webrtc::{
-    bytes_to_b64, send_emulator_frame, send_emulator_frame_chunked, send_log, send_logcat,
-    send_mobile_capabilities, send_status,
-};
+use crate::android::webrtc::{send_log, send_logcat, send_mobile_capabilities, send_status};
+use crate::android::webrtc::{input as emulator_input, video_pipeline};
 use crate::android::emulator::{
     acquire_emulator_daemon, detect_kvm, ensure_emulator_ready, EmulatorConfig, EnsureReadyResult,
     LogcatEntry,
@@ -28,7 +26,9 @@ use crate::android::react_native::{
 
 use super::project_detection::find_react_native_project_root;
 
-use crate::android::webrtc::frames::{capture_screencap_png, compress_frame_for_preview};
+use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
+use webrtc::track::track_local::TrackLocal;
 
 /// Handles a React Native emulator job.
 ///
@@ -44,6 +44,7 @@ pub async fn handle_react_native_emulator_job(
     workspace_path: PathBuf,
     project_root: Option<String>,
     is_release: bool,
+    pc: Arc<RTCPeerConnection>,
 ) -> Result<()> {
     // Determine starting path for project detection
     let start_path = if let Some(root) = &project_root {
@@ -770,121 +771,53 @@ pub async fn handle_react_native_emulator_job(
         }
     });
 
-    // Step 8: Stream emulator frames (PNG screenshots) for a short window.
-    // This is a minimal, portable preview mechanism that works even when we do not
-    // have a WebRTC video track carrying emulator pixels.
-    let log_dc_for_frames = log_dc.clone();
-    let session_id_for_frames = session_id.clone();
-    let adb_for_frames = if cfg!(windows) {
+    // Step 8: Start real-time emulator video track (GStreamer RTP -> WebRTC video track).
+    // Also enable the emulator-input backchannel.
+    let adb_path = if cfg!(windows) {
         sdk_root.join("platform-tools/adb.exe")
     } else {
         sdk_root.join("platform-tools/adb")
     };
-    let serial_for_frames = emulator_serial.clone();
 
-    tokio::spawn(async move {
-        // Conservative defaults to avoid overwhelming the datachannel.
-        const FRAME_INTERVAL: Duration = Duration::from_secs(2);
-        const STREAM_DURATION: Duration = Duration::from_secs(120);
-        // If base64 is still huge after compression, fall back to chunking.
-        const MAX_B64_INLINE: usize = 45_000;
-        // Hard safety cap after compression (should be rare with resizing).
-        const MAX_BYTES_AFTER_COMPRESS: usize = 2_000_000;
+    emulator_input::register_session(&session_id, adb_path, emulator_serial.clone()).await?;
 
-        let start = Instant::now();
-        let mut last_error_at: Option<Instant> = None;
+    let cfg = video_pipeline::EmulatorVideoConfig::default();
+    send_log(
+        &log_dc,
+        &session_id,
+        &format!(
+            "[video] starting GStreamer pipeline: {}",
+            video_pipeline::EmulatorVideoPipeline::debug_pipeline_string(&cfg)
+        ),
+        "emulator",
+    )
+    .await;
 
-        // One-time log line so we can diagnose "black screen" reports from the UI.
-        send_log(
-            &log_dc_for_frames,
-            &session_id_for_frames,
-            &format!(
-                "[frames] starting screenshot stream (interval={}ms duration={}s)",
-                FRAME_INTERVAL.as_millis(),
-                STREAM_DURATION.as_secs()
-            ),
-            "emulator",
-        )
-        .await;
-
-        while start.elapsed() < STREAM_DURATION {
-            match capture_screencap_png(&adb_for_frames, &serial_for_frames).await {
-                Ok(png) => {
-                    // IMPORTANT: Do not gate on the raw PNG size.
-                    // Raw screencap PNGs can easily exceed a conservative threshold even though
-                    // the compressed/resized preview is small; gating before compression causes
-                    // "black screen" (no frames ever sent).
-                    let (mime, bytes) = match compress_frame_for_preview(&png) {
-                        Ok(v) => v,
-                        Err(_) => ("image/png".to_string(), png),
-                    };
-
-                    if bytes.len() > MAX_BYTES_AFTER_COMPRESS {
-                        let should_log = last_error_at
-                            .map(|t| t.elapsed() > Duration::from_secs(15))
-                            .unwrap_or(true);
-                        if should_log {
-                            send_log(
-                                &log_dc_for_frames,
-                                &session_id_for_frames,
-                                &format!(
-                                    "[frames] skipping oversized compressed frame ({} bytes)",
-                                    bytes.len()
-                                ),
-                                "emulator",
-                            )
-                            .await;
-                            last_error_at = Some(Instant::now());
-                        }
-                        sleep(FRAME_INTERVAL).await;
-                        continue;
-                    }
-
-                    let b64 = bytes_to_b64(&bytes);
-                    if b64.len() <= MAX_B64_INLINE {
-                        send_emulator_frame(
-                            &log_dc_for_frames,
-                            &session_id_for_frames,
-                            &mime,
-                            &b64,
-                            bytes.len(),
-                        )
-                        .await;
-                    } else {
-                        send_emulator_frame_chunked(
-                            &log_dc_for_frames,
-                            &session_id_for_frames,
-                            &mime,
-                            &b64,
-                            bytes.len(),
-                        )
-                        .await;
-                    }
-                }
-                Err(e) => {
-                    // Avoid spamming logs if screencap fails repeatedly.
-                    let should_log = last_error_at
-                        .map(|t| t.elapsed() > Duration::from_secs(15))
-                        .unwrap_or(true);
-                    if should_log {
-                        send_log(
-                            &log_dc_for_frames,
-                            &session_id_for_frames,
-                            &format!("[frames] screencap failed: {}", e),
-                            "emulator",
-                        )
-                        .await;
-                        last_error_at = Some(Instant::now());
-                    }
-                }
-            }
-
-            sleep(FRAME_INTERVAL).await;
+    let pipeline = match video_pipeline::EmulatorVideoPipeline::start(cfg.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            emulator_input::unregister_session_sync(&session_id);
+            return Err(e).context("failed to start emulator video pipeline");
         }
-    });
+    };
+
+    // Attach to existing video transceiver.
+    let transceivers = pc.get_transceivers().await;
+    for t in transceivers {
+        if t.kind() == RTPCodecType::Video {
+            let sender = t.sender().await;
+            let _ = sender
+                .replace_track(Some(Arc::clone(&pipeline.track) as Arc<dyn TrackLocal + Send + Sync>))
+                .await;
+        }
+    }
 
     // Release the emulator back to the daemon (keep alive for next jobs)
     daemon.release_keepalive().await;
+
+    // Cleanup: stop streaming + unregister input.
+    emulator_input::unregister_session_sync(&session_id);
+    pipeline.stop();
 
     // Send final success status
     send_status(

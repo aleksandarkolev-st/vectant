@@ -768,6 +768,7 @@ async fn main() -> Result<()> {
                                                         workspace_path,
                                                         project_root,
                                                         false, // debug build by default
+                                                        pc_for_compile.clone(),
                                                     ).await {
                                                         eprintln!("[Main] Mobile emulator job failed: {:?}", e);
                                                     }
@@ -1302,6 +1303,21 @@ async fn main() -> Result<()> {
                         }
                     }
                 });
+            }
+            else if label == "emulator-input" {
+                dc.on_message(Box::new(move |msg| {
+                    async move {
+                        if !msg.is_string {
+                            return;
+                        }
+                        if let Ok(v) = serde_json::from_slice::<crate::android::webrtc::input::EmulatorInputMessage>(&msg.data) {
+                            if let Err(e) = crate::android::webrtc::input::handle_input_message(v).await {
+                                eprintln!("[emulator-input] error: {:#}", e);
+                            }
+                        }
+                    }
+                    .boxed()
+                }));
             }
         }
         .boxed()

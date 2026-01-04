@@ -40,6 +40,12 @@ impl EmulatorSession {
         // Force kill if still running
         self.kill_emulator().await;
 
+        // Stop Xvfb if we started it
+        if let Some(mut xvfb) = self.core.xvfb_process.lock().await.take() {
+            let _ = xvfb.kill().await;
+            let _ = xvfb.wait().await;
+        }
+
         *self.core.state.lock().await = EmulatorState::Stopped;
         *self.core.serial.lock().await = None;
 

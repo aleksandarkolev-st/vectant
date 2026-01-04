@@ -27,6 +27,45 @@ impl EmulatorSession {
         self.ensure_system_image().await?;
         self.ensure_avd().await?;
 
+        // Ensure an X11 display exists for real-time video capture in headless environments.
+        // If DISPLAY is already set (e.g., container provides Xvfb), reuse it.
+        let display = if cfg!(target_os = "windows") {
+            std::env::var("DISPLAY").unwrap_or_default()
+        } else {
+            match std::env::var("DISPLAY") {
+                Ok(d) if !d.trim().is_empty() => d,
+                _ => {
+                    let d = std::env::var("SYNTHI_ANDROID_XVFB_DISPLAY").unwrap_or_else(|_| ":99".to_string());
+                    let res = std::env::var("SYNTHI_ANDROID_XVFB_RESOLUTION").unwrap_or_else(|_| "1080x1920".to_string());
+                    let screen = format!("{}x24", res);
+
+                    // Spawn Xvfb and keep it alive for the lifetime of this emulator session.
+                    let mut xvfb = Command::new("Xvfb");
+                    xvfb.args([
+                        &d,
+                        "-screen",
+                        "0",
+                        &screen,
+                        "-nolisten",
+                        "tcp",
+                        "-ac",
+                        "+extension",
+                        "GLX",
+                        "+render",
+                        "-noreset",
+                    ]);
+                    xvfb.stdout(Stdio::null()).stderr(Stdio::null());
+
+                    let child = xvfb.spawn().context("Failed to start Xvfb")?;
+                    *self.core.xvfb_process.lock().await = Some(child);
+
+                    // Small settle time.
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    d
+                }
+            }
+        };
+
         // Build emulator command
         let emulator_path = self
             .core
@@ -38,7 +77,6 @@ impl EmulatorSession {
         cmd.args([
             "-avd",
             &self.core.config.avd_name,
-            "-no-window",    // Headless
             "-no-audio",     // No audio
             "-no-boot-anim", // Skip boot animation
             "-gpu",
@@ -51,6 +89,10 @@ impl EmulatorSession {
             "-no-snapshot-save", // Don't save snapshots
             "-no-snapshot-load", // Don't load snapshots
         ]);
+
+        if !display.trim().is_empty() {
+            cmd.env("DISPLAY", &display);
+        }
 
         // Add hardware acceleration if enabled
         if self.core.config.use_hw_accel {

@@ -28,6 +28,7 @@ tempfile = "3.8"
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.21"
 webrtc = "0.9"
+webrtc-util = "0.8"
 bytes = "1"
 gstreamer = "0.21"
 gstreamer-app = "0.21"
@@ -53,4 +54,3 @@ byteorder = "1.5"
 hex = "0.4"
 base64 = "0.22"
 sha2 = "0.10"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

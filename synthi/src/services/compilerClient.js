@@ -31,6 +31,7 @@ export class CompilerClient {
         this.compileChannel = null;
         this.buildLogChannel = null;
         this.terminalChannel = null;
+        this.emulatorInputChannel = null;
         this.lspChannel = null;
         this.readyPromise = null;
         this.currentStreams = [];
@@ -39,12 +40,14 @@ export class CompilerClient {
         this.textDecoder = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
         this.terminalInputBuffer = [];
         this.guiInputBuffer = [];
+        this.emulatorInputBuffer = [];
         this.status = CompilerStatus.IDLE;
         this.slug = null;
         this.supportsH265 = false;
         
         this._handleTerminalInput = this._handleTerminalInput.bind(this);
         this._handleGuiInput = this._handleGuiInput.bind(this);
+        this._handleEmulatorInput = this._handleEmulatorInput.bind(this);
     }
 
     setSlug(slug) {
@@ -110,7 +113,7 @@ export class CompilerClient {
             text = String(msg);
         }
 
-        // Some messages (e.g. emulator-frame screenshots) can be very large.
+        // Some messages can be very large.
         // Logging them verbatim can freeze DevTools and slow the UI.
         if (typeof text === 'string' && text.length > 2000) {
             console.log('[CompilerClient] Received log (truncated):', `${text.slice(0, 2000)}…`);
@@ -249,6 +252,20 @@ export class CompilerClient {
         } catch (e) { console.error('[CompilerClient] guiListener error', e); }
     }
 
+    _handleEmulatorInput(ev) {
+        try {
+            const d = ev?.detail || {};
+            const payload = JSON.stringify(d);
+            if (this.emulatorInputChannel && this.emulatorInputChannel.readyState === 'open') {
+                this.emulatorInputChannel.send(payload);
+            } else {
+                this.emulatorInputBuffer.push(payload);
+            }
+        } catch (e) {
+            console.error('[CompilerClient] emulatorInputListener error', e);
+        }
+    }
+
     connect() {
         if (this.readyPromise) return this.readyPromise;
         
@@ -330,6 +347,7 @@ export class CompilerClient {
                 this.buildLogChannel = null;
                 this.pc = null;
                 this.ws = null;
+                this.emulatorInputChannel = null;
                 this._setStatus(CompilerStatus.DISCONNECTED);
             };
 
@@ -348,6 +366,8 @@ export class CompilerClient {
                 this.compileChannel = this.pc.createDataChannel('compile', { ordered: true });
                 // Terminal channel for stdin forwarding
                 this.terminalChannel = this.pc.createDataChannel('terminal', { ordered: true });
+                // Emulator input backchannel (Android)
+                this.emulatorInputChannel = this.pc.createDataChannel('emulator-input', { ordered: true });
                 
                 this.compileChannel.onclose = () => {};
 
@@ -387,11 +407,27 @@ export class CompilerClient {
                         } catch (_) {}
                     };
                 }
+
+                if (this.emulatorInputChannel) {
+                    this.emulatorInputChannel.onopen = () => {
+                        try {
+                            window.addEventListener('synthi:emulator-input', this._handleEmulatorInput);
+                        } catch (_) {}
+                        while (this.emulatorInputBuffer.length > 0) {
+                            const p = this.emulatorInputBuffer.shift();
+                            try { this.emulatorInputChannel.send(p); } catch (_) {}
+                        }
+                    };
+                    this.emulatorInputChannel.onclose = () => {
+                        try { window.removeEventListener('synthi:emulator-input', this._handleEmulatorInput); } catch (_) {}
+                    };
+                }
                 // Remove listener when the WebSocket closes as a backup
                 this.ws.addEventListener('close', () => {
                     try { 
                         window.removeEventListener('synthi:terminal-input', this._handleTerminalInput); 
                         window.removeEventListener('synthi:gui-input', this._handleGuiInput);
+                        window.removeEventListener('synthi:emulator-input', this._handleEmulatorInput);
                     } catch (_) {}
                 });
             };

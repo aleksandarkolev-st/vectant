@@ -73,10 +73,10 @@ function MessageScreen({ title, subtitle }) {
 export default function EmulatorScreen({
   state,
   errorMessage,
+  sessionId,
   videoRef,
   canvasRef,
   mediaStream,
-  frameDataUrl,
 }) {
   // Future-proofing:
   // - When real streaming is added, the backend will supply frames via WebRTC.
@@ -91,17 +91,111 @@ export default function EmulatorScreen({
     typeof mediaStream.getVideoTracks === 'function' &&
     mediaStream.getVideoTracks().length > 0;
 
+  const emitInput = (payload) => {
+    try {
+      if (!sessionId) return;
+      if (typeof window === 'undefined' || !window.dispatchEvent) return;
+      window.dispatchEvent(new CustomEvent('synthi:emulator-input', { detail: { sessionId, ...payload } }));
+    } catch (_) {
+      // ignore
+    }
+  };
+
+  const getGeometry = (el) => {
+    try {
+      const r = el.getBoundingClientRect();
+      return {
+        viewW: r.width,
+        viewH: r.height,
+        videoW: el.videoWidth || 0,
+        videoH: el.videoHeight || 0,
+      };
+    } catch (_) {
+      return { viewW: 0, viewH: 0, videoW: 0, videoH: 0 };
+    }
+  };
+
+  const pointerStateRef = React.useRef(null);
+
+  const onPointerDown = (e) => {
+    const el = e.currentTarget;
+    const r = el.getBoundingClientRect();
+    const x = e.clientX - r.left;
+    const y = e.clientY - r.top;
+    pointerStateRef.current = { x, y, t: Date.now() };
+    try { el.setPointerCapture?.(e.pointerId); } catch (_) {}
+  };
+
+  const onPointerUp = (e) => {
+    const el = e.currentTarget;
+    const r = el.getBoundingClientRect();
+    const x2 = e.clientX - r.left;
+    const y2 = e.clientY - r.top;
+    const st = pointerStateRef.current;
+    pointerStateRef.current = null;
+    if (!st) return;
+
+    const dx = x2 - st.x;
+    const dy = y2 - st.y;
+    const dist = Math.hypot(dx, dy);
+    const dur = Math.max(0, Date.now() - st.t);
+    const geo = getGeometry(el);
+
+    if (dist < 8 && dur < 250) {
+      emitInput({ type: 'tap', x: st.x, y: st.y, ...geo });
+    } else {
+      emitInput({ type: 'swipe', x: st.x, y: st.y, x2, y2, durationMs: dur, ...geo });
+    }
+  };
+
+  const mapKey = (k) => {
+    switch (k) {
+      case 'Enter': return 'ENTER';
+      case 'Backspace': return 'DEL';
+      case 'Escape': return 'BACK';
+      case 'Tab': return 'TAB';
+      case 'ArrowUp': return 'DPAD_UP';
+      case 'ArrowDown': return 'DPAD_DOWN';
+      case 'ArrowLeft': return 'DPAD_LEFT';
+      case 'ArrowRight': return 'DPAD_RIGHT';
+      case ' ': return null;
+      default: return null;
+    }
+  };
+
+  const onKeyDown = (e) => {
+    if (!sessionId) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const k = e.key;
+    if (!k) return;
+
+    // Printable single-character keys -> text.
+    if (k.length === 1 && k !== '\n' && k !== '\r') {
+      emitInput({ type: 'text', text: k });
+      e.preventDefault();
+      return;
+    }
+
+    const kc = mapKey(k);
+    if (kc) {
+      emitInput({ type: 'key', keycode: kc });
+      e.preventDefault();
+    }
+  };
+
   // If a MediaStream exists AND it has a video track, prefer rendering the real streaming surface.
   // Otherwise we show an explicit placeholder (instead of a confusing black screen).
   if (hasVideoTrack && state !== EMULATOR_STATES.ERROR) {
     return (
-      <div className="h-full w-full bg-black relative">
+      <div className="h-full w-full bg-black relative" tabIndex={0} onKeyDown={onKeyDown}>
         <video
           ref={videoRef}
-          className="absolute inset-0 h-full w-full object-contain"
+          className="absolute inset-0 h-full w-full object-contain touch-none"
           muted
           playsInline
           autoPlay
+          onPointerDown={onPointerDown}
+          onPointerUp={onPointerUp}
         />
 
         <div className="absolute inset-0 pointer-events-none">
@@ -125,24 +219,19 @@ export default function EmulatorScreen({
 
   if (state === EMULATOR_STATES.STREAMING) {
     return (
-      <div className="h-full w-full bg-black relative">
-        {frameDataUrl ? (
-          <img
-            src={frameDataUrl}
-            alt="Emulator preview"
-            className="absolute inset-0 h-full w-full object-contain"
-          />
-        ) : null}
+      <div className="h-full w-full bg-black relative" tabIndex={0} onKeyDown={onKeyDown}>
         <video
           ref={videoRef}
-          className={hasVideoTrack ? "absolute inset-0 h-full w-full object-contain" : "hidden"}
+          className={hasVideoTrack ? "absolute inset-0 h-full w-full object-contain touch-none" : "hidden"}
           muted
           playsInline
           autoPlay
+          onPointerDown={onPointerDown}
+          onPointerUp={onPointerUp}
         />
 
-        {!hasVideoTrack && !frameDataUrl ? (
-          <MessageScreen title="Waiting for device stream…" subtitle="Streaming connected; no video track yet." />
+        {!hasVideoTrack ? (
+          <MessageScreen title="Waiting for device stream…" subtitle="No video track yet." />
         ) : null}
 
         {/*

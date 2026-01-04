@@ -35,9 +35,7 @@ export default function EmulatorPanel({
   const [workerStatus, setWorkerStatus] = useState(null);
   const [workerMessage, setWorkerMessage] = useState('');
   const [streamConnected, setStreamConnected] = useState(false);
-  const [frameDataUrl, setFrameDataUrl] = useState('');
   const lastEventAtRef = useRef(0);
-  const frameRxRef = useRef(new Map());
   const capabilitiesRef = useRef(null);
 
   // Future-proof: keep refs ready for real streaming.
@@ -151,69 +149,6 @@ export default function EmulatorPanel({
       // Capability announcement (future-proof for real video + input)
       if (parsed.type === 'mobile-capabilities') {
         capabilitiesRef.current = parsed?.data || null;
-        return;
-      }
-
-      // Emulator pixel stream (minimal screenshot-based preview)
-      if (parsed.type === 'emulator-frame') {
-        const mime = parsed?.data?.mime || 'image/png';
-        const b64 = parsed?.data?.b64 || parsed?.data?.png_b64;
-        if (typeof b64 === 'string' && b64.length > 0) {
-          setFrameDataUrl(`data:${mime};base64,${b64}`);
-          // Ensure we are in a visual state.
-          setState((prev) => (prev === EMULATOR_STATES.ERROR ? prev : EMULATOR_STATES.STREAMING));
-        }
-        return;
-      }
-
-      // Chunked emulator frame stream (for large screenshots)
-      if (parsed.type === 'emulator-frame-begin') {
-        const fid = parsed?.data?.frame_id;
-        const total = Number(parsed?.data?.total_chunks);
-        const mime = parsed?.data?.mime || 'image/png';
-        if (!fid || !Number.isFinite(total) || total <= 0) return;
-        frameRxRef.current.set(String(fid), {
-          mime,
-          total,
-          received: 0,
-          chunks: new Array(total),
-          startedAt: Date.now(),
-        });
-        return;
-      }
-
-      if (parsed.type === 'emulator-frame-chunk') {
-        const fid = parsed?.data?.frame_id;
-        const idx = Number(parsed?.data?.idx);
-        const chunk = parsed?.data?.chunk;
-        if (!fid) return;
-        const entry = frameRxRef.current.get(String(fid));
-        if (!entry) return;
-        if (!Number.isFinite(idx) || idx < 0 || idx >= entry.total) return;
-        if (typeof chunk !== 'string') return;
-        if (entry.chunks[idx] === undefined) {
-          entry.chunks[idx] = chunk;
-          entry.received += 1;
-        }
-        return;
-      }
-
-      if (parsed.type === 'emulator-frame-end') {
-        const fid = parsed?.data?.frame_id;
-        if (!fid) return;
-        const entry = frameRxRef.current.get(String(fid));
-        if (!entry) return;
-        if (entry.received !== entry.total) {
-          // Drop incomplete frames.
-          frameRxRef.current.delete(String(fid));
-          return;
-        }
-        const b64 = entry.chunks.join('');
-        if (b64) {
-          setFrameDataUrl(`data:${entry.mime};base64,${b64}`);
-          setState((prev) => (prev === EMULATOR_STATES.ERROR ? prev : EMULATOR_STATES.STREAMING));
-        }
-        frameRxRef.current.delete(String(fid));
         return;
       }
 
@@ -331,10 +266,10 @@ export default function EmulatorPanel({
             <EmulatorScreen
               state={state}
               errorMessage={errorMessage}
+              sessionId={sessionId}
               videoRef={videoRef}
               canvasRef={canvasRef}
               mediaStream={mediaStream}
-              frameDataUrl={frameDataUrl}
             />
           </div>
         </EmulatorFrame>
