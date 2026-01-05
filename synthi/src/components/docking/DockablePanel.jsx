@@ -176,7 +176,7 @@ function FloatingWindow({
     <div
       ref={windowRef}
       className={cn(
-        'fixed bg-[#121212] border border-[#3A3A3A] rounded-lg shadow-2xl overflow-hidden',
+        'fixed bg-[#0d0e14] border border-[#3A3A3A] rounded-lg shadow-2xl overflow-hidden',
         'flex flex-col',
         isDragging && 'cursor-move',
       )}
@@ -192,7 +192,7 @@ function FloatingWindow({
       <div
         className={cn(
           'flex items-center justify-between px-3 py-2',
-          'bg-[#1a1a1a] border-b border-[#3A3A3A]',
+          'bg-[#0d0e14]',
           'cursor-move select-none',
         )}
         onMouseDown={handleMouseDown}

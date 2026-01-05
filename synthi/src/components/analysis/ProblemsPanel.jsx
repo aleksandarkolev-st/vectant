@@ -11,16 +11,8 @@
  * - Filtering by severity/tier
  * - Real-time updates as analysis runs
  * 
- * COLOR PALETTE (exact, no deviations):
- * - Error panel background: #2B0F12 (muted dark red, low eye strain)
- * - Error text: #E6E6E6 (readable, no pure white)
- * - Error accent (icon, left bar): #C6362B (confirmed errors only)
- * - Warning background: #2A1E0A
- * - Warning accent: #D4A017
- * - Info/analysis background: #121212
- * - Info accent: #3A7AFE
- * - Borders: #3A3A3A (never red borders everywhere)
- * - Hover: +8% brightness only, no color shift
+ * COLOR PALETTE - Synthi Premium Dark Theme (Blue-Gray with Teal Accent)
+ * Matches the rest of the application's theme
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
@@ -40,90 +32,91 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-// EXACT COLOR PALETTE - DO NOT DEVIATE
+// SYNTHI PREMIUM DARK PALETTE - Blue-Gray with Teal Accent
 const COLORS = {
-  // Error colors
-  errorBg: '#2B0F12',        // Muted dark red background
-  errorText: '#E6E6E6',      // Readable text, not pure white
-  errorAccent: '#C6362B',    // Icon/left bar accent
-  errorHoverBg: '#361419',   // +8% brightness
+  // Error colors - tinted to match blue-gray theme
+  errorBg: '#1a0f14',        // Blue-tinted dark red background
+  errorText: '#f4f5f8',      // Synthi text-primary
+  errorAccent: '#ff6b6b',    // Synthi error red
+  errorHoverBg: '#241419',   // Slightly lighter
   
-  // Warning colors
-  warningBg: '#2A1E0A',
-  warningAccent: '#D4A017',
-  warningHoverBg: '#352810', // +8% brightness
+  // Warning colors - tinted to match theme
+  warningBg: '#1a1508',      // Blue-tinted dark amber
+  warningAccent: '#fbbf24',  // Synthi warning amber
+  warningHoverBg: '#24200e', // Slightly lighter
   
-  // Info colors
-  infoBg: '#121212',
-  infoAccent: '#3A7AFE',
-  infoHoverBg: '#1a1a1a',    // +8% brightness
+  // Info colors - Synthi teal accent
+  infoBg: '#0d0e14',         // Synthi bg-card
+  infoAccent: '#3a8574',     // Synthi teal accent
+  infoHoverBg: '#101118',    // Synthi bg-panel
   
-  // General
-  border: '#3A3A3A',
-  panelBg: '#121212',
-  headerBg: '#1a1a1a',
-  text: '#E6E6E6',
-  textMuted: '#888888',
-  textDim: '#666666',
+  // General - Synthi theme colors
+  border: '#1a1b24',         // Synthi border-subtle
+  borderMedium: '#2a2b38',   // Synthi border-medium
+  panelBg: '#0d0e14',        // Synthi bg-card
+  headerBg: '#08090d',       // Synthi bg-app
+  text: '#f4f5f8',           // Synthi text-primary
+  textMuted: '#9ba2b8',      // Synthi text-secondary
+  textDim: '#5a6178',        // Synthi text-muted
 };
 
-// Severity configuration with EXACT colors
+// Severity configuration with Synthi theme colors
 const SEVERITY_CONFIG = {
   error: {
     icon: AlertCircle,
     label: 'Error',
-    textClass: 'text-[#E6E6E6]',
-    iconClass: 'text-[#C6362B]',
-    bgClass: 'bg-[#2B0F12] border-l-[#C6362B]',
-    badgeBg: 'bg-[#2B0F12]',
-    dotClass: 'bg-[#C6362B]',
-    hoverBg: 'hover:bg-[#361419]',
+    textClass: 'text-[#f4f5f8]',
+    iconClass: 'text-[#ff6b6b]',
+    bgClass: 'bg-[#1a0f14] border-l-[#ff6b6b]',
+    badgeBg: 'bg-[#1a0f14]',
+    dotClass: 'bg-[#ff6b6b]',
+    hoverBg: 'hover:bg-[#241419]',
   },
   warning: {
     icon: AlertTriangle,
     label: 'Warning',
-    textClass: 'text-[#E6E6E6]',
-    iconClass: 'text-[#D4A017]',
-    bgClass: 'bg-[#2A1E0A] border-l-[#D4A017]',
-    badgeBg: 'bg-[#2A1E0A]',
-    dotClass: 'bg-[#D4A017]',
-    hoverBg: 'hover:bg-[#352810]',
+    textClass: 'text-[#f4f5f8]',
+    iconClass: 'text-[#fbbf24]',
+    bgClass: 'bg-[#1a1508] border-l-[#fbbf24]',
+    badgeBg: 'bg-[#1a1508]',
+    dotClass: 'bg-[#fbbf24]',
+    hoverBg: 'hover:bg-[#24200e]',
   },
   info: {
     icon: Info,
     label: 'Info',
-    textClass: 'text-[#E6E6E6]',
-    iconClass: 'text-[#3A7AFE]',
-    bgClass: 'bg-[#121212] border-l-[#3A7AFE]',
-    badgeBg: 'bg-[#1a1a2a]',
-    dotClass: 'bg-[#3A7AFE]',
-    hoverBg: 'hover:bg-[#1a1a1a]',
+    textClass: 'text-[#f4f5f8]',
+    iconClass: 'text-[#3a8574]',
+    bgClass: 'bg-[#0d0e14] border-l-[#3a8574]',
+    badgeBg: 'bg-[#0f1a17]',
+    dotClass: 'bg-[#3a8574]',
+    hoverBg: 'hover:bg-[#101118]',
   },
   hint: {
     icon: Lightbulb,
     label: 'Hint',
-    textClass: 'text-[#E6E6E6]',
+    textClass: 'text-[#f4f5f8]',
     iconClass: 'text-[#4ade80]',
-    bgClass: 'bg-[#121212] border-l-[#4ade80]',
+    bgClass: 'bg-[#0d0e14] border-l-[#4ade80]',
     badgeBg: 'bg-[#0f1a14]',
     dotClass: 'bg-[#4ade80]',
-    hoverBg: 'hover:bg-[#1a1a1a]',
+    hoverBg: 'hover:bg-[#101118]',
   },
 };
 
-// Tier badges
+// Tier badges - Synthi themed
 const TIER_CONFIG = {
   static: {
     label: 'Static',
-    className: 'bg-[#2a2a2a] text-[#E6E6E6]',
+    className: 'bg-[#1a1b24] text-[#9ba2b8]',
   },
   semantic: {
     label: 'Semantic',
-    className: 'bg-[#1a1a2a] text-[#3A7AFE]',
+    className: 'bg-[#0f1a17] text-[#3a8574]',
   },
   ai: {
     label: 'AI',
-    className: 'bg-[#1a1a2a] text-[#3A7AFE]',
+    className: 'bg-[#0f1a17] text-[#3a8574]',
     icon: Sparkles,
   },
 };
@@ -158,8 +151,8 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
         'border-l-2',
         severityConfig.bgClass,
         severityConfig.hoverBg,
-        'focus:outline-none focus:ring-1 focus:ring-[#3A7AFE] focus:ring-inset',
-        isSelected && 'ring-1 ring-[#3A7AFE] ring-inset',
+        'focus:outline-none focus:ring-1 focus:ring-[#3a8574] focus:ring-inset',
+        isSelected && 'ring-1 ring-[#3a8574] ring-inset',
       )}
     >
       {/* Severity Icon */}
@@ -174,13 +167,13 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
         
         {/* Explanation (AI diagnostics) */}
         {diagnostic.explanation && (
-          <p className="text-xs text-[#888888] mt-1 break-words">
+          <p className="text-xs text-[#9ba2b8] mt-1 break-words">
             {diagnostic.explanation}
           </p>
         )}
         
         {/* Meta info */}
-        <div className="flex items-center gap-2 mt-1 text-xs text-[#666666]">
+        <div className="flex items-center gap-2 mt-1 text-xs text-[#5a6178]">
           {/* Location - show range for multi-line diagnostics */}
           <span className="flex items-center gap-1">
             <FileCode className="h-3 w-3" />
@@ -210,7 +203,7 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
           
           {/* Confidence (AI only) */}
           {diagnostic.confidence && diagnostic.confidence < 1 && (
-            <span className="text-[#3A7AFE]">
+            <span className="text-[#3a8574]">
               {Math.round(diagnostic.confidence * 100)}%
             </span>
           )}
@@ -218,8 +211,8 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
         
         {/* Cross-file references */}
         {diagnostic.crossFileRefs?.length > 0 && (
-          <div className="mt-1 text-xs text-[#666666]">
-            <span className="text-[#888888]">Related: </span>
+          <div className="mt-1 text-xs text-[#5a6178]">
+            <span className="text-[#9ba2b8]">Related: </span>
             {diagnostic.crossFileRefs.map((ref, idx) => (
               <button
                 key={idx}
@@ -233,7 +226,7 @@ function DiagnosticItem({ diagnostic, onNavigate, isSelected, filePath }) {
                     });
                   }
                 }}
-                className="text-[#3A7AFE] hover:text-[#5a9aff] hover:underline ml-1"
+                className="text-[#3a8574] hover:text-[#4aba9a] hover:underline ml-1"
               >
                 {ref.filePath?.split('/').pop() || ref.file?.split('/').pop()}:{(ref.location?.line ?? ref.line ?? 0) + 1}
               </button>
@@ -261,33 +254,33 @@ function FileGroup({ filePath, diagnostics, onNavigate, isExpanded, onToggle }) 
   const warningCount = diagnostics.filter(d => d.severity === 'warning').length;
   
   return (
-    <div className="border-b border-[#3A3A3A] last:border-b-0">
+    <div className="border-b border-[#1a1b24] last:border-b-0">
       {/* File header */}
       <button
         onClick={onToggle}
-        className="w-full px-3 py-2 flex items-center gap-2 hover:bg-[#1a1a1a] text-left transition-colors"
+        className="w-full px-3 py-2 flex items-center gap-2 hover:bg-[#101118] text-left transition-colors"
       >
         {isExpanded ? (
-          <ChevronDown className="h-4 w-4 text-[#666666]" />
+          <ChevronDown className="h-4 w-4 text-[#5a6178]" />
         ) : (
-          <ChevronRight className="h-4 w-4 text-[#666666]" />
+          <ChevronRight className="h-4 w-4 text-[#5a6178]" />
         )}
         
-        <FileCode className="h-4 w-4 text-[#888888]" />
-        <span className="text-sm text-[#E6E6E6] truncate flex-1">{filePath}</span>
+        <FileCode className="h-4 w-4 text-[#9ba2b8]" />
+        <span className="text-sm text-[#f4f5f8] truncate flex-1">{filePath}</span>
         
         {/* Counts */}
         <div className="flex items-center gap-1.5">
           {errorCount > 0 && (
             <span className="flex items-center gap-1 text-xs">
-              <span className="w-5 h-5 rounded bg-[#2B0F12] flex items-center justify-center text-[#C6362B] font-medium">
+              <span className="w-5 h-5 rounded bg-[#1a0f14] flex items-center justify-center text-[#ff6b6b] font-medium">
                 {errorCount}
               </span>
             </span>
           )}
           {warningCount > 0 && (
             <span className="flex items-center gap-1 text-xs">
-              <span className="w-5 h-5 rounded bg-[#2A1E0A] flex items-center justify-center text-[#D4A017] font-medium">
+              <span className="w-5 h-5 rounded bg-[#1a1508] flex items-center justify-center text-[#fbbf24] font-medium">
                 {warningCount}
               </span>
             </span>
@@ -297,7 +290,7 @@ function FileGroup({ filePath, diagnostics, onNavigate, isExpanded, onToggle }) 
       
       {/* Diagnostics list */}
       {isExpanded && (
-        <div className="bg-[#121212]">
+        <div className="bg-[#0d0e14]">
           {diagnostics.map((diagnostic, index) => (
             <DiagnosticItem
               key={`${diagnostic.code}-${diagnostic.location?.line}-${index}`}
@@ -317,8 +310,8 @@ function FileGroup({ filePath, diagnostics, onNavigate, isExpanded, onToggle }) 
  */
 function FilterBar({ filters, onFilterChange, summary }) {
   return (
-    <div className="flex items-center gap-2 px-3 py-2 border-b border-[#3A3A3A] bg-[#1a1a1a]">
-      <Filter className="h-3.5 w-3.5 text-[#666666]" />
+    <div className="flex items-center gap-2 px-3 py-2 border-b border-[#1a1b24] bg-[#08090d]">
+      <Filter className="h-3.5 w-3.5 text-[#5a6178]" />
       
       {/* Severity filters */}
       {Object.entries(SEVERITY_CONFIG).map(([severity, config]) => {
@@ -333,7 +326,7 @@ function FilterBar({ filters, onFilterChange, summary }) {
               'flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors',
               isActive
                 ? config.badgeBg + ' ' + config.textClass
-                : 'bg-transparent hover:bg-[#2a2a2a] text-[#666666]',
+                : 'bg-transparent hover:bg-[#1a1b24] text-[#5a6178]',
             )}
           >
             <span className={cn('w-2 h-2 rounded-full', config.dotClass)} />
@@ -343,7 +336,7 @@ function FilterBar({ filters, onFilterChange, summary }) {
       })}
       
       {/* Tier filters */}
-      <div className="border-l border-[#3A3A3A] pl-2 ml-1">
+      <div className="border-l border-[#1a1b24] pl-2 ml-1">
         {Object.entries(TIER_CONFIG).map(([tier, config]) => {
           const isActive = filters.tiers.includes(tier);
           const TierIcon = config.icon;
@@ -356,7 +349,7 @@ function FilterBar({ filters, onFilterChange, summary }) {
                 'px-2 py-0.5 rounded text-xs transition-colors ml-1',
                 isActive
                   ? config.className
-                  : 'bg-transparent hover:bg-[#2a2a2a] text-[#666666]',
+                  : 'bg-transparent hover:bg-[#1a1b24] text-[#5a6178]',
               )}
             >
               {TierIcon && <TierIcon className="h-3 w-3 inline mr-1" />}
@@ -460,7 +453,7 @@ export function ProblemsPanel({
   
   return (
     <div className={cn(
-      'flex flex-col bg-[#121212] border border-[#3A3A3A] rounded-md overflow-hidden',
+      'flex flex-col bg-[#0d0e14] border border-[#1a1b24] rounded-md overflow-hidden',
       className,
     )}>
       {/* Filter bar */}
@@ -472,25 +465,25 @@ export function ProblemsPanel({
       
       {/* Tier progress indicators */}
       {isAnalyzing && (
-        <div className="flex items-center gap-2 px-3 py-1 bg-[#1a1a1a] border-b border-[#3A3A3A] text-xs">
+        <div className="flex items-center gap-2 px-3 py-1 bg-[#08090d] border-b border-[#1a1b24] text-xs">
           {Object.entries(tierStatus).map(([tier, status]) => {
             const config = TIER_CONFIG[tier];
             if (!config) return null;
             
             return (
-              <span key={tier} className="flex items-center gap-1 text-[#888888]">
+              <span key={tier} className="flex items-center gap-1 text-[#9ba2b8]">
                 {status.status === 'running' ? (
-                  <Loader2 className="h-3 w-3 animate-spin text-[#3A7AFE]" />
+                  <Loader2 className="h-3 w-3 animate-spin text-[#3a8574]" />
                 ) : status.status === 'completed' ? (
                   <span className="w-2 h-2 rounded-full bg-[#4ade80]" />
                 ) : status.status === 'error' ? (
-                  <span className="w-2 h-2 rounded-full bg-[#C6362B]" />
+                  <span className="w-2 h-2 rounded-full bg-[#ff6b6b]" />
                 ) : (
-                  <span className="w-2 h-2 rounded-full bg-[#666666]" />
+                  <span className="w-2 h-2 rounded-full bg-[#5a6178]" />
                 )}
                 {config.label}
                 {status.elapsed > 0 && (
-                  <span className="text-[#666666]">({Math.round(status.elapsed)}ms)</span>
+                  <span className="text-[#5a6178]">({Math.round(status.elapsed)}ms)</span>
                 )}
               </span>
             );
@@ -501,18 +494,18 @@ export function ProblemsPanel({
       {/* Diagnostics list */}
       <div className="flex-1 overflow-auto">
         {filteredDiagnostics.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-8 text-[#666666]">
+          <div className="flex flex-col items-center justify-center py-8 text-[#5a6178]">
             {diagnostics.length === 0 ? (
               <>
                 <AlertCircle className="h-8 w-8 mb-2 text-[#4ade80]/50" />
-                <p className="text-sm text-[#E6E6E6]">No problems detected</p>
-                <p className="text-xs text-[#666666] mt-1">Your code looks good!</p>
+                <p className="text-sm text-[#f4f5f8]">No problems detected</p>
+                <p className="text-xs text-[#5a6178] mt-1">Your code looks good!</p>
               </>
             ) : (
               <>
                 <Filter className="h-8 w-8 mb-2" />
-                <p className="text-sm text-[#E6E6E6]">No problems match filters</p>
-                <p className="text-xs text-[#666666] mt-1">Adjust filters to see results</p>
+                <p className="text-sm text-[#f4f5f8]">No problems match filters</p>
+                <p className="text-xs text-[#5a6178] mt-1">Adjust filters to see results</p>
               </>
             )}
           </div>
