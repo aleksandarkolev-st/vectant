@@ -285,7 +285,7 @@ function AutoHideStrip({ position, title, isExpanded, onExpand, onCollapse }) {
   return (
     <div
       className={cn(
-        'fixed z-50 bg-[#1a1a1a] border border-[#3A3A3A]',
+        'fixed z-50 bg-[#0D0E14] border border-[#3A3A3A]',
         'flex items-center justify-center cursor-pointer',
         'transition-all duration-150',
         stripStyles[position],
@@ -316,7 +316,7 @@ function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab, onReorderTabs }) {
   return (
     <div
       ref={tabBarRef}
-      className="flex items-center bg-[#1a1a1a] border-b border-[#3A3A3A] overflow-x-auto scrollbar-none"
+      className="flex items-center bg-[#0D0E14] border-b border-[#3A3A3A] overflow-x-auto scrollbar-none"
     >
       {tabs.map((tab) => (
         <button
@@ -604,7 +604,7 @@ export function DockablePanel({
       <div
         className={cn(
           'flex items-center justify-between px-3 py-2',
-          'bg-[#1a1a1a] border-b border-[#3A3A3A]',
+          'bg-[#0D0E14] border-b border-[#3A3A3A]',
           'cursor-grab select-none',
         )}
         onMouseDown={!isFloating ? handleHeaderMouseDown : undefined}

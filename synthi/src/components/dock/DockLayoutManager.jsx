@@ -500,7 +500,7 @@ export function DockablePanel({
           dockZone === 'bottom' && 'bottom-0 left-1/2 -translate-x-1/2 h-6 w-24',
         )}
         style={{
-          backgroundColor: '#1a1a1a',
+          backgroundColor: '#0D0E14',
           borderColor: BORDER_COLOR,
           borderWidth: 1,
           borderStyle: 'solid',
@@ -545,7 +545,7 @@ export function DockablePanel({
             headerClassName,
           )}
           style={{
-            backgroundColor: isHovered ? increaseBrightness('#1a1a1a', HOVER_BRIGHTNESS_INCREASE) : '#1a1a1a',
+            backgroundColor: isHovered ? increaseBrightness('#0D0E14', HOVER_BRIGHTNESS_INCREASE) : '#0D0E14',
             borderBottom: `1px solid ${BORDER_COLOR}`,
           }}
           onMouseDown={handleDragStart}
@@ -627,7 +627,7 @@ export function DockablePanel({
           headerClassName,
         )}
         style={{
-          backgroundColor: isHovered ? increaseBrightness('#1a1a1a', HOVER_BRIGHTNESS_INCREASE) : '#1a1a1a',
+          backgroundColor: isHovered ? increaseBrightness('#0D0E14', HOVER_BRIGHTNESS_INCREASE) : '#0D0E14',
           borderBottom: `1px solid ${BORDER_COLOR}`,
         }}
         onMouseDown={handleDragStart}
@@ -730,7 +730,7 @@ export function TabGroup({ tabs, activeTab, onTabChange, onTabClose }) {
               : 'text-gray-500 border-transparent hover:text-gray-300',
           )}
           style={{
-            backgroundColor: activeTab === tab.id ? '#1a1a1a' : 'transparent',
+            backgroundColor: activeTab === tab.id ? '#0D0E14' : 'transparent',
           }}
         >
           {tab.icon && <tab.icon className="w-3 h-3" />}
