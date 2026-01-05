@@ -67,7 +67,7 @@ export default function EditorPage({ params }) {
     const [guiConfig, setGuiConfig] = useState(null);
     const [isGuiRunning, setIsGuiRunning] = useState(false);
     const [editor, setEditor] = useState(null);
-    const { analyzeCode, analyzeProactive, lastResult, isAnalyzing: isAnalyzingGateway } = useAnalyzerGateway();
+    const { analyzeCode, analyzeProactive, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = useAnalyzerGateway();
     const { compile, mediaStream } = useCompiler();
     useHMR();
     const [latestCompletion, setLatestCompletion] = useState(null);
@@ -430,6 +430,10 @@ export default function EditorPage({ params }) {
 
     useEffect(() => {
         if (!activeFile || !hasLoadedInitialFile) return;
+
+        // The first file can be selected before the gateway WebSocket is ready;
+        // waiting for CONNECTED ensures we don't "miss" the initial analysis.
+        if (!connectionMeta?.isConnected) return;
         
         // Ensure content is available (might be empty string, that's fine)
         const contentToAnalyze = typeof currentContent === 'string' ? currentContent : '';
@@ -626,7 +630,7 @@ export default function EditorPage({ params }) {
                 clearTimeout(proactiveTimeoutRef.current);
             }
         };
-    }, [currentContent, activeFile, hasLoadedInitialFile, analyzeProactive, getRelatedFilesForAnalysis, computeContentHash]);
+    }, [currentContent, activeFile, hasLoadedInitialFile, connectionMeta?.isConnected, analyzeProactive, getRelatedFilesForAnalysis, computeContentHash]);
 
     // Track focused file and content changes for workspace analysis
     useEffect(() => {
