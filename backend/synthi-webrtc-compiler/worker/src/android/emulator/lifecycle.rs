@@ -96,18 +96,20 @@ impl EmulatorSession {
             .join("emulator/emulator");
 
         let mut cmd = Command::new(&emulator_path);
-        // GPU mode: ximagesrc capture is most reliable when the emulator renders into the X11
-        // window via software. Under Xvfb, default to -gpu off unless explicitly overridden.
+        // GPU mode: ximagesrc capture requires the emulator to render into the X11 window.
+        // -gpu off = no rendering at all (headless, no X11 output)
+        // -gpu swiftshader_indirect = software rendering, but uses incompatible X11 visual (XID capture fails with BadMatch)
+        // -gpu guest = software rendering inside Android VM, renders to standard X11 window
+        // For video streaming with ximagesrc, -gpu guest is most compatible.
         let gpu_mode = if cfg!(target_os = "windows") {
             std::env::var("SYNTHI_ANDROID_EMULATOR_GPU").unwrap_or_else(|_| "swiftshader_indirect".to_string())
         } else {
-            let use_host_display = std::env::var("SYNTHI_ANDROID_USE_HOST_DISPLAY")
-                .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
-                .unwrap_or(false);
             std::env::var("SYNTHI_ANDROID_EMULATOR_GPU").unwrap_or_else(|_| {
-                if use_host_display { "swiftshader_indirect".to_string() } else { "off".to_string() }
+                // Use guest mode for X11 capture compatibility
+                "guest".to_string()
             })
         };
+        eprintln!("[emulator] Starting with -gpu {} on DISPLAY={}", gpu_mode, display);
         cmd.args([
             "-avd",
             &self.core.config.avd_name,

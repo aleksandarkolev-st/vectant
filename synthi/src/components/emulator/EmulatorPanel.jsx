@@ -71,7 +71,8 @@ export default function EmulatorPanel({
     return () => window.clearTimeout(id);
   }, [state, bootDurationMs, sessionId]);
 
-  // If we have a media stream for a real session, ensure we render the streaming surface.
+  // If we have a media stream for a real session, log it but DON'T transition state yet.
+  // Wait for the worker to send status='ready' before showing the streaming view.
   useEffect(() => {
     if (!sessionId) return;
     if (!mediaStream) {
@@ -87,7 +88,7 @@ export default function EmulatorPanel({
     } catch (_) {
       setWebrtcDiagnostics('stream received (could not inspect)');
     }
-    setState((prev) => (prev === EMULATOR_STATES.ERROR ? prev : EMULATOR_STATES.STREAMING));
+    // Note: Don't transition to STREAMING here - wait for worker status='ready'
   }, [sessionId, mediaStream]);
 
   // Attach WebRTC media stream (if any) to the video element.

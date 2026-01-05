@@ -9,23 +9,39 @@ export default function EmulatorFrame({
 }) {
   const isLandscape = orientation === 'landscape';
 
+  // When responsive (real streaming), let the video fill the space naturally
+  if (responsive) {
+    return (
+      <div className="w-full h-full flex items-center justify-center bg-black p-2">
+        <div 
+          className={
+            "relative bg-[#0c0c0e] border-2 border-[#1a1a1e] rounded-[2rem] shadow-sm overflow-hidden flex-shrink-0 " +
+            (isLandscape
+              ? "w-full max-w-full h-auto max-h-full aspect-[19.5/9]"
+              : "h-full max-h-full w-auto max-w-full aspect-[9/19.5]")
+          }
+        >
+          {/* Screen area - let children fill */}
+          <div className="absolute inset-[8px] rounded-[1.5rem] bg-black overflow-hidden">
+            {children}
+          </div>
+          {/* Speaker notch (decorative) */}
+          <div className="absolute top-[4px] left-1/2 -translate-x-1/2 w-12 h-[4px] rounded-full bg-[#151519]" />
+        </div>
+      </div>
+    );
+  }
+
+  // Non-responsive (placeholder/mock) - fixed size
   return (
-    <div className={"w-full h-full flex items-center justify-center " + (responsive ? 'p-4' : 'p-4')}>
-      {/*
-        UI-only: this is just a phone-like frame.
-        Aspect ratio is fixed to emulate a device viewport.
-      */}
+    <div className="w-full h-full flex items-center justify-center p-4">
       <div className="relative select-none">
         <div
           className={
             "bg-[#0c0c0e] border-2 border-[#1a1a1e] rounded-[2.25rem] shadow-sm overflow-hidden " +
-            (responsive
-              ? (isLandscape
-                  ? 'aspect-[19.5/9] h-full max-h-full w-auto max-w-full'
-                  : 'aspect-[9/19.5] h-full max-h-full w-auto max-w-full')
-              : (isLandscape
-                  ? 'aspect-[19.5/9] w-[420px] max-w-[70vw]'
-                  : 'aspect-[9/19.5] w-[280px] max-w-[70vw]'))
+            (isLandscape
+              ? 'aspect-[19.5/9] w-[420px] max-w-[70vw]'
+              : 'aspect-[9/19.5] w-[280px] max-w-[70vw]')
           }
         >
           {/* Bezel */}

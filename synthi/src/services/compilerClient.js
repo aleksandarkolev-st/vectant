@@ -735,10 +735,10 @@ export class CompilerClient {
         };
 
         // Marker to confirm updated client diagnostics are running.
-        this._webrtcEmit('[webrtc] client-diag=v4');
+        this._webrtcEmit('[webrtc] client-diag=v5');
 
         // Also log to console for immediate visibility
-        console.log('[webrtc] client-diag=v4 - sessionId:', sessionId);
+        console.log('[webrtc] client-diag=v5 - sessionId:', sessionId);
 
         // Flush any pre-session WebRTC diagnostics captured during auto-connect.
         if (this._pendingWebrtcLines && this._pendingWebrtcLines.length > 0) {
@@ -768,14 +768,17 @@ export class CompilerClient {
         if (effectiveTarget === 'react-native-emulator') {
             let ticks = 0;
             let lastBytes = null;
+            let sawNonZero = false;
             this._webrtcStatsTimer = setInterval(async () => {
                 ticks += 1;
                 if (!this.pc || this.pc.connectionState === 'closed') {
                     stopStats();
                     return;
                 }
-                // Auto-stop after ~20s to avoid spamming logs.
-                if (ticks > 10) {
+                // Run for 60 ticks (2 min) to capture video after build completes.
+                // Stop early if we've seen data flowing for a while.
+                if (ticks > 60 || (sawNonZero && ticks > 30)) {
+                    this._webrtcEmit?.(`[webrtc] stats timer stopping after ${ticks} ticks`);
                     stopStats();
                     return;
                 }
@@ -785,6 +788,8 @@ export class CompilerClient {
                     let packetsReceived = 0;
                     let framesDecoded = null;
                     let framesDropped = null;
+                    let packetsLost = 0;
+                    let jitter = null;
                     stats.forEach((r) => {
                         const isInbound = r.type === 'inbound-rtp';
                         const isVideo = r.kind === 'video' || r.mediaType === 'video';
@@ -793,15 +798,20 @@ export class CompilerClient {
                         if (typeof r.packetsReceived === 'number') packetsReceived += r.packetsReceived;
                         if (typeof r.framesDecoded === 'number') framesDecoded = (framesDecoded ?? 0) + r.framesDecoded;
                         if (typeof r.framesDropped === 'number') framesDropped = (framesDropped ?? 0) + r.framesDropped;
+                        if (typeof r.packetsLost === 'number') packetsLost += r.packetsLost;
+                        if (typeof r.jitter === 'number') jitter = r.jitter;
                     });
 
+                    if (bytesReceived > 0) sawNonZero = true;
                     const muted = this._remoteVideoTrack ? !!this._remoteVideoTrack.muted : null;
                     const changed = (lastBytes === null) || (bytesReceived !== lastBytes);
                     lastBytes = bytesReceived;
-                    if (changed || bytesReceived > 0) {
+                    // Always log during first 15 ticks, then only when changed
+                    if (changed || bytesReceived > 0 || ticks <= 15) {
                         const fd = framesDecoded === null ? 'n/a' : String(framesDecoded);
                         const fdrop = framesDropped === null ? 'n/a' : String(framesDropped);
-                        this._webrtcEmit?.(`[webrtc] stats(video): bytes=${bytesReceived} packets=${packetsReceived} framesDecoded=${fd} framesDropped=${fdrop} trackMuted=${muted}`);
+                        const jitterStr = jitter === null ? 'n/a' : jitter.toFixed(3);
+                        this._webrtcEmit?.(`[webrtc] stats(video): bytes=${bytesReceived} packets=${packetsReceived} lost=${packetsLost} jitter=${jitterStr} framesDecoded=${fd} framesDropped=${fdrop} trackMuted=${muted}`);
                     }
                 } catch (_) {
                     // ignore

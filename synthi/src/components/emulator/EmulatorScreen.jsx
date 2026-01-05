@@ -205,11 +205,45 @@ export default function EmulatorScreen({
   }
 
   if (state === EMULATOR_STATES.STREAMING) {
+    // Debug: capture a frame to see what's actually in the video
+    const captureFrame = () => {
+      try {
+        const video = videoRef.current;
+        if (!video || video.videoWidth === 0) return;
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.min(video.videoWidth, 320);
+        canvas.height = Math.min(video.videoHeight, 640);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        // Check if the frame is all black
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = imageData.data;
+        let nonBlackPixels = 0;
+        let totalPixels = data.length / 4;
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i] > 10 || data[i+1] > 10 || data[i+2] > 10) {
+            nonBlackPixels++;
+          }
+        }
+        const pct = ((nonBlackPixels / totalPixels) * 100).toFixed(1);
+        console.log(`[video-debug] Frame analysis: ${nonBlackPixels}/${totalPixels} non-black pixels (${pct}%)`);
+        // Show the frame in a new window for debugging
+        const dataUrl = canvas.toDataURL('image/png');
+        console.log('[video-debug] Frame captured, opening in new tab...');
+        const w = window.open('', '_blank');
+        if (w) {
+          w.document.write(`<img src="${dataUrl}" style="max-width:100%;border:2px solid red;"/><p>Non-black: ${pct}%</p>`);
+        }
+      } catch (e) {
+        console.error('[video-debug] Frame capture failed:', e);
+      }
+    };
+
     return (
-      <div className="h-full w-full bg-black relative" tabIndex={0} onKeyDown={onKeyDown}>
+      <div className="h-full w-full bg-black relative flex items-center justify-center" tabIndex={0} onKeyDown={onKeyDown}>
         <video
           ref={videoRef}
-          className={hasVideoTrack ? "absolute inset-0 h-full w-full object-contain touch-none" : "hidden"}
+          className={hasVideoTrack ? "max-h-full max-w-full object-contain touch-none" : "hidden"}
           muted
           playsInline
           autoPlay
@@ -223,10 +257,18 @@ export default function EmulatorScreen({
 
         {/* Debug overlay - shows video element state */}
         {hasVideoTrack && (
-          <div className="absolute bottom-0 left-0 right-0 p-1 bg-black/70 text-[10px] text-green-400 font-mono pointer-events-none z-10">
-            video: {videoRef.current?.videoWidth || 0}x{videoRef.current?.videoHeight || 0} | 
-            readyState={videoRef.current?.readyState || 0} | 
-            {videoRef.current?.paused ? 'paused' : 'playing'}
+          <div className="absolute bottom-0 left-0 right-0 p-1 bg-black/70 text-[10px] text-green-400 font-mono pointer-events-none z-10 flex justify-between items-center">
+            <span>
+              video: {videoRef.current?.videoWidth || 0}x{videoRef.current?.videoHeight || 0} | 
+              readyState={videoRef.current?.readyState || 0} | 
+              {videoRef.current?.paused ? 'paused' : 'playing'}
+            </span>
+            <button 
+              onClick={captureFrame} 
+              className="pointer-events-auto px-2 py-0.5 bg-blue-600 rounded text-white text-[9px] hover:bg-blue-500"
+            >
+              Capture Frame
+            </button>
           </div>
         )}
 

@@ -958,9 +958,8 @@ pub async fn handle_react_native_emulator_job(
         }
     }
 
-    // Default to root capture because some window/XID drawables can trigger X_GetImage BadMatch
-    // in headless/Xvfb setups (which can kill the process and leave a gray/blank preview).
-    // Opt-in to XID capture via SYNTHI_ANDROID_CAPTURE_XID=true.
+    // XID capture can cause X_GetImage BadMatch with some GPU modes due to incompatible X11 visuals.
+    // Default to root capture which is safer. XID capture can be enabled via SYNTHI_ANDROID_CAPTURE_XID=true.
     let capture_xid = std::env::var("SYNTHI_ANDROID_CAPTURE_XID")
         .ok()
         .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
@@ -968,9 +967,12 @@ pub async fn handle_react_native_emulator_job(
 
     // Debug: try to locate the emulator window and report if it's likely off-screen.
     // This helps diagnose "stream ready but blank" when root capture is used.
+    // Also capture geometry for region-based root capture.
+    let mut emulator_geom: Option<(i32, i32, i32, i32)> = None;
     if !cfg!(target_os = "windows") {
         if let Some((xid, _w, _h)) = find_emulator_x11_window(&cfg.x11_display).await {
             if let Some((x, y, w, h)) = xdotool_window_geometry_xywh(&cfg.x11_display, xid).await {
+                emulator_geom = Some((x, y, w, h));
                 if let Some((sw, sh)) = parse_xvfb_resolution() {
                     let offscreen = x >= sw || y >= sh || (x + w) <= 0 || (y + h) <= 0;
                     send_log(
@@ -1035,20 +1037,46 @@ pub async fn handle_react_native_emulator_job(
             .await;
         }
     } else {
-        send_log(
-            &log_dc,
-            &session_id,
-            &format!("[video] capturing X11 root on DISPLAY={} (set SYNTHI_ANDROID_CAPTURE_XID=true to try window capture)", cfg.x11_display),
-            "emulator",
-        )
-        .await;
+        // Use root capture with region crop to just the emulator window area
+        if let Some((x, y, w, h)) = emulator_geom {
+            cfg.startx = Some(x.max(0));
+            cfg.starty = Some(y.max(0));
+            cfg.endx = Some(x + w);
+            cfg.endy = Some(y + h);
+            // Use the capture region size as output size (don't distort aspect ratio)
+            cfg.width = w as u32;
+            cfg.height = h as u32;
+            send_log(
+                &log_dc,
+                &session_id,
+                &format!(
+                    "[video] capturing X11 root region x={}..{} y={}..{} ({}x{}) on DISPLAY={}",
+                    cfg.startx.unwrap(), cfg.endx.unwrap(), cfg.starty.unwrap(), cfg.endy.unwrap(),
+                    w, h, cfg.x11_display
+                ),
+                "emulator",
+            )
+            .await;
+        } else {
+            send_log(
+                &log_dc,
+                &session_id,
+                &format!("[video] capturing X11 root on DISPLAY={} (no emulator window found, may be black)", cfg.x11_display),
+                "emulator",
+            )
+            .await;
+        }
     }
 
-    // Prefer streaming at the device's logical pixel resolution when available.
-    if let Ok((w, h)) = emulator_input::query_device_size(&adb_path, &emulator_serial).await {
-        if w > 0 && h > 0 {
-            cfg.width = w;
-            cfg.height = h;
+    // Note: When using region capture, we use the region size directly to avoid distortion.
+    // The device resolution query is only used when we have no better size info.
+    if cfg.startx.is_none() {
+        // Only override dimensions if not using region capture
+        if let Ok((w, h)) = emulator_input::query_device_size(&adb_path, &emulator_serial).await {
+            if w > 0 && h > 0 {
+                cfg.width = w;
+                cfg.height = h;
+            }
         }
     }
 

@@ -29,6 +29,14 @@ pub struct EmulatorVideoConfig {
     /// Capture height.
     pub height: u32,
     pub codec: VideoCodec,
+    /// Optional capture region (for root capture): start X coordinate
+    pub startx: Option<i32>,
+    /// Optional capture region: start Y coordinate
+    pub starty: Option<i32>,
+    /// Optional capture region: end X coordinate (exclusive)
+    pub endx: Option<i32>,
+    /// Optional capture region: end Y coordinate (exclusive)
+    pub endy: Option<i32>,
 }
 
 impl Default for EmulatorVideoConfig {
@@ -40,6 +48,10 @@ impl Default for EmulatorVideoConfig {
             width: 1080,
             height: 1920,
             codec: VideoCodec::Vp8,
+            startx: None,
+            starty: None,
+            endx: None,
+            endy: None,
         }
     }
 }
@@ -135,8 +147,21 @@ fn pipeline_string(cfg: &EmulatorVideoConfig) -> String {
 
     // Capture strategy:
     // 1) If we have an XID, capture that window directly (avoids scaling the whole X11 root).
-    // 2) Else capture the full X11 root window for the display.
+    // 2) Else capture the full X11 root window for the display, optionally with region crop.
     // NOTE: we force use-damage=0 to avoid missed updates on some drivers.
+    
+    // Build region properties if set (for root capture)
+    let region = if cfg.x11_xid.is_none() {
+        let mut r = String::new();
+        if let Some(x) = cfg.startx { r.push_str(&format!(" startx={}", x)); }
+        if let Some(y) = cfg.starty { r.push_str(&format!(" starty={}", y)); }
+        if let Some(x) = cfg.endx { r.push_str(&format!(" endx={}", x)); }
+        if let Some(y) = cfg.endy { r.push_str(&format!(" endy={}", y)); }
+        r
+    } else {
+        String::new()
+    };
+    
     let src = if let Some(xid) = cfg.x11_xid {
         if cfg.x11_display.trim().is_empty() {
             format!("ximagesrc use-damage=0 show-pointer=false{} xid={} ! ", shm_arg, xid)
@@ -148,12 +173,12 @@ fn pipeline_string(cfg: &EmulatorVideoConfig) -> String {
         }
     } else if cfg.x11_display.trim().is_empty() {
         // Explicit xid=0 to force root capture (some builds do nothing if xid is unset).
-        format!("ximagesrc use-damage=0 show-pointer=false{} xid=0 ! ", shm_arg)
+        format!("ximagesrc use-damage=0 show-pointer=false{}{} xid=0 ! ", shm_arg, region)
     } else {
         // Explicit xid=0 to force root capture (some builds do nothing if xid is unset).
         format!(
-            "ximagesrc use-damage=0 show-pointer=false{} display-name={} xid=0 ! ",
-            shm_arg, cfg.x11_display
+            "ximagesrc use-damage=0 show-pointer=false{} display-name={}{} xid=0 ! ",
+            shm_arg, cfg.x11_display, region
         )
     };
 
