@@ -115,11 +115,26 @@ pub async fn handle_input_message(msg: EmulatorInputMessage) -> Result<()> {
             let text = msg.text.unwrap_or_default();
             adb_shell_text(&session.adb, &session.serial, &text).await?;
         }
+        "rotate" => {
+            rotate_device(&session.adb, &session.serial).await?;
+        }
         _ => {
             anyhow::bail!("unknown emulator input type: {}", msg.kind);
         }
     }
 
+    Ok(())
+}
+
+async fn rotate_device(adb: &PathBuf, serial: &str) -> Result<()> {
+    // Best-effort rotation: lock rotation (disable accelerometer) and advance user_rotation.
+    // 0=0°, 1=90°, 2=180°, 3=270°
+    let cur = adb_shell_output(adb, serial, &["settings", "get", "system", "user_rotation"]).await?;
+    let cur = cur.trim().parse::<i32>().unwrap_or(0).rem_euclid(4);
+    let next = (cur + 1).rem_euclid(4);
+
+    adb_shell(adb, serial, &["settings", "put", "system", "accelerometer_rotation", "0"]).await?;
+    adb_shell(adb, serial, &["settings", "put", "system", "user_rotation", &next.to_string()]).await?;
     Ok(())
 }
 
@@ -180,6 +195,19 @@ async fn adb_shell(adb: &PathBuf, serial: &str, args: &[&str]) -> Result<()> {
         anyhow::bail!("adb shell failed: {:?}", status.code());
     }
     Ok(())
+}
+
+async fn adb_shell_output(adb: &PathBuf, serial: &str, args: &[&str]) -> Result<String> {
+    let out = Command::new(adb)
+        .args(["-s", serial, "shell"])
+        .args(args)
+        .output()
+        .await
+        .context("failed to run adb shell (output)")?;
+    if !out.status.success() {
+        anyhow::bail!("adb shell (output) failed: {:?}", out.status.code());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
 async fn adb_shell_text(adb: &PathBuf, serial: &str, text: &str) -> Result<()> {

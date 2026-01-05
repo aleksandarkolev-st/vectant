@@ -41,6 +41,24 @@ export default function EmulatorPanel({
   // Future-proof: keep refs ready for real streaming.
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  
+  // Debug: WebRTC/media diagnostics (shown in headerSubtitle and console)
+  const [webrtcDiagnostics, setWebrtcDiagnostics] = useState('');
+
+  const emitInput = useCallback(
+    (payload) => {
+      try {
+        if (!sessionId) return;
+        if (typeof window === 'undefined' || !window.dispatchEvent) return;
+        window.dispatchEvent(
+          new CustomEvent('synthi:emulator-input', { detail: { sessionId, ...payload } })
+        );
+      } catch (_) {
+        // ignore
+      }
+    },
+    [sessionId]
+  );
 
   // Fake boot completion (UI-only mode).
   // When a real session is active, the worker stream drives state.
@@ -56,7 +74,19 @@ export default function EmulatorPanel({
   // If we have a media stream for a real session, ensure we render the streaming surface.
   useEffect(() => {
     if (!sessionId) return;
-    if (!mediaStream) return;
+    if (!mediaStream) {
+      setWebrtcDiagnostics('Waiting for mediaStream...');
+      return;
+    }
+    // Check video tracks
+    try {
+      const vt = typeof mediaStream.getVideoTracks === 'function' ? mediaStream.getVideoTracks() : [];
+      const vtInfo = vt.map(t => `${t.id?.slice(0, 6) || '?'}:${t.readyState}:muted=${t.muted}`).join(', ');
+      setWebrtcDiagnostics(`stream: ${vt.length} video track(s) [${vtInfo}]`);
+      console.debug('[EmulatorPanel] mediaStream received', { videoTracks: vt.length, info: vtInfo, streamId: mediaStream.id });
+    } catch (_) {
+      setWebrtcDiagnostics('stream received (could not inspect)');
+    }
     setState((prev) => (prev === EMULATOR_STATES.ERROR ? prev : EMULATOR_STATES.STREAMING));
   }, [sessionId, mediaStream]);
 
@@ -77,6 +107,66 @@ export default function EmulatorPanel({
       // ignore
     }
   }, [mediaStream, state]);
+
+  // Debug: log key video element lifecycle events so we can see whether
+  // media is attached/decoding even when the preview is visually blank.
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+
+    const snap = () => ({
+      readyState: el.readyState,
+      videoWidth: el.videoWidth,
+      videoHeight: el.videoHeight,
+      paused: el.paused,
+      muted: el.muted,
+      hasSrcObject: Boolean(el.srcObject),
+    });
+
+    const log = (label) => {
+      try {
+        const s = snap();
+        console.debug(`[emulator-video] ${label}`, s);
+        // Also update diagnostic string to show in header
+        setWebrtcDiagnostics((prev) => {
+          const videoInfo = `video: ${s.videoWidth}x${s.videoHeight} rs=${s.readyState} ${s.paused ? 'paused' : 'playing'}`;
+          // If there's existing stream info, append video info
+          if (prev && prev.startsWith('stream:')) {
+            return `${prev} | ${videoInfo}`;
+          }
+          return videoInfo;
+        });
+      } catch (_) {
+        // ignore
+      }
+    };
+
+    const onLoadedMetadata = () => log('loadedmetadata');
+    const onResize = () => log('resize');
+    const onPlaying = () => log('playing');
+    const onWaiting = () => log('waiting');
+    const onStalled = () => log('stalled');
+    const onError = () => log('error');
+
+    el.addEventListener('loadedmetadata', onLoadedMetadata);
+    el.addEventListener('resize', onResize);
+    el.addEventListener('playing', onPlaying);
+    el.addEventListener('waiting', onWaiting);
+    el.addEventListener('stalled', onStalled);
+    el.addEventListener('error', onError);
+
+    // Snapshot once on mount.
+    log('mounted');
+
+    return () => {
+      el.removeEventListener('loadedmetadata', onLoadedMetadata);
+      el.removeEventListener('resize', onResize);
+      el.removeEventListener('playing', onPlaying);
+      el.removeEventListener('waiting', onWaiting);
+      el.removeEventListener('stalled', onStalled);
+      el.removeEventListener('error', onError);
+    };
+  }, [state]);
 
   // If the parent reports a hard failure (e.g. compile promise rejected), surface it.
   useEffect(() => {
@@ -119,6 +209,27 @@ export default function EmulatorPanel({
       lastEventAtRef.current = Date.now();
       setStreamConnected(true);
 
+      // Capture [webrtc] diagnostic lines and show in header
+      if (line.startsWith('[webrtc]')) {
+        console.debug('[EmulatorPanel] webrtc diagnostic:', line);
+        // Extract key stats from the line for display
+        const statsMatch = line.match(/stats\(video\):\s*bytes=(\d+)\s+packets=(\d+)\s+framesDecoded=(\S+)/);
+        if (statsMatch) {
+          const [, bytes, packets, frames] = statsMatch;
+          setWebrtcDiagnostics(`RTP: ${bytes}B ${packets}pkts ${frames}frames`);
+        }
+        const trackMatch = line.match(/ontrack:\s*kind=(\w+)\s+.*muted=(\w+)/);
+        if (trackMatch) {
+          const [, kind, muted] = trackMatch;
+          setWebrtcDiagnostics((prev) => `${prev ? prev + ' | ' : ''}track:${kind} muted=${muted}`);
+        }
+        const unmuteMatch = line.match(/track onunmute:\s*kind=(\w+)/);
+        if (unmuteMatch) {
+          setWebrtcDiagnostics((prev) => `${prev ? prev + ' | ' : ''}${unmuteMatch[1]} unmuted!`);
+        }
+        return;
+      }
+
       let parsed = null;
       try { parsed = JSON.parse(line); } catch (_) { parsed = null; }
       if (!parsed || typeof parsed !== 'object') return;
@@ -134,7 +245,7 @@ export default function EmulatorPanel({
           return;
         }
 
-        if (s === 'running' || s === 'streaming' || s === 'done') {
+        if (s === 'running' || s === 'streaming' || s === 'ready' || s === 'done') {
           setErrorMessage('');
           setState(EMULATOR_STATES.STREAMING);
           return;
@@ -149,6 +260,16 @@ export default function EmulatorPanel({
       // Capability announcement (future-proof for real video + input)
       if (parsed.type === 'mobile-capabilities') {
         capabilitiesRef.current = parsed?.data || null;
+        // Log capabilities to console for debugging version mismatch issues
+        console.info('[EmulatorPanel] mobile-capabilities received:', parsed?.data);
+        const version = parsed?.data?.version || 'unknown';
+        const pixels = parsed?.data?.pixels || {};
+        const webrtcVideo = pixels.webrtc_video;
+        // Show version and capability in diagnostics to help debug stale binary issues
+        setWebrtcDiagnostics((prev) => `worker:${version} webrtc=${webrtcVideo} | ${prev || ''}`);
+        if (webrtcVideo === false) {
+          console.warn('[EmulatorPanel] WARNING: Worker reports webrtc_video=false! This indicates an OLD worker binary is running.');
+        }
         return;
       }
 
@@ -209,20 +330,32 @@ export default function EmulatorPanel({
     if (!sessionId) return `State: ${statusText}`;
     const sidShort = sessionId.length > 18 ? `${sessionId.slice(0, 9)}…${sessionId.slice(-6)}` : sessionId;
     const worker = workerMessage ? ` • ${workerMessage}` : '';
-    return `State: ${statusText} • Session: ${sidShort}${worker}`;
-  }, [sessionId, statusText, workerMessage]);
+    const diag = webrtcDiagnostics ? ` | ${webrtcDiagnostics}` : '';
+    return `State: ${statusText} • Session: ${sidShort}${worker}${diag}`;
+  }, [sessionId, statusText, workerMessage, webrtcDiagnostics]);
 
   const handlePower = () => {
     setErrorMessage('');
+    if (sessionId) {
+      emitInput({ type: 'key', keycode: 'POWER' });
+      return;
+    }
     setState((prev) => nextStateOnPower(prev));
   };
 
   const handleHome = () => {
     setErrorMessage('');
+    if (sessionId) {
+      emitInput({ type: 'key', keycode: 'HOME' });
+      return;
+    }
     setState((prev) => nextStateOnHome(prev));
   };
 
   const handleRotate = () => {
+    if (sessionId) {
+      emitInput({ type: 'rotate' });
+    }
     setOrientation((prev) => (prev === 'portrait' ? 'landscape' : 'portrait'));
   };
 
@@ -243,7 +376,7 @@ export default function EmulatorPanel({
           <div className="text-[11px] text-gray-500">
             {sessionId ? (streamConnected ? 'Connected' : 'Connecting…') : 'UI-only'}
           </div>
-          <div className="text-[11px] text-gray-500">UI-only</div>
+          {!sessionId ? <div className="text-[11px] text-gray-500">UI-only</div> : null}
           {typeof onClose === 'function' ? (
             <Button
               type="button"
@@ -261,7 +394,7 @@ export default function EmulatorPanel({
 
       {/* Body */}
       <div className="flex-1 min-h-0">
-        <EmulatorFrame orientation={orientation}>
+        <EmulatorFrame orientation={orientation} responsive={!!sessionId}>
           <div className="relative h-full w-full">
             <EmulatorScreen
               state={state}

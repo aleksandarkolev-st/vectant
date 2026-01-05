@@ -44,6 +44,22 @@ export class CompilerClient {
         this.status = CompilerStatus.IDLE;
         this.slug = null;
         this.supportsH265 = false;
+
+        // Best-effort session scoping for client-side WebRTC diagnostics.
+        // Signaling is currently unscoped, but build logs are session-scoped.
+        this.activeSessionId = null;
+
+        // Buffer WebRTC diagnostics that may occur before `activeSessionId` is known
+        // (e.g., auto-connect on page load).
+        this._pendingWebrtcLines = [];
+
+        // Optional emitter used to mirror WebRTC diagnostics into the active build log output.
+        // Set by `compile()` and cleared when the compile finishes.
+        this._webrtcEmit = null;
+        
+        // Track pending negotiation to avoid overlapping offer/answer cycles
+        this._negotiationInProgress = false;
+        this._pendingNegotiation = null;
         
         this._handleTerminalInput = this._handleTerminalInput.bind(this);
         this._handleGuiInput = this._handleGuiInput.bind(this);
@@ -59,6 +75,22 @@ export class CompilerClient {
             return this.currentStreams[0];
         }
         return null;
+    }
+
+    _emitWebrtcDiag(line) {
+        try {
+            if (typeof this._webrtcEmit === 'function') {
+                this._webrtcEmit(line);
+                return;
+            }
+            this._pendingWebrtcLines.push({ t: Date.now(), line });
+            // Bound memory usage.
+            if (this._pendingWebrtcLines.length > 50) {
+                this._pendingWebrtcLines.splice(0, this._pendingWebrtcLines.length - 50);
+            }
+        } catch (_) {
+            // ignore
+        }
     }
 
     _setStatus(newStatus) {
@@ -111,6 +143,16 @@ export class CompilerClient {
             }
         } catch (e) {
             text = String(msg);
+        }
+
+        // Device logcat can be extremely chatty; don't spam console/UI by default.
+        try {
+            const parsed = JSON.parse(text);
+            if (parsed && parsed.type === 'logcat') {
+                return;
+            }
+        } catch (e) {
+            // ignore
         }
 
         // Some messages can be very large.
@@ -312,12 +354,69 @@ export class CompilerClient {
             };
 
             this.pc.ontrack = (event) => {
-                console.log('Received remote track', event.track.kind);
-                if (event.streams && event.streams.length > 0) {
-                    this.currentStreams = event.streams;
+                console.log('Received remote track', event.track.kind, {
+                    id: event.track?.id,
+                    readyState: event.track?.readyState,
+                    muted: event.track?.muted,
+                    streams: event.streams?.length ?? 0,
+                });
+
+                // Track mute/unmute transitions are a strong signal of whether frames are flowing.
+                try {
+                    const kind = event.track?.kind;
+                    const id = event.track?.id;
+                    event.track.onunmute = () => {
+                        try {
+                            this._emitWebrtcDiag(`[webrtc] track onunmute: kind=${kind} id=${id}`);
+                        } catch (_) {}
+                    };
+                    event.track.onmute = () => {
+                        try {
+                            this._emitWebrtcDiag(`[webrtc] track onmute: kind=${kind} id=${id}`);
+                        } catch (_) {}
+                    };
+                } catch (_) {
+                    // ignore
                 }
+
+                // Emit to build log stream so we can debug without DevTools.
+                try {
+                    const line = `[webrtc] ontrack: kind=${event.track?.kind} id=${event.track?.id} readyState=${event.track?.readyState} muted=${event.track?.muted} streams=${event.streams?.length ?? 0}`;
+                    this._emitWebrtcDiag(line);
+                } catch (_) {
+                    // ignore
+                }
+                // Some browsers/transceivers deliver tracks with an empty `event.streams`.
+                // In that case, synthesize a MediaStream so UI can attach it to <video>.
+                let streams = (event.streams && event.streams.length > 0) ? event.streams : null;
+                if (!streams) {
+                    try { console.debug('[CompilerClient] ontrack without streams; synthesizing MediaStream'); } catch (_) {}
+                    try {
+                        if (!this._synthStream) this._synthStream = new MediaStream();
+                        // Replace existing track of same kind to avoid piling up tracks across renegotiations.
+                        const existing = this._synthStream.getTracks().filter(t => t.kind === event.track.kind);
+                        existing.forEach(t => { try { this._synthStream.removeTrack(t); } catch (_) {} });
+                        this._synthStream.addTrack(event.track);
+                        streams = [this._synthStream];
+                    } catch (_) {
+                        // ignore
+                    }
+                }
+
+                if (streams && streams.length > 0) {
+                    this.currentStreams = streams;
+                }
+
+                // Keep references to most recent tracks for stats/debug.
+                try {
+                    if (event.track?.kind === 'video') this._remoteVideoTrack = event.track;
+                    if (event.track?.kind === 'audio') this._remoteAudioTrack = event.track;
+                } catch (_) {
+                    // ignore
+                }
+
                 if (typeof window !== 'undefined' && window.dispatchEvent) {
-                    const ev = new CustomEvent('synthi:media-track', { detail: { track: event.track, streams: event.streams } });
+                    const ev = new CustomEvent('synthi:media-track', { detail: { track: event.track, streams: streams || [] } });
                     window.dispatchEvent(ev);
                 }
             };
@@ -355,7 +454,36 @@ export class CompilerClient {
                 let msg;
                 try { msg = JSON.parse(event.data); } catch (_) { return; }
                 if (msg.type === 'answer' && msg.sdp) {
-                    await this.pc.setRemoteDescription(new RTCSessionDescription({ type: msg.sdp_type || 'answer', sdp: msg.sdp }));
+                    // Emit negotiated codecs to build log stream.
+                    try {
+                        const sdp = String(msg.sdp || '');
+                        const hasVp8 = /a=rtpmap:\\d+\\s+VP8\\//i.test(sdp);
+                        const hasH264 = /a=rtpmap:\\d+\\s+H264\\//i.test(sdp);
+                        const hasVp9 = /a=rtpmap:\\d+\\s+VP9\\//i.test(sdp);
+                        const hasAv1 = /a=rtpmap:\\d+\\s+AV1\\//i.test(sdp);
+                        const line = `[webrtc] answer: hasVp8=${hasVp8} hasH264=${hasH264} hasVp9=${hasVp9} hasAv1=${hasAv1} sdpLen=${sdp.length}`;
+                        this._emitWebrtcDiag(line);
+                    } catch (_) {
+                        // ignore
+                    }
+                    // Only set remote description if we're waiting for an answer (have-local-offer state)
+                    // This prevents "Called in wrong state: stable" errors from stale/duplicate answers
+                    const signalingState = this.pc?.signalingState;
+                    if (signalingState === 'have-local-offer') {
+                        await this.pc.setRemoteDescription(new RTCSessionDescription({ type: msg.sdp_type || 'answer', sdp: msg.sdp }));
+                        this._emitWebrtcDiag(`[webrtc] answer applied, new state=${this.pc?.signalingState}`);
+                        // Mark negotiation as complete
+                        this._negotiationInProgress = false;
+                        // Process any pending negotiation
+                        if (this._pendingNegotiation) {
+                            const pending = this._pendingNegotiation;
+                            this._pendingNegotiation = null;
+                            this._renegotiate(pending.reason, pending.sessionId, pending.onLog);
+                        }
+                    } else {
+                        console.warn(`[CompilerClient] Ignoring answer in signalingState=${signalingState} (expected have-local-offer)`);
+                        this._emitWebrtcDiag(`[webrtc] ignored answer signalingState=${signalingState}`);
+                    }
                 } else if (msg.type === 'candidate' && msg.candidate) {
                     try { await this.pc.addIceCandidate(msg.candidate); } catch (_) {}
                 }
@@ -371,8 +499,37 @@ export class CompilerClient {
                 
                 this.compileChannel.onclose = () => {};
 
+                // Important: modern browsers (notably Chrome) may ignore offerToReceiveVideo/Audio
+                // unless there is an explicit transceiver. Without an m=video section, the worker
+                // cannot send the emulator stream and ontrack will never fire.
+                try {
+                    const transceivers = (typeof this.pc.getTransceivers === 'function') ? this.pc.getTransceivers() : [];
+                    const hasVideo = transceivers.some(t => t?.receiver?.track?.kind === 'video');
+                    const hasAudio = transceivers.some(t => t?.receiver?.track?.kind === 'audio');
+                    if (!hasVideo && typeof this.pc.addTransceiver === 'function') {
+                        this.pc.addTransceiver('video', { direction: 'recvonly' });
+                    }
+                    if (!hasAudio && typeof this.pc.addTransceiver === 'function') {
+                        this.pc.addTransceiver('audio', { direction: 'recvonly' });
+                    }
+                } catch (e) {
+                    console.warn('[CompilerClient] Failed to ensure recvonly transceivers', e);
+                }
+
+                // Mark initial negotiation as in progress
+                this._negotiationInProgress = true;
+                
                 const offer = await this.pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
                 await this.pc.setLocalDescription(offer);
+                try {
+                    const sdp = String(offer?.sdp || '');
+                    console.debug('[CompilerClient] Created initial offer', {
+                        hasMVideo: /\nm=video\s/i.test(sdp),
+                        hasMAudio: /\nm=audio\s/i.test(sdp),
+                        sdpLen: sdp.length,
+                        signalingState: this.pc?.signalingState,
+                    });
+                } catch (_) {}
                 this.ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp, sdp_type: offer.type }));
 
                 this.compileChannel.onopen = () => resolve(true);
@@ -435,6 +592,92 @@ export class CompilerClient {
         return this.readyPromise;
     }
 
+    _emitBuildStream(sessionId, line) {
+        try {
+            if (!sessionId) return;
+            if (typeof window !== 'undefined' && window.dispatchEvent) {
+                window.dispatchEvent(new CustomEvent('synthi:build-stream', { detail: { sessionId, line } }));
+            }
+        } catch (_) {
+            // ignore
+        }
+    }
+
+    async _renegotiate(reason = '', sessionId = null, onLog = null) {
+        try {
+            if (!this.pc || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+            
+            // If a negotiation is already in progress, queue this one
+            if (this._negotiationInProgress) {
+                console.debug('[CompilerClient] Negotiation in progress, queuing renegotiation for:', reason);
+                this._pendingNegotiation = { reason, sessionId, onLog };
+                return;
+            }
+            this._negotiationInProgress = true;
+            
+            const offer = await this.pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+            await this.pc.setLocalDescription(offer);
+            let hasMVideo = false;
+            let hasMAudio = false;
+            try {
+                const sdp = String(offer?.sdp || '');
+                hasMVideo = /\nm=video\s/i.test(sdp);
+                hasMAudio = /\nm=audio\s/i.test(sdp);
+                console.debug('[CompilerClient] Renegotiation offer', {
+                    reason,
+                    hasMVideo,
+                    hasMAudio,
+                    sdpLen: sdp.length,
+                    signalingState: this.pc?.signalingState,
+                });
+            } catch (_) {}
+
+            const line = `[webrtc] renegotiate reason=${reason} hasMVideo=${hasMVideo} hasMAudio=${hasMAudio} state=${this.pc?.signalingState}`;
+            try { if (typeof onLog === 'function') onLog(line); } catch (_) {}
+            this._emitBuildStream(sessionId, line);
+
+            this.ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp, sdp_type: offer.type }));
+        } catch (e) {
+            this._negotiationInProgress = false;
+            console.warn('[CompilerClient] Renegotiation failed', e);
+            const line = `[webrtc] renegotiate failed reason=${reason} err=${e?.message || String(e)}`;
+            try { if (typeof onLog === 'function') onLog(line); } catch (_) {}
+            this._emitBuildStream(sessionId, line);
+        }
+    }
+
+    async _ensureRecvTransceivers({ video = false, audio = false, sessionId = null, onLog = null, forceRenegotiate = false } = {}) {
+        if (!this.pc || typeof this.pc.addTransceiver !== 'function') return;
+        let changed = false;
+        let hasVideo = false;
+        let hasAudio = false;
+        try {
+            const transceivers = (typeof this.pc.getTransceivers === 'function') ? this.pc.getTransceivers() : [];
+            const hasKind = (kind) => transceivers.some(t => t?.receiver?.track?.kind === kind);
+            hasVideo = hasKind('video');
+            hasAudio = hasKind('audio');
+            if (video && !hasKind('video')) {
+                this.pc.addTransceiver('video', { direction: 'recvonly' });
+                changed = true;
+                hasVideo = true;
+            }
+            if (audio && !hasKind('audio')) {
+                this.pc.addTransceiver('audio', { direction: 'recvonly' });
+                changed = true;
+                hasAudio = true;
+            }
+        } catch (e) {
+            console.warn('[CompilerClient] Failed to ensure recvonly transceivers', e);
+        }
+        const line = `[webrtc] transceivers: hasVideo=${hasVideo} hasAudio=${hasAudio} requestedVideo=${video} requestedAudio=${audio} changed=${changed} forceRenegotiate=${forceRenegotiate}`;
+        try { if (typeof onLog === 'function') onLog(line); } catch (_) {}
+        this._emitBuildStream(sessionId, line);
+
+        if (changed || forceRenegotiate) {
+            await this._renegotiate(changed ? 'ensureRecvTransceivers' : 'forceRenegotiate', sessionId, onLog);
+        }
+    }
+
     createLspChannel(language) {
         if (!this.pc || this.pc.connectionState !== 'connected') {
             throw new Error('CompilerClient not connected');
@@ -469,13 +712,112 @@ export class CompilerClient {
         // For mobile targets, language detection is optional
         const lang = effectiveTarget === 'react-native-emulator' ? (language || 'javascript') : (language || this._mapLanguage(filename));
         if (!effectiveTarget && !lang) throw new SynthiException('Unsupported language for compilation', 'The file extension is not supported by the compiler.');
+        // Generate a session id early so we can scope client-side WebRTC logs
+        // (answer/ontrack) that occur during the initial connect/negotiation.
+        const sessionId = (typeof providedSessionId === 'string' && providedSessionId.length > 0)
+            ? providedSessionId
+            : `sess-${Date.now()}-${Math.floor(Math.random()*100000)}`;
+
+        // Associate client-side WebRTC logs with this run.
+        this.activeSessionId = sessionId;
+
+        // We'll want to surface browser-side WebRTC negotiation logs to the same build log stream.
+        const clientLog = (line, sessionId) => {
+            try { if (typeof onLog === 'function') onLog(line); } catch (_) {}
+            this._emitBuildStream(sessionId, line);
+        };
+
+        // Install a WebRTC diagnostic emitter for this run so we can surface
+        // answer/ontrack events in the build output (not only DevTools).
+        this._webrtcEmit = (line) => {
+            const sid = this.activeSessionId || sessionId;
+            clientLog(line, sid);
+        };
+
+        // Marker to confirm updated client diagnostics are running.
+        this._webrtcEmit('[webrtc] client-diag=v4');
+
+        // Also log to console for immediate visibility
+        console.log('[webrtc] client-diag=v4 - sessionId:', sessionId);
+
+        // Flush any pre-session WebRTC diagnostics captured during auto-connect.
+        if (this._pendingWebrtcLines && this._pendingWebrtcLines.length > 0) {
+            const pending = this._pendingWebrtcLines.slice();
+            this._pendingWebrtcLines.length = 0;
+            for (const item of pending) {
+                const l = item?.line;
+                if (typeof l === 'string' && l.length > 0) {
+                    this._webrtcEmit(`[webrtc] (pre-session) ${l.replace(/^\[webrtc\]\s*/i, '')}`);
+                }
+            }
+        }
+
         await this.connect();
 
+        // For mobile runs: sample WebRTC stats briefly to confirm inbound video bytes/frames.
+        // This helps distinguish “UI issue” from “no media flowing / black frames”.
+        const stopStats = () => {
+            try {
+                if (this._webrtcStatsTimer) {
+                    clearInterval(this._webrtcStatsTimer);
+                    this._webrtcStatsTimer = null;
+                }
+            } catch (_) {}
+        };
+        stopStats();
+        if (effectiveTarget === 'react-native-emulator') {
+            let ticks = 0;
+            let lastBytes = null;
+            this._webrtcStatsTimer = setInterval(async () => {
+                ticks += 1;
+                if (!this.pc || this.pc.connectionState === 'closed') {
+                    stopStats();
+                    return;
+                }
+                // Auto-stop after ~20s to avoid spamming logs.
+                if (ticks > 10) {
+                    stopStats();
+                    return;
+                }
+                try {
+                    const stats = await this.pc.getStats();
+                    let bytesReceived = 0;
+                    let packetsReceived = 0;
+                    let framesDecoded = null;
+                    let framesDropped = null;
+                    stats.forEach((r) => {
+                        const isInbound = r.type === 'inbound-rtp';
+                        const isVideo = r.kind === 'video' || r.mediaType === 'video';
+                        if (!isInbound || !isVideo) return;
+                        if (typeof r.bytesReceived === 'number') bytesReceived += r.bytesReceived;
+                        if (typeof r.packetsReceived === 'number') packetsReceived += r.packetsReceived;
+                        if (typeof r.framesDecoded === 'number') framesDecoded = (framesDecoded ?? 0) + r.framesDecoded;
+                        if (typeof r.framesDropped === 'number') framesDropped = (framesDropped ?? 0) + r.framesDropped;
+                    });
+
+                    const muted = this._remoteVideoTrack ? !!this._remoteVideoTrack.muted : null;
+                    const changed = (lastBytes === null) || (bytesReceived !== lastBytes);
+                    lastBytes = bytesReceived;
+                    if (changed || bytesReceived > 0) {
+                        const fd = framesDecoded === null ? 'n/a' : String(framesDecoded);
+                        const fdrop = framesDropped === null ? 'n/a' : String(framesDropped);
+                        this._webrtcEmit?.(`[webrtc] stats(video): bytes=${bytesReceived} packets=${packetsReceived} framesDecoded=${fd} framesDropped=${fdrop} trackMuted=${muted}`);
+                    }
+                } catch (_) {
+                    // ignore
+                }
+            }, 2000);
+        }
+
         return new Promise((resolve, reject) => {
-            // Unique session id for this compile - allows streaming and session-scoped events
-            const sessionId = (typeof providedSessionId === 'string' && providedSessionId.length > 0)
-                ? providedSessionId
-                : `sess-${Date.now()}-${Math.floor(Math.random()*100000)}`;
+
+            // Mobile emulator streams video over WebRTC. If the browser connected earlier without
+            // negotiating an m=video section, ontrack will never fire. Ensure recvonly video now.
+            if (effectiveTarget === 'react-native-emulator') {
+                // Fire-and-forget; we don't want to block the job on renegotiation.
+                this._ensureRecvTransceivers({ video: true, audio: false, forceRenegotiate: true, sessionId, onLog: (l) => clientLog(l, sessionId) })
+                    .catch(() => {});
+            }
 
             const handleLog = (msg) => {
                 // `msg` is normalized to a string by notifyLog. Ensure we have a string.
@@ -494,6 +836,11 @@ export class CompilerClient {
                 // Determine which sessionId to expose to UI consumers: prefer worker-provided sessionId
                 const sidToExpose = parsed && parsed.sessionId ? parsed.sessionId : sessionId;
 
+                // Keep activeSessionId aligned with worker-provided sessionId (best-effort).
+                if (sidToExpose && this.activeSessionId !== sidToExpose) {
+                    this.activeSessionId = sidToExpose;
+                }
+
                 // Emit a stream event for UI consumers that want session-scoped streaming
                 try {
                     if (typeof window !== 'undefined' && window.dispatchEvent) {
@@ -505,6 +852,9 @@ export class CompilerClient {
                 // Check for mobile job completion
                 if (parsed && parsed.type === 'mobile-status' && parsed.status === 'done') {
                     this.logHandlers.delete(handleLog);
+                    // Clear per-run WebRTC emitter.
+                    this._webrtcEmit = null;
+                    stopStats();
                     if (parsed.data?.success) {
                         resolve(parsed);
                     } else {
@@ -516,6 +866,8 @@ export class CompilerClient {
                 // Check for mobile job error
                 if (parsed && parsed.type === 'mobile-status' && parsed.status === 'error') {
                     this.logHandlers.delete(handleLog);
+                    this._webrtcEmit = null;
+                    stopStats();
                     reject(new SynthiException('Mobile build failed', parsed.message || 'Mobile emulator job failed'));
                     return;
                 }
@@ -524,6 +876,8 @@ export class CompilerClient {
                 if (parsed && parsed.status === 'done') {
                     // cleanup
                     this.logHandlers.delete(handleLog);
+                    this._webrtcEmit = null;
+                    stopStats();
                     if (parsed.success) {
                         resolve(parsed);
                     } else {
@@ -565,6 +919,12 @@ export class CompilerClient {
         if (this.pc) {
             this.pc.close();
         }
+        try {
+            if (this._webrtcStatsTimer) {
+                clearInterval(this._webrtcStatsTimer);
+                this._webrtcStatsTimer = null;
+            }
+        } catch (_) {}
         if (typeof window !== 'undefined') {
             window.removeEventListener('synthi:terminal-input', this._handleTerminalInput);
             window.removeEventListener('synthi:gui-input', this._handleGuiInput);

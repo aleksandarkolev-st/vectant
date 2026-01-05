@@ -4,26 +4,28 @@ import React from 'react';
 
 export default function EmulatorFrame({
   orientation = 'portrait',
+  responsive = false,
   children,
 }) {
   const isLandscape = orientation === 'landscape';
 
   return (
-    <div className="w-full h-full flex items-center justify-center p-4">
+    <div className={"w-full h-full flex items-center justify-center " + (responsive ? 'p-4' : 'p-4')}>
       {/*
         UI-only: this is just a phone-like frame.
         Aspect ratio is fixed to emulate a device viewport.
       */}
-      <div
-        className={
-          "relative select-none transition-transform duration-200 " +
-          (isLandscape ? 'rotate-90 scale-90' : '')
-        }
-      >
+      <div className="relative select-none">
         <div
           className={
-            "bg-[#0c0c0e] border border-[#1a1a1e] rounded-[2.25rem] shadow-sm overflow-hidden " +
-            (isLandscape ? 'aspect-[19.5/9] w-[420px] max-w-[70vw]' : 'aspect-[9/19.5] w-[280px] max-w-[70vw]')
+            "bg-[#0c0c0e] border-2 border-[#1a1a1e] rounded-[2.25rem] shadow-sm overflow-hidden " +
+            (responsive
+              ? (isLandscape
+                  ? 'aspect-[19.5/9] h-full max-h-full w-auto max-w-full'
+                  : 'aspect-[9/19.5] h-full max-h-full w-auto max-w-full')
+              : (isLandscape
+                  ? 'aspect-[19.5/9] w-[420px] max-w-[70vw]'
+                  : 'aspect-[9/19.5] w-[280px] max-w-[70vw]'))
           }
         >
           {/* Bezel */}

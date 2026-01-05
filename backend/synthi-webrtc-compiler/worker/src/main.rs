@@ -1343,12 +1343,14 @@ async fn main() -> Result<()> {
                         "rollback" => RTCSdpType::Rollback,
                         _ => RTCSdpType::Offer,
                     };
+                    eprintln!("[WebRTC-signal] Received offer (type={:?}), current state={:?}", sdp_type, pc.signaling_state());
                     let mut desc = RTCSessionDescription::default();
                     desc.sdp_type = sdp_type;
                     desc.sdp = sdp;
                     pc.set_remote_description(desc).await?;
                     let answer = pc.create_answer(None).await?;
                     pc.set_local_description(answer.clone()).await?;
+                    eprintln!("[WebRTC-signal] Sending answer, new state={:?}", pc.signaling_state());
                     signal_tx.send(SignalMessage {
                         msg_type: "answer".into(),
                         role: None,
@@ -1452,6 +1454,58 @@ async fn create_peer(
         }),
     )
     .await?;
+
+    // Important: some browsers won't emit `ontrack` unless the SDP includes track/MSID info.
+    // Attaching placeholder tracks up-front ensures the answer advertises real tracks, while
+    // later runtime pipelines can `replace_track()` without requiring renegotiation.
+    // This is especially important for Android emulator streaming, where the real track is
+    // created after the initial offer/answer exchange.
+    {
+        let placeholder_video = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "video/VP8".to_owned(),
+                ..Default::default()
+            },
+            "video".to_owned(),
+            "synthi-placeholder".to_owned(),
+        ));
+        let placeholder_audio = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "audio/opus".to_owned(),
+                ..Default::default()
+            },
+            "audio".to_owned(),
+            "synthi-placeholder".to_owned(),
+        ));
+
+        let transceivers = pc.get_transceivers().await;
+        for t in transceivers {
+            let kind = t.kind();
+            if kind == RTPCodecType::Video {
+                let sender = t.sender().await;
+                match sender
+                    .replace_track(Some(
+                        Arc::clone(&placeholder_video) as Arc<dyn TrackLocal + Send + Sync>
+                    ))
+                    .await
+                {
+                    Ok(_) => eprintln!("[WebRTC] Attached placeholder video track"),
+                    Err(e) => eprintln!("[WebRTC] Failed to attach placeholder video track: {:?}", e),
+                }
+            } else if kind == RTPCodecType::Audio {
+                let sender = t.sender().await;
+                match sender
+                    .replace_track(Some(
+                        Arc::clone(&placeholder_audio) as Arc<dyn TrackLocal + Send + Sync>
+                    ))
+                    .await
+                {
+                    Ok(_) => eprintln!("[WebRTC] Attached placeholder audio track"),
+                    Err(e) => eprintln!("[WebRTC] Failed to attach placeholder audio track: {:?}", e),
+                }
+            }
+        }
+    }
 
     {
         let tx = signal_tx.clone();

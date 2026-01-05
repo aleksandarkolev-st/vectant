@@ -27,44 +27,66 @@ impl EmulatorSession {
         self.ensure_system_image().await?;
         self.ensure_avd().await?;
 
-        // Ensure an X11 display exists for real-time video capture in headless environments.
-        // If DISPLAY is already set (e.g., container provides Xvfb), reuse it.
+        // Ensure an X11 display exists for real-time video capture.
+        // Default (Linux): run the emulator on Xvfb so it doesn't pop a visible window,
+        // and so the capture pipeline has a stable, known display.
+        // Opt-in to host display via SYNTHI_ANDROID_USE_HOST_DISPLAY=true.
         let display = if cfg!(target_os = "windows") {
             std::env::var("DISPLAY").unwrap_or_default()
         } else {
-            match std::env::var("DISPLAY") {
-                Ok(d) if !d.trim().is_empty() => d,
-                _ => {
-                    let d = std::env::var("SYNTHI_ANDROID_XVFB_DISPLAY").unwrap_or_else(|_| ":99".to_string());
-                    let res = std::env::var("SYNTHI_ANDROID_XVFB_RESOLUTION").unwrap_or_else(|_| "1080x1920".to_string());
-                    let screen = format!("{}x24", res);
+            let use_host_display = std::env::var("SYNTHI_ANDROID_USE_HOST_DISPLAY")
+                .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
+                .unwrap_or(false);
 
-                    // Spawn Xvfb and keep it alive for the lifetime of this emulator session.
-                    let mut xvfb = Command::new("Xvfb");
-                    xvfb.args([
-                        &d,
-                        "-screen",
-                        "0",
-                        &screen,
-                        "-nolisten",
-                        "tcp",
-                        "-ac",
-                        "+extension",
-                        "GLX",
-                        "+render",
-                        "-noreset",
-                    ]);
-                    xvfb.stdout(Stdio::null()).stderr(Stdio::null());
+            if use_host_display {
+                std::env::var("DISPLAY").unwrap_or_default()
+            } else {
+                let d = std::env::var("SYNTHI_ANDROID_XVFB_DISPLAY")
+                    .unwrap_or_else(|_| ":99".to_string());
+                let res = std::env::var("SYNTHI_ANDROID_XVFB_RESOLUTION")
+                    .unwrap_or_else(|_| "1440x2960".to_string());
+                let screen = format!("{}x24", res);
 
-                    let child = xvfb.spawn().context("Failed to start Xvfb")?;
-                    *self.core.xvfb_process.lock().await = Some(child);
+                // Spawn Xvfb and keep it alive for the lifetime of this emulator session.
+                let mut xvfb = Command::new("Xvfb");
+                xvfb.args([
+                    &d,
+                    "-screen",
+                    "0",
+                    &screen,
+                    "-nolisten",
+                    "tcp",
+                    "-ac",
+                    "+extension",
+                    "GLX",
+                    // Disable MIT-SHM to avoid X_ShmGetImage BadMatch errors in headless capture.
+                    "-extension",
+                    "MIT-SHM",
+                    "+render",
+                    "-noreset",
+                ]);
+                xvfb.stdout(Stdio::null()).stderr(Stdio::null());
 
-                    // Small settle time.
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                    d
+                match xvfb.spawn() {
+                    Ok(child) => {
+                        *self.core.xvfb_process.lock().await = Some(child);
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        d
+                    }
+                    Err(e) => {
+                        // Fallback: if Xvfb isn't available, use the host DISPLAY.
+                        // This may open a visible emulator window.
+                        let host = std::env::var("DISPLAY").unwrap_or_default();
+                        if host.trim().is_empty() {
+                            return Err(e).context("Failed to start Xvfb and no DISPLAY set");
+                        }
+                        host
+                    }
                 }
             }
         };
+
+        *self.core.x11_display.lock().await = display.clone();
 
         // Build emulator command
         let emulator_path = self
@@ -74,13 +96,25 @@ impl EmulatorSession {
             .join("emulator/emulator");
 
         let mut cmd = Command::new(&emulator_path);
+        // GPU mode: ximagesrc capture is most reliable when the emulator renders into the X11
+        // window via software. Under Xvfb, default to -gpu off unless explicitly overridden.
+        let gpu_mode = if cfg!(target_os = "windows") {
+            std::env::var("SYNTHI_ANDROID_EMULATOR_GPU").unwrap_or_else(|_| "swiftshader_indirect".to_string())
+        } else {
+            let use_host_display = std::env::var("SYNTHI_ANDROID_USE_HOST_DISPLAY")
+                .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
+                .unwrap_or(false);
+            std::env::var("SYNTHI_ANDROID_EMULATOR_GPU").unwrap_or_else(|_| {
+                if use_host_display { "swiftshader_indirect".to_string() } else { "off".to_string() }
+            })
+        };
         cmd.args([
             "-avd",
             &self.core.config.avd_name,
             "-no-audio",     // No audio
             "-no-boot-anim", // Skip boot animation
             "-gpu",
-            "swiftshader_indirect", // Software rendering
+            &gpu_mode,
             "-memory",
             &self.core.config.ram_mb.to_string(),
             "-cores",

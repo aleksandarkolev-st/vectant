@@ -233,6 +233,7 @@ pub(crate) struct SessionCore {
     pub state: Arc<Mutex<EmulatorState>>,
     pub emulator_process: Arc<Mutex<Option<Child>>>,
     pub xvfb_process: Arc<Mutex<Option<Child>>>,
+    pub x11_display: Arc<Mutex<String>>,
     pub serial: Arc<Mutex<Option<String>>>,
     pub shutdown_tx: Option<oneshot::Sender<()>>,
     pub logcat_process: Arc<Mutex<Option<Child>>>,

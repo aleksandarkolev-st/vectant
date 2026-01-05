@@ -8,7 +8,9 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
+use tokio::process::Command;
 use webrtc::data_channel::RTCDataChannel;
+use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 
 use crate::android::fs::{
     reconcile_and_stream_with_rules, take_snapshot_with_rules, ReconcileConfig, SyncRules,
@@ -27,8 +29,156 @@ use crate::android::react_native::{
 use super::project_detection::find_react_native_project_root;
 
 use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::track::track_local::TrackLocal;
+
+async fn xdotool_search(display: &str, args: &[&str]) -> Option<Vec<u64>> {
+    let out = Command::new("xdotool")
+        .env("DISPLAY", display)
+        .args(args)
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return Some(vec![]);
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut xids = vec![];
+    for line in stdout.lines() {
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
+        if let Ok(x) = l.parse::<u64>() {
+            xids.push(x);
+        }
+    }
+    Some(xids)
+}
+
+async fn xdotool_window_geometry(display: &str, xid: u64) -> Option<(u32, u32)> {
+    // xdotool getwindowgeometry --shell prints WIDTH/HEIGHT among other keys.
+    let out = Command::new("xdotool")
+        .env("DISPLAY", display)
+        .args(["getwindowgeometry", "--shell", &xid.to_string()])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut w: Option<u32> = None;
+    let mut h: Option<u32> = None;
+    for line in stdout.lines() {
+        let line = line.trim();
+        if let Some(v) = line.strip_prefix("WIDTH=") {
+            w = v.trim().parse::<u32>().ok();
+        } else if let Some(v) = line.strip_prefix("HEIGHT=") {
+            h = v.trim().parse::<u32>().ok();
+        }
+    }
+    match (w, h) {
+        (Some(w), Some(h)) if w > 0 && h > 0 => Some((w, h)),
+        _ => None,
+    }
+}
+
+fn parse_xvfb_resolution() -> Option<(i32, i32)> {
+    // Keep in sync with emulator lifecycle defaults.
+    let raw = std::env::var("SYNTHI_ANDROID_XVFB_RESOLUTION").unwrap_or_else(|_| "1440x2960".to_string());
+    let s = raw.trim();
+    let (w, h) = s.split_once('x')?;
+    let w = w.trim().parse::<i32>().ok()?;
+    let h = h.trim().parse::<i32>().ok()?;
+    if w > 0 && h > 0 { Some((w, h)) } else { None }
+}
+
+async fn xdotool_window_geometry_xywh(display: &str, xid: u64) -> Option<(i32, i32, i32, i32)> {
+    // xdotool getwindowgeometry --shell prints X/Y/WIDTH/HEIGHT among other keys.
+    let out = Command::new("xdotool")
+        .env("DISPLAY", display)
+        .args(["getwindowgeometry", "--shell", &xid.to_string()])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut x: Option<i32> = None;
+    let mut y: Option<i32> = None;
+    let mut w: Option<i32> = None;
+    let mut h: Option<i32> = None;
+    for line in stdout.lines() {
+        let line = line.trim();
+        if let Some(v) = line.strip_prefix("X=") {
+            x = v.trim().parse::<i32>().ok();
+        } else if let Some(v) = line.strip_prefix("Y=") {
+            y = v.trim().parse::<i32>().ok();
+        } else if let Some(v) = line.strip_prefix("WIDTH=") {
+            w = v.trim().parse::<i32>().ok();
+        } else if let Some(v) = line.strip_prefix("HEIGHT=") {
+            h = v.trim().parse::<i32>().ok();
+        }
+    }
+    match (x, y, w, h) {
+        (Some(x), Some(y), Some(w), Some(h)) if w > 0 && h > 0 => Some((x, y, w, h)),
+        _ => None,
+    }
+}
+
+async fn find_emulator_x11_window(display: &str) -> Option<(u64, u32, u32)> {
+    if cfg!(target_os = "windows") {
+        return None;
+    }
+    let d = display.trim();
+    if d.is_empty() {
+        return None;
+    }
+
+    // Collect candidate windows from multiple queries.
+    let mut candidates: Vec<u64> = vec![];
+    let queries: &[&[&str]] = &[
+        &["search", "--name", "Android Emulator"],
+        &["search", "--name", "Emulator"],
+        &["search", "--class", "emulator"],
+        &["search", "--classname", "emulator"],
+    ];
+    for q in queries {
+        if let Some(mut xids) = xdotool_search(d, q).await {
+            candidates.append(&mut xids);
+        }
+    }
+
+    // De-dupe.
+    candidates.sort_unstable();
+    candidates.dedup();
+    if candidates.is_empty() {
+        return None;
+    }
+
+    // Pick the largest window by area; this avoids selecting tiny tooltips/overlays.
+    let mut best: Option<(u64, u32, u32, u64)> = None; // (xid, w, h, area)
+    for xid in candidates.iter().copied() {
+        if let Some((w, h)) = xdotool_window_geometry(d, xid).await {
+            let area = (w as u64) * (h as u64);
+            match best {
+                Some((_, _, _, best_area)) if area <= best_area => {}
+                _ => best = Some((xid, w, h, area)),
+            }
+        }
+    }
+
+    if let Some((xid, w, h, _)) = best {
+        return Some((xid, w, h));
+    }
+
+    // Fallback: return the last xid if geometry isn't available.
+    let xid = candidates.last().copied()?;
+    Some((xid, 0, 0))
+}
 
 /// Handles a React Native emulator job.
 ///
@@ -46,6 +196,10 @@ pub async fn handle_react_native_emulator_job(
     is_release: bool,
     pc: Arc<RTCPeerConnection>,
 ) -> Result<()> {
+    // Version marker to identify deployed binary - this helps detect stale binaries
+    const JOB_HANDLER_VERSION: &str = "v2-webrtc-video-2025-01-18";
+    eprintln!("[mobile-job] Starting handle_react_native_emulator_job version={}", JOB_HANDLER_VERSION);
+    
     // Determine starting path for project detection
     let start_path = if let Some(root) = &project_root {
         let cleaned = root.trim_start_matches('/');
@@ -57,6 +211,15 @@ pub async fn handle_react_native_emulator_job(
     } else {
         workspace_path.clone()
     };
+
+    // Log version to frontend so we can verify which code is actually running
+    send_log(
+        &log_dc,
+        &session_id,
+        &format!("[worker] Job handler version: {} (webrtc_video=true, no screenshot fallback)", JOB_HANDLER_VERSION),
+        "worker",
+    )
+    .await;
 
     send_status(
         &log_dc,
@@ -750,22 +913,21 @@ pub async fn handle_react_native_emulator_job(
     )
     .await;
 
-    // Step 7: Start logcat streaming
-    send_status(&log_dc, &session_id, "streaming", "Streaming logs...", None).await;
+    // Step 7: Start logcat streaming (best-effort; may be chatty).
+    send_status(&log_dc, &session_id, "streaming", "Starting device logs...", None).await;
 
     let (logcat_tx, mut logcat_rx) = mpsc::unbounded_channel::<LogcatEntry>();
-
-    daemon
+    let logcat_started = daemon
         .session_mut()
         .start_logcat(Some(&package_name), logcat_tx)
         .await
-        .context("Failed to start logcat")?;
+        .is_ok();
 
-    // Forward logcat entries to frontend
+    // Forward logcat entries to frontend.
+    // Note: the frontend may choose to ignore these messages.
     let log_dc_for_logcat = log_dc.clone();
     let session_id_for_logcat = session_id.clone();
-
-    tokio::spawn(async move {
+    let logcat_task = tokio::spawn(async move {
         while let Some(entry) = logcat_rx.recv().await {
             send_logcat(&log_dc_for_logcat, &session_id_for_logcat, &entry).await;
         }
@@ -779,9 +941,117 @@ pub async fn handle_react_native_emulator_job(
         sdk_root.join("platform-tools/adb")
     };
 
-    emulator_input::register_session(&session_id, adb_path, emulator_serial.clone()).await?;
+    emulator_input::register_session(&session_id, adb_path.clone(), emulator_serial.clone()).await?;
 
-    let cfg = video_pipeline::EmulatorVideoConfig::default();
+    // Use the same X11 display as the emulator session.
+    let session_display = {
+        let d = daemon.session_mut().core.x11_display.lock().await.clone();
+        d
+    };
+
+    let mut cfg = video_pipeline::EmulatorVideoConfig::default();
+    if !session_display.trim().is_empty() {
+        cfg.x11_display = session_display;
+    } else if let Ok(d) = std::env::var("DISPLAY") {
+        if !d.trim().is_empty() {
+            cfg.x11_display = d;
+        }
+    }
+
+    // Default to root capture because some window/XID drawables can trigger X_GetImage BadMatch
+    // in headless/Xvfb setups (which can kill the process and leave a gray/blank preview).
+    // Opt-in to XID capture via SYNTHI_ANDROID_CAPTURE_XID=true.
+    let capture_xid = std::env::var("SYNTHI_ANDROID_CAPTURE_XID")
+        .ok()
+        .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+
+    // Debug: try to locate the emulator window and report if it's likely off-screen.
+    // This helps diagnose "stream ready but blank" when root capture is used.
+    if !cfg!(target_os = "windows") {
+        if let Some((xid, _w, _h)) = find_emulator_x11_window(&cfg.x11_display).await {
+            if let Some((x, y, w, h)) = xdotool_window_geometry_xywh(&cfg.x11_display, xid).await {
+                if let Some((sw, sh)) = parse_xvfb_resolution() {
+                    let offscreen = x >= sw || y >= sh || (x + w) <= 0 || (y + h) <= 0;
+                    send_log(
+                        &log_dc,
+                        &session_id,
+                        &format!(
+                            "[video] debug: Xvfb={}x{} display={} emulatorWindow xid={} geom x={} y={} w={} h={} offscreen={}",
+                            sw,
+                            sh,
+                            cfg.x11_display,
+                            xid,
+                            x,
+                            y,
+                            w,
+                            h,
+                            offscreen
+                        ),
+                        "emulator",
+                    )
+                    .await;
+                } else {
+                    send_log(
+                        &log_dc,
+                        &session_id,
+                        &format!(
+                            "[video] debug: display={} emulatorWindow xid={} geom x={} y={} w={} h={}",
+                            cfg.x11_display, xid, x, y, w, h
+                        ),
+                        "emulator",
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+
+    if capture_xid {
+        if let Some((xid, w, h)) = find_emulator_x11_window(&cfg.x11_display).await {
+            cfg.x11_xid = Some(xid);
+            let extra = if w > 0 && h > 0 {
+                format!(" ({}x{})", w, h)
+            } else {
+                String::new()
+            };
+            send_log(
+                &log_dc,
+                &session_id,
+                &format!("[video] capturing emulator X11 window xid={}{} on DISPLAY={}", xid, extra, cfg.x11_display),
+                "emulator",
+            )
+            .await;
+        } else {
+            send_log(
+                &log_dc,
+                &session_id,
+                &format!(
+                    "[video] no emulator X11 window found via xdotool; capturing X11 root on DISPLAY={} (may look black if emulator is off-screen)",
+                    cfg.x11_display
+                ),
+                "emulator",
+            )
+            .await;
+        }
+    } else {
+        send_log(
+            &log_dc,
+            &session_id,
+            &format!("[video] capturing X11 root on DISPLAY={} (set SYNTHI_ANDROID_CAPTURE_XID=true to try window capture)", cfg.x11_display),
+            "emulator",
+        )
+        .await;
+    }
+
+    // Prefer streaming at the device's logical pixel resolution when available.
+    if let Ok((w, h)) = emulator_input::query_device_size(&adb_path, &emulator_serial).await {
+        if w > 0 && h > 0 {
+            cfg.width = w;
+            cfg.height = h;
+        }
+    }
+
     send_log(
         &log_dc,
         &session_id,
@@ -796,35 +1066,164 @@ pub async fn handle_react_native_emulator_job(
     let pipeline = match video_pipeline::EmulatorVideoPipeline::start(cfg.clone()) {
         Ok(p) => p,
         Err(e) => {
-            emulator_input::unregister_session_sync(&session_id);
-            return Err(e).context("failed to start emulator video pipeline");
+            // If capturing a specific window fails (common under Xvfb / WMs), retry root capture.
+            if cfg.x11_xid.is_some() {
+                send_log(
+                    &log_dc,
+                    &session_id,
+                    &format!(
+                        "[video] capture via xid failed; retrying root capture on DISPLAY={}: {:#}",
+                        cfg.x11_display, e
+                    ),
+                    "emulator",
+                )
+                .await;
+
+                cfg.x11_xid = None;
+                send_log(
+                    &log_dc,
+                    &session_id,
+                    &format!(
+                        "[video] starting GStreamer pipeline (root capture): {}",
+                        video_pipeline::EmulatorVideoPipeline::debug_pipeline_string(&cfg)
+                    ),
+                    "emulator",
+                )
+                .await;
+
+                match video_pipeline::EmulatorVideoPipeline::start(cfg.clone()) {
+                    Ok(p) => p,
+                    Err(e2) => {
+                        emulator_input::unregister_session_sync(&session_id);
+                        return Err(e2).context("failed to start emulator video pipeline (root capture retry)");
+                    }
+                }
+            } else {
+                emulator_input::unregister_session_sync(&session_id);
+                return Err(e).context("failed to start emulator video pipeline");
+            }
         }
     };
 
     // Attach to existing video transceiver.
     let transceivers = pc.get_transceivers().await;
+    let mut video_transceiver_found = false;
     for t in transceivers {
         if t.kind() == RTPCodecType::Video {
+            video_transceiver_found = true;
             let sender = t.sender().await;
-            let _ = sender
+            eprintln!("[mobile-job] Attaching video track to transceiver...");
+            match sender
                 .replace_track(Some(Arc::clone(&pipeline.track) as Arc<dyn TrackLocal + Send + Sync>))
-                .await;
+                .await
+            {
+                Ok(_) => {
+                    eprintln!("[mobile-job] Video track attached successfully");
+                    send_log(
+                        &log_dc,
+                        &session_id,
+                        "[video] Track attached to WebRTC sender successfully",
+                        "emulator",
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    eprintln!("[mobile-job] ERROR: Failed to attach video track: {:?}", e);
+                    send_log(
+                        &log_dc,
+                        &session_id,
+                        &format!("[video] ERROR: Failed to attach track to sender: {:?}", e),
+                        "emulator",
+                    )
+                    .await;
+                }
+            }
         }
     }
+    if !video_transceiver_found {
+        eprintln!("[mobile-job] WARNING: No video transceiver found! Browser may not have requested video.");
+        send_log(
+            &log_dc,
+            &session_id,
+            "[video] WARNING: No video transceiver found in peer connection!",
+            "emulator",
+        )
+        .await;
+    }
 
-    // Release the emulator back to the daemon (keep alive for next jobs)
-    daemon.release_keepalive().await;
+    send_status(
+        &log_dc,
+        &session_id,
+        "ready",
+        "Emulator stream ready",
+        Some(json!({
+            "success": true,
+            "package_name": package_name,
+            "emulator_serial": emulator_serial,
+            "display": cfg.x11_display,
+            "logcat": logcat_started,
+            "video_transceiver_attached": video_transceiver_found,
+        })),
+    )
+    .await;
+
+    // Keep the job alive while the user interacts with the emulator in the web panel.
+    let stream_secs: u64 = std::env::var("SYNTHI_ANDROID_STREAM_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(15 * 60);
+    let stream_until = Instant::now() + Duration::from_secs(stream_secs);
+
+    let mut last_rtp_log = Instant::now();
+    let mut last_rtp_count: u64 = 0;
+    loop {
+        if Instant::now() >= stream_until {
+            break;
+        }
+        if log_dc.ready_state() != RTCDataChannelState::Open {
+            break;
+        }
+        match pc.connection_state() {
+            RTCPeerConnectionState::Connected | RTCPeerConnectionState::Connecting => {}
+            _ => break,
+        }
+        
+        // Periodically log RTP packet count to help diagnose video streaming issues
+        if last_rtp_log.elapsed() >= Duration::from_secs(5) {
+            let rtp_count = pipeline.get_rtp_packet_count();
+            let appsink_count = pipeline.get_appsink_sample_count();
+            let gst_state = pipeline.get_pipeline_state();
+            let errors = pipeline.drain_errors();
+            let packets_per_sec = (rtp_count - last_rtp_count) / 5;
+            
+            let mut msg = format!(
+                "[video-rtp] worker stats: rtp={} appsink={} pps={} gst={} pc={:?}",
+                rtp_count, appsink_count, packets_per_sec, gst_state, pc.connection_state()
+            );
+            if !errors.is_empty() {
+                msg.push_str(&format!(" errors=[{}]", errors.join(", ")));
+            }
+            
+            send_log(&log_dc, &session_id, &msg, "emulator").await;
+            last_rtp_count = rtp_count;
+            last_rtp_log = Instant::now();
+        }
+        
+        sleep(Duration::from_millis(250)).await;
+    }
 
     // Cleanup: stop streaming + unregister input.
+    logcat_task.abort();
+    let _ = daemon.session_mut().stop_logcat().await;
+    daemon.release_keepalive().await;
     emulator_input::unregister_session_sync(&session_id);
     pipeline.stop();
 
-    // Send final success status
     send_status(
         &log_dc,
         &session_id,
         "done",
-        "Mobile job completed successfully",
+        "Emulator session ended",
         Some(json!({
             "success": true,
             "package_name": package_name,

@@ -4500,6 +4500,7 @@ dependencies = [
  "tokio-tungstenite",
  "uuid",
  "webrtc",
+ "webrtc-util",
  "x11rb",
  "zip",
 ]

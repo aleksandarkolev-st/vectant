@@ -78,18 +78,29 @@ export default function EmulatorScreen({
   canvasRef,
   mediaStream,
 }) {
-  // Future-proofing:
-  // - When real streaming is added, the backend will supply frames via WebRTC.
-  // - Those frames can be injected here by attaching `videoRef` or `canvasRef`.
-
-  if (state === EMULATOR_STATES.OFF) {
-    return <div className="h-full w-full bg-black" />;
-  }
+  // All hooks MUST be called before any conditional returns (React Rules of Hooks)
+  const pointerStateRef = React.useRef(null);
 
   const hasVideoTrack =
     !!mediaStream &&
     typeof mediaStream.getVideoTracks === 'function' &&
     mediaStream.getVideoTracks().length > 0;
+
+  // Debug effect - logs streaming state (safe because it's before conditional returns)
+  React.useEffect(() => {
+    if (state === EMULATOR_STATES.STREAMING) {
+      console.debug('[EmulatorScreen] STREAMING render', { 
+        hasVideoTrack, 
+        mediaStreamId: mediaStream?.id,
+        videoTracks: mediaStream?.getVideoTracks?.()?.length ?? 'n/a',
+      });
+    }
+  }, [state, hasVideoTrack, mediaStream]);
+
+  // Early return for OFF state
+  if (state === EMULATOR_STATES.OFF) {
+    return <div className="h-full w-full bg-black" />;
+  }
 
   const emitInput = (payload) => {
     try {
@@ -114,8 +125,6 @@ export default function EmulatorScreen({
       return { viewW: 0, viewH: 0, videoW: 0, videoH: 0 };
     }
   };
-
-  const pointerStateRef = React.useRef(null);
 
   const onPointerDown = (e) => {
     const el = e.currentTarget;
@@ -183,28 +192,6 @@ export default function EmulatorScreen({
     }
   };
 
-  // If a MediaStream exists AND it has a video track, prefer rendering the real streaming surface.
-  // Otherwise we show an explicit placeholder (instead of a confusing black screen).
-  if (hasVideoTrack && state !== EMULATOR_STATES.ERROR) {
-    return (
-      <div className="h-full w-full bg-black relative" tabIndex={0} onKeyDown={onKeyDown}>
-        <video
-          ref={videoRef}
-          className="absolute inset-0 h-full w-full object-contain touch-none"
-          muted
-          playsInline
-          autoPlay
-          onPointerDown={onPointerDown}
-          onPointerUp={onPointerUp}
-        />
-
-        <div className="absolute inset-0 pointer-events-none">
-          <canvas ref={canvasRef} className="hidden" />
-        </div>
-      </div>
-    );
-  }
-
   if (state === EMULATOR_STATES.BOOTING) {
     return <BootingScreen />;
   }
@@ -233,6 +220,15 @@ export default function EmulatorScreen({
         {!hasVideoTrack ? (
           <MessageScreen title="Waiting for device stream…" subtitle="No video track yet." />
         ) : null}
+
+        {/* Debug overlay - shows video element state */}
+        {hasVideoTrack && (
+          <div className="absolute bottom-0 left-0 right-0 p-1 bg-black/70 text-[10px] text-green-400 font-mono pointer-events-none z-10">
+            video: {videoRef.current?.videoWidth || 0}x{videoRef.current?.videoHeight || 0} | 
+            readyState={videoRef.current?.readyState || 0} | 
+            {videoRef.current?.paused ? 'paused' : 'playing'}
+          </div>
+        )}
 
         {/*
           Future injection point (do not use yet):
