@@ -1226,6 +1226,7 @@ export default function EditorPage({ params }) {
                             )} 
                         />
                         <ResizablePanel 
+                            key={`problems-dock-${isProblemsPanelDocked ? 'docked' : 'floating'}`}
                             defaultSize={isProblemsPanelDocked ? 25 : 0} 
                             minSize={isProblemsPanelDocked ? 10 : 0}
                             maxSize={isProblemsPanelDocked ? 100 : 0}

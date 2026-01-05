@@ -516,7 +516,12 @@ export function DockablePanel({
       setDockPosition(zone);
       changeState(PANEL_STATE.DOCKED);
     }
-  }, [changeState]);
+
+    // Docking should surface the panel back into the dock slot immediately.
+    setIsOpen(true);
+    onOpenChange?.(true);
+    onDockedChange?.(true);
+  }, [changeState, onDockedChange, onOpenChange]);
 
   // Toggle floating
   const handleToggleFloat = useCallback(() => {
@@ -524,7 +529,14 @@ export function DockablePanel({
       ? PANEL_STATE.DOCKED
       : PANEL_STATE.FLOATING;
     changeState(newState);
-  }, [panelState, changeState]);
+
+    // If we're docking back via shortcut/button, ensure the docked panel is open.
+    if (newState === PANEL_STATE.DOCKED) {
+      setIsOpen(true);
+      onOpenChange?.(true);
+      onDockedChange?.(true);
+    }
+  }, [panelState, changeState, onDockedChange, onOpenChange]);
 
   // Toggle pin
   const handleTogglePin = useCallback(() => {
