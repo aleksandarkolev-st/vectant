@@ -105,6 +105,7 @@ function FloatingWindow({
   onClose,
   onDock,
   zIndex = 1000,
+  isVisible = true,
 }) {
   const windowRef = useRef(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -168,6 +169,8 @@ function FloatingWindow({
       };
     }
   }, [isDragging, isResizing, handleMouseMove, handleMouseUp]);
+
+  if (!isVisible) return null;
 
   return createPortal(
     <div
@@ -362,7 +365,9 @@ export function DockablePanel({
   isOpen: externalIsOpen,
   onOpenChange,
   onStateChange,
+  onDockedChange, // Callback: tells parent if panel is docked (true) or floating/auto-hide (false)
   workspaceId,
+  dockSlotId, // ID of the DOM element to portal docked content into
   className,
 }) {
   // State
@@ -376,6 +381,7 @@ export function DockablePanel({
   const [isDragging, setIsDragging] = useState(false);
   const [showDockZones, setShowDockZones] = useState(false);
   const [activeDockZone, setActiveDockZone] = useState(null);
+  const [dockSlot, setDockSlot] = useState(null);
 
   // Refs
   const panelRef = useRef(null);
@@ -389,7 +395,47 @@ export function DockablePanel({
     }
   }, [externalIsOpen]);
 
-  // Persist state to localStorage
+  // Find dock slot element when dockSlotId provided
+  useEffect(() => {
+    if (!dockSlotId) return;
+    
+    // Use RAF to ensure DOM is ready
+    const findSlot = () => {
+      const slot = document.getElementById(dockSlotId);
+      if (slot) {
+        setDockSlot(slot);
+      } else {
+        // Retry on next frame if not found
+        requestAnimationFrame(findSlot);
+      }
+    };
+    
+    findSlot();
+    
+    // Also observe for the slot being added/removed
+    const observer = new MutationObserver(() => {
+      const slot = document.getElementById(dockSlotId);
+      setDockSlot(slot || null);
+    });
+    
+    observer.observe(document.body, { childList: true, subtree: true });
+    
+    return () => observer.disconnect();
+  }, [dockSlotId, panelState, isOpen]);
+
+  // Notify parent of docked state changes
+  useEffect(() => {
+    const isDocked = panelState === PANEL_STATE.DOCKED && isOpen;
+    onDockedChange?.(isDocked);
+  }, [panelState, isOpen, onDockedChange]);
+
+  // State change handler
+  const changeState = useCallback((newState) => {
+    setPanelState(newState);
+    onStateChange?.(newState);
+  }, [onStateChange]);
+
+  // Persist state to localStorage (NOT isOpen - parent controls that)
   useEffect(() => {
     if (!workspaceId) return;
     const key = `synthi-panel-${id}-${workspaceId}`;
@@ -402,14 +448,14 @@ export function DockablePanel({
         setFloatingPosition(parsed.floatingPosition ?? defaultFloatingPosition);
         setFloatingSize(parsed.floatingSize ?? defaultFloatingSize);
         setIsPinned(parsed.isPinned ?? defaultPinned);
-        setIsOpen(parsed.isOpen ?? true);
+        // Note: isOpen is NOT restored - controlled by parent
       } catch (e) {
         console.error('Failed to parse panel state:', e);
       }
     }
   }, [id, workspaceId]);
 
-  // Save state on change
+  // Save state on change (NOT isOpen - parent controls that)
   useEffect(() => {
     if (!workspaceId) return;
     const key = `synthi-panel-${id}-${workspaceId}`;
@@ -419,10 +465,9 @@ export function DockablePanel({
       floatingPosition,
       floatingSize,
       isPinned,
-      isOpen,
     };
     localStorage.setItem(key, JSON.stringify(state));
-  }, [id, workspaceId, panelState, dockPosition, floatingPosition, floatingSize, isPinned, isOpen]);
+  }, [id, workspaceId, panelState, dockPosition, floatingPosition, floatingSize, isPinned]);
 
   // Handle drag-to-detach
   const handleHeaderMouseDown = useCallback((e) => {
@@ -436,15 +481,14 @@ export function DockablePanel({
       const deltaY = Math.abs(moveEvent.clientY - dragStartRef.current.y);
 
       if (deltaX > UNDOCK_THRESHOLD || deltaY > UNDOCK_THRESHOLD) {
-        // Undock immediately
+        // Undock with smooth transition
         setIsDragging(true);
         setShowDockZones(true);
-        setPanelState(PANEL_STATE.FLOATING);
         setFloatingPosition({
           x: moveEvent.clientX - 100,
           y: moveEvent.clientY - 20,
         });
-        onStateChange?.(PANEL_STATE.FLOATING);
+        changeState(PANEL_STATE.FLOATING);
         document.body.style.cursor = 'move';
       }
     };
@@ -459,7 +503,7 @@ export function DockablePanel({
 
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
-  }, [panelState, onStateChange]);
+  }, [panelState, changeState]);
 
   // Handle dock zone drop
   const handleDockZoneDrop = useCallback((zone) => {
@@ -467,22 +511,20 @@ export function DockablePanel({
     setIsDragging(false);
     if (zone === DOCK_POSITION.CENTER) {
       // Tab merge - would be handled by parent context
-      setPanelState(PANEL_STATE.DOCKED);
+      changeState(PANEL_STATE.DOCKED);
     } else {
       setDockPosition(zone);
-      setPanelState(PANEL_STATE.DOCKED);
+      changeState(PANEL_STATE.DOCKED);
     }
-    onStateChange?.(PANEL_STATE.DOCKED);
-  }, [onStateChange]);
+  }, [changeState]);
 
   // Toggle floating
   const handleToggleFloat = useCallback(() => {
     const newState = panelState === PANEL_STATE.FLOATING
       ? PANEL_STATE.DOCKED
       : PANEL_STATE.FLOATING;
-    setPanelState(newState);
-    onStateChange?.(newState);
-  }, [panelState, onStateChange]);
+    changeState(newState);
+  }, [panelState, changeState]);
 
   // Toggle pin
   const handleTogglePin = useCallback(() => {
@@ -548,6 +590,60 @@ export function DockablePanel({
     );
   };
 
+  // Render panel content (shared between docked and floating)
+  const renderPanelContent = (isFloating = false) => (
+    <div
+      ref={panelRef}
+      className={cn(
+        'flex flex-col bg-[#121212] border border-[#3A3A3A] overflow-hidden h-full',
+        className,
+      )}
+      tabIndex={-1}
+    >
+      {/* Header - drag handle */}
+      <div
+        className={cn(
+          'flex items-center justify-between px-3 py-2',
+          'bg-[#1a1a1a] border-b border-[#3A3A3A]',
+          'cursor-grab select-none',
+        )}
+        onMouseDown={!isFloating ? handleHeaderMouseDown : undefined}
+      >
+        <div className="flex items-center gap-2">
+          <GripHorizontal className="h-4 w-4 text-[#666]" />
+          {Icon && <Icon className="h-4 w-4 text-[#888]" />}
+          <span className="text-sm font-medium text-[#E6E6E6]">{title}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={handleTogglePin}
+            className="p-1 rounded hover:bg-[#2a2a2a] text-[#888] hover:text-[#E6E6E6] transition-colors"
+            title={isPinned ? 'Auto-hide panel' : 'Pin panel'}
+          >
+            {isPinned ? <Pin className="h-4 w-4" /> : <PinOff className="h-4 w-4" />}
+          </button>
+          <button
+            onClick={handleToggleFloat}
+            className="p-1 rounded hover:bg-[#2a2a2a] text-[#888] hover:text-[#E6E6E6] transition-colors"
+            title={isFloating ? 'Dock panel (Ctrl+Shift+D)' : 'Float panel (Ctrl+Shift+D)'}
+          >
+            {isFloating ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+          </button>
+          <button
+            onClick={handleClose}
+            className="p-1 rounded hover:bg-[#2a2a2a] text-[#888] hover:text-[#E6E6E6] transition-colors"
+            title="Close (Esc)"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-hidden">{children}</div>
+    </div>
+  );
+
   // Auto-hide state
   if (panelState === PANEL_STATE.AUTO_HIDE && !isAutoHideExpanded) {
     return (
@@ -588,58 +684,20 @@ export function DockablePanel({
   // Docked state
   if (!isOpen) return null;
 
+  // If dockSlotId is provided, render into that slot via portal
+  if (dockSlotId && dockSlot) {
+    return (
+      <>
+        {createPortal(renderPanelContent(false), dockSlot)}
+        {renderDockZones()}
+      </>
+    );
+  }
+
+  // Fallback: render inline
   return (
     <>
-      <div
-        ref={panelRef}
-        className={cn(
-          'flex flex-col bg-[#121212] border border-[#3A3A3A] overflow-hidden',
-          className,
-        )}
-        tabIndex={-1}
-      >
-        {/* Header - drag handle */}
-        <div
-          className={cn(
-            'flex items-center justify-between px-3 py-2',
-            'bg-[#1a1a1a] border-b border-[#3A3A3A]',
-            'cursor-grab select-none',
-          )}
-          onMouseDown={handleHeaderMouseDown}
-        >
-          <div className="flex items-center gap-2">
-            <GripHorizontal className="h-4 w-4 text-[#666]" />
-            {Icon && <Icon className="h-4 w-4 text-[#888]" />}
-            <span className="text-sm font-medium text-[#E6E6E6]">{title}</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <button
-              onClick={handleTogglePin}
-              className="p-1 rounded hover:bg-[#2a2a2a] text-[#888] hover:text-[#E6E6E6] transition-colors"
-              title={isPinned ? 'Auto-hide panel' : 'Pin panel'}
-            >
-              {isPinned ? <Pin className="h-4 w-4" /> : <PinOff className="h-4 w-4" />}
-            </button>
-            <button
-              onClick={handleToggleFloat}
-              className="p-1 rounded hover:bg-[#2a2a2a] text-[#888] hover:text-[#E6E6E6] transition-colors"
-              title="Float panel (Ctrl+Shift+D)"
-            >
-              <Maximize2 className="h-4 w-4" />
-            </button>
-            <button
-              onClick={handleClose}
-              className="p-1 rounded hover:bg-[#2a2a2a] text-[#888] hover:text-[#E6E6E6] transition-colors"
-              title="Close (Esc)"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 overflow-hidden">{children}</div>
-      </div>
+      {renderPanelContent(false)}
       {renderDockZones()}
     </>
   );

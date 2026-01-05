@@ -463,62 +463,6 @@ export function ProblemsPanel({
       'flex flex-col bg-[#121212] border border-[#3A3A3A] rounded-md overflow-hidden',
       className,
     )}>
-      {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-[#3A3A3A] bg-[#1a1a1a]">
-        <div className="flex items-center gap-2">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-[#888888]">
-            Problems
-          </h3>
-          
-          {/* Summary badges */}
-          <div className="flex items-center gap-1.5">
-            {summary.errors > 0 && (
-              <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#2B0F12] text-xs text-[#C6362B]">
-                <AlertCircle className="h-3 w-3" />
-                {summary.errors}
-              </span>
-            )}
-            {summary.warnings > 0 && (
-              <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#2A1E0A] text-xs text-[#D4A017]">
-                <AlertTriangle className="h-3 w-3" />
-                {summary.warnings}
-              </span>
-            )}
-          </div>
-          
-          {/* Analysis status */}
-          {isAnalyzing && (
-            <div className="flex items-center gap-1 text-xs text-[#3A7AFE]">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              Analyzing...
-            </div>
-          )}
-        </div>
-        
-        {/* Actions */}
-        <div className="flex items-center gap-1">
-          {onRefresh && (
-            <button
-              onClick={onRefresh}
-              disabled={isAnalyzing}
-              className="p-1 rounded hover:bg-[#2a2a2a] text-[#888888] hover:text-[#E6E6E6] disabled:opacity-50 transition-colors"
-              title="Refresh analysis"
-            >
-              <RefreshCw className={cn('h-4 w-4', isAnalyzing && 'animate-spin')} />
-            </button>
-          )}
-          {onClose && (
-            <button
-              onClick={onClose}
-              className="p-1 rounded hover:bg-[#2a2a2a] text-[#888888] hover:text-[#E6E6E6] transition-colors"
-              title="Close panel"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          )}
-        </div>
-      </div>
-      
       {/* Filter bar */}
       <FilterBar
         filters={filters}

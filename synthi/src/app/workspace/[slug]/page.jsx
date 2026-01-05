@@ -52,6 +52,7 @@ import WorkspaceHydrator from '@/components/WorkspaceHydrator';
 import { ProblemsPanel } from '@/components/analysis';
 import { DockablePanel, DockablePanelProvider, PANEL_STATE, DOCK_POSITION } from '@/components/docking';
 import { AlertCircle } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -62,6 +63,7 @@ export default function EditorPage({ params }) {
     const [chatVisible, setChatVisible] = useState(false);
     const [sidebarView, setSidebarView] = useState('explorer');
     const [showProblemsPanel, setShowProblemsPanel] = useState(false);
+    const [isProblemsPanelDocked, setIsProblemsPanelDocked] = useState(true); // Track if panel is docked or floating
     const [guiConfig, setGuiConfig] = useState(null);
     const [isGuiRunning, setIsGuiRunning] = useState(false);
     const [editor, setEditor] = useState(null);
@@ -1214,84 +1216,108 @@ export default function EditorPage({ params }) {
                     </ResizablePanelGroup>
                 </ResizablePanel>
 
+                {/* Docked Problems Panel - container always present when panel shown, collapses when floating */}
                 {showProblemsPanel && (
                     <>
-                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#3A7AFE] h-px z-50" />
-                        <ResizablePanel defaultSize={25} minSize={10}>
-                            <DockablePanel
-                                id="problems-panel"
-                                title="Problems"
-                                icon={AlertCircle}
-                                defaultState={PANEL_STATE.DOCKED}
-                                defaultPosition={DOCK_POSITION.BOTTOM}
-                                defaultFloatingPosition={{ x: 200, y: 200 }}
-                                defaultFloatingSize={{ width: 600, height: 400 }}
-                                isOpen={showProblemsPanel}
-                                onOpenChange={setShowProblemsPanel}
-                                workspaceId={slug}
-                                className="h-full rounded-none border-0"
-                            >
-                                <ProblemsPanel
-                                    diagnostics={mergedDiagnostics}
-                                    summary={diagnosticSummary}
-                                    isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
-                                    filePath={activeFile?.path || activeFile?.name || 'Current File'}
-                                    onClose={() => setShowProblemsPanel(false)}
-                                    onNavigate={(location) => {
-                                        const targetFile = location.filePath;
-                                        const currentFile = activeFile?.path || activeFile?.name;
-                                        
-                                        // If navigating to a different file, select it first
-                                        if (targetFile && targetFile !== currentFile) {
-                                            // Find the file in rawFiles and select it
-                                            const findFile = (files, path) => {
-                                                for (const file of files || []) {
-                                                    if (file.isFolder && file.children) {
-                                                        const found = findFile(file.children, path);
-                                                        if (found) return found;
-                                                    } else if (file.path === path || file.name === path) {
-                                                        return file;
-                                                    }
-                                                }
-                                                return null;
-                                            };
-                                            
-                                            const fileToSelect = findFile(rawFiles, targetFile);
-                                            if (fileToSelect) {
-                                                dispatch(selectFileThunk(fileToSelect));
-                                                // Wait a bit for file to load, then navigate
-                                                setTimeout(() => {
-                                                    if (editor) {
-                                                        const position = {
-                                                            lineNumber: (location.line ?? 0) + 1,
-                                                            column: (location.column ?? 0) + 1,
-                                                        };
-                                                        editor.setPosition(position);
-                                                        editor.revealPositionInCenter(position);
-                                                        editor.focus();
-                                                    }
-                                                }, 100);
-                                            }
-                                        } else if (editor) {
-                                            // Same file, just navigate
-                                            const position = {
-                                                lineNumber: (location.line ?? 0) + 1,
-                                                column: (location.column ?? 0) + 1,
-                                            };
-                                            editor.setPosition(position);
-                                            editor.revealPositionInCenter(position);
-                                            editor.focus();
-                                        }
-                                    }}
-                                    className="h-full rounded-none border-0"
-                                />
-                            </DockablePanel>
+                        <ResizableHandle 
+                            className={cn(
+                                "!pointer-events-auto bg-[#1a1a1e] hover:bg-[#3A7AFE] h-px z-50",
+                                !isProblemsPanelDocked && "opacity-0 pointer-events-none"
+                            )} 
+                        />
+                        <ResizablePanel 
+                            defaultSize={isProblemsPanelDocked ? 25 : 0} 
+                            minSize={isProblemsPanelDocked ? 10 : 0}
+                            maxSize={isProblemsPanelDocked ? 100 : 0}
+                            collapsible={true}
+                            collapsedSize={0}
+                            className={cn(
+                                !isProblemsPanelDocked && "!h-0 !min-h-0 !max-h-0 overflow-hidden"
+                            )}
+                        >
+                            <div 
+                                className={cn(
+                                    "h-full",
+                                    !isProblemsPanelDocked && "opacity-0"
+                                )} 
+                                id="problems-panel-dock-slot" 
+                            />
                         </ResizablePanel>
                     </>
                 )}
             </ResizablePanelGroup>
 
         </div>
+
+        {/* Single Problems Panel instance - renders to dock slot or as floating */}
+        {showProblemsPanel && (
+            <DockablePanel
+                id="problems-panel"
+                title="Problems"
+                icon={AlertCircle}
+                defaultState={PANEL_STATE.DOCKED}
+                defaultPosition={DOCK_POSITION.BOTTOM}
+                defaultFloatingPosition={{ x: 200, y: 200 }}
+                defaultFloatingSize={{ width: 600, height: 400 }}
+                isOpen={showProblemsPanel}
+                onOpenChange={setShowProblemsPanel}
+                onDockedChange={setIsProblemsPanelDocked}
+                workspaceId={slug}
+                dockSlotId="problems-panel-dock-slot"
+                className="h-full rounded-none border-0"
+            >
+                <ProblemsPanel
+                    diagnostics={mergedDiagnostics}
+                    summary={diagnosticSummary}
+                    isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
+                    filePath={activeFile?.path || activeFile?.name || 'Current File'}
+                    onClose={() => setShowProblemsPanel(false)}
+                    onNavigate={(location) => {
+                        const targetFile = location.filePath;
+                        const currentFile = activeFile?.path || activeFile?.name;
+                        
+                        if (targetFile && targetFile !== currentFile) {
+                            const findFile = (files, path) => {
+                                for (const file of files || []) {
+                                    if (file.isFolder && file.children) {
+                                        const found = findFile(file.children, path);
+                                        if (found) return found;
+                                    } else if (file.path === path || file.name === path) {
+                                        return file;
+                                    }
+                                }
+                                return null;
+                            };
+                            
+                            const fileToSelect = findFile(rawFiles, targetFile);
+                            if (fileToSelect) {
+                                dispatch(selectFileThunk(fileToSelect));
+                                setTimeout(() => {
+                                    if (editor) {
+                                        const position = {
+                                            lineNumber: (location.line ?? 0) + 1,
+                                            column: (location.column ?? 0) + 1,
+                                        };
+                                        editor.setPosition(position);
+                                        editor.revealPositionInCenter(position);
+                                        editor.focus();
+                                    }
+                                }, 100);
+                            }
+                        } else if (editor) {
+                            const position = {
+                                lineNumber: (location.line ?? 0) + 1,
+                                column: (location.column ?? 0) + 1,
+                            };
+                            editor.setPosition(position);
+                            editor.revealPositionInCenter(position);
+                            editor.focus();
+                        }
+                    }}
+                    className="h-full rounded-none border-0"
+                />
+            </DockablePanel>
+        )}
 
         {/* Status Bar */}
         <StatusBar
