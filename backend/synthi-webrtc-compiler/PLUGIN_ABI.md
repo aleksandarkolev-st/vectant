@@ -560,3 +560,340 @@ void save_state(CoreState* state, const SynthiHostContextV1* ctx) {
 
 - **v1.0** (2024-12-12): Initial frozen specification
 - **v1.1** (2024-12-12): Added Host KV API for persistent state
+- **v2.0** (2024-12-25): New single-export ABI with HotApi table
+
+---
+
+## HotApi v2.0 - Single-Export ABI
+
+### Overview
+
+Version 2.0 introduces a simplified, more robust ABI that:
+- Uses a **single export** (`hot_get_api`) instead of multiple symbol lookups
+- Provides a **static table** of function pointers for all lifecycle hooks
+- Supports **size-then-write** serialization (no module allocations)
+- Treats **migration as MsgPack decode**, not struct pointer casting
+
+### Key Changes from v1
+
+| Aspect | v1.0 | v2.0 |
+|--------|------|------|
+| Exports | Multiple symbols | Single `hot_get_api` |
+| Events | SDL types | POD `Event` struct |
+| Serialization | Module allocates | Size-then-write |
+| Migration | Struct pointer cast | MsgPack decode |
+| State ownership | Module | Runner |
+
+### HotApi Structure
+
+```c
+typedef struct HotApi {
+    uint32_t struct_size;        // Size of this struct (for versioning)
+    uint32_t api_version;        // Must be >= 2
+    uint32_t state_version;      // Module-defined, for migration
+    uint64_t abi_fingerprint;    // Hash of state layout
+    
+    size_t state_size_bytes;     // sizeof(YourState)
+    size_t state_align_bytes;    // alignof(YourState), power of 2
+    size_t state_min_size_bytes; // 0 if unused
+    
+    // Lifecycle (function pointers)
+    InitFn init;                 // Required
+    ShutdownFn shutdown;         // Optional
+    TickFn tick;                 // Optional
+    RenderFn render;             // Optional
+    EventFn event;               // Optional
+    MigrateFn migrate;           // Recommended
+    
+    // Serialization (size-then-write pattern)
+    SaveSizeFn save_state_msgpack_size;    // Optional
+    SaveWriteFn save_state_msgpack_write;  // Optional
+    SaveSizeFn save_state_json_size;       // Optional (debug)
+    SaveWriteFn save_state_json_write;     // Optional (debug)
+} HotApi;
+```
+
+### Single Export
+
+```c
+// The ONLY export your module needs
+__attribute__((visibility("default")))
+const HotApi* hot_get_api(void) {
+    return &MY_HOT_API;
+}
+```
+
+### Runner API (Host Services)
+
+```c
+typedef struct RunnerApi {
+    uint32_t struct_size;
+    uint32_t api_version;     // Currently 1
+    
+    // Logging (allocation-free)
+    void (*log)(uint32_t level, const uint8_t* msg, size_t len);
+    
+    // Monotonic time
+    uint64_t (*get_time_ns)(void);
+    
+    size_t _reserved[8];      // Future expansion
+} RunnerApi;
+```
+
+### POD Event Structure
+
+No SDL types! Events are plain-old-data defined by the runner:
+
+```c
+typedef struct Event {
+    uint32_t kind;          // EVENT_KEY_DOWN, EVENT_MOUSE_MOVE, etc.
+    uint32_t a;             // Parameter 1 (key code, button, etc.)
+    uint32_t b;             // Parameter 2 (x coordinate, modifiers)
+    uint32_t c;             // Parameter 3 (y coordinate)
+    const void* payload_ptr;// Optional extra data
+    size_t payload_len;     // Length of payload
+} Event;
+```
+
+### Function Signatures
+
+```c
+// Initialize state (REQUIRED)
+typedef bool (*InitFn)(
+    void* state,            // Runner-allocated, properly aligned
+    const RunnerApi* host
+);
+
+// Cleanup before unload
+typedef void (*ShutdownFn)(void* state, const RunnerApi* host);
+
+// Per-frame update
+typedef void (*TickFn)(void* state, const RunnerApi* host, float dt);
+
+// Render frame
+typedef void (*RenderFn)(void* state, const RunnerApi* host);
+
+// Handle input event
+typedef void (*EventFn)(void* state, const Event* e, const RunnerApi* host);
+
+// Get serialization size (for size-then-write)
+typedef size_t (*SaveSizeFn)(
+    const void* state,
+    uint32_t state_version,
+    const RunnerApi* host
+);
+
+// Write serialized data to buffer
+typedef bool (*SaveWriteFn)(
+    const void* state,
+    uint32_t state_version,
+    const RunnerApi* host,
+    uint8_t* out,           // Runner-provided buffer
+    size_t out_cap,         // Buffer capacity
+    size_t* out_written     // Actual bytes written
+);
+
+// Migrate state from old version
+// CRITICAL: Use old_msgpack, NOT old_blob pointer casting!
+typedef bool (*MigrateFn)(
+    const void* old_blob,      // Opaque - for size reference only
+    uint32_t old_ver,
+    void* new_blob,            // Write migrated state here
+    uint32_t new_ver,
+    const RunnerApi* host,
+    const uint8_t* old_msgpack,// Serialized old state (preferred)
+    size_t old_msgpack_len,
+    const uint8_t* old_json,   // Fallback
+    size_t old_json_len
+);
+```
+
+### 3-Mode Hot Reload Algorithm
+
+The runner implements this algorithm:
+
+1. **Mode 1: Same-Version Swap**
+   - Condition: `old.state_version == new.state_version` AND `old.abi_fingerprint == new.abi_fingerprint`
+   - Action: Copy old state memory to new location
+   - Fastest path (~10μs)
+
+2. **Mode 2: Migration via MsgPack**
+   - Condition: Versions differ, `migrate` function exists, MsgPack data available
+   - Action: Call `migrate(old_blob, old_ver, new_blob, new_ver, host, msgpack, ...)`
+   - **CRITICAL**: `migrate` must decode from `old_msgpack`, NOT cast `old_blob` to old struct
+   - Medium path (~100-500μs)
+
+3. **Mode 3: Cold Reload**
+   - Condition: No migrate function, or migration failed
+   - Action: Call `init(state, host)`
+   - State is reset
+
+### Validation Rules (Enforced by Runner)
+
+1. `struct_size >= offset_of(HotApi, migrate)` — reject if required fields missing
+2. `api_version >= 2` — reject older modules
+3. `state_align_bytes` is power of 2 — reject if not
+4. `state_align_bytes <= 128` — reject excessive alignment
+5. `state_size_bytes % state_align_bytes == 0` — reject misaligned size
+6. `init` function is not NULL — reject if missing
+
+### Size-Then-Write Serialization
+
+Do NOT allocate inside your module for serialization. Instead:
+
+```c
+// Step 1: Runner calls size function
+size_t size = api->save_state_msgpack_size(state, version, host);
+
+// Step 2: Runner allocates buffer
+uint8_t* buffer = runner_allocate(size);
+
+// Step 3: Runner calls write function
+size_t written;
+bool ok = api->save_state_msgpack_write(state, version, host, buffer, size, &written);
+```
+
+Implement with a generic writer pattern:
+
+```c
+// Counting writer (for size)
+typedef struct CountingWriter {
+    size_t count;
+} CountingWriter;
+
+// Slice writer (for actual write)
+typedef struct SliceWriter {
+    uint8_t* buf;
+    size_t cap;
+    size_t pos;
+} SliceWriter;
+
+// Generic encode function works with either
+void encode_state(StateWriter* w, const AppState* state) {
+    write_map_header(w, 5);
+    write_key_int(w, "x", state->x);
+    write_key_int(w, "y", state->y);
+    // ...
+}
+
+// Size function
+size_t save_size(...) {
+    CountingWriter w = {0};
+    encode_state(&w, state);
+    return w.count;
+}
+
+// Write function
+bool save_write(...) {
+    SliceWriter w = {out, out_cap, 0};
+    encode_state(&w, state);
+    *out_written = w.pos;
+    return true;
+}
+```
+
+### Migration Best Practices
+
+**DO:**
+- Decode MsgPack field-by-field using stable keys
+- Apply defaults for missing fields
+- Handle type changes gracefully
+
+**DON'T:**
+- Cast `old_blob` to your old struct type
+- Assume field positions in MsgPack data
+- Read from `old_blob` memory directly
+
+Example migration:
+
+```c
+bool migrate(const void* old_blob, uint32_t old_ver, void* new_blob, ...) {
+    AppState* new_state = (AppState*)new_blob;
+    memset(new_state, 0, sizeof(AppState));
+    
+    // Set defaults for new fields
+    new_state->new_field = 42;
+    
+    // Decode from MsgPack using keyed lookup
+    // (NOT: memcpy from old_blob!)
+    new_state->x = msgpack_get_int(old_msgpack, "x", 0);
+    new_state->y = msgpack_get_int(old_msgpack, "y", 0);
+    
+    return true;
+}
+```
+
+### Example Complete Module
+
+```c
+#include <stdint.h>
+#include <string.h>
+
+typedef struct AppState {
+    int x, y;
+    int dx, dy;
+    int running;
+} AppState;
+
+// Forward declarations
+static bool hot_init(void*, const RunnerApi*);
+static void hot_tick(void*, const RunnerApi*, float);
+static size_t hot_save_size(const void*, uint32_t, const RunnerApi*);
+static bool hot_save_write(const void*, uint32_t, const RunnerApi*, uint8_t*, size_t, size_t*);
+static bool hot_migrate(const void*, uint32_t, void*, uint32_t, const RunnerApi*, const uint8_t*, size_t, const uint8_t*, size_t);
+
+// Static API table
+static const HotApi HOT_API = {
+    .struct_size = sizeof(HotApi),
+    .api_version = 2,
+    .state_version = 1,
+    .abi_fingerprint = 0x1234567890ABCDEFULL,
+    .state_size_bytes = sizeof(AppState),
+    .state_align_bytes = 8,
+    .state_min_size_bytes = 0,
+    .init = hot_init,
+    .shutdown = NULL,
+    .tick = hot_tick,
+    .render = NULL,
+    .event = NULL,
+    .migrate = hot_migrate,
+    .save_state_msgpack_size = hot_save_size,
+    .save_state_msgpack_write = hot_save_write,
+    .save_state_json_size = NULL,
+    .save_state_json_write = NULL,
+};
+
+// Single export
+__attribute__((visibility("default")))
+const HotApi* hot_get_api(void) {
+    return &HOT_API;
+}
+
+static bool hot_init(void* state, const RunnerApi* host) {
+    AppState* s = (AppState*)state;
+    s->x = 100;
+    s->y = 100;
+    s->dx = 5;
+    s->dy = 3;
+    s->running = 1;
+    return true;
+}
+
+static void hot_tick(void* state, const RunnerApi* host, float dt) {
+    AppState* s = (AppState*)state;
+    s->x += s->dx;
+    s->y += s->dy;
+    if (s->x < 0 || s->x > 800) s->dx = -s->dx;
+    if (s->y < 0 || s->y > 600) s->dy = -s->dy;
+}
+
+// ... serialization and migration implementations ...
+```
+
+### Backward Compatibility
+
+The runner detects module type automatically:
+1. First tries `hot_get_api` (v2 module)
+2. Falls back to legacy symbol probing (v1 module)
+
+Both module types can coexist in the same project during transition.

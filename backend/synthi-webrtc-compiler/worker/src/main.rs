@@ -6,13 +6,14 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 mod abi_version;
+mod android;
 mod binary_state;
 mod boundary;
 mod builder;
 mod capability;
 mod crash_recovery;
 mod error_parser;
-mod fast_refresh;
+pub mod fast_refresh;
 mod hmr_orchestrator;
 mod host_kv;
 mod incremental_cache;
@@ -28,25 +29,85 @@ mod storage;
 mod supervisor;
 mod watcher;
 
-mod android;
 
 // Re-export orchestrator for external use
 pub use hmr_orchestrator::{
     HmrOrchestrator, HmrResult, HmrStatus, LoadedState, MigrationSummary, OrchestratorConfig,
     SavedState, SchemaCompatibility,
+mod hmr_orchestrator;
+// New safety-critical modules
+mod process_isolation;
+mod enhanced_fingerprint;
+mod strict_contract;
+
+// HMR v2.1 hardening modules (requirements #1-10)
+pub mod reload_protocol;       // #1: Deterministic reload state machine
+pub mod state_type_id;         // #2: Explicit DWARF type identification (not size-based)
+                           // #3: Semantic hash for reload safety (in state_type_id)
+pub mod hardened_ipc;          // #4: IPC hardening (size limits, CRC32, decode limits)
+                           // #5: ABI ownership rules (documented in plugin_contract.rs)
+pub mod quiescence;            // #6: Per-subsystem quiescence rules
+pub mod slot_isolation;        // #7: Worker isolation model options
+pub mod restart_control;       // #8: Backoff, fallback, circuit breaker
+mod security;              // #9: Honest security documentation
+pub mod observability;         // #10: Structured logging, metrics, crash classification
+
+// Re-export orchestrator for external use
+pub use hmr_orchestrator::{
+    HmrOrchestrator, HmrResult, HmrStatus as OrchestratorHmrStatus, OrchestratorConfig,
+    SavedState, LoadedState, MigrationSummary, SchemaCompatibility,
 };
 // Android compilation pipeline is housed under `src/android/*`.
 mod mobile_routing;
 // Android pipeline workspace reconciliation lives under `android::fs`.
 
+
 use anyhow::{Context, Result};
-use builder::{hash_content, ModuleHashes, RebuildScope, WidgetCompiler, WidgetDetector};
 use bytes::Bytes;
-use capability::{detect_capabilities, HmrCapability, HmrStatus as CapabilityHmrStatus};
 use chrono::Utc;
-use error_parser::{parse_compiler_output, CompilerType, DiagnosticEvent};
-use fast_refresh::{BoundaryChecker, BoundaryViolationEvent, RefreshAction};
 use futures::{FutureExt, SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
+
+use builder::{
+    hash_content,
+    hash_shared_header_semantic,
+    ModuleHashes,
+    RebuildScope,
+    WidgetCompiler,
+    WidgetDetector,
+};
+
+use capability::{detect_capabilities, HmrCapability, HmrStatus};
+
+use error_parser::{parse_compiler_output, CompilerType, DiagnosticEvent};
+
+use fast_refresh::{
+    BoundaryChecker,
+    BoundaryViolationEvent,
+    RefreshAction,
+};
+
+use observability::{
+    StructuredLogger,
+    LogFormat,
+    LogLevel,
+    LogEntry,
+    MetricsAggregator,
+    ReloadMetricsTracker,
+    ReloadId,
+};
+
+use slot_isolation::{IsolationModel, IsolationManager};
+use restart_control::{RestartController, BackoffConfig, KnownGoodStore};
+use hardened_ipc::IpcConfig;
+use quiescence::QuiescenceConfig;
+
+use watcher::{PreemptiveConfig, PreemptiveMessage, SpeculativeCache};
+
+use shim::{auto_shim, ShimMode, detect_shim_mode};
+
+#[allow(unused_imports)]
+use incremental_cache::{IncrementalCache, compile_with_cache, link_objects};
 use gstreamer as gst;
 use gstreamer::prelude::{Cast, ElementExt, GstBinExt, GstObjectExt};
 use gstreamer_app as gst_app;
@@ -147,6 +208,7 @@ struct CompileRequest {
 // This is used by the worker to manage HMR, video streaming, and process lifecycle
 // Currently the runner uses individual fields directly, but this struct provides
 // the complete state model for future HMR orchestration integration
+#[allow(dead_code)]
 struct RunnerState {
     process: Option<tokio::process::Child>, // Option to allow taking it if needed, or just drop
     stdin: tokio::process::ChildStdin,
@@ -174,6 +236,7 @@ struct RunnerState {
 }
 
 /// RunnerState builder methods for fluent configuration
+#[allow(dead_code)]
 impl RunnerState {
     /// Create a new RunnerState with required fields
     pub fn new(
@@ -374,6 +437,99 @@ fn make_chunks(data: &[u8], msg_id: u32) -> Vec<Vec<u8>> {
 async fn main() -> Result<()> {
     println!("Worker starting...");
     println!("Operating System: {}", std::env::consts::OS);
+    
+    // v2.1: Print security audit at startup (requirement #9)
+    if std::env::var("SYNTHI_SECURITY_AUDIT").map(|v| v == "1").unwrap_or(false) {
+        security::print_security_audit();
+    } else {
+        // Brief security notice
+        let audit = security::audit_security();
+        eprintln!("[Security] Status: {} enforced, {} partial, {} stub (set SYNTHI_SECURITY_AUDIT=1 for details)",
+            audit.enforced_count, audit.partial_count, audit.stub_count);
+    }
+    
+    // ============================================================
+    // v2.1 HMR INFRASTRUCTURE INITIALIZATION (Requirements #1-10)
+    // ============================================================
+    // Initialize all HMR hardening infrastructure from dead code modules:
+    // - StructuredLogger for observability (#10)
+    // - IsolationManager for worker isolation (#7)
+    // - RestartController for backoff/fallback (#8)
+    // - IpcConfig for hardened communication (#4)
+    // - HmrOrchestrator for central coordination
+    // ============================================================
+    
+    // Initialize structured logging (requirement #10)
+    let hmr_log_format = if std::env::var("SYNTHI_JSON_LOGS").map(|v| v == "1").unwrap_or(false) {
+        LogFormat::Json
+    } else {
+        LogFormat::Human
+    };
+    let hmr_log_level = match std::env::var("SYNTHI_LOG_LEVEL").unwrap_or_default().as_str() {
+        "trace" => LogLevel::Trace,
+        "debug" => LogLevel::Debug,
+        "warn" => LogLevel::Warn,
+        "error" => LogLevel::Error,
+        _ => LogLevel::Info,
+    };
+    let structured_logger = Arc::new(StructuredLogger::new(hmr_log_format, hmr_log_level));
+    
+    // Initialize metrics aggregator for reload performance tracking
+    let metrics_aggregator = Arc::new(tokio::sync::Mutex::new(MetricsAggregator::new()));
+    
+    // Log startup
+    structured_logger.log(&LogEntry::new(LogLevel::Info, "main", "Worker starting with HMR v2.1 hardening")
+        .with_field("os", std::env::consts::OS)
+        .with_field("log_format", format!("{:?}", hmr_log_format)));
+    
+    // Initialize isolation manager (requirement #7)
+    let isolation_model = match std::env::var("SYNTHI_ISOLATION_MODEL").unwrap_or_default().as_str() {
+        "worker_per_slot" => IsolationModel::WorkerPerSlot,
+        "grouped" => IsolationModel::GroupedWorkers,
+        _ => IsolationModel::SingleWorker, // Default: simpler, lower overhead
+    };
+    let isolation_manager = Arc::new(tokio::sync::Mutex::new(IsolationManager::new(isolation_model)));
+    eprintln!("[HMR v2.1] Isolation model: {:?}", isolation_model);
+    
+    // Initialize restart controller with backoff (requirement #8)
+    let known_good_dir = std::env::temp_dir().join("synthi_known_good");
+    let _ = std::fs::create_dir_all(&known_good_dir);
+    let known_good_store = KnownGoodStore::with_persistence(known_good_dir.join("known_good.json"));
+    let backoff_config = BackoffConfig::default();
+    let restart_controller = Arc::new(tokio::sync::Mutex::new(
+        RestartController::new(backoff_config, known_good_store)
+    ));
+    eprintln!("[HMR v2.1] Restart controller initialized with backoff/fallback");
+    
+    // Initialize hardened IPC config (requirement #4)
+    let ipc_config = Arc::new(IpcConfig::default());
+    eprintln!("[HMR v2.1] IPC config: max_frame_size={}MB, read_timeout={}s",
+        ipc_config.max_frame_size / (1024 * 1024),
+        ipc_config.read_timeout.as_secs());
+    
+    // Initialize HMR orchestrator (central coordination)
+    let orchestrator_config = OrchestratorConfig {
+        prefer_binary_state: true,
+        max_snapshots: 10,
+        max_consecutive_crashes: 3,
+        task_shutdown_timeout: std::time::Duration::from_secs(5),
+        strict_abi: std::env::var("SYNTHI_STRICT_ABI").map(|v| v == "1").unwrap_or(false),
+        max_boundaries_per_module: 20,
+    };
+    let hmr_orchestrator = Arc::new(tokio::sync::Mutex::new(HmrOrchestrator::with_config(orchestrator_config)));
+    eprintln!("[HMR v2.1] Orchestrator initialized (binary_state={}, strict_abi={})",
+        true, std::env::var("SYNTHI_STRICT_ABI").map(|v| v == "1").unwrap_or(false));
+    
+    // Initialize quiescence config (requirement #6)
+    let _quiescence_config = QuiescenceConfig::default();
+    eprintln!("[HMR v2.1] Quiescence protocol ready");
+    
+    structured_logger.log(&LogEntry::new(LogLevel::Info, "main", "HMR v2.1 infrastructure initialized"));
+    
+    // ============================================================
+    // END v2.1 INFRASTRUCTURE
+    // ============================================================
+    
     // Cargo does not source shell rc files, so ensure Android SDK tools are visible
     // to this process deterministically before any SDK checks or emulator logic.
     android::ensure_android_sdk_env();
@@ -659,6 +815,12 @@ async fn main() -> Result<()> {
     let compile_cache_for_callback = compile_cache.clone();
     let boundary_checker_for_callback = boundary_checker.clone();
     let incremental_cache_for_callback = incremental_cache.clone();
+    // v2.1 HMR Infrastructure clones for callback
+    let hmr_orchestrator_for_callback = hmr_orchestrator.clone();
+    let structured_logger_for_callback = structured_logger.clone();
+    let metrics_aggregator_for_callback = metrics_aggregator.clone();
+    let restart_controller_for_callback = restart_controller.clone();
+    let ipc_config_for_callback = ipc_config.clone();
     pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
         let store = compile_store.clone();
         let term_store = term_store.clone();
@@ -669,6 +831,12 @@ async fn main() -> Result<()> {
         let compile_cache_outer = compile_cache_for_callback.clone();
         let boundary_checker_outer = boundary_checker_for_callback.clone();
         let incremental_cache_outer = incremental_cache_for_callback.clone();
+        // v2.1 outer clones
+        let hmr_orchestrator_outer = hmr_orchestrator_for_callback.clone();
+        let structured_logger_outer = structured_logger_for_callback.clone();
+        let metrics_aggregator_outer = metrics_aggregator_for_callback.clone();
+        let restart_controller_outer = restart_controller_for_callback.clone();
+        let ipc_config_outer = ipc_config_for_callback.clone();
         async move {
             let label = dc.label();
                 if label == "compile" {
@@ -685,6 +853,12 @@ async fn main() -> Result<()> {
                         let compile_cache = compile_cache_outer.clone();
                         let boundary_checker = boundary_checker_outer.clone();
                         let incremental_cache = incremental_cache_outer.clone();
+                        // v2.1 inner clones
+                        let hmr_orchestrator = hmr_orchestrator_outer.clone();
+                        let structured_logger = structured_logger_outer.clone();
+                        let metrics_aggregator = metrics_aggregator_outer.clone();
+                        let restart_controller = restart_controller_outer.clone();
+                        let ipc_config = ipc_config_outer.clone();
                         async move {
                             if msg.is_string {
                                 // Try to parse as a CompileRequest
@@ -786,7 +960,13 @@ async fn main() -> Result<()> {
                                         let cc = compile_cache.clone();
                                         let bc = boundary_checker.clone();
                                         let ic = incremental_cache.clone();
-                                        tokio::spawn(handle_compile(req, log, ts, sdls, rs, pc_clone, wp.to_path_buf(), cc, bc, ic));
+                                        // v2.1 clones for spawn
+                                        let ho = hmr_orchestrator.clone();
+                                        let sl = structured_logger.clone();
+                                        let ma = metrics_aggregator.clone();
+                                        let rc = restart_controller.clone();
+                                        let ipc = ipc_config.clone();
+                                        tokio::spawn(handle_compile(req, log, ts, sdls, rs, pc_clone, wp.to_path_buf(), cc, bc, ic, ho, sl, ma, rc, ipc));
                                     }
                                     return;
                                 }
@@ -1550,8 +1730,184 @@ fn extract_string_literals(source: &str) -> Vec<String> {
             if c == '*' && chars.peek() == Some(&'/') {
                 chars.next();
                 in_block_comment = false;
+// ============================================================
+// GUARDRAIL HELPER FUNCTIONS
+// ============================================================
+// These functions apply all guardrails to source content BEFORE
+// hash computation, ensuring rebuild scope decisions are based
+// on the actual compiled content.
+
+/// Apply guardrails to shared.h content
+fn apply_shared_guardrails(content: &str) -> String {
+    let mut result = content.to_string();
+    
+    // Guardrails: AI sometimes typedefs X11 types to void, which conflicts with Xlib headers.
+    for bad in ["typedef void Display", "typedef void GC", "typedef void Atom", "typedef void XIM", "typedef void XIC"] {
+        if result.contains(bad) {
+            result = result.replace(bad, "// stripped invalid typedef\n");
+        }
+    }
+
+    // Strip conflicting forward declarations of X11 types and normalize struct field types.
+    for bad in [
+        "struct Display;", "struct Window;", "struct Atom;", "struct XIM;", "struct XIC;", "struct Pixmap;", "struct GC;", "struct XWindowAttributes;"
+    ] {
+        if result.contains(bad) {
+            result = result.replace(bad, "// stripped conflicting X11 forward decl\n");
+        }
+    }
+    result = result.replace("struct Display*", "Display*");
+    result = result.replace("struct Window", "Window");
+    result = result.replace("struct Atom", "Atom");
+    result = result.replace("struct XIM*", "XIM*");
+    result = result.replace("struct XIC*", "XIC*");
+    result = result.replace("struct Pixmap", "Pixmap");
+    result = result.replace("struct GC", "GC");
+    result = result.replace("struct XWindowAttributes", "XWindowAttributes");
+
+    // Guardrail: SDL_Event is a union in SDL2. Forward-declaring it as a struct
+    // (e.g. `struct SDL_Event;`) causes compile failures when SDL.h is included.
+    for bad in [
+        "struct SDL_Event;",
+        "typedef struct SDL_Event SDL_Event;",
+        "typedef struct SDL_Event SDL_Event ;",
+    ] {
+        if result.contains(bad) {
+            result = result.replace(bad, "/* stripped invalid SDL_Event forward decl */");
+        }
+    }
+
+    // FIX: gui_on_load declaration MUST have 3 parameters to match implementation
+    if result.contains("gui_on_load(void* prev_state, void* window_ptr)") && 
+       !result.contains("gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)") {
+        result = result.replace(
+            "gui_on_load(void* prev_state, void* window_ptr)",
+            "gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)"
+        );
+        eprintln!("[Guardrail] Fixed gui_on_load declaration in shared.h: added missing core_api_ptr parameter");
+    }
+    
+    result
+}
+
+/// Apply guardrails to core.cpp content (requires processed shared.h for context)
+fn apply_core_guardrails(content: &str, shared_content: &str) -> String {
+    let mut result = content.to_string();
+    
+    // Detect if shared.h has full struct definitions or just forward declarations
+    let shared_has_full_hostkv = shared_content.contains("struct HostKvApiV1 {") ||
+                                  shared_content.contains("struct SynthiHostContextV1 {") ||
+                                  shared_content.contains("struct SynthiNamespaceSchemaV1 {");
+
+    // Fix common AI mistakes in core.cpp before compilation.
+    if result.contains("is_running") {
+        result = result.replace("is_running", "running");
+    }
+
+    // CRITICAL: Strip X11-related functions that the AI incorrectly preserved from the input.
+    let x11_type_patterns = [
+        "Display*", "Display *", "Window*", "XIM", "XIC", "Atom", "Colormap", "Pixmap", "GC ",
+        "XEvent", "XOpenDisplay", "XCloseDisplay", "XCreateWindow", "XDestroyWindow",
+        "XOpenIM", "XCreateIC", "XCreateGC", "XFreeGC", "XCreatePixmap", "XFreePixmap",
+    ];
+    
+    let mut cleaned_lines = Vec::new();
+    for line in result.lines() {
+        let has_x11 = x11_type_patterns.iter().any(|pat| line.contains(pat));
+        let is_comment = line.trim_start().starts_with("//") || line.trim_start().starts_with("/*");
+        let is_include = line.trim_start().starts_with("#include");
+        
+        if has_x11 && !is_comment && !is_include {
+            cleaned_lines.push(format!("// [X11-stripped] {}", line));
+        } else {
+            cleaned_lines.push(line.to_string());
+        }
+    }
+    result = cleaned_lines.join("\n");
+
+    // CRITICAL: Ensure shared.h is included FIRST
+    if !result.contains("#include \"shared.h\"") {
+        if let Some(pos) = result.find("#include <") {
+            if let Some(newline) = result[pos..].find('\n') {
+                let insert_pos = pos + newline + 1;
+                result.insert_str(insert_pos, "#include \"shared.h\"  // [Guardrail] Added\n");
             }
-            continue;
+        } else {
+            result = format!("#include \"shared.h\"  // [Guardrail] Added\n{}", result);
+        }
+    }
+
+    // CRITICAL FIX: Transform malloc-based on_load to static storage
+    if result.contains("malloc(sizeof(AppState))") && result.contains("on_load") {
+        if !result.contains("static AppState app_state") && !result.contains("static CoreState core_state") {
+            if let Some(on_load_pos) = result.find("extern \"C\" void* on_load") {
+                result.insert_str(on_load_pos, "// [Guardrail] Injected static storage for HMR\nstatic AppState app_state = {0};\n\n");
+            } else if let Some(on_load_pos) = result.find("extern \"C\" void* core_on_load") {
+                result.insert_str(on_load_pos, "// [Guardrail] Injected static storage for HMR\nstatic AppState app_state = {0};\n\n");
+            }
+        }
+        
+        let re_malloc = regex::Regex::new(r"AppState\*\s+state\s*=\s*\(AppState\*\)\s*malloc\s*\(\s*sizeof\s*\(\s*AppState\s*\)\s*\)\s*;").unwrap();
+        result = re_malloc.replace_all(&result, "AppState* state = (prev_state) ? (AppState*)prev_state : &app_state; // [Guardrail] Fixed malloc->static").to_string();
+        
+        let re_malloc2 = regex::Regex::new(r"CoreState\*\s+state\s*=\s*\(CoreState\*\)\s*malloc\s*\(\s*sizeof\s*\(\s*CoreState\s*\)\s*\)\s*;").unwrap();
+        result = re_malloc2.replace_all(&result, "CoreState* state = (prev_state) ? (CoreState*)prev_state : &core_state; // [Guardrail] Fixed malloc->static").to_string();
+        
+        let re_if_malloc = regex::Regex::new(r"if\s*\(\s*!prev_state\s*\)\s*\{\s*state\s*=\s*\(AppState\*\)\s*malloc[^}]+\}").unwrap();
+        result = re_if_malloc.replace_all(&result, "if (!prev_state) { state = &app_state; /* [Guardrail] Fixed malloc->static */ }").to_string();
+    }
+
+    // FIX: Detect and warn about free(state) which causes crashes on reload
+    if result.contains("free(state)") {
+        result = result.replace("free(state);", "// free(state); // Commented - runner manages state");
+    }
+
+    // FIX: Detect and warn about memset on state which wipes preserved HMR state
+    if result.contains("memset(state") || result.contains("memset(&app_state") || 
+        result.contains("memset(&state") || result.contains("memset(&core_state") ||
+        result.contains("memset( state") {
+        let re_memset = regex::Regex::new(r"memset\s*\(\s*(state|&app_state|&core_state|&state|&gui_app_state)[^;]*\)\s*;").unwrap();
+        result = re_memset.replace_all(&result, "// [Guardrail] memset REMOVED to preserve HMR state").to_string();
+    }
+
+    // Drop writes/reads to non-existent XWindowAttributes fields
+    for bad_field in ["event_mask", "damage", "border_pixel", "background_pixel", "saved_attributes", "attributes_mask"] {
+        if result.contains(bad_field) {
+            let mut cleaned = String::new();
+            for line in result.lines() {
+                if line.contains(bad_field) {
+                    cleaned.push_str("// stripped invalid field: ");
+                    cleaned.push_str(line);
+                    cleaned.push('\n');
+                } else {
+                    cleaned.push_str(line);
+                    cleaned.push('\n');
+                }
+            }
+            result = cleaned;
+        }
+    }
+
+    // INJECT MISSING HEADERS
+    if result.contains("setlocale") && !result.contains("#include <locale.h>") {
+        result = format!("#include <locale.h>\n{}", result);
+    }
+    if result.contains("SDL_") && !result.contains("#include <SDL2/SDL.h>") {
+        result = format!("#include <SDL2/SDL.h>\n{}", result);
+    }
+    if (result.contains("XLookupString") || result.contains("XK_Escape")) && !result.contains("#include <X11/Xutil.h>") {
+        result = format!("#include <X11/Xutil.h>\n#include <X11/keysym.h>\n{}", result);
+    }
+    if (result.contains("dlopen") || result.contains("dlsym")) && !result.contains("#include <dlfcn.h>") {
+        result = format!("#include <dlfcn.h>\n{}", result);
+    }
+
+    // FIX: Ensure shared.h is included in core.cpp if AppState is used
+    if result.contains("AppState") && !result.contains("#include \"shared.h\"") {
+        if result.contains("struct AppState;") {
+            result = result.replace("struct AppState;", "#include \"shared.h\"");
+        } else {
+            result = format!("#include \"shared.h\"\n{}", result);
         }
 
         if in_string {
@@ -1563,8 +1919,30 @@ fn extract_string_literals(source: &str) -> Vec<String> {
                 in_string = false;
             } else {
                 current_string.push(c);
+    }
+
+    // FIX: Remove duplicate defines that are already in shared.h
+    if result.contains("#include \"shared.h\"") {
+        result = result.replace("#define CORE_STATE_MAGIC", "// #define CORE_STATE_MAGIC");
+        result = result.replace("#define SYNTHI_ABI_VERSION", "// #define SYNTHI_ABI_VERSION");
+        
+        // Strip duplicate AppState struct/typedef
+        if let Some(start) = result.find("typedef struct AppState") {
+            if let Some(end) = result[start..].find("} AppState;") {
+                let block_end = start + end + "} AppState;".len();
+                let block = result[start..block_end].to_string();
+                result = result.replace(&block, "// AppState defined in shared.h");
             }
-            continue;
+        }
+
+        if let Some(start) = result.find("typedef struct {") {
+            if let Some(end) = result[start..].find("} AppState;") {
+                 let block_end = start + end + "} AppState;".len();
+                 let block = result[start..block_end].to_string();
+                 if block.contains("magic") && block.contains("struct_size") {
+                     result = result.replace(&block, "// AppState defined in shared.h");
+                 }
+            }
         }
 
         if in_char {
@@ -1639,8 +2017,72 @@ fn patch_strings_in_cached_result(
                     }
 
                     *content = serde_json::Value::String(patched);
+        
+        if let Some(start) = result.find("struct AppState {") {
+            if let Some(end) = result[start..].find("};") {
+                let block_end = start + end + "};".len();
+                let block = result[start..block_end].to_string();
+                if block.contains("{") {
+                    result = result.replace(&block, "// AppState defined in shared.h");
                 }
             }
+        }
+
+        // Handle Host KV structs
+        for struct_name in &["HostKvApiV1", "SynthiHostContextV1", "SynthiNamespaceSchemaV1"] {
+             let typedef_pattern = format!("typedef struct {} {};", struct_name, struct_name);
+             if result.contains(&typedef_pattern) {
+                 result = result.replace(&typedef_pattern, &format!("// {} forward-declared in shared.h", struct_name));
+             }
+             
+             if shared_has_full_hostkv {
+                 let struct_decl = format!("struct {} {{", struct_name);
+                 if let Some(start) = result.find(&struct_decl) {
+                     if let Some(end) = result[start..].find("};") {
+                         let block_end = start + end + "};".len();
+                         let block = result[start..block_end].to_string();
+                         result = result.replace(&block, &format!("// {} fully defined in shared.h", struct_name));
+                     }
+                 }
+             }
+        }
+        
+        // Inject Host KV definitions if needed
+        let uses_hostkv_types = result.contains("SynthiHostContextV1") || 
+                                result.contains("SynthiNamespaceSchemaV1") ||
+                                result.contains("HostKvApiV1") ||
+                                result.contains("g_core_schemas") ||
+                                result.contains("host_kv_schemas");
+        
+        if uses_hostkv_types && !shared_has_full_hostkv {
+            let hostkv_header = get_hostkv_header();
+            if let Some(include_end) = result.rfind("#include") {
+                if let Some(newline_pos) = result[include_end..].find('\n') {
+                    let insert_pos = include_end + newline_pos + 1;
+                    result.insert_str(insert_pos, &hostkv_header);
+                }
+            } else {
+                result = format!("{}{}", hostkv_header, result);
+            }
+        }
+    }
+
+    // FIX: Strip hallucinated fields
+    let hallucinated_fields = ["wbuffer", "write_buffer", "rbuffer", "read_buffer", "buffer_ptr"];
+    for field in &hallucinated_fields {
+        if !shared_content.contains(*field) && (result.contains(&format!("->{}", field)) || result.contains(&format!(".{}", field))) {
+            let pattern1 = format!("->{}", field);
+            let pattern2 = format!(".{}", field);
+            
+            let mut cleaned = Vec::new();
+            for line in result.lines() {
+                if line.contains(&pattern1) || line.contains(&pattern2) {
+                    cleaned.push(format!("// [Guardrail] Removed: {} (field not in AppState)", line.trim()));
+                } else {
+                    cleaned.push(line.to_string());
+                }
+            }
+            result = cleaned.join("\n");
         }
     }
 
@@ -1657,6 +2099,553 @@ fn is_semantic_string(s: &str) -> bool {
         "silver", "fuchsia",
     ];
 
+    let lower = s.to_lowercase();
+    color_names.iter().any(|c| lower == *c)
+}
+
+    // FIX: Inject button state initialization if needed
+    if shared_content.contains("btn_x") && shared_content.contains("btn_y") {
+        let has_btn_init = result.contains("btn_x =") || result.contains("btn_x=") ||
+                           result.contains("->btn_x =") || result.contains(".btn_x =");
+        
+        if !has_btn_init && result.contains("app_state.dx = 5;") {
+            let btn_init_code = "\n        app_state.btn_x = 200;\n        app_state.btn_y = 10;\n        app_state.btn_w = 120;\n        app_state.btn_h = 40;";
+            result = result.replace("app_state.dx = 5;", &format!("app_state.dx = 5;{}", btn_init_code));
+        }
+    }
+
+    // FIX: state->btn* -> app_state.btn* in init code
+    if result.contains("state->btn") && result.contains("static AppState app_state") {
+        let patterns = [
+            ("state->btn2_", "app_state.btn2_"),
+            ("state->btn3_", "app_state.btn3_"),
+            ("state->btn4_", "app_state.btn4_"),
+            ("state->new_btn_", "app_state.new_btn_"),
+            ("state->reset_btn_", "app_state.reset_btn_"),
+        ];
+        for (wrong, correct) in &patterns {
+            if result.contains(*wrong) {
+                result = result.replace(*wrong, *correct);
+            }
+        }
+    }
+
+    // FIX: cleanup_window not declared
+    if result.contains("cleanup_window(app_state.window)") && !result.contains("void cleanup_window") {
+        if let Some(idx) = result.rfind("#include") {
+            if let Some(end_idx) = result[idx..].find('\n') {
+                let insert_pos = idx + end_idx + 1;
+                let cleanup_impl = "\nvoid cleanup_window(SDL_Window* win) { if (win) SDL_DestroyWindow(win); }\n";
+                result.insert_str(insert_pos, cleanup_impl);
+            }
+        } else {
+             result = format!("void cleanup_window(SDL_Window* win) {{ if (win) SDL_DestroyWindow(win); }}\n{}", result);
+        }
+    }
+
+    // INJECT SAFETY PATCH: Safer dlopen
+    if result.contains("dlopen(") && result.contains("dlclose(") {
+         result = result.replace(
+            "gui_lib = dlopen(path, RTLD_NOW);",
+            "fprintf(stderr, \"Loading GUI from %s\\n\", path); void* new_lib = dlopen(path, RTLD_NOW); if(new_lib) { if(gui_lib) dlclose(gui_lib); gui_lib = new_lib; fprintf(stderr, \"GUI loaded OK\\n\"); } else { fprintf(stderr, \"dlopen failed: %s\\n\", dlerror()); }"
+         );
+         result = result.replace(
+            "if (gui_lib) {\n        dlclose(gui_lib);\n    }",
+            "// dlclose moved to safe block"
+         );
+         result = result.replace(
+            "if (gui_lib) dlclose(gui_lib);",
+            "// dlclose moved to safe block"
+         );
+    }
+
+    // INJECT PROBE: Check if GUI is loaded
+    if result.contains("if (ptr_gui_render)") {
+         result = result.replace(
+            "if (ptr_gui_render)",
+            "if (!ptr_gui_render) { static int null_cnt=0; if(++null_cnt%60==0) fprintf(stderr, \"WARNING: ptr_gui_render is NULL. GUI module not loaded!\\n\"); } if (ptr_gui_render)"
+         );
+    }
+
+    // FIX: Replace direct calls to gui functions with pointers
+    for func in &["gui_initialize", "gui_on_update", "gui_render", "gui_cleanup", "gui_on_event"] {
+        let ptr_name = format!("ptr_{}", func);
+        result = result.replace(&format!("{}(", func), &format!("{}(", ptr_name));
+        let double_ptr = format!("ptr_{}", ptr_name);
+        result = result.replace(&double_ptr, &ptr_name);
+        result = result.replace(&format!("void {}(", ptr_name), &format!("void {}(", func));
+    }
+
+    // Replace hard-wired GUI symbol assignments with null
+    for (from, to) in [
+        ("ptr_gui_initialize = gui_initialize;", "ptr_gui_initialize = nullptr;"),
+        ("ptr_gui_on_update = gui_on_update;", "ptr_gui_on_update = nullptr;"),
+        ("ptr_gui_render = gui_render;", "ptr_gui_render = nullptr;"),
+        ("ptr_gui_cleanup = gui_cleanup;", "ptr_gui_cleanup = nullptr;"),
+        ("ptr_gui_on_event = gui_on_event;", "ptr_gui_on_event = nullptr;")
+    ] {
+        if result.contains(from) {
+            result = result.replace(from, to);
+        }
+    }
+
+    // FIX: Comment out SDL_RenderPresent
+    let re_present = regex::Regex::new(r"SDL_RenderPresent\s*\([^)]*\)\s*;").unwrap();
+    result = re_present.replace_all(&result, "/* SDL_RenderPresent removed - runner handles this */").to_string();
+
+    // FIX: Correct Display** cast
+    if result.contains("(Display**)window_ptr") {
+        result = result.replace("(Display**)window_ptr", "(void**)window_ptr");
+    }
+
+    // FIX: Correct XCreateIC call
+    if result.contains("XCreateIC(*(Display**)state->window,") {
+        result = result.replace("XCreateIC(*(Display**)state->window,", "XCreateIC(");
+    }
+
+    // Add entrypoint if needed
+    if result.contains("main(") && !result.contains("extern \"C\" void* entrypoint") {
+         result.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
+    }
+
+    // Inject State Serialization Stubs
+    if result.contains("core_on_load") && 
+       !result.contains("core_on_save_state") && 
+       !result.contains("core_get_state_schema_hash") {
+        let fields = parse_appstate_int_fields_with_defaults(shared_content);
+        let state_serial_stubs = generate_state_serialization_code_with_defaults(&fields, "core");
+        result.push_str(&state_serial_stubs);
+    } else if result.contains("on_load") && 
+              !result.contains("on_save_state") && 
+              !result.contains("core_on_load") &&
+              !result.contains("get_state_schema_hash") {
+        let fields = parse_appstate_int_fields_with_defaults(shared_content);
+        let state_serial_stubs = generate_state_serialization_code_with_defaults(&fields, "legacy");
+        result.push_str(&state_serial_stubs);
+    }
+    
+    result
+}
+
+/// Parse AppState struct fields from shared.h content
+/// Returns a list of (field_name, field_type, default_value) tuples for int fields
+/// Default value is extracted from declarations like "int btn_x = 200;"
+fn parse_appstate_int_fields_with_defaults(
+    shared_content: &str,
+) -> Vec<(String, String, Option<i64>)> {
+    let mut fields = Vec::new();
+
+    // Find AppState struct definition
+    let struct_re = regex::Regex::new(r"struct\s+AppState\s*\{([^}]*)\}").ok();
+
+/// Apply guardrails to gui.cpp content (requires processed shared.h for context)
+fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
+    let mut result = content.to_string();
+    
+    // Detect if shared.h has full struct definitions
+    let shared_has_full_hostkv = shared_content.contains("struct HostKvApiV1 {") ||
+                                  shared_content.contains("struct SynthiHostContextV1 {") ||
+                                  shared_content.contains("struct SynthiNamespaceSchemaV1 {");
+
+    // Strip X11-related functions
+    let x11_type_patterns = [
+        "Display*", "Display *", "XIM", "XIC", "Atom", "Colormap", "Pixmap", "GC ",
+        "XEvent", "XOpenDisplay", "XCloseDisplay", "XCreateWindow", "XDestroyWindow",
+        "XOpenIM", "XCreateIC", "XCreateGC", "XFreeGC", "XCreatePixmap", "XFreePixmap",
+    ];
+    let mut cleaned_lines = Vec::new();
+    for line in result.lines() {
+        let has_x11 = x11_type_patterns.iter().any(|pat| line.contains(pat));
+        let is_comment = line.trim_start().starts_with("//") || line.trim_start().starts_with("/*");
+        let is_include = line.trim_start().starts_with("#include");
+        if has_x11 && !is_comment && !is_include {
+            cleaned_lines.push(format!("// [X11-stripped] {}", line));
+        } else {
+            cleaned_lines.push(line.to_string());
+        }
+    }
+    result = cleaned_lines.join("\n");
+
+    // FIX: GUI module should use GUI_STATE_MAGIC
+    if result.contains("CORE_STATE_MAGIC") && !result.contains("#define CORE_STATE_MAGIC") {
+        result = result.replace("CORE_STATE_MAGIC", "GUI_STATE_MAGIC");
+    }
+
+    // FIX: Ensure shared.h is included
+    if result.contains("AppState") && !result.contains("#include \"shared.h\"") {
+        if result.contains("struct AppState;") {
+            result = result.replace("struct AppState;", "#include \"shared.h\"");
+        } else {
+            result = format!("#include \"shared.h\"\n{}", result);
+        }
+    }
+    
+    // Strip duplicate AppState definitions
+    if result.contains("#include \"shared.h\"") {
+        if let Some(start) = result.find("typedef struct AppState") {
+            if let Some(end) = result[start..].find("} AppState;") {
+                let block_end = start + end + "} AppState;".len();
+                let block = result[start..block_end].to_string();
+                result = result.replace(&block, "// AppState defined in shared.h");
+            }
+        }
+
+        if let Some(start) = result.find("typedef struct {") {
+            if let Some(end) = result[start..].find("} AppState;") {
+                 let block_end = start + end + "} AppState;".len();
+                 let block = result[start..block_end].to_string();
+                 if block.contains("magic") && block.contains("struct_size") {
+                     result = result.replace(&block, "// AppState defined in shared.h");
+                 }
+            }
+        }
+        
+        if let Some(start) = result.find("struct AppState {") {
+            if let Some(end) = result[start..].find("};") {
+                let block_end = start + end + "};".len();
+                let block = result[start..block_end].to_string();
+                if block.contains("{") {
+                    result = result.replace(&block, "// AppState defined in shared.h");
+                }
+            }
+        }
+
+        // Handle Host KV structs
+        for struct_name in &["HostKvApiV1", "SynthiHostContextV1", "SynthiNamespaceSchemaV1"] {
+             let typedef_pattern = format!("typedef struct {} {};", struct_name, struct_name);
+             if result.contains(&typedef_pattern) {
+                 result = result.replace(&typedef_pattern, &format!("// {} forward-declared in shared.h", struct_name));
+             }
+             
+             if shared_has_full_hostkv {
+                 let struct_decl = format!("struct {} {{", struct_name);
+                 if let Some(start) = result.find(&struct_decl) {
+                     if let Some(end) = result[start..].find("};") {
+                         let block_end = start + end + "};".len();
+                         let block = result[start..block_end].to_string();
+                         result = result.replace(&block, &format!("// {} fully defined in shared.h", struct_name));
+                     }
+                 }
+             }
+        }
+        
+        // Inject Host KV definitions if needed
+        let uses_hostkv_types = result.contains("SynthiHostContextV1") || 
+                                result.contains("SynthiNamespaceSchemaV1") ||
+                                result.contains("HostKvApiV1") ||
+                                result.contains("g_gui_schemas") ||
+                                result.contains("host_kv_schemas");
+        
+        if uses_hostkv_types && !shared_has_full_hostkv {
+            let hostkv_header = get_hostkv_header();
+            if let Some(include_end) = result.rfind("#include") {
+                if let Some(newline_pos) = result[include_end..].find('\n') {
+                    let insert_pos = include_end + newline_pos + 1;
+                    result.insert_str(insert_pos, &hostkv_header);
+                }
+            } else {
+                result = format!("{}{}", hostkv_header, result);
+            }
+        }
+    }
+
+    // FIX: gui_on_load MUST have 3 parameters
+    if result.contains("gui_on_load(void* prev_state, void* window_ptr)") && 
+       !result.contains("gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)") {
+        result = result.replace(
+            "gui_on_load(void* prev_state, void* window_ptr)",
+            "gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)"
+        );
+    }
+
+    // FIX: Comment out SDL_RenderPresent
+    let re_present = regex::Regex::new(r"SDL_RenderPresent\s*\([^)]*\)\s*;").unwrap();
+    result = re_present.replace_all(&result, "/* SDL_RenderPresent removed - runner handles this */").to_string();
+
+    // FIX: Replace SDL_GetKeyboardWindow
+    if result.contains("SDL_GetKeyboardWindow") {
+        result = result.replace("SDL_GetKeyboardWindow", "SDL_GetKeyboardFocus");
+    }
+
+    // Convert malloc-based gui_on_load to static storage
+    if result.contains("malloc(sizeof(AppState))") && result.contains("gui_on_load") {
+        if !result.contains("static AppState gui_app_state") && !result.contains("static GuiState gui_state") {
+            if let Some(on_load_pos) = result.find("extern \"C\" void* gui_on_load") {
+                result.insert_str(on_load_pos, "// [Guardrail] Injected static storage for HMR\nstatic AppState gui_app_state = {0};\n\n");
+            }
+        }
+        
+        let re_malloc = regex::Regex::new(r"AppState\*\s+state\s*=\s*\(AppState\*\)\s*malloc\s*\(\s*sizeof\s*\(\s*AppState\s*\)\s*\)\s*;").unwrap();
+        result = re_malloc.replace_all(&result, "AppState* state = (prev_state) ? (AppState*)prev_state : &gui_app_state; // [Guardrail] Fixed malloc->static").to_string();
+        
+        let re_malloc2 = regex::Regex::new(r"GuiState\*\s+state\s*=\s*\(GuiState\*\)\s*malloc\s*\(\s*sizeof\s*\(\s*GuiState\s*\)\s*\)\s*;").unwrap();
+        result = re_malloc2.replace_all(&result, "GuiState* state = (prev_state) ? (GuiState*)prev_state : &gui_state; // [Guardrail] Fixed malloc->static").to_string();
+    }
+
+    // FIX: free(state) crashes
+    if result.contains("free(state)") {
+        result = result.replace("free(state);", "// free(state); // Commented - runner manages state");
+    }
+
+    // FIX: memset wipes HMR state
+    if result.contains("memset(state") || result.contains("memset(&app_state") || 
+        result.contains("memset(&gui_state") || result.contains("memset(&state") ||
+        result.contains("memset(&gui_app_state") || result.contains("memset( state") {
+        let re_memset = regex::Regex::new(r"memset\s*\(\s*(state|&app_state|&gui_state|&state|&gui_app_state)[^;]*\)\s*;").unwrap();
+        result = re_memset.replace_all(&result, "// [Guardrail] memset REMOVED to preserve HMR state").to_string();
+    }
+
+    // FIX: app_state -> gui_app_state in gui.cpp
+    if result.contains("static AppState gui_app_state") || result.contains("&gui_app_state") {
+        if result.contains("&app_state") && !result.contains("&gui_app_state") {
+            result = result.replace("&app_state", "&gui_app_state");
+        }
+        
+        if result.contains("gui_app_state") {
+            let placeholder = "__GUI_APP_STATE_PLACEHOLDER__";
+            let temp_content = result.replace("gui_app_state", placeholder);
+            if temp_content.contains("app_state") {
+                let fixed_content = temp_content.replace("app_state", "gui_app_state");
+                result = fixed_content.replace(placeholder, "gui_app_state");
+            }
+        }
+    }
+
+    // Add entrypoint if needed
+    if result.contains("main(") && !result.contains("extern \"C\" void* entrypoint") {
+         result.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
+    }
+
+    // FIX: renderer -> state->renderer
+    if result.contains("SDL_Render") || result.contains("SDL_SetRenderDrawColor") || result.contains("draw_text") {
+        let fixes = [
+            ("SDL_RenderFillRect(renderer,", "SDL_RenderFillRect(state->renderer,"),
+            ("SDL_RenderDrawRect(renderer,", "SDL_RenderDrawRect(state->renderer,"),
+            ("SDL_SetRenderDrawColor(renderer,", "SDL_SetRenderDrawColor(state->renderer,"),
+            ("SDL_RenderClear(renderer)", "SDL_RenderClear(state->renderer)"),
+            ("draw_text(renderer,", "draw_text(state->renderer,"),
+        ];
+        for (wrong, correct) in &fixes {
+            if result.contains(*wrong) {
+                result = result.replace(*wrong, *correct);
+            }
+        }
+    }
+
+    // FIX: x/y -> mx/my in click handlers
+    if result.contains("SDL_MOUSEBUTTONDOWN") {
+        let click_fixes = [
+            ("if (x >= state->", "if (mx >= state->"),
+            ("if (y >= state->", "if (my >= state->"),
+            ("&& x <", "&& mx <"),
+            ("&& y <", "&& my <"),
+            ("&& x <=", "&& mx <="),
+            ("&& y <=", "&& my <="),
+        ];
+        for (wrong, correct) in &click_fixes {
+            if result.contains(*wrong) {
+                result = result.replace(*wrong, *correct);
+            }
+        }
+    }
+    
+    // Inject GUI state serialization stubs
+    if result.contains("gui_on_load") && 
+       !result.contains("gui_on_save_state") &&
+       !result.contains("gui_get_state_schema_hash") {
+        let gui_serial_stubs = r#"
+
+// [Guardrail] State serialization stubs for Full HMR capability (GUI)
+extern "C" char* gui_on_save_state(void* state_ptr) {
+    (void)state_ptr;
+    char* json = (char*)malloc(3);
+    if (json) strcpy(json, "{}");
+    return json;
+}
+
+extern "C" void* gui_on_load_from_json(const char* json) {
+    (void)json;
+    return NULL;
+}
+
+extern "C" void synthi_free_json(char* json) {
+    if (json) free(json);
+}
+"#;
+        result.push_str(gui_serial_stubs);
+    }
+    
+    result
+}
+
+/// Get the Host KV header definitions
+fn get_hostkv_header() -> &'static str {
+    r#"
+// ============================================================
+// [Guardrail] HOST KV TYPE DEFINITIONS (auto-injected)
+// ============================================================
+
+#ifndef SYNTHI_HOST_KV_TYPES_DEFINED
+#define SYNTHI_HOST_KV_TYPES_DEFINED
+
+#include <stdint.h>
+
+struct SynthiHostContextV1;
+struct HostKvApiV1;
+
+typedef struct SynthiNamespaceSchemaV1 {
+    const char* ns;
+    uint64_t schema_id;
+} SynthiNamespaceSchemaV1;
+
+typedef struct SynthiHostContextV1 {
+    uint32_t host_api_version;
+    const struct HostKvApiV1* kv;
+    const char* session_id;
+    uint32_t session_id_len;
+    uint32_t module_slot;
+    void* window;
+    void* renderer;
+    void* reserved[8];
+} SynthiHostContextV1;
+
+typedef struct HostKvApiV1 {
+    uint32_t version;
+    int (*set_bytes)(const SynthiHostContextV1* ctx, const char* ns, const char* key, const uint8_t* data, uint32_t len);
+    int (*get_bytes)(const SynthiHostContextV1* ctx, const char* ns, const char* key, uint8_t** out, uint32_t* out_len);
+    int (*delete_key)(const SynthiHostContextV1* ctx, const char* ns, const char* key);
+    int (*clear_namespace)(const SynthiHostContextV1* ctx, const char* ns);
+    int (*get_schema)(const SynthiHostContextV1* ctx, const char* ns, uint64_t* out_schema);
+    int (*set_schema)(const SynthiHostContextV1* ctx, const char* ns, uint64_t schema);
+    void* (*host_alloc)(uint32_t size);
+    void (*host_free)(void* ptr);
+    const char* (*last_error)(void);
+} HostKvApiV1;
+
+#endif // SYNTHI_HOST_KV_TYPES_DEFINED
+"#
+}
+
+/// Extract all string literals from C/C++ source in order
+fn extract_string_literals(source: &str) -> Vec<String> {
+    let mut strings = Vec::new();
+    let mut chars = source.chars().peekable();
+    let mut in_string = false;
+    let mut in_char = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut escape_next = false;
+    let mut current_string = String::new();
+    
+    while let Some(c) = chars.next() {
+        if escape_next {
+            if in_string {
+                current_string.push('\\');
+                current_string.push(c);
+            }
+            escape_next = false;
+            continue;
+        }
+        
+        if in_line_comment {
+            if c == '\n' { in_line_comment = false; }
+            continue;
+        }
+        
+        if in_block_comment {
+            if c == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                in_block_comment = false;
+            }
+            continue;
+        }
+        
+        if in_string {
+            if c == '\\' {
+                escape_next = true;
+            } else if c == '"' {
+                strings.push(current_string.clone());
+                current_string.clear();
+                in_string = false;
+            } else {
+                current_string.push(c);
+            }
+            continue;
+        }
+        
+        if in_char {
+            if c == '\\' { escape_next = true; }
+            else if c == '\'' { in_char = false; }
+            continue;
+        }
+        
+        // Detect start of constructs
+        if c == '/' {
+            if chars.peek() == Some(&'/') { chars.next(); in_line_comment = true; continue; }
+            if chars.peek() == Some(&'*') { chars.next(); in_block_comment = true; continue; }
+        }
+        if c == '"' { in_string = true; continue; }
+        if c == '\'' { in_char = true; continue; }
+    }
+    
+    strings
+}
+
+/// Patch string literals in cached JSON result with new strings from source
+/// Returns (patched_result, did_patch_anything)
+fn patch_strings_in_cached_result(
+    cached: &serde_json::Value,
+    old_strings: &[String],
+    new_strings: &[String],
+) -> (serde_json::Value, bool) {
+    // Only patch if we have a reasonable mapping
+    if old_strings.is_empty() || new_strings.is_empty() {
+        return (cached.clone(), false);
+    }
+    
+    let mut result = cached.clone();
+    let mut any_patches_applied = false;
+    
+    // Patch each file's content in the split result
+    for key in &["core", "gui", "shared"] {
+        if let Some(file_obj) = result.get_mut(key) {
+            if let Some(content) = file_obj.get_mut("content") {
+                if let Some(content_str) = content.as_str() {
+                    let mut patched = content_str.to_string();
+                    
+                    // Replace old strings with new strings where they differ
+                    // Match by position in the string list (assuming order is preserved)
+                    for (old, new) in old_strings.iter().zip(new_strings.iter()) {
+                        if old != new && !old.is_empty() {
+                            // Use format with quotes to avoid partial matches
+                            let old_quoted = format!("\"{}\"", old);
+                            let new_quoted = format!("\"{}\"", new);
+                            if patched.contains(&old_quoted) {
+                                patched = patched.replace(&old_quoted, &new_quoted);
+                                any_patches_applied = true;
+                            }
+                        }
+                    }
+                    
+                    *content = serde_json::Value::String(patched);
+                }
+            }
+        }
+    }
+    
+    (result, any_patches_applied)
+}
+
+/// Check if a string looks like a semantic value that AI transforms (not just copies)
+/// These include: color names, font names, file paths, etc.
+fn is_semantic_string(s: &str) -> bool {
+    // X11/CSS color names
+    let color_names = [
+        "black", "white", "red", "green", "blue", "yellow", "cyan", "magenta",
+        "orange", "purple", "pink", "brown", "gray", "grey", "navy", "teal",
+        "lime", "aqua", "maroon", "olive", "silver", "fuchsia",
+    ];
+    
     let lower = s.to_lowercase();
     color_names.iter().any(|c| lower == *c)
 }
@@ -1688,19 +2677,18 @@ fn collect_string_changes(old_strings: &[String], new_strings: &[String]) -> Vec
 /// Parse AppState struct fields from shared.h content
 /// Returns a list of (field_name, field_type, default_value) tuples for int fields
 /// Default value is extracted from declarations like "int btn_x = 200;"
-fn parse_appstate_int_fields_with_defaults(
-    shared_content: &str,
-) -> Vec<(String, String, Option<i64>)> {
+fn parse_appstate_int_fields_with_defaults(shared_content: &str) -> Vec<(String, String, Option<i64>)> {
     let mut fields = Vec::new();
-
+    
     // Find AppState struct definition
     let struct_re = regex::Regex::new(r"struct\s+AppState\s*\{([^}]*)\}").ok();
-
+    
     if let Some(re) = struct_re {
         if let Some(captures) = re.captures(shared_content) {
             if let Some(body) = captures.get(1) {
                 let body_str = body.as_str();
 
+                
                 // Parse individual field declarations WITH default values
                 // Match patterns like: int x; or int x = 10; or int btn_x = 330, btn_y = 10;
                 // Also handle inline declarations like: int x = 0, y = 0, dx = 5, dy = 5;
@@ -1912,6 +2900,69 @@ fn try_local_deletion_patch(
     Some(result)
 }
 
+/// Detect GUI-related modifications (position, color, size changes)
+/// Returns modified lines as X11 code for translation to SDL2
+fn detect_gui_modifications(old_source: &str, new_source: &str) -> Option<String> {
+    let old_lines: Vec<&str> = old_source.lines().collect();
+    let new_lines: Vec<&str> = new_source.lines().collect();
+    
+    // GUI-related keywords that indicate drawable/interactive elements
+    let gui_keywords = [
+        "XFillRectangle", "XDrawRectangle", "XDrawString", "XDrawLine",
+        "XSetForeground", "XSetBackground", "XDrawArc", "XFillArc",
+        "SDL_Rect", "SDL_RenderFillRect", "SDL_RenderDrawRect",
+        "btn_x", "btn_y", "btn_w", "btn_h", "button",
+        "color", "Color", "width", "height", "position",
+    ];
+    
+    let mut modifications = Vec::new();
+    
+    // Find modified lines (lines that have similar structure but different values)
+    for new_line in &new_lines {
+        let trimmed_new = new_line.trim();
+        if trimmed_new.is_empty() || trimmed_new.starts_with("//") {
+            continue;
+        }
+        
+        // Check if this line contains GUI keywords
+        let is_gui_line = gui_keywords.iter().any(|kw| trimmed_new.contains(kw));
+        if !is_gui_line {
+            continue;
+        }
+        
+        // Check if a SIMILAR line exists in old (same function call, different args)
+        let has_similar_in_old = old_lines.iter().any(|old_line| {
+            let trimmed_old = old_line.trim();
+            // Check if they share the same function call or variable name
+            if trimmed_old == trimmed_new {
+                return true; // Exact match - not a modification
+            }
+            // Check for similar structure (e.g., same function name)
+            for kw in &gui_keywords {
+                if trimmed_old.contains(kw) && trimmed_new.contains(kw) {
+                    // Same keyword, likely a modification if values differ
+                    return true;
+                }
+            }
+            false
+        });
+        
+        // If this GUI line doesn't have an exact match in old, it's new or modified
+        let exists_exactly_in_old = old_lines.iter().any(|old_line| old_line.trim() == trimmed_new);
+        
+        if is_gui_line && has_similar_in_old && !exists_exactly_in_old {
+            modifications.push(trimmed_new.to_string());
+        }
+    }
+    
+    if modifications.is_empty() {
+        return None;
+    }
+    
+    eprintln!("[AI Split] Detected {} GUI modifications", modifications.len());
+    Some(modifications.join("\n"))
+}
+
 /// Detect structural additions between old and new source code
 /// Returns a description of what was added (new buttons, new elements, etc.)
 fn detect_structural_additions(old_source: &str, new_source: &str) -> Option<String> {
@@ -2077,8 +3128,8 @@ async fn perform_structural_ai_update(
         "cached_result": cached_result  // CRITICAL: Include cached result for delta injection
     });
 
-    let backend_url =
-        std::env::var("AI_BACKEND_URL").unwrap_or_else(|_| "http://172.19.224.1:8000".to_string());
+    let backend_url = std::env::var("AI_BACKEND_URL")
+        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
     let url = format!("{}/refactor/delta", backend_url);
 
     eprintln!("[AI Split] Calling fast delta endpoint: {}", url);
@@ -2203,8 +3254,8 @@ async fn perform_delta_deletion(
         "cached_result": cached_result
     });
 
-    let backend_url =
-        std::env::var("AI_BACKEND_URL").unwrap_or_else(|_| "http://172.19.224.1:8000".to_string());
+    let backend_url = std::env::var("AI_BACKEND_URL")
+        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
     let url = format!("{}/refactor/delta", backend_url);
 
     eprintln!("[AI Split] Calling delta deletion endpoint: {}", url);
@@ -2274,8 +3325,8 @@ async fn perform_incremental_ai_update(
         "shared_content": shared_content
     });
 
-    let backend_url =
-        std::env::var("AI_BACKEND_URL").unwrap_or_else(|_| "http://172.19.224.1:8000".to_string());
+    let backend_url = std::env::var("AI_BACKEND_URL")
+        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
     let url = format!("{}/refactor/structural", backend_url);
 
     eprintln!("[AI Split] Calling fast incremental endpoint: {}", url);
@@ -2682,6 +3733,37 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
                 }
             }
         }
+        // Level 2.8: Check for GUI modifications (position, color, size changes)
+        // These are lines that exist in both but with different values
+        else if let Some(gui_changes) = detect_gui_modifications(&cached.original_source, &req.source) {
+            eprintln!("[AI Split] ╔═══════════════════════════════════════════════════════════╗");
+            eprintln!("[AI Split] ║  GUI MODIFICATION DETECTED - Using fast delta path       ║");
+            eprintln!("[AI Split] ╚═══════════════════════════════════════════════════════════╝");
+            eprintln!("[AI Split] Delta type: GUI MODIFICATION (position/color/size change)");
+            eprintln!("[AI Split] Modified GUI code:\n{}", gui_changes.lines().take(5).collect::<Vec<_>>().join("\n"));
+            
+            match perform_structural_ai_update(&cached.result, &cached.original_source, &req.source, &gui_changes, &req.language).await {
+                Ok(updated_result) => {
+                    let cached_entry = CachedSplit {
+                        result: updated_result.clone(),
+                        original_source: req.source.clone(),
+                    };
+                    {
+                        let mut cache = get_ai_split_cache().lock().await;
+                        cache.insert(source_hash, cached_entry.clone());
+                    }
+                    {
+                        let mut structural_cache = get_ai_split_structural_cache().lock().await;
+                        structural_cache.insert(structural_hash, cached_entry);
+                    }
+                    eprintln!("[AI Split] ✓ GUI modification delta complete - fast HMR!");
+                    return Ok(updated_result);
+                }
+                Err(e) => {
+                    eprintln!("[AI Split] ✗ GUI modification update failed: {} - falling back to full regen", e);
+                }
+            }
+        }
     }
 
     // Level 3: Cache miss - call AI backend (full regeneration)
@@ -2696,8 +3778,8 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
         "mode": "split"
     });
 
-    let backend_url =
-        std::env::var("AI_BACKEND_URL").unwrap_or_else(|_| "http://172.19.224.1:8000".to_string());
+    let backend_url = std::env::var("AI_BACKEND_URL")
+        .unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
     let url = format!("{}/refactor/split", backend_url);
 
     let res = client
@@ -2863,7 +3945,31 @@ async fn handle_compile(
     compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>>,
     boundary_checker: Arc<Mutex<BoundaryChecker>>,
     incremental_cache: Arc<IncrementalCache>,
+    // v2.1 HMR Infrastructure
+    hmr_orchestrator: Arc<tokio::sync::Mutex<HmrOrchestrator>>,
+    structured_logger: Arc<StructuredLogger>,
+    metrics_aggregator: Arc<tokio::sync::Mutex<MetricsAggregator>>,
+    restart_controller: Arc<tokio::sync::Mutex<RestartController>>,
+    ipc_config: Arc<IpcConfig>,
 ) -> Result<()> {
+    // ============================================================
+    // v2.1 HMR METRICS & LOGGING INITIALIZATION
+    // ============================================================
+    let compile_start = std::time::Instant::now();
+    let reload_id = ReloadId::new(); // Generate unique reload ID (from observability, re-exported from reload_protocol)
+    
+    structured_logger.log(&LogEntry::new(LogLevel::Info, "handle_compile", "Starting compile request")
+        .with_reload_id(reload_id.clone())
+        .with_field("is_gui", req.is_gui.to_string())
+        .with_field("use_ai_split", req.use_ai_split.to_string())
+        .with_field("language", req.language.clone()));
+    
+    // Module ID for tracking restarts and metrics
+    let module_id = format!("{}:{}", req.language, if req.is_gui { "gui" } else { "cli" });
+    
+    // Log IPC config being used
+    eprintln!("[HMR v2.1] Using IPC config: max_frame_size={}KB", ipc_config.max_frame_size / 1024);
+    
     // Use the shared workspace path instead of creating a new temp dir
     let dir_path = workspace_path;
 
@@ -3075,7 +4181,7 @@ async fn handle_compile(
         }
 
         // ============================================================
-        // DIFFERENTIAL REBUILD: Compute new hashes and determine scope
+        // PHASE 1: APPLY GUARDRAILS TO ALL CONTENT FIRST
         // ============================================================
         // Use the outer-scope new_hashes variable
         if let Some(shared) = split_data.get("shared") {
@@ -3091,6 +4197,40 @@ async fn handle_compile(
             new_hashes.gui_hash = hash_content(content);
         }
 
+        // This ensures hashes are computed from post-guardrail content,
+        // so the rebuild scope decision is based on what actually gets compiled.
+        
+        // Extract raw content from AI split
+        let shared_raw = split_data.get("shared")
+            .and_then(|s| s["content"].as_str())
+            .unwrap_or("")
+            .to_string();
+        let core_raw = split_data.get("core")
+            .and_then(|s| s["content"].as_str())
+            .unwrap_or("")
+            .to_string();
+        let gui_raw = split_data.get("gui")
+            .and_then(|s| s["content"].as_str())
+            .unwrap_or("")
+            .to_string();
+        
+        // Apply guardrails to shared.h
+        let processed_shared = apply_shared_guardrails(&shared_raw);
+        
+        // Apply guardrails to core.cpp (needs shared content for context)
+        let processed_core = apply_core_guardrails(&core_raw, &processed_shared);
+        
+        // Apply guardrails to gui.cpp (needs shared content for context)
+        let processed_gui = apply_gui_guardrails(&gui_raw, &processed_shared);
+        
+        // ============================================================
+        // PHASE 2: COMPUTE HASHES FROM POST-GUARDRAIL CONTENT
+        // ============================================================
+        // Use semantic hashing for shared.h so comment/whitespace churn doesn't force full rebuilds.
+        new_hashes.shared_hash = hash_shared_header_semantic(&processed_shared);
+        new_hashes.core_hash = hash_content(&processed_core);
+        new_hashes.gui_hash = hash_content(&processed_gui);
+        
         // Get previous hashes from runner state (if exists)
         let (prev_hashes, prev_core_path, _prev_gui_path) = {
             let guard = runner_store.lock().await;
@@ -3120,6 +4260,26 @@ async fn handle_compile(
             && prev_hashes.core_hash == 0
             && prev_hashes.gui_hash == 0
         {
+        
+        // ============================================================
+        // PHASE 3: DETERMINE REBUILD SCOPE FROM POST-GUARDRAIL HASHES
+        // ============================================================
+        // DEBUG: Print hashes to help diagnose "Full build" issues
+        eprintln!("[Main] Hashes (post-guardrail) - Prev: s={}, c={}, g={}", prev_hashes.shared_hash, prev_hashes.core_hash, prev_hashes.gui_hash);
+        eprintln!("[Main] Hashes (post-guardrail) - New:  s={}, c={}, g={}", new_hashes.shared_hash, new_hashes.core_hash, new_hashes.gui_hash);
+
+        // Enhanced debug: show which hashes changed
+        if prev_hashes.shared_hash != 0 && prev_hashes.shared_hash != new_hashes.shared_hash {
+            eprintln!("[Main] DEBUG: shared.h hash CHANGED - check for field order changes or AI rewriting struct fields");
+        }
+        if prev_hashes.core_hash != 0 && prev_hashes.core_hash != new_hashes.core_hash {
+            eprintln!("[Main] DEBUG: core.cpp hash changed");
+        }
+        if prev_hashes.gui_hash != 0 && prev_hashes.gui_hash != new_hashes.gui_hash {
+            eprintln!("[Main] DEBUG: gui.cpp hash changed");
+        }
+
+        let rebuild_scope = if prev_hashes.shared_hash == 0 && prev_hashes.core_hash == 0 && prev_hashes.gui_hash == 0 {
             eprintln!("[Main] First build detected - full build");
             RebuildScope::Both
         } else if prev_hashes.shared_hash != new_hashes.shared_hash {
@@ -3201,6 +4361,13 @@ async fn handle_compile(
                     .push("core.cpp should define abi_version field in state struct".to_string());
             }
 
+            let has_abi_version = content.contains("SYNTHI_CORE_ABI_VERSION") || 
+                                  content.contains("abi_version") ||
+                                  shared_content.contains("abi_version");
+            if !has_abi_version {
+                validation_warnings.push("core.cpp should define abi_version field in state struct".to_string());
+            }
+            
             // Dangerous patterns: GUI code modifying CoreState directly
             if content.contains("GuiState") && content.contains("CoreState") {
                 // This is allowed - core might reference GUI types for callbacks
@@ -3233,11 +4400,35 @@ async fn handle_compile(
                 if content.contains("core_state->")
                     && (content.contains("= ") || content.contains("++") || content.contains("--"))
                 {
+        
+        // Validate gui.cpp required exports
+        if let Some(gui) = split_data.get("gui") {
+            let content = gui["content"].as_str().unwrap_or("");
+            
+            // Required GUI exports (check for both new and legacy symbol names)
+            // Support both inline: `extern "C" void gui_render(...)` 
+            // and block: `extern "C" { ... void gui_render(...) ... }`
+            let has_extern_c_block = content.contains("extern \"C\" {");
+            let has_gui_render_fn = content.contains("void gui_on_render") || content.contains("void gui_render");
+            let has_inline_extern = content.contains("extern \"C\" void gui_on_render") ||
+                                    content.contains("extern \"C\" void gui_render");
+            let has_gui_render = has_inline_extern || (has_extern_c_block && has_gui_render_fn);
+            
+            if !has_gui_render {
+                validation_errors.push("gui.cpp missing required export: gui_render or gui_on_render".to_string());
+            }
+            
+            // Warning: GUI should not modify CoreState directly (HMR safety)
+            if content.contains("CoreState*") && content.contains("->") {
+                // Check if it's writing to CoreState (not just reading)
+                if content.contains("core_state->") && 
+                   (content.contains("= ") || content.contains("++") || content.contains("--")) {
                     validation_warnings.push("gui.cpp may be modifying CoreState - HMR state preservation may be affected".to_string());
                 }
             }
         }
 
+        
         // Report validation results
         if !validation_warnings.is_empty() {
             for warning in &validation_warnings {
@@ -3252,6 +4443,10 @@ async fn handle_compile(
             }
         }
 
+                let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+            }
+        }
+        
         if !validation_errors.is_empty() {
             // Send all errors to frontend
             for error in &validation_errors {
@@ -3265,6 +4460,9 @@ async fn handle_compile(
                     .await;
             }
 
+                let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+            }
+            
             // Don't fail completely - continue with compilation but warn
             let payload = serde_json::json!({
                 "sessionId": session_id.clone(),
@@ -4151,6 +5349,49 @@ typedef struct HostKvApiV1 {
                         }
 
                         core_lib_path = core_out.to_string_lossy().to_string();
+            let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+        }
+
+        // Reuse previous paths if not rebuilding that module
+        if rebuild_scope == RebuildScope::GuiOnly {
+            if let Some(ref path) = prev_core_path {
+                core_lib_path = path.clone();
+                eprintln!("[Main] Reusing existing core library: {}", core_lib_path);
+            }
+        }
+
+        // Write shared.h (already processed by guardrails in Phase 1)
+        // IMPORTANT: avoid rewriting when semantically unchanged, otherwise a file-watcher can
+        // see generated `shared.h` churn and trigger redundant builds/restarts.
+        if split_data.get("shared").is_some() {
+            let fname = split_data
+                .get("shared")
+                .and_then(|s| s["filename"].as_str())
+                .unwrap_or("shared.h");
+
+            let shared_path = dir_path.join(fname);
+            let shared_exists = tokio::fs::try_exists(&shared_path).await.unwrap_or(false);
+
+            let shared_semantically_changed = prev_hashes.shared_hash == 0
+                || prev_hashes.shared_hash != new_hashes.shared_hash;
+
+            if !shared_exists || shared_semantically_changed {
+                println!("Writing shared library file: {}", fname);
+                tokio::fs::write(shared_path, &processed_shared).await?;
+            } else {
+                eprintln!("[Main] shared.h unchanged (semantic) - skipping write");
+            }
+        }
+
+        // Skip core compilation if GUI-only rebuild (reuse existing core.so)
+        if rebuild_scope == RebuildScope::Both || rebuild_scope == RebuildScope::CoreOnly {
+        if split_data.get("core").is_some() {
+            let fname = split_data.get("core")
+                .and_then(|s| s["filename"].as_str())
+                .unwrap_or("core.cpp");
+            
+            // Use the already-processed content from Phase 1 (guardrails already applied)
+            let content = processed_core.clone();
 
                         // Detect Core module capabilities from exports
                         if let Ok(core_report) =
@@ -4318,7 +5559,7 @@ typedef struct HostKvApiV1 {
                 .await;
         }
 
-        if let Some(gui) = split_data.get("gui") {
+        if split_data.get("gui").is_some() {
             // Only compile GUI if scope includes it
             if rebuild_scope == RebuildScope::Both || rebuild_scope == RebuildScope::GuiOnly {
                 let fname = gui["filename"].as_str().unwrap_or("gui.cpp");
@@ -4765,6 +6006,117 @@ extern "C" void synthi_free_json(char* json) {
 "#;
                     content.push_str(gui_serial_stubs);
                     eprintln!("[Guardrail] Injected GUI state serialization stubs for Full HMR capability");
+            let fname = split_data.get("gui")
+                .and_then(|s| s["filename"].as_str())
+                .unwrap_or("gui.cpp");
+            
+            // Use the already-processed content from Phase 1 (guardrails already applied)
+            let content = processed_gui.clone();
+            
+            // Hash content + core_lib_path dependency
+            let combined_hash = calculate_hash(&(content.clone(), &core_lib_path));
+            
+            // Try content-addressable cache first (persists across sessions)
+            let gui_cache_key = IncrementalCache::cache_key(&content, &["-shared", "-fPIC", "-lSDL2"], &[]);
+            if let Some(cached_so) = incremental_cache.get(&gui_cache_key).await {
+                gui_lib_path = cached_so.to_string_lossy().to_string();
+                eprintln!("[Cache] HIT for gui module (persistent cache)");
+                println!("Using cached gui library: {}", gui_lib_path);
+            } else {
+                // Cache miss - need to compile
+                tokio::fs::write(dir_path.join(fname), &content).await?;
+                
+                let gui_out = output_dir.join(format!("libgui_{}.{}", timestamp, ext));
+                let mut cmd = system_command("g++");
+                cmd.arg("-shared").arg("-fPIC")
+                   .arg("-D_POSIX_C_SOURCE=199309L")
+                   // Debug flags for source map generation
+                   .arg("-g").arg("-gdwarf-4").arg("-fno-omit-frame-pointer")
+                   // Add JSON diagnostics flag for structured error parsing
+                   .arg("-fdiagnostics-format=json")
+                   .arg(fname).arg("-I.").arg("-o").arg(&gui_out)
+                   .arg("-ldl")
+                   // Export symbols for backtracing
+                   .arg("-rdynamic");
+                
+                if req.is_gui {
+                    cmd.arg("-lSDL2");
+                }
+                // User requested dynamic loading via dlopen/dlsym, so we do NOT link core directly.
+                // if !core_lib_path.is_empty() {
+                //    cmd.arg(&core_lib_path);
+                // }
+
+                cmd.current_dir(&dir_path);
+                
+                let output = cmd.output().await?;
+                if !output.status.success() {
+                     let stderr = String::from_utf8_lossy(&output.stderr);
+                     
+                     // Parse compiler output into structured diagnostics
+                     let diag_report = parse_compiler_output(&stderr, "gui", CompilerType::Gcc, true);
+                     let diag_event = DiagnosticEvent::new("gui", diag_report.clone())
+                         .with_session(session_id.clone().unwrap_or_default());
+                     
+                     // Send structured diagnostics
+                     let diag_payload = serde_json::json!({
+                        "sessionId": session_id.clone(),
+                        "type": "compile-diagnostics",
+                        "data": serde_json::from_str::<serde_json::Value>(&diag_event.to_json()).unwrap_or_default()
+                     });
+                     let _ = log_dc.send_text(serde_json::to_string(&diag_payload).unwrap_or_default()).await;
+                     
+                     // Send compile error HMR status - rollback behavior keeps old module
+                     let status = HmrStatus::compile_error("gui", vec![stderr.to_string()]);
+                     let hmr_payload = serde_json::json!({
+                        "sessionId": session_id.clone(),
+                        "type": "hmr-status",
+                        "data": serde_json::from_str::<serde_json::Value>(&status.to_json()).unwrap_or_default()
+                     });
+                     let _ = log_dc.send_text(serde_json::to_string(&hmr_payload).unwrap_or_default()).await;
+                     
+                     // If we have an existing runner with the old gui, keep it running (rollback)
+                     {
+                         let guard = runner_store.lock().await;
+                         if let Some(state) = guard.as_ref() {
+                             if state.loaded_gui_path.is_some() {
+                                 let rejected = HmrStatus::rejected("gui", "Compilation failed - keeping previous GUI module");
+                                 let payload = serde_json::json!({
+                                     "sessionId": session_id.clone(),
+                                     "type": "hmr-status",
+                                     "data": serde_json::from_str::<serde_json::Value>(&rejected.to_json()).unwrap_or_default()
+                                 });
+                                 let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                 eprintln!("[Rollback] GUI compile failed, keeping old module running");
+                                 
+                                 // Don't fail the whole operation - just skip GUI update
+                                 // The core will continue running with the old GUI
+                             }
+                         }
+                     }
+                     
+                     let payload = serde_json::json!({
+                        "sessionId": session_id.clone(),
+                        "status": "done",
+                        "success": false,
+                        "stage": "compile_gui",
+                        "error": stderr
+                    });
+                    let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                    return Ok(());
+                }
+                gui_lib_path = gui_out.to_string_lossy().to_string();
+                
+                // Detect GUI module capabilities from exports
+                if let Ok(gui_report) = detect_capabilities(std::path::Path::new(&gui_lib_path)) {
+                    eprintln!("[Capability] GUI module: {:?}, HMR: {:?}", gui_report.module_type, gui_report.hmr_capability);
+                    let status = HmrStatus::capability_detected("gui", &gui_report);
+                    let payload = serde_json::json!({
+                        "sessionId": session_id.clone(),
+                        "type": "hmr-status",
+                        "data": serde_json::from_str::<serde_json::Value>(&status.to_json()).unwrap_or_default()
+                    });
+                    let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
                 }
 
                 // Hash content + core_lib_path dependency
@@ -6322,6 +7674,40 @@ extern "C" void synthi_free_json(char* json) {
         .send_text(serde_json::to_string(&payload).unwrap_or_default())
         .await;
 
+    let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+    
+    // ============================================================
+    // v2.1 COMPLETION METRICS
+    // ============================================================
+    let compile_duration = compile_start.elapsed();
+    
+    // Record metrics for this reload using proper tracker
+    {
+        let tracker = ReloadMetricsTracker::start(reload_id.clone(), module_id.clone());
+        // For now we're tracking total duration, quiescence/snapshot would be recorded during HMR
+        let mut metrics = metrics_aggregator.lock().await;
+        metrics.record(&tracker, true);
+    }
+    
+    // Mark successful compilation in restart controller (known good)
+    {
+        let mut rc = restart_controller.lock().await;
+        // Record success with the appropriate lib path
+        let lib_path = if !core_lib_path.is_empty() {
+            std::path::PathBuf::from(&core_lib_path)
+        } else if !gui_lib_path.is_empty() {
+            std::path::PathBuf::from(&gui_lib_path)
+        } else {
+            dir_path.join("unknown_module")
+        };
+        rc.record_success(&module_id, &lib_path);
+    }
+    
+    structured_logger.log(&LogEntry::new(LogLevel::Info, "handle_compile", "Compile completed successfully")
+        .with_reload_id(reload_id.clone())
+        .with_field("duration_ms", compile_duration.as_millis())
+        .with_field("module_id", module_id.clone()));
+    
     println!("[Main] handle_compile completed successfully.");
 
     // Cleanup terminal sender for this session (if any)

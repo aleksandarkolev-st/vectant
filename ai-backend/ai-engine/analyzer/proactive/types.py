@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
+import hashlib
 
 
 class Severity(str, Enum):
@@ -84,12 +85,20 @@ class Diagnostic:
     code: str                                    # Unique diagnostic code e.g. "PY001"
     category: DiagnosticCategory = DiagnosticCategory.SYNTAX
     source: str = "synthi"                       # Tool that produced this
+    id: Optional[str] = None                     # Unique identifier for this diagnostic
     related_information: List[Dict] = field(default_factory=list)
     fixes: List[CodeFix] = field(default_factory=list)
     explanation: Optional[str] = None            # Detailed explanation for AI diagnostics
     confidence: float = 1.0                      # Confidence score (0-1) for AI diagnostics
     originalText: Optional[str] = None           # Original code that caused the diagnostic
     
+    def __post_init__(self):
+        if not self.id:
+            # Generate deterministic ID from content available
+            # We use message, code, and location to create a unique signature
+            content = f"{self.location.line}:{self.location.column}:{self.message}:{self.code}"
+            self.id = hashlib.md5(content.encode()).hexdigest()[:12]
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "message": self.message,
@@ -101,6 +110,8 @@ class Diagnostic:
             "source": self.source,
         }
         
+        if self.id:
+            result["id"] = self.id
         if self.related_information:
             result["relatedInformation"] = self.related_information
         if self.fixes:
