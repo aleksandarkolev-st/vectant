@@ -97,6 +97,31 @@ export default function EmulatorScreen({
     }
   }, [state, hasVideoTrack, mediaStream]);
 
+  // CRITICAL: Attach the mediaStream to the video element
+  React.useEffect(() => {
+    const video = videoRef?.current;
+    if (!video) return;
+    
+    if (mediaStream && hasVideoTrack) {
+      console.debug('[EmulatorScreen] Attaching mediaStream to video element', { 
+        streamId: mediaStream.id,
+        currentSrc: video.srcObject?.id 
+      });
+      
+      // Only update if different stream
+      if (video.srcObject !== mediaStream) {
+        video.srcObject = mediaStream;
+        // Ensure playback starts
+        video.play().catch(err => {
+          console.warn('[EmulatorScreen] video.play() rejected:', err.message);
+        });
+      }
+    } else if (!mediaStream && video.srcObject) {
+      // Clear when stream is removed
+      video.srcObject = null;
+    }
+  }, [mediaStream, hasVideoTrack, videoRef]);
+
   // Early return for OFF state
   if (state === EMULATOR_STATES.OFF) {
     return <div className="h-full w-full bg-black" />;
