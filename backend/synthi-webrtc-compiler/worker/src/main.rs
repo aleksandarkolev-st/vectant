@@ -434,14 +434,86 @@ fn make_chunks(data: &[u8], msg_id: u32) -> Vec<Vec<u8>> {
     chunks
 }
 
+/// Try to detect the Windows host IP if running in WSL
+fn get_wsl_host_ip() -> Option<String> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+
+    // Check if we are in WSL
+    let is_wsl = std::fs::read_to_string("/proc/version")
+        .map(|s| s.to_lowercase().contains("microsoft"))
+        .unwrap_or(false);
+
+    if !is_wsl {
+        return None;
+    }
+
+    // METHOD 1: Try to parse default route from /proc/net/route
+    // This is more reliable than /etc/resolv.conf in modern WSL 2
+    if let Ok(content) = std::fs::read_to_string("/proc/net/route") {
+        for line in content.lines().skip(1) { // Skip header
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 3 && parts[1] == "00000000" { // Destination 0.0.0.0 (default)
+                // Gateway is hex, little endian? No, usually hex network byte order.
+                // Actually, just calling `ip route` via shell is safer if available.
+            }
+        }
+    }
+
+    // Better approach: Run `ip route show default` and parse output
+    // "default via 172.x.x.x dev eth0"
+    if let Ok(output) = std::process::Command::new("ip")
+        .args(&["route", "show", "default"])
+        .output() 
+    {
+        let s = String::from_utf8_lossy(&output.stdout);
+        // Look for "via <IP>"
+        if let Some(pos) = s.find("via ") {
+            let rest = &s[pos + 4..];
+            if let Some(end) = rest.find(' ') {
+                let ip = &rest[..end];
+                eprintln!("[Config] Detected WSL environment. Using Windows Host IP (from ip route): {}", ip);
+                return Some(ip.to_string());
+            }
+        }
+    }
+
+    // Fallback: Parse /etc/resolv.conf for nameserver
+    if let Ok(content) = std::fs::read_to_string("/etc/resolv.conf") {
+        for line in content.lines() {
+            if line.trim().starts_with("nameserver ") {
+                let ip = line.trim().split_whitespace().nth(1)?;
+                eprintln!("[Config] Detected WSL environment. Using Windows Host IP: {}", ip);
+                return Some(ip.to_string());
+            }
+        }
+    }
+    None
+}
+
 fn get_ai_backend_url() -> String {
-    std::env::var("AI_BACKEND_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:8000".to_string())
+    if let Ok(url) = std::env::var("AI_BACKEND_URL") {
+        return url;
+    }
+    
+    // Auto-detect WSL host IP
+    if let Some(host_ip) = get_wsl_host_ip() {
+        return format!("http://{}:8000", host_ip);
+    }
+
+    "http://127.0.0.1:8000".to_string()
 }
 
 fn get_signaling_url() -> String {
-    std::env::var("SIGNALING_URL")
-        .unwrap_or_else(|_| "ws://localhost:9000".to_string())
+    if let Ok(url) = std::env::var("SIGNALING_URL") {
+        return url;
+    }
+
+    // In most setups, the signaling server runs alongside the worker (in WSL)
+    // or is accessible via localhost forwarding.
+    // We ONLY default to Host IP for the AI Backend which we know runs on Windows.
+    "ws://localhost:9000".to_string()
 }
 
 #[tokio::main]
@@ -3788,8 +3860,8 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
         "mode": "split"
     });
 
-    let backend_url = std::env::var("AI_BACKEND_URL")
-        .unwrap_or_elsget_ai_backend_url(
+    let backend_url = get_ai_backend_url();
+    let url = format!("{}/refactor/split", backend_url);
 
     let res = client
         .post(&url)
@@ -3902,7 +3974,8 @@ async fn perform_ai_fix(code: &str, error: &str) -> Result<String> {
     let client = reqwest::Client::new();
     let payload = serde_json::json!({
         "code": code,
-        "error": error,
+        "lang": "cpp", // Defaulting to cpp as this seems to be C++ centric, strictly speaking we should pass language
+        "prompt": format!("Fix the following error:\n{}", error),
         "mode": "fix"
     });
 
@@ -4106,7 +4179,7 @@ async fn handle_compile(
         if !source_code.contains("extern \"C\" fn entrypoint") {
             source_code.push_str("\n\n#[no_mangle]\npub extern \"C\" fn entrypoint(_state: *mut std::ffi::c_void) -> *mut std::ffi::c_void {\n    main();\n    std::ptr::null_mut()\n}\n");
         }
-    } else if req.language == "cpp" || req.language == "cpp_legacy" {
+    } else if (req.language == "cpp" || req.language == "cpp_legacy") && use_ai_split {
         if !source_code.contains("extern \"C\" void* entrypoint") {
             source_code.push_str(
                 "\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n",
@@ -6659,8 +6732,27 @@ extern "C" void synthi_free_json(char* json) {
                 }
 
                 // Write shimmed source with a new filename
-                shimmed_filename = format!("shimmed_{}", req.filename);
+                // Handle paths correctly: test/main.cpp -> test/shimmed_main.cpp
+                let original_path = std::path::Path::new(&req.filename);
+                let parent = original_path.parent().unwrap_or(std::path::Path::new(""));
+                let file_stem = original_path.file_stem().unwrap_or_default();
+                let extension = original_path.extension().unwrap_or_default();
+                
+                let new_filename = format!("shimmed_{}.{}", 
+                    file_stem.to_string_lossy(), 
+                    extension.to_string_lossy()
+                );
+                
+                let shimmed_rel_path = parent.join(new_filename);
+                shimmed_filename = shimmed_rel_path.to_string_lossy().to_string();
+                
                 let shimmed_path = dir_path.join(&shimmed_filename);
+                
+                // Ensure parent directory exists (though it should for the original file)
+                if let Some(p) = shimmed_path.parent() {
+                    tokio::fs::create_dir_all(p).await?;
+                }
+                
                 tokio::fs::write(&shimmed_path, &shimmed_source).await?;
 
                 // Notify frontend about shim application
@@ -6683,23 +6775,26 @@ extern "C" void synthi_free_json(char* json) {
             }
         }
 
-        let compile_filename = if shim_applied {
-            &shimmed_filename
-        } else {
-            &req.filename
-        };
-
+        let compile_filename = if shim_applied { &shimmed_filename } else { &req.filename };
+        
+        // Ensure path separators are correct for the OS
+        // e.g., on Windows/WSL mixed envs, we might need to be careful, but these are relative paths
+        
         let mut cmd = match req.language.as_str() {
             "cpp" | "cpp_legacy" => {
                 let mut c = system_command("g++");
-                c.arg("-shared")
-                    .arg("-fPIC")
-                    .arg("-D_POSIX_C_SOURCE=199309L");
+                c.arg("-shared").arg("-fPIC").arg("-D_POSIX_C_SOURCE=199309L");
+                
+                // Add -pthread for shimming support
+                c.arg("-pthread");
+
                 // Output to temp path for atomic swap
-                c.arg(compile_filename)
-                    .arg("-I.")
-                    .arg("-o")
-                    .arg(&temp_output_path_str);
+                c.arg(compile_filename).arg("-I.").arg("-o").arg(&temp_output_path_str);
+                
+                // CRITICAL: Always link pthread for shimmed apps
+                if shim_applied {
+                    c.arg("-lpthread");
+                }
                 if req.is_gui {
                     c.arg("-lSDL2").arg("-lX11");
                 }

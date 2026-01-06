@@ -113,6 +113,8 @@ fn generate_blocking_wrapper_cpp(source: &str, config: &ShimConfig) -> ShimResul
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {{
@@ -127,10 +129,11 @@ typedef struct {state_name} {{
     bool first_frame;        // Is this the first frame?
     void* renderer;          // SDL renderer (if GUI)
     void* user_data;         // User's custom state (optional)
+    pthread_t user_thread;   // Thread for running blocking user code
 }} {state_name};
 
 // Forward declare user's original main
-int _user_main(int argc, char* argv[]);
+__attribute__((visibility("default"))) int _user_main(int argc, char* argv[]);
 
 #ifdef __cplusplus
 }}
@@ -149,6 +152,7 @@ int _user_main(int argc, char* argv[]);
 
 #include "synthi_shim.h"
 #include <stdio.h>
+#include <pthread.h>
 
 // Rename user's main to _user_main
 #define main _user_main
@@ -162,6 +166,14 @@ int _user_main(int argc, char* argv[]);
 // ============================================================
 // HMR HOOKS
 // ============================================================
+
+// Wrapper to run user main in a thread
+static void* _user_main_thread_entry(void* arg) {{
+    (void)arg;
+    char* argv[] = {{(char*)"app", NULL}};
+    _user_main(1, argv);
+    return NULL;
+}}
 
 extern "C" void* on_load(void* prev_state, void* renderer) {{
     // Use static storage for reliability (avoids heap fragmentation/pointer issues)
@@ -223,15 +235,14 @@ extern "C" void on_update(void* state_ptr, double dt) {{
     {state_name}* state = ({state_name}*)state_ptr;
     if (!state) return;
     
-    // Run user's main() exactly once, on first frame
+    // Run user's main() exactly once, in a separate thread, on first frame
     if (!state->initialized && state->first_frame) {{
-        fprintf(stderr, "[Shim] Running user main() (one-shot)\\n");
+        fprintf(stderr, "[Shim] Spawning user main() thread (non-blocking)\\n");
         state->first_frame = false;
         state->initialized = true;
         
-        // Call user's main with empty args
-        char* argv[] = {{"app", NULL}};
-        _user_main(1, argv);
+        // Create thread for user main
+        pthread_create(&state->user_thread, NULL, _user_main_thread_entry, NULL);
     }}
     
     // After initialization, this is just a no-op frame
@@ -1502,14 +1513,21 @@ const HotApi* hot_get_api(void) {{
 /// Analyze source code and determine best shim mode
 pub fn detect_shim_mode(source: &str) -> ShimConfig {
     let has_sdl = source.contains("SDL_") || source.contains("<SDL2/SDL.h>");
+    let has_x11 = source.contains("XOpenDisplay") || source.contains("<X11/");
+    
     let has_main = source.contains("int main(") || source.contains("int main (");
     let has_sdl_main = source.contains("SDL_main");
     let has_on_load = source.contains("on_load(") || source.contains("extern \"C\" void* on_load");
-    let has_on_update =
-        source.contains("on_update(") || source.contains("extern \"C\" void on_update");
-    let has_event_loop = source.contains("while")
-        && (source.contains("SDL_PollEvent") || source.contains("running"));
-
+    let has_on_update = source.contains("on_update(") || source.contains("extern \"C\" void on_update");
+    let has_event_loop = source.contains("while") && (
+        source.contains("SDL_PollEvent") || 
+        source.contains("running") || 
+        source.contains("XNextEvent") ||
+        source.contains("XPending")
+    );
+    
+    // We only use Full shim (SDL replacement) for SDL apps.
+    // X11 apps fall through to WrapBlocking but with has_gui=true.
     let mode = if has_on_load && has_on_update {
         // Already HMR-compatible
         ShimMode::None
@@ -1517,7 +1535,7 @@ pub fn detect_shim_mode(source: &str) -> ShimConfig {
         // SDL app with event loop - needs full GUI shim
         ShimMode::Full
     } else if has_main {
-        // Regular blocking app
+        // Regular blocking app (includes X11)
         ShimMode::WrapBlocking
     } else if !has_on_load || !has_on_update {
         // Missing hooks
@@ -1528,7 +1546,7 @@ pub fn detect_shim_mode(source: &str) -> ShimConfig {
 
     ShimConfig {
         mode,
-        has_gui: has_sdl,
+        has_gui: has_sdl || has_x11,
         state_struct_name: None,
         width: 800,
         height: 600,
@@ -1538,8 +1556,11 @@ pub fn detect_shim_mode(source: &str) -> ShimConfig {
 /// Apply appropriate shim based on source analysis
 pub fn auto_shim(source: &str) -> ShimResult {
     let config = detect_shim_mode(source);
-
-    if config.has_gui && config.mode != ShimMode::None {
+    
+    // Only use the special SDL GUI shim if we are in Full mode (SDL app replacement).
+    // For WrapBlocking (which includes X11 GUI apps), we want the standard threaded C++ shim
+    // so that the main loop runs in a thread and doesn't block the runner.
+    if config.mode == ShimMode::Full {
         generate_sdl_gui_shim(source, &config)
     } else {
         generate_cpp_shim(source, &config)
