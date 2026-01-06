@@ -3,7 +3,7 @@
 // ============================================================
 // This module ties together all the previously "dead" infrastructure:
 // - StateManager for centralized state lifecycle
-// - ReloadManager for reload taxonomy and snapshots  
+// - ReloadManager for reload taxonomy and snapshots
 // - CrashSupervisor for recovery policies
 // - ModuleLoader for ABI-validated loading
 // - BoundaryManifest for explicit boundaries
@@ -26,14 +26,26 @@ use std::time::{Duration, Instant};
 
 use libloading::{Library, Symbol};
 
+use crate::binary_state::{MsgPackState, SchemaMigrationResult, SchemaMigrator};
+use crate::boundary::{Boundary, BoundaryId, BoundaryManifest, BoundaryType, ReloadPlan};
+use crate::crash_recovery::CrashInfo;
+use crate::fast_refresh::{
+    BoundaryCheckResult, BoundaryChecker, BoundaryViolationEvent, RefreshAction,
+};
 use crate::binary_state::{MsgPackState, SchemaMigrationResult};
 use crate::boundary::{Boundary, BoundaryId, BoundaryManifest, ReloadPlan};
 use crate::loader::{LoadResult, ModuleLoader};
 use crate::plugin_contract::ModuleSlot;
 use crate::reload_manager::{
-    AsyncTaskRegistry, ReloadChanges, ReloadClass, ReloadClassifier, 
-    SnapshotManager, ReloadSnapshot,
+    AsyncTaskRegistry, ReloadChanges, ReloadClass, ReloadClassifier, ReloadSnapshot,
+    SnapshotManager,
 };
+use crate::source_map::SOURCE_MAP_CACHE;
+use crate::state_diff::{migrate_state_with_config, DiffConfig, DiffResult};
+use crate::state_manager::{
+    MigrationResult, MigrationSchema, SchemaVersion, StateHandle, StateManager,
+};
+use crate::supervisor::{CrashEvent, CrashSupervisor, RecoveryAction, SupervisorConfig};
 use crate::observability::{
     ReloadId, LogLevel, LogEntry, StructuredLogger, LogFormat,
     ReloadMetricsTracker, MetricsAggregator,
@@ -133,12 +145,18 @@ pub enum SchemaCompatibility {
 impl SchemaCompatibility {
     /// Returns true if state pointer can be safely reused
     pub fn is_compatible(&self) -> bool {
-        matches!(self, SchemaCompatibility::Compatible { .. } | SchemaCompatibility::NeitherHasHash)
+        matches!(
+            self,
+            SchemaCompatibility::Compatible { .. } | SchemaCompatibility::NeitherHasHash
+        )
     }
-    
+
     /// Returns true if cold reload is required
     pub fn requires_cold_reload(&self) -> bool {
-        matches!(self, SchemaCompatibility::Incompatible { .. } | SchemaCompatibility::NewMissing { .. })
+        matches!(
+            self,
+            SchemaCompatibility::Incompatible { .. } | SchemaCompatibility::NewMissing { .. }
+        )
     }
 }
 
@@ -159,7 +177,12 @@ pub struct HmrStatus {
 impl From<&HmrResult> for HmrStatus {
     fn from(result: &HmrResult) -> Self {
         Self {
-            status: if result.success { "hmr_success" } else { "hmr_failed" }.to_string(),
+            status: if result.success {
+                "hmr_success"
+            } else {
+                "hmr_failed"
+            }
+            .to_string(),
             module: result.module.as_str().to_string(),
             reload_class: format!("{:?}", result.reload_class),
             preserved_fields: result.preserved_fields.clone(),
@@ -231,10 +254,10 @@ pub struct HmrOrchestrator {
 
     // Configuration
     config: OrchestratorConfig,
-    
+
     // Statistics
     stats: OrchestratorStats,
-    
+
     // Feature flags
     binary_state_enabled: bool,
     strict_abi_validation: bool,
@@ -363,9 +386,15 @@ impl HmrOrchestrator {
         }
 
         self.boundary_manifests.insert(slot, manifest);
-        eprintln!("[Orchestrator] Registered module {:?} with {} boundaries",
-            slot, self.boundary_manifests.get(&slot).map(|m| m.boundaries.len()).unwrap_or(0));
-        
+        eprintln!(
+            "[Orchestrator] Registered module {:?} with {} boundaries",
+            slot,
+            self.boundary_manifests
+                .get(&slot)
+                .map(|m| m.boundaries.len())
+                .unwrap_or(0)
+        );
+
         Ok(())
     }
 
@@ -424,17 +453,22 @@ impl HmrOrchestrator {
             changes.file_path.as_deref(),
         );
 
+        eprintln!(
+            "[Orchestrator] Hot reload {:?}: class={:?}",
+            slot, reload_class
+        );
         self.logger.log(&LogEntry::new(LogLevel::Debug, "hmr", format!("Reload class: {:?}", reload_class))
             .with_reload_id(reload_id));
 
         // 2. Create pre-reload snapshot (if needed)
         let snapshot_id = if reload_class.requires_snapshot() && self.snapshot_enabled {
-            let boundaries: Vec<BoundaryId> = self.active_boundaries
+            let boundaries: Vec<BoundaryId> = self
+                .active_boundaries
                 .iter()
                 .filter(|(_, b)| b.parent_module == slot.as_str())
                 .map(|(id, _)| id.clone())
                 .collect();
-            
+
             let id = self.snapshot_manager.create_snapshot(
                 reload_class,
                 &self.state_manager,
@@ -451,25 +485,39 @@ impl HmrOrchestrator {
 
         // 4. Drain async tasks (if cold reload)
         if reload_class.requires_task_shutdown() {
+            self.task_registry
+                .shutdown_boundary(&slot.as_str().to_string());
             let _ = self.task_registry.prepare_for_reload(&slot.as_str().to_string(), ReloadClass::Cold);
         }
 
         // 5. Validate ABI (if strict mode)
         if self.strict_abi_validation {
-            let content_hash = std::fs::metadata(new_path)
-                .map(|m| m.len())
-                .unwrap_or(0);
-            
+            let content_hash = std::fs::metadata(new_path).map(|m| m.len()).unwrap_or(0);
+
             match self.module_loader.load(new_path, slot, content_hash) {
-                LoadResult::Success { module_id, abi_version } => {
-                    eprintln!("[Orchestrator] ABI validation passed: {} v{}", module_id, abi_version);
+                LoadResult::Success {
+                    module_id,
+                    abi_version,
+                } => {
+                    eprintln!(
+                        "[Orchestrator] ABI validation passed: {} v{}",
+                        module_id, abi_version
+                    );
                 }
-                LoadResult::AbiMismatch { expected, found, details } => {
+                LoadResult::AbiMismatch {
+                    expected,
+                    found,
+                    details,
+                } => {
                     self.crash_supervisor.exit_context();
                     self.stats.failed_reloads += 1;
-                    return HmrResult::failure(slot, format!(
-                        "ABI mismatch: expected v{}, found v{}. {}", expected, found, details
-                    ));
+                    return HmrResult::failure(
+                        slot,
+                        format!(
+                            "ABI mismatch: expected v{}, found v{}. {}",
+                            expected, found, details
+                        ),
+                    );
                 }
                 LoadResult::MissingSymbols { symbols } => {
                     eprintln!("[Orchestrator] Warning: Missing symbols: {:?}", symbols);
@@ -516,7 +564,8 @@ impl HmrOrchestrator {
                     MigratedState::Json(json_result) => {
                         result = result.with_json_migration(&json_result);
                         self.stats.json_migrations += 1;
-                        self.stats.total_preserved_fields += json_result.preserved_fields.len() as u64;
+                        self.stats.total_preserved_fields +=
+                            json_result.preserved_fields.len() as u64;
                     }
                     MigratedState::None => {}
                 }
@@ -540,6 +589,14 @@ impl HmrOrchestrator {
             }
         };
 
+        // 8. Log status
+        eprintln!(
+            "[Orchestrator] HMR complete: success={}, binary={}, preserved={}, duration={}ms",
+            result.success,
+            result.used_binary_serialization,
+            result.preserved_fields.len(),
+            result.duration_ms
+        );
         // 8. Record metrics and log completion (v2.1 observability)
         self.metrics_aggregator.record(&metrics_tracker, result.success);
         
@@ -579,7 +636,7 @@ impl HmrOrchestrator {
     ) -> Result<MigratedState, String> {
         // Create default state for new fields
         let new_defaults = MsgPackState::new(1, 0);
-        
+
         let (new_bytes, result) = self.state_manager.migrate_binary(
             slot,
             old_bytes,
@@ -618,7 +675,9 @@ impl HmrOrchestrator {
         if result.success {
             Ok(MigratedState::Json(result))
         } else {
-            Err(result.error.unwrap_or_else(|| "Migration failed".to_string()))
+            Err(result
+                .error
+                .unwrap_or_else(|| "Migration failed".to_string()))
         }
     }
 
@@ -630,12 +689,12 @@ impl HmrOrchestrator {
     // ============================================================
 
     /// Save module state using the best available method (binary first, JSON fallback)
-    /// 
+    ///
     /// # Arguments
     /// * `slot` - Module slot (Core, Gui, Main)
     /// * `lib` - Reference to the loaded library
     /// * `state_ptr` - Pointer to the state to save
-    /// 
+    ///
     /// # Returns
     /// SavedState containing binary and/or JSON representation
     pub fn save_module_state(
@@ -652,7 +711,10 @@ impl HmrOrchestrator {
         };
 
         if state_ptr.is_null() {
-            eprintln!("[Orchestrator] save_module_state: NULL state pointer for {:?}", slot);
+            eprintln!(
+                "[Orchestrator] save_module_state: NULL state pointer for {:?}",
+                slot
+            );
             return result;
         }
 
@@ -664,9 +726,11 @@ impl HmrOrchestrator {
         };
 
         unsafe {
-            let save_binary: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut usize) -> *mut u8>, _> = 
-                lib.get(&binary_symbol[..binary_symbol.len()-1]);
-            
+            let save_binary: Result<
+                Symbol<unsafe extern "C" fn(*mut c_void, *mut usize) -> *mut u8>,
+                _,
+            > = lib.get(&binary_symbol[..binary_symbol.len() - 1]);
+
             if let Ok(f) = save_binary {
                 let mut size: usize = 0;
                 let ptr = f(state_ptr, &mut size);
@@ -675,8 +739,11 @@ impl HmrOrchestrator {
                     result.binary = Some(data);
                     result.was_binary = true;
                     self.stats.binary_migrations += 1;
-                    eprintln!("[Orchestrator] Binary state saved for {:?}: {} bytes", slot, size);
-                    
+                    eprintln!(
+                        "[Orchestrator] Binary state saved for {:?}: {} bytes",
+                        slot, size
+                    );
+
                     // Free the C-allocated buffer
                     libc::free(ptr as *mut c_void);
                     return result;
@@ -692,16 +759,20 @@ impl HmrOrchestrator {
         };
 
         unsafe {
-            let save_json: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut i8>, _> = 
-                lib.get(&json_symbol[..json_symbol.len()-1]);
-            
+            let save_json: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut i8>, _> =
+                lib.get(&json_symbol[..json_symbol.len() - 1]);
+
             if let Ok(f) = save_json {
                 let ptr = f(state_ptr);
                 if !ptr.is_null() {
                     if let Ok(json_str) = CStr::from_ptr(ptr).to_str() {
                         result.json = Some(json_str.to_string());
                         self.stats.json_migrations += 1;
-                        eprintln!("[Orchestrator] JSON state saved for {:?}: {} chars", slot, json_str.len());
+                        eprintln!(
+                            "[Orchestrator] JSON state saved for {:?}: {} chars",
+                            slot,
+                            json_str.len()
+                        );
                     }
                     libc::free(ptr as *mut c_void);
                 }
@@ -712,6 +783,7 @@ impl HmrOrchestrator {
     }
 
     /// Load module state with automatic migration
+    ///
     /// 
     /// MIGRATION PRIORITY (highest to lowest):
     /// 1. Module-provided binary migration (hot_migrate in HotApi)
@@ -723,7 +795,7 @@ impl HmrOrchestrator {
     /// * `new_lib` - Reference to the NEW library to load into
     /// * `saved` - Previously saved state from save_module_state()
     /// * `template_json` - Optional JSON template for field-level diffing
-    /// 
+    ///
     /// # Returns
     /// LoadedState with new state pointer and migration details
     pub fn load_module_state(
@@ -779,9 +851,11 @@ impl HmrOrchestrator {
             };
 
             unsafe {
-                let load_binary: Result<Symbol<unsafe extern "C" fn(*const u8, usize) -> *mut c_void>, _> = 
-                    new_lib.get(&load_symbol[..load_symbol.len()-1]);
-                
+                let load_binary: Result<
+                    Symbol<unsafe extern "C" fn(*const u8, usize) -> *mut c_void>,
+                    _,
+                > = new_lib.get(&load_symbol[..load_symbol.len() - 1]);
+
                 if let Ok(f) = load_binary {
                     result.state_ptr = f(binary_data.as_ptr(), binary_data.len());
                     if !result.state_ptr.is_null() {
@@ -834,6 +908,10 @@ impl HmrOrchestrator {
                         migrated
                     }
                     Err(e) => {
+                        eprintln!(
+                            "[Orchestrator] JSON migration failed: {}, using original",
+                            e
+                        );
                         eprintln!("[Orchestrator] Worker diff failed: {}, using original JSON", e);
                         json_str.clone()
                     }
@@ -849,9 +927,9 @@ impl HmrOrchestrator {
             };
 
             unsafe {
-                let load_json: Result<Symbol<unsafe extern "C" fn(*const i8) -> *mut c_void>, _> = 
-                    new_lib.get(&load_symbol[..load_symbol.len()-1]);
-                
+                let load_json: Result<Symbol<unsafe extern "C" fn(*const i8) -> *mut c_void>, _> =
+                    new_lib.get(&load_symbol[..load_symbol.len() - 1]);
+
                 if let Ok(f) = load_json {
                     if let Ok(cstring) = CString::new(final_json) {
                         result.state_ptr = f(cstring.as_ptr());
@@ -877,8 +955,9 @@ impl HmrOrchestrator {
             ModuleSlot::Main => DiffConfig::new(),
         };
 
-        let (merged_str, diff_result) = migrate_state_with_config(old_json, template_json, &config)?;
-        
+        let (merged_str, diff_result) =
+            migrate_state_with_config(old_json, template_json, &config)?;
+
         let summary = MigrationSummary {
             preserved_fields: diff_result.preserved_fields.clone(),
             reset_fields: diff_result.reset_fields.clone(),
@@ -889,11 +968,7 @@ impl HmrOrchestrator {
     }
 
     /// Get a template JSON from a fresh state (for field-level diffing)
-    pub fn get_template_json(
-        &self,
-        slot: ModuleSlot,
-        lib: &Library,
-    ) -> Option<String> {
+    pub fn get_template_json(&self, slot: ModuleSlot, lib: &Library) -> Option<String> {
         // Get on_load to create fresh state
         let load_symbol = match slot {
             ModuleSlot::Core => b"core_on_load\0".as_slice(),
@@ -916,10 +991,12 @@ impl HmrOrchestrator {
         };
 
         unsafe {
-            let load_fn: Result<Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>, _> = 
-                lib.get(&load_symbol[..load_symbol.len()-1]);
-            let save_fn: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut i8>, _> = 
-                lib.get(&save_symbol[..save_symbol.len()-1]);
+            let load_fn: Result<
+                Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>,
+                _,
+            > = lib.get(&load_symbol[..load_symbol.len() - 1]);
+            let save_fn: Result<Symbol<unsafe extern "C" fn(*mut c_void) -> *mut i8>, _> =
+                lib.get(&save_symbol[..save_symbol.len() - 1]);
 
             if let (Ok(load), Ok(save)) = (load_fn, save_fn) {
                 // Create fresh state
@@ -931,7 +1008,10 @@ impl HmrOrchestrator {
                 // Serialize to JSON
                 let json_ptr = save(template_state);
                 let result = if !json_ptr.is_null() {
-                    CStr::from_ptr(json_ptr).to_str().ok().map(|s| s.to_string())
+                    CStr::from_ptr(json_ptr)
+                        .to_str()
+                        .ok()
+                        .map(|s| s.to_string())
                 } else {
                     None
                 };
@@ -940,9 +1020,9 @@ impl HmrOrchestrator {
                 if !json_ptr.is_null() {
                     libc::free(json_ptr as *mut c_void);
                 }
-                
-                let unload_fn: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = 
-                    lib.get(&unload_symbol[..unload_symbol.len()-1]);
+
+                let unload_fn: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> =
+                    lib.get(&unload_symbol[..unload_symbol.len() - 1]);
                 if let Ok(unload) = unload_fn {
                     unload(template_state);
                 }
@@ -968,10 +1048,10 @@ impl HmrOrchestrator {
         };
 
         unsafe {
-            let old_hash_fn: Result<Symbol<unsafe extern "C" fn() -> u64>, _> = 
-                old_lib.get(&get_hash_symbol[..get_hash_symbol.len()-1]);
-            let new_hash_fn: Result<Symbol<unsafe extern "C" fn() -> u64>, _> = 
-                new_lib.get(&get_hash_symbol[..get_hash_symbol.len()-1]);
+            let old_hash_fn: Result<Symbol<unsafe extern "C" fn() -> u64>, _> =
+                old_lib.get(&get_hash_symbol[..get_hash_symbol.len() - 1]);
+            let new_hash_fn: Result<Symbol<unsafe extern "C" fn() -> u64>, _> =
+                new_lib.get(&get_hash_symbol[..get_hash_symbol.len() - 1]);
 
             match (old_hash_fn.ok(), new_hash_fn.ok()) {
                 (Some(old_fn), Some(new_fn)) => {
@@ -983,15 +1063,9 @@ impl HmrOrchestrator {
                         SchemaCompatibility::Incompatible { old_hash, new_hash }
                     }
                 }
-                (Some(old_fn), None) => {
-                    SchemaCompatibility::NewMissing { old_hash: old_fn() }
-                }
-                (None, Some(new_fn)) => {
-                    SchemaCompatibility::OldMissing { new_hash: new_fn() }
-                }
-                (None, None) => {
-                    SchemaCompatibility::NeitherHasHash
-                }
+                (Some(old_fn), None) => SchemaCompatibility::NewMissing { old_hash: old_fn() },
+                (None, Some(new_fn)) => SchemaCompatibility::OldMissing { new_hash: new_fn() },
+                (None, None) => SchemaCompatibility::NeitherHasHash,
             }
         }
     }
@@ -1003,7 +1077,7 @@ impl HmrOrchestrator {
     /// Report a crash and get recovery action
     pub fn report_crash(&mut self, crash_info: &CrashInfo) -> RecoveryAction {
         let action = self.crash_supervisor.report_crash(crash_info);
-        
+
         match action {
             RecoveryAction::HotReload => {
                 eprintln!("[Orchestrator] Crash recovery: attempting hot reload");
@@ -1102,6 +1176,8 @@ impl HmrOrchestrator {
         boundary_id: BoundaryId,
         supports_checkpoint: bool,
     ) -> Arc<AtomicBool> {
+        self.task_registry
+            .register_task(task_id, boundary_id, supports_checkpoint)
         use crate::reload_manager::AsyncTaskType;
         self.task_registry.register(
             task_id,
@@ -1160,12 +1236,17 @@ impl HmrOrchestrator {
             };
         }
 
-        let result = self.boundary_checker.check_boundaries(module_name, new_source);
-        
+        let result = self
+            .boundary_checker
+            .check_boundaries(module_name, new_source);
+
         // Log violations
         if !result.violations.is_empty() {
-            eprintln!("[Orchestrator] Fast Refresh boundary check for '{}': {} violation(s)",
-                module_name, result.violations.len());
+            eprintln!(
+                "[Orchestrator] Fast Refresh boundary check for '{}': {} violation(s)",
+                module_name,
+                result.violations.len()
+            );
             for violation in &result.violations {
                 use crate::fast_refresh::BoundaryViolation;
                 let v: &BoundaryViolation = violation;
@@ -1175,7 +1256,8 @@ impl HmrOrchestrator {
 
         // Update source cache on successful check
         if result.can_hmr {
-            self.source_cache.insert(module_name.to_string(), new_source.to_string());
+            self.source_cache
+                .insert(module_name.to_string(), new_source.to_string());
         }
 
         result
@@ -1193,7 +1275,8 @@ impl HmrOrchestrator {
     /// Update Fast Refresh baseline after successful HMR
     pub fn update_fast_refresh_baseline(&mut self, module_name: &str, source: &str) {
         self.boundary_checker.update_baseline(module_name, source);
-        self.source_cache.insert(module_name.to_string(), source.to_string());
+        self.source_cache
+            .insert(module_name.to_string(), source.to_string());
     }
 
     /// Clear Fast Refresh state for a module
@@ -1217,7 +1300,11 @@ impl HmrOrchestrator {
     }
 
     /// Get source-mapped crash location
-    pub fn resolve_crash_location(&self, lib_path: &Path, address: u64) -> Option<crate::source_map::SourceLocation> {
+    pub fn resolve_crash_location(
+        &self,
+        lib_path: &Path,
+        address: u64,
+    ) -> Option<crate::source_map::SourceLocation> {
         SOURCE_MAP_CACHE.resolve(lib_path, address)
     }
 
@@ -1228,8 +1315,10 @@ impl HmrOrchestrator {
     /// Enable/disable binary state serialization
     pub fn set_binary_state(&mut self, enabled: bool) {
         self.binary_state_enabled = enabled;
-        eprintln!("[Orchestrator] Binary state serialization: {}", 
-            if enabled { "ENABLED" } else { "DISABLED" });
+        eprintln!(
+            "[Orchestrator] Binary state serialization: {}",
+            if enabled { "ENABLED" } else { "DISABLED" }
+        );
     }
 
     /// Enable/disable strict ABI validation
@@ -1245,13 +1334,16 @@ impl HmrOrchestrator {
     /// Enable/disable Fast Refresh boundary checking
     pub fn set_fast_refresh(&mut self, enabled: bool) {
         self.fast_refresh_enabled = enabled;
-        eprintln!("[Orchestrator] Fast Refresh boundary checking: {}",
-            if enabled { "ENABLED" } else { "DISABLED" });
+        eprintln!(
+            "[Orchestrator] Fast Refresh boundary checking: {}",
+            if enabled { "ENABLED" } else { "DISABLED" }
+        );
     }
 
     /// Set reload class override for a boundary
     pub fn set_reload_class_override(&mut self, boundary_id: BoundaryId, class: ReloadClass) {
-        self.reload_classifier.set_boundary_override(boundary_id, class);
+        self.reload_classifier
+            .set_boundary_override(boundary_id, class);
     }
     
     // ============================================================
@@ -1297,6 +1389,47 @@ enum MigratedState {
 }
 
 // ============================================================
+// ASYNC TASK REGISTRY EXTENSIONS
+// ============================================================
+
+impl AsyncTaskRegistry {
+    /// Register a task and return its shutdown signal
+    pub fn register_task(
+        &mut self,
+        task_id: String,
+        boundary_id: BoundaryId,
+        supports_checkpoint: bool,
+    ) -> Arc<AtomicBool> {
+        use crate::reload_manager::AsyncTaskType;
+
+        self.register(
+            task_id,
+            AsyncTaskType::BackgroundComputation,
+            boundary_id,
+            supports_checkpoint,
+            false,
+        )
+    }
+
+    /// Unregister a task
+    pub fn unregister_task(&mut self, task_id: &str) {
+        self.unregister(task_id);
+    }
+
+    /// Shutdown all tasks for a boundary
+    pub fn shutdown_boundary(&mut self, boundary_id: &str) {
+        let boundary_id: BoundaryId = boundary_id.to_string();
+        let task_ids: Vec<String> = self
+            .tasks_for_boundary(&boundary_id)
+            .into_iter()
+            .map(|t| t.task_id.clone())
+            .collect();
+
+        self.signal_shutdown(&task_ids);
+    }
+}
+
+// ============================================================
 // TESTS
 // ============================================================
 
@@ -1329,7 +1462,7 @@ mod tests {
     #[test]
     fn test_fast_refresh_integration() {
         let mut orchestrator = HmrOrchestrator::new();
-        
+
         // First check establishes baseline
         let source1 = r#"
             extern "C" void* core_on_load(void* prev, void* ctx) { return prev; }
@@ -1337,7 +1470,7 @@ mod tests {
         "#;
         let result1 = orchestrator.check_fast_refresh_boundaries("core", source1);
         assert!(result1.can_hmr);
-        
+
         // Same source should still be safe
         let result2 = orchestrator.check_fast_refresh_boundaries("core", source1);
         assert!(result2.can_hmr);

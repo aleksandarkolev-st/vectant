@@ -3,10 +3,16 @@
 ## Steps
 1. **Prerequisites (Linux/WSL required)**:
    - Install Rust toolchain.
-   - Install required packages:
+    - Install required packages. For React Native tooling, use Node.js 20 LTS (Node >= 20.19.4):
      ```bash
      sudo apt-get update
-     sudo apt-get install -y build-essential g++ rustc nodejs npm xdotool xvfb matchbox-window-manager gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
+
+       # Install Node 20 LTS (recommended) instead of distro-provided `nodejs`.
+       curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+       sudo apt-get install -y nodejs
+
+       # Other build/runtime dependencies
+       sudo apt-get install -y build-essential g++ rustc xdotool xvfb matchbox-window-manager gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
      ```
    - Ensure `g++`, `rustc`, `tsc`, `xdotool`, `Xvfb`, and `matchbox-window-manager` are available on PATH.
 2. Start signaling server:

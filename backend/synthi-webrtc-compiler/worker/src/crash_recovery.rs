@@ -25,15 +25,15 @@
 // ============================================================
 // CRITICAL SAFETY DOCUMENTATION
 // ============================================================
-// 
+//
 // SIGNAL RECOVERY LIMITATIONS - READ CAREFULLY
-// 
+//
 // After SIGSEGV, SIGABRT, or any signal indicating memory corruption:
 // - Heap state is UNKNOWN and potentially corrupted
 // - Mutex/lock state is UNKNOWN and potentially deadlocked
 // - Stack frames may be unwound incorrectly
 // - Global state may be inconsistent
-// 
+//
 // WHAT WE CAN SAFELY DO:
 // 1. Log the crash (if logging doesn't allocate)
 // 2. Store minimal crash info in pre-allocated buffers
@@ -47,7 +47,7 @@
 // 4. Assume any data structure is valid
 //
 // THE ONLY SAFE RECOVERY IS RESTART WITH ROLLBACK
-// 
+//
 // This module provides:
 // - Fork isolation: crash in child, parent continues cleanly
 // - Crash reporting: capture info for debugging
@@ -60,16 +60,18 @@
 // - Magic healing of corrupted state
 // ============================================================
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Mutex;
 use std::ffi::c_void;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::source_map;
 
 #[cfg(unix)]
-use libc::{c_int, siginfo_t, sigaction, sigemptyset, SA_SIGINFO, SIGSEGV, SIGABRT, SIGFPE, SIGBUS};
+use libc::{
+    c_int, sigaction, sigemptyset, siginfo_t, SA_SIGINFO, SIGABRT, SIGBUS, SIGFPE, SIGSEGV,
+};
 
 #[cfg(unix)]
 use std::mem::MaybeUninit;
@@ -92,7 +94,7 @@ pub fn get_max_consecutive_crashes() -> u32 {
     if override_val > 0 {
         return override_val;
     }
-    
+
     // Check environment variable once
     if let Ok(val_str) = std::env::var("SYNTHI_MAX_CRASHES") {
         if let Ok(val) = val_str.parse::<u32>() {
@@ -101,7 +103,7 @@ pub fn get_max_consecutive_crashes() -> u32 {
             return clamped;
         }
     }
-    
+
     // Return default
     MAX_CONSECUTIVE_CRASHES
 }
@@ -138,9 +140,13 @@ impl Default for ProtectionMode {
     fn default() -> Self {
         // Default to fork isolation on Unix, no protection on Windows
         #[cfg(unix)]
-        { ProtectionMode::ForkIsolation }
+        {
+            ProtectionMode::ForkIsolation
+        }
         #[cfg(not(unix))]
-        { ProtectionMode::None }
+        {
+            ProtectionMode::None
+        }
     }
 }
 
@@ -202,9 +208,10 @@ impl CrashInfo {
             "source_location": self.source_location,
             "source_frames": self.source_frames,
             "lib_path": self.lib_path,
-        }).to_string()
+        })
+        .to_string()
     }
-    
+
     /// Get primary source location as string
     pub fn source_location_str(&self) -> Option<String> {
         self.source_location.as_ref().map(|loc| {
@@ -220,10 +227,10 @@ impl CrashInfo {
     pub fn is_fatal_memory_error(&self) -> bool {
         #[cfg(unix)]
         {
-            self.signal == libc::SIGSEGV || 
-            self.signal == libc::SIGBUS || 
-            self.signal == libc::SIGABRT ||
-            self.signal == libc::SIGFPE
+            self.signal == libc::SIGSEGV
+                || self.signal == libc::SIGBUS
+                || self.signal == libc::SIGABRT
+                || self.signal == libc::SIGFPE
         }
         #[cfg(not(unix))]
         {
@@ -257,16 +264,20 @@ pub fn resolve_crash_source_locations(crash_info: &mut CrashInfo) {
         Some(path) => path.clone(),
         None => {
             // Try the current lib path if not in crash info
-            CURRENT_LIB_PATH.lock().ok().map(|g| g.clone()).unwrap_or_default()
+            CURRENT_LIB_PATH
+                .lock()
+                .ok()
+                .map(|g| g.clone())
+                .unwrap_or_default()
         }
     };
-    
+
     if lib_path.is_empty() {
         return;
     }
-    
+
     let path = Path::new(&lib_path);
-    
+
     // Resolve primary address if available
     if let Some(addr) = crash_info.address {
         if let Some(loc) = SOURCE_MAP_CACHE.resolve(path, addr) {
@@ -278,7 +289,7 @@ pub fn resolve_crash_source_locations(crash_info: &mut CrashInfo) {
             });
         }
     }
-    
+
     // Note: For full stack frame resolution, the backtrace would need to be
     // parsed to extract addresses, which requires backtrace parsing logic.
     // For now, we resolve just the primary crash address.
@@ -296,7 +307,7 @@ extern "C" fn crash_handler(sig: c_int, info: *mut siginfo_t, _context: *mut c_v
         }
         return;
     }
-    
+
     // Get crash details
     let signal_name = match sig {
         SIGSEGV => "SIGSEGV (Segmentation fault)",
@@ -305,7 +316,7 @@ extern "C" fn crash_handler(sig: c_int, info: *mut siginfo_t, _context: *mut c_v
         SIGBUS => "SIGBUS (Bus error)",
         _ => "Unknown signal",
     };
-    
+
     let address = unsafe {
         if !info.is_null() {
             Some((*info).si_addr() as u64)
@@ -313,15 +324,17 @@ extern "C" fn crash_handler(sig: c_int, info: *mut siginfo_t, _context: *mut c_v
             None
         }
     };
-    
-    let module_name = CURRENT_MODULE.lock()
+
+    let module_name = CURRENT_MODULE
+        .lock()
         .map(|m| m.clone())
         .unwrap_or_else(|_| "unknown".to_string());
-    
-    let lib_path = CURRENT_LIB_PATH.lock()
+
+    let lib_path = CURRENT_LIB_PATH
+        .lock()
         .map(|p| if p.is_empty() { None } else { Some(p.clone()) })
         .unwrap_or(None);
-    
+
     let crash_info = CrashInfo {
         signal: sig as i32,
         signal_name: signal_name.to_string(),
@@ -336,19 +349,19 @@ extern "C" fn crash_handler(sig: c_int, info: *mut siginfo_t, _context: *mut c_v
         source_frames: Vec::new(),
         lib_path,
     };
-    
+
     // Store crash info
     if let Ok(mut guard) = LAST_CRASH.lock() {
         *guard = Some(crash_info);
     }
-    
+
     // Increment crash count
     CRASH_COUNT.fetch_add(1, Ordering::SeqCst);
-    
+
     // SAFETY: Instead of longjmp (which is UB), we set a flag and exit the child process
     // The parent process will detect the crash via waitpid
     ABORT_REQUESTED.store(true, Ordering::SeqCst);
-    
+
     // In fork isolation mode, exit the child process
     // In signal recovery mode, this will cause the thread to detect abort on next check
     if get_protection_mode() == ProtectionMode::ForkIsolation {
@@ -357,7 +370,7 @@ extern "C" fn crash_handler(sig: c_int, info: *mut siginfo_t, _context: *mut c_v
             libc::_exit(128 + sig);
         }
     }
-    
+
     // For signal recovery mode, re-raise to terminate (we've stored the info)
     eprintln!("[CRASH] Plugin crash detected: {}", signal_name);
     unsafe {
@@ -394,14 +407,17 @@ pub fn install_crash_handlers() -> Result<(), String> {
             sa.sa_flags = SA_SIGINFO;
             sa.sa_sigaction = crash_handler as usize;
             sigemptyset(&mut sa.sa_mask);
-            
+
             if sigaction(sig, &sa, std::ptr::null_mut()) != 0 {
                 return Err(format!("Failed to install handler for signal {}", sig));
             }
         }
     }
-    
-    eprintln!("[CrashRecovery] Signal handlers installed (mode: {:?})", get_protection_mode());
+
+    eprintln!(
+        "[CrashRecovery] Signal handlers installed (mode: {:?})",
+        get_protection_mode()
+    );
     Ok(())
 }
 
@@ -415,19 +431,23 @@ pub fn install_crash_handlers() -> Result<(), String> {
 /// Execute plugin code with crash protection using fork isolation (SAFE)
 /// This is the safest approach - crashes in the child process don't affect the parent
 #[cfg(unix)]
-pub fn execute_with_fork_protection<F, R>(module_name: &str, f: F, timeout: Duration) -> Result<R, CrashInfo>
+pub fn execute_with_fork_protection<F, R>(
+    module_name: &str,
+    f: F,
+    timeout: Duration,
+) -> Result<R, CrashInfo>
 where
     F: FnOnce() -> R,
     R: serde::Serialize + serde::de::DeserializeOwned,
 {
     use std::io::{Read, Write};
     use std::os::unix::io::{FromRawFd, RawFd};
-    
+
     // Set current module name
     if let Ok(mut guard) = CURRENT_MODULE.lock() {
         *guard = module_name.to_string();
     }
-    
+
     // Create a pipe for IPC
     let mut pipe_fds: [RawFd; 2] = [0; 2];
     if unsafe { libc::pipe(pipe_fds.as_mut_ptr()) } != 0 {
@@ -446,15 +466,15 @@ where
             lib_path: None,
         });
     }
-    
+
     let read_fd = pipe_fds[0];
     let write_fd = pipe_fds[1];
-    
+
     let start_time = Instant::now();
-    
+
     // Fork
     let pid = unsafe { libc::fork() };
-    
+
     if pid < 0 {
         // Fork failed
         unsafe {
@@ -477,34 +497,40 @@ where
         });
     } else if pid == 0 {
         // Child process - execute the plugin code
-        unsafe { libc::close(read_fd); }
-        
+        unsafe {
+            libc::close(read_fd);
+        }
+
         IN_PLUGIN_CONTEXT.store(true, Ordering::SeqCst);
-        
+
         // Execute the function
         let result = f();
-        
+
         IN_PLUGIN_CONTEXT.store(false, Ordering::SeqCst);
-        
+
         // Serialize and send result
         let mut write_file = unsafe { std::fs::File::from_raw_fd(write_fd) };
         if let Ok(serialized) = serde_json::to_vec(&result) {
             let _ = write_file.write_all(&serialized);
         }
-        
+
         // Exit child cleanly
-        unsafe { libc::_exit(0); }
+        unsafe {
+            libc::_exit(0);
+        }
     } else {
         // Parent process - wait for child with timeout
-        unsafe { libc::close(write_fd); }
-        
+        unsafe {
+            libc::close(write_fd);
+        }
+
         let mut status: c_int = 0;
         let _timeout_ms = timeout.as_millis() as i32;
-        
+
         // Poll for child completion with timeout
         loop {
             let wait_result = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
-            
+
             if wait_result > 0 {
                 // Child finished
                 break;
@@ -518,7 +544,7 @@ where
                         libc::close(read_fd);
                     }
                     PLUGIN_TIMED_OUT.store(true, Ordering::SeqCst);
-                    
+
                     return Err(CrashInfo {
                         signal: libc::SIGKILL as i32,
                         signal_name: "Timeout (plugin took too long)".to_string(),
@@ -534,12 +560,14 @@ where
                         lib_path: None,
                     });
                 }
-                
+
                 // Sleep briefly and retry
                 std::thread::sleep(Duration::from_millis(10));
             } else {
                 // Wait error
-                unsafe { libc::close(read_fd); }
+                unsafe {
+                    libc::close(read_fd);
+                }
                 return Err(CrashInfo {
                     signal: 0,
                     signal_name: "waitpid() failed".to_string(),
@@ -556,7 +584,7 @@ where
                 });
             }
         }
-        
+
         // Check child exit status
         if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
             // Child exited successfully - read result
@@ -568,7 +596,7 @@ where
                     return Ok(result);
                 }
             }
-            
+
             // Failed to read result but child exited ok
             return Err(CrashInfo {
                 signal: 0,
@@ -586,14 +614,16 @@ where
             });
         } else {
             // Child crashed
-            unsafe { libc::close(read_fd); }
-            
+            unsafe {
+                libc::close(read_fd);
+            }
+
             let signal = if libc::WIFSIGNALED(status) {
                 libc::WTERMSIG(status)
             } else {
                 0
             };
-            
+
             let signal_name = match signal {
                 libc::SIGSEGV => "SIGSEGV (Segmentation fault)",
                 libc::SIGABRT => "SIGABRT (Abort)",
@@ -602,9 +632,9 @@ where
                 libc::SIGKILL => "SIGKILL (Killed)",
                 _ => "Unknown signal",
             };
-            
+
             CRASH_COUNT.fetch_add(1, Ordering::SeqCst);
-            
+
             return Err(CrashInfo {
                 signal: signal as i32,
                 signal_name: signal_name.to_string(),
@@ -621,7 +651,7 @@ where
             });
         }
     }
-    
+
     // Unreachable - suppress warning
     #[allow(unreachable_code)]
     Err(CrashInfo {
@@ -639,7 +669,7 @@ where
 
 /// Execute plugin code with crash protection
 /// Returns Ok(result) on success, Err(CrashInfo) if plugin crashed
-/// 
+///
 /// SAFETY NOTE: This function now uses a watchdog timeout instead of longjmp
 /// to avoid undefined behavior. The longjmp approach was removed as it's technically UB.
 #[cfg(unix)]
@@ -649,44 +679,44 @@ where
     R: Send + 'static,
 {
     use std::thread;
-    
+
     // Set current module name
     if let Ok(mut guard) = CURRENT_MODULE.lock() {
         *guard = module_name.to_string();
     }
-    
+
     // Reset abort flag
     ABORT_REQUESTED.store(false, Ordering::SeqCst);
     IN_PLUGIN_CONTEXT.store(true, Ordering::SeqCst);
-    
+
     // Spawn thread for plugin execution (allows timeout)
     let module_name_clone = module_name.to_string();
     let handle = thread::spawn(move || {
         // Install panic hook to catch panics
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f()));
-        
+
         match result {
             Ok(r) => Some(r),
             Err(_) => None,
         }
     });
-    
+
     // Wait with timeout
     let timeout = Duration::from_secs(PLUGIN_TIMEOUT_SECS);
     let start = Instant::now();
-    
+
     loop {
         // Check if thread finished
         if handle.is_finished() {
             break;
         }
-        
+
         // Check timeout
         if start.elapsed() > timeout {
             ABORT_REQUESTED.store(true, Ordering::SeqCst);
             IN_PLUGIN_CONTEXT.store(false, Ordering::SeqCst);
             PLUGIN_TIMED_OUT.store(true, Ordering::SeqCst);
-            
+
             // Can't kill the thread safely, but we can return an error
             return Err(CrashInfo {
                 signal: 0,
@@ -703,12 +733,13 @@ where
                 lib_path: None,
             });
         }
-        
+
         // Check if crash was detected by signal handler
         if ABORT_REQUESTED.load(Ordering::SeqCst) {
             IN_PLUGIN_CONTEXT.store(false, Ordering::SeqCst);
-            
-            let crash_info = LAST_CRASH.lock()
+
+            let crash_info = LAST_CRASH
+                .lock()
                 .ok()
                 .and_then(|guard| guard.clone())
                 .unwrap_or_else(|| CrashInfo {
@@ -725,15 +756,15 @@ where
                     source_frames: Vec::new(),
                     lib_path: None,
                 });
-            
+
             return Err(crash_info);
         }
-        
+
         thread::sleep(Duration::from_millis(10));
     }
-    
+
     IN_PLUGIN_CONTEXT.store(false, Ordering::SeqCst);
-    
+
     // Get result from thread
     match handle.join() {
         Ok(Some(result)) => {
@@ -823,36 +854,39 @@ pub fn clear_last_crash() {
 /// Generate a human-readable crash report
 pub fn generate_crash_report(crash: &CrashInfo) -> String {
     let mut report = String::new();
-    
+
     report.push_str("═══════════════════════════════════════════════════════════════\n");
     report.push_str("                    SYNTHI CRASH REPORT                        \n");
     report.push_str("═══════════════════════════════════════════════════════════════\n\n");
-    
-    report.push_str(&format!("Signal:     {} ({})\n", crash.signal_name, crash.signal));
+
+    report.push_str(&format!(
+        "Signal:     {} ({})\n",
+        crash.signal_name, crash.signal
+    ));
     report.push_str(&format!("Module:     {}\n", crash.module_name));
-    
+
     if let Some(addr) = crash.address {
         report.push_str(&format!("Address:    0x{:016x}\n", addr));
     }
-    
+
     report.push_str(&format!("Timestamp:  {}\n", crash.timestamp));
-    
+
     report.push_str("\n───────────────────────────────────────────────────────────────\n");
     report.push_str("Recovery Status:\n");
     report.push_str("───────────────────────────────────────────────────────────────\n");
     report.push_str("✓ Process recovered - old module continues running\n");
     report.push_str("✓ State preserved from last successful update\n");
     report.push_str("⚠ Fix the error in your code and save to retry HMR\n");
-    
+
     if let Some(ref bt) = crash.backtrace {
         report.push_str("\n───────────────────────────────────────────────────────────────\n");
         report.push_str("Backtrace:\n");
         report.push_str("───────────────────────────────────────────────────────────────\n");
         report.push_str(bt);
     }
-    
+
     report.push_str("\n═══════════════════════════════════════════════════════════════\n");
-    
+
     report
 }
 
@@ -860,7 +894,7 @@ pub fn generate_crash_report(crash: &CrashInfo) -> String {
 // HMR STATUS INTEGRATION
 // ============================================================
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// HMR crash status event - sent to frontend for error overlay display
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -910,24 +944,36 @@ impl From<&CrashInfo> for CrashInfoJson {
 
 impl HmrCrashStatus {
     pub fn from_crash(crash: &CrashInfo, recovered: bool) -> Self {
-        let location_str = crash.source_location_str()
+        let location_str = crash
+            .source_location_str()
             .unwrap_or_else(|| "unknown location".to_string());
-        
+
         Self {
-            status: if recovered { "crash-recovered" } else { "crash-fatal" }.to_string(),
+            status: if recovered {
+                "crash-recovered"
+            } else {
+                "crash-fatal"
+            }
+            .to_string(),
             module: crash.module_name.clone(),
             signal: crash.signal_name.clone(),
             recovered,
             crash_count: CRASH_COUNT.load(Ordering::SeqCst),
             message: if recovered {
-                format!("Plugin crashed at {} but recovered. Old module continues running.", location_str)
+                format!(
+                    "Plugin crashed at {} but recovered. Old module continues running.",
+                    location_str
+                )
             } else {
-                format!("Plugin crashed at {}. Too many consecutive crashes, restart required.", location_str)
+                format!(
+                    "Plugin crashed at {}. Too many consecutive crashes, restart required.",
+                    location_str
+                )
             },
             crash_info: Some(CrashInfoJson::from(crash)),
         }
     }
-    
+
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
     }
@@ -936,7 +982,7 @@ impl HmrCrashStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_crash_info_json() {
         let info = CrashInfo {
@@ -950,20 +996,20 @@ mod tests {
             source_frames: Vec::new(),
             lib_path: None,
         };
-        
+
         let json = info.to_json();
         assert!(json.contains("SIGSEGV"));
         assert!(json.contains("gui"));
     }
-    
+
     #[test]
     fn test_should_force_restart() {
         CRASH_COUNT.store(0, Ordering::SeqCst);
         assert!(!should_force_restart());
-        
+
         CRASH_COUNT.store(MAX_CONSECUTIVE_CRASHES, Ordering::SeqCst);
         assert!(should_force_restart());
-        
+
         reset_crash_count();
         assert!(!should_force_restart());
     }

@@ -31,7 +31,11 @@ pub struct AbiVersion {
 
 impl AbiVersion {
     pub const fn new(major: u32, minor: u32, patch: u32) -> Self {
-        Self { major, minor, patch }
+        Self {
+            major,
+            minor,
+            patch,
+        }
     }
 
     /// Check if this version is compatible with required version
@@ -259,11 +263,7 @@ impl AbiVersionManager {
     }
 
     /// Load a module after compatibility check
-    pub fn load_module(
-        &mut self,
-        path: &Path,
-        manifest: SymbolManifest,
-    ) -> Result<(), String> {
+    pub fn load_module(&mut self, path: &Path, manifest: SymbolManifest) -> Result<(), String> {
         let module_name = manifest.module_name.clone();
 
         // Move current to previous
@@ -305,7 +305,10 @@ impl AbiVersionManager {
             .ok_or_else(|| format!("No previous version for {}", module_name))?;
 
         if prev.is_empty() {
-            return Err(format!("No rollback versions available for {}", module_name));
+            return Err(format!(
+                "No rollback versions available for {}",
+                module_name
+            ));
         }
 
         let previous = prev.remove(0);
@@ -315,7 +318,8 @@ impl AbiVersionManager {
             prev.insert(0, current);
         }
 
-        self.current_versions.insert(module_name.to_string(), previous);
+        self.current_versions
+            .insert(module_name.to_string(), previous);
         Ok(())
     }
 
@@ -380,10 +384,7 @@ pub mod standard_manifests {
                 "fn(*mut c_void, *mut c_void)",
             ))
             .with_symbol(SymbolInfo::optional("core_on_unload", "fn(*mut c_void)"))
-            .with_symbol(SymbolInfo::optional(
-                "core_get_abi_version",
-                "fn() -> u32",
-            ))
+            .with_symbol(SymbolInfo::optional("core_get_abi_version", "fn() -> u32"))
             .with_symbol(SymbolInfo::optional(
                 "core_on_save_state",
                 "fn(*mut c_void) -> *mut c_char",
@@ -551,7 +552,7 @@ pub enum TestValue {
 pub struct ExpectedBehavior {
     pub must_succeed: bool,
     pub timeout_ms: u64,
-    pub tolerance: Option<f64>,  // For float comparisons
+    pub tolerance: Option<f64>, // For float comparisons
 }
 
 impl Default for ExpectedBehavior {
@@ -590,7 +591,7 @@ impl SemanticTestSuite {
             tests: Vec::new(),
         }
     }
-    
+
     pub fn with_test(mut self, test: SemanticAbiTest) -> Self {
         self.tests.push(test);
         self
@@ -608,25 +609,29 @@ impl SemanticTestRunner {
             suites: HashMap::new(),
         }
     }
-    
+
     pub fn register_suite(&mut self, suite: SemanticTestSuite) {
         self.suites.insert(suite.module_name.clone(), suite);
     }
-    
+
     /// Run all semantic tests for a module
     /// This goes beyond symbol matching to test actual behavior
-    pub fn run_tests(&self, module_name: &str, lib: &libloading::Library) -> Vec<SemanticTestResult> {
+    pub fn run_tests(
+        &self,
+        module_name: &str,
+        lib: &libloading::Library,
+    ) -> Vec<SemanticTestResult> {
         let mut results = Vec::new();
-        
+
         let Some(suite) = self.suites.get(module_name) else {
             return results;
         };
-        
+
         for test in &suite.tests {
             let start = std::time::Instant::now();
             let result = self.run_single_test(test, lib);
             let duration_ms = start.elapsed().as_millis() as u64;
-            
+
             results.push(SemanticTestResult {
                 test_name: test.name.clone(),
                 passed: result.is_ok(),
@@ -635,34 +640,47 @@ impl SemanticTestRunner {
                 duration_ms,
             });
         }
-        
+
         results
     }
-    
+
     fn run_single_test(
         &self,
         test: &SemanticAbiTest,
         lib: &libloading::Library,
     ) -> Result<TestValue, String> {
         match &test.test_type {
-            SemanticTestType::FunctionOutput { symbol_name, test_input, expected_output } => {
-                self.test_function_output(lib, symbol_name, test_input, expected_output, &test.expected_behavior)
-            }
-            SemanticTestType::StateTransition { initial_state_json, action, expected_state_json } => {
-                self.test_state_transition(lib, initial_state_json, action, expected_state_json)
-            }
-            SemanticTestType::CallbackSequence { trigger, expected_callbacks } => {
-                self.test_callback_sequence(lib, trigger, expected_callbacks)
-            }
-            SemanticTestType::ErrorHandling { trigger_error, expected_error_code } => {
-                self.test_error_handling(lib, trigger_error, *expected_error_code)
-            }
-            SemanticTestType::InvariantPreservation { invariant_name, operations } => {
-                self.test_invariant_preservation(lib, invariant_name, operations)
-            }
+            SemanticTestType::FunctionOutput {
+                symbol_name,
+                test_input,
+                expected_output,
+            } => self.test_function_output(
+                lib,
+                symbol_name,
+                test_input,
+                expected_output,
+                &test.expected_behavior,
+            ),
+            SemanticTestType::StateTransition {
+                initial_state_json,
+                action,
+                expected_state_json,
+            } => self.test_state_transition(lib, initial_state_json, action, expected_state_json),
+            SemanticTestType::CallbackSequence {
+                trigger,
+                expected_callbacks,
+            } => self.test_callback_sequence(lib, trigger, expected_callbacks),
+            SemanticTestType::ErrorHandling {
+                trigger_error,
+                expected_error_code,
+            } => self.test_error_handling(lib, trigger_error, *expected_error_code),
+            SemanticTestType::InvariantPreservation {
+                invariant_name,
+                operations,
+            } => self.test_invariant_preservation(lib, invariant_name, operations),
         }
     }
-    
+
     fn test_function_output(
         &self,
         lib: &libloading::Library,
@@ -672,51 +690,61 @@ impl SemanticTestRunner {
         behavior: &ExpectedBehavior,
     ) -> Result<TestValue, String> {
         use std::time::{Duration, Instant};
-        
+
         let timeout = Duration::from_millis(behavior.timeout_ms);
         let start = Instant::now();
-        
+
         // Dynamically call the function based on input/output types
         let result = match (test_input.len(), expected_output) {
             // No arguments, returns int (common for init functions)
-            (0, TestValue::Int(_)) => {
-                unsafe {
-                    let func: Result<libloading::Symbol<unsafe extern "C" fn() -> i64>, _> = 
-                        lib.get(symbol_name.as_bytes());
-                    match func {
-                        Ok(f) => {
-                            if start.elapsed() > timeout {
-                                return Err("Function call timed out".to_string());
-                            }
-                            Ok(TestValue::Int(f()))
+            (0, TestValue::Int(_)) => unsafe {
+                let func: Result<libloading::Symbol<unsafe extern "C" fn() -> i64>, _> =
+                    lib.get(symbol_name.as_bytes());
+                match func {
+                    Ok(f) => {
+                        if start.elapsed() > timeout {
+                            return Err("Function call timed out".to_string());
                         }
-                        Err(e) => Err(format!("Symbol not found: {}: {}", symbol_name, e))
+                        Ok(TestValue::Int(f()))
                     }
+                    Err(e) => Err(format!("Symbol not found: {}: {}", symbol_name, e)),
                 }
-            }
-            
+            },
+
             // Two pointer args (null, null), returns int - typical for on_load(state*, engine*)
-            (2, TestValue::Int(_)) if matches!((&test_input[0], &test_input[1]), (TestValue::Null, TestValue::Null)) => {
-                unsafe {
-                    let func: Result<libloading::Symbol<unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void) -> i64>, _> = 
-                        lib.get(symbol_name.as_bytes());
-                    match func {
-                        Ok(f) => {
-                            if start.elapsed() > timeout {
-                                return Err("Function call timed out".to_string());
-                            }
-                            Ok(TestValue::Int(f(std::ptr::null_mut(), std::ptr::null_mut())))
+            (2, TestValue::Int(_))
+                if matches!(
+                    (&test_input[0], &test_input[1]),
+                    (TestValue::Null, TestValue::Null)
+                ) =>
+            unsafe {
+                let func: Result<
+                    libloading::Symbol<
+                        unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void) -> i64,
+                    >,
+                    _,
+                > = lib.get(symbol_name.as_bytes());
+                match func {
+                    Ok(f) => {
+                        if start.elapsed() > timeout {
+                            return Err("Function call timed out".to_string());
                         }
-                        Err(e) => Err(format!("Symbol not found: {}: {}", symbol_name, e))
+                        Ok(TestValue::Int(f(
+                            std::ptr::null_mut(),
+                            std::ptr::null_mut(),
+                        )))
                     }
+                    Err(e) => Err(format!("Symbol not found: {}: {}", symbol_name, e)),
                 }
-            }
-            
+            },
+
             // Single float arg, returns float (e.g., update(dt))
             (1, TestValue::Float(_)) if matches!(&test_input[0], TestValue::Float(_)) => {
-                let TestValue::Float(arg) = test_input[0] else { unreachable!() };
+                let TestValue::Float(arg) = test_input[0] else {
+                    unreachable!()
+                };
                 unsafe {
-                    let func: Result<libloading::Symbol<unsafe extern "C" fn(f64) -> f64>, _> = 
+                    let func: Result<libloading::Symbol<unsafe extern "C" fn(f64) -> f64>, _> =
                         lib.get(symbol_name.as_bytes());
                     match func {
                         Ok(f) => {
@@ -725,16 +753,18 @@ impl SemanticTestRunner {
                             }
                             Ok(TestValue::Float(f(arg)))
                         }
-                        Err(e) => Err(format!("Symbol not found: {}: {}", symbol_name, e))
+                        Err(e) => Err(format!("Symbol not found: {}: {}", symbol_name, e)),
                     }
                 }
             }
-            
+
             // Single int arg, returns int
             (1, TestValue::Int(_)) if matches!(&test_input[0], TestValue::Int(_)) => {
-                let TestValue::Int(arg) = test_input[0] else { unreachable!() };
+                let TestValue::Int(arg) = test_input[0] else {
+                    unreachable!()
+                };
                 unsafe {
-                    let func: Result<libloading::Symbol<unsafe extern "C" fn(i64) -> i64>, _> = 
+                    let func: Result<libloading::Symbol<unsafe extern "C" fn(i64) -> i64>, _> =
                         lib.get(symbol_name.as_bytes());
                     match func {
                         Ok(f) => {
@@ -743,15 +773,15 @@ impl SemanticTestRunner {
                             }
                             Ok(TestValue::Int(f(arg)))
                         }
-                        Err(e) => Err(format!("Symbol not found: {}: {}", symbol_name, e))
+                        Err(e) => Err(format!("Symbol not found: {}: {}", symbol_name, e)),
                     }
                 }
             }
-            
+
             // Void function (returns nothing, expect null or bool success)
             (0, TestValue::Null) | (0, TestValue::Bool(_)) => {
                 unsafe {
-                    let func: Result<libloading::Symbol<unsafe extern "C" fn()>, _> = 
+                    let func: Result<libloading::Symbol<unsafe extern "C" fn()>, _> =
                         lib.get(symbol_name.as_bytes());
                     match func {
                         Ok(f) => {
@@ -761,15 +791,15 @@ impl SemanticTestRunner {
                             f();
                             Ok(TestValue::Bool(true)) // Completed without crash
                         }
-                        Err(e) => Err(format!("Symbol not found: {}: {}", symbol_name, e))
+                        Err(e) => Err(format!("Symbol not found: {}: {}", symbol_name, e)),
                     }
                 }
             }
-            
+
             // Fallback: just check symbol exists
             _ => {
                 unsafe {
-                    let func: Result<libloading::Symbol<unsafe extern "C" fn()>, _> = 
+                    let func: Result<libloading::Symbol<unsafe extern "C" fn()>, _> =
                         lib.get(symbol_name.as_bytes());
                     match func {
                         Ok(_) => {
@@ -777,14 +807,16 @@ impl SemanticTestRunner {
                             // More specific calling conventions can be added as needed
                             Ok(expected_output.clone())
                         }
-                        Err(e) => Err(format!("Symbol not found: {}: {}", symbol_name, e))
+                        Err(e) => Err(format!("Symbol not found: {}: {}", symbol_name, e)),
                     }
                 }
             }
         };
-        
+
         // Verify result against expected if tolerance specified
-        if let (Ok(TestValue::Float(actual)), TestValue::Float(expected)) = (&result, expected_output) {
+        if let (Ok(TestValue::Float(actual)), TestValue::Float(expected)) =
+            (&result, expected_output)
+        {
             if let Some(tolerance) = behavior.tolerance {
                 if (actual - expected).abs() > tolerance {
                     return Err(format!(
@@ -794,10 +826,10 @@ impl SemanticTestRunner {
                 }
             }
         }
-        
+
         result
     }
-    
+
     fn test_state_transition(
         &self,
         lib: &libloading::Library,
@@ -808,10 +840,10 @@ impl SemanticTestRunner {
         // Parse initial state JSON
         let initial: serde_json::Value = serde_json::from_str(initial_json)
             .map_err(|e| format!("Invalid initial state JSON: {}", e))?;
-        
+
         // Look for state setter function
         let set_state_result = unsafe {
-            let setter: Result<libloading::Symbol<unsafe extern "C" fn(*const i8)>, _> = 
+            let setter: Result<libloading::Symbol<unsafe extern "C" fn(*const i8)>, _> =
                 lib.get(b"hmr_set_state_json");
             if let Ok(setter_fn) = setter {
                 let json_cstr = std::ffi::CString::new(initial.to_string())
@@ -822,22 +854,25 @@ impl SemanticTestRunner {
                 Err("hmr_set_state_json not found".to_string())
             }
         };
-        
+
         if let Err(e) = set_state_result {
             // Fall back to basic test without state setup
-            return Ok(TestValue::String(format!("State setup skipped ({}), expected: {}", e, expected_json)));
+            return Ok(TestValue::String(format!(
+                "State setup skipped ({}), expected: {}",
+                e, expected_json
+            )));
         }
-        
+
         // Execute the action (look for action function)
         let action_symbol = format!("action_{}", action.replace([' ', '-'], "_"));
         unsafe {
-            let action_fn: Result<libloading::Symbol<unsafe extern "C" fn()>, _> = 
+            let action_fn: Result<libloading::Symbol<unsafe extern "C" fn()>, _> =
                 lib.get(action_symbol.as_bytes());
             if let Ok(f) = action_fn {
                 f();
             } else {
                 // Try generic dispatch
-                let dispatch: Result<libloading::Symbol<unsafe extern "C" fn(*const i8)>, _> = 
+                let dispatch: Result<libloading::Symbol<unsafe extern "C" fn(*const i8)>, _> =
                     lib.get(b"hmr_dispatch_action");
                 if let Ok(dispatch_fn) = dispatch {
                     let action_cstr = std::ffi::CString::new(action)
@@ -846,10 +881,10 @@ impl SemanticTestRunner {
                 }
             }
         }
-        
+
         // Get resulting state
         let result_state = unsafe {
-            let getter: Result<libloading::Symbol<unsafe extern "C" fn() -> *const i8>, _> = 
+            let getter: Result<libloading::Symbol<unsafe extern "C" fn() -> *const i8>, _> =
                 lib.get(b"hmr_get_state_json");
             if let Ok(getter_fn) = getter {
                 let ptr = getter_fn();
@@ -863,13 +898,13 @@ impl SemanticTestRunner {
                 expected_json.to_string()
             }
         };
-        
+
         // Parse and compare
         let result: serde_json::Value = serde_json::from_str(&result_state)
             .unwrap_or_else(|_| serde_json::json!({"raw": result_state}));
         let expected: serde_json::Value = serde_json::from_str(expected_json)
             .unwrap_or_else(|_| serde_json::json!({"raw": expected_json}));
-        
+
         if result == expected {
             Ok(TestValue::Json(result))
         } else {
@@ -880,7 +915,7 @@ impl SemanticTestRunner {
             })))
         }
     }
-    
+
     fn test_callback_sequence(
         &self,
         lib: &libloading::Library,
@@ -888,26 +923,29 @@ impl SemanticTestRunner {
         expected: &[String],
     ) -> Result<TestValue, String> {
         use std::sync::Mutex;
-        
+
         // We need to capture callback invocations
         // This uses a global collector pattern
-        static CALLBACK_LOG: std::sync::LazyLock<Mutex<Vec<String>>> = 
+        static CALLBACK_LOG: std::sync::LazyLock<Mutex<Vec<String>>> =
             std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
-        
+
         // Clear previous log
         if let Ok(mut log) = CALLBACK_LOG.lock() {
             log.clear();
         }
-        
+
         // Try to install callback logger
         unsafe {
-            let install_logger: Result<libloading::Symbol<unsafe extern "C" fn(extern "C" fn(*const i8))>, _> = 
-                lib.get(b"hmr_install_callback_logger");
-            
+            let install_logger: Result<
+                libloading::Symbol<unsafe extern "C" fn(extern "C" fn(*const i8))>,
+                _,
+            > = lib.get(b"hmr_install_callback_logger");
+
             if let Ok(installer) = install_logger {
                 extern "C" fn log_callback(name: *const i8) {
                     if !name.is_null() {
-                        let name_str = unsafe { CStr::from_ptr(name).to_string_lossy().to_string() };
+                        let name_str =
+                            unsafe { CStr::from_ptr(name).to_string_lossy().to_string() };
                         if let Ok(mut log) = CALLBACK_LOG.lock() {
                             log.push(name_str);
                         }
@@ -916,17 +954,17 @@ impl SemanticTestRunner {
                 installer(log_callback);
             }
         }
-        
+
         // Execute the trigger
         let trigger_symbol = format!("trigger_{}", trigger.replace([' ', '-'], "_"));
         unsafe {
-            let trigger_fn: Result<libloading::Symbol<unsafe extern "C" fn()>, _> = 
+            let trigger_fn: Result<libloading::Symbol<unsafe extern "C" fn()>, _> =
                 lib.get(trigger_symbol.as_bytes());
             if let Ok(f) = trigger_fn {
                 f();
             } else {
                 // Generic trigger dispatch
-                let dispatch: Result<libloading::Symbol<unsafe extern "C" fn(*const i8)>, _> = 
+                let dispatch: Result<libloading::Symbol<unsafe extern "C" fn(*const i8)>, _> =
                     lib.get(b"hmr_trigger_event");
                 if let Ok(dispatch_fn) = dispatch {
                     let trigger_cstr = std::ffi::CString::new(trigger)
@@ -935,12 +973,13 @@ impl SemanticTestRunner {
                 }
             }
         }
-        
+
         // Compare callback sequence
-        let actual_sequence = CALLBACK_LOG.lock()
+        let actual_sequence = CALLBACK_LOG
+            .lock()
             .map(|log| log.clone())
             .unwrap_or_default();
-        
+
         if actual_sequence == expected {
             Ok(TestValue::Json(serde_json::json!(actual_sequence)))
         } else {
@@ -951,7 +990,7 @@ impl SemanticTestRunner {
             })))
         }
     }
-    
+
     fn test_error_handling(
         &self,
         lib: &libloading::Library,
@@ -960,25 +999,27 @@ impl SemanticTestRunner {
     ) -> Result<TestValue, String> {
         // Try to trigger the error and capture the error code
         let error_symbol = format!("test_error_{}", trigger_error.replace([' ', '-'], "_"));
-        
+
         let actual_code = unsafe {
             // First try specific error trigger function
-            let error_fn: Result<libloading::Symbol<unsafe extern "C" fn() -> i32>, _> = 
+            let error_fn: Result<libloading::Symbol<unsafe extern "C" fn() -> i32>, _> =
                 lib.get(error_symbol.as_bytes());
-            
+
             if let Ok(f) = error_fn {
                 f()
             } else {
                 // Try generic error simulation
-                let simulate: Result<libloading::Symbol<unsafe extern "C" fn(*const i8) -> i32>, _> = 
-                    lib.get(b"hmr_simulate_error");
+                let simulate: Result<
+                    libloading::Symbol<unsafe extern "C" fn(*const i8) -> i32>,
+                    _,
+                > = lib.get(b"hmr_simulate_error");
                 if let Ok(simulate_fn) = simulate {
                     let error_cstr = std::ffi::CString::new(trigger_error)
                         .map_err(|e| format!("CString error: {}", e))?;
                     simulate_fn(error_cstr.as_ptr())
                 } else {
                     // No error simulation available, check last error
-                    let get_error: Result<libloading::Symbol<unsafe extern "C" fn() -> i32>, _> = 
+                    let get_error: Result<libloading::Symbol<unsafe extern "C" fn() -> i32>, _> =
                         lib.get(b"hmr_get_last_error");
                     if let Ok(get_fn) = get_error {
                         get_fn()
@@ -991,7 +1032,7 @@ impl SemanticTestRunner {
                 }
             }
         };
-        
+
         if actual_code == expected_code {
             Ok(TestValue::Int(actual_code as i64))
         } else {
@@ -1002,7 +1043,7 @@ impl SemanticTestRunner {
             })))
         }
     }
-    
+
     fn test_invariant_preservation(
         &self,
         lib: &libloading::Library,
@@ -1013,15 +1054,17 @@ impl SemanticTestRunner {
         let check_invariant = |name: &str| -> Result<bool, String> {
             let invariant_symbol = format!("check_invariant_{}", name.replace([' ', '-'], "_"));
             unsafe {
-                let check_fn: Result<libloading::Symbol<unsafe extern "C" fn() -> i32>, _> = 
+                let check_fn: Result<libloading::Symbol<unsafe extern "C" fn() -> i32>, _> =
                     lib.get(invariant_symbol.as_bytes());
-                
+
                 if let Ok(f) = check_fn {
                     Ok(f() != 0)
                 } else {
                     // Try generic invariant check
-                    let generic: Result<libloading::Symbol<unsafe extern "C" fn(*const i8) -> i32>, _> = 
-                        lib.get(b"hmr_check_invariant");
+                    let generic: Result<
+                        libloading::Symbol<unsafe extern "C" fn(*const i8) -> i32>,
+                        _,
+                    > = lib.get(b"hmr_check_invariant");
                     if let Ok(generic_fn) = generic {
                         let name_cstr = std::ffi::CString::new(name)
                             .map_err(|e| format!("CString error: {}", e))?;
@@ -1033,7 +1076,7 @@ impl SemanticTestRunner {
                 }
             }
         };
-        
+
         // Check initial state
         let initial_valid = check_invariant(invariant_name)?;
         if !initial_valid {
@@ -1042,30 +1085,30 @@ impl SemanticTestRunner {
                 "invariant": invariant_name
             })));
         }
-        
+
         // Execute operations
         let mut failed_after: Option<String> = None;
         for op in operations {
             // Parse operation (format: "function_name(args)")
             let op_name = op.split('(').next().unwrap_or(op);
             let op_symbol = format!("op_{}", op_name.replace([' ', '-'], "_"));
-            
+
             unsafe {
-                let op_fn: Result<libloading::Symbol<unsafe extern "C" fn()>, _> = 
+                let op_fn: Result<libloading::Symbol<unsafe extern "C" fn()>, _> =
                     lib.get(op_symbol.as_bytes());
-                
+
                 if let Ok(f) = op_fn {
                     f();
                 } else {
                     // Try to call as a regular function
-                    let direct: Result<libloading::Symbol<unsafe extern "C" fn()>, _> = 
+                    let direct: Result<libloading::Symbol<unsafe extern "C" fn()>, _> =
                         lib.get(op_name.as_bytes());
                     if let Ok(f) = direct {
                         f();
                     }
                 }
             }
-            
+
             // Check invariant after each operation
             let still_valid = check_invariant(invariant_name)?;
             if !still_valid {
@@ -1073,7 +1116,7 @@ impl SemanticTestRunner {
                 break;
             }
         }
-        
+
         if let Some(failed_op) = failed_after {
             Ok(TestValue::Json(serde_json::json!({
                 "status": "invariant_violated",
@@ -1095,7 +1138,7 @@ impl Default for SemanticTestRunner {
 /// Standard semantic test suites
 pub mod semantic_tests {
     use super::*;
-    
+
     /// Core module semantic tests
     pub fn core_tests() -> SemanticTestSuite {
         SemanticTestSuite::new("core", AbiVersion::new(1, 0, 0))
@@ -1129,7 +1172,7 @@ pub mod semantic_tests {
                 expected_behavior: ExpectedBehavior::default(),
             })
     }
-    
+
     /// GUI module semantic tests
     pub fn gui_tests() -> SemanticTestSuite {
         SemanticTestSuite::new("gui", AbiVersion::new(1, 0, 0))
@@ -1150,7 +1193,7 @@ pub mod semantic_tests {
                     expected_error_code: -1,
                 },
                 expected_behavior: ExpectedBehavior {
-                    must_succeed: false,  // Expect error
+                    must_succeed: false, // Expect error
                     timeout_ms: 1000,
                     tolerance: None,
                 },
@@ -1193,7 +1236,7 @@ mod tests {
         assert!(!result.compatible);
         assert!(result.missing_symbols.contains(&"func1".to_string()));
     }
-    
+
     #[test]
     fn test_semantic_test_suite() {
         let suite = semantic_tests::core_tests();
@@ -1288,51 +1331,51 @@ impl StructuralAbiDescriptor {
             fields: Vec::new(),
         }
     }
-    
+
     /// Add a field descriptor
     pub fn with_field(mut self, field: AbiFieldDescriptor) -> Self {
         self.fields.push(field);
         self
     }
-    
+
     /// Set struct size
     pub fn with_size(mut self, size: u32) -> Self {
         self.struct_size = size;
         self
     }
-    
+
     /// Set struct alignment
     pub fn with_alignment(mut self, alignment: u32) -> Self {
         self.struct_alignment = alignment;
         self
     }
-    
+
     /// Compute layout hash
     pub fn compute_layout_hash(&self) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        
+
         let mut hasher = DefaultHasher::new();
         self.struct_size.hash(&mut hasher);
         self.struct_alignment.hash(&mut hasher);
         self.pointer_size.hash(&mut hasher);
-        
+
         for field in &self.fields {
             field.name.hash(&mut hasher);
             field.offset.hash(&mut hasher);
             field.size.hash(&mut hasher);
             field.alignment.hash(&mut hasher);
         }
-        
+
         hasher.finish()
     }
-    
+
     /// Finalize the descriptor (compute hash)
     pub fn finalize(mut self) -> Self {
         self.layout_hash = self.compute_layout_hash();
         self
     }
-    
+
     /// Validate compatibility with another descriptor
     pub fn validate_against(&self, other: &StructuralAbiDescriptor) -> AbiValidationResult {
         let mut result = AbiValidationResult {
@@ -1340,7 +1383,7 @@ impl StructuralAbiDescriptor {
             errors: Vec::new(),
             warnings: Vec::new(),
         };
-        
+
         // Check version compatibility
         if !self.version.is_compatible_with(&other.version) {
             result.compatible = false;
@@ -1349,7 +1392,7 @@ impl StructuralAbiDescriptor {
                 self.version, other.version
             ));
         }
-        
+
         // Check struct size
         if self.struct_size != other.struct_size {
             result.compatible = false;
@@ -1358,7 +1401,7 @@ impl StructuralAbiDescriptor {
                 self.struct_size, other.struct_size
             ));
         }
-        
+
         // Check alignment
         if self.struct_alignment != other.struct_alignment {
             result.compatible = false;
@@ -1367,7 +1410,7 @@ impl StructuralAbiDescriptor {
                 self.struct_alignment, other.struct_alignment
             ));
         }
-        
+
         // Check pointer size
         if self.pointer_size != other.pointer_size {
             result.compatible = false;
@@ -1376,13 +1419,13 @@ impl StructuralAbiDescriptor {
                 self.pointer_size, other.pointer_size
             ));
         }
-        
+
         // Check endianness
         if self.endianness != other.endianness {
             result.compatible = false;
             result.errors.push("Endianness mismatch".to_string());
         }
-        
+
         // Check calling convention
         if self.calling_convention != other.calling_convention {
             result.compatible = false;
@@ -1391,17 +1434,15 @@ impl StructuralAbiDescriptor {
                 self.calling_convention, other.calling_convention
             ));
         }
-        
+
         // Check layout hash (quick structural check)
         if self.layout_hash != other.layout_hash {
             // Detailed field comparison
-            let self_fields: std::collections::HashMap<_, _> = self.fields.iter()
-                .map(|f| (f.name.as_str(), f))
-                .collect();
-            let other_fields: std::collections::HashMap<_, _> = other.fields.iter()
-                .map(|f| (f.name.as_str(), f))
-                .collect();
-            
+            let self_fields: std::collections::HashMap<_, _> =
+                self.fields.iter().map(|f| (f.name.as_str(), f)).collect();
+            let other_fields: std::collections::HashMap<_, _> =
+                other.fields.iter().map(|f| (f.name.as_str(), f)).collect();
+
             for (name, field) in &self_fields {
                 if let Some(other_field) = other_fields.get(name) {
                     if field.offset != other_field.offset {
@@ -1425,11 +1466,13 @@ impl StructuralAbiDescriptor {
                         ));
                     }
                 } else {
-                    result.warnings.push(format!("Field '{}' not in other descriptor", name));
+                    result
+                        .warnings
+                        .push(format!("Field '{}' not in other descriptor", name));
                 }
             }
         }
-        
+
         result
     }
 }
@@ -1455,7 +1498,7 @@ impl AbiValidationResult {
 /// Standard structural descriptors for Synthi state structs
 pub mod structural_descriptors {
     use super::*;
-    
+
     /// AppState structural descriptor (must match shared.h)
     pub fn app_state_v1() -> StructuralAbiDescriptor {
         StructuralAbiDescriptor::new(AbiVersion::new(1, 0, 0))
@@ -1551,7 +1594,7 @@ pub mod structural_descriptors {
             })
             .finalize()
     }
-    
+
     /// Validate runtime state against expected descriptor
     pub unsafe fn validate_runtime_state(
         state_ptr: *const u8,
@@ -1564,13 +1607,13 @@ pub mod structural_descriptors {
                 warnings: Vec::new(),
             };
         }
-        
+
         let mut result = AbiValidationResult::ok();
-        
+
         // Read magic number (first 8 bytes)
         let magic_ptr = state_ptr as *const u64;
         let magic = std::ptr::read_unaligned(magic_ptr);
-        
+
         // Expected magic from our schema
         const EXPECTED_MAGIC: u64 = 0xDEADBEEF_CAFEBABE;
         if magic != EXPECTED_MAGIC {
@@ -1580,11 +1623,11 @@ pub mod structural_descriptors {
                 EXPECTED_MAGIC, magic
             ));
         }
-        
+
         // Read struct_size field (offset 8)
         let size_ptr = state_ptr.add(8) as *const u32;
         let runtime_size = std::ptr::read_unaligned(size_ptr);
-        
+
         if runtime_size != expected.struct_size {
             result.compatible = false;
             result.errors.push(format!(
@@ -1592,18 +1635,18 @@ pub mod structural_descriptors {
                 runtime_size, expected.struct_size
             ));
         }
-        
+
         // Read abi_version field (offset 12)
         let version_ptr = state_ptr.add(12) as *const u32;
         let runtime_version = std::ptr::read_unaligned(version_ptr);
-        
+
         if runtime_version != expected.version.major {
             result.warnings.push(format!(
                 "ABI version field {} != expected major version {}",
                 runtime_version, expected.version.major
             ));
         }
-        
+
         result
     }
 }

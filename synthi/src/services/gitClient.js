@@ -184,6 +184,14 @@ export const gitClient = {
         return this.request(slug, 'create-directory', { path });
     },
     
+
+    async writeFilesBatch(slug, files, options = {}) {
+        return this.request(slug, 'write-files-batch', {
+            files,
+            syncToGcs: options.syncToGcs !== false,
+        });
+    },
+    
     /**
      * Clear Yjs collaboration persistence for specified files.
      * Used after merge conflict resolution to ensure fresh content loads.

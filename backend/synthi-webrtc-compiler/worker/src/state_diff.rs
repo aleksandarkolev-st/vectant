@@ -41,16 +41,16 @@ pub struct DiffConfig {
     /// Fields that should always be reset (never preserved)
     /// Use dot notation for nested fields: "gui.animation_frame"
     pub always_reset: HashSet<String>,
-    
+
     /// Fields that should always be preserved if present
     pub always_preserve: HashSet<String>,
-    
+
     /// Whether to preserve arrays by reference (vs deep merge)
     pub preserve_arrays: bool,
-    
+
     /// Maximum depth for nested object diffing
     pub max_depth: usize,
-    
+
     /// Maximum number of visited nodes to prevent infinite loops with circular refs
     pub max_visited_nodes: usize,
 }
@@ -65,7 +65,7 @@ impl DiffConfig {
             max_visited_nodes: 10000, // Prevent runaway recursion on large/circular structures
         }
     }
-    
+
     /// Create config optimized for GUI state
     pub fn for_gui() -> Self {
         let mut config = Self::new();
@@ -75,7 +75,7 @@ impl DiffConfig {
         config.always_reset.insert("transient_ui".to_string());
         config
     }
-    
+
     /// Create config optimized for Core state
     pub fn for_core() -> Self {
         let mut config = Self::new();
@@ -91,7 +91,7 @@ impl DiffConfig {
         config.always_preserve.insert("user_data".to_string());
         config.always_preserve.insert("running".to_string());
         config.always_preserve.insert("paused".to_string());
-        
+
         // Button positions should be preserved too (UI elements)
         config.always_preserve.insert("btn_x".to_string());
         config.always_preserve.insert("btn_y".to_string());
@@ -101,10 +101,10 @@ impl DiffConfig {
         config.always_preserve.insert("btn2_y".to_string());
         config.always_preserve.insert("btn2_w".to_string());
         config.always_preserve.insert("btn2_h".to_string());
-        
+
         config
     }
-    
+
     /// Builder: Add fields to always preserve
     pub fn with_preserved(mut self, fields: &[&str]) -> Self {
         for field in fields {
@@ -112,7 +112,7 @@ impl DiffConfig {
         }
         self
     }
-    
+
     /// Builder: Add fields to always reset
     pub fn with_reset(mut self, fields: &[&str]) -> Self {
         for field in fields {
@@ -120,21 +120,21 @@ impl DiffConfig {
         }
         self
     }
-    
+
     /// Builder: Set max recursion depth
     pub fn with_max_depth(mut self, depth: usize) -> Self {
         self.max_depth = depth;
         self
     }
-    
+
     /// Builder: Set whether to preserve arrays by reference
     pub fn with_preserve_arrays(mut self, preserve: bool) -> Self {
         self.preserve_arrays = preserve;
         self
     }
-    
+
     /// Load config from JSON string (for runtime customization)
-    /// 
+    ///
     /// JSON format:
     /// {
     ///   "always_preserve": ["x", "y", "position"],
@@ -143,11 +143,11 @@ impl DiffConfig {
     ///   "max_depth": 10
     /// }
     pub fn from_json(json_str: &str) -> Result<Self, String> {
-        let value: Value = serde_json::from_str(json_str)
-            .map_err(|e| format!("Invalid JSON config: {}", e))?;
-        
+        let value: Value =
+            serde_json::from_str(json_str).map_err(|e| format!("Invalid JSON config: {}", e))?;
+
         let mut config = Self::new();
-        
+
         if let Some(arr) = value.get("always_preserve").and_then(|v| v.as_array()) {
             for item in arr {
                 if let Some(s) = item.as_str() {
@@ -155,7 +155,7 @@ impl DiffConfig {
                 }
             }
         }
-        
+
         if let Some(arr) = value.get("always_reset").and_then(|v| v.as_array()) {
             for item in arr {
                 if let Some(s) = item.as_str() {
@@ -163,21 +163,21 @@ impl DiffConfig {
                 }
             }
         }
-        
+
         if let Some(b) = value.get("preserve_arrays").and_then(|v| v.as_bool()) {
             config.preserve_arrays = b;
         }
-        
+
         if let Some(n) = value.get("max_depth").and_then(|v| v.as_u64()) {
             config.max_depth = n as usize;
         }
-        
+
         Ok(config)
     }
 }
 
 /// Diff two JSON states and merge them intelligently
-/// 
+///
 /// Strategy:
 /// 1. If a field exists in both and values are equal → preserve from old
 /// 2. If a field exists in both but values differ:
@@ -195,7 +195,7 @@ pub fn diff_and_merge(
     let mut reset = Vec::new();
     let mut new_fields = Vec::new();
     let mut removed = Vec::new();
-    
+
     let merged = diff_value(
         old_state,
         new_state_template,
@@ -207,7 +207,7 @@ pub fn diff_and_merge(
         &mut new_fields,
         &mut removed,
     );
-    
+
     DiffResult {
         preserved_fields: preserved,
         reset_fields: reset,
@@ -231,27 +231,29 @@ fn diff_value(
     // SAFETY: Check depth BEFORE any recursive operations to prevent stack overflow
     if depth >= config.max_depth {
         // Too deep, just use new value without further recursion
-        eprintln!("[state_diff] Warning: max depth {} reached at path '{}', using new value", config.max_depth, path);
+        eprintln!(
+            "[state_diff] Warning: max depth {} reached at path '{}', using new value",
+            config.max_depth, path
+        );
         return new.clone();
     }
-    
+
     // SAFETY: Check total visited nodes to catch circular references
     let total_visited = preserved.len() + reset.len() + new_fields.len() + removed.len();
     if total_visited >= config.max_visited_nodes {
         eprintln!("[state_diff] Warning: max visited nodes {} reached, possible circular reference at '{}'", config.max_visited_nodes, path);
         return new.clone();
     }
-    
+
     match (old, new) {
         // Both are objects - merge recursively
         (Value::Object(old_map), Value::Object(new_map)) => {
             let merged = diff_objects(
-                old_map, new_map, config, path, depth,
-                preserved, reset, new_fields, removed
+                old_map, new_map, config, path, depth, preserved, reset, new_fields, removed,
             );
             Value::Object(merged)
         }
-        
+
         // Both are arrays
         (Value::Array(old_arr), Value::Array(new_arr)) => {
             if config.preserve_arrays && !config.always_reset.contains(path) {
@@ -264,9 +266,11 @@ fn diff_value(
                 Value::Array(new_arr.clone())
             }
         }
-        
+
         // Same primitive type - compare values
-        (old_val, new_val) if std::mem::discriminant(old_val) == std::mem::discriminant(new_val) => {
+        (old_val, new_val)
+            if std::mem::discriminant(old_val) == std::mem::discriminant(new_val) =>
+        {
             if old_val == new_val {
                 // Values are equal - preserve
                 preserved.push(path.to_string());
@@ -285,7 +289,7 @@ fn diff_value(
                 new_val.clone()
             }
         }
-        
+
         // Different types - use new value
         (_, new_val) => {
             reset.push(path.to_string());
@@ -307,7 +311,7 @@ fn diff_objects(
 ) -> Map<String, Value> {
     let mut result = Map::new();
     let mut seen_keys = HashSet::new();
-    
+
     // Process fields from new template
     for (key, new_val) in new_map {
         seen_keys.insert(key.clone());
@@ -316,12 +320,19 @@ fn diff_objects(
         } else {
             format!("{}.{}", parent_path, key)
         };
-        
+
         if let Some(old_val) = old_map.get(key) {
             // Field exists in both
             let merged_val = diff_value(
-                old_val, new_val, config, &field_path, depth + 1,
-                preserved, reset, new_fields, removed
+                old_val,
+                new_val,
+                config,
+                &field_path,
+                depth + 1,
+                preserved,
+                reset,
+                new_fields,
+                removed,
             );
             result.insert(key.clone(), merged_val);
         } else {
@@ -330,7 +341,7 @@ fn diff_objects(
             result.insert(key.clone(), new_val.clone());
         }
     }
-    
+
     // Check for fields only in old (preserve user data)
     for (key, old_val) in old_map {
         if !seen_keys.contains(key) {
@@ -339,31 +350,33 @@ fn diff_objects(
             } else {
                 format!("{}.{}", parent_path, key)
             };
-            
+
             // Skip special fields that shouldn't be preserved
             if key == "magic" || key == "struct_size" || key == "abi_version" {
                 continue;
             }
-            
+
             // Preserve user data fields
             preserved.push(field_path);
             result.insert(key.clone(), old_val.clone());
         }
     }
-    
+
     result
 }
 
 /// Generate a state migration report for logging
 pub fn generate_migration_report(diff: &DiffResult) -> String {
     let mut report = String::new();
-    
+
     report.push_str("[State Migration]\n");
-    
+
     if !diff.preserved_fields.is_empty() {
         report.push_str(&format!("  Preserved ({}):", diff.preserved_fields.len()));
         for (i, field) in diff.preserved_fields.iter().take(5).enumerate() {
-            if i > 0 { report.push_str(","); }
+            if i > 0 {
+                report.push_str(",");
+            }
             report.push_str(&format!(" {}", field));
         }
         if diff.preserved_fields.len() > 5 {
@@ -371,11 +384,13 @@ pub fn generate_migration_report(diff: &DiffResult) -> String {
         }
         report.push('\n');
     }
-    
+
     if !diff.reset_fields.is_empty() {
         report.push_str(&format!("  Reset ({}):", diff.reset_fields.len()));
         for (i, field) in diff.reset_fields.iter().take(5).enumerate() {
-            if i > 0 { report.push_str(","); }
+            if i > 0 {
+                report.push_str(",");
+            }
             report.push_str(&format!(" {}", field));
         }
         if diff.reset_fields.len() > 5 {
@@ -383,11 +398,11 @@ pub fn generate_migration_report(diff: &DiffResult) -> String {
         }
         report.push('\n');
     }
-    
+
     if !diff.new_fields.is_empty() {
         report.push_str(&format!("  New fields: {:?}\n", diff.new_fields));
     }
-    
+
     report
 }
 
@@ -423,16 +438,19 @@ pub fn check_state_compatibility(old_json: &str, new_json: &str) -> Result<bool,
 }
 
 /// Detailed schema compatibility check for intelligent migration
-pub fn check_schema_compatibility(old_json: &str, new_json: &str) -> Result<SchemaCheckResult, String> {
-    let old: Value = serde_json::from_str(old_json)
-        .map_err(|e| format!("Failed to parse old state: {}", e))?;
-    let new: Value = serde_json::from_str(new_json)
-        .map_err(|e| format!("Failed to parse new state: {}", e))?;
-    
+pub fn check_schema_compatibility(
+    old_json: &str,
+    new_json: &str,
+) -> Result<SchemaCheckResult, String> {
+    let old: Value =
+        serde_json::from_str(old_json).map_err(|e| format!("Failed to parse old state: {}", e))?;
+    let new: Value =
+        serde_json::from_str(new_json).map_err(|e| format!("Failed to parse new state: {}", e))?;
+
     // Check magic numbers match
     let old_magic = old.get("magic").and_then(|v| v.as_u64());
     let new_magic = new.get("magic").and_then(|v| v.as_u64());
-    
+
     if old_magic != new_magic {
         return Ok(SchemaCheckResult {
             compatibility: SchemaCompatibility::Incompatible,
@@ -440,14 +458,17 @@ pub fn check_schema_compatibility(old_json: &str, new_json: &str) -> Result<Sche
             added_fields: vec![],
             removed_fields: vec![],
             type_changed_fields: vec![],
-            message: format!("Magic number mismatch: old={:?}, new={:?}", old_magic, new_magic),
+            message: format!(
+                "Magic number mismatch: old={:?}, new={:?}",
+                old_magic, new_magic
+            ),
         });
     }
-    
+
     // Check ABI versions
     let old_abi = old.get("abi_version").and_then(|v| v.as_u64()).unwrap_or(1);
     let new_abi = new.get("abi_version").and_then(|v| v.as_u64()).unwrap_or(1);
-    
+
     if new_abi < old_abi {
         return Ok(SchemaCheckResult {
             compatibility: SchemaCompatibility::Incompatible,
@@ -455,23 +476,41 @@ pub fn check_schema_compatibility(old_json: &str, new_json: &str) -> Result<Sche
             added_fields: vec![],
             removed_fields: vec![],
             type_changed_fields: vec![],
-            message: format!("ABI downgrade not supported: old={}, new={}", old_abi, new_abi),
+            message: format!(
+                "ABI downgrade not supported: old={}, new={}",
+                old_abi, new_abi
+            ),
         });
     }
-    
+
     // Compare field sets (excluding metadata fields)
-    let metadata_fields: HashSet<&str> = ["magic", "struct_size", "abi_version"].iter().cloned().collect();
-    
-    let old_fields: HashSet<String> = old.as_object()
-        .map(|o| o.keys().filter(|k| !metadata_fields.contains(k.as_str())).cloned().collect())
+    let metadata_fields: HashSet<&str> = ["magic", "struct_size", "abi_version"]
+        .iter()
+        .cloned()
+        .collect();
+
+    let old_fields: HashSet<String> = old
+        .as_object()
+        .map(|o| {
+            o.keys()
+                .filter(|k| !metadata_fields.contains(k.as_str()))
+                .cloned()
+                .collect()
+        })
         .unwrap_or_default();
-    let new_fields: HashSet<String> = new.as_object()
-        .map(|o| o.keys().filter(|k| !metadata_fields.contains(k.as_str())).cloned().collect())
+    let new_fields: HashSet<String> = new
+        .as_object()
+        .map(|o| {
+            o.keys()
+                .filter(|k| !metadata_fields.contains(k.as_str()))
+                .cloned()
+                .collect()
+        })
         .unwrap_or_default();
-    
+
     let added: Vec<String> = new_fields.difference(&old_fields).cloned().collect();
     let removed: Vec<String> = old_fields.difference(&new_fields).cloned().collect();
-    
+
     // Check for type changes in common fields
     let mut type_changed = Vec::new();
     for field in old_fields.intersection(&new_fields) {
@@ -481,7 +520,7 @@ pub fn check_schema_compatibility(old_json: &str, new_json: &str) -> Result<Sche
             type_changed.push(field.clone());
         }
     }
-    
+
     // Determine compatibility level
     let compatibility = if !type_changed.is_empty() {
         SchemaCompatibility::Incompatible
@@ -495,16 +534,21 @@ pub fn check_schema_compatibility(old_json: &str, new_json: &str) -> Result<Sche
         // Both added and removed - still migratable if no type changes
         SchemaCompatibility::Forward
     };
-    
+
     let can_migrate = compatibility != SchemaCompatibility::Incompatible;
-    
+
     let message = match compatibility {
         SchemaCompatibility::Full => "Schemas fully compatible".to_string(),
         SchemaCompatibility::Forward => format!("Forward compatible: {} new fields", added.len()),
-        SchemaCompatibility::Backward => format!("Backward compatible: {} removed fields (data loss)", removed.len()),
-        SchemaCompatibility::Incompatible => format!("Incompatible: {} type changes", type_changed.len()),
+        SchemaCompatibility::Backward => format!(
+            "Backward compatible: {} removed fields (data loss)",
+            removed.len()
+        ),
+        SchemaCompatibility::Incompatible => {
+            format!("Incompatible: {} type changes", type_changed.len())
+        }
     };
-    
+
     Ok(SchemaCheckResult {
         compatibility,
         can_migrate,
@@ -537,34 +581,43 @@ pub fn migrate_state(
 ) -> Result<(String, DiffResult), String> {
     // First check schema compatibility
     let schema_check = check_schema_compatibility(old_state_json, new_state_template_json)?;
-    
+
     if !schema_check.can_migrate {
-        return Err(format!("Schema migration not possible: {}", schema_check.message));
+        return Err(format!(
+            "Schema migration not possible: {}",
+            schema_check.message
+        ));
     }
-    
+
     // Log schema changes for debugging
     if !schema_check.added_fields.is_empty() {
-        eprintln!("[state_diff] New fields added: {:?}", schema_check.added_fields);
+        eprintln!(
+            "[state_diff] New fields added: {:?}",
+            schema_check.added_fields
+        );
     }
     if !schema_check.removed_fields.is_empty() {
-        eprintln!("[state_diff] WARNING: Fields removed (data loss): {:?}", schema_check.removed_fields);
+        eprintln!(
+            "[state_diff] WARNING: Fields removed (data loss): {:?}",
+            schema_check.removed_fields
+        );
     }
-    
+
     let old: Value = serde_json::from_str(old_state_json)
         .map_err(|e| format!("Failed to parse old state: {}", e))?;
     let new: Value = serde_json::from_str(new_state_template_json)
         .map_err(|e| format!("Failed to parse new state: {}", e))?;
-    
+
     let config = match module_type {
         "core" => DiffConfig::for_core(),
         "gui" => DiffConfig::for_gui(),
         _ => DiffConfig::new(),
     };
-    
+
     let diff = diff_and_merge(&old, &new, &config);
     let merged_json = serde_json::to_string(&diff.merged_state)
         .map_err(|e| format!("Failed to serialize merged state: {}", e))?;
-    
+
     Ok((merged_json, diff))
 }
 
@@ -578,11 +631,11 @@ pub fn migrate_state_with_config(
         .map_err(|e| format!("Failed to parse old state: {}", e))?;
     let new: Value = serde_json::from_str(new_state_template_json)
         .map_err(|e| format!("Failed to parse new state: {}", e))?;
-    
+
     let diff = diff_and_merge(&old, &new, config);
     let merged_json = serde_json::to_string(&diff.merged_state)
         .map_err(|e| format!("Failed to serialize merged state: {}", e))?;
-    
+
     Ok((merged_json, diff))
 }
 
@@ -623,7 +676,7 @@ impl Drop for MigrationGuard {
 }
 
 /// Perform atomic state swap with migration guard
-/// 
+///
 /// # Safety
 /// The caller must ensure:
 /// 1. `dest` is a valid, aligned pointer to the state struct
@@ -639,21 +692,25 @@ pub unsafe fn atomic_state_swap(
         return Err("Destination pointer is null".to_string());
     }
     if src_bytes.len() != size {
-        return Err(format!("Size mismatch: expected {}, got {}", size, src_bytes.len()));
+        return Err(format!(
+            "Size mismatch: expected {}, got {}",
+            size,
+            src_bytes.len()
+        ));
     }
-    
+
     // Create migration guard to block on_update calls
     let _guard = MigrationGuard::new();
-    
+
     // Memory barrier before copy
     std::sync::atomic::fence(Ordering::SeqCst);
-    
+
     // Copy the new state
     std::ptr::copy_nonoverlapping(src_bytes.as_ptr(), dest as *mut u8, size);
-    
+
     // Memory barrier after copy
     std::sync::atomic::fence(Ordering::SeqCst);
-    
+
     Ok(())
     // Guard drops here, clearing the migration flag
 }
@@ -706,36 +763,41 @@ pub fn diff_and_merge_binary(
     config: &DiffConfig,
 ) -> (MsgPackState, BinaryDiffResult) {
     let mut result = BinaryDiffResult::new();
-    
-    let mut merged = MsgPackState::new(
-        new_defaults.schema_version, 
-        new_defaults.schema_hash
-    );
-    
+
+    let mut merged = MsgPackState::new(new_defaults.schema_version, new_defaults.schema_hash);
+
     // Process new schema fields
     for field_name in new_field_names {
         let in_old = old_state.has_field(field_name);
         let should_reset = config.always_reset.contains(field_name);
         let should_preserve = config.always_preserve.contains(field_name);
-        
+
         if in_old && (should_preserve || !should_reset) {
             // PRESERVE: Copy bytes directly from old state
             if let Some(idx) = old_state.field_names.iter().position(|n| n == field_name) {
                 merged.field_names.push(field_name.clone());
-                merged.field_values.push(old_state.field_values[idx].clone());
+                merged
+                    .field_values
+                    .push(old_state.field_values[idx].clone());
                 result.preserved_fields.push(field_name.clone());
             }
         } else {
             // RESET or NEW: Use default value
-            if let Some(idx) = new_defaults.field_names.iter().position(|n| n == field_name) {
+            if let Some(idx) = new_defaults
+                .field_names
+                .iter()
+                .position(|n| n == field_name)
+            {
                 merged.field_names.push(field_name.clone());
-                merged.field_values.push(new_defaults.field_values[idx].clone());
+                merged
+                    .field_values
+                    .push(new_defaults.field_values[idx].clone());
             } else {
                 // No default available - add empty
                 merged.field_names.push(field_name.clone());
                 merged.field_values.push(Vec::new());
             }
-            
+
             if !in_old {
                 result.new_fields.push(field_name.clone());
             } else {
@@ -743,21 +805,21 @@ pub fn diff_and_merge_binary(
             }
         }
     }
-    
+
     // Track removed fields (in old but not in new)
     for old_field in &old_state.field_names {
         if !new_field_names.contains(old_field) {
             result.removed_fields.push(old_field.clone());
         }
     }
-    
+
     (merged, result)
 }
 
 /// Generate migration report for binary diff result
 pub fn generate_binary_migration_report(result: &BinaryDiffResult) -> String {
     let mut report = String::from("[Binary State Migration]\n");
-    
+
     if !result.preserved_fields.is_empty() {
         report.push_str(&format!(
             "  Preserved ({}): {}\n",
@@ -765,7 +827,7 @@ pub fn generate_binary_migration_report(result: &BinaryDiffResult) -> String {
             result.preserved_fields.join(", ")
         ));
     }
-    
+
     if !result.reset_fields.is_empty() {
         report.push_str(&format!(
             "  Reset ({}): {}\n",
@@ -773,7 +835,7 @@ pub fn generate_binary_migration_report(result: &BinaryDiffResult) -> String {
             result.reset_fields.join(", ")
         ));
     }
-    
+
     if !result.new_fields.is_empty() {
         report.push_str(&format!(
             "  New ({}): {}\n",
@@ -781,7 +843,7 @@ pub fn generate_binary_migration_report(result: &BinaryDiffResult) -> String {
             result.new_fields.join(", ")
         ));
     }
-    
+
     if !result.removed_fields.is_empty() {
         report.push_str(&format!(
             "  Removed ({}): {}\n",
@@ -789,7 +851,7 @@ pub fn generate_binary_migration_report(result: &BinaryDiffResult) -> String {
             result.removed_fields.join(", ")
         ));
     }
-    
+
     report
 }
 
@@ -806,7 +868,7 @@ pub extern "C" fn synthi_migrate_state(
     module_type_ptr: *const std::ffi::c_char,
 ) -> *mut std::ffi::c_char {
     use std::ffi::{CStr, CString};
-    
+
     unsafe {
         let old_json = match CStr::from_ptr(old_json_ptr).to_str() {
             Ok(s) => s,
@@ -820,14 +882,12 @@ pub extern "C" fn synthi_migrate_state(
             Ok(s) => s,
             Err(_) => "main",
         };
-        
+
         match migrate_state(old_json, new_json, module_type) {
-            Ok((merged, _)) => {
-                match CString::new(merged) {
-                    Ok(cstr) => cstr.into_raw(),
-                    Err(_) => std::ptr::null_mut(),
-                }
-            }
+            Ok((merged, _)) => match CString::new(merged) {
+                Ok(cstr) => cstr.into_raw(),
+                Err(_) => std::ptr::null_mut(),
+            },
             Err(_) => std::ptr::null_mut(),
         }
     }
@@ -847,7 +907,7 @@ pub extern "C" fn synthi_free_migrated_state(ptr: *mut std::ffi::c_char) {
 mod tests {
     use super::*;
     use serde_json::json;
-    
+
     #[test]
     fn test_simple_merge() {
         let old = json!({
@@ -855,17 +915,17 @@ mod tests {
             "y": 200,
             "dx": 5
         });
-        
+
         let new = json!({
             "x": 0,
             "y": 0,
             "dx": 0,
             "new_field": "hello"
         });
-        
+
         let config = DiffConfig::for_core();
         let result = diff_and_merge(&old, &new, &config);
-        
+
         // x, y should be preserved (in always_preserve)
         assert_eq!(result.merged_state["x"], 100);
         assert_eq!(result.merged_state["y"], 200);
@@ -874,7 +934,7 @@ mod tests {
         // new_field should be added
         assert_eq!(result.merged_state["new_field"], "hello");
     }
-    
+
     #[test]
     fn test_nested_merge() {
         let old = json!({
@@ -887,7 +947,7 @@ mod tests {
                 "dy": -3
             }
         });
-        
+
         let new = json!({
             "position": {
                 "x": 0,
@@ -899,36 +959,36 @@ mod tests {
                 "dy": 0
             }
         });
-        
+
         let config = DiffConfig::for_core();
         let result = diff_and_merge(&old, &new, &config);
-        
+
         // Position should be preserved
         assert_eq!(result.merged_state["position"]["x"], 100);
         assert_eq!(result.merged_state["position"]["y"], 200);
         // z is new
         assert_eq!(result.merged_state["position"]["z"], 0);
     }
-    
+
     #[test]
     fn test_always_reset() {
         let old = json!({
             "x": 100,
             "animation_frame": 42
         });
-        
+
         let new = json!({
             "x": 0,
             "animation_frame": 0
         });
-        
+
         let config = DiffConfig::for_gui();
         let result = diff_and_merge(&old, &new, &config);
-        
+
         // animation_frame should always reset
         assert_eq!(result.merged_state["animation_frame"], 0);
     }
-    
+
     #[test]
     fn test_migration_report() {
         let result = DiffResult {
@@ -938,7 +998,7 @@ mod tests {
             removed_fields: vec![],
             merged_state: json!({}),
         };
-        
+
         let report = generate_migration_report(&result);
         assert!(report.contains("Preserved (2)"));
         assert!(report.contains("Reset (1)"));

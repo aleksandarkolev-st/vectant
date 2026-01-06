@@ -214,14 +214,16 @@ impl CrashSupervisor {
     /// Update statistics
     fn update_stats(&mut self, module: ModuleSlot, action: RecoveryAction) {
         self.stats.total_crashes += 1;
-        
+
         if action == RecoveryAction::Fatal {
             self.stats.fatal_crashes += 1;
         } else {
             self.stats.recovered_crashes += 1;
         }
 
-        *self.stats.crashes_by_module
+        *self
+            .stats
+            .crashes_by_module
             .entry(module.as_str().to_string())
             .or_insert(0) += 1;
 
@@ -249,11 +251,7 @@ impl CrashSupervisor {
 
     /// Get recent crash history
     pub fn get_history(&self, count: usize) -> Vec<&CrashEvent> {
-        self.crash_history
-            .iter()
-            .rev()
-            .take(count)
-            .collect()
+        self.crash_history.iter().rev().take(count).collect()
     }
 
     /// Generate crash report for debugging
