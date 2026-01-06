@@ -342,7 +342,7 @@ pub fn extract_fingerprint_from_module(
 fn extract_elf_metadata(path: &Path, state_size: usize) -> (Option<String>, Option<u64>) {
     #[cfg(unix)]
     {
-        use object::Object;
+        // use object::Object;
         
         // Memory map the file for efficient parsing
         let file = match File::open(path) {
@@ -627,7 +627,7 @@ fn extract_layout_hash_from_dwarf(
     obj: &object::File,
     state_size: usize,
 ) -> Option<u64> {
-    use gimli::{EndianSlice, Reader, RunTimeEndian};
+    use gimli::{EndianSlice, RunTimeEndian};
     use object::{Object, ObjectSection};
     
     // Find DWARF sections

@@ -1,7 +1,7 @@
 // Crash recovery is actively used by HmrOrchestrator and runner_bin.rs
 // #![allow(dead_code)] - REMOVED: This module is now wired up
 #![allow(dead_code)]
-#![allow(function_casts_as_integer)]
+// #![allow(function_casts_as_integer)]
 
 // ============================================================
 // RUNTIME ERROR RECOVERY MODULE

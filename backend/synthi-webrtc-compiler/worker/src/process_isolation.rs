@@ -252,8 +252,19 @@ pub struct IsolationConfig {
 
 impl Default for IsolationConfig {
     fn default() -> Self {
+        // Resolve runner binary path relative to current executable (robust for cargo run)
+        let worker_binary = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .map(|mut p| {
+                p.push(if cfg!(target_os = "windows") { "runner.exe" } else { "runner" });
+                p
+            })
+            // Fallback to name-based lookup
+            .unwrap_or_else(|| PathBuf::from(if cfg!(target_os = "windows") { "runner.exe" } else { "runner" }));
+
         Self {
-            worker_binary: PathBuf::from("synthi-runner-worker"),
+            worker_binary,
             heartbeat_interval: Duration::from_secs(5),
             heartbeat_timeout: Duration::from_secs(15),
             max_restarts: 5,
@@ -1135,8 +1146,8 @@ impl ProcessSupervisor {
                         _ => kind_str.parse::<u32>().unwrap_or(0),
                     };
                     
-                    let mut a = 0;
-                    let mut b = 0;
+                    let a;
+                    let b;
                     let mut c = 0;
                     
                     if kind == 0 { // motion x y

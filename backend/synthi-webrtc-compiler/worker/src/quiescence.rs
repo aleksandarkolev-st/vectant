@@ -473,7 +473,7 @@ impl QuiescenceManager {
     pub fn get_report(&self) -> FullQuiescenceReport {
         let mut subsystem_reports = Vec::new();
         
-        for (id, handler) in &self.quiescence_handlers {
+        for (_id, handler) in &self.quiescence_handlers {
             subsystem_reports.push(handler.get_report());
         }
         

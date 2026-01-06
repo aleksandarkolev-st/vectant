@@ -465,7 +465,7 @@ pub fn is_blocking(lib_path: &Path) -> bool {
 // ============================================================
 
 use crate::plugin_contract::{
-    HotApi, HotGetApiFn, HOT_GET_API_SYMBOL, HOT_API_VERSION, HOT_API_MIN_VERSION,
+    HotApi, HotGetApiFn, HOT_API_VERSION, HOT_API_MIN_VERSION,
     MAX_STATE_ALIGNMENT,
 };
 
