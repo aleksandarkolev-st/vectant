@@ -47,50 +47,12 @@ export const PANEL_STATE = {
   FLOATING: 'floating',
   AUTO_HIDE: 'auto-hide',
 };
-
-// Dock positions
-export const DOCK_POSITION = {
-  LEFT: 'left',
-  RIGHT: 'right',
-  BOTTOM: 'bottom',
-  CENTER: 'center', // For tab merging
-};
-
 // Context for dock zone management
 const DockContext = createContext(null);
 
 /**
  * Dock zone indicator shown during drag operations
  */
-function DockZoneIndicator({ position, isActive, onDrop }) {
-  const positionStyles = {
-    [DOCK_POSITION.LEFT]: 'left-0 top-0 bottom-0 w-24',
-    [DOCK_POSITION.RIGHT]: 'right-0 top-0 bottom-0 w-24',
-    [DOCK_POSITION.BOTTOM]: 'bottom-0 left-0 right-0 h-24',
-    [DOCK_POSITION.CENTER]: 'inset-0 m-auto w-32 h-32',
-  };
-
-  return (
-    <div
-      className={cn(
-        'absolute transition-all duration-150 pointer-events-auto',
-        'border-2 border-dashed rounded-lg',
-        positionStyles[position],
-        isActive
-          ? 'bg-[#3A7AFE]/40 border-[#3A7AFE]'
-          : 'bg-[#3A7AFE]/20 border-[#3A7AFE]/50 opacity-30 hover:opacity-60',
-      )}
-      onMouseUp={onDrop}
-      onMouseEnter={(e) => e.stopPropagation()}
-    >
-      <div className="absolute inset-0 flex items-center justify-center">
-        <span className="text-xs text-[#E6E6E6] font-medium uppercase tracking-wide opacity-80">
-          {position === DOCK_POSITION.CENTER ? 'Tab' : `Dock ${position}`}
-        </span>
-      </div>
-    </div>
-  );
-}
 
 /**
  * Floating panel window
