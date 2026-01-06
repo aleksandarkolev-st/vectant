@@ -54,6 +54,7 @@ const fileIndex = require('./fileIndex');
 const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
+const gcsSync = require('./gcsSync');
 
 // LevelDB persistence is optional — some environments (or registries) may not
 // provide a compatible `y-leveldb` binary. Try to load it and fall back to
@@ -527,6 +528,24 @@ const server = http.createServer(async (req, res) => {
                 data[key] = value;
             }
 
+        // Ensure the workspace repo exists for this slug.
+        // This avoids REPO_NOT_FOUND for fresh workspaces and allows the server to
+        // hydrate from GCS automatically (when configured) without requiring a manual
+        // "Initialize Git" click.
+        if (action !== 'clone' && !gitService.isRepoExists(slug)) {
+          try {
+            // initRepo will mkdir the repo path, init .git, and (when configured)
+            // pull the current workspace contents from GCS.
+            await gitService.initRepo(slug, null);
+          } catch (e) {
+            // If init fails, continue so the normal handler can return a structured error.
+            // (Most read paths will fail and the frontend can fall back to storage.)
+            if (gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
+              console.warn('[Collab] auto-init repo failed for slug:', slug, e?.message || e);
+            }
+          }
+        }
+
             let result;
 
             switch (action) {
@@ -759,6 +778,13 @@ const server = http.createServer(async (req, res) => {
                     await gitService.writeFile(slug, data.path, data.content);
                     result = { success: true };
                     break;
+                case 'write-files-batch':
+                  // Batch write many files (supports base64 for binary).
+                  // Payload shape: { files: [{ path, encoding: 'utf8'|'base64', content }] }
+                  result = await gitService.writeFilesBatch(slug, data.files, {
+                    syncToGcs: data.syncToGcs !== false,
+                  });
+                  break;
                 case 'create-directory':
                     await gitService.createDirectory(slug, data.path);
                     result = { success: true };

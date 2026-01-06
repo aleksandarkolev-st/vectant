@@ -89,16 +89,17 @@ pub fn generate_cpp_shim(source: &str, config: &ShimConfig) -> ShimResult {
 fn generate_blocking_wrapper_cpp(source: &str, config: &ShimConfig) -> ShimResult {
     let has_main = source.contains("int main(") || source.contains("int main (");
     let has_sdl_main = source.contains("SDL_main");
-    
+
     if !has_main && !has_sdl_main {
         // No main to wrap, just add minimal HMR hooks if missing
         return add_minimal_hmr_hooks_cpp(source, config);
     }
-    
+
     // State struct name
     let state_name = config.state_struct_name.as_deref().unwrap_or("ShimState");
-    
-    let shim_header = format!(r#"
+
+    let shim_header = format!(
+        r#"
 // ============================================================
 // SYNTHI AUTO-GENERATED HMR SHIM
 // ============================================================
@@ -136,9 +137,12 @@ int _user_main(int argc, char* argv[]);
 #endif
 
 #endif // SYNTHI_SHIM_H
-"#, state_name = state_name);
+"#,
+        state_name = state_name
+    );
 
-    let shim_impl = format!(r#"
+    let shim_impl = format!(
+        r#"
 // ============================================================
 // SYNTHI HMR SHIM IMPLEMENTATION
 // ============================================================
@@ -267,16 +271,14 @@ extern "C" void* on_load_from_json(const char* json) {{
 extern "C" void* entrypoint(void* state) {{
     return on_load(state, NULL);
 }}
-"#, 
+"#,
         user_source = source,
         state_name = state_name
     );
 
     ShimResult {
         source: shim_impl,
-        additional_files: vec![
-            ("synthi_shim.h".to_string(), shim_header),
-        ],
+        additional_files: vec![("synthi_shim.h".to_string(), shim_header)],
         extra_flags: vec![],
     }
 }
@@ -285,7 +287,7 @@ extern "C" void* entrypoint(void* state) {{
 fn add_minimal_hmr_hooks_cpp(source: &str, config: &ShimConfig) -> ShimResult {
     let has_on_load = source.contains("on_load(") || source.contains("on_load (");
     let has_on_update = source.contains("on_update(") || source.contains("on_update (");
-    
+
     if has_on_load && has_on_update {
         // Already has hooks
         return ShimResult {
@@ -294,10 +296,14 @@ fn add_minimal_hmr_hooks_cpp(source: &str, config: &ShimConfig) -> ShimResult {
             extra_flags: vec![],
         };
     }
-    
-    let state_name = config.state_struct_name.as_deref().unwrap_or("MinimalState");
-    
-    let hooks = format!(r#"
+
+    let state_name = config
+        .state_struct_name
+        .as_deref()
+        .unwrap_or("MinimalState");
+
+    let hooks = format!(
+        r#"
 // ============================================================
 // SYNTHI AUTO-ADDED HMR HOOKS
 // ============================================================
@@ -323,7 +329,8 @@ typedef struct {state_name} {{
 "#,
         state_name = state_name,
         on_load = if !has_on_load {
-            format!(r#"
+            format!(
+                r#"
 extern "C" void* on_load(void* prev, void* renderer) {{
     static {state_name} app_state = {{0}};
     {state_name}* state = &app_state;
@@ -341,24 +348,28 @@ extern "C" void* on_load(void* prev, void* renderer) {{
     state->renderer = renderer;
     return state;
 }}
-"#, state_name = state_name)
+"#,
+                state_name = state_name
+            )
         } else {
             String::new()
         },
         on_update = if !has_on_update {
-            format!(r#"
+            format!(
+                r#"
 extern "C" void on_update(void* state_ptr, double dt) {{
     // Minimal update - override this with your logic
     (void)state_ptr;
     (void)dt;
 }}
-"#)
+"#
+            )
         } else {
             String::new()
         },
         source = source
     );
-    
+
     ShimResult {
         source: hooks,
         additional_files: vec![],
@@ -371,7 +382,7 @@ extern "C" void on_update(void* state_ptr, double dt) {{
 fn generate_state_serialization_cpp(source: &str, config: &ShimConfig) -> ShimResult {
     let has_save = source.contains("on_save_state");
     let has_load = source.contains("on_load_from_json");
-    
+
     if has_save && has_load {
         return ShimResult {
             source: source.to_string(),
@@ -379,13 +390,14 @@ fn generate_state_serialization_cpp(source: &str, config: &ShimConfig) -> ShimRe
             extra_flags: vec![],
         };
     }
-    
+
     let state_name = config.state_struct_name.as_deref().unwrap_or("ShimState");
     let mut additions = String::new();
-    
+
     // Add helper includes if needed
     if !source.contains("<cJSON.h>") && !source.contains("<json.h>") {
-        additions.push_str(r#"
+        additions.push_str(
+            r#"
 // ============================================================
 // SYNTHI STATE SERIALIZATION HELPERS
 // ============================================================
@@ -560,11 +572,13 @@ static bool json_parse_string(const char* json, const char* key, char* out, size
     return true;
 }
 
-"#);
+"#,
+        );
     }
-    
+
     if !has_save {
-        additions.push_str(&format!(r#"
+        additions.push_str(&format!(
+            r#"
 // ============================================================
 // AUTO-GENERATED STATE SERIALIZATION
 // ============================================================
@@ -636,9 +650,11 @@ extern "C" char* on_save_state(void* state_ptr) {{
     
     return json_builder_finish(&jb);
 }}
-"#, state_name = state_name));
+"#,
+            state_name = state_name
+        ));
     }
-    
+
     if !has_load {
         additions.push_str(&format!(r#"
 // ============================================================
@@ -727,7 +743,7 @@ extern "C" void* on_load_from_json(const char* json) {{
 }}
 "#, state_name = state_name));
     }
-    
+
     ShimResult {
         source: format!("{}\n{}", source, additions),
         additional_files: vec![],
@@ -743,8 +759,9 @@ extern "C" void* on_load_from_json(const char* json) {{
 /// This handles the SDL event loop properly
 pub fn generate_sdl_gui_shim(source: &str, config: &ShimConfig) -> ShimResult {
     let state_name = config.state_struct_name.as_deref().unwrap_or("SdlGuiState");
-    
-    let shim = format!(r#"
+
+    let shim = format!(
+        r#"
 // ============================================================
 // SYNTHI SDL2 GUI SHIM
 // ============================================================
@@ -895,7 +912,7 @@ extern "C" void* on_load_from_json(const char* json) {{
         state_name = state_name,
         source = source
     );
-    
+
     ShimResult {
         source: shim,
         additional_files: vec![],
@@ -1488,9 +1505,11 @@ pub fn detect_shim_mode(source: &str) -> ShimConfig {
     let has_main = source.contains("int main(") || source.contains("int main (");
     let has_sdl_main = source.contains("SDL_main");
     let has_on_load = source.contains("on_load(") || source.contains("extern \"C\" void* on_load");
-    let has_on_update = source.contains("on_update(") || source.contains("extern \"C\" void on_update");
-    let has_event_loop = source.contains("while") && (source.contains("SDL_PollEvent") || source.contains("running"));
-    
+    let has_on_update =
+        source.contains("on_update(") || source.contains("extern \"C\" void on_update");
+    let has_event_loop = source.contains("while")
+        && (source.contains("SDL_PollEvent") || source.contains("running"));
+
     let mode = if has_on_load && has_on_update {
         // Already HMR-compatible
         ShimMode::None
@@ -1506,7 +1525,7 @@ pub fn detect_shim_mode(source: &str) -> ShimConfig {
     } else {
         ShimMode::None
     };
-    
+
     ShimConfig {
         mode,
         has_gui: has_sdl,
@@ -1519,7 +1538,7 @@ pub fn detect_shim_mode(source: &str) -> ShimConfig {
 /// Apply appropriate shim based on source analysis
 pub fn auto_shim(source: &str) -> ShimResult {
     let config = detect_shim_mode(source);
-    
+
     if config.has_gui && config.mode != ShimMode::None {
         generate_sdl_gui_shim(source, &config)
     } else {
@@ -1530,7 +1549,7 @@ pub fn auto_shim(source: &str) -> ShimResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_detect_blocking_app() {
         let source = r#"
@@ -1540,11 +1559,11 @@ mod tests {
                 return 0;
             }
         "#;
-        
+
         let config = detect_shim_mode(source);
         assert_eq!(config.mode, ShimMode::WrapBlocking);
     }
-    
+
     #[test]
     fn test_detect_hmr_ready() {
         let source = r#"
@@ -1554,11 +1573,11 @@ mod tests {
             extern "C" void on_update(void* state, double dt) {
             }
         "#;
-        
+
         let config = detect_shim_mode(source);
         assert_eq!(config.mode, ShimMode::None);
     }
-    
+
     #[test]
     fn test_detect_sdl_app() {
         let source = r#"
@@ -1571,7 +1590,7 @@ mod tests {
                 return 0;
             }
         "#;
-        
+
         let config = detect_shim_mode(source);
         assert_eq!(config.mode, ShimMode::Full);
         assert!(config.has_gui);

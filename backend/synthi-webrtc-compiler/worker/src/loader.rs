@@ -19,14 +19,14 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::abi_version::AbiVersionManager;
+use crate::abi_version::{AbiVersionManager, CompatibilityResult, SymbolManifest};
 use crate::plugin_contract::ModuleSlot;
 use crate::enhanced_fingerprint::{AbiFingerprint, extract_fingerprint_from_module};
 
 /// Result of a module load operation
 #[derive(Debug)]
 pub enum LoadResult {
-    Success { 
+    Success {
         module_id: String,
         abi_version: u32,
     },
@@ -73,13 +73,13 @@ pub struct ModuleLoader {
 impl ModuleLoader {
     pub fn new() -> Self {
         let mut abi_manager = AbiVersionManager::new();
-        
+
         // Register standard manifests
         use crate::abi_version::standard_manifests;
         abi_manager.register_expected(standard_manifests::core_v1());
         abi_manager.register_expected(standard_manifests::gui_v1());
         abi_manager.register_expected(standard_manifests::main_v1());
-        
+
         Self {
             abi_manager,
             loaded_modules: HashMap::new(),
@@ -90,15 +90,10 @@ impl ModuleLoader {
     }
 
     /// Load a module from path with full validation
-    pub fn load(
-        &mut self,
-        path: &Path,
-        slot: ModuleSlot,
-        content_hash: u64,
-    ) -> LoadResult {
+    pub fn load(&mut self, path: &Path, slot: ModuleSlot, content_hash: u64) -> LoadResult {
         let module_name = slot.as_str();
         let start = std::time::Instant::now();
-        
+
         // Load the library
         let library = match unsafe { libloading::Library::new(path) } {
             Ok(lib) => lib,
@@ -114,9 +109,8 @@ impl ModuleLoader {
         };
 
         // Extract manifest from loaded library
-        let manifest = unsafe {
-            crate::abi_version::extract_manifest_from_library(&library, module_name)
-        };
+        let manifest =
+            unsafe { crate::abi_version::extract_manifest_from_library(&library, module_name) };
 
         // Try to get state size for fingerprinting
         let state_size = unsafe {
@@ -180,9 +174,12 @@ impl ModuleLoader {
                     details: compat.version_info.clone(),
                 }
             };
-            self.record_load(path.to_string_lossy().to_string(), LoadResult::LoadError {
-                reason: format!("Compatibility check failed: {:?}", compat),
-            });
+            self.record_load(
+                path.to_string_lossy().to_string(),
+                LoadResult::LoadError {
+                    reason: format!("Compatibility check failed: {:?}", compat),
+                },
+            );
             return result;
         }
 
@@ -211,11 +208,14 @@ impl ModuleLoader {
             module_id: info.id.clone(),
             abi_version: manifest.abi_version.major,
         };
-        
-        self.record_load(path.to_string_lossy().to_string(), LoadResult::Success {
-            module_id: info.id,
-            abi_version: manifest.abi_version.major,
-        });
+
+        self.record_load(
+            path.to_string_lossy().to_string(),
+            LoadResult::Success {
+                module_id: info.id,
+                abi_version: manifest.abi_version.major,
+            },
+        );
 
         result
     }
@@ -226,9 +226,9 @@ impl ModuleLoader {
         slot: ModuleSlot,
         symbol_name: &[u8],
     ) -> Option<libloading::Symbol<T>> {
-        self.libraries.get(&slot).and_then(|lib| {
-            lib.get(symbol_name).ok()
-        })
+        self.libraries
+            .get(&slot)
+            .and_then(|lib| lib.get(symbol_name).ok())
     }
 
     /// Check if a module is loaded
@@ -273,8 +273,12 @@ impl ModuleLoader {
 
     fn record_load(&mut self, path: String, result: LoadResult) {
         // For now just log, in production would store result summary
-        eprintln!("[Loader] Load {}: {:?}", path, std::mem::discriminant(&result));
-        
+        eprintln!(
+            "[Loader] Load {}: {:?}",
+            path,
+            std::mem::discriminant(&result)
+        );
+
         // Keep history bounded
         if self.load_history.len() >= self.max_history {
             self.load_history.remove(0);

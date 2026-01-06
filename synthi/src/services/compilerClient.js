@@ -31,6 +31,7 @@ export class CompilerClient {
         this.compileChannel = null;
         this.buildLogChannel = null;
         this.terminalChannel = null;
+        this.emulatorInputChannel = null;
         this.lspChannel = null;
         this.readyPromise = null;
         this.currentStreams = [];
@@ -39,12 +40,14 @@ export class CompilerClient {
         this.textDecoder = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
         this.terminalInputBuffer = [];
         this.guiInputBuffer = [];
+        this.emulatorInputBuffer = [];
         this.status = CompilerStatus.IDLE;
         this.slug = null;
         this.supportsH265 = false;
         
         this._handleTerminalInput = this._handleTerminalInput.bind(this);
         this._handleGuiInput = this._handleGuiInput.bind(this);
+        this._handleEmulatorInput = this._handleEmulatorInput.bind(this);
     }
 
     setSlug(slug) {
@@ -110,11 +113,25 @@ export class CompilerClient {
             text = String(msg);
         }
 
-        console.log('[CompilerClient] Received log:', text);
+        // Some messages can be very large.
+        // Logging them verbatim can freeze DevTools and slow the UI.
+        if (typeof text === 'string' && text.length > 2000) {
+            console.log('[CompilerClient] Received log (truncated):', `${text.slice(0, 2000)}…`);
+        } else {
+            console.log('[CompilerClient] Received log:', text);
+        }
 
         // Check for GUI control messages
         try {
             const parsed = JSON.parse(text);
+            // Workspace reconciliation messages (generated file sync).
+            if (parsed && typeof parsed.type === 'string' && parsed.type.startsWith('workspace-')) {
+                if (typeof window !== 'undefined' && window.dispatchEvent) {
+                    window.dispatchEvent(new CustomEvent('synthi:workspace-reconcile', { detail: parsed }));
+                }
+                // Do not forward these payloads to build log handlers (they can be large / base64).
+                return;
+            }
             if (parsed && parsed.type === 'run-gui-start') {
                 console.log('[CompilerClient] Dispatching synthi:gui-start', parsed);
                 if (typeof window !== 'undefined' && window.dispatchEvent) {
@@ -235,6 +252,20 @@ export class CompilerClient {
         } catch (e) { console.error('[CompilerClient] guiListener error', e); }
     }
 
+    _handleEmulatorInput(ev) {
+        try {
+            const d = ev?.detail || {};
+            const payload = JSON.stringify(d);
+            if (this.emulatorInputChannel && this.emulatorInputChannel.readyState === 'open') {
+                this.emulatorInputChannel.send(payload);
+            } else {
+                this.emulatorInputBuffer.push(payload);
+            }
+        } catch (e) {
+            console.error('[CompilerClient] emulatorInputListener error', e);
+        }
+    }
+
     connect() {
         if (this.readyPromise) return this.readyPromise;
         
@@ -316,6 +347,7 @@ export class CompilerClient {
                 this.buildLogChannel = null;
                 this.pc = null;
                 this.ws = null;
+                this.emulatorInputChannel = null;
                 this._setStatus(CompilerStatus.DISCONNECTED);
             };
 
@@ -334,6 +366,8 @@ export class CompilerClient {
                 this.compileChannel = this.pc.createDataChannel('compile', { ordered: true });
                 // Terminal channel for stdin forwarding
                 this.terminalChannel = this.pc.createDataChannel('terminal', { ordered: true });
+                // Emulator input backchannel (Android)
+                this.emulatorInputChannel = this.pc.createDataChannel('emulator-input', { ordered: true });
                 
                 this.compileChannel.onclose = () => {};
 
@@ -373,11 +407,27 @@ export class CompilerClient {
                         } catch (_) {}
                     };
                 }
+
+                if (this.emulatorInputChannel) {
+                    this.emulatorInputChannel.onopen = () => {
+                        try {
+                            window.addEventListener('synthi:emulator-input', this._handleEmulatorInput);
+                        } catch (_) {}
+                        while (this.emulatorInputBuffer.length > 0) {
+                            const p = this.emulatorInputBuffer.shift();
+                            try { this.emulatorInputChannel.send(p); } catch (_) {}
+                        }
+                    };
+                    this.emulatorInputChannel.onclose = () => {
+                        try { window.removeEventListener('synthi:emulator-input', this._handleEmulatorInput); } catch (_) {}
+                    };
+                }
                 // Remove listener when the WebSocket closes as a backup
                 this.ws.addEventListener('close', () => {
                     try { 
                         window.removeEventListener('synthi:terminal-input', this._handleTerminalInput); 
                         window.removeEventListener('synthi:gui-input', this._handleGuiInput);
+                        window.removeEventListener('synthi:emulator-input', this._handleEmulatorInput);
                     } catch (_) {}
                 });
             };
@@ -405,7 +455,7 @@ export class CompilerClient {
         return channel;
     }
 
-    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false, target = null, projectRoot = null, slug = null } = {}) {
+    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false, target = null, projectRoot = null, slug = null, sessionId: providedSessionId = null } = {}) {
         // Auto-detect React Native from source if no target specified and file is JS/JSX/TSX
         const ext = (filename || '').split('.').pop().toLowerCase();
         const isJsxFile = ['js', 'jsx', 'tsx', 'ts'].includes(ext);
@@ -421,11 +471,11 @@ export class CompilerClient {
         if (!effectiveTarget && !lang) throw new SynthiException('Unsupported language for compilation', 'The file extension is not supported by the compiler.');
         await this.connect();
 
-        if (onLog) this.logHandlers.add(onLog);
-
         return new Promise((resolve, reject) => {
             // Unique session id for this compile - allows streaming and session-scoped events
-            const sessionId = `sess-${Date.now()}-${Math.floor(Math.random()*100000)}`;
+            const sessionId = (typeof providedSessionId === 'string' && providedSessionId.length > 0)
+                ? providedSessionId
+                : `sess-${Date.now()}-${Math.floor(Math.random()*100000)}`;
 
             const handleLog = (msg) => {
                 // `msg` is normalized to a string by notifyLog. Ensure we have a string.
@@ -455,7 +505,6 @@ export class CompilerClient {
                 // Check for mobile job completion
                 if (parsed && parsed.type === 'mobile-status' && parsed.status === 'done') {
                     this.logHandlers.delete(handleLog);
-                    if (onLog) this.logHandlers.delete(onLog);
                     if (parsed.data?.success) {
                         resolve(parsed);
                     } else {
@@ -467,7 +516,6 @@ export class CompilerClient {
                 // Check for mobile job error
                 if (parsed && parsed.type === 'mobile-status' && parsed.status === 'error') {
                     this.logHandlers.delete(handleLog);
-                    if (onLog) this.logHandlers.delete(onLog);
                     reject(new SynthiException('Mobile build failed', parsed.message || 'Mobile emulator job failed'));
                     return;
                 }
@@ -476,7 +524,6 @@ export class CompilerClient {
                 if (parsed && parsed.status === 'done') {
                     // cleanup
                     this.logHandlers.delete(handleLog);
-                    if (onLog) this.logHandlers.delete(onLog);
                     if (parsed.success) {
                         resolve(parsed);
                     } else {

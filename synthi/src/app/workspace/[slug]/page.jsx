@@ -35,6 +35,7 @@ import { useWorkspaceAnalysis } from '@/hooks/useWorkspaceAnalysis';
 import { useCompiler } from '@/hooks/useCompiler';
 import AIChatWindow from '@/components/chat/AIChatWindow';
 import { api } from '@/services/api';
+import { gitClient } from '@/services/gitClient';
 import WorkspaceNotFoundModal from '@/components/WorkspaceNotFoundModal';
 import { fileCache } from '@/services/fileCache';
 import { resolveDependencies } from '@/utils/dependencyResolver';
@@ -49,6 +50,9 @@ import { EMULATOR_STATES } from '@/components/emulator/emulatorStates';
 import StatusBar from '../StatusBar.jsx';
 import WorkspaceHydrator from '@/components/WorkspaceHydrator';
 import { ProblemsPanel } from '@/components/analysis';
+import { DockablePanel, DockablePanelProvider, PANEL_STATE, DOCK_POSITION } from '@/components/docking';
+import { AlertCircle } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -59,6 +63,7 @@ export default function EditorPage({ params }) {
     const [chatVisible, setChatVisible] = useState(false);
     const [sidebarView, setSidebarView] = useState('explorer');
     const [showProblemsPanel, setShowProblemsPanel] = useState(false);
+    const [isProblemsPanelDocked, setIsProblemsPanelDocked] = useState(true); // Track if panel is docked or floating
     const [guiConfig, setGuiConfig] = useState(null);
     const [isGuiRunning, setIsGuiRunning] = useState(false);
     const [runInGuiMode, setRunInGuiMode] = useState(false);
@@ -73,6 +78,9 @@ export default function EditorPage({ params }) {
     const [buildLogs, setBuildLogs] = useState([]);
     const [useAiSplit, setUseAiSplit] = useState(false);
     const [emulatorRunNonce, setEmulatorRunNonce] = useState(0);
+    const [emulatorSessionId, setEmulatorSessionId] = useState(null);
+    const [emulatorForcedError, setEmulatorForcedError] = useState('');
+    const reconcileRef = useRef({});
     const analysisTimeoutRef = useRef(null);
     const lastAnalyzedSignatureRef = useRef('');
     
@@ -511,6 +519,11 @@ export default function EditorPage({ params }) {
 
     // Subscribe to editor changes to force re-analysis even for remote changes or undo/redo
     useEffect(() => {
+        if (!activeFile || !hasLoadedInitialFile) return;
+
+        // The first file can be selected before the gateway WebSocket is ready;
+        // waiting for CONNECTED ensures we don't "miss" the initial analysis.
+        if (!connectionMeta?.isConnected) return;
         if (!editor) return;
 
         const disposable = editor.onDidChangeModelContent(() => {
@@ -1110,7 +1123,20 @@ export default function EditorPage({ params }) {
                 aiTimeoutRef.current = null;
             }
         };
-    }, [currentContent, activeFile, hasLoadedInitialFile, slug, analyzeUnified, computeContentHash, editorVersion, editor]);
+      }, [
+        currentContent,
+        activeFile,
+        hasLoadedInitialFile,
+        connectionMeta?.isConnected,
+        analyzeProactive,
+        getRelatedFilesForAnalysis,
+        slug,
+        analyzeUnified,
+        computeContentHash,
+        editorVersion,
+        editor,
+      ]); 
+      
 
     // Track focused file and content changes for workspace analysis
     useEffect(() => {
@@ -1190,6 +1216,110 @@ export default function EditorPage({ params }) {
     const appendBuildLog = useCallback((line) => {
         setBuildLogs((prev) => [...prev, line].slice(-200));
     }, []);
+
+    // Apply worker-generated Android/Gradle artifacts back into the real workspace.
+    // This is session-scoped and only runs for the active emulator session.
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+
+        const handler = async (e) => {
+            const msg = e?.detail;
+            if (!msg || typeof msg !== 'object') return;
+            const sid = msg.sessionId;
+            if (!sid) return;
+
+            // Only apply patches for the active mobile session to avoid cross-talk.
+            if (emulatorSessionId && sid !== emulatorSessionId) return;
+
+            const state = reconcileRef.current;
+            if (!state[sid]) {
+                state[sid] = { files: new Map(), ready: [], summary: null };
+            }
+            const s = state[sid];
+
+            if (msg.type === 'workspace-reconcile-begin') {
+                s.files = new Map();
+                s.ready = [];
+                s.summary = msg.summary || null;
+                appendBuildLog('[sync] Capturing generated Android/Gradle artifacts...');
+                return;
+            }
+
+            if (msg.type === 'workspace-file-begin') {
+                const totalChunks = Number(msg.total_chunks) || 0;
+                if (!msg.path || totalChunks <= 0) return;
+                s.files.set(msg.path, {
+                    totalChunks,
+                    chunks: new Array(totalChunks),
+                    received: 0,
+                    mode: msg.mode,
+                    sha256: msg.sha256,
+                    kind: msg.data,
+                });
+                return;
+            }
+
+            if (msg.type === 'workspace-file-chunk') {
+                if (!msg.path) return;
+                const entry = s.files.get(msg.path);
+                if (!entry) return;
+                const idx = Number(msg.idx);
+                if (!Number.isFinite(idx) || idx < 0 || idx >= entry.totalChunks) return;
+                if (typeof msg.data !== 'string') return;
+                if (entry.chunks[idx] === undefined) {
+                    entry.chunks[idx] = msg.data;
+                    entry.received += 1;
+                }
+                return;
+            }
+
+            if (msg.type === 'workspace-file-end') {
+                if (!msg.path) return;
+                const entry = s.files.get(msg.path);
+                if (!entry) return;
+                if (entry.received !== entry.totalChunks) {
+                    appendBuildLog(`[sync] Skipping incomplete file: ${msg.path}`);
+                    return;
+                }
+                const base64 = entry.chunks.join('');
+                s.ready.push({ path: msg.path, encoding: 'base64', content: base64 });
+                return;
+            }
+
+            if (msg.type === 'workspace-reconcile-end') {
+                const files = s.ready || [];
+                const count = files.length;
+                if (count === 0) {
+                    appendBuildLog('[sync] No generated files to persist.');
+                    return;
+                }
+
+                appendBuildLog(`[sync] Persisting ${count} generated file(s) into workspace...`);
+                try {
+                    const result = await gitClient.writeFilesBatch(slug, files, { syncToGcs: true });
+
+                    // Invalidate caches for any text-ish files we may display.
+                    for (const f of files) {
+                        if (typeof f.path === 'string') fileCache.delete(f.path);
+                    }
+
+                    await dispatch(fetchFilesThunk(slug));
+
+                    const writtenCount = Array.isArray(result?.written) ? result.written.length : 0;
+                    const skippedCount = Array.isArray(result?.skipped) ? result.skipped.length : 0;
+                    const errorCount = Array.isArray(result?.errors) ? result.errors.length : 0;
+                    appendBuildLog(`[sync] Applied: ${writtenCount}, skipped: ${skippedCount}, errors: ${errorCount}`);
+                } catch (err) {
+                    console.error('Workspace reconciliation apply failed', err);
+                    appendBuildLog(`[sync] Apply failed: ${err?.message || String(err)}`);
+                }
+                return;
+            }
+        };
+
+        window.addEventListener('synthi:workspace-reconcile', handler);
+        return () => window.removeEventListener('synthi:workspace-reconcile', handler);
+    }, [appendBuildLog, dispatch, emulatorSessionId, slug]);
 
     // Helper to detect if source code contains React Native imports
     const detectReactNativeInSource = useCallback((source) => {
@@ -1287,9 +1417,12 @@ export default function EditorPage({ params }) {
         const isReactNative = hasRnImports || hasRnPackage;
         const target = isReactNative ? 'react-native-emulator' : null;
 
-        // Auto-open the UI-only emulator panel when we run a mobile build.
-        // This is intentionally NOT a real emulator: it only shows the preview panel.
+        // Auto-open the emulator panel when we run a mobile build.
+        let mobileSid = null;
         if (isReactNative) {
+            mobileSid = `sess-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+            setEmulatorSessionId(mobileSid);
+            setEmulatorForcedError('');
             dispatch(setEmulatorPreviewVisible(true));
             setEmulatorRunNonce((v) => v + 1); // remount to simulate a fresh boot
         }
@@ -1315,6 +1448,7 @@ export default function EditorPage({ params }) {
                 target,
                 projectRoot,
                 slug, // Pass workspace slug for mobile builds to download synced files
+                sessionId: mobileSid,
                 onLog: (line) => {
                     appendBuildLog(line);
                     console.log('[build]', line);
@@ -1324,6 +1458,9 @@ export default function EditorPage({ params }) {
         } catch (err) {
             console.error('Compile failed', err);
             appendBuildLog(`error: ${err?.message || err}`);
+            if (isReactNative) {
+                setEmulatorForcedError(err?.message || String(err));
+            }
         }
     }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, useAiSplit, runInGuiMode]);
 
@@ -1479,7 +1616,14 @@ export default function EditorPage({ params }) {
             <EmulatorPanel
                 key={emulatorRunNonce}
                 defaultState={EMULATOR_STATES.BOOTING}
-                onClose={() => dispatch(setEmulatorPreviewVisible(false))}
+                sessionId={emulatorSessionId}
+                mediaStream={mediaStream}
+                forcedErrorMessage={emulatorForcedError}
+                onClose={() => {
+                    dispatch(setEmulatorPreviewVisible(false));
+                    setEmulatorSessionId(null);
+                    setEmulatorForcedError('');
+                }}
             />
         </ResizablePanel>
     );
@@ -1489,6 +1633,7 @@ export default function EditorPage({ params }) {
     }
 
     return (
+    <DockablePanelProvider workspaceId={slug}>
     <div className="flex flex-col h-screen overflow-hidden bg-[#09090b] text-[#D7DAE0]">
         <div className="flex flex-col flex-1 bg-[#1e1e1e] text-gray-200">
             {/* Hydrate workspace-specific tabs from localStorage */}
@@ -1587,53 +1732,85 @@ export default function EditorPage({ params }) {
                     </ResizablePanelGroup>
                 </ResizablePanel>
 
+                {/* Docked Problems Panel - container always present when panel shown, collapses when floating */}
                 {showProblemsPanel && (
                     <>
-                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] h-px z-50" />
-                        <ResizablePanel defaultSize={25} minSize={10}>
-                            <ProblemsPanel
-                                diagnostics={mergedDiagnostics}
-                                summary={diagnosticSummary}
-                                isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
-                                filePath={activeFile?.path || activeFile?.name || 'Current File'}
-                                onClose={() => setShowProblemsPanel(false)}
-                                onNavigate={(location) => {
-                                    const targetFile = location.filePath;
-                                    const currentFile = activeFile?.path || activeFile?.name;
-                                    
-                                    // If navigating to a different file, select it first
-                                    if (targetFile && targetFile !== currentFile) {
-                                        // Find the file in rawFiles and select it
-                                        const findFile = (files, path) => {
-                                            for (const file of files || []) {
-                                                if (file.isFolder && file.children) {
-                                                    const found = findFile(file.children, path);
-                                                    if (found) return found;
-                                                } else if (file.path === path || file.name === path) {
-                                                    return file;
-                                                }
-                                            }
-                                            return null;
-                                        };
-                                        
-                                        const fileToSelect = findFile(rawFiles, targetFile);
-                                        if (fileToSelect) {
-                                            dispatch(selectFileThunk(fileToSelect));
-                                            // Wait a bit for file to load, then navigate
-                                            setTimeout(() => {
-                                                if (editor) {
-                                                    const position = {
-                                                        lineNumber: (location.line ?? 0) + 1,
-                                                        column: (location.column ?? 0) + 1,
-                                                    };
-                                                    editor.setPosition(position);
-                                                    editor.revealPositionInCenter(position);
-                                                    editor.focus();
-                                                }
-                                            }, 100);
-                                        }
-                                    } else if (editor) {
-                                        // Same file, just navigate
+                        <ResizableHandle 
+                            className={cn(
+                                "!pointer-events-auto bg-[#1a1a1e] hover:bg-[#3A7AFE] h-px z-50",
+                                !isProblemsPanelDocked && "opacity-0 pointer-events-none"
+                            )} 
+                        />
+                        <ResizablePanel 
+                            key={`problems-dock-${isProblemsPanelDocked ? 'docked' : 'floating'}`}
+                            defaultSize={isProblemsPanelDocked ? 25 : 0} 
+                            minSize={isProblemsPanelDocked ? 10 : 0}
+                            maxSize={isProblemsPanelDocked ? 100 : 0}
+                            collapsible={true}
+                            collapsedSize={0}
+                            className={cn(
+                                !isProblemsPanelDocked && "!h-0 !min-h-0 !max-h-0 overflow-hidden"
+                            )}
+                        >
+                            <div 
+                                className={cn(
+                                    "h-full",
+                                    !isProblemsPanelDocked && "opacity-0"
+                                )} 
+                                id="problems-panel-dock-slot" 
+                            />
+                        </ResizablePanel>
+                    </>
+                )}
+            </ResizablePanelGroup>
+
+        </div>
+
+        {/* Single Problems Panel instance - renders to dock slot or as floating */}
+        {showProblemsPanel && (
+            <DockablePanel
+                id="problems-panel"
+                title="Problems"
+                icon={AlertCircle}
+                defaultState={PANEL_STATE.DOCKED}
+                defaultPosition={DOCK_POSITION.BOTTOM}
+                defaultFloatingPosition={{ x: 200, y: 200 }}
+                defaultFloatingSize={{ width: 600, height: 400 }}
+                isOpen={showProblemsPanel}
+                onOpenChange={setShowProblemsPanel}
+                onDockedChange={setIsProblemsPanelDocked}
+                workspaceId={slug}
+                dockSlotId="problems-panel-dock-slot"
+                className="h-full rounded-none border-0"
+            >
+                <ProblemsPanel
+                    diagnostics={mergedDiagnostics}
+                    summary={diagnosticSummary}
+                    isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
+                    filePath={activeFile?.path || activeFile?.name || 'Current File'}
+                    onClose={() => setShowProblemsPanel(false)}
+                    onNavigate={(location) => {
+                        const targetFile = location.filePath;
+                        const currentFile = activeFile?.path || activeFile?.name;
+                        
+                        if (targetFile && targetFile !== currentFile) {
+                            const findFile = (files, path) => {
+                                for (const file of files || []) {
+                                    if (file.isFolder && file.children) {
+                                        const found = findFile(file.children, path);
+                                        if (found) return found;
+                                    } else if (file.path === path || file.name === path) {
+                                        return file;
+                                    }
+                                }
+                                return null;
+                            };
+                            
+                            const fileToSelect = findFile(rawFiles, targetFile);
+                            if (fileToSelect) {
+                                dispatch(selectFileThunk(fileToSelect));
+                                setTimeout(() => {
+                                    if (editor) {
                                         const position = {
                                             lineNumber: (location.line ?? 0) + 1,
                                             column: (location.column ?? 0) + 1,
@@ -1642,14 +1819,22 @@ export default function EditorPage({ params }) {
                                         editor.revealPositionInCenter(position);
                                         editor.focus();
                                     }
-                                }}
-                                className="h-full rounded-none border-0"
-                            />
-                        </ResizablePanel>
-                    </>
-                )}
-            </ResizablePanelGroup>
-        </div>
+                                }, 100);
+                            }
+                        } else if (editor) {
+                            const position = {
+                                lineNumber: (location.line ?? 0) + 1,
+                                column: (location.column ?? 0) + 1,
+                            };
+                            editor.setPosition(position);
+                            editor.revealPositionInCenter(position);
+                            editor.focus();
+                        }
+                    }}
+                    className="h-full rounded-none border-0"
+                />
+            </DockablePanel>
+        )}
 
         {/* Status Bar */}
         <StatusBar
@@ -1662,5 +1847,6 @@ export default function EditorPage({ params }) {
         {/* Error Overlay */}
         <ErrorOverlay />
     </div>
+    </DockablePanelProvider>
 );
 }

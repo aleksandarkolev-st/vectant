@@ -165,7 +165,7 @@ export function ProactiveAnalysisStatusFloat({
       <button
         onClick={() => setEnabled(true)}
         className={cn(
-          'fixed z-50 p-2 rounded-full bg-[#1a1a1a] border border-[#2a2a2a]',
+          'fixed z-50 p-2 rounded-full bg-[#0D0E14] border border-[#2a2a2a]',
           'shadow-lg hover:bg-[#252525] transition-colors',
           positionClass,
           className,
@@ -182,7 +182,7 @@ export function ProactiveAnalysisStatusFloat({
       {/* Expanded panel */}
       {isExpanded && (
         <div className={cn(
-          'mb-2 p-3 rounded-lg bg-[#1a1a1a] border border-[#2a2a2a]',
+          'mb-2 p-3 rounded-lg bg-[#0D0E14] border border-[#2a2a2a]',
           'shadow-xl min-w-[200px]',
         )}>
           {/* Header */}
@@ -273,7 +273,7 @@ export function ProactiveAnalysisStatusFloat({
         onClick={handleToggle}
         className={cn(
           'flex items-center gap-2 px-3 py-2 rounded-full',
-          'bg-[#1a1a1a] border border-[#2a2a2a]',
+          'bg-[#0D0E14] border border-[#2a2a2a]',
           'shadow-lg hover:bg-[#252525] transition-all',
           isAnalyzing && 'border-blue-500/50',
           hasIssues && summary.errors > 0 && 'border-red-500/50',
