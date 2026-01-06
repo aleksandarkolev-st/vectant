@@ -26,7 +26,14 @@ class MonacoTextBinding {
       try {
         const newText = this.ytext.toString();
         const current = this.model.getValue();
-        if (current === newText) return;
+        
+        // Normalize line endings for comparison to avoid false positives on Windows
+        // Monaco might normalize to CRLF while Yjs has LF or vice versa
+        const normalize = (s) => s ? s.replace(/\r\n/g, '\n') : '';
+        if (normalize(current) === normalize(newText)) return;
+
+        // console.log('[Collab] Remote change detected. Applying to Monaco.');
+        // console.log(`[Collab] Current length: ${current.length}, New length: ${newText.length}`);
 
         // Use setTimeout to avoid reentrancy issues when Monaco fires view events
         // synchronously — scheduling to next event loop reduces chance of

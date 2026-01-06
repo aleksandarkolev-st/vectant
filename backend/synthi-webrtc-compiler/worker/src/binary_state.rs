@@ -1,6 +1,7 @@
 // ============================================================
 // BINARY STATE SCHEMA - PRODUCTION-SAFE STATE MIGRATION
 // ============================================================
+#![allow(dead_code)]
 // JSON-based state diffing is fragile (type drift, padding, floats).
 // This module provides binary schemas with explicit layout, alignment,
 // and versioned offsets for production safety.
@@ -17,6 +18,7 @@
 // - 10-50x faster than JSON
 // - Smaller payloads (~40% of JSON)
 // - Schema-aware migration for structural additions
+// - SIZE-THEN-WRITE pattern for allocation-free serialization
 //
 // STATUS: ACTIVE - used by HmrOrchestrator and main.rs
 // ============================================================
@@ -25,6 +27,372 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Cursor;
+
+// ============================================================
+// SIZE-THEN-WRITE PATTERN: Generic Writer Trait
+// ============================================================
+// To avoid allocating inside the module for serialization, we use:
+// - CountingWriter for *_size: counts bytes without writing
+// - SliceWriter for *_write: writes directly to provided buffer
+// ============================================================
+
+/// Writer trait for allocation-free serialization
+/// Implementations either count bytes or write to a buffer
+pub trait StateWriter {
+    /// Write bytes to the output
+    fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), StateWriteError>;
+    
+    /// Write a single byte
+    fn write_u8(&mut self, value: u8) -> Result<(), StateWriteError> {
+        self.write_bytes(&[value])
+    }
+    
+    /// Write a u16 in little-endian
+    fn write_u16(&mut self, value: u16) -> Result<(), StateWriteError> {
+        self.write_bytes(&value.to_le_bytes())
+    }
+    
+    /// Write a u32 in little-endian
+    fn write_u32(&mut self, value: u32) -> Result<(), StateWriteError> {
+        self.write_bytes(&value.to_le_bytes())
+    }
+    
+    /// Write a u64 in little-endian
+    fn write_u64(&mut self, value: u64) -> Result<(), StateWriteError> {
+        self.write_bytes(&value.to_le_bytes())
+    }
+    
+    /// Write an i32 in little-endian
+    fn write_i32(&mut self, value: i32) -> Result<(), StateWriteError> {
+        self.write_bytes(&value.to_le_bytes())
+    }
+    
+    /// Write an i64 in little-endian
+    fn write_i64(&mut self, value: i64) -> Result<(), StateWriteError> {
+        self.write_bytes(&value.to_le_bytes())
+    }
+    
+    /// Write an f32 in little-endian
+    fn write_f32(&mut self, value: f32) -> Result<(), StateWriteError> {
+        self.write_bytes(&value.to_le_bytes())
+    }
+    
+    /// Write an f64 in little-endian
+    fn write_f64(&mut self, value: f64) -> Result<(), StateWriteError> {
+        self.write_bytes(&value.to_le_bytes())
+    }
+    
+    /// Get total bytes written so far
+    fn bytes_written(&self) -> usize;
+}
+
+/// Error type for state writing
+#[derive(Debug, Clone)]
+pub enum StateWriteError {
+    /// Buffer is too small
+    BufferOverflow { needed: usize, available: usize },
+    /// Invalid data
+    InvalidData(String),
+}
+
+impl std::fmt::Display for StateWriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StateWriteError::BufferOverflow { needed, available } => {
+                write!(f, "Buffer overflow: needed {} bytes, only {} available", needed, available)
+            }
+            StateWriteError::InvalidData(msg) => write!(f, "Invalid data: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for StateWriteError {}
+
+/// Counting writer - counts bytes without writing anything
+/// Use this for *_size functions
+pub struct CountingWriter {
+    count: usize,
+}
+
+impl CountingWriter {
+    pub fn new() -> Self {
+        Self { count: 0 }
+    }
+    
+    pub fn count(&self) -> usize {
+        self.count
+    }
+}
+
+impl Default for CountingWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StateWriter for CountingWriter {
+    fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), StateWriteError> {
+        self.count += bytes.len();
+        Ok(())
+    }
+    
+    fn bytes_written(&self) -> usize {
+        self.count
+    }
+}
+
+/// Slice writer - writes directly to a provided buffer
+/// Use this for *_write functions
+pub struct SliceWriter<'a> {
+    buffer: &'a mut [u8],
+    position: usize,
+}
+
+impl<'a> SliceWriter<'a> {
+    pub fn new(buffer: &'a mut [u8]) -> Self {
+        Self { buffer, position: 0 }
+    }
+    
+    pub fn position(&self) -> usize {
+        self.position
+    }
+    
+    pub fn remaining(&self) -> usize {
+        self.buffer.len().saturating_sub(self.position)
+    }
+}
+
+impl<'a> StateWriter for SliceWriter<'a> {
+    fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), StateWriteError> {
+        if self.position + bytes.len() > self.buffer.len() {
+            return Err(StateWriteError::BufferOverflow {
+                needed: bytes.len(),
+                available: self.remaining(),
+            });
+        }
+        self.buffer[self.position..self.position + bytes.len()].copy_from_slice(bytes);
+        self.position += bytes.len();
+        Ok(())
+    }
+    
+    fn bytes_written(&self) -> usize {
+        self.position
+    }
+}
+
+// ============================================================
+// MSGPACK STATE SERIALIZER (allocation-free)
+// ============================================================
+
+/// MsgPack serializer that uses the StateWriter trait
+/// Can work with CountingWriter (for size) or SliceWriter (for write)
+pub struct MsgPackSerializer<W: StateWriter> {
+    writer: W,
+    /// Use stable field names/ids for encoding (not position-dependent)
+    use_stable_keys: bool,
+}
+
+impl<W: StateWriter> MsgPackSerializer<W> {
+    pub fn new(writer: W) -> Self {
+        Self {
+            writer,
+            use_stable_keys: true, // Always use stable keys to avoid ABI churn
+        }
+    }
+    
+    pub fn into_writer(self) -> W {
+        self.writer
+    }
+    
+    /// Write MsgPack nil
+    pub fn write_nil(&mut self) -> Result<(), StateWriteError> {
+        self.writer.write_u8(0xc0)
+    }
+    
+    /// Write MsgPack boolean
+    pub fn write_bool(&mut self, value: bool) -> Result<(), StateWriteError> {
+        self.writer.write_u8(if value { 0xc3 } else { 0xc2 })
+    }
+    
+    /// Write MsgPack fixint (0-127)
+    pub fn write_fixint(&mut self, value: u8) -> Result<(), StateWriteError> {
+        debug_assert!(value <= 127);
+        self.writer.write_u8(value)
+    }
+    
+    /// Write MsgPack negative fixint (-1 to -32)
+    pub fn write_neg_fixint(&mut self, value: i8) -> Result<(), StateWriteError> {
+        debug_assert!((-32..0).contains(&value));
+        self.writer.write_u8(value as u8)
+    }
+    
+    /// Write MsgPack u8
+    pub fn write_uint8(&mut self, value: u8) -> Result<(), StateWriteError> {
+        if value <= 127 {
+            self.write_fixint(value)
+        } else {
+            self.writer.write_u8(0xcc)?;
+            self.writer.write_u8(value)
+        }
+    }
+    
+    /// Write MsgPack u16
+    pub fn write_uint16(&mut self, value: u16) -> Result<(), StateWriteError> {
+        if value <= 127 {
+            self.write_fixint(value as u8)
+        } else if value <= 255 {
+            self.writer.write_u8(0xcc)?;
+            self.writer.write_u8(value as u8)
+        } else {
+            self.writer.write_u8(0xcd)?;
+            self.writer.write_bytes(&value.to_be_bytes())
+        }
+    }
+    
+    /// Write MsgPack u32
+    pub fn write_uint32(&mut self, value: u32) -> Result<(), StateWriteError> {
+        if value <= 127 {
+            self.write_fixint(value as u8)
+        } else if value <= 255 {
+            self.writer.write_u8(0xcc)?;
+            self.writer.write_u8(value as u8)
+        } else if value <= 65535 {
+            self.writer.write_u8(0xcd)?;
+            self.writer.write_bytes(&(value as u16).to_be_bytes())
+        } else {
+            self.writer.write_u8(0xce)?;
+            self.writer.write_bytes(&value.to_be_bytes())
+        }
+    }
+    
+    /// Write MsgPack u64
+    pub fn write_uint64(&mut self, value: u64) -> Result<(), StateWriteError> {
+        if value <= 127 {
+            self.write_fixint(value as u8)
+        } else if value <= u32::MAX as u64 {
+            self.write_uint32(value as u32)
+        } else {
+            self.writer.write_u8(0xcf)?;
+            self.writer.write_bytes(&value.to_be_bytes())
+        }
+    }
+    
+    /// Write MsgPack i32
+    pub fn write_int32(&mut self, value: i32) -> Result<(), StateWriteError> {
+        if value >= 0 {
+            self.write_uint32(value as u32)
+        } else if value >= -32 {
+            self.write_neg_fixint(value as i8)
+        } else if value >= i8::MIN as i32 {
+            self.writer.write_u8(0xd0)?;
+            self.writer.write_u8(value as u8)
+        } else if value >= i16::MIN as i32 {
+            self.writer.write_u8(0xd1)?;
+            self.writer.write_bytes(&(value as i16).to_be_bytes())
+        } else {
+            self.writer.write_u8(0xd2)?;
+            self.writer.write_bytes(&value.to_be_bytes())
+        }
+    }
+    
+    /// Write MsgPack i64
+    pub fn write_int64(&mut self, value: i64) -> Result<(), StateWriteError> {
+        if value >= 0 && value <= i32::MAX as i64 {
+            self.write_int32(value as i32)
+        } else if value >= i32::MIN as i64 {
+            self.write_int32(value as i32)
+        } else {
+            self.writer.write_u8(0xd3)?;
+            self.writer.write_bytes(&value.to_be_bytes())
+        }
+    }
+    
+    /// Write MsgPack f32
+    pub fn write_float32(&mut self, value: f32) -> Result<(), StateWriteError> {
+        self.writer.write_u8(0xca)?;
+        self.writer.write_bytes(&value.to_be_bytes())
+    }
+    
+    /// Write MsgPack f64
+    pub fn write_float64(&mut self, value: f64) -> Result<(), StateWriteError> {
+        self.writer.write_u8(0xcb)?;
+        self.writer.write_bytes(&value.to_be_bytes())
+    }
+    
+    /// Write MsgPack string (fixstr, str8, str16, str32)
+    pub fn write_str(&mut self, value: &str) -> Result<(), StateWriteError> {
+        let bytes = value.as_bytes();
+        let len = bytes.len();
+        
+        if len <= 31 {
+            self.writer.write_u8(0xa0 | len as u8)?;
+        } else if len <= 255 {
+            self.writer.write_u8(0xd9)?;
+            self.writer.write_u8(len as u8)?;
+        } else if len <= 65535 {
+            self.writer.write_u8(0xda)?;
+            self.writer.write_bytes(&(len as u16).to_be_bytes())?;
+        } else {
+            self.writer.write_u8(0xdb)?;
+            self.writer.write_bytes(&(len as u32).to_be_bytes())?;
+        }
+        
+        self.writer.write_bytes(bytes)
+    }
+    
+    /// Write MsgPack binary (bin8, bin16, bin32)
+    pub fn write_bin(&mut self, bytes: &[u8]) -> Result<(), StateWriteError> {
+        let len = bytes.len();
+        
+        if len <= 255 {
+            self.writer.write_u8(0xc4)?;
+            self.writer.write_u8(len as u8)?;
+        } else if len <= 65535 {
+            self.writer.write_u8(0xc5)?;
+            self.writer.write_bytes(&(len as u16).to_be_bytes())?;
+        } else {
+            self.writer.write_u8(0xc6)?;
+            self.writer.write_bytes(&(len as u32).to_be_bytes())?;
+        }
+        
+        self.writer.write_bytes(bytes)
+    }
+    
+    /// Write MsgPack map header (fixmap, map16, map32)
+    pub fn write_map_header(&mut self, count: usize) -> Result<(), StateWriteError> {
+        if count <= 15 {
+            self.writer.write_u8(0x80 | count as u8)
+        } else if count <= 65535 {
+            self.writer.write_u8(0xde)?;
+            self.writer.write_bytes(&(count as u16).to_be_bytes())
+        } else {
+            self.writer.write_u8(0xdf)?;
+            self.writer.write_bytes(&(count as u32).to_be_bytes())
+        }
+    }
+    
+    /// Write MsgPack array header (fixarray, array16, array32)
+    pub fn write_array_header(&mut self, count: usize) -> Result<(), StateWriteError> {
+        if count <= 15 {
+            self.writer.write_u8(0x90 | count as u8)
+        } else if count <= 65535 {
+            self.writer.write_u8(0xdc)?;
+            self.writer.write_bytes(&(count as u16).to_be_bytes())
+        } else {
+            self.writer.write_u8(0xdd)?;
+            self.writer.write_bytes(&(count as u32).to_be_bytes())
+        }
+    }
+    
+    /// Get bytes written so far
+    pub fn bytes_written(&self) -> usize {
+        self.writer.bytes_written()
+    }
+}
+
+// ============================================================
+// MESSAGEPACK STATE SERIALIZATION (Legacy Vec<u8> interface)
+// ============================================================
 
 // ============================================================
 // MESSAGEPACK STATE SERIALIZATION (Fast alternative to JSON)

@@ -368,7 +368,20 @@ export class MonacoBridge {
       tags: diag.tags?.map(t => t === 1 ? 1 : 2) // Unnecessary = 1, Deprecated = 2
     }));
 
-    this.monaco.editor.setModelMarkers(model, source || 'extension', markers);
+    const owner = source || 'extension';
+
+    // Track all marker owners we ever use so the UI can reliably clear stale markers
+    // on user edits (Monaco markers do not "shift" with edits).
+    try {
+      if (!this.monaco.__synthiMarkerOwners) {
+        this.monaco.__synthiMarkerOwners = new Set();
+      }
+      this.monaco.__synthiMarkerOwners.add(owner);
+    } catch (e) {
+      // ignore
+    }
+
+    this.monaco.editor.setModelMarkers(model, owner, markers);
   }
 
   /**

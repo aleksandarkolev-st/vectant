@@ -168,41 +168,123 @@ if (LeveldbPersistence) {
 }
 
 /**
- * Wrapper persistence that validates cached state against actual file content.
- * This prevents stale data from being loaded when files change outside the editor.
+ * Wrapper persistence that validates cached state against actual file content,
+ * AND automatically flushes Y.js changes to disk for Container-First architecture.
+ * This ensures the compiler/AI always sees the latest content.
  */
 class ValidatingPersistence {
   constructor(innerPersistence) {
     this.inner = innerPersistence;
-    // console.log('[Collab DEBUG] ValidatingPersistence wrapper initialized');
+    // Track Y.js document observers for auto-flush
+    this.docObservers = new Map(); // docName -> { ydoc, observer, flushTimer }
+    // Debounce interval for disk writes (ms)
+    this.FLUSH_DEBOUNCE_MS = 150;
+  }
+
+  /**
+   * Set up auto-flush observer for a Y.js document
+   * This ensures every Y.js change is eventually written to disk
+   */
+  _setupAutoFlush(docName, ydoc) {
+    // Only set up for workspace documents
+    const parsed = parseDocName(docName);
+    if (!parsed) return;
+
+    // Clean up existing observer if any
+    this._cleanupAutoFlush(docName);
+
+    const { slug, filePath } = parsed;
+    
+    // Find the text type being used
+    const textTypes = ['monaco', 'content', 'text', 'codemirror'];
+    let targetText = null;
+    for (const name of textTypes) {
+      const text = ydoc.getText(name);
+      if (text) {
+        targetText = text;
+        break;
+      }
+    }
+
+    if (!targetText) return;
+
+    // Create observer that flushes to disk
+    let flushTimer = null;
+    const observer = () => {
+      // Debounce disk writes
+      if (flushTimer) clearTimeout(flushTimer);
+      
+      flushTimer = setTimeout(async () => {
+        try {
+          const content = targetText.toString();
+          const repoPath = path.join(__dirname, 'repos', slug);
+          const fullPath = path.join(repoPath, filePath);
+          
+          // Ensure directory exists
+          const dirPath = path.dirname(fullPath);
+          await fs.mkdir(dirPath, { recursive: true });
+          
+          // Write to disk
+          await fs.writeFile(fullPath, content, 'utf-8');
+          
+          // Update hash cache
+          fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
+          
+          console.log(`[Collab AutoFlush] ${filePath} -> disk (${content.length} chars)`);
+        } catch (e) {
+          console.error(`[Collab AutoFlush] Failed to flush ${filePath}:`, e.message);
+        }
+      }, this.FLUSH_DEBOUNCE_MS);
+    };
+
+    // Observe changes on the text type
+    targetText.observe(observer);
+
+    // Store for cleanup
+    this.docObservers.set(docName, { ydoc, text: targetText, observer, flushTimer: null });
+    
+    console.log(`[Collab AutoFlush] Set up auto-flush for ${docName}`);
+  }
+
+  /**
+   * Clean up auto-flush observer
+   */
+  _cleanupAutoFlush(docName) {
+    const entry = this.docObservers.get(docName);
+    if (entry) {
+      try {
+        if (entry.text && entry.observer) {
+          entry.text.unobserve(entry.observer);
+        }
+        if (entry.flushTimer) {
+          clearTimeout(entry.flushTimer);
+        }
+      } catch (e) {
+        console.warn(`[Collab AutoFlush] Cleanup error for ${docName}:`, e.message);
+      }
+      this.docObservers.delete(docName);
+    }
   }
 
   async bindState(docName, ydoc) {
-    // console.log(\`[Collab DEBUG] === bindState START: \${docName} ===\`);
-    
     // First, bind the persisted state (if any)
     if (this.inner.bindState) {
-      // console.log(\`[Collab DEBUG]   Calling inner.bindState...\`);
       await this.inner.bindState(docName, ydoc);
-      // console.log(\`[Collab DEBUG]   Inner bindState completed\`);
     }
 
     // Now validate against actual file
     const parsed = parseDocName(docName);
     if (!parsed) {
       // Not a workspace document, skip validation
-      // console.log(\`[Collab DEBUG]   Not a workspace document, skipping validation\`);
       return;
     }
 
     const { slug, filePath } = parsed;
-    // console.log(\`[Collab DEBUG]   Parsed: slug=\${slug}, filePath=\${filePath}\`);
     
     const actualContent = await getActualFileContent(slug, filePath);
     
     if (actualContent === null) {
       // File doesn't exist on disk, keep persisted state
-      // console.log(\`[Collab DEBUG]   File not found on disk, keeping persisted state\`);
       return;
     }
 
@@ -210,19 +292,13 @@ class ValidatingPersistence {
     const actualHash = computeHash(actualContent);
     const persistedHash = computeHash(persistedContent);
 
-    // console.log(\`[Collab DEBUG]   Persisted content: \${persistedContent.length} chars, hash=\${persistedHash.substring(0, 8)}\`);
-    // console.log(\`[Collab DEBUG]   Actual file: \${actualContent.length} chars, hash=\${actualHash.substring(0, 8)}\`);
-    // console.log(\`[Collab DEBUG]   Persisted preview: \${JSON.stringify(persistedContent.substring(0, 100))}...\`);
-    // console.log(\`[Collab DEBUG]   Actual preview: \${JSON.stringify(actualContent.substring(0, 100))}...\`);
-
+    // Condensed logging - only log when relevant
     if (actualHash !== persistedHash) {
-      // console.log(\`[Collab DEBUG]   *** STALE DATA DETECTED ***\`);
-      // console.log(\`[Collab DEBUG]   Resetting document to actual file content\`);
+      console.log(`[Collab] STALE DATA: ${filePath} | persisted=${persistedHash.substring(0, 8)} | actual=${actualHash.substring(0, 8)} | resetting...`);
 
       // Clear the persisted state and reset to actual content
       if (this.inner.clearDocument) {
         await this.inner.clearDocument(docName);
-        // console.log(\`[Collab DEBUG]   Cleared persisted state\`);
       }
 
       // Reset Yjs document to actual file content
@@ -235,7 +311,6 @@ class ValidatingPersistence {
             text.delete(0, text.length);
             text.insert(0, actualContent);
           });
-          // console.log(\`[Collab DEBUG]   Reset text type '\${name}' with \${actualContent.length} chars\`);
           break;
         }
       }
@@ -243,16 +318,16 @@ class ValidatingPersistence {
       // Update hash cache
       fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
     } else {
-      // console.log(\`[Collab DEBUG]   Content is VALID (hashes match)\`);
       fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
     }
     
-    // console.log(\`[Collab DEBUG] === bindState END: \${docName} ===\`);
+    // Set up auto-flush so all future Y.js changes are written to disk
+    // This is critical for Container-First architecture
+    this._setupAutoFlush(docName, ydoc);
   }
 
   async writeState(docName, ydoc) {
     const content = getYDocContent(ydoc);
-    console.log(`[Collab DEBUG] writeState: ${docName} (${content.length} chars)`);
     
     if (this.inner.writeState) {
       await this.inner.writeState(docName, ydoc);
@@ -263,7 +338,6 @@ class ValidatingPersistence {
   }
 
   async clearDocument(docName) {
-    console.log(`[Collab DEBUG] clearDocument: ${docName}`);
     fileHashCache.delete(docName);
     if (this.inner.clearDocument) {
       await this.inner.clearDocument(docName);
@@ -272,7 +346,6 @@ class ValidatingPersistence {
 
   // Proxy other methods to inner persistence
   async flushDocument(docName) {
-    console.log(`[Collab DEBUG] flushDocument: ${docName}`);
     if (this.inner.flushDocument) {
       await this.inner.flushDocument(docName);
     }
@@ -373,6 +446,45 @@ const server = http.createServer(async (req, res) => {
     
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  // ========================================================================
+  // FILE CONTENT ENDPOINT - Used by AI backend for Container-First analysis
+  // ========================================================================
+  // GET /file-content/:slug/:filePath - Returns file content from disk (Source of Truth)
+  if (req.url.startsWith('/file-content/') && req.method === 'GET') {
+    const urlObj = new URL(req.url, `http://${req.headers.host}`);
+    const parts = urlObj.pathname.split('/');
+    // /file-content/:slug/:filePath (filePath can contain slashes)
+    const slug = parts[2];
+    const filePath = parts.slice(3).join('/');
+    
+    if (!slug || !filePath) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing slug or filePath', usage: '/file-content/:slug/:filePath' }));
+      return;
+    }
+    
+    console.log(`[Collab] FILE-CONTENT request: slug=${slug}, path=${filePath}`);
+    
+    try {
+      const content = await getActualFileContent(slug, filePath);
+      if (content === null) {
+        console.log(`[Collab] FILE-CONTENT: File not found: ${slug}/${filePath}`);
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'File not found', slug, filePath }));
+        return;
+      }
+      
+      console.log(`[Collab] FILE-CONTENT: Returning ${content.length} chars for ${slug}/${filePath}`);
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(content);
+    } catch (e) {
+      console.error(`[Collab] FILE-CONTENT error:`, e);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to read file', detail: e.message }));
+    }
     return;
   }
 
@@ -652,6 +764,16 @@ const server = http.createServer(async (req, res) => {
                     const content = await gitService.readFile(slug, data.path);
                     result = { content };
                     break;
+                case 'file-hash':
+                    // Get content hash for a file (for VFS validation)
+                    try {
+                        const hashContent = await gitService.readFile(slug, data.path);
+                        const hashValue = computeHash(hashContent);
+                        result = { hash: hashValue, path: data.path };
+                    } catch (e) {
+                        result = { hash: null, path: data.path, error: e.message };
+                    }
+                    break;
                 case 'write-file':
                     await gitService.writeFile(slug, data.path, data.content);
                     result = { success: true };
@@ -744,7 +866,11 @@ wss.on('connection', (ws, req) => {
   console.log(`[Collab DEBUG]   Active clients for ${roomName}: ${docInfo.clientCount}`);
   
   ws.on('message', (data) => {
-    console.log(`[Collab DEBUG] Message received for ${roomName}: ${data.length} bytes`);
+    // Handle both Buffer and string messages safely
+    const byteLen = Buffer.isBuffer(data) ? data.length : (typeof data === 'string' ? Buffer.byteLength(data) : 0);
+    if (byteLen > 0) {
+      console.log(`[Collab DEBUG] Message received for ${roomName}: ${byteLen} bytes`);
+    }
     docInfo.lastUpdate = Date.now();
   });
   
