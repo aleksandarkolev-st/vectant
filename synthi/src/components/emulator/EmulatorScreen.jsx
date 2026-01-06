@@ -137,48 +137,86 @@ export default function EmulatorScreen({
     }
   };
 
-  const getGeometry = (el) => {
-    try {
-      const r = el.getBoundingClientRect();
-      return {
-        viewW: r.width,
-        viewH: r.height,
-        videoW: el.videoWidth || 0,
-        videoH: el.videoHeight || 0,
-      };
-    } catch (_) {
-      return { viewW: 0, viewH: 0, videoW: 0, videoH: 0 };
+  /**
+   * Convert client coordinates to video coordinates, accounting for object-contain scaling.
+   * The video element may be letterboxed/pillarboxed, so we need to:
+   * 1. Calculate the actual rendered video size within the container
+   * 2. Calculate the offset from letterboxing
+   * 3. Map the click position to video pixel coordinates
+   */
+  const clientToVideoCoords = (el, clientX, clientY) => {
+    const rect = el.getBoundingClientRect();
+    const containerW = rect.width;
+    const containerH = rect.height;
+    const videoW = el.videoWidth || 1;
+    const videoH = el.videoHeight || 1;
+
+    // Calculate the scale factor for object-contain
+    const containerAspect = containerW / containerH;
+    const videoAspect = videoW / videoH;
+
+    let renderedW, renderedH, offsetX, offsetY;
+
+    if (containerAspect > videoAspect) {
+      // Container is wider than video - letterboxed on sides (pillarboxed)
+      renderedH = containerH;
+      renderedW = containerH * videoAspect;
+      offsetX = (containerW - renderedW) / 2;
+      offsetY = 0;
+    } else {
+      // Container is taller than video - letterboxed on top/bottom
+      renderedW = containerW;
+      renderedH = containerW / videoAspect;
+      offsetX = 0;
+      offsetY = (containerH - renderedH) / 2;
     }
+
+    // Get position relative to container
+    const relX = clientX - rect.left;
+    const relY = clientY - rect.top;
+
+    // Adjust for letterbox offset and scale to video resolution
+    const videoX = ((relX - offsetX) / renderedW) * videoW;
+    const videoY = ((relY - offsetY) / renderedH) * videoH;
+
+    // Clamp to valid range
+    return {
+      x: Math.max(0, Math.min(videoW - 1, Math.round(videoX))),
+      y: Math.max(0, Math.min(videoH - 1, Math.round(videoY))),
+      videoW,
+      videoH,
+      viewW: containerW,
+      viewH: containerH,
+    };
   };
 
   const onPointerDown = (e) => {
     const el = e.currentTarget;
-    const r = el.getBoundingClientRect();
-    const x = e.clientX - r.left;
-    const y = e.clientY - r.top;
-    pointerStateRef.current = { x, y, t: Date.now() };
+    const coords = clientToVideoCoords(el, e.clientX, e.clientY);
+    pointerStateRef.current = { ...coords, t: Date.now(), clientX: e.clientX, clientY: e.clientY };
     try { el.setPointerCapture?.(e.pointerId); } catch (_) {}
   };
 
   const onPointerUp = (e) => {
     const el = e.currentTarget;
-    const r = el.getBoundingClientRect();
-    const x2 = e.clientX - r.left;
-    const y2 = e.clientY - r.top;
     const st = pointerStateRef.current;
     pointerStateRef.current = null;
     if (!st) return;
 
-    const dx = x2 - st.x;
-    const dy = y2 - st.y;
+    const coords = clientToVideoCoords(el, e.clientX, e.clientY);
+    
+    // Calculate distance in client space (for gesture detection)
+    const dx = e.clientX - st.clientX;
+    const dy = e.clientY - st.clientY;
     const dist = Math.hypot(dx, dy);
     const dur = Math.max(0, Date.now() - st.t);
-    const geo = getGeometry(el);
 
     if (dist < 8 && dur < 250) {
-      emitInput({ type: 'tap', x: st.x, y: st.y, ...geo });
+      // Tap - use start coordinates
+      emitInput({ type: 'tap', x: st.x, y: st.y, videoW: st.videoW, videoH: st.videoH, viewW: st.viewW, viewH: st.viewH });
     } else {
-      emitInput({ type: 'swipe', x: st.x, y: st.y, x2, y2, durationMs: dur, ...geo });
+      // Swipe - use start and end coordinates
+      emitInput({ type: 'swipe', x: st.x, y: st.y, x2: coords.x, y2: coords.y, durationMs: dur, videoW: coords.videoW, videoH: coords.videoH, viewW: coords.viewW, viewH: coords.viewH });
     }
   };
 
@@ -230,45 +268,12 @@ export default function EmulatorScreen({
   }
 
   if (state === EMULATOR_STATES.STREAMING) {
-    // Debug: capture a frame to see what's actually in the video
-    const captureFrame = () => {
-      try {
-        const video = videoRef.current;
-        if (!video || video.videoWidth === 0) return;
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.min(video.videoWidth, 320);
-        canvas.height = Math.min(video.videoHeight, 640);
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        // Check if the frame is all black
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const data = imageData.data;
-        let nonBlackPixels = 0;
-        let totalPixels = data.length / 4;
-        for (let i = 0; i < data.length; i += 4) {
-          if (data[i] > 10 || data[i+1] > 10 || data[i+2] > 10) {
-            nonBlackPixels++;
-          }
-        }
-        const pct = ((nonBlackPixels / totalPixels) * 100).toFixed(1);
-        console.log(`[video-debug] Frame analysis: ${nonBlackPixels}/${totalPixels} non-black pixels (${pct}%)`);
-        // Show the frame in a new window for debugging
-        const dataUrl = canvas.toDataURL('image/png');
-        console.log('[video-debug] Frame captured, opening in new tab...');
-        const w = window.open('', '_blank');
-        if (w) {
-          w.document.write(`<img src="${dataUrl}" style="max-width:100%;border:2px solid red;"/><p>Non-black: ${pct}%</p>`);
-        }
-      } catch (e) {
-        console.error('[video-debug] Frame capture failed:', e);
-      }
-    };
-
     return (
-      <div className="h-full w-full bg-black relative flex items-center justify-center" tabIndex={0} onKeyDown={onKeyDown}>
+      <div className="h-full w-full bg-black relative" tabIndex={0} onKeyDown={onKeyDown}>
+        {/* Video element - fills container, maintains aspect ratio */}
         <video
           ref={videoRef}
-          className={hasVideoTrack ? "max-h-full max-w-full object-contain touch-none" : "hidden"}
+          className={hasVideoTrack ? "absolute inset-0 w-full h-full object-contain touch-none" : "hidden"}
           muted
           playsInline
           autoPlay
@@ -276,35 +281,12 @@ export default function EmulatorScreen({
           onPointerUp={onPointerUp}
         />
 
-        {!hasVideoTrack ? (
+        {!hasVideoTrack && (
           <MessageScreen title="Waiting for device stream…" subtitle="No video track yet." />
-        ) : null}
-
-        {/* Debug overlay - shows video element state */}
-        {hasVideoTrack && (
-          <div className="absolute bottom-0 left-0 right-0 p-1 bg-black/70 text-[10px] text-green-400 font-mono pointer-events-none z-10 flex justify-between items-center">
-            <span>
-              video: {videoRef.current?.videoWidth || 0}x{videoRef.current?.videoHeight || 0} | 
-              readyState={videoRef.current?.readyState || 0} | 
-              {videoRef.current?.paused ? 'paused' : 'playing'}
-            </span>
-            <button 
-              onClick={captureFrame} 
-              className="pointer-events-auto px-2 py-0.5 bg-blue-600 rounded text-white text-[9px] hover:bg-blue-500"
-            >
-              Capture Frame
-            </button>
-          </div>
         )}
 
-        {/*
-          Future injection point (do not use yet):
-          - videoRef can attach to a <video> fed by WebRTC.
-          - canvasRef can attach to a <canvas> for decoded frames.
-        */}
-        <div className="absolute inset-0 pointer-events-none">
-          <canvas ref={canvasRef} className="hidden" />
-        </div>
+        {/* Hidden canvas for future use */}
+        <canvas ref={canvasRef} className="hidden" />
       </div>
     );
   }

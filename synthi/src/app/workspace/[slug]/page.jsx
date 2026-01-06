@@ -45,7 +45,7 @@ import ErrorOverlay from '@/components/ErrorOverlay';
 import { GitStatus } from '@/components/git/GitStatus';
 import ActivityBar from '../ActivityBar.jsx';
 import SearchView from './SearchView.jsx';
-import EmulatorPanel from '@/components/emulator/EmulatorPanel';
+import FloatingEmulatorWindow from '@/components/emulator/FloatingEmulatorWindow';
 import { EMULATOR_STATES } from '@/components/emulator/emulatorStates';
 import StatusBar from '../StatusBar.jsx';
 import WorkspaceHydrator from '@/components/WorkspaceHydrator';
@@ -1093,24 +1093,22 @@ export default function EditorPage({ params }) {
         </ResizablePanel>
     );
 
-    // UI-only dockable panel (hidden by default). Opening will be hooked up later
-    // via command palette / toolbar (stub only per requirements).
-    const EmulatorPreviewPanel = (
-        <ResizablePanel defaultSize={24} minSize={18} maxSize={55} className="border-l border-[#545454] bg-[#0c0c0e] min-w-0">
-            <EmulatorPanel
-                key={emulatorRunNonce}
-                defaultState={EMULATOR_STATES.BOOTING}
-                sessionId={emulatorSessionId}
-                mediaStream={mediaStream}
-                forcedErrorMessage={emulatorForcedError}
-                onClose={() => {
-                    dispatch(setEmulatorPreviewVisible(false));
-                    setEmulatorSessionId(null);
-                    setEmulatorForcedError('');
-                }}
-            />
-        </ResizablePanel>
-    );
+    // Floating emulator window (renders outside the panel layout)
+    // This is now independent of the ResizablePanelGroup structure
+    const FloatingEmulator = showEmulatorPreview ? (
+        <FloatingEmulatorWindow
+            key={emulatorRunNonce}
+            defaultState={EMULATOR_STATES.BOOTING}
+            sessionId={emulatorSessionId}
+            mediaStream={mediaStream}
+            forcedErrorMessage={emulatorForcedError}
+            onClose={() => {
+                dispatch(setEmulatorPreviewVisible(false));
+                setEmulatorSessionId(null);
+                setEmulatorForcedError('');
+            }}
+        />
+    ) : null;
 
     if (workspaceMissing) {
         return <WorkspaceNotFoundModal slug={slug} message={workspaceMissingMessage} open={true} />;
@@ -1177,13 +1175,6 @@ export default function EditorPage({ params }) {
                                         {ChatPanel}
                                     </>
                                 )}
-
-                                {showEmulatorPreview && (
-                                    <>
-                                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                                        {EmulatorPreviewPanel}
-                                    </>
-                                )}
                             </>
                         ) : (
                             <>
@@ -1197,13 +1188,6 @@ export default function EditorPage({ params }) {
                                     <>
                                         <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
                                         {ChatPanel}
-                                    </>
-                                )}
-
-                                {showEmulatorPreview && (
-                                    <>
-                                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                                        {EmulatorPreviewPanel}
                                     </>
                                 )}
                             </>
@@ -1310,6 +1294,9 @@ export default function EditorPage({ params }) {
 
         {/* Error Overlay */}
         <ErrorOverlay />
+
+        {/* Floating Emulator Window - rendered outside panel layout */}
+        {FloatingEmulator}
     </div>
 );
 }
