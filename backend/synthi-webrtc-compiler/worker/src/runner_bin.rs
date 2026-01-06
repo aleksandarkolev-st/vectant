@@ -2571,9 +2571,24 @@ fn main() {
                         // Check if window is mapped (viewable)
                         if let Ok(attrs) = x11_conn.get_window_attributes(child) {
                             if let Ok(attr_reply) = attrs.reply() {
+<<<<<<< HEAD
                                 if attr_reply.map_state
                                     == x11rb::protocol::xproto::MapState::VIEWABLE
                                 {
+=======
+                                if attr_reply.map_state == x11rb::protocol::xproto::MapState::VIEWABLE {
+                                    // Debug: Check window name
+                                    
+                                    if last_frame_log.elapsed() > Duration::from_secs(1) {
+                                        let name = x11_conn.get_property(false, child, x11rb::protocol::xproto::AtomEnum::WM_NAME, x11rb::protocol::xproto::AtomEnum::STRING, 0, 1024);
+                                        if let Ok(cookie) = name {
+                                            if let Ok(reply) = cookie.reply() {
+                                                eprintln!("[Runner] Found viewable window ID {}: {:?}", child, String::from_utf8_lossy(&reply.value));
+                                            }
+                                        }
+                                    }
+                                    
+>>>>>>> ce7e5fd (Fix runner display loop and enable window debugging)
                                     found_window = Some(child);
                                     break;
                                 }
@@ -2601,6 +2616,20 @@ fn main() {
             const OUTPUT_W: u16 = 800;
             const OUTPUT_H: u16 = 600;
 
+<<<<<<< HEAD
+=======
+            // In headles/WSL environments using Xvfb, SDL creates a window but it might not be a top-level child of root
+            // or might be obscured. However, SDL_RenderPresent draws to valid backing store.
+            // If we fail to find a specific window, we typically default to Root.
+            
+            // Heuristic for Xvfb/WSL: If we are running in Xvfb, and we couldn't find a specific window,
+            // we should try to capture the Root window, BUT we must ensure the contents are flushed.
+            // SDL_RenderPresent flushes.
+            
+            // If target_window is root, we might be capturing black if the SDL window is not mapped at (0,0) or at all.
+            // But SDL_CreateWindow usually maps it.
+            
+>>>>>>> ce7e5fd (Fix runner display loop and enable window debugging)
             // Get the actual window size to capture
             let (win_w, win_h): (u16, u16) = if target_window != x11_root {
                 if let Ok(geom) = x11_conn.get_geometry(target_window) {
@@ -2685,9 +2714,11 @@ fn main() {
                         last_frame_log = Instant::now();
                     }
 
-                    // Update local SDL window
-                    if !renderer.is_null() && !sdl_texture.is_null() {
+                    // Disable local window update from capture to prevent infinite recursion/black screen
+                    /*
+                    if !renderer.is_null() {
                         unsafe {
+<<<<<<< HEAD
                             SDL_UpdateTexture(
                                 sdl_texture,
                                 ptr::null(),
@@ -2696,8 +2727,20 @@ fn main() {
                             );
                             SDL_RenderCopy(renderer, sdl_texture, ptr::null(), ptr::null());
                             SDL_RenderPresent(renderer);
+=======
+                            if !sdl_texture.is_null() && target_window == x11_root {
+                                // If capturing ROOT, we show the capture via texture
+                                SDL_UpdateTexture(sdl_texture, ptr::null(), frame_data.as_ptr() as *const c_void, (OUTPUT_W as i32) * 4);
+                                SDL_RenderCopy(renderer, sdl_texture, ptr::null(), ptr::null());
+                                SDL_RenderPresent(renderer);
+                            } else {
+                                // If capturing specific window, we just let SDL_RenderPresent above do the work
+                                // SDL_RenderPresent(renderer); // Already done above "before capturing"
+                            }
+>>>>>>> ce7e5fd (Fix runner display loop and enable window debugging)
                         }
                     }
+                    */
                 }
             }
         }
