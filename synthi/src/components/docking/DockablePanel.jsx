@@ -47,16 +47,17 @@ export const PANEL_STATE = {
   FLOATING: 'floating',
   AUTO_HIDE: 'auto-hide',
 };
+
+// Dock positions
+export const DOCK_POSITION = {
+  LEFT: 'left',
+  RIGHT: 'right',
+  BOTTOM: 'bottom',
+  CENTER: 'center', // For tab merging
+};
+
 // Context for dock zone management
 const DockContext = createContext(null);
-
-/**
- * Dock zone indicator shown during drag operations
- */
-
-/**
- * Floating panel window
- */
 function FloatingWindow({
   children,
   title,
@@ -478,12 +479,7 @@ export function DockablePanel({
       setDockPosition(zone);
       changeState(PANEL_STATE.DOCKED);
     }
-
-    // Docking should surface the panel back into the dock slot immediately.
-    setIsOpen(true);
-    onOpenChange?.(true);
-    onDockedChange?.(true);
-  }, [changeState, onDockedChange, onOpenChange]);
+  }, [changeState]);
 
   // Toggle floating
   const handleToggleFloat = useCallback(() => {
@@ -491,14 +487,7 @@ export function DockablePanel({
       ? PANEL_STATE.DOCKED
       : PANEL_STATE.FLOATING;
     changeState(newState);
-
-    // If we're docking back via shortcut/button, ensure the docked panel is open.
-    if (newState === PANEL_STATE.DOCKED) {
-      setIsOpen(true);
-      onOpenChange?.(true);
-      onDockedChange?.(true);
-    }
-  }, [panelState, changeState, onDockedChange, onOpenChange]);
+  }, [panelState, changeState]);
 
   // Toggle pin
   const handleTogglePin = useCallback(() => {
@@ -544,25 +533,6 @@ export function DockablePanel({
   }, [isOpen, handleToggleFloat, handleClose, onOpenChange]);
 
   // Render dock zones overlay
-  const renderDockZones = () => {
-    if (!showDockZones) return null;
-
-    return createPortal(
-      <div className="fixed inset-0 z-[9999] pointer-events-none">
-        <div className="relative w-full h-full pointer-events-auto">
-          {Object.values(DOCK_POSITION).map((pos) => (
-            <DockZoneIndicator
-              key={pos}
-              position={pos}
-              isActive={activeDockZone === pos}
-              onDrop={() => handleDockZoneDrop(pos)}
-            />
-          ))}
-        </div>
-      </div>,
-      document.body
-    );
-  };
 
   // Render panel content (shared between docked and floating)
   const renderPanelContent = (isFloating = false) => (
@@ -629,7 +599,6 @@ export function DockablePanel({
           onExpand={() => setIsAutoHideExpanded(true)}
           onCollapse={() => setIsAutoHideExpanded(false)}
         />
-        {renderDockZones()}
       </>
     );
   }
@@ -650,7 +619,6 @@ export function DockablePanel({
         >
           {children}
         </FloatingWindow>
-        {renderDockZones()}
       </>
     );
   }
@@ -663,7 +631,6 @@ export function DockablePanel({
     return (
       <>
         {createPortal(renderPanelContent(false), dockSlot)}
-        {renderDockZones()}
       </>
     );
   }
@@ -672,7 +639,6 @@ export function DockablePanel({
   return (
     <>
       {renderPanelContent(false)}
-      {renderDockZones()}
     </>
   );
 }
