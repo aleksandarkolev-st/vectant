@@ -434,6 +434,16 @@ fn make_chunks(data: &[u8], msg_id: u32) -> Vec<Vec<u8>> {
     chunks
 }
 
+fn get_ai_backend_url() -> String {
+    std::env::var("AI_BACKEND_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8000".to_string())
+}
+
+fn get_signaling_url() -> String {
+    std::env::var("SIGNALING_URL")
+        .unwrap_or_else(|_| "ws://localhost:9000".to_string())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     println!("Worker starting...");
@@ -549,7 +559,9 @@ async fn main() -> Result<()> {
 
     gst::init()?;
     verify_tooling().await?;
-    let (ws_stream, _) = connect_async("ws://localhost:9000").await?;
+    let signaling_url = get_signaling_url();
+    println!("Connecting to signaling server at: {}", signaling_url);
+    let (ws_stream, _) = connect_async(&signaling_url).await?;
     let (mut ws_write, mut ws_read) = ws_stream.split();
     let (signal_tx, mut signal_rx) = mpsc::unbounded_channel::<SignalMessage>();
 
@@ -3129,8 +3141,7 @@ async fn perform_structural_ai_update(
         "cached_result": cached_result  // CRITICAL: Include cached result for delta injection
     });
 
-    let backend_url = std::env::var("AI_BACKEND_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
+    let backend_url = get_ai_backend_url();
     let url = format!("{}/refactor/delta", backend_url);
 
     eprintln!("[AI Split] Calling fast delta endpoint: {}", url);
@@ -3255,8 +3266,7 @@ async fn perform_delta_deletion(
         "cached_result": cached_result
     });
 
-    let backend_url = std::env::var("AI_BACKEND_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
+    let backend_url = get_ai_backend_url();
     let url = format!("{}/refactor/delta", backend_url);
 
     eprintln!("[AI Split] Calling delta deletion endpoint: {}", url);
@@ -3326,8 +3336,7 @@ async fn perform_incremental_ai_update(
         "shared_content": shared_content
     });
 
-    let backend_url = std::env::var("AI_BACKEND_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
+    let backend_url = get_ai_backend_url();
     let url = format!("{}/refactor/structural", backend_url);
 
     eprintln!("[AI Split] Calling fast incremental endpoint: {}", url);
@@ -3780,8 +3789,7 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
     });
 
     let backend_url = std::env::var("AI_BACKEND_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
-    let url = format!("{}/refactor/split", backend_url);
+        .unwrap_or_elsget_ai_backend_url(
 
     let res = client
         .post(&url)
@@ -3898,8 +3906,7 @@ async fn perform_ai_fix(code: &str, error: &str) -> Result<String> {
         "mode": "fix"
     });
 
-    let backend_url =
-        std::env::var("AI_BACKEND_URL").unwrap_or_else(|_| "http://172.26.16.1:8000".to_string());
+    let backend_url = get_ai_backend_url();
     let url = format!("{}/refactor/fix", backend_url);
 
     let res = client
