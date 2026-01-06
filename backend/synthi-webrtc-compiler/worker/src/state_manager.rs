@@ -19,9 +19,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::c_void;
 
-use crate::plugin_contract::ModuleSlot;
-use crate::state_diff::{DiffConfig, DiffResult, diff_and_merge};
 use crate::boundary::BoundaryId;
+use crate::plugin_contract::ModuleSlot;
+use crate::state_diff::{diff_and_merge, DiffConfig, DiffResult};
 
 /// State pointer wrapper with metadata
 #[derive(Debug, Clone)]
@@ -112,16 +112,19 @@ pub struct SchemaVersion {
 
 impl SchemaVersion {
     pub const fn new(major: u32, minor: u32, patch: u32) -> Self {
-        Self { major, minor, patch }
+        Self {
+            major,
+            minor,
+            patch,
+        }
     }
-    
+
     /// Check if this version can upgrade to target
     pub fn can_upgrade_to(&self, target: &SchemaVersion) -> bool {
         // Can upgrade within same major version, or to next major
-        target.major >= self.major && 
-        (target.major == self.major || target.major == self.major + 1)
+        target.major >= self.major && (target.major == self.major || target.major == self.major + 1)
     }
-    
+
     /// Check if this version can downgrade to target
     pub fn can_downgrade_to(&self, target: &SchemaVersion) -> bool {
         // Can only downgrade within same major version
@@ -185,7 +188,7 @@ impl MigrationSchema {
             reversible: true,
         }
     }
-    
+
     /// Create a new migration schema with explicit versioning
     pub fn new(from: SchemaVersion, to: SchemaVersion) -> Self {
         Self {
@@ -200,14 +203,14 @@ impl MigrationSchema {
             reversible: false,
         }
     }
-    
+
     /// Add a downgrade path - REQUIRED for forward compatibility
     pub fn with_downgrade(mut self, path: DowngradePath) -> Self {
         self.downgrade = Some(path);
         self.reversible = true;
         self
     }
-    
+
     /// Check if this schema can be safely applied
     pub fn validate(&self) -> Result<(), String> {
         // Must have downgrade path for non-identity migrations
@@ -217,14 +220,17 @@ impl MigrationSchema {
                 self.from_version, self.to_version
             ));
         }
-        
+
         // Check that renames don't conflict with preserve/reset
         for old_name in self.renames.keys() {
             if self.reset_fields.contains(old_name) {
-                return Err(format!("Field '{}' cannot be both renamed and reset", old_name));
+                return Err(format!(
+                    "Field '{}' cannot be both renamed and reset",
+                    old_name
+                ));
             }
         }
-        
+
         Ok(())
     }
 }
@@ -268,7 +274,7 @@ impl MigrationResult {
 pub trait StateInvariant: Send + Sync {
     /// Check if state satisfies the invariant
     fn check(&self, state_json: &serde_json::Value) -> Result<(), String>;
-    
+
     /// Name of the invariant for error messages
     fn name(&self) -> &str;
 }
@@ -327,7 +333,10 @@ impl StateInvariant for MagicNumberInvariant {
                 ));
             }
         }
-        Err(format!("Magic number field '{}' not found or invalid", self.field))
+        Err(format!(
+            "Magic number field '{}' not found or invalid",
+            self.field
+        ))
     }
 
     fn name(&self) -> &str {
@@ -366,10 +375,10 @@ impl StateManager {
             state_history: HashMap::new(),
             max_history: 5,
             schema_versions: HashMap::new(),
-            require_downgrade_paths: true,  // ENFORCE BY DEFAULT
+            require_downgrade_paths: true, // ENFORCE BY DEFAULT
         }
     }
-    
+
     /// Create without downgrade enforcement (for testing only)
     #[cfg(test)]
     pub fn new_without_downgrade_enforcement() -> Self {
@@ -377,12 +386,12 @@ impl StateManager {
         mgr.require_downgrade_paths = false;
         mgr
     }
-    
+
     /// Register current schema version for a module
     pub fn register_schema_version(&mut self, module: ModuleSlot, version: SchemaVersion) {
         self.schema_versions.insert(module, version);
     }
-    
+
     /// Get current schema version for a module
     pub fn get_schema_version(&self, module: ModuleSlot) -> Option<&SchemaVersion> {
         self.schema_versions.get(&module)
@@ -391,18 +400,18 @@ impl StateManager {
     /// Register a state handle for a module
     pub fn register_state(&mut self, handle: StateHandle) {
         let module = handle.module;
-        
+
         // Move current to history if exists
         if let Some(current) = self.states.remove(&module) {
             let history = self.state_history.entry(module).or_insert_with(Vec::new);
             history.insert(0, current);
-            
+
             // Trim history
             while history.len() > self.max_history {
                 history.pop();
             }
         }
-        
+
         self.states.insert(module, handle);
     }
 
@@ -431,32 +440,28 @@ impl StateManager {
     pub fn register_migration(&mut self, schema: MigrationSchema) -> Result<(), String> {
         // Validate schema
         schema.validate()?;
-        
+
         // Enforce downgrade path requirement
-        if self.require_downgrade_paths && 
-           schema.from_version != schema.to_version && 
-           schema.downgrade.is_none() 
+        if self.require_downgrade_paths
+            && schema.from_version != schema.to_version
+            && schema.downgrade.is_none()
         {
             return Err(format!(
                 "Migration from v{} to v{} rejected: downgrade path required",
                 schema.from_version, schema.to_version
             ));
         }
-        
-        self.migration_schemas.insert(
-            (schema.from_version, schema.to_version),
-            schema,
-        );
+
+        self.migration_schemas
+            .insert((schema.from_version, schema.to_version), schema);
         Ok(())
     }
-    
+
     /// Register migration without downgrade validation (legacy support)
     #[deprecated(note = "Use register_migration() with downgrade path")]
     pub fn register_migration_unchecked(&mut self, schema: MigrationSchema) {
-        self.migration_schemas.insert(
-            (schema.from_version, schema.to_version),
-            schema,
-        );
+        self.migration_schemas
+            .insert((schema.from_version, schema.to_version), schema);
     }
 
     /// Register an invariant for a module
@@ -477,28 +482,29 @@ impl StateManager {
         to_version: u32,
     ) -> MigrationResult {
         let start = std::time::Instant::now();
-        
+
         // 1. Parse JSON
         let old_state: serde_json::Value = match serde_json::from_str(old_state_json) {
             Ok(v) => v,
             Err(e) => return MigrationResult::failure(format!("Failed to parse old state: {}", e)),
         };
-        
+
         let new_template: serde_json::Value = match serde_json::from_str(new_template_json) {
             Ok(v) => v,
-            Err(e) => return MigrationResult::failure(format!("Failed to parse new template: {}", e)),
+            Err(e) => {
+                return MigrationResult::failure(format!("Failed to parse new template: {}", e))
+            }
         };
 
         // 2. Get migration schema (or use identity)
-        let schema = self.migration_schemas
+        let schema = self
+            .migration_schemas
             .get(&(from_version, to_version))
             .cloned()
             .unwrap_or_else(|| MigrationSchema::identity(to_version));
-        
+
         // 2.5 ENFORCE: Non-identity migrations must have been registered with downgrade path
-        if self.require_downgrade_paths && 
-           from_version != to_version && 
-           schema.downgrade.is_none() 
+        if self.require_downgrade_paths && from_version != to_version && schema.downgrade.is_none()
         {
             return MigrationResult::failure(format!(
                 "Cannot migrate from v{} to v{}: no downgrade path registered. \
@@ -523,7 +529,7 @@ impl StateManager {
             ModuleSlot::Gui => DiffConfig::for_gui(),
             _ => DiffConfig::new(),
         };
-        
+
         let diff = diff_and_merge(&old_renamed, &new_template, &diff_config);
 
         // 5. Apply defaults for new fields
@@ -551,7 +557,7 @@ impl StateManager {
         result.duration_ms = start.elapsed().as_millis() as u64;
         result
     }
-    
+
     /// Migrate using fast binary serialization (10-50x faster than JSON)
     /// Uses MessagePack-based state migration from binary_state.rs
     pub fn migrate_binary(
@@ -564,14 +570,14 @@ impl StateManager {
         _to_version: u32,
     ) -> Result<(Vec<u8>, crate::binary_state::SchemaMigrationResult), String> {
         let start = std::time::Instant::now();
-        
+
         // 1. Parse binary state (FAST - no string parsing)
         let old_state = crate::binary_state::MsgPackState::from_bytes(old_bytes)
             .map_err(|e| format!("Failed to parse binary state: {}", e))?;
-        
+
         // 2. Get schema migrator with proper defaults
         let mut migrator = crate::binary_state::SchemaMigrator::default();
-        
+
         // Add module-specific rules
         match module {
             ModuleSlot::Core => {
@@ -599,22 +605,24 @@ impl StateManager {
                 migrator.always_preserve("y");
             }
         }
-        
+
         // 3. Migrate (FAST - no JSON intermediate)
         let (migrated, mut result) = migrator.migrate(&old_state, new_field_names, new_defaults);
-        
+
         // 4. Serialize result (FAST - direct binary)
-        let new_bytes = migrated.to_bytes()
+        let new_bytes = migrated
+            .to_bytes()
             .map_err(|e| format!("Failed to serialize: {}", e))?;
-        
+
         result.duration_us = start.elapsed().as_micros() as u64;
-        eprintln!("[HMR] Binary migration completed in {}μs (preserved={}, new={}, removed={})",
+        eprintln!(
+            "[HMR] Binary migration completed in {}μs (preserved={}, new={}, removed={})",
             result.duration_us,
             result.preserved.len(),
             result.new_fields.len(),
             result.removed_fields.len()
         );
-        
+
         Ok((new_bytes, result))
     }
 
@@ -642,12 +650,12 @@ impl StateManager {
         }
 
         let previous = history.remove(0);
-        
+
         // Swap current with previous
         if let Some(current) = self.states.remove(&module) {
             history.insert(0, current);
         }
-        
+
         self.states.insert(module, previous.clone());
         Some(previous)
     }
@@ -659,7 +667,8 @@ impl StateManager {
 
     /// Clear all boundary states for a module
     pub fn clear_boundary_states(&mut self, parent_module: &str) {
-        self.boundary_states.retain(|k, _| !k.starts_with(parent_module));
+        self.boundary_states
+            .retain(|k, _| !k.starts_with(parent_module));
     }
 
     /// Get state statistics
@@ -720,7 +729,14 @@ impl StateManagerInterface for StateManager {
         from_version: u32,
         to_version: u32,
     ) -> MigrationResult {
-        StateManager::migrate(self, module, old_state_json, new_template_json, from_version, to_version)
+        StateManager::migrate(
+            self,
+            module,
+            old_state_json,
+            new_template_json,
+            from_version,
+            to_version,
+        )
     }
 
     fn rollback(&mut self, module: ModuleSlot) -> bool {

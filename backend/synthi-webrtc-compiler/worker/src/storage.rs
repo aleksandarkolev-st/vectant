@@ -1,14 +1,15 @@
+use futures_util::StreamExt;
+use object_store::{
+    gcp::{GoogleCloudStorageBuilder, GoogleConfigKey},
+    path::Path,
+    ObjectStore,
+};
 use serde_json::json;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use tokio::sync::mpsc;
-use futures_util::StreamExt;
-use object_store::{
-    gcp::{GoogleCloudStorageBuilder, GoogleConfigKey},
-    ObjectStore, path::Path,
-};
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
 // Helper function to send progress updates
 async fn send_progress_update(
@@ -24,13 +25,25 @@ async fn send_progress_update(
 }
 
 pub async fn download(
-    slug: &str, 
-    mut progress_tx: Option<mpsc::UnboundedSender<String>>
+    slug: &str,
+    mut progress_tx: Option<mpsc::UnboundedSender<String>>,
 ) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
-    // Check if directory already exists
+    // Local directory for downloads - Write to /synthi/
+    // We *update in place* so that build artifacts (node_modules, android/app/build, etc.)
+    // can persist between runs for much faster subsequent builds.
     let local_dir = PathBuf::from("/synthi").join(slug);
-    if local_dir.exists() {
-        println!("Directory already exists: {}, skipping download", local_dir.display());
+    let skip_if_present = std::env::var("SYNTHI_STORAGE_SKIP_DOWNLOAD_IF_PRESENT")
+        .ok()
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            matches!(v.as_str(), "1" | "true" | "yes" | "y" | "on")
+        })
+        .unwrap_or(false);
+    if skip_if_present && local_dir.exists() {
+        println!(
+            "Directory already exists: {}, skipping download (SYNTHI_STORAGE_SKIP_DOWNLOAD_IF_PRESENT=1)",
+            local_dir.display()
+        );
         return Ok(local_dir);
     }
 
@@ -58,118 +71,179 @@ pub async fn download(
 
     std::env::remove_var("GCLOUD_PROJECT");
     std::env::remove_var("CLOUDSDK_CORE_PROJECT");
-    
+
     // Build the GCS object store with explicit service account key
     let mut builder = GoogleCloudStorageBuilder::new();
     builder = builder.with_bucket_name(bucket_name);
-    
+
     // Try multiple approaches to force use of service account key
     builder = builder.with_config(GoogleConfigKey::ServiceAccountKey, &credentials_json);
-    
-    let store_impl = builder.build()
+
+    let store_impl = builder
+        .build()
         .map_err(|e| format!("Failed to build GCS store: {}", e))?;
 
     let store: Arc<dyn ObjectStore> = Arc::new(store_impl);
-    
+
     // List objects with workspaces/slug prefix
     let prefix = Path::from(format!("workspaces/{}/", slug.trim_matches('/')));
-    
+
     let mut list_stream = store.list(Some(&prefix));
     let mut objects: Vec<Path> = Vec::new();
     while let Some(meta_res) = list_stream.next().await {
         let meta = meta_res?;
         let location_str = meta.location.as_ref();
-        
+
         // Skip if doesn't match prefix
         if !location_str.starts_with(prefix.as_ref()) {
             continue;
         }
-        
+
         let stripped = location_str.strip_prefix(prefix.as_ref()).unwrap();
-        
+
         // Skip empty paths (top-level directory marker)
         if stripped.is_empty() {
             println!("skipped top-level directory marker: {}", location_str);
             continue;
         }
-        
+
         // Skip directory markers (paths ending with '/')
         if location_str.ends_with('/') {
             println!("skipped directory marker: {}", location_str);
             continue;
         }
-        
+
         // Additional check: skip objects with size 0 that look like directories
         if meta.size == 0 && stripped.contains('/') && !stripped.contains('.') {
             continue;
         }
-        
+
         objects.push(meta.location.clone());
     }
-    
+
     if objects.is_empty() {
         return Err("No objects found in the specified folder".into());
     }
-    
 
-    // -------------------------
-    // Local directory for downloads - Write to /synthi/
-    // -------------------------
-    let local_dir = PathBuf::from("/synthi").join(slug);
-    
     // Create the directory structure
     if !local_dir.exists() {
-        fs::create_dir_all(&local_dir)
-            .map_err(|e| {
-                eprintln!("   Path: {}", local_dir.display());
-                eprintln!("   Error: {}", e);
-                eprintln!("   Current working dir: {:?}", std::env::current_dir());
-                format!("Failed to create directory {}: {}", local_dir.display(), e)
-            })?;
+        fs::create_dir_all(&local_dir).map_err(|e| {
+            eprintln!("   Path: {}", local_dir.display());
+            eprintln!("   Error: {}", e);
+            eprintln!("   Current working dir: {:?}", std::env::current_dir());
+            format!("Failed to create directory {}: {}", local_dir.display(), e)
+        })?;
         println!("Created local directory: {}", local_dir.display());
     } else {
-        println!("Directory already exists: {}", local_dir.display());
+        println!("Directory already exists: {} (updating in place)", local_dir.display());
     }
-    
-    // Download each object
+
+    // Maintain a manifest of previously downloaded paths so we can prune removed upstream files
+    // without deleting build artifacts that are not part of the download (e.g. node_modules).
+    let manifest_path = local_dir.join(".synthi_download_manifest.json");
+    let prev_manifest: Vec<String> = if manifest_path.exists() {
+        match fs::read_to_string(&manifest_path) {
+            Ok(s) => serde_json::from_str::<Vec<String>>(&s).unwrap_or_default(),
+            Err(_) => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+
+    // Build the next manifest (relative paths) from remote object listing.
+    let mut next_manifest: Vec<String> = Vec::with_capacity(objects.len());
+    for object_path in objects.iter() {
+        let object_name: &str = object_path.as_ref();
+        let stripped = object_name
+            .strip_prefix(prefix.as_ref())
+            .ok_or_else(|| format!("Failed to strip prefix from: {}", object_name))?;
+        let stripped_clean = stripped.trim_start_matches('/');
+        next_manifest.push(stripped_clean.to_string());
+    }
+
+    // Prune files that were previously downloaded but are no longer present upstream.
+    // This only touches paths from the manifest, so build artifacts remain intact.
+    if !prev_manifest.is_empty() {
+        let next_set: std::collections::HashSet<&str> =
+            next_manifest.iter().map(|s| s.as_str()).collect();
+        for old_rel in prev_manifest.iter() {
+            if next_set.contains(old_rel.as_str()) {
+                continue;
+            }
+            let old_path = local_dir.join(old_rel);
+            if old_path.is_file() {
+                let _ = fs::remove_file(&old_path);
+                // Best-effort cleanup of empty parent dirs up to local_dir.
+                let mut cur = old_path.parent();
+                while let Some(p) = cur {
+                    if p == local_dir {
+                        break;
+                    }
+                    let is_empty = fs::read_dir(p).map(|mut it| it.next().is_none()).unwrap_or(false);
+                    if is_empty {
+                        let _ = fs::remove_dir(p);
+                        cur = p.parent();
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Download each object (overwriting existing files).
     for (index, object_path) in objects.iter().enumerate() {
         let object_name: &str = object_path.as_ref();
         println!("📥 Downloading object: {}", object_name);
-        
-        send_progress_update(&mut progress_tx, &format!("Downloading ({}/{})", index + 1, objects.len())).await;
+
+        send_progress_update(
+            &mut progress_tx,
+            &format!("Downloading ({}/{})", index + 1, objects.len()),
+        )
+        .await;
 
         // Construct the local file path (strip workspaces/slug prefix)
-        let stripped = object_name.strip_prefix(prefix.as_ref())
+        let stripped = object_name
+            .strip_prefix(prefix.as_ref())
             .ok_or_else(|| format!("Failed to strip prefix from: {}", object_name))?;
-        
+
         // Additional safety: remove any leading slashes from stripped path
         let stripped_clean = stripped.trim_start_matches('/');
-        
+
         println!("🔧 Processing: {} -> {}", object_name, stripped_clean);
         let local_path = local_dir.join(stripped_clean);
         let parent_dir = local_path.parent().ok_or("Invalid path")?;
-        
+
         // Create parent directories if they don't exist
         if !parent_dir.exists() {
-            fs::create_dir_all(parent_dir)
-                .map_err(|e| format!("Failed to create directory {}: {}", parent_dir.display(), e))?;
+            fs::create_dir_all(parent_dir).map_err(|e| {
+                format!("Failed to create directory {}: {}", parent_dir.display(), e)
+            })?;
             println!("Created directory: {}", parent_dir.display());
         }
 
         // Download the full object into memory then write to disk
-        let get_result = store.get(object_path).await
+        let get_result = store
+            .get(object_path)
+            .await
             .map_err(|e| format!("Failed to download {}: {}", object_name, e))?;
-        let data = get_result.bytes().await
+        let data = get_result
+            .bytes()
+            .await
             .map_err(|e| format!("Failed to read bytes from {}: {}", object_name, e))?;
-        
+
         let mut file = fs::File::create(&local_path)
             .map_err(|e| format!("Failed to create file {}: {}", local_path.display(), e))?;
         file.write_all(&data)
             .map_err(|e| format!("Failed to write to file {}: {}", local_path.display(), e))?;
-        
+
         println!("Saved to: {}", local_path.display());
     }
-    
+
+    // Write updated manifest.
+    if let Ok(s) = serde_json::to_string_pretty(&next_manifest) {
+        let _ = fs::write(&manifest_path, s);
+    }
 
     // Return the local directory path so the caller can navigate to it
     Ok(local_dir)

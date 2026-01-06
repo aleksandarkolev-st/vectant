@@ -43,7 +43,7 @@ pub enum ReloadClass {
     /// - No state migration needed
     /// - Target latency: <10ms
     Safe,
-    
+
     /// WARM RELOAD - State preserved, minimal disruption
     /// - State schema unchanged
     /// - API signatures stable
@@ -51,7 +51,7 @@ pub enum ReloadClass {
     /// - Brief pause for in-flight requests
     /// - Target latency: <100ms
     Warm,
-    
+
     /// COLD RELOAD - Full restart, state reset
     /// - Breaking API changes
     /// - State schema incompatible
@@ -59,7 +59,7 @@ pub enum ReloadClass {
     /// - Full state reconstruction
     /// - Target latency: <1000ms
     Cold,
-    
+
     /// CANARY RELOAD - Test new logic on subset
     /// - Shadow execution alongside old code
     /// - Compare outputs, don't serve from new
@@ -77,27 +77,27 @@ impl ReloadClass {
             ReloadClass::Canary => 5000, // Can be slow, it's shadow
         }
     }
-    
+
     /// Whether to run semantic ABI tests for this class
     pub fn requires_semantic_tests(&self) -> bool {
         match self {
-            ReloadClass::Safe => false,    // Skip for speed
-            ReloadClass::Warm => true,     // Validate compatibility
-            ReloadClass::Cold => true,     // Full validation
-            ReloadClass::Canary => true,   // Always test canaries
+            ReloadClass::Safe => false,  // Skip for speed
+            ReloadClass::Warm => true,   // Validate compatibility
+            ReloadClass::Cold => true,   // Full validation
+            ReloadClass::Canary => true, // Always test canaries
         }
     }
-    
+
     /// Whether in-flight requests must be drained first
     pub fn requires_request_drain(&self) -> bool {
         match self {
             ReloadClass::Safe => false,
-            ReloadClass::Warm => false,  // Brief pause OK
-            ReloadClass::Cold => true,   // Must drain
+            ReloadClass::Warm => false, // Brief pause OK
+            ReloadClass::Cold => true,  // Must drain
             ReloadClass::Canary => false,
         }
     }
-    
+
     /// Whether async tasks must be stopped
     pub fn requires_task_shutdown(&self) -> bool {
         match self {
@@ -107,13 +107,13 @@ impl ReloadClass {
             ReloadClass::Canary => false,
         }
     }
-    
+
     /// Whether to create pre-reload snapshot
     pub fn requires_snapshot(&self) -> bool {
         match self {
-            ReloadClass::Safe => false,  // Can always retry
-            ReloadClass::Warm => true,   // Snapshot for rollback
-            ReloadClass::Cold => true,   // Definitely snapshot
+            ReloadClass::Safe => false,   // Can always retry
+            ReloadClass::Warm => true,    // Snapshot for rollback
+            ReloadClass::Cold => true,    // Definitely snapshot
             ReloadClass::Canary => false, // Shadow only
         }
     }
@@ -154,22 +154,22 @@ impl ReloadClassifier {
             global_override: None,
         }
     }
-    
+
     // =====================================================
     // MANUAL OVERRIDE HOOKS - Use when auto-detection fails
     // =====================================================
-    
+
     /// Override classification for a specific boundary
     /// Use when auto-detection consistently gets it wrong
     pub fn set_boundary_override(&mut self, boundary_id: BoundaryId, class: ReloadClass) {
         self.boundary_overrides.insert(boundary_id, class);
     }
-    
+
     /// Remove boundary override (revert to auto-detection)
     pub fn clear_boundary_override(&mut self, boundary_id: &BoundaryId) {
         self.boundary_overrides.remove(boundary_id);
     }
-    
+
     /// Override classification for files matching a glob pattern
     /// Example: "**/*_test.rs" -> ReloadClass::Safe
     pub fn set_path_override(&mut self, pattern: String, class: ReloadClass) {
@@ -177,7 +177,7 @@ impl ReloadClassifier {
         self.path_overrides.retain(|(p, _)| p != &pattern);
         self.path_overrides.push((pattern, class));
     }
-    
+
     /// Set global override - FORCES all reloads to this class
     /// WARNING: Use only for debugging, disables safety checks
     pub fn set_global_override(&mut self, class: Option<ReloadClass>) {
@@ -190,7 +190,7 @@ impl ReloadClassifier {
         }
         self.global_override = class;
     }
-    
+
     /// Check if a path matches any override patterns
     fn check_path_override(&self, file_path: &str) -> Option<ReloadClass> {
         for (pattern, class) in &self.path_overrides {
@@ -200,22 +200,25 @@ impl ReloadClassifier {
         }
         None
     }
-    
+
     /// Simple glob matching (supports * and **)
     fn glob_match(pattern: &str, path: &str) -> bool {
         // Simplified glob: ** matches any path, * matches segment
-        let pattern = pattern.replace("**", "§").replace("*", "[^/]*").replace("§", ".*");
+        let pattern = pattern
+            .replace("**", "§")
+            .replace("*", "[^/]*")
+            .replace("§", ".*");
         regex::Regex::new(&format!("^{}$", pattern))
             .map(|re| re.is_match(path))
             .unwrap_or(false)
     }
-    
+
     /// Classify a reload based on what changed
     /// Priority: global_override > boundary_override > path_override > auto-detect
     pub fn classify(&self, changes: &ReloadChanges) -> ReloadClass {
         self.classify_with_context(changes, None, None)
     }
-    
+
     /// Classify with full context for override checking
     pub fn classify_with_context(
         &self,
@@ -227,49 +230,57 @@ impl ReloadClassifier {
         if let Some(class) = self.global_override {
             return class;
         }
-        
+
         // 2. Boundary-specific override
         if let Some(bid) = boundary_id {
             if let Some(&class) = self.boundary_overrides.get(bid) {
                 return class;
             }
         }
-        
+
         // 3. Path pattern override
         if let Some(path) = file_path {
             if let Some(class) = self.check_path_override(path) {
                 return class;
             }
         }
-        
+
         // 4. Auto-detection (original logic)
         self.auto_classify(changes)
     }
-    
+
     /// Original auto-classification logic (isolated for clarity)
     fn auto_classify(&self, changes: &ReloadChanges) -> ReloadClass {
         // Cold if any breaking changes
-        if changes.has_breaking_api_change || 
-           changes.has_state_schema_change ||
-           !changes.removed_exports.is_empty() {
+        if changes.has_breaking_api_change
+            || changes.has_state_schema_change
+            || !changes.removed_exports.is_empty()
+        {
             return ReloadClass::Cold;
         }
-        
+
         // Safe if only safe changes
-        if changes.is_stateless_change && 
-           changes.added_exports.is_empty() &&
-           changes.modified_functions.iter().all(|f| !changes.api_functions.contains(f)) {
+        if changes.is_stateless_change
+            && changes.added_exports.is_empty()
+            && changes
+                .modified_functions
+                .iter()
+                .all(|f| !changes.api_functions.contains(f))
+        {
             return ReloadClass::Safe;
         }
-        
+
         // Default to Warm
         ReloadClass::Warm
     }
-    
+
     /// Get classification with confidence score (for debugging)
-    pub fn classify_with_confidence(&self, changes: &ReloadChanges) -> (ReloadClass, ClassificationConfidence) {
+    pub fn classify_with_confidence(
+        &self,
+        changes: &ReloadChanges,
+    ) -> (ReloadClass, ClassificationConfidence) {
         let class = self.auto_classify(changes);
-        
+
         let confidence = if changes.has_breaking_api_change || changes.has_state_schema_change {
             ClassificationConfidence::High // Clear signals
         } else if changes.is_stateless_change && changes.modified_functions.is_empty() {
@@ -279,7 +290,7 @@ impl ReloadClassifier {
         } else {
             ClassificationConfidence::Medium
         };
-        
+
         (class, confidence)
     }
 }
@@ -349,24 +360,24 @@ pub struct ReloadSnapshot {
     pub snapshot_id: u64,
     pub created_at: Instant,
     pub reload_class: ReloadClass,
-    
+
     /// State snapshots per boundary
     pub state_snapshots: HashMap<BoundaryId, StateSnapshot>,
-    
+
     /// Module hashes before reload
     pub module_hashes: HashMap<String, u64>,
-    
+
     /// In-flight request IDs (for replay)
     pub in_flight_requests: Vec<RequestSnapshot>,
-    
+
     /// Async task states
     pub task_states: Vec<TaskSnapshot>,
-    
+
     // VALIDITY: Use generation counter instead of per-snapshot bool
     // This makes invalidation O(1) instead of O(n)
     /// Generation when snapshot was created
     pub generation: u64,
-    
+
     /// Reason if invalidated (lazy - set on access, not on invalidate)
     invalidation_reason: Option<String>,
 }
@@ -527,7 +538,7 @@ impl SnapshotManager {
             min_valid_generation: AtomicU64::new(1),
         }
     }
-    
+
     /// Create a new snapshot before reload
     /// OPTIMIZED: Only stores handles, not full state
     /// For proper HMR, use create_snapshot_with_bytes instead
@@ -539,10 +550,21 @@ impl SnapshotManager {
     ) -> u64 {
         let snapshot_id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let generation = self.current_generation.fetch_add(1, Ordering::SeqCst);
-        
+
         // Collect state snapshots - LAZY: only store handles
         let mut state_snapshots = HashMap::new();
         for boundary_id in boundaries {
+            // Store handle + hash, not serialized state
+            // Actual serialization happens only on revert
+            state_snapshots.insert(
+                boundary_id.clone(),
+                StateSnapshot {
+                    boundary_id: boundary_id.clone(),
+                    state_handle: snapshot_id, // Would be actual handle
+                    state_hash: 0,             // Would compute hash
+                    abi_version: 1,
+                    source_hash: 0,
+                },
             // Store handle only, no serialized bytes
             // For proper cross-version migration, use create_snapshot_with_bytes
             state_snapshots.insert(
@@ -590,7 +612,7 @@ impl SnapshotManager {
                 StateSnapshot::new(boundary_id, build_id, bytes, format, state_version),
             );
         }
-        
+
         let snapshot = ReloadSnapshot {
             snapshot_id,
             created_at: Instant::now(),
@@ -602,26 +624,27 @@ impl SnapshotManager {
             generation,
             invalidation_reason: None,
         };
-        
+
         self.snapshots.push_back(snapshot);
-        
+
         // Enforce retention
         while self.snapshots.len() > self.max_snapshots {
             self.snapshots.pop_front();
         }
-        
+
         snapshot_id
     }
-    
+
     /// Revert to a snapshot after crash
     pub fn revert_to_snapshot(&mut self, snapshot_id: u64) -> Result<&ReloadSnapshot, String> {
         let min_gen = self.min_valid_generation.load(Ordering::SeqCst);
-        
-        let snapshot = self.snapshots
+
+        let snapshot = self
+            .snapshots
             .iter()
             .find(|s| s.snapshot_id == snapshot_id)
             .ok_or_else(|| format!("Snapshot {} not found", snapshot_id))?;
-        
+
         // O(1) validity check
         if !snapshot.is_valid(min_gen) {
             return Err(format!(
@@ -629,16 +652,17 @@ impl SnapshotManager {
                 snapshot_id, snapshot.generation, min_gen
             ));
         }
-        
+
         Ok(snapshot)
     }
-    
+
     /// Invalidate all snapshots older than given generation - O(1)!
     /// Does NOT iterate through snapshots
     pub fn invalidate_before_generation(&self, generation: u64) {
-        self.min_valid_generation.fetch_max(generation, Ordering::SeqCst);
+        self.min_valid_generation
+            .fetch_max(generation, Ordering::SeqCst);
     }
-    
+
     /// Invalidate all snapshots before a snapshot ID - O(n) but only to find gen
     pub fn invalidate_before(&mut self, snapshot_id: u64, _reason: &str) {
         if let Some(snapshot) = self.snapshots.iter().find(|s| s.snapshot_id == snapshot_id) {
@@ -646,13 +670,13 @@ impl SnapshotManager {
             self.invalidate_before_generation(snapshot.generation);
         }
     }
-    
+
     /// Get most recent valid snapshot - O(n) but usually small
     pub fn latest_valid(&self) -> Option<&ReloadSnapshot> {
         let min_gen = self.min_valid_generation.load(Ordering::SeqCst);
         self.snapshots.iter().rev().find(|s| s.is_valid(min_gen))
     }
-    
+
     /// Check validity without loading snapshot - O(1)
     #[inline]
     pub fn is_valid(&self, snapshot_id: u64) -> bool {
@@ -732,7 +756,7 @@ impl AsyncTaskRegistry {
             strict_mode: false, // Default permissive
         }
     }
-    
+
     /// Create strict registry that blocks on violations
     pub fn new_strict(shutdown_timeout: Duration) -> Self {
         Self {
@@ -743,12 +767,12 @@ impl AsyncTaskRegistry {
             strict_mode: true,
         }
     }
-    
+
     /// Register a known spawn point (for static analysis)
     pub fn register_spawn_point(&mut self, location: String) {
         self.known_spawn_points.insert(location);
     }
-    
+
     /// Register a task that must be managed during reload
     pub fn register(
         &mut self,
@@ -767,35 +791,38 @@ impl AsyncTaskRegistry {
                 details: format!("Task '{}' registered twice", task_id),
             });
         }
-        
+
         let shutdown_signal = Arc::new(AtomicBool::new(false));
-        
-        self.tasks.insert(task_id.clone(), RegisteredTask {
-            task_id,
-            task_type,
-            boundary_id,
-            supports_checkpoint,
-            supports_pause,
-            shutdown_signal: shutdown_signal.clone(),
-            registered_at: Instant::now(),
-            last_checkpoint: None,
-            shutdown_signaled_at: None,
-        });
-        
+
+        self.tasks.insert(
+            task_id.clone(),
+            RegisteredTask {
+                task_id,
+                task_type,
+                boundary_id,
+                supports_checkpoint,
+                supports_pause,
+                shutdown_signal: shutdown_signal.clone(),
+                registered_at: Instant::now(),
+                last_checkpoint: None,
+                shutdown_signaled_at: None,
+            },
+        );
+
         shutdown_signal
     }
-    
+
     /// Record a checkpoint (validates checkpoint claims)
     pub fn record_checkpoint(&mut self, task_id: &str) {
         if let Some(task) = self.tasks.get_mut(task_id) {
             task.last_checkpoint = Some(Instant::now());
         }
     }
-    
+
     /// Detect violations - call periodically or before reload
     pub fn detect_violations(&mut self) {
         let now = Instant::now();
-        
+
         for task in self.tasks.values() {
             // Check for stale tasks (running > 1 hour without checkpoint)
             if task.supports_checkpoint {
@@ -812,7 +839,7 @@ impl AsyncTaskRegistry {
                     });
                 }
             }
-            
+
             // Check for tasks ignoring shutdown signal
             if let Some(signaled_at) = task.shutdown_signaled_at {
                 if now.duration_since(signaled_at) > self.shutdown_timeout {
@@ -830,9 +857,13 @@ impl AsyncTaskRegistry {
             }
         }
     }
-    
+
     /// Report an unregistered task spawn (call from instrumented code)
-    pub fn report_unregistered_spawn(&mut self, spawn_location: &str, boundary_id: Option<BoundaryId>) {
+    pub fn report_unregistered_spawn(
+        &mut self,
+        spawn_location: &str,
+        boundary_id: Option<BoundaryId>,
+    ) {
         self.violations.push(TaskViolation {
             detected_at: Instant::now(),
             violation_type: TaskViolationType::UnregisteredSpawn,
@@ -840,27 +871,27 @@ impl AsyncTaskRegistry {
             details: format!("Unregistered task spawn at: {}", spawn_location),
         });
     }
-    
+
     /// Get current violations
     pub fn get_violations(&self) -> &[TaskViolation] {
         &self.violations
     }
-    
+
     /// Clear violations (after handling)
     pub fn clear_violations(&mut self) {
         self.violations.clear();
     }
-    
+
     /// Check if reload should be blocked due to violations
     pub fn should_block_reload(&self) -> bool {
         self.strict_mode && !self.violations.is_empty()
     }
-    
+
     /// Unregister a completed task
     pub fn unregister(&mut self, task_id: &str) {
         self.tasks.remove(task_id);
     }
-    
+
     /// Get tasks that will be affected by a boundary reload
     pub fn tasks_for_boundary(&self, boundary_id: &BoundaryId) -> Vec<&RegisteredTask> {
         self.tasks
@@ -868,7 +899,7 @@ impl AsyncTaskRegistry {
             .filter(|t| &t.boundary_id == boundary_id)
             .collect()
     }
-    
+
     /// Prepare tasks for reload based on reload class
     pub fn prepare_for_reload(
         &mut self,
@@ -878,12 +909,12 @@ impl AsyncTaskRegistry {
         // Run violation detection first
         self.detect_violations();
         let affected_tasks = self.tasks_for_boundary(boundary_id);
-        
+
         let mut to_checkpoint = Vec::new();
         let mut to_pause = Vec::new();
         let mut to_terminate = Vec::new();
         let mut blocking = Vec::new();
-        
+
         for task in affected_tasks {
             match reload_class {
                 ReloadClass::Safe => {
@@ -911,7 +942,7 @@ impl AsyncTaskRegistry {
                 }
             }
         }
-        
+
         TaskPreparationResult {
             to_checkpoint,
             to_pause,
@@ -920,7 +951,7 @@ impl AsyncTaskRegistry {
             can_proceed: blocking.is_empty() || reload_class == ReloadClass::Cold,
         }
     }
-    
+
     /// Signal shutdown to tasks (tracks timing for violation detection)
     pub fn signal_shutdown(&mut self, task_ids: &[String]) {
         let now = Instant::now();
@@ -1008,22 +1039,25 @@ impl RequestTracker {
             drain_timeout,
         }
     }
-    
+
     /// Track a new request
     pub fn track(&mut self, request_id: String, boundary_id: BoundaryId) {
-        self.requests.insert(request_id.clone(), TrackedRequest {
-            request_id: request_id.clone(),
-            boundary_id: boundary_id.clone(),
-            started_at: Instant::now(),
-            state: RequestState::Active,
-        });
-        
+        self.requests.insert(
+            request_id.clone(),
+            TrackedRequest {
+                request_id: request_id.clone(),
+                boundary_id: boundary_id.clone(),
+                started_at: Instant::now(),
+                state: RequestState::Active,
+            },
+        );
+
         self.boundary_requests
             .entry(boundary_id)
             .or_insert_with(HashSet::new)
             .insert(request_id);
     }
-    
+
     /// Untrack a completed request
     pub fn untrack(&mut self, request_id: &str) {
         if let Some(req) = self.requests.remove(request_id) {
@@ -1032,45 +1066,38 @@ impl RequestTracker {
             }
         }
     }
-    
+
     /// Get in-flight requests for a boundary
     pub fn requests_for_boundary(&self, boundary_id: &BoundaryId) -> Vec<&TrackedRequest> {
         self.boundary_requests
             .get(boundary_id)
-            .map(|ids| {
-                ids.iter()
-                    .filter_map(|id| self.requests.get(id))
-                    .collect()
-            })
+            .map(|ids| ids.iter().filter_map(|id| self.requests.get(id)).collect())
             .unwrap_or_default()
     }
-    
+
     /// Check if boundary can reload given current requests
     pub fn can_reload(&self, boundary_id: &BoundaryId, class: ReloadClass) -> ReloadReadiness {
         let requests = self.requests_for_boundary(boundary_id);
-        let active_count = requests.iter().filter(|r| r.state == RequestState::Active).count();
-        
+        let active_count = requests
+            .iter()
+            .filter(|r| r.state == RequestState::Active)
+            .count();
+
         let policy = InFlightPolicy::for_reload_class(class);
-        
+
         match policy {
-            InFlightPolicy::DrainFirst if active_count > 0 => {
-                ReloadReadiness::MustWait {
-                    reason: format!("{} requests must drain", active_count),
-                    estimated_wait: self.estimate_drain_time(&requests),
-                }
-            }
-            _ if active_count > 0 => {
-                ReloadReadiness::CanProceed {
-                    in_flight_count: active_count,
-                    policy,
-                }
-            }
-            _ => {
-                ReloadReadiness::Ready
-            }
+            InFlightPolicy::DrainFirst if active_count > 0 => ReloadReadiness::MustWait {
+                reason: format!("{} requests must drain", active_count),
+                estimated_wait: self.estimate_drain_time(&requests),
+            },
+            _ if active_count > 0 => ReloadReadiness::CanProceed {
+                in_flight_count: active_count,
+                policy,
+            },
+            _ => ReloadReadiness::Ready,
         }
     }
-    
+
     fn estimate_drain_time(&self, requests: &[&TrackedRequest]) -> Duration {
         // Estimate based on longest running request
         requests
@@ -1079,14 +1106,15 @@ impl RequestTracker {
             .max()
             .unwrap_or(Duration::ZERO)
     }
-    
+
     /// Apply policy to requests before reload
     pub fn apply_policy(&mut self, boundary_id: &BoundaryId, policy: InFlightPolicy) {
-        let request_ids: Vec<String> = self.boundary_requests
+        let request_ids: Vec<String> = self
+            .boundary_requests
             .get(boundary_id)
             .map(|ids| ids.iter().cloned().collect())
             .unwrap_or_default();
-        
+
         for request_id in request_ids {
             if let Some(req) = self.requests.get_mut(&request_id) {
                 req.state = match policy {
@@ -1188,7 +1216,7 @@ impl Default for OutputComparisonConfig {
             numeric_tolerance: 0.0001, // For floating point
             array_order_sensitive: false,
             max_mismatch_rate: 0.01, // 1% mismatch triggers rollback
-            sample_rate: 1.0, // Compare all by default
+            sample_rate: 1.0,        // Compare all by default
         }
     }
 }
@@ -1196,7 +1224,7 @@ impl Default for OutputComparisonConfig {
 impl Default for CanaryConfig {
     fn default() -> Self {
         Self {
-            traffic_percentage: 0,  // Shadow only by default
+            traffic_percentage: 0, // Shadow only by default
             min_requests: 100,
             max_error_rate: 0.01,
             max_latency_factor: 1.5,
@@ -1218,9 +1246,9 @@ pub struct OutputComparisonResult {
 /// Specific difference found in output comparison
 #[derive(Debug, Clone)]
 pub struct OutputDifference {
-    pub path: String,           // JSON path to difference: "response.items[2].value"
+    pub path: String, // JSON path to difference: "response.items[2].value"
     pub diff_type: DiffType,
-    pub old_value: String,      // Truncated to 100 chars
+    pub old_value: String, // Truncated to 100 chars
     pub new_value: String,
 }
 
@@ -1247,17 +1275,17 @@ fn compare_json_values(
     semantic: bool,
 ) -> (bool, Vec<OutputDifference>) {
     let mut diffs = Vec::new();
-    
+
     // Check if this field should be ignored
     if config.ignore_fields.iter().any(|f| path.ends_with(f)) {
         return (true, vec![]);
     }
-    
+
     use serde_json::Value;
-    
+
     match (old, new) {
         (Value::Null, Value::Null) => (true, vec![]),
-        
+
         (Value::Bool(a), Value::Bool(b)) => {
             if a == b {
                 (true, vec![])
@@ -1271,18 +1299,18 @@ fn compare_json_values(
                 (false, diffs)
             }
         }
-        
+
         (Value::Number(a), Value::Number(b)) => {
             // Handle numeric comparison with tolerance
             let a_f64 = a.as_f64().unwrap_or(0.0);
             let b_f64 = b.as_f64().unwrap_or(0.0);
-            
+
             let matches = if config.numeric_tolerance > 0.0 {
                 (a_f64 - b_f64).abs() <= config.numeric_tolerance
             } else {
                 a == b
             };
-            
+
             if matches {
                 (true, vec![])
             } else if (a_f64 - b_f64).abs() <= config.numeric_tolerance {
@@ -1297,7 +1325,7 @@ fn compare_json_values(
                 (false, diffs)
             }
         }
-        
+
         (Value::String(a), Value::String(b)) => {
             if a == b {
                 (true, vec![])
@@ -1325,7 +1353,7 @@ fn compare_json_values(
                 (false, diffs)
             }
         }
-        
+
         // Semantic mode: allow type coercion between numbers and strings
         (Value::Number(a), Value::String(b)) if semantic => {
             if let Ok(b_num) = b.parse::<f64>() {
@@ -1342,7 +1370,7 @@ fn compare_json_values(
             });
             (false, diffs)
         }
-        
+
         (Value::String(a), Value::Number(b)) if semantic => {
             if let Ok(a_num) = a.parse::<f64>() {
                 let b_f64 = b.as_f64().unwrap_or(0.0);
@@ -1358,7 +1386,7 @@ fn compare_json_values(
             });
             (false, diffs)
         }
-        
+
         (Value::Array(a), Value::Array(b)) => {
             if a.len() != b.len() && config.array_order_sensitive {
                 diffs.push(OutputDifference {
@@ -1369,13 +1397,14 @@ fn compare_json_values(
                 });
                 return (false, diffs);
             }
-            
+
             let mut all_match = true;
-            
+
             if config.array_order_sensitive {
                 for (i, (a_item, b_item)) in a.iter().zip(b.iter()).enumerate() {
                     let item_path = format!("{}[{}]", path, i);
-                    let (matches, item_diffs) = compare_json_values(a_item, b_item, &item_path, config, semantic);
+                    let (matches, item_diffs) =
+                        compare_json_values(a_item, b_item, &item_path, config, semantic);
                     if !matches {
                         all_match = false;
                         diffs.extend(item_diffs);
@@ -1385,7 +1414,8 @@ fn compare_json_values(
                 // Order insensitive: check that all items in old exist in new
                 for (i, a_item) in a.iter().enumerate() {
                     let found = b.iter().any(|b_item| {
-                        let (matches, _) = compare_json_values(a_item, b_item, "", config, semantic);
+                        let (matches, _) =
+                            compare_json_values(a_item, b_item, "", config, semantic);
                         matches
                     });
                     if !found {
@@ -1401,7 +1431,8 @@ fn compare_json_values(
                 // Check for extra items in new
                 for (i, b_item) in b.iter().enumerate() {
                     let found = a.iter().any(|a_item| {
-                        let (matches, _) = compare_json_values(a_item, b_item, "", config, semantic);
+                        let (matches, _) =
+                            compare_json_values(a_item, b_item, "", config, semantic);
                         matches
                     });
                     if !found {
@@ -1415,13 +1446,13 @@ fn compare_json_values(
                     }
                 }
             }
-            
+
             (all_match, diffs)
         }
-        
+
         (Value::Object(a), Value::Object(b)) => {
             let mut all_match = true;
-            
+
             // Check all keys in old
             for (key, a_val) in a {
                 let child_path = if path.is_empty() {
@@ -1429,15 +1460,16 @@ fn compare_json_values(
                 } else {
                     format!("{}.{}", path, key)
                 };
-                
+
                 // Skip ignored fields
                 if config.ignore_fields.contains(key) {
                     continue;
                 }
-                
+
                 match b.get(key) {
                     Some(b_val) => {
-                        let (matches, child_diffs) = compare_json_values(a_val, b_val, &child_path, config, semantic);
+                        let (matches, child_diffs) =
+                            compare_json_values(a_val, b_val, &child_path, config, semantic);
                         if !matches {
                             all_match = false;
                             diffs.extend(child_diffs);
@@ -1454,13 +1486,13 @@ fn compare_json_values(
                     }
                 }
             }
-            
+
             // Check for extra keys in new
             for (key, b_val) in b {
                 if config.ignore_fields.contains(key) {
                     continue;
                 }
-                
+
                 if !a.contains_key(key) {
                     let child_path = if path.is_empty() {
                         key.clone()
@@ -1476,10 +1508,10 @@ fn compare_json_values(
                     });
                 }
             }
-            
+
             (all_match, diffs)
         }
-        
+
         // Type mismatch
         (a, b) => {
             diffs.push(OutputDifference {
@@ -1500,16 +1532,16 @@ fn compare_json_schema(
     path: &str,
 ) -> (bool, Vec<OutputDifference>) {
     use serde_json::Value;
-    
+
     let mut diffs = Vec::new();
-    
+
     match (old, new) {
         // Same type primitives - always match for schema
-        (Value::Null, Value::Null) |
-        (Value::Bool(_), Value::Bool(_)) |
-        (Value::Number(_), Value::Number(_)) |
-        (Value::String(_), Value::String(_)) => (true, vec![]),
-        
+        (Value::Null, Value::Null)
+        | (Value::Bool(_), Value::Bool(_))
+        | (Value::Number(_), Value::Number(_))
+        | (Value::String(_), Value::String(_)) => (true, vec![]),
+
         (Value::Array(a), Value::Array(b)) => {
             // For schema comparison, just check first element types match
             match (a.first(), b.first()) {
@@ -1528,10 +1560,10 @@ fn compare_json_schema(
                 }
             }
         }
-        
+
         (Value::Object(a), Value::Object(b)) => {
             let mut all_match = true;
-            
+
             // Check all keys exist and types match
             for (key, a_val) in a {
                 let child_path = if path.is_empty() {
@@ -1539,7 +1571,7 @@ fn compare_json_schema(
                 } else {
                     format!("{}.{}", path, key)
                 };
-                
+
                 match b.get(key) {
                     Some(b_val) => {
                         let (matches, child_diffs) = compare_json_schema(a_val, b_val, &child_path);
@@ -1559,7 +1591,7 @@ fn compare_json_schema(
                     }
                 }
             }
-            
+
             // Check for extra keys in new (optional for schema mode)
             for key in b.keys() {
                 if !a.contains_key(key) {
@@ -1577,10 +1609,10 @@ fn compare_json_schema(
                     });
                 }
             }
-            
+
             (all_match, diffs)
         }
-        
+
         // Type mismatch
         (a, b) => {
             diffs.push(OutputDifference {
@@ -1622,7 +1654,7 @@ pub struct CanaryState {
     pub started_at: Instant,
     pub old_version_hash: u64,
     pub new_version_hash: u64,
-    
+
     // Metrics
     pub old_requests: u32,
     pub new_requests: u32,
@@ -1630,14 +1662,14 @@ pub struct CanaryState {
     pub new_errors: u32,
     pub old_latency_sum_ms: u64,
     pub new_latency_sum_ms: u64,
-    
+
     // OUTPUT COMPARISON TRACKING (strict)
     pub comparisons_performed: u32,
     pub comparisons_matched: u32,
     pub comparisons_mismatched: u32,
-    pub comparison_errors: u32,  // Comparison itself failed
+    pub comparison_errors: u32, // Comparison itself failed
     pub recent_mismatches: VecDeque<OutputComparisonResult>, // Last N for debugging
-    
+
     // Decision
     pub decision: Option<CanaryDecision>,
 }
@@ -1650,7 +1682,12 @@ pub enum CanaryDecision {
 }
 
 impl CanaryState {
-    pub fn new(boundary_id: BoundaryId, config: CanaryConfig, old_hash: u64, new_hash: u64) -> Self {
+    pub fn new(
+        boundary_id: BoundaryId,
+        config: CanaryConfig,
+        old_hash: u64,
+        new_hash: u64,
+    ) -> Self {
         Self {
             boundary_id,
             config,
@@ -1671,12 +1708,12 @@ impl CanaryState {
             decision: None,
         }
     }
-    
+
     /// Compare outputs using configured comparison mode
     pub fn compare_outputs(&self, old_output: &[u8], new_output: &[u8]) -> OutputComparisonResult {
         let start = Instant::now();
         let config = &self.config.output_comparison;
-        
+
         let (matches, differences) = match config.mode {
             OutputComparisonMode::Exact => {
                 let matches = old_output == new_output;
@@ -1695,15 +1732,15 @@ impl CanaryState {
             OutputComparisonMode::HashOnly => {
                 use std::collections::hash_map::DefaultHasher;
                 use std::hash::{Hash, Hasher};
-                
+
                 let mut h1 = DefaultHasher::new();
                 old_output.hash(&mut h1);
                 let old_hash = h1.finish();
-                
+
                 let mut h2 = DefaultHasher::new();
                 new_output.hash(&mut h2);
                 let new_hash = h2.finish();
-                
+
                 let matches = old_hash == new_hash;
                 let diffs = if matches {
                     vec![]
@@ -1717,43 +1754,40 @@ impl CanaryState {
                 };
                 (matches, diffs)
             }
-            OutputComparisonMode::JsonStructural | 
-            OutputComparisonMode::JsonSemantic => {
+            OutputComparisonMode::JsonStructural | OutputComparisonMode::JsonSemantic => {
                 // Parse JSON and compare structurally
                 let old_json: Result<serde_json::Value, _> = serde_json::from_slice(old_output);
                 let new_json: Result<serde_json::Value, _> = serde_json::from_slice(new_output);
-                
+
                 match (old_json, new_json) {
                     (Ok(old_val), Ok(new_val)) => {
                         let semantic = config.mode == OutputComparisonMode::JsonSemantic;
-                        compare_json_values(
-                            &old_val, 
-                            &new_val, 
-                            "", 
-                            config,
-                            semantic
-                        )
+                        compare_json_values(&old_val, &new_val, "", config, semantic)
                     }
-                    (Err(_), Ok(_)) => {
-                        (false, vec![OutputDifference {
+                    (Err(_), Ok(_)) => (
+                        false,
+                        vec![OutputDifference {
                             path: "<root>".to_string(),
                             diff_type: DiffType::TypeMismatch,
                             old_value: "invalid JSON".to_string(),
                             new_value: "valid JSON".to_string(),
-                        }])
-                    }
-                    (Ok(_), Err(_)) => {
-                        (false, vec![OutputDifference {
+                        }],
+                    ),
+                    (Ok(_), Err(_)) => (
+                        false,
+                        vec![OutputDifference {
                             path: "<root>".to_string(),
                             diff_type: DiffType::TypeMismatch,
                             old_value: "valid JSON".to_string(),
                             new_value: "invalid JSON".to_string(),
-                        }])
-                    }
+                        }],
+                    ),
                     (Err(_), Err(_)) => {
                         // Both not JSON, fall back to exact comparison
                         let matches = old_output == new_output;
-                        let diffs = if matches { vec![] } else {
+                        let diffs = if matches {
+                            vec![]
+                        } else {
                             vec![OutputDifference {
                                 path: "<binary>".to_string(),
                                 diff_type: DiffType::ValueMismatch,
@@ -1769,17 +1803,18 @@ impl CanaryState {
                 // Validate schema shapes match (types and structure, not values)
                 let old_json: Result<serde_json::Value, _> = serde_json::from_slice(old_output);
                 let new_json: Result<serde_json::Value, _> = serde_json::from_slice(new_output);
-                
+
                 match (old_json, new_json) {
-                    (Ok(old_val), Ok(new_val)) => {
-                        compare_json_schema(&old_val, &new_val, "")
-                    }
-                    _ => (false, vec![OutputDifference {
-                        path: "<root>".to_string(),
-                        diff_type: DiffType::TypeMismatch,
-                        old_value: "JSON parse failed".to_string(),
-                        new_value: "JSON parse failed".to_string(),
-                    }])
+                    (Ok(old_val), Ok(new_val)) => compare_json_schema(&old_val, &new_val, ""),
+                    _ => (
+                        false,
+                        vec![OutputDifference {
+                            path: "<root>".to_string(),
+                            diff_type: DiffType::TypeMismatch,
+                            old_value: "JSON parse failed".to_string(),
+                            new_value: "JSON parse failed".to_string(),
+                        }],
+                    ),
                 }
             }
             OutputComparisonMode::Custom => {
@@ -1789,7 +1824,7 @@ impl CanaryState {
                 (matches, vec![])
             }
         };
-        
+
         OutputComparisonResult {
             matches,
             mode_used: config.mode,
@@ -1797,29 +1832,33 @@ impl CanaryState {
             comparison_time_us: start.elapsed().as_micros() as u64,
         }
     }
-    
+
     /// Record a request result (simple version)
     pub fn record_result(&mut self, is_new: bool, error: bool, latency_ms: u64) {
         if is_new {
             self.new_requests += 1;
-            if error { self.new_errors += 1; }
+            if error {
+                self.new_errors += 1;
+            }
             self.new_latency_sum_ms += latency_ms;
         } else {
             self.old_requests += 1;
-            if error { self.old_errors += 1; }
+            if error {
+                self.old_errors += 1;
+            }
             self.old_latency_sum_ms += latency_ms;
         }
     }
-    
+
     /// Record a comparison result (strict version)
     pub fn record_comparison(&mut self, result: OutputComparisonResult) {
         self.comparisons_performed += 1;
-        
+
         if result.matches {
             self.comparisons_matched += 1;
         } else {
             self.comparisons_mismatched += 1;
-            
+
             // Keep recent mismatches for debugging
             if self.recent_mismatches.len() >= 10 {
                 self.recent_mismatches.pop_front();
@@ -1827,12 +1866,12 @@ impl CanaryState {
             self.recent_mismatches.push_back(result);
         }
     }
-    
+
     /// Record comparison error (comparison itself failed)
     pub fn record_comparison_error(&mut self) {
         self.comparison_errors += 1;
     }
-    
+
     /// Get current mismatch rate
     pub fn mismatch_rate(&self) -> f64 {
         if self.comparisons_performed == 0 {
@@ -1840,56 +1879,58 @@ impl CanaryState {
         }
         self.comparisons_mismatched as f64 / self.comparisons_performed as f64
     }
-    
+
     /// Evaluate canary health and make decision
     pub fn evaluate(&mut self) -> CanaryDecision {
         // Not enough data yet
         if self.new_requests < self.config.min_requests {
             return CanaryDecision::Continue;
         }
-        
+
         // Calculate metrics
         let new_error_rate = self.new_errors as f64 / self.new_requests as f64;
-        
+
         let new_avg_latency = self.new_latency_sum_ms as f64 / self.new_requests as f64;
         let old_avg_latency = if self.old_requests > 0 {
             self.old_latency_sum_ms as f64 / self.old_requests as f64
         } else {
             new_avg_latency
         };
-        
+
         // Check error rate
         if new_error_rate > self.config.max_error_rate {
             self.decision = Some(CanaryDecision::Rollback);
             return CanaryDecision::Rollback;
         }
-        
+
         // Check latency
-        if old_avg_latency > 0.0 && new_avg_latency / old_avg_latency > self.config.max_latency_factor {
+        if old_avg_latency > 0.0
+            && new_avg_latency / old_avg_latency > self.config.max_latency_factor
+        {
             self.decision = Some(CanaryDecision::Rollback);
             return CanaryDecision::Rollback;
         }
-        
+
         // Check output mismatches using STRICT comparison config
         if self.config.output_comparison.enabled {
             let mismatch_rate = self.mismatch_rate();
             let max_rate = self.config.output_comparison.max_mismatch_rate;
-            
+
             if mismatch_rate > max_rate {
                 self.decision = Some(CanaryDecision::Rollback);
                 return CanaryDecision::Rollback;
             }
         }
-        
+
         // Check promotion delay
         if self.started_at.elapsed() >= self.config.promotion_delay {
             self.decision = Some(CanaryDecision::Promote);
             return CanaryDecision::Promote;
         }
-        
+
         CanaryDecision::Continue
     }
-    
+
     /// Get detailed evaluation report for debugging
     pub fn evaluation_report(&self) -> CanaryEvaluationReport {
         let new_error_rate = if self.new_requests > 0 {
@@ -1897,19 +1938,19 @@ impl CanaryState {
         } else {
             0.0
         };
-        
+
         let new_avg_latency = if self.new_requests > 0 {
             self.new_latency_sum_ms as f64 / self.new_requests as f64
         } else {
             0.0
         };
-        
+
         let old_avg_latency = if self.old_requests > 0 {
             self.old_latency_sum_ms as f64 / self.old_requests as f64
         } else {
             0.0
         };
-        
+
         CanaryEvaluationReport {
             new_requests: self.new_requests,
             old_requests: self.old_requests,
@@ -1965,7 +2006,7 @@ impl CanaryManager {
             canaries: HashMap::new(),
         }
     }
-    
+
     /// Start a canary deployment
     pub fn start_canary(
         &mut self,
@@ -1979,22 +2020,22 @@ impl CanaryManager {
             CanaryState::new(boundary_id, config, old_hash, new_hash),
         );
     }
-    
+
     /// Get canary state for routing decision
     pub fn get_canary(&self, boundary_id: &BoundaryId) -> Option<&CanaryState> {
         self.canaries.get(boundary_id)
     }
-    
+
     /// Get mutable canary for recording results
     pub fn get_canary_mut(&mut self, boundary_id: &BoundaryId) -> Option<&mut CanaryState> {
         self.canaries.get_mut(boundary_id)
     }
-    
+
     /// End a canary deployment
     pub fn end_canary(&mut self, boundary_id: &BoundaryId) -> Option<CanaryState> {
         self.canaries.remove(boundary_id)
     }
-    
+
     /// Evaluate all canaries and return decisions
     pub fn evaluate_all(&mut self) -> Vec<(BoundaryId, CanaryDecision)> {
         self.canaries
@@ -2045,9 +2086,9 @@ pub struct CascadeEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CircuitState {
-    Closed,      // Normal operation
-    Open,        // Rejecting cascades
-    HalfOpen,    // Testing recovery
+    Closed,   // Normal operation
+    Open,     // Rejecting cascades
+    HalfOpen, // Testing recovery
 }
 
 impl CascadeCircuitBreaker {
@@ -2063,7 +2104,7 @@ impl CascadeCircuitBreaker {
             failure_threshold: 3,
         }
     }
-    
+
     /// Check if cascade is allowed
     pub fn allow_cascade(&self, depth: usize, boundary_count: usize) -> CascadePermission {
         // Check circuit breaker state
@@ -2072,21 +2113,24 @@ impl CascadeCircuitBreaker {
                 reason: "Circuit breaker is open".to_string(),
             };
         }
-        
+
         // Check depth
         if depth > self.max_depth {
             return CascadePermission::Denied {
                 reason: format!("Cascade depth {} exceeds max {}", depth, self.max_depth),
             };
         }
-        
+
         // Check boundary count
         if boundary_count > self.max_boundaries {
             return CascadePermission::Denied {
-                reason: format!("Boundary count {} exceeds max {}", boundary_count, self.max_boundaries),
+                reason: format!(
+                    "Boundary count {} exceeds max {}",
+                    boundary_count, self.max_boundaries
+                ),
             };
         }
-        
+
         // Check cooldown
         if let Some(last) = self.recent_cascades.back() {
             if last.started_at.elapsed() < self.cascade_cooldown {
@@ -2095,31 +2139,31 @@ impl CascadeCircuitBreaker {
                 };
             }
         }
-        
+
         CascadePermission::Allowed
     }
-    
+
     /// Start tracking a cascade
     pub fn start_cascade(&mut self) {
         self.current_depth += 1;
     }
-    
+
     /// End cascade tracking
     pub fn end_cascade(&mut self, success: bool, boundaries: usize) {
         self.current_depth = self.current_depth.saturating_sub(1);
-        
+
         self.recent_cascades.push_back(CascadeEvent {
             started_at: Instant::now(),
             depth: self.current_depth + 1,
             boundaries,
             success,
         });
-        
+
         // Trim old events
         while self.recent_cascades.len() > 100 {
             self.recent_cascades.pop_front();
         }
-        
+
         // Update circuit breaker
         if success {
             self.failure_count = 0;
@@ -2133,7 +2177,7 @@ impl CascadeCircuitBreaker {
             }
         }
     }
-    
+
     /// Reset circuit breaker (for testing recovery)
     pub fn reset(&mut self) {
         self.state = CircuitState::HalfOpen;
@@ -2187,21 +2231,21 @@ impl ReloadManagerConfig {
     pub fn development() -> Self {
         Self {
             dev_mode: true,
-            max_repair_depth: 3,  // Allow multi-file repairs
-            skip_semantic_tests: true,  // Skip for speed
+            max_repair_depth: 3,       // Allow multi-file repairs
+            skip_semantic_tests: true, // Skip for speed
             enable_canary: false,
             drain_timeout: Duration::from_secs(5),
             task_shutdown_timeout: Duration::from_secs(5),
         }
     }
-    
+
     /// Production configuration (strict, safe)
     pub fn production() -> Self {
         Self {
             dev_mode: false,
             max_repair_depth: 1,
             skip_semantic_tests: false,
-            enable_canary: true,  // Use canary in prod
+            enable_canary: true, // Use canary in prod
             drain_timeout: Duration::from_secs(30),
             task_shutdown_timeout: Duration::from_secs(30),
         }
@@ -2217,10 +2261,10 @@ pub struct ReloadManager {
     pub request_tracker: RequestTracker,
     pub canary_manager: CanaryManager,
     pub cascade_breaker: CascadeCircuitBreaker,
-    
+
     /// Debug trace collector for HMR failure analysis
     pub debug_collector: HmrDebugCollector,
-    
+
     // Statistics
     pub stats: ReloadStats,
 }
@@ -2247,7 +2291,7 @@ impl ReloadManager {
         if !config.dev_mode {
             debug_collector.set_failures_only_filter(500); // Keep slow (>500ms) or failed
         }
-        
+
         Self {
             snapshots: SnapshotManager::new(10),
             task_registry: AsyncTaskRegistry::new(config.task_shutdown_timeout),
@@ -2263,7 +2307,7 @@ impl ReloadManager {
             stats: ReloadStats::default(),
         }
     }
-    
+
     /// Execute a reload with full orchestration and debug tracing
     pub fn execute_reload(
         &mut self,
@@ -2272,10 +2316,10 @@ impl ReloadManager {
         state_manager: &StateManager,
     ) -> Result<ReloadResult, ReloadError> {
         let start = Instant::now();
-        
+
         // Start debug trace
         let mut trace = self.debug_collector.start_trace(boundary_id.clone());
-        
+
         // 1. Classify the reload
         trace.phase_start(HmrPhase::Classification);
         let (auto_class, confidence) = self.classifier.classify_with_confidence(changes);
@@ -2284,9 +2328,17 @@ impl ReloadManager {
             Some(boundary_id),
             changes.file_path.as_deref(),
         );
-        trace.decision(HmrPhase::Classification, "auto_class", &format!("{:?}", auto_class));
-        trace.decision(HmrPhase::Classification, "confidence", &format!("{:?}", confidence));
-        
+        trace.decision(
+            HmrPhase::Classification,
+            "auto_class",
+            &format!("{:?}", auto_class),
+        );
+        trace.decision(
+            HmrPhase::Classification,
+            "confidence",
+            &format!("{:?}", confidence),
+        );
+
         // Record if override was applied
         if reload_class != auto_class {
             trace.override_applied(
@@ -2296,30 +2348,42 @@ impl ReloadManager {
             );
         }
         trace.phase_end(HmrPhase::Classification, start.elapsed());
-        
+
         // 2. Check if canary mode should be used
         if self.config.enable_canary && reload_class == ReloadClass::Warm {
             reload_class = ReloadClass::Canary;
             trace.decision(HmrPhase::Classification, "canary_enabled", "true");
         }
-        
+
         // 3. Check request readiness
         trace.phase_start(HmrPhase::RequestDrain);
         let readiness = self.request_tracker.can_reload(boundary_id, reload_class);
         match readiness {
-            ReloadReadiness::MustWait { ref reason, ref estimated_wait } => {
+            ReloadReadiness::MustWait {
+                ref reason,
+                ref estimated_wait,
+            } => {
                 trace.warning(HmrPhase::RequestDrain, &format!("Must wait: {}", reason));
-                trace.set_outcome(HmrOutcome::Blocked { reason: reason.clone() });
+                trace.set_outcome(HmrOutcome::Blocked {
+                    reason: reason.clone(),
+                });
                 self.debug_collector.complete_trace(trace);
-                
+
                 return Err(ReloadError::NotReady {
                     reason: reason.clone(),
                     estimated_wait: *estimated_wait,
                 });
             }
-            ReloadReadiness::CanProceed { policy, in_flight_count } => {
+            ReloadReadiness::CanProceed {
+                policy,
+                in_flight_count,
+            } => {
                 trace.decision(HmrPhase::RequestDrain, "policy", &format!("{:?}", policy));
-                trace.decision(HmrPhase::RequestDrain, "in_flight", &format!("{}", in_flight_count));
+                trace.decision(
+                    HmrPhase::RequestDrain,
+                    "in_flight",
+                    &format!("{}", in_flight_count),
+                );
                 self.request_tracker.apply_policy(boundary_id, policy);
             }
             ReloadReadiness::Ready => {
@@ -2327,54 +2391,74 @@ impl ReloadManager {
             }
         }
         trace.phase_end(HmrPhase::RequestDrain, start.elapsed());
-        
+
         // 4. Check cascade permission
         trace.phase_start(HmrPhase::Validation);
-        if let CascadePermission::Denied { reason } = 
-            self.cascade_breaker.allow_cascade(0, 1) {
-            trace.error(HmrPhase::Validation, &format!("Cascade blocked: {}", reason), false);
-            trace.set_outcome(HmrOutcome::Blocked { reason: reason.clone() });
+        if let CascadePermission::Denied { reason } = self.cascade_breaker.allow_cascade(0, 1) {
+            trace.error(
+                HmrPhase::Validation,
+                &format!("Cascade blocked: {}", reason),
+                false,
+            );
+            trace.set_outcome(HmrOutcome::Blocked {
+                reason: reason.clone(),
+            });
             self.debug_collector.complete_trace(trace);
-            
+
             return Err(ReloadError::CascadeBlocked { reason });
         }
-        
+
         // 5. Prepare async tasks
         trace.phase_start(HmrPhase::TaskPrep);
-        let task_prep = self.task_registry.prepare_for_reload(boundary_id, reload_class);
-        trace.decision(HmrPhase::TaskPrep, "to_checkpoint", &format!("{}", task_prep.to_checkpoint.len()));
-        trace.decision(HmrPhase::TaskPrep, "to_pause", &format!("{}", task_prep.to_pause.len()));
-        trace.decision(HmrPhase::TaskPrep, "to_terminate", &format!("{}", task_prep.to_terminate.len()));
-        
+        let task_prep = self
+            .task_registry
+            .prepare_for_reload(boundary_id, reload_class);
+        trace.decision(
+            HmrPhase::TaskPrep,
+            "to_checkpoint",
+            &format!("{}", task_prep.to_checkpoint.len()),
+        );
+        trace.decision(
+            HmrPhase::TaskPrep,
+            "to_pause",
+            &format!("{}", task_prep.to_pause.len()),
+        );
+        trace.decision(
+            HmrPhase::TaskPrep,
+            "to_terminate",
+            &format!("{}", task_prep.to_terminate.len()),
+        );
+
         // Check for task violations
         if self.task_registry.should_block_reload() {
             let violations = self.task_registry.get_violations();
             for v in violations {
-                trace.warning(HmrPhase::TaskPrep, &format!("{:?}: {}", v.violation_type, v.details));
+                trace.warning(
+                    HmrPhase::TaskPrep,
+                    &format!("{:?}: {}", v.violation_type, v.details),
+                );
             }
         }
-        
+
         if !task_prep.can_proceed {
             trace.error(HmrPhase::TaskPrep, "Tasks blocking reload", false);
-            trace.set_outcome(HmrOutcome::Blocked { 
-                reason: format!("Blocking tasks: {:?}", task_prep.blocking_tasks) 
+            trace.set_outcome(HmrOutcome::Blocked {
+                reason: format!("Blocking tasks: {:?}", task_prep.blocking_tasks),
             });
             self.debug_collector.complete_trace(trace);
-            
+
             return Err(ReloadError::TasksBlocking {
                 task_ids: task_prep.blocking_tasks,
             });
         }
         trace.phase_end(HmrPhase::TaskPrep, start.elapsed());
-        
+
         // 6. Create snapshot if required
         trace.phase_start(HmrPhase::Snapshot);
         let snapshot_id = if reload_class.requires_snapshot() {
-            let id = self.snapshots.create_snapshot(
-                reload_class,
-                state_manager,
-                &[boundary_id.clone()],
-            );
+            let id =
+                self.snapshots
+                    .create_snapshot(reload_class, state_manager, &[boundary_id.clone()]);
             trace.decision(HmrPhase::Snapshot, "snapshot_id", &format!("{}", id));
             Some(id)
         } else {
@@ -2382,21 +2466,21 @@ impl ReloadManager {
             None
         };
         trace.phase_end(HmrPhase::Snapshot, start.elapsed());
-        
+
         // 7. Signal task shutdown/pause
         self.task_registry.signal_shutdown(&task_prep.to_terminate);
-        
+
         // 8. Execute the reload
         trace.phase_start(HmrPhase::Reload);
         self.cascade_breaker.start_cascade();
         let reload_success = true; // Actual reload would happen here
         self.cascade_breaker.end_cascade(reload_success, 1);
         trace.phase_end(HmrPhase::Reload, start.elapsed());
-        
+
         // 9. Update statistics
         let duration = start.elapsed();
         self.update_stats(reload_class, duration, reload_success);
-        
+
         // 10. Check latency target
         if duration.as_millis() as u64 > reload_class.max_latency_ms() {
             trace.warning(
@@ -2409,11 +2493,14 @@ impl ReloadManager {
                 ),
             );
         }
-        
+
         // Record successful outcome
-        trace.set_outcome(HmrOutcome::Success { reload_class, duration });
+        trace.set_outcome(HmrOutcome::Success {
+            reload_class,
+            duration,
+        });
         self.debug_collector.complete_trace(trace);
-        
+
         Ok(ReloadResult {
             reload_class,
             snapshot_id,
@@ -2422,62 +2509,63 @@ impl ReloadManager {
             tasks_affected: task_prep.to_terminate.len() + task_prep.to_pause.len(),
         })
     }
-    
+
     /// Revert a failed reload
     pub fn revert_reload(&mut self, snapshot_id: u64) -> Result<(), ReloadError> {
-        let _snapshot = self.snapshots.revert_to_snapshot(snapshot_id)
+        let _snapshot = self
+            .snapshots
+            .revert_to_snapshot(snapshot_id)
             .map_err(|e| ReloadError::RevertFailed { reason: e })?;
-        
+
         // Would restore state from snapshot here
         self.stats.reverted_reloads += 1;
-        
+
         Ok(())
     }
-    
+
     fn update_stats(&mut self, class: ReloadClass, duration: Duration, success: bool) {
         self.stats.total_reloads += 1;
-        
+
         match class {
             ReloadClass::Safe => self.stats.safe_reloads += 1,
             ReloadClass::Warm => self.stats.warm_reloads += 1,
             ReloadClass::Cold => self.stats.cold_reloads += 1,
             ReloadClass::Canary => self.stats.canary_reloads += 1,
         }
-        
+
         if !success {
             self.stats.failed_reloads += 1;
         }
-        
+
         let ms = duration.as_millis() as u64;
         if ms > self.stats.max_reload_ms {
             self.stats.max_reload_ms = ms;
         }
-        
+
         // Rolling average
         let n = self.stats.total_reloads as f64;
-        self.stats.avg_reload_ms = 
-            (self.stats.avg_reload_ms * (n - 1.0) + ms as f64) / n;
+        self.stats.avg_reload_ms = (self.stats.avg_reload_ms * (n - 1.0) + ms as f64) / n;
     }
-    
+
     // =====================================================
     // DEBUGGING & OBSERVABILITY METHODS
     // =====================================================
-    
+
     /// Get recent HMR traces for debugging
     pub fn recent_traces(&self, count: usize) -> Vec<&HmrDebugTrace> {
         self.debug_collector.recent_traces(count)
     }
-    
+
     /// Get failed HMR traces
     pub fn failed_traces(&self) -> Vec<&HmrDebugTrace> {
         self.debug_collector.failed_traces()
     }
-    
+
     /// Get traces for a specific boundary
     pub fn traces_for_boundary(&self, boundary_id: &BoundaryId) -> Vec<&HmrDebugTrace> {
         self.debug_collector.traces_for_boundary(boundary_id)
     }
-    
+
     /// Print summary of recent failures (for CLI debugging)
     pub fn print_failure_summary(&self) {
         let failed = self.failed_traces();
@@ -2485,39 +2573,39 @@ impl ReloadManager {
             println!("No HMR failures recorded.");
             return;
         }
-        
+
         println!("=== HMR Failure Summary ({} failures) ===\n", failed.len());
         for trace in failed.iter().take(5) {
             println!("{}\n", trace.summary());
             println!("---");
         }
     }
-    
+
     /// Export debug data as JSON for external tools
     pub fn export_debug_json(&self) -> String {
         self.debug_collector.export_json()
     }
-    
+
     /// Set manual override for a boundary's reload class
     pub fn set_reload_override(&mut self, boundary_id: BoundaryId, class: ReloadClass) {
         self.classifier.set_boundary_override(boundary_id, class);
     }
-    
+
     /// Clear manual override for a boundary
     pub fn clear_reload_override(&mut self, boundary_id: &BoundaryId) {
         self.classifier.clear_boundary_override(boundary_id);
     }
-    
+
     /// Set path pattern override
     pub fn set_path_override(&mut self, pattern: String, class: ReloadClass) {
         self.classifier.set_path_override(pattern, class);
     }
-    
+
     /// Get current task violations
     pub fn task_violations(&self) -> &[TaskViolation] {
         self.task_registry.get_violations()
     }
-    
+
     /// Clear task violations
     pub fn clear_task_violations(&mut self) {
         self.task_registry.clear_violations();
@@ -2560,14 +2648,14 @@ pub enum ReloadError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_reload_class_latency() {
         assert_eq!(ReloadClass::Safe.max_latency_ms(), 10);
         assert_eq!(ReloadClass::Warm.max_latency_ms(), 100);
         assert_eq!(ReloadClass::Cold.max_latency_ms(), 1000);
     }
-    
+
     #[test]
     fn test_classifier_safe() {
         let classifier = ReloadClassifier::new();
@@ -2577,7 +2665,7 @@ mod tests {
         };
         assert_eq!(classifier.classify(&changes), ReloadClass::Safe);
     }
-    
+
     #[test]
     fn test_classifier_cold() {
         let classifier = ReloadClassifier::new();
@@ -2587,18 +2675,21 @@ mod tests {
         };
         assert_eq!(classifier.classify(&changes), ReloadClass::Cold);
     }
-    
+
     #[test]
     fn test_cascade_breaker() {
         let mut breaker = CascadeCircuitBreaker::new(3, 10);
-        
-        assert!(matches!(breaker.allow_cascade(2, 5), CascadePermission::Allowed));
+
+        assert!(matches!(
+            breaker.allow_cascade(2, 5),
+            CascadePermission::Allowed
+        ));
         assert!(matches!(
             breaker.allow_cascade(5, 5),
             CascadePermission::Denied { .. }
         ));
     }
-    
+
     #[test]
     fn test_canary_evaluation() {
         let mut state = CanaryState::new(
@@ -2611,15 +2702,15 @@ mod tests {
             100,
             200,
         );
-        
+
         // Not enough requests
         assert_eq!(state.evaluate(), CanaryDecision::Continue);
-        
+
         // Add successful requests
         for _ in 0..15 {
             state.record_result(true, false, 50);
         }
-        
+
         // Should still be continue (waiting for promotion delay)
         assert_eq!(state.evaluate(), CanaryDecision::Continue);
     }
@@ -2676,10 +2767,21 @@ pub enum HmrEventType {
 
 #[derive(Debug, Clone)]
 pub enum HmrOutcome {
-    Success { reload_class: ReloadClass, duration: Duration },
-    RolledBack { reason: String, snapshot_id: u64 },
-    Failed { phase: HmrPhase, error: String },
-    Blocked { reason: String },
+    Success {
+        reload_class: ReloadClass,
+        duration: Duration,
+    },
+    RolledBack {
+        reason: String,
+        snapshot_id: u64,
+    },
+    Failed {
+        phase: HmrPhase,
+        error: String,
+    },
+    Blocked {
+        reason: String,
+    },
 }
 
 impl HmrDebugTrace {
@@ -2692,7 +2794,7 @@ impl HmrDebugTrace {
             outcome: None,
         }
     }
-    
+
     /// Record phase start
     pub fn phase_start(&mut self, phase: HmrPhase) {
         self.events.push(HmrDebugEvent {
@@ -2703,7 +2805,7 @@ impl HmrDebugTrace {
             duration_us: None,
         });
     }
-    
+
     /// Record phase end with duration
     pub fn phase_end(&mut self, phase: HmrPhase, duration: Duration) {
         self.events.push(HmrDebugEvent {
@@ -2714,7 +2816,7 @@ impl HmrDebugTrace {
             duration_us: Some(duration.as_micros() as u64),
         });
     }
-    
+
     /// Record a decision point
     pub fn decision(&mut self, phase: HmrPhase, key: &str, value: &str) {
         self.events.push(HmrDebugEvent {
@@ -2728,7 +2830,7 @@ impl HmrDebugTrace {
             duration_us: None,
         });
     }
-    
+
     /// Record a warning
     pub fn warning(&mut self, phase: HmrPhase, message: &str) {
         self.events.push(HmrDebugEvent {
@@ -2741,7 +2843,7 @@ impl HmrDebugTrace {
             duration_us: None,
         });
     }
-    
+
     /// Record an error
     pub fn error(&mut self, phase: HmrPhase, message: &str, recoverable: bool) {
         self.events.push(HmrDebugEvent {
@@ -2755,7 +2857,7 @@ impl HmrDebugTrace {
             duration_us: None,
         });
     }
-    
+
     /// Record an override being applied
     pub fn override_applied(&mut self, phase: HmrPhase, from: &str, to: &str) {
         self.events.push(HmrDebugEvent {
@@ -2769,17 +2871,17 @@ impl HmrDebugTrace {
             duration_us: None,
         });
     }
-    
+
     /// Record final outcome
     pub fn set_outcome(&mut self, outcome: HmrOutcome) {
         self.outcome = Some(outcome);
     }
-    
+
     /// Get total duration
     pub fn total_duration(&self) -> Duration {
         self.started_at.elapsed()
     }
-    
+
     /// Format as human-readable summary
     pub fn summary(&self) -> String {
         let mut lines = Vec::new();
@@ -2788,7 +2890,7 @@ impl HmrDebugTrace {
             self.trace_id, self.boundary_id
         ));
         lines.push(format!("Total duration: {:?}", self.total_duration()));
-        
+
         // Phase timings
         lines.push("\nPhase timings:".to_string());
         for event in &self.events {
@@ -2798,7 +2900,7 @@ impl HmrDebugTrace {
                 }
             }
         }
-        
+
         // Decisions made
         lines.push("\nKey decisions:".to_string());
         for event in &self.events {
@@ -2806,9 +2908,11 @@ impl HmrDebugTrace {
                 lines.push(format!("  {} = {}", key, value));
             }
         }
-        
+
         // Warnings and errors
-        let warnings: Vec<_> = self.events.iter()
+        let warnings: Vec<_> = self
+            .events
+            .iter()
             .filter(|e| matches!(&e.event_type, HmrEventType::Warning { .. }))
             .collect();
         if !warnings.is_empty() {
@@ -2817,8 +2921,10 @@ impl HmrDebugTrace {
                 lines.push(format!("  - {}", w.details));
             }
         }
-        
-        let errors: Vec<_> = self.events.iter()
+
+        let errors: Vec<_> = self
+            .events
+            .iter()
             .filter(|e| matches!(&e.event_type, HmrEventType::Error { .. }))
             .collect();
         if !errors.is_empty() {
@@ -2827,15 +2933,27 @@ impl HmrDebugTrace {
                 lines.push(format!("  - {}", e.details));
             }
         }
-        
+
         // Outcome
         lines.push("\nOutcome:".to_string());
         match &self.outcome {
-            Some(HmrOutcome::Success { reload_class, duration }) => {
-                lines.push(format!("  SUCCESS: {:?} reload in {:?}", reload_class, duration));
+            Some(HmrOutcome::Success {
+                reload_class,
+                duration,
+            }) => {
+                lines.push(format!(
+                    "  SUCCESS: {:?} reload in {:?}",
+                    reload_class, duration
+                ));
             }
-            Some(HmrOutcome::RolledBack { reason, snapshot_id }) => {
-                lines.push(format!("  ROLLED BACK: {} (snapshot #{})", reason, snapshot_id));
+            Some(HmrOutcome::RolledBack {
+                reason,
+                snapshot_id,
+            }) => {
+                lines.push(format!(
+                    "  ROLLED BACK: {} (snapshot #{})",
+                    reason, snapshot_id
+                ));
             }
             Some(HmrOutcome::Failed { phase, error }) => {
                 lines.push(format!("  FAILED in {:?}: {}", phase, error));
@@ -2847,7 +2965,7 @@ impl HmrDebugTrace {
                 lines.push("  (no outcome recorded)".to_string());
             }
         }
-        
+
         lines.join("\n")
     }
 }
@@ -2870,29 +2988,36 @@ impl HmrDebugCollector {
             filter: None,
         }
     }
-    
+
     /// Only keep traces that had errors or took too long
     pub fn set_failures_only_filter(&mut self, max_duration_ms: u64) {
         self.filter = Some(Box::new(move |trace| {
             // Keep if has errors
-            if trace.events.iter().any(|e| matches!(&e.event_type, HmrEventType::Error { .. })) {
+            if trace
+                .events
+                .iter()
+                .any(|e| matches!(&e.event_type, HmrEventType::Error { .. }))
+            {
                 return true;
             }
             // Keep if failed or rolled back
-            if matches!(&trace.outcome, Some(HmrOutcome::Failed { .. }) | Some(HmrOutcome::RolledBack { .. })) {
+            if matches!(
+                &trace.outcome,
+                Some(HmrOutcome::Failed { .. }) | Some(HmrOutcome::RolledBack { .. })
+            ) {
                 return true;
             }
             // Keep if slow
             trace.total_duration().as_millis() as u64 > max_duration_ms
         }));
     }
-    
+
     /// Start a new trace
     pub fn start_trace(&self, boundary_id: BoundaryId) -> HmrDebugTrace {
         let trace_id = self.next_id.fetch_add(1, Ordering::SeqCst);
         HmrDebugTrace::new(trace_id, boundary_id)
     }
-    
+
     /// Complete and store a trace
     pub fn complete_trace(&mut self, trace: HmrDebugTrace) {
         // Apply filter if set
@@ -2901,34 +3026,41 @@ impl HmrDebugCollector {
                 return; // Don't store
             }
         }
-        
+
         self.traces.push_back(trace);
-        
+
         // Enforce retention
         while self.traces.len() > self.max_traces {
             self.traces.pop_front();
         }
     }
-    
+
     /// Get recent traces
     pub fn recent_traces(&self, count: usize) -> Vec<&HmrDebugTrace> {
         self.traces.iter().rev().take(count).collect()
     }
-    
+
     /// Get traces for a specific boundary
     pub fn traces_for_boundary(&self, boundary_id: &BoundaryId) -> Vec<&HmrDebugTrace> {
-        self.traces.iter()
+        self.traces
+            .iter()
             .filter(|t| &t.boundary_id == boundary_id)
             .collect()
     }
-    
+
     /// Get failed traces only
     pub fn failed_traces(&self) -> Vec<&HmrDebugTrace> {
-        self.traces.iter()
-            .filter(|t| matches!(&t.outcome, Some(HmrOutcome::Failed { .. }) | Some(HmrOutcome::RolledBack { .. })))
+        self.traces
+            .iter()
+            .filter(|t| {
+                matches!(
+                    &t.outcome,
+                    Some(HmrOutcome::Failed { .. }) | Some(HmrOutcome::RolledBack { .. })
+                )
+            })
             .collect()
     }
-    
+
     /// Export all traces as JSON for external analysis
     pub fn export_json(&self) -> String {
         // Would serialize to JSON
@@ -3042,17 +3174,17 @@ impl TaskReplayEngine {
             logs: HashMap::new(),
             max_ops_per_task: 10000,
             checkpoint_interval: 100,
-            record_data: false,  // Default: hash only for performance
+            record_data: false, // Default: hash only for performance
             stats: ReplayStats::default(),
         }
     }
-    
+
     /// Enable full data recording (expensive but enables exact replay)
     pub fn with_data_recording(mut self) -> Self {
         self.record_data = true;
         self
     }
-    
+
     /// Start recording for a task
     pub fn start_recording(&mut self, task_id: String, boundary_id: BoundaryId) {
         let log = TaskReplayLog {
@@ -3068,7 +3200,7 @@ impl TaskReplayEngine {
         };
         self.logs.insert(task_id, log);
     }
-    
+
     /// Record an async operation
     pub fn record_operation(
         &mut self,
@@ -3081,19 +3213,19 @@ impl TaskReplayEngine {
         let Some(log) = self.logs.get_mut(task_id) else {
             return;
         };
-        
+
         // Check limit
         if log.operations.len() >= self.max_ops_per_task {
             // Could either stop recording or evict old ops
             return;
         }
-        
+
         let op_id = log.operations.len() as u64;
-        
+
         // Compute hashes
         let input_hash = Self::hash_value(input);
         let output_hash = output.map(Self::hash_value);
-        
+
         // Optionally record full data
         let input_data = if self.record_data {
             serde_json::to_vec(input).ok()
@@ -3105,12 +3237,12 @@ impl TaskReplayEngine {
         } else {
             None
         };
-        
+
         let timestamp_us = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_micros() as u64;
-        
+
         log.operations.push(AsyncOperation {
             op_id,
             task_id: task_id.to_string(),
@@ -3122,53 +3254,47 @@ impl TaskReplayEngine {
             input_data,
             output_data,
         });
-        
+
         // Create checkpoint if needed
         if log.operations.len() % self.checkpoint_interval == 0 {
             log.checkpoints.push(TaskCheckpoint {
                 checkpoint_id: log.checkpoints.len() as u64,
                 op_index: log.operations.len(),
                 timestamp_us,
-                state_hash: 0,  // Would be computed from actual state
+                state_hash: 0, // Would be computed from actual state
                 state_data: None,
             });
         }
     }
-    
+
     fn hash_value<T: serde::Serialize>(value: &T) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        
+
         let mut hasher = DefaultHasher::new();
         if let Ok(json) = serde_json::to_string(value) {
             json.hash(&mut hasher);
         }
         hasher.finish()
     }
-    
+
     /// Get replay log for a task
     pub fn get_log(&self, task_id: &str) -> Option<&TaskReplayLog> {
         self.logs.get(task_id)
     }
-    
+
     /// Prepare replay plan for warm reload
-    pub fn prepare_replay(
-        &self,
-        task_id: &str,
-        mode: ReplayMode,
-    ) -> Option<ReplayPlan> {
+    pub fn prepare_replay(&self, task_id: &str, mode: ReplayMode) -> Option<ReplayPlan> {
         let log = self.logs.get(task_id)?;
-        
+
         match mode {
-            ReplayMode::Full => {
-                Some(ReplayPlan {
-                    task_id: task_id.to_string(),
-                    start_op_index: 0,
-                    ops_to_replay: log.operations.len(),
-                    checkpoint: None,
-                    random_seed: log.random_seed,
-                })
-            }
+            ReplayMode::Full => Some(ReplayPlan {
+                task_id: task_id.to_string(),
+                start_op_index: 0,
+                ops_to_replay: log.operations.len(),
+                checkpoint: None,
+                random_seed: log.random_seed,
+            }),
             ReplayMode::FromCheckpoint => {
                 let checkpoint = log.checkpoints.last()?;
                 Some(ReplayPlan {
@@ -3179,37 +3305,33 @@ impl TaskReplayEngine {
                     random_seed: log.random_seed,
                 })
             }
-            ReplayMode::StateOnly => {
-                Some(ReplayPlan {
-                    task_id: task_id.to_string(),
-                    start_op_index: log.operations.len(),
-                    ops_to_replay: 0,
-                    checkpoint: log.checkpoints.last().cloned(),
-                    random_seed: log.random_seed,
-                })
-            }
-            ReplayMode::VerifyOnly => {
-                Some(ReplayPlan {
-                    task_id: task_id.to_string(),
-                    start_op_index: 0,
-                    ops_to_replay: log.operations.len(),
-                    checkpoint: None,
-                    random_seed: log.random_seed,
-                })
-            }
+            ReplayMode::StateOnly => Some(ReplayPlan {
+                task_id: task_id.to_string(),
+                start_op_index: log.operations.len(),
+                ops_to_replay: 0,
+                checkpoint: log.checkpoints.last().cloned(),
+                random_seed: log.random_seed,
+            }),
+            ReplayMode::VerifyOnly => Some(ReplayPlan {
+                task_id: task_id.to_string(),
+                start_op_index: 0,
+                ops_to_replay: log.operations.len(),
+                checkpoint: None,
+                random_seed: log.random_seed,
+            }),
         }
     }
-    
+
     /// Get replay statistics
     pub fn stats(&self) -> &ReplayStats {
         &self.stats
     }
-    
+
     /// Clear logs for a task
     pub fn clear_task(&mut self, task_id: &str) {
         self.logs.remove(task_id);
     }
-    
+
     /// Clear logs for all tasks in a boundary
     pub fn clear_boundary(&mut self, boundary_id: &BoundaryId) {
         self.logs.retain(|_, log| &log.boundary_id != boundary_id);
@@ -3288,32 +3410,32 @@ impl CalibrationData {
     /// Record a prediction outcome
     pub fn record(&mut self, confidence: f64, correct: bool) {
         let bucket = (confidence * 10.0).floor() as u8;
-        let bucket = bucket.min(9);  // Cap at 0.9-1.0 bucket
-        
+        let bucket = bucket.min(9); // Cap at 0.9-1.0 bucket
+
         let entry = self.buckets.entry(bucket).or_insert((0, 0));
         if correct {
             entry.0 += 1;
         }
         entry.1 += 1;
     }
-    
+
     /// Get calibration error (how far confidence is from actual accuracy)
     pub fn calibration_error(&self) -> f64 {
         let mut total_error = 0.0;
         let mut total_samples = 0u64;
-        
+
         for (bucket, (correct, total)) in &self.buckets {
             if *total == 0 {
                 continue;
             }
-            
+
             let expected_accuracy = (*bucket as f64 + 0.5) / 10.0;
             let actual_accuracy = *correct as f64 / *total as f64;
-            
+
             total_error += (*total as f64) * (expected_accuracy - actual_accuracy).abs();
             total_samples += total;
         }
-        
+
         if total_samples == 0 {
             0.0
         } else {
@@ -3341,7 +3463,7 @@ impl ClassificationTracker {
             max_misclassifications: 1000,
         }
     }
-    
+
     /// Record a classification prediction
     pub fn record_prediction(
         &mut self,
@@ -3351,14 +3473,14 @@ impl ClassificationTracker {
         _changes: &ReloadChanges,
     ) -> u64 {
         self.metrics.total_classifications += 1;
-        
+
         let class_key = format!("{:?}", predicted);
         let stats = self.metrics.by_class.entry(class_key).or_default();
         stats.predicted_count += 1;
-        
+
         self.metrics.total_classifications
     }
-    
+
     /// Record actual outcome after reload
     pub fn record_outcome(
         &mut self,
@@ -3370,11 +3492,11 @@ impl ClassificationTracker {
         changes: &ReloadChanges,
     ) {
         let correct = predicted == actual;
-        
+
         // Update class stats
         let predicted_key = format!("{:?}", predicted);
         let actual_key = format!("{:?}", actual);
-        
+
         if let Some(stats) = self.metrics.by_class.get_mut(&predicted_key) {
             if correct {
                 stats.correct_count += 1;
@@ -3382,13 +3504,13 @@ impl ClassificationTracker {
                 stats.false_positive_count += 1;
             }
         }
-        
+
         let actual_stats = self.metrics.by_class.entry(actual_key.clone()).or_default();
         actual_stats.actual_count += 1;
         if !correct {
             actual_stats.false_negative_count += 1;
         }
-        
+
         // Record misclassification
         if !correct {
             let confidence_value = match confidence {
@@ -3396,7 +3518,7 @@ impl ClassificationTracker {
                 ClassificationConfidence::Medium => 0.6,
                 ClassificationConfidence::Low => 0.3,
             };
-            
+
             self.metrics.misclassifications.push(Misclassification {
                 timestamp: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -3409,22 +3531,22 @@ impl ClassificationTracker {
                 reason: Self::analyze_misclassification(&predicted, &actual, changes),
                 changes: changes.clone(),
             });
-            
+
             // Enforce retention
             while self.metrics.misclassifications.len() > self.max_misclassifications {
                 self.metrics.misclassifications.remove(0);
             }
         }
-        
+
         // Update rolling accuracy
         self.recent_predictions.push_back(correct);
         while self.recent_predictions.len() > self.window_size {
             self.recent_predictions.pop_front();
         }
-        
+
         let correct_count = self.recent_predictions.iter().filter(|&&c| c).count();
         self.metrics.rolling_accuracy = correct_count as f64 / self.recent_predictions.len() as f64;
-        
+
         // Update calibration
         let confidence_value = match confidence {
             ClassificationConfidence::High => 0.9,
@@ -3433,7 +3555,7 @@ impl ClassificationTracker {
         };
         self.metrics.calibration.record(confidence_value, correct);
     }
-    
+
     fn analyze_misclassification(
         predicted: &ReloadClass,
         actual: &ReloadClass,
@@ -3449,8 +3571,7 @@ impl ClassificationTracker {
             (ReloadClass::Warm, ReloadClass::Cold) => {
                 format!(
                     "Predicted warm but cold required. Breaking changes: API={}, State={}",
-                    changes.has_breaking_api_change,
-                    changes.has_state_schema_change
+                    changes.has_breaking_api_change, changes.has_state_schema_change
                 )
             }
             (ReloadClass::Warm, ReloadClass::Safe) => {
@@ -3462,29 +3583,29 @@ impl ClassificationTracker {
             _ => format!("Predicted {:?}, actual {:?}", predicted, actual),
         }
     }
-    
+
     /// Get current metrics
     pub fn metrics(&self) -> &ClassificationMetrics {
         &self.metrics
     }
-    
+
     /// Get accuracy for a specific class
     pub fn class_accuracy(&self, class: ReloadClass) -> Option<f64> {
         let key = format!("{:?}", class);
         self.metrics.by_class.get(&key).map(|stats| {
             if stats.predicted_count == 0 {
-                1.0  // No predictions = perfect (vacuously true)
+                1.0 // No predictions = perfect (vacuously true)
             } else {
                 stats.correct_count as f64 / stats.predicted_count as f64
             }
         })
     }
-    
+
     /// Get precision for a class (correct / predicted)
     pub fn class_precision(&self, class: ReloadClass) -> Option<f64> {
-        self.class_accuracy(class)  // Same as accuracy for our use case
+        self.class_accuracy(class) // Same as accuracy for our use case
     }
-    
+
     /// Get recall for a class (correct / actual)
     pub fn class_recall(&self, class: ReloadClass) -> Option<f64> {
         let key = format!("{:?}", class);
@@ -3496,16 +3617,16 @@ impl ClassificationTracker {
             }
         })
     }
-    
+
     /// Export metrics as JSON
     pub fn export_json(&self) -> String {
         serde_json::to_string_pretty(&self.metrics).unwrap_or_default()
     }
-    
+
     /// Get suggestions for improving classifier based on misclassifications
     pub fn get_improvement_suggestions(&self) -> Vec<String> {
         let mut suggestions = Vec::new();
-        
+
         // Check calibration error
         let cal_error = self.metrics.calibration.calibration_error();
         if cal_error > 0.1 {
@@ -3514,7 +3635,7 @@ impl ClassificationTracker {
                 cal_error
             ));
         }
-        
+
         // Check for systematic misclassifications
         for (class, stats) in &self.metrics.by_class {
             if stats.predicted_count > 10 {
@@ -3527,24 +3648,28 @@ impl ClassificationTracker {
                 }
             }
         }
-        
+
         // Analyze recent misclassifications
-        let recent_misses: Vec<_> = self.metrics.misclassifications.iter()
+        let recent_misses: Vec<_> = self
+            .metrics
+            .misclassifications
+            .iter()
             .rev()
             .take(20)
             .collect();
-        
+
         // Check for patterns
-        let safe_to_warm = recent_misses.iter()
+        let safe_to_warm = recent_misses
+            .iter()
             .filter(|m| m.predicted == "Safe" && m.actual == "Warm")
             .count();
-        
+
         if safe_to_warm > 5 {
             suggestions.push(
                 "Frequent Safe->Warm misclassifications. State changes may not be detected properly.".to_string()
             );
         }
-        
+
         suggestions
     }
 }
@@ -3554,4 +3679,3 @@ impl Default for ClassificationTracker {
         Self::new()
     }
 }
-

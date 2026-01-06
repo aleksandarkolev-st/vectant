@@ -23,10 +23,10 @@
 // STATUS: ACTIVE - used by HmrOrchestrator and main.rs
 // ============================================================
 
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Cursor;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 // ============================================================
 // SIZE-THEN-WRITE PATTERN: Generic Writer Trait
@@ -430,8 +430,8 @@ impl MsgPackState {
 
     /// Add a field value (serialized to MessagePack)
     pub fn add_field<T: Serialize>(&mut self, name: &str, value: &T) -> Result<(), MsgPackError> {
-        let bytes = rmp_serde::to_vec(value)
-            .map_err(|e| MsgPackError::SerializeError(e.to_string()))?;
+        let bytes =
+            rmp_serde::to_vec(value).map_err(|e| MsgPackError::SerializeError(e.to_string()))?;
         self.field_names.push(name.to_string());
         self.field_values.push(bytes);
         Ok(())
@@ -456,14 +456,12 @@ impl MsgPackState {
 
     /// Serialize entire state to MessagePack bytes
     pub fn to_bytes(&self) -> Result<Vec<u8>, MsgPackError> {
-        rmp_serde::to_vec(self)
-            .map_err(|e| MsgPackError::SerializeError(e.to_string()))
+        rmp_serde::to_vec(self).map_err(|e| MsgPackError::SerializeError(e.to_string()))
     }
 
     /// Deserialize from MessagePack bytes
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, MsgPackError> {
-        rmp_serde::from_slice(bytes)
-            .map_err(|e| MsgPackError::DeserializeError(e.to_string()))
+        rmp_serde::from_slice(bytes).map_err(|e| MsgPackError::DeserializeError(e.to_string()))
     }
 
     /// Merge fields from another state (preserving existing values)
@@ -587,12 +585,14 @@ impl SchemaMigrator {
         // Process each field in the new schema
         for new_field in new_field_names {
             let should_reset = self.always_reset.contains(new_field);
-            
+
             if old_state.has_field(new_field) && !should_reset {
                 // Field exists in old state - preserve it
                 if let Some(idx) = old_state.field_names.iter().position(|n| n == new_field) {
                     migrated.field_names.push(new_field.clone());
-                    migrated.field_values.push(old_state.field_values[idx].clone());
+                    migrated
+                        .field_values
+                        .push(old_state.field_values[idx].clone());
                     result.preserved.push(new_field.clone());
                 }
             } else {
@@ -600,16 +600,22 @@ impl SchemaMigrator {
                 if let Some(default_bytes) = self.default_values.get(new_field) {
                     migrated.field_names.push(new_field.clone());
                     migrated.field_values.push(default_bytes.clone());
-                } else if let Some(idx) = new_defaults.field_names.iter().position(|n| n == new_field) {
+                } else if let Some(idx) =
+                    new_defaults.field_names.iter().position(|n| n == new_field)
+                {
                     migrated.field_names.push(new_field.clone());
-                    migrated.field_values.push(new_defaults.field_values[idx].clone());
+                    migrated
+                        .field_values
+                        .push(new_defaults.field_values[idx].clone());
                 } else {
                     // No default available - add empty
                     migrated.field_names.push(new_field.clone());
                     migrated.field_values.push(Vec::new());
-                    result.warnings.push(format!("No default for new field '{}'", new_field));
+                    result
+                        .warnings
+                        .push(format!("No default for new field '{}'", new_field));
                 }
-                
+
                 if !old_state.has_field(new_field) {
                     result.new_fields.push(new_field.clone());
                 }
@@ -620,7 +626,9 @@ impl SchemaMigrator {
         for old_field in &old_state.field_names {
             if !new_field_names.contains(old_field) {
                 result.removed_fields.push(old_field.clone());
-                result.warnings.push(format!("Field '{}' removed in new schema", old_field));
+                result
+                    .warnings
+                    .push(format!("Field '{}' removed in new schema", old_field));
             }
         }
 
@@ -640,7 +648,7 @@ impl Default for SchemaMigrator {
         m.set_default("running", &1i32);
         m.set_default("paused", &0i32);
         m.set_default("frame_count", &0u64);
-        
+
         // Button defaults (common for GUI additions)
         m.set_default("btn_x", &200i32);
         m.set_default("btn_y", &10i32);
@@ -650,19 +658,19 @@ impl Default for SchemaMigrator {
         m.set_default("btn2_y", &10i32);
         m.set_default("btn2_w", &120i32);
         m.set_default("btn2_h", &40i32);
-        
+
         // Fields to always reset
         m.always_reset("frame_count");
         m.always_reset("last_update_ms");
         m.always_reset("animation_frame");
-        
+
         // Fields to always preserve
         m.always_preserve("x");
         m.always_preserve("y");
         m.always_preserve("dx");
         m.always_preserve("dy");
         m.always_preserve("running");
-        
+
         m
     }
 }
@@ -676,7 +684,8 @@ impl Default for SchemaMigrator {
 /// Now accepts fields with optional default values for proper initialization
 pub fn generate_msgpack_serialization_code(fields: &[(String, String)], prefix: &str) -> String {
     // Convert to fields with default values (all None)
-    let fields_with_defaults: Vec<(String, String, Option<i64>)> = fields.iter()
+    let fields_with_defaults: Vec<(String, String, Option<i64>)> = fields
+        .iter()
         .map(|(n, t)| (n.clone(), t.clone(), None))
         .collect();
     generate_msgpack_serialization_code_with_defaults(&fields_with_defaults, prefix)
@@ -685,15 +694,31 @@ pub fn generate_msgpack_serialization_code(fields: &[(String, String)], prefix: 
 /// Generate C code for state serialization with declared default values
 /// This ensures new fields get their proper defaults instead of zeros
 pub fn generate_msgpack_serialization_code_with_defaults(
-    fields: &[(String, String, Option<i64>)], 
-    prefix: &str
+    fields: &[(String, String, Option<i64>)],
+    prefix: &str,
 ) -> String {
-    let func_save = if prefix == "core" { "core_on_save_state_binary" } else { "on_save_state_binary" };
-    let func_load = if prefix == "core" { "core_on_load_from_binary" } else { "on_load_from_binary" };
-    
+    let func_save = if prefix == "core" {
+        "core_on_save_state_binary"
+    } else {
+        "on_save_state_binary"
+    };
+    let func_load = if prefix == "core" {
+        "core_on_load_from_binary"
+    } else {
+        "on_load_from_binary"
+    };
+
     // Also generate JSON fallback for debugging
-    let func_save_json = if prefix == "core" { "core_on_save_state" } else { "on_save_state" };
-    let func_load_json = if prefix == "core" { "core_on_load_from_json" } else { "on_load_from_json" };
+    let func_save_json = if prefix == "core" {
+        "core_on_save_state"
+    } else {
+        "on_save_state"
+    };
+    let func_load_json = if prefix == "core" {
+        "core_on_load_from_json"
+    } else {
+        "on_load_from_json"
+    };
 
     let field_count = fields.len();
     let mut total_size = 0;
@@ -708,14 +733,15 @@ pub fn generate_msgpack_serialization_code_with_defaults(
     }
 
     // Calculate schema hash from field names and types
-    let mut schema_parts: Vec<String> = fields.iter()
+    let mut schema_parts: Vec<String> = fields
+        .iter()
         .map(|(n, t, _)| format!("{}:{}", n, t))
         .collect();
     schema_parts.sort(); // Deterministic ordering
     let schema_str = schema_parts.join(",");
     let schema_hash: u64 = {
-        use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
         let mut h = DefaultHasher::new();
         schema_str.hash(&mut h);
         h.finish()
@@ -725,10 +751,10 @@ pub fn generate_msgpack_serialization_code_with_defaults(
     let mut write_code = String::new();
     let mut read_code = String::new();
     let mut offset = 0;
-    
+
     // Header: schema_hash (8 bytes) + field_count (4 bytes) + version (4 bytes)
     let header_size = 16;
-    
+
     for (name, typ, _) in fields {
         let size = match typ.as_str() {
             "int" | "unsigned" => 4,
@@ -737,24 +763,29 @@ pub fn generate_msgpack_serialization_code_with_defaults(
             "long" => 8,
             _ => 4,
         };
-        
+
         write_code.push_str(&format!(
             "    memcpy(buf + {}, &state->{}, {});\n",
-            header_size + offset, name, size
+            header_size + offset,
+            name,
+            size
         ));
-        
+
         read_code.push_str(&format!(
             "    memcpy(&state->{}, buf + {}, {});\n",
-            name, header_size + offset, size
+            name,
+            header_size + offset,
+            size
         ));
-        
+
         offset += size;
     }
 
     let total_buf_size = header_size + total_size;
 
     // Also generate the JSON versions for compatibility
-    let json_format_parts: Vec<String> = fields.iter()
+    let json_format_parts: Vec<String> = fields
+        .iter()
         .enumerate()
         .map(|(i, (name, _, _))| {
             let comma = if i < fields.len() - 1 { "," } else { "" };
@@ -762,8 +793,9 @@ pub fn generate_msgpack_serialization_code_with_defaults(
         })
         .collect();
     let json_format = json_format_parts.join("\n        ");
-    
-    let json_args: Vec<String> = fields.iter()
+
+    let json_args: Vec<String> = fields
+        .iter()
         .map(|(name, _, _)| format!("state->{}", name))
         .collect();
     let json_args_str = json_args.join(",\n        ");
@@ -779,7 +811,7 @@ pub fn generate_msgpack_serialization_code_with_defaults(
     // Build default value initialization code using DECLARED defaults
     let mut defaults_code = String::new();
     let mut has_any_default = false;
-    
+
     for (name, _, default_opt) in fields {
         let default_value = match default_opt {
             Some(v) => *v,
@@ -798,14 +830,14 @@ pub fn generate_msgpack_serialization_code_with_defaults(
                 }
             }
         };
-        
+
         // Only emit non-zero defaults
         if default_value != 0 {
             defaults_code.push_str(&format!("    state->{} = {};\n", name, default_value));
             has_any_default = true;
         }
     }
-    
+
     // Wrap defaults in a comment block
     let defaults_section = if has_any_default {
         format!(
@@ -816,7 +848,8 @@ pub fn generate_msgpack_serialization_code_with_defaults(
         "    // No non-zero defaults declared\n".to_string()
     };
 
-    format!(r#"
+    format!(
+        r#"
 // ============================================================
 // [Guardrail] BINARY STATE SERIALIZATION (Fast HMR)
 // Schema hash: {:016X}
@@ -934,7 +967,9 @@ extern "C" void synthi_free_json(char* json) {{
     if (json) free(json);
 }}
 "#,
-        schema_hash, field_count, total_size,
+        schema_hash,
+        field_count,
+        total_size,
         schema_hash,
         total_buf_size,
         prefix = prefix,
@@ -968,14 +1003,19 @@ pub struct SchemaVersion {
 
 impl SchemaVersion {
     pub const fn new(major: u16, minor: u16, patch: u16) -> Self {
-        Self { major, minor, patch, _reserved: 0 }
+        Self {
+            major,
+            minor,
+            patch,
+            _reserved: 0,
+        }
     }
-    
+
     pub fn is_compatible_with(&self, other: &Self) -> bool {
         // Same major version required, minor can be higher
         self.major == other.major && self.minor >= other.minor
     }
-    
+
     pub fn is_wire_compatible(&self, other: &Self) -> bool {
         // For binary wire format, exact major.minor required
         self.major == other.major && self.minor == other.minor
@@ -1001,26 +1041,26 @@ pub enum FieldType {
     U16 = 6,
     U32 = 7,
     U64 = 8,
-    
+
     // Floating point (IEEE 754)
     F32 = 10,
     F64 = 11,
-    
+
     // Boolean (1 byte, 0 or 1)
     Bool = 20,
-    
+
     // Fixed-size arrays
-    FixedArray = 30,  // Followed by element type and count
-    
+    FixedArray = 30, // Followed by element type and count
+
     // Nested struct
     Struct = 40,
-    
+
     // Padding (explicit, not implicit)
     Padding = 50,
-    
+
     // Optional/nullable field
-    Optional = 60,  // 1 byte present flag + value
-    
+    Optional = 60, // 1 byte present flag + value
+
     // Reserved for future use
     Reserved = 255,
 }
@@ -1033,11 +1073,11 @@ impl FieldType {
             FieldType::I16 | FieldType::U16 => 2,
             FieldType::I32 | FieldType::U32 | FieldType::F32 => 4,
             FieldType::I64 | FieldType::U64 | FieldType::F64 => 8,
-            FieldType::Padding => 1,  // Variable, but 1 per padding byte
-            _ => 0,  // Complex types need additional info
+            FieldType::Padding => 1, // Variable, but 1 per padding byte
+            _ => 0,                  // Complex types need additional info
         }
     }
-    
+
     /// Get required alignment for this type
     pub fn alignment(&self) -> usize {
         match self {
@@ -1045,7 +1085,7 @@ impl FieldType {
             FieldType::I16 | FieldType::U16 => 2,
             FieldType::I32 | FieldType::U32 | FieldType::F32 => 4,
             FieldType::I64 | FieldType::U64 | FieldType::F64 => 8,
-            _ => 8,  // Default to 8-byte alignment for complex types
+            _ => 8, // Default to 8-byte alignment for complex types
         }
     }
 }
@@ -1124,24 +1164,24 @@ impl BinarySchema {
     pub fn builder(name: impl Into<String>) -> BinarySchemaBuilder {
         BinarySchemaBuilder::new(name)
     }
-    
+
     /// Validate that the schema is internally consistent
     pub fn validate(&self) -> Result<(), SchemaValidationError> {
         let mut errors = Vec::new();
-        
+
         // Check magic is non-zero
         if self.magic == 0 {
             errors.push("Magic number cannot be zero".to_string());
         }
-        
+
         // Check total size is positive
         if self.total_size == 0 {
             errors.push("Total size cannot be zero".to_string());
         }
-        
+
         // Check fields don't overlap and are within bounds
         let mut covered = vec![false; self.total_size as usize];
-        
+
         for field in &self.fields {
             // Check offset is within bounds
             if field.offset as usize + field.size as usize > self.total_size as usize {
@@ -1151,7 +1191,7 @@ impl BinarySchema {
                 ));
                 continue;
             }
-            
+
             // Check alignment
             if field.offset as usize % field.alignment as usize != 0 {
                 errors.push(format!(
@@ -1159,7 +1199,7 @@ impl BinarySchema {
                     field.name, field.offset, field.alignment
                 ));
             }
-            
+
             // Check for overlaps (excluding explicit padding)
             if field.field_type != FieldType::Padding {
                 for i in field.offset..(field.offset + field.size) {
@@ -1176,36 +1216,36 @@ impl BinarySchema {
                 }
             }
         }
-        
+
         if errors.is_empty() {
             Ok(())
         } else {
             Err(SchemaValidationError { errors })
         }
     }
-    
+
     /// Compute structure hash for quick compatibility check
     pub fn compute_structure_hash(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
-        
+        use std::hash::{Hash, Hasher};
+
         let mut hasher = DefaultHasher::new();
         self.name.hash(&mut hasher);
         self.version.major.hash(&mut hasher);
         self.version.minor.hash(&mut hasher);
         self.total_size.hash(&mut hasher);
         self.struct_alignment.hash(&mut hasher);
-        
+
         for field in &self.fields {
             field.name.hash(&mut hasher);
             (field.field_type as u8).hash(&mut hasher);
             field.offset.hash(&mut hasher);
             field.size.hash(&mut hasher);
         }
-        
+
         hasher.finish()
     }
-    
+
     /// Check if migration is possible from an older schema version
     pub fn can_migrate_from(&self, old_schema: &BinarySchema) -> MigrationAnalysis {
         let mut analysis = MigrationAnalysis {
@@ -1216,7 +1256,7 @@ impl BinarySchema {
             removed_fields: Vec::new(),
             errors: Vec::new(),
         };
-        
+
         // Check version compatibility
         if old_schema.version.major != self.version.major {
             analysis.compatible = false;
@@ -1226,26 +1266,26 @@ impl BinarySchema {
             ));
             return analysis;
         }
-        
+
         // Build field maps
-        let old_fields: HashMap<_, _> = old_schema.fields.iter()
+        let old_fields: HashMap<_, _> = old_schema
+            .fields
+            .iter()
             .map(|f| (f.name.as_str(), f))
             .collect();
-        let new_fields: HashMap<_, _> = self.fields.iter()
-            .map(|f| (f.name.as_str(), f))
-            .collect();
-        
+        let new_fields: HashMap<_, _> = self.fields.iter().map(|f| (f.name.as_str(), f)).collect();
+
         // Check each new field
         for new_field in &self.fields {
             if new_field.field_type == FieldType::Padding {
                 continue;
             }
-            
+
             if let Some(old_field) = old_fields.get(new_field.name.as_str()) {
                 // Field exists in both
-                let type_match = old_field.field_type == new_field.field_type 
+                let type_match = old_field.field_type == new_field.field_type
                     && old_field.size == new_field.size;
-                
+
                 match new_field.migration {
                     FieldMigration::Preserve if type_match => {
                         analysis.preserve_fields.push(new_field.name.clone());
@@ -1266,7 +1306,7 @@ impl BinarySchema {
                 analysis.new_fields.push(new_field.name.clone());
             }
         }
-        
+
         // Check for removed fields
         for old_field in &old_schema.fields {
             if old_field.field_type == FieldType::Padding {
@@ -1276,7 +1316,7 @@ impl BinarySchema {
                 analysis.removed_fields.push(old_field.name.clone());
             }
         }
-        
+
         analysis
     }
 }
@@ -1304,22 +1344,22 @@ impl BinarySchemaBuilder {
             struct_alignment: 8,
         }
     }
-    
+
     pub fn version(mut self, major: u16, minor: u16, patch: u16) -> Self {
         self.version = SchemaVersion::new(major, minor, patch);
         self
     }
-    
+
     pub fn magic(mut self, magic: u64) -> Self {
         self.magic = magic;
         self
     }
-    
+
     pub fn alignment(mut self, align: u8) -> Self {
         self.struct_alignment = align;
         self
     }
-    
+
     /// Add a field with explicit offset (REQUIRED - no auto-layout)
     pub fn field(
         mut self,
@@ -1330,7 +1370,7 @@ impl BinarySchemaBuilder {
     ) -> Self {
         let size = field_type.base_size() as u32;
         let alignment = field_type.alignment() as u8;
-        
+
         self.fields.push(FieldDescriptor {
             name: name.into(),
             field_type,
@@ -1343,11 +1383,11 @@ impl BinarySchemaBuilder {
             nested_schema: None,
             migration,
         });
-        
+
         self.current_offset = offset + size;
         self
     }
-    
+
     /// Add a fixed-size array field
     pub fn array_field(
         mut self,
@@ -1360,7 +1400,7 @@ impl BinarySchemaBuilder {
         let element_size = element_type.base_size() as u32;
         let size = element_size * count;
         let alignment = element_type.alignment() as u8;
-        
+
         self.fields.push(FieldDescriptor {
             name: name.into(),
             field_type: FieldType::FixedArray,
@@ -1373,11 +1413,11 @@ impl BinarySchemaBuilder {
             nested_schema: None,
             migration,
         });
-        
+
         self.current_offset = offset + size;
         self
     }
-    
+
     /// Add explicit padding
     pub fn padding(mut self, offset: u32, size: u32) -> Self {
         self.fields.push(FieldDescriptor {
@@ -1392,11 +1432,11 @@ impl BinarySchemaBuilder {
             nested_schema: None,
             migration: FieldMigration::Reset,
         });
-        
+
         self.current_offset = offset + size;
         self
     }
-    
+
     /// Build the schema with explicit total size
     pub fn build(self, total_size: u32) -> BinarySchema {
         let mut schema = BinarySchema {
@@ -1442,14 +1482,14 @@ impl BinaryMigrator {
             tolerance_f64: 1e-12,
         }
     }
-    
+
     /// Set floating point tolerance for comparisons
     pub fn with_tolerance(mut self, f32_tol: f32, f64_tol: f64) -> Self {
         self.tolerance_f32 = f32_tol;
         self.tolerance_f64 = f64_tol;
         self
     }
-    
+
     /// Migrate state from old schema to new schema
     pub fn migrate(
         &self,
@@ -1464,11 +1504,12 @@ impl BinaryMigrator {
                 actual: old_data.len(),
             });
         }
-        
+
         // Validate magic number
         if old_data.len() >= 8 {
             let mut cursor = Cursor::new(&old_data[0..8]);
-            let magic = cursor.read_u64::<LittleEndian>()
+            let magic = cursor
+                .read_u64::<LittleEndian>()
                 .map_err(|e| MigrationError::ReadError(e.to_string()))?;
             if magic != old_schema.magic {
                 return Err(MigrationError::MagicMismatch {
@@ -1477,7 +1518,7 @@ impl BinaryMigrator {
                 });
             }
         }
-        
+
         // Analyze migration
         let analysis = new_schema.can_migrate_from(old_schema);
         if !analysis.compatible {
@@ -1485,28 +1526,31 @@ impl BinaryMigrator {
                 errors: analysis.errors.clone(),
             });
         }
-        
+
         // Allocate new buffer
         let mut new_data = vec![0u8; new_schema.total_size as usize];
-        
+
         // Write new magic
         {
             let mut cursor = Cursor::new(&mut new_data[0..8]);
-            cursor.write_u64::<LittleEndian>(new_schema.magic)
+            cursor
+                .write_u64::<LittleEndian>(new_schema.magic)
                 .map_err(|e| MigrationError::WriteError(e.to_string()))?;
         }
-        
+
         // Build field maps
-        let old_fields: HashMap<_, _> = old_schema.fields.iter()
+        let old_fields: HashMap<_, _> = old_schema
+            .fields
+            .iter()
             .map(|f| (f.name.as_str(), f))
             .collect();
-        
+
         // Migrate each field
         for new_field in &new_schema.fields {
             if new_field.field_type == FieldType::Padding {
-                continue;  // Leave as zeros
+                continue; // Leave as zeros
             }
-            
+
             if let Some(old_field) = old_fields.get(new_field.name.as_str()) {
                 // Check if we should preserve
                 let should_preserve = match new_field.migration {
@@ -1516,26 +1560,26 @@ impl BinaryMigrator {
                         old_field.field_type == new_field.field_type
                             && old_field.size == new_field.size
                     }
-                    FieldMigration::Custom => false,  // Handled separately
+                    FieldMigration::Custom => false, // Handled separately
                 };
-                
+
                 if should_preserve {
                     // Copy bytes from old to new
                     let old_start = old_field.offset as usize;
                     let _old_end = old_start + old_field.size.min(new_field.size) as usize;
                     let new_start = new_field.offset as usize;
                     let copy_len = old_field.size.min(new_field.size) as usize;
-                    
+
                     new_data[new_start..new_start + copy_len]
                         .copy_from_slice(&old_data[old_start..old_start + copy_len]);
                 }
             }
             // New fields remain as zeros (default-initialized)
         }
-        
+
         Ok((new_data, analysis))
     }
-    
+
     /// Read a field value from binary data
     pub fn read_field(
         &self,
@@ -1543,22 +1587,26 @@ impl BinaryMigrator {
         schema: &BinarySchema,
         field_name: &str,
     ) -> Result<FieldValue, MigrationError> {
-        let field = schema.fields.iter()
+        let field = schema
+            .fields
+            .iter()
             .find(|f| f.name == field_name)
             .ok_or_else(|| MigrationError::FieldNotFound(field_name.to_string()))?;
-        
+
         let start = field.offset as usize;
         let end = start + field.size as usize;
-        
+
         if end > data.len() {
             return Err(MigrationError::ReadError(format!(
                 "Field '{}' at offset {} extends beyond data length {}",
-                field_name, start, data.len()
+                field_name,
+                start,
+                data.len()
             )));
         }
-        
+
         let mut cursor = Cursor::new(&data[start..end]);
-        
+
         let value = match field.field_type {
             FieldType::I8 => FieldValue::I64(cursor.read_i8().unwrap() as i64),
             FieldType::I16 => FieldValue::I64(cursor.read_i16::<LittleEndian>().unwrap() as i64),
@@ -1573,10 +1621,10 @@ impl BinaryMigrator {
             FieldType::Bool => FieldValue::Bool(cursor.read_u8().unwrap() != 0),
             _ => FieldValue::Bytes(data[start..end].to_vec()),
         };
-        
+
         Ok(value)
     }
-    
+
     /// Write a field value to binary data
     pub fn write_field(
         &self,
@@ -1585,22 +1633,26 @@ impl BinaryMigrator {
         field_name: &str,
         value: &FieldValue,
     ) -> Result<(), MigrationError> {
-        let field = schema.fields.iter()
+        let field = schema
+            .fields
+            .iter()
             .find(|f| f.name == field_name)
             .ok_or_else(|| MigrationError::FieldNotFound(field_name.to_string()))?;
-        
+
         let start = field.offset as usize;
         let end = start + field.size as usize;
-        
+
         if end > data.len() {
             return Err(MigrationError::WriteError(format!(
                 "Field '{}' at offset {} extends beyond data length {}",
-                field_name, start, data.len()
+                field_name,
+                start,
+                data.len()
             )));
         }
-        
+
         let mut cursor = Cursor::new(&mut data[start..end]);
-        
+
         match (field.field_type, value) {
             (FieldType::I8, FieldValue::I64(v)) => cursor.write_i8(*v as i8),
             (FieldType::I16, FieldValue::I64(v)) => cursor.write_i16::<LittleEndian>(*v as i16),
@@ -1613,25 +1665,28 @@ impl BinaryMigrator {
             (FieldType::F32, FieldValue::F64(v)) => cursor.write_f32::<LittleEndian>(*v as f32),
             (FieldType::F64, FieldValue::F64(v)) => cursor.write_f64::<LittleEndian>(*v),
             (FieldType::Bool, FieldValue::Bool(v)) => cursor.write_u8(if *v { 1 } else { 0 }),
-            _ => return Err(MigrationError::TypeMismatch {
-                field: field_name.to_string(),
-                expected: format!("{:?}", field.field_type),
-                actual: format!("{:?}", value),
-            }),
-        }.map_err(|e| MigrationError::WriteError(e.to_string()))
+            _ => {
+                return Err(MigrationError::TypeMismatch {
+                    field: field_name.to_string(),
+                    expected: format!("{:?}", field.field_type),
+                    actual: format!("{:?}", value),
+                })
+            }
+        }
+        .map_err(|e| MigrationError::WriteError(e.to_string()))
     }
-    
+
     /// Compare two float values with tolerance
     pub fn floats_equal_f32(&self, a: f32, b: f32) -> bool {
         if a.is_nan() && b.is_nan() {
-            return true;  // NaN == NaN for state comparison
+            return true; // NaN == NaN for state comparison
         }
         if a.is_infinite() && b.is_infinite() {
             return a.signum() == b.signum();
         }
         (a - b).abs() <= self.tolerance_f32
     }
-    
+
     pub fn floats_equal_f64(&self, a: f64, b: f64) -> bool {
         if a.is_nan() && b.is_nan() {
             return true;
@@ -1682,11 +1737,23 @@ impl std::error::Error for SchemaValidationError {}
 
 #[derive(Debug)]
 pub enum MigrationError {
-    InvalidInputSize { expected: usize, actual: usize },
-    MagicMismatch { expected: u64, actual: u64 },
-    IncompatibleSchemas { errors: Vec<String> },
+    InvalidInputSize {
+        expected: usize,
+        actual: usize,
+    },
+    MagicMismatch {
+        expected: u64,
+        actual: u64,
+    },
+    IncompatibleSchemas {
+        errors: Vec<String>,
+    },
     FieldNotFound(String),
-    TypeMismatch { field: String, expected: String, actual: String },
+    TypeMismatch {
+        field: String,
+        expected: String,
+        actual: String,
+    },
     ReadError(String),
     WriteError(String),
 }
@@ -1695,10 +1762,18 @@ impl std::fmt::Display for MigrationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             MigrationError::InvalidInputSize { expected, actual } => {
-                write!(f, "Invalid input size: expected {}, got {}", expected, actual)
+                write!(
+                    f,
+                    "Invalid input size: expected {}, got {}",
+                    expected, actual
+                )
             }
             MigrationError::MagicMismatch { expected, actual } => {
-                write!(f, "Magic mismatch: expected {:016x}, got {:016x}", expected, actual)
+                write!(
+                    f,
+                    "Magic mismatch: expected {:016x}, got {:016x}",
+                    expected, actual
+                )
             }
             MigrationError::IncompatibleSchemas { errors } => {
                 write!(f, "Incompatible schemas: {}", errors.join(", "))
@@ -1706,8 +1781,16 @@ impl std::fmt::Display for MigrationError {
             MigrationError::FieldNotFound(name) => {
                 write!(f, "Field not found: {}", name)
             }
-            MigrationError::TypeMismatch { field, expected, actual } => {
-                write!(f, "Type mismatch for field '{}': expected {}, got {}", field, expected, actual)
+            MigrationError::TypeMismatch {
+                field,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "Type mismatch for field '{}': expected {}, got {}",
+                    field, expected, actual
+                )
             }
             MigrationError::ReadError(msg) => write!(f, "Read error: {}", msg),
             MigrationError::WriteError(msg) => write!(f, "Write error: {}", msg),
@@ -1729,18 +1812,18 @@ pub fn binary_to_debug_json(
 ) -> Result<serde_json::Value, MigrationError> {
     let migrator = BinaryMigrator::new();
     let mut map = serde_json::Map::new();
-    
+
     map.insert("_schema".to_string(), serde_json::json!({
         "name": schema.name,
         "version": format!("{}.{}.{}", schema.version.major, schema.version.minor, schema.version.patch),
         "size": schema.total_size,
     }));
-    
+
     for field in &schema.fields {
         if field.field_type == FieldType::Padding {
             continue;
         }
-        
+
         let value = migrator.read_field(data, schema, &field.name)?;
         let json_value = match value {
             FieldValue::I64(v) => serde_json::json!(v),
@@ -1751,7 +1834,7 @@ pub fn binary_to_debug_json(
         };
         map.insert(field.name.clone(), json_value);
     }
-    
+
     Ok(serde_json::Value::Object(map))
 }
 
@@ -1772,8 +1855,18 @@ pub fn create_app_state_schema() -> BinarySchema {
         .field("window", FieldType::U64, 16, FieldMigration::Reset)
         .field("renderer", FieldType::U64, 24, FieldMigration::Reset)
         // State flags
-        .field("running", FieldType::I32, 32, FieldMigration::PreserveIfCompatible)
-        .field("paused", FieldType::I32, 36, FieldMigration::PreserveIfCompatible)
+        .field(
+            "running",
+            FieldType::I32,
+            32,
+            FieldMigration::PreserveIfCompatible,
+        )
+        .field(
+            "paused",
+            FieldType::I32,
+            36,
+            FieldMigration::PreserveIfCompatible,
+        )
         // Position (always preserve)
         .field("x", FieldType::I32, 40, FieldMigration::Preserve)
         .field("y", FieldType::I32, 44, FieldMigration::Preserve)
@@ -1857,14 +1950,13 @@ pub trait StableLayout: Sized {
     const ALIGN: usize;
     /// Schema version for migration
     const SCHEMA_VERSION: SchemaVersion;
-    
+
     /// Get binary schema for this layout
     fn schema() -> BinarySchema;
-    
+
     /// Validate that runtime layout matches compile-time assertions
     fn validate_layout() -> bool {
-        std::mem::size_of::<Self>() == Self::SIZE &&
-        std::mem::align_of::<Self>() == Self::ALIGN
+        std::mem::size_of::<Self>() == Self::SIZE && std::mem::align_of::<Self>() == Self::ALIGN
     }
 }
 
@@ -1873,21 +1965,21 @@ pub trait StableLayout: Sized {
 #[derive(Debug, Clone, Copy)]
 pub struct StableAppState {
     /// Magic number for identification
-    pub magic: u64,           // offset 0, size 8
+    pub magic: u64, // offset 0, size 8
     /// Position X
-    pub x: i64,               // offset 8, size 8
+    pub x: i64, // offset 8, size 8
     /// Position Y
-    pub y: i64,               // offset 16, size 8
+    pub y: i64, // offset 16, size 8
     /// Velocity X
-    pub vx: f64,              // offset 24, size 8
+    pub vx: f64, // offset 24, size 8
     /// Velocity Y
-    pub vy: f64,              // offset 32, size 8
+    pub vy: f64, // offset 32, size 8
     /// Frame counter
-    pub frame_count: u64,     // offset 40, size 8
+    pub frame_count: u64, // offset 40, size 8
     /// Last update timestamp (ms)
-    pub last_update_ms: u64,  // offset 48, size 8
+    pub last_update_ms: u64, // offset 48, size 8
     /// Reserved for future use
-    pub reserved: [u8; 72],   // offset 56, padding to 128
+    pub reserved: [u8; 72], // offset 56, padding to 128
 }
 
 impl Default for StableAppState {
@@ -1919,7 +2011,7 @@ impl StableLayout for StableAppState {
     const SIZE: usize = 128;
     const ALIGN: usize = 8;
     const SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(1, 0, 0);
-    
+
     fn schema() -> BinarySchema {
         create_app_state_schema()
     }
@@ -1928,25 +2020,25 @@ impl StableLayout for StableAppState {
 impl StableAppState {
     /// Well-known magic number for validation
     pub const MAGIC: u64 = 0xDEADBEEF_CAFEBABE;
-    
+
     /// Create with validated magic
     pub fn new() -> Self {
         let mut state = Self::default();
         state.magic = Self::MAGIC;
         state
     }
-    
+
     /// Validate magic number
     pub fn is_valid(&self) -> bool {
         self.magic == Self::MAGIC
     }
-    
+
     /// Convert to raw bytes for binary transfer
     pub fn to_bytes(&self) -> [u8; 128] {
         // Safe because repr(C) guarantees layout
         unsafe { std::mem::transmute_copy(self) }
     }
-    
+
     /// Create from raw bytes with validation
     pub fn from_bytes(bytes: &[u8; 128]) -> Result<Self, &'static str> {
         let state: Self = unsafe { std::ptr::read(bytes.as_ptr() as *const Self) };
@@ -1956,13 +2048,15 @@ impl StableAppState {
             Err("Invalid magic number - state may be corrupted or incompatible")
         }
     }
-    
+
     /// Create from slice with bounds checking
     pub fn from_slice(slice: &[u8]) -> Result<Self, &'static str> {
         if slice.len() < 128 {
             return Err("Slice too small for StableAppState");
         }
-        let bytes: [u8; 128] = slice[..128].try_into().map_err(|_| "Slice conversion failed")?;
+        let bytes: [u8; 128] = slice[..128]
+            .try_into()
+            .map_err(|_| "Slice conversion failed")?;
         Self::from_bytes(&bytes)
     }
 }
@@ -1976,11 +2070,11 @@ impl LayoutValidator {
     pub fn new() -> Self {
         Self { errors: Vec::new() }
     }
-    
+
     /// Validate that a type's layout matches the schema
     pub fn validate<T: StableLayout>(&mut self) -> bool {
         let mut valid = true;
-        
+
         // Check size
         if std::mem::size_of::<T>() != T::SIZE {
             self.errors.push(format!(
@@ -1990,7 +2084,7 @@ impl LayoutValidator {
             ));
             valid = false;
         }
-        
+
         // Check alignment
         if std::mem::align_of::<T>() != T::ALIGN {
             self.errors.push(format!(
@@ -2000,7 +2094,7 @@ impl LayoutValidator {
             ));
             valid = false;
         }
-        
+
         // Validate schema is consistent with declared size
         let schema = T::schema();
         if schema.total_size as usize != T::SIZE {
@@ -2011,15 +2105,15 @@ impl LayoutValidator {
             ));
             valid = false;
         }
-        
+
         valid
     }
-    
+
     /// Get validation errors
     pub fn errors(&self) -> &[String] {
         &self.errors
     }
-    
+
     /// Check if validation passed
     pub fn is_valid(&self) -> bool {
         self.errors.is_empty()
@@ -2040,36 +2134,39 @@ impl BinarySchema {
     /// Generate C header for this schema
     pub fn to_c_header(&self, struct_name: &str) -> String {
         let mut header = String::new();
-        
+
         header.push_str(&format!(
             "// Auto-generated header for {} v{}.{}.{}\n",
-            struct_name,
-            self.version.major,
-            self.version.minor,
-            self.version.patch
+            struct_name, self.version.major, self.version.minor, self.version.patch
         ));
         header.push_str("// DO NOT EDIT - regenerate from binary schema\n\n");
         header.push_str("#pragma once\n");
         header.push_str("#include <stdint.h>\n");
         header.push_str("#include <stdbool.h>\n\n");
-        
+
         // Add static assertions for platform checks
         header.push_str("// Platform layout assertions\n");
         header.push_str(&format!(
             "_Static_assert(sizeof(void*) == {}, \"Pointer size mismatch\");\n\n",
             if self.struct_alignment >= 8 { 8 } else { 4 }
         ));
-        
-        header.push_str(&format!("typedef struct __attribute__((packed, aligned({}))) {{\n", self.struct_alignment));
-        
+
+        header.push_str(&format!(
+            "typedef struct __attribute__((packed, aligned({}))) {{\n",
+            self.struct_alignment
+        ));
+
         let mut current_offset = 0;
         for field in &self.fields {
             // Add padding if needed
             if field.offset > current_offset {
                 let padding = field.offset - current_offset;
-                header.push_str(&format!("    uint8_t _pad{}[{}];\n", current_offset, padding));
+                header.push_str(&format!(
+                    "    uint8_t _pad{}[{}];\n",
+                    current_offset, padding
+                ));
             }
-            
+
             let c_type = match field.field_type {
                 FieldType::I8 => "int8_t",
                 FieldType::I16 => "int16_t",
@@ -2083,31 +2180,37 @@ impl BinarySchema {
                 FieldType::F64 => "double",
                 FieldType::Bool => "bool",
                 FieldType::Padding => {
-                    header.push_str(&format!("    uint8_t _pad{}[{}];\n", field.offset, field.size));
+                    header.push_str(&format!(
+                        "    uint8_t _pad{}[{}];\n",
+                        field.offset, field.size
+                    ));
                     current_offset = field.offset + field.size;
                     continue;
                 }
                 _ => "/* UNSUPPORTED */",
             };
-            
-            header.push_str(&format!("    {} {};  // offset {}\n", c_type, field.name, field.offset));
+
+            header.push_str(&format!(
+                "    {} {};  // offset {}\n",
+                c_type, field.name, field.offset
+            ));
             current_offset = field.offset + field.size;
         }
-        
+
         // Final padding to total size
         if current_offset < self.total_size {
             let padding = self.total_size - current_offset;
             header.push_str(&format!("    uint8_t _pad_end[{}];\n", padding));
         }
-        
+
         header.push_str(&format!("}} {};\n\n", struct_name));
-        
+
         // Add compile-time size assertion
         header.push_str(&format!(
             "_Static_assert(sizeof({}) == {}, \"{} size mismatch\");\n",
             struct_name, self.total_size, struct_name
         ));
-        
+
         header
     }
 }
@@ -2115,32 +2218,43 @@ impl BinarySchema {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_schema_validation() {
         let schema = create_app_state_schema();
         assert!(schema.validate().is_ok());
     }
-    
+
     #[test]
     fn test_migration_preserves_position() {
         let schema = create_app_state_schema();
-        
+
         // Create old state with position
         let mut old_data = vec![0u8; 128];
         let migrator = BinaryMigrator::new();
-        
-        migrator.write_field(&mut old_data, &schema, "magic", &FieldValue::U64(0xDEADBEEF_CAFEBABE)).unwrap();
-        migrator.write_field(&mut old_data, &schema, "x", &FieldValue::I64(100)).unwrap();
-        migrator.write_field(&mut old_data, &schema, "y", &FieldValue::I64(200)).unwrap();
-        
+
+        migrator
+            .write_field(
+                &mut old_data,
+                &schema,
+                "magic",
+                &FieldValue::U64(0xDEADBEEF_CAFEBABE),
+            )
+            .unwrap();
+        migrator
+            .write_field(&mut old_data, &schema, "x", &FieldValue::I64(100))
+            .unwrap();
+        migrator
+            .write_field(&mut old_data, &schema, "y", &FieldValue::I64(200))
+            .unwrap();
+
         // Migrate to same schema (simulating reload)
         let (new_data, analysis) = migrator.migrate(&old_data, &schema, &schema).unwrap();
-        
+
         // Check position preserved
         let x = migrator.read_field(&new_data, &schema, "x").unwrap();
         let y = migrator.read_field(&new_data, &schema, "y").unwrap();
-        
+
         match (x, y) {
             (FieldValue::I64(x_val), FieldValue::I64(y_val)) => {
                 assert_eq!(x_val, 100);
@@ -2148,22 +2262,22 @@ mod tests {
             }
             _ => panic!("Unexpected field types"),
         }
-        
+
         assert!(analysis.preserve_fields.contains(&"x".to_string()));
         assert!(analysis.preserve_fields.contains(&"y".to_string()));
     }
-    
+
     #[test]
     fn test_stable_app_state_layout() {
         // Verify compile-time assertions work
         assert!(StableAppState::validate_layout());
-        
+
         // Verify layout validator
         let mut validator = LayoutValidator::new();
         assert!(validator.validate::<StableAppState>());
         assert!(validator.is_valid());
     }
-    
+
     #[test]
     fn test_stable_app_state_roundtrip() {
         let mut state = StableAppState::new();
@@ -2171,21 +2285,21 @@ mod tests {
         state.y = 100;
         state.vx = 1.5;
         state.vy = -2.5;
-        
+
         let bytes = state.to_bytes();
         let restored = StableAppState::from_bytes(&bytes).unwrap();
-        
+
         assert_eq!(restored.x, 42);
         assert_eq!(restored.y, 100);
         assert!((restored.vx - 1.5).abs() < 1e-10);
         assert!((restored.vy - (-2.5)).abs() < 1e-10);
     }
-    
+
     #[test]
     fn test_c_header_generation() {
         let schema = create_app_state_schema();
         let header = schema.to_c_header("AppState");
-        
+
         assert!(header.contains("typedef struct"));
         assert!(header.contains("int64_t x;"));
         assert!(header.contains("double vx;"));

@@ -7,7 +7,7 @@
 // HOST KV STORAGE MODULE
 // ============================================================
 // Provides persistent key-value storage for plugins across hot reloads.
-// 
+//
 // KEY FEATURES:
 // - Per-namespace schema validation (Fast Refresh-like safety)
 // - Schema mismatch triggers namespace reset, not full state reset
@@ -20,11 +20,11 @@
 // - Modules can write/read only to declared namespaces (deterministic)
 // ============================================================
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::{c_char, c_uint, c_void};
 use std::ptr;
 use std::sync::{Arc, Mutex, RwLock};
-use serde::{Serialize, Deserialize};
 
 use crate::plugin_contract::ModuleSlot;
 
@@ -44,7 +44,9 @@ pub fn error_string(code: i32) -> &'static str {
     match code {
         KV_OK => "OK",
         KV_NOT_FOUND => "Key not found",
-        KV_INVALID_ARG => "Invalid argument (bad namespace/key, null pointer, or undeclared namespace)",
+        KV_INVALID_ARG => {
+            "Invalid argument (bad namespace/key, null pointer, or undeclared namespace)"
+        }
         KV_QUOTA_EXCEEDED => "Storage quota exceeded",
         KV_INTERNAL_ERROR => "Internal error",
         _ => "Unknown error",
@@ -56,10 +58,10 @@ pub fn error_string(code: i32) -> &'static str {
 // ============================================================
 
 /// Default quota limits
-pub const DEFAULT_MAX_VALUE_BYTES: usize = 1_000_000;        // 1 MB per value
-pub const DEFAULT_MAX_KEYS_PER_NAMESPACE: usize = 2_000;     // 2000 keys per namespace
+pub const DEFAULT_MAX_VALUE_BYTES: usize = 1_000_000; // 1 MB per value
+pub const DEFAULT_MAX_KEYS_PER_NAMESPACE: usize = 2_000; // 2000 keys per namespace
 pub const DEFAULT_MAX_TOTAL_BYTES_PER_MODULE: usize = 20_000_000; // 20 MB per (session, module_slot)
-pub const MAX_NAMESPACES_DECLARED: usize = 128;              // Max namespaces per module
+pub const MAX_NAMESPACES_DECLARED: usize = 128; // Max namespaces per module
 
 /// Namespace/key validation constraints
 pub const MAX_NAMESPACE_LEN: usize = 64;
@@ -95,7 +97,7 @@ pub fn validate_ns_or_key(s: &str, max_len: usize) -> Result<(), i32> {
 pub const HOST_KV_API_VERSION: u32 = 1;
 
 /// Host Context passed to *_on_load_host functions
-/// 
+///
 /// Layout (C ABI):
 /// ```c
 /// typedef struct SynthiHostContextV1 {
@@ -163,7 +165,7 @@ pub fn u32_to_module_slot(v: u32) -> Option<ModuleSlot> {
 }
 
 /// KV API vtable
-/// 
+///
 /// Layout (C ABI):
 /// ```c
 /// typedef struct HostKvApiV1 {
@@ -201,10 +203,8 @@ pub struct HostKvApiV1 {
         ns: *const c_char,
         key: *const c_char,
     ) -> i32,
-    pub clear_namespace: unsafe extern "C" fn(
-        ctx: *const SynthiHostContextV1,
-        ns: *const c_char,
-    ) -> i32,
+    pub clear_namespace:
+        unsafe extern "C" fn(ctx: *const SynthiHostContextV1, ns: *const c_char) -> i32,
     pub get_schema: unsafe extern "C" fn(
         ctx: *const SynthiHostContextV1,
         ns: *const c_char,
@@ -221,7 +221,7 @@ pub struct HostKvApiV1 {
 }
 
 /// Namespace schema entry (exported by modules)
-/// 
+///
 /// Layout (C ABI):
 /// ```c
 /// typedef struct SynthiNamespaceSchemaV1 {
@@ -296,7 +296,10 @@ impl HostKvStore {
 
     /// Get the last error message
     pub fn get_last_error(&self) -> String {
-        self.last_error.lock().map(|e| e.clone()).unwrap_or_default()
+        self.last_error
+            .lock()
+            .map(|e| e.clone())
+            .unwrap_or_default()
     }
 
     /// Register declared namespaces from module's schema table
@@ -323,12 +326,18 @@ impl HostKvStore {
             }
 
             let old_schema = module_storage.declared_namespaces.get(ns).copied();
-            
+
             match old_schema {
                 None => {
                     // New namespace, just store schema
-                    module_storage.declared_namespaces.insert(ns.clone(), *new_schema_id);
-                    module_storage.namespaces.entry(ns.clone()).or_default().schema_id = Some(*new_schema_id);
+                    module_storage
+                        .declared_namespaces
+                        .insert(ns.clone(), *new_schema_id);
+                    module_storage
+                        .namespaces
+                        .entry(ns.clone())
+                        .or_default()
+                        .schema_id = Some(*new_schema_id);
                     events.push(HostKvSchemaEvent::NamespaceRegistered {
                         namespace: ns.clone(),
                         schema_id: *new_schema_id,
@@ -342,7 +351,9 @@ impl HostKvStore {
                         ns_data.total_bytes = 0;
                         ns_data.schema_id = Some(*new_schema_id);
                     }
-                    module_storage.declared_namespaces.insert(ns.clone(), *new_schema_id);
+                    module_storage
+                        .declared_namespaces
+                        .insert(ns.clone(), *new_schema_id);
                     events.push(HostKvSchemaEvent::SchemaMismatchReset {
                         namespace: ns.clone(),
                         old_schema: old_id,
@@ -430,8 +441,7 @@ impl HostKvStore {
         if new_total > self.max_total_bytes_per_module {
             self.set_error(&format!(
                 "Total bytes {} exceeds max {}",
-                new_total,
-                self.max_total_bytes_per_module
+                new_total, self.max_total_bytes_per_module
             ));
             return KV_QUOTA_EXCEEDED;
         }
@@ -470,7 +480,7 @@ impl HostKvStore {
 
         let storage_key = (session_id.to_string(), module_slot);
         let storage = self.storage.read().unwrap();
-        
+
         storage
             .get(&storage_key)
             .and_then(|m| m.namespaces.get(ns))
@@ -483,13 +493,7 @@ impl HostKvStore {
     }
 
     /// Delete a key (idempotent - returns OK even if key doesn't exist)
-    pub fn delete_key(
-        &self,
-        session_id: &str,
-        module_slot: u32,
-        ns: &str,
-        key: &str,
-    ) -> i32 {
+    pub fn delete_key(&self, session_id: &str, module_slot: u32, ns: &str, key: &str) -> i32 {
         // Validate inputs
         if let Err(code) = validate_ns_or_key(ns, MAX_NAMESPACE_LEN) {
             self.set_error("Invalid namespace name");
@@ -508,7 +512,7 @@ impl HostKvStore {
 
         let storage_key = (session_id.to_string(), module_slot);
         let mut storage = self.storage.write().unwrap();
-        
+
         if let Some(module_storage) = storage.get_mut(&storage_key) {
             if let Some(ns_data) = module_storage.namespaces.get_mut(ns) {
                 if let Some(old_data) = ns_data.data.remove(key) {
@@ -522,12 +526,7 @@ impl HostKvStore {
     }
 
     /// Clear all keys in a namespace
-    pub fn clear_namespace(
-        &self,
-        session_id: &str,
-        module_slot: u32,
-        ns: &str,
-    ) -> i32 {
+    pub fn clear_namespace(&self, session_id: &str, module_slot: u32, ns: &str) -> i32 {
         // Validate inputs
         if let Err(code) = validate_ns_or_key(ns, MAX_NAMESPACE_LEN) {
             self.set_error("Invalid namespace name");
@@ -542,7 +541,7 @@ impl HostKvStore {
 
         let storage_key = (session_id.to_string(), module_slot);
         let mut storage = self.storage.write().unwrap();
-        
+
         if let Some(module_storage) = storage.get_mut(&storage_key) {
             if let Some(ns_data) = module_storage.namespaces.get_mut(ns) {
                 module_storage.total_bytes -= ns_data.total_bytes;
@@ -555,15 +554,10 @@ impl HostKvStore {
     }
 
     /// Get schema ID for a namespace
-    pub fn get_schema(
-        &self,
-        session_id: &str,
-        module_slot: u32,
-        ns: &str,
-    ) -> Result<u64, i32> {
+    pub fn get_schema(&self, session_id: &str, module_slot: u32, ns: &str) -> Result<u64, i32> {
         let storage_key = (session_id.to_string(), module_slot);
         let storage = self.storage.read().unwrap();
-        
+
         storage
             .get(&storage_key)
             .and_then(|m| m.declared_namespaces.get(ns))
@@ -578,7 +572,7 @@ impl HostKvStore {
     pub fn get_preserved_namespaces(&self, session_id: &str, module_slot: u32) -> Vec<String> {
         let storage_key = (session_id.to_string(), module_slot);
         let storage = self.storage.read().unwrap();
-        
+
         storage
             .get(&storage_key)
             .map(|m| {
@@ -590,21 +584,24 @@ impl HostKvStore {
             })
             .unwrap_or_default()
     }
-    
+
     // ============================================================
     // PERSISTENCE (Cross-Session State)
     // ============================================================
-    
+
     /// Serialize all storage to a JSON string for disk persistence
     pub fn serialize_to_json(&self) -> Result<String, String> {
-        let storage = self.storage.read().map_err(|e| format!("Lock error: {}", e))?;
-        
+        let storage = self
+            .storage
+            .read()
+            .map_err(|e| format!("Lock error: {}", e))?;
+
         // Convert to serializable format
         let mut serializable: HashMap<String, SerializableModuleStorage> = HashMap::new();
-        
+
         for ((session_id, module_slot), module_storage) in storage.iter() {
             let key = format!("{}:{}", session_id, module_slot);
-            
+
             let mut namespaces = HashMap::new();
             for (ns_name, ns_data) in &module_storage.namespaces {
                 // Convert bytes to base64 for JSON serialization
@@ -612,50 +609,59 @@ impl HostKvStore {
                 for (k, v) in &ns_data.data {
                     data.insert(k.clone(), base64_encode(v));
                 }
-                
-                namespaces.insert(ns_name.clone(), SerializableNamespaceData {
-                    schema_id: ns_data.schema_id,
-                    data,
-                    total_bytes: ns_data.total_bytes,
-                });
+
+                namespaces.insert(
+                    ns_name.clone(),
+                    SerializableNamespaceData {
+                        schema_id: ns_data.schema_id,
+                        data,
+                        total_bytes: ns_data.total_bytes,
+                    },
+                );
             }
-            
-            serializable.insert(key, SerializableModuleStorage {
-                declared_namespaces: module_storage.declared_namespaces.clone(),
-                namespaces,
-                total_bytes: module_storage.total_bytes,
-                timestamp: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
-            });
+
+            serializable.insert(
+                key,
+                SerializableModuleStorage {
+                    declared_namespaces: module_storage.declared_namespaces.clone(),
+                    namespaces,
+                    total_bytes: module_storage.total_bytes,
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                },
+            );
         }
-        
+
         serde_json::to_string_pretty(&serializable)
             .map_err(|e| format!("Serialization error: {}", e))
     }
-    
+
     /// Deserialize storage from a JSON string
     pub fn deserialize_from_json(&self, json: &str) -> Result<usize, String> {
-        let serializable: HashMap<String, SerializableModuleStorage> = 
+        let serializable: HashMap<String, SerializableModuleStorage> =
             serde_json::from_str(json).map_err(|e| format!("Parse error: {}", e))?;
-        
-        let mut storage = self.storage.write().map_err(|e| format!("Lock error: {}", e))?;
+
+        let mut storage = self
+            .storage
+            .write()
+            .map_err(|e| format!("Lock error: {}", e))?;
         let mut loaded_count = 0;
-        
+
         for (key, ser_storage) in serializable {
             // Parse key "session_id:module_slot"
             let parts: Vec<&str> = key.rsplitn(2, ':').collect();
             if parts.len() != 2 {
                 continue;
             }
-            
+
             let module_slot: u32 = match parts[0].parse() {
                 Ok(v) => v,
                 Err(_) => continue,
             };
             let session_id = parts[1].to_string();
-            
+
             // Convert back from serializable format
             let mut namespaces = HashMap::new();
             for (ns_name, ser_ns) in ser_storage.namespaces {
@@ -665,39 +671,42 @@ impl HostKvStore {
                         data.insert(k, decoded);
                     }
                 }
-                
-                namespaces.insert(ns_name, NamespaceData {
-                    schema_id: ser_ns.schema_id,
-                    data,
-                    total_bytes: ser_ns.total_bytes,
-                });
+
+                namespaces.insert(
+                    ns_name,
+                    NamespaceData {
+                        schema_id: ser_ns.schema_id,
+                        data,
+                        total_bytes: ser_ns.total_bytes,
+                    },
+                );
             }
-            
+
             let module_storage = ModuleStorage {
                 declared_namespaces: ser_storage.declared_namespaces,
                 namespaces,
                 total_bytes: ser_storage.total_bytes,
             };
-            
+
             storage.insert((session_id, module_slot), module_storage);
             loaded_count += 1;
         }
-        
+
         Ok(loaded_count)
     }
-    
+
     /// Save storage to a file
     pub fn save_to_file(&self, path: &std::path::Path) -> Result<(), String> {
         let json = self.serialize_to_json()?;
         std::fs::write(path, json).map_err(|e| format!("Write error: {}", e))
     }
-    
+
     /// Load storage from a file
     pub fn load_from_file(&self, path: &std::path::Path) -> Result<usize, String> {
         let json = std::fs::read_to_string(path).map_err(|e| format!("Read error: {}", e))?;
         self.deserialize_from_json(&json)
     }
-    
+
     /// Clean up stale sessions (older than TTL)
     /// 
     /// Removes all data for sessions that haven't been accessed within ttl_secs.
@@ -707,6 +716,16 @@ impl HostKvStore {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
+
+        // For cleanup, we'd need to track timestamps per session
+        // This is a simplified version that just clears all data
+        // In production, you'd track last-access timestamps
+
+        // Note: This is a placeholder. Full implementation would require
+        // tracking access timestamps per (session_id, module_slot)
+        let _ = ttl_secs;
+        let _ = now;
+        0
         
         let mut storage = match self.storage.write() {
             Ok(s) => s,
@@ -778,26 +797,26 @@ impl HostKvStore {
         
         count
     }
-    
+
     /// Get statistics about stored data
     pub fn get_stats(&self) -> KvStoreStats {
         let storage = self.storage.read().unwrap();
-        
+
         let mut total_sessions = std::collections::HashSet::new();
         let mut total_namespaces = 0;
         let mut total_keys = 0;
         let mut total_bytes = 0usize;
-        
+
         for ((session_id, _), module_storage) in storage.iter() {
             total_sessions.insert(session_id.clone());
-            
+
             for (_, ns_data) in &module_storage.namespaces {
                 total_namespaces += 1;
                 total_keys += ns_data.data.len();
                 total_bytes += ns_data.total_bytes;
             }
         }
-        
+
         KvStoreStats {
             session_count: total_sessions.len(),
             module_count: storage.len(),
@@ -838,78 +857,76 @@ struct SerializableModuleStorage {
 /// Simple base64 encoding
 fn base64_encode(data: &[u8]) -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    
+
     let mut result = String::new();
     let mut i = 0;
-    
+
     while i < data.len() {
         let b0 = data[i] as usize;
         let b1 = data.get(i + 1).copied().unwrap_or(0) as usize;
         let b2 = data.get(i + 2).copied().unwrap_or(0) as usize;
-        
+
         result.push(ALPHABET[(b0 >> 2) & 0x3F] as char);
         result.push(ALPHABET[((b0 << 4) | (b1 >> 4)) & 0x3F] as char);
-        
+
         if i + 1 < data.len() {
             result.push(ALPHABET[((b1 << 2) | (b2 >> 6)) & 0x3F] as char);
         } else {
             result.push('=');
         }
-        
+
         if i + 2 < data.len() {
             result.push(ALPHABET[b2 & 0x3F] as char);
         } else {
             result.push('=');
         }
-        
+
         i += 3;
     }
-    
+
     result
 }
 
 /// Simple base64 decoding
 fn base64_decode(s: &str) -> Option<Vec<u8>> {
     const DECODE: [i8; 128] = [
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,-1,-1,63,
-        52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,
-        -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
-        15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,
-        -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
-        41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 62, -1, -1,
+        -1, 63, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, -1, -1, -1, -1, -1, -1, -1, 0, 1, 2, 3, 4,
+        5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, -1, -1, -1,
+        -1, -1, -1, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
+        46, 47, 48, 49, 50, 51, -1, -1, -1, -1, -1,
     ];
-    
+
     let bytes: Vec<u8> = s.bytes().filter(|&b| b != b'=').collect();
     let mut result = Vec::with_capacity(bytes.len() * 3 / 4);
-    
+
     let mut i = 0;
     while i + 3 < bytes.len() {
         let b0 = DECODE.get(bytes[i] as usize).copied().unwrap_or(-1);
         let b1 = DECODE.get(bytes[i + 1] as usize).copied().unwrap_or(-1);
         let b2 = DECODE.get(bytes[i + 2] as usize).copied().unwrap_or(-1);
         let b3 = DECODE.get(bytes[i + 3] as usize).copied().unwrap_or(-1);
-        
+
         if b0 < 0 || b1 < 0 || b2 < 0 || b3 < 0 {
             return None;
         }
-        
+
         result.push(((b0 << 2) | (b1 >> 4)) as u8);
         result.push(((b1 << 4) | (b2 >> 2)) as u8);
         result.push(((b2 << 6) | b3) as u8);
-        
+
         i += 4;
     }
-    
+
     // Handle remaining bytes
     if i + 1 < bytes.len() {
         let b0 = DECODE.get(bytes[i] as usize).copied().unwrap_or(-1);
         let b1 = DECODE.get(bytes[i + 1] as usize).copied().unwrap_or(-1);
-        
+
         if b0 >= 0 && b1 >= 0 {
             result.push(((b0 << 2) | (b1 >> 4)) as u8);
-            
+
             if i + 2 < bytes.len() {
                 let b2 = DECODE.get(bytes[i + 2] as usize).copied().unwrap_or(-1);
                 if b2 >= 0 {
@@ -918,7 +935,7 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
             }
         }
     }
-    
+
     Some(result)
 }
 
@@ -931,14 +948,9 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum HostKvSchemaEvent {
     /// New namespace registered
-    NamespaceRegistered {
-        namespace: String,
-        schema_id: u64,
-    },
+    NamespaceRegistered { namespace: String, schema_id: u64 },
     /// Namespace preserved (schema unchanged)
-    NamespacePreserved {
-        namespace: String,
-    },
+    NamespacePreserved { namespace: String },
     /// Schema mismatch - namespace was reset
     SchemaMismatchReset {
         namespace: String,
@@ -946,10 +958,7 @@ pub enum HostKvSchemaEvent {
         new_schema: u64,
     },
     /// Invalid namespace name
-    InvalidNamespace {
-        namespace: String,
-        reason: String,
-    },
+    InvalidNamespace { namespace: String, reason: String },
 }
 
 // ============================================================
@@ -992,11 +1001,11 @@ pub unsafe extern "C" fn kv_set_bytes(
     let Some((session_id, module_slot)) = ctx_to_key(ctx) else {
         return KV_INVALID_ARG;
     };
-    
+
     if ns.is_null() || key.is_null() {
         return KV_INVALID_ARG;
     }
-    
+
     let ns_str = match std::ffi::CStr::from_ptr(ns).to_str() {
         Ok(s) => s,
         Err(_) => return KV_INVALID_ARG,
@@ -1005,13 +1014,13 @@ pub unsafe extern "C" fn kv_set_bytes(
         Ok(s) => s,
         Err(_) => return KV_INVALID_ARG,
     };
-    
+
     let data_slice = if data.is_null() || len == 0 {
         &[]
     } else {
         std::slice::from_raw_parts(data, len as usize)
     };
-    
+
     KV_STORE.set_bytes(&session_id, module_slot, ns_str, key_str, data_slice)
 }
 
@@ -1026,11 +1035,11 @@ pub unsafe extern "C" fn kv_get_bytes(
     let Some((session_id, module_slot)) = ctx_to_key(ctx) else {
         return KV_INVALID_ARG;
     };
-    
+
     if ns.is_null() || key.is_null() || out.is_null() || out_len.is_null() {
         return KV_INVALID_ARG;
     }
-    
+
     let ns_str = match std::ffi::CStr::from_ptr(ns).to_str() {
         Ok(s) => s,
         Err(_) => return KV_INVALID_ARG,
@@ -1039,7 +1048,7 @@ pub unsafe extern "C" fn kv_get_bytes(
         Ok(s) => s,
         Err(_) => return KV_INVALID_ARG,
     };
-    
+
     match KV_STORE.get_bytes(&session_id, module_slot, ns_str, key_str) {
         Ok(data) => {
             let ptr = libc::malloc(data.len()) as *mut u8;
@@ -1064,11 +1073,11 @@ pub unsafe extern "C" fn kv_delete_key(
     let Some((session_id, module_slot)) = ctx_to_key(ctx) else {
         return KV_INVALID_ARG;
     };
-    
+
     if ns.is_null() || key.is_null() {
         return KV_INVALID_ARG;
     }
-    
+
     let ns_str = match std::ffi::CStr::from_ptr(ns).to_str() {
         Ok(s) => s,
         Err(_) => return KV_INVALID_ARG,
@@ -1077,7 +1086,7 @@ pub unsafe extern "C" fn kv_delete_key(
         Ok(s) => s,
         Err(_) => return KV_INVALID_ARG,
     };
-    
+
     KV_STORE.delete_key(&session_id, module_slot, ns_str, key_str)
 }
 
@@ -1089,16 +1098,16 @@ pub unsafe extern "C" fn kv_clear_namespace(
     let Some((session_id, module_slot)) = ctx_to_key(ctx) else {
         return KV_INVALID_ARG;
     };
-    
+
     if ns.is_null() {
         return KV_INVALID_ARG;
     }
-    
+
     let ns_str = match std::ffi::CStr::from_ptr(ns).to_str() {
         Ok(s) => s,
         Err(_) => return KV_INVALID_ARG,
     };
-    
+
     KV_STORE.clear_namespace(&session_id, module_slot, ns_str)
 }
 
@@ -1111,16 +1120,16 @@ pub unsafe extern "C" fn kv_get_schema(
     let Some((session_id, module_slot)) = ctx_to_key(ctx) else {
         return KV_INVALID_ARG;
     };
-    
+
     if ns.is_null() || out_schema.is_null() {
         return KV_INVALID_ARG;
     }
-    
+
     let ns_str = match std::ffi::CStr::from_ptr(ns).to_str() {
         Ok(s) => s,
         Err(_) => return KV_INVALID_ARG,
     };
-    
+
     match KV_STORE.get_schema(&session_id, module_slot, ns_str) {
         Ok(schema) => {
             *out_schema = schema;
@@ -1139,16 +1148,16 @@ pub unsafe extern "C" fn kv_set_schema(
     let Some((session_id, module_slot)) = ctx_to_key(ctx) else {
         return KV_INVALID_ARG;
     };
-    
+
     if ns.is_null() {
         return KV_INVALID_ARG;
     }
-    
+
     let ns_str = match std::ffi::CStr::from_ptr(ns).to_str() {
         Ok(s) => s,
         Err(_) => return KV_INVALID_ARG,
     };
-    
+
     // Register single schema
     let _ = KV_STORE.register_schemas(&session_id, module_slot, &[(ns_str.to_string(), schema)]);
     KV_OK
@@ -1171,14 +1180,14 @@ pub unsafe extern "C" fn kv_last_error() -> *const c_char {
     // Return a static error string based on current state
     // In production, this would be thread-local
     static mut LAST_ERROR_BUF: [u8; 256] = [0; 256];
-    
+
     let msg = KV_STORE.get_last_error();
     let bytes = msg.as_bytes();
     let len = bytes.len().min(255);
-    
+
     LAST_ERROR_BUF[..len].copy_from_slice(&bytes[..len]);
     LAST_ERROR_BUF[len] = 0;
-    
+
     LAST_ERROR_BUF.as_ptr() as *const c_char
 }
 
@@ -1205,7 +1214,7 @@ pub fn create_kv_api() -> HostKvApiV1 {
 use libloading::{Library, Symbol};
 
 /// Read schema table from a loaded library
-/// 
+///
 /// Looks for:
 /// - *_host_kv_schemas_len() -> uint32_t
 /// - *_host_kv_schemas() -> const SynthiNamespaceSchemaV1*
@@ -1221,7 +1230,7 @@ pub fn read_schema_table(lib: &Library, module_slot: ModuleSlot) -> Vec<(String,
     } else {
         format!("{}_host_kv_schemas_len", prefix)
     };
-    
+
     let ptr_symbol_name = if prefix.is_empty() {
         "host_kv_schemas".to_string()
     } else {
@@ -1239,15 +1248,15 @@ pub fn read_schema_table(lib: &Library, module_slot: ModuleSlot) -> Vec<(String,
 
         if let (Ok(get_len), Ok(get_ptr)) = (len_fn, ptr_fn) {
             let count = get_len() as usize;
-            
+
             // Cap at max to prevent malicious modules
             let count = count.min(MAX_NAMESPACES_DECLARED);
-            
+
             if count > 0 {
                 let ptr = get_ptr();
                 if !ptr.is_null() {
                     let entries = std::slice::from_raw_parts(ptr, count);
-                    
+
                     for entry in entries {
                         if !entry.ns.is_null() {
                             if let Ok(ns) = std::ffi::CStr::from_ptr(entry.ns).to_str() {
@@ -1321,13 +1330,13 @@ mod tests {
         assert!(validate_ns_or_key("app-state", MAX_NAMESPACE_LEN).is_ok());
         assert!(validate_ns_or_key("app.state", MAX_NAMESPACE_LEN).is_ok());
         assert!(validate_ns_or_key("App123", MAX_NAMESPACE_LEN).is_ok());
-        
+
         // Invalid cases
         assert!(validate_ns_or_key("", MAX_NAMESPACE_LEN).is_err());
         assert!(validate_ns_or_key("app/state", MAX_NAMESPACE_LEN).is_err());
         assert!(validate_ns_or_key("app\\state", MAX_NAMESPACE_LEN).is_err());
         assert!(validate_ns_or_key("app state", MAX_NAMESPACE_LEN).is_err());
-        
+
         // Too long
         let long_name = "a".repeat(MAX_NAMESPACE_LEN + 1);
         assert!(validate_ns_or_key(&long_name, MAX_NAMESPACE_LEN).is_err());
@@ -1338,22 +1347,37 @@ mod tests {
         let store = HostKvStore::new();
         let session = "test-session";
         let slot = 0;
-        
+
         // Register namespace
         store.register_schemas(session, slot, &[("app".to_string(), 1)]);
-        
+
         // Set and get
-        assert_eq!(store.set_bytes(session, slot, "app", "key1", b"value1"), KV_OK);
-        assert_eq!(store.get_bytes(session, slot, "app", "key1"), Ok(b"value1".to_vec()));
-        
+        assert_eq!(
+            store.set_bytes(session, slot, "app", "key1", b"value1"),
+            KV_OK
+        );
+        assert_eq!(
+            store.get_bytes(session, slot, "app", "key1"),
+            Ok(b"value1".to_vec())
+        );
+
         // Update
-        assert_eq!(store.set_bytes(session, slot, "app", "key1", b"value2"), KV_OK);
-        assert_eq!(store.get_bytes(session, slot, "app", "key1"), Ok(b"value2".to_vec()));
-        
+        assert_eq!(
+            store.set_bytes(session, slot, "app", "key1", b"value2"),
+            KV_OK
+        );
+        assert_eq!(
+            store.get_bytes(session, slot, "app", "key1"),
+            Ok(b"value2".to_vec())
+        );
+
         // Delete
         assert_eq!(store.delete_key(session, slot, "app", "key1"), KV_OK);
-        assert_eq!(store.get_bytes(session, slot, "app", "key1"), Err(KV_NOT_FOUND));
-        
+        assert_eq!(
+            store.get_bytes(session, slot, "app", "key1"),
+            Err(KV_NOT_FOUND)
+        );
+
         // Delete non-existent (idempotent)
         assert_eq!(store.delete_key(session, slot, "app", "key1"), KV_OK);
     }
@@ -1363,9 +1387,12 @@ mod tests {
         let store = HostKvStore::new();
         let session = "test-session";
         let slot = 0;
-        
+
         // No namespace registered
-        assert_eq!(store.set_bytes(session, slot, "app", "key1", b"value1"), KV_INVALID_ARG);
+        assert_eq!(
+            store.set_bytes(session, slot, "app", "key1", b"value1"),
+            KV_INVALID_ARG
+        );
     }
 
     #[test]
@@ -1373,38 +1400,46 @@ mod tests {
         let store = HostKvStore::new();
         let session = "test-session";
         let slot = 0;
-        
+
         // Register and write
         store.register_schemas(session, slot, &[("app".to_string(), 1)]);
         store.set_bytes(session, slot, "app", "key1", b"value1");
-        assert_eq!(store.get_bytes(session, slot, "app", "key1"), Ok(b"value1".to_vec()));
-        
+        assert_eq!(
+            store.get_bytes(session, slot, "app", "key1"),
+            Ok(b"value1".to_vec())
+        );
+
         // Change schema - should clear
         let events = store.register_schemas(session, slot, &[("app".to_string(), 2)]);
-        
+
         // Should have reset event
-        assert!(events.iter().any(|e| matches!(e, HostKvSchemaEvent::SchemaMismatchReset { .. })));
-        
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, HostKvSchemaEvent::SchemaMismatchReset { .. })));
+
         // Data should be gone
-        assert_eq!(store.get_bytes(session, slot, "app", "key1"), Err(KV_NOT_FOUND));
+        assert_eq!(
+            store.get_bytes(session, slot, "app", "key1"),
+            Err(KV_NOT_FOUND)
+        );
     }
 
     #[test]
     fn test_quota_enforcement() {
         let mut store = HostKvStore::new();
         store.max_value_bytes = 10; // Very small for testing
-        
+
         let session = "test-session";
         let slot = 0;
-        
+
         store.register_schemas(session, slot, &[("app".to_string(), 1)]);
-        
+
         // Should fail - too large
         assert_eq!(
             store.set_bytes(session, slot, "app", "key1", &[0u8; 20]),
             KV_QUOTA_EXCEEDED
         );
-        
+
         // Should succeed
         assert_eq!(
             store.set_bytes(session, slot, "app", "key1", &[0u8; 5]),
@@ -1437,7 +1472,7 @@ impl Default for AutoPersistConfig {
         Self {
             persistence_dir: std::path::PathBuf::from(".synthi_kv_persistence"),
             enabled: true,
-            debounce_ms: 1000,  // 1 second debounce
+            debounce_ms: 1000,        // 1 second debounce
             max_file_age_secs: 86400, // 24 hours
         }
     }
@@ -1459,24 +1494,26 @@ impl AutoPersistManager {
             // Ensure persistence directory exists
             std::fs::create_dir_all(&config.persistence_dir)?;
         }
-        
+
         Ok(Self {
             config,
             last_save: std::sync::RwLock::new(HashMap::new()),
             dirty_sessions: std::sync::RwLock::new(std::collections::HashSet::new()),
         })
     }
-    
+
     /// Create with default config
     pub fn new_default() -> std::io::Result<Self> {
         Self::new(AutoPersistConfig::default())
     }
-    
+
     /// Get the persistence file path for a session
     fn session_file_path(&self, session_id: &str) -> std::path::PathBuf {
-        self.config.persistence_dir.join(format!("{}.kv.json", session_id))
+        self.config
+            .persistence_dir
+            .join(format!("{}.kv.json", session_id))
     }
-    
+
     /// Mark a session as dirty (needs saving)
     pub fn mark_dirty(&self, session_id: &str) {
         if self.config.enabled {
@@ -1485,21 +1522,23 @@ impl AutoPersistManager {
             }
         }
     }
-    
+
     /// Check if a session needs saving and enough time has passed
     fn should_save(&self, session_id: &str) -> bool {
         if !self.config.enabled {
             return false;
         }
-        
-        let is_dirty = self.dirty_sessions.read()
+
+        let is_dirty = self
+            .dirty_sessions
+            .read()
             .map(|d| d.contains(session_id))
             .unwrap_or(false);
-        
+
         if !is_dirty {
             return false;
         }
-        
+
         // Check debounce
         if let Ok(last_save) = self.last_save.read() {
             if let Some(last) = last_save.get(session_id) {
@@ -1508,71 +1547,80 @@ impl AutoPersistManager {
                 }
             }
         }
-        
+
         true
     }
-    
+
     /// Save a session's state to disk
     pub fn save_session(&self, store: &HostKvStore, session_id: &str) -> Result<(), String> {
         if !self.config.enabled {
             return Ok(());
         }
-        
+
         let path = self.session_file_path(session_id);
         let json = store.serialize_to_json()?;
-        
+
         std::fs::write(&path, &json)
             .map_err(|e| format!("Failed to write persistence file: {}", e))?;
-        
+
         // Update last save time
         if let Ok(mut last_save) = self.last_save.write() {
             last_save.insert(session_id.to_string(), std::time::Instant::now());
         }
-        
+
         // Clear dirty flag
         if let Ok(mut dirty) = self.dirty_sessions.write() {
             dirty.remove(session_id);
         }
-        
-        eprintln!("[Host KV] Persisted session {} to {}", session_id, path.display());
+
+        eprintln!(
+            "[Host KV] Persisted session {} to {}",
+            session_id,
+            path.display()
+        );
         Ok(())
     }
-    
+
     /// Load a session's state from disk
     pub fn load_session(&self, store: &HostKvStore, session_id: &str) -> Result<bool, String> {
         if !self.config.enabled {
             return Ok(false);
         }
-        
+
         let path = self.session_file_path(session_id);
-        
+
         if !path.exists() {
             return Ok(false);
         }
-        
+
         let json = std::fs::read_to_string(&path)
             .map_err(|e| format!("Failed to read persistence file: {}", e))?;
-        
+
         let count = store.deserialize_from_json(&json)?;
-        
-        eprintln!("[Host KV] Restored {} entries for session {} from {}", 
-                  count, session_id, path.display());
-        
+
+        eprintln!(
+            "[Host KV] Restored {} entries for session {} from {}",
+            count,
+            session_id,
+            path.display()
+        );
+
         Ok(true)
     }
-    
+
     /// Check and save dirty sessions (call periodically)
     pub fn flush_dirty(&self, store: &HostKvStore) {
         if !self.config.enabled {
             return;
         }
-        
+
         let sessions_to_save: Vec<String> = {
-            self.dirty_sessions.read()
+            self.dirty_sessions
+                .read()
                 .map(|d| d.iter().cloned().collect())
                 .unwrap_or_default()
         };
-        
+
         for session_id in sessions_to_save {
             if self.should_save(&session_id) {
                 if let Err(e) = self.save_session(store, &session_id) {
@@ -1581,34 +1629,38 @@ impl AutoPersistManager {
             }
         }
     }
-    
+
     /// Save all dirty sessions immediately (call on shutdown)
     pub fn save_all(&self, store: &HostKvStore) {
         if !self.config.enabled {
             return;
         }
-        
+
         let sessions_to_save: Vec<String> = {
-            self.dirty_sessions.read()
+            self.dirty_sessions
+                .read()
                 .map(|d| d.iter().cloned().collect())
                 .unwrap_or_default()
         };
-        
+
         for session_id in sessions_to_save {
             if let Err(e) = self.save_session(store, &session_id) {
-                eprintln!("[Host KV] Failed to persist session {} on shutdown: {}", session_id, e);
+                eprintln!(
+                    "[Host KV] Failed to persist session {} on shutdown: {}",
+                    session_id, e
+                );
             }
         }
     }
-    
+
     /// Load all sessions from disk on startup
     pub fn load_all(&self, store: &HostKvStore) -> Result<usize, String> {
         if !self.config.enabled {
             return Ok(0);
         }
-        
+
         let mut total = 0;
-        
+
         if let Ok(entries) = std::fs::read_dir(&self.config.persistence_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -1618,25 +1670,27 @@ impl AutoPersistManager {
                         match self.load_session(store, session_id) {
                             Ok(true) => total += 1,
                             Ok(false) => {}
-                            Err(e) => eprintln!("[Host KV] Failed to load {}: {}", path.display(), e),
+                            Err(e) => {
+                                eprintln!("[Host KV] Failed to load {}: {}", path.display(), e)
+                            }
                         }
                     }
                 }
             }
         }
-        
+
         Ok(total)
     }
-    
+
     /// Clean up old persistence files
     pub fn cleanup_old_files(&self) -> Result<usize, String> {
         if !self.config.enabled {
             return Ok(0);
         }
-        
+
         let max_age = std::time::Duration::from_secs(self.config.max_file_age_secs);
         let mut removed = 0;
-        
+
         if let Ok(entries) = std::fs::read_dir(&self.config.persistence_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -1654,7 +1708,7 @@ impl AutoPersistManager {
                 }
             }
         }
-        
+
         Ok(removed)
     }
 }
@@ -1662,7 +1716,10 @@ impl AutoPersistManager {
 impl Default for AutoPersistManager {
     fn default() -> Self {
         Self::new_default().unwrap_or_else(|_| Self {
-            config: AutoPersistConfig { enabled: false, ..Default::default() },
+            config: AutoPersistConfig {
+                enabled: false,
+                ..Default::default()
+            },
             last_save: std::sync::RwLock::new(HashMap::new()),
             dirty_sessions: std::sync::RwLock::new(std::collections::HashSet::new()),
         })

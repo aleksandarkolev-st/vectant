@@ -23,10 +23,9 @@ pub enum BuildTarget {
     RustNative,
     Typescript,
     Python,
-    
+
     // Mobile emulator target - builds APK and runs in Android emulator
     ReactNativeAndroidEmulator,
-    
     // Future: Native Android (Java/Kotlin)
     // NativeAndroidEmulator,
 }
@@ -41,7 +40,7 @@ impl BuildTarget {
             _ => RequiredOS::Any,
         }
     }
-    
+
     /// Returns minimum RAM requirement in GB
     pub fn min_ram_gb(&self) -> u32 {
         match self {
@@ -51,7 +50,7 @@ impl BuildTarget {
             BuildTarget::ReactNativeAndroidEmulator => 6,
         }
     }
-    
+
     /// Returns minimum disk space requirement in GB
     pub fn min_disk_gb(&self) -> u32 {
         match self {
@@ -61,7 +60,7 @@ impl BuildTarget {
             BuildTarget::ReactNativeAndroidEmulator => 10,
         }
     }
-    
+
     /// Returns estimated execution time in seconds
     pub fn estimated_execution_seconds(&self) -> u32 {
         match self {
@@ -73,25 +72,23 @@ impl BuildTarget {
             BuildTarget::ReactNativeAndroidEmulator => 330,
         }
     }
-    
+
     /// Returns compatible capability classes for this target
     pub fn compatible_capabilities(&self) -> &'static [CapabilityClass] {
         match self {
-            BuildTarget::CppNative 
-            | BuildTarget::RustNative 
-            | BuildTarget::Typescript 
+            BuildTarget::CppNative
+            | BuildTarget::RustNative
+            | BuildTarget::Typescript
             | BuildTarget::Python => &[
                 CapabilityClass::LinuxBasic,
                 CapabilityClass::LinuxReactNativeEmulator,
             ],
-            
+
             // Emulator execution requires the emulator capability class
-            BuildTarget::ReactNativeAndroidEmulator => &[
-                CapabilityClass::LinuxReactNativeEmulator,
-            ],
+            BuildTarget::ReactNativeAndroidEmulator => &[CapabilityClass::LinuxReactNativeEmulator],
         }
     }
-    
+
     /// Whether this is a mobile/emulator target
     pub fn is_mobile_target(&self) -> bool {
         matches!(self, BuildTarget::ReactNativeAndroidEmulator)
@@ -108,7 +105,7 @@ impl BuildTarget {
 pub enum CapabilityClass {
     /// Basic Linux worker: C++, Rust, TypeScript, Python only
     LinuxBasic,
-    
+
     /// Linux with Node.js + Android SDK + Emulator (React Native mobile dev)
     /// Includes: Node.js, npm, Java, Android SDK, cmdline-tools, emulator, system-images
     LinuxReactNativeEmulator,
@@ -134,19 +131,26 @@ impl CapabilityClass {
             ],
         }
     }
-    
+
     /// Whether this capability class supports mobile development
     pub fn supports_mobile(&self) -> bool {
         matches!(self, CapabilityClass::LinuxReactNativeEmulator)
     }
-    
+
     /// Required toolchains for this capability class
     pub fn required_toolchains(&self) -> &'static [&'static str] {
         match self {
             CapabilityClass::LinuxBasic => &["gcc", "rustc", "node", "python3"],
             CapabilityClass::LinuxReactNativeEmulator => &[
-                "gcc", "rustc", "node", "python3",
-                "java", "adb", "emulator", "avdmanager", "npx",
+                "gcc",
+                "rustc",
+                "node",
+                "python3",
+                "java",
+                "adb",
+                "emulator",
+                "avdmanager",
+                "npx",
             ],
         }
     }
@@ -161,19 +165,19 @@ impl CapabilityClass {
 pub struct EmulatorCapabilities {
     /// Whether Android emulator is available
     pub android_emulator: bool,
-    
+
     /// Whether KVM hardware acceleration is available
     pub kvm_available: bool,
-    
+
     /// Installed system images (e.g., ["system-images;android-34;google_apis;x86_64"])
     pub system_images: Vec<String>,
-    
+
     /// Pre-created AVD names
     pub avd_names: Vec<String>,
-    
+
     /// Maximum concurrent emulators (usually 1 per worker)
     pub max_concurrent: u32,
-    
+
     /// Current running emulator count
     pub current_running: u32,
 }
@@ -241,20 +245,20 @@ pub struct WarmCacheInfo {
 pub struct WorkerCapabilityReport {
     #[serde(rename = "type")]
     pub msg_type: String, // "capability_report"
-    
+
     pub worker_id: String,
     pub capability_class: CapabilityClass,
-    
+
     pub os: OSInfo,
     pub toolchains: HashMap<String, ToolchainInfo>,
     pub build_targets: Vec<BuildTarget>,
     pub resources: ResourceInfo,
     pub warm_caches: WarmCacheInfo,
-    
+
     pub health: WorkerHealth,
     pub current_job_id: Option<String>,
     pub jobs_completed_total: u64,
-    
+
     pub registered_at: String,
     pub last_heartbeat: String,
 }
@@ -278,12 +282,12 @@ pub struct BuildJobRequest {
     pub job_id: String,
     pub workspace_id: String,
     pub user_id: String,
-    
+
     pub build: BuildSpec,
     pub source: SourceSpec,
     pub routing: Option<RoutingHints>,
     pub output: OutputSpec,
-    
+
     pub created_at: String,
     pub expires_at: String,
 }
@@ -410,12 +414,12 @@ impl RoutingErrorCode {
         matches!(
             self,
             RoutingErrorCode::NoCapableWorkers
-            | RoutingErrorCode::AllWorkersBusy
-            | RoutingErrorCode::ResourceInsufficient
-            | RoutingErrorCode::QueueTimeout
+                | RoutingErrorCode::AllWorkersBusy
+                | RoutingErrorCode::ResourceInsufficient
+                | RoutingErrorCode::QueueTimeout
         )
     }
-    
+
     /// Suggested HTTP status code
     pub fn http_status(&self) -> u16 {
         match self {
@@ -450,45 +454,41 @@ impl Default for JobRouter {
 
 impl JobRouter {
     /// Score a worker for a job (higher = better match)
-    pub fn score_worker(
-        &self,
-        worker: &WorkerCapabilityReport,
-        job: &BuildJobRequest,
-    ) -> f64 {
+    pub fn score_worker(&self, worker: &WorkerCapabilityReport, job: &BuildJobRequest) -> f64 {
         let mut score = 0.0;
-        
+
         // Base availability score
         match worker.health {
             WorkerHealth::Ready => score += 100.0,
             WorkerHealth::Busy => score += 0.0,
             _ => return -1000.0, // Ineligible
         }
-        
+
         // Cache affinity
         if worker.warm_caches.workspace_ids.contains(&job.workspace_id) {
             score += 50.0; // Major win for incremental builds
         }
-        
+
         // Resource headroom
         let ram_ratio = worker.resources.ram_available_gb / worker.resources.ram_total_gb;
         score += ram_ratio * 20.0;
-        
+
         let disk_headroom = (worker.resources.disk_available_gb / 50.0).min(1.0);
         score += disk_headroom * 10.0;
-        
+
         // Preferred worker bonus
         if let Some(ref hints) = job.routing {
             if hints.preferred_worker_id.as_ref() == Some(&worker.worker_id) {
                 score += 200.0;
             }
         }
-        
+
         // Load balancing (prefer less loaded)
         score -= worker.resources.cpu_load_percent * 0.5;
-        
+
         score
     }
-    
+
     /// Check if a worker is eligible for a job
     pub fn is_eligible(
         &self,
@@ -496,17 +496,16 @@ impl JobRouter {
         job: &BuildJobRequest,
     ) -> Result<(), String> {
         let target = job.build.target;
-        
+
         // Capability check
         let compatible = target.compatible_capabilities();
         if !compatible.contains(&worker.capability_class) {
             return Err(format!(
                 "capability mismatch: {} not in {:?}",
-                worker.capability_class as u8,
-                compatible
+                worker.capability_class as u8, compatible
             ));
         }
-        
+
         // OS check
         let required_os = target.required_os();
         if required_os != RequiredOS::Any {
@@ -523,12 +522,12 @@ impl JobRouter {
                 ));
             }
         }
-        
+
         // Health check
         if !matches!(worker.health, WorkerHealth::Ready | WorkerHealth::Busy) {
             return Err(format!("unhealthy: {:?}", worker.health));
         }
-        
+
         // Resource check
         let min_disk = target.min_disk_gb() as f64;
         if worker.resources.disk_available_gb < min_disk {
@@ -537,7 +536,7 @@ impl JobRouter {
                 min_disk, worker.resources.disk_available_gb
             ));
         }
-        
+
         let min_ram = target.min_ram_gb() as f64;
         if worker.resources.ram_available_gb < min_ram {
             return Err(format!(
@@ -545,7 +544,7 @@ impl JobRouter {
                 min_ram, worker.resources.ram_available_gb
             ));
         }
-        
+
         Ok(())
     }
 }
@@ -682,7 +681,7 @@ pub struct ReactNativeProjectInfo {
     pub is_react_native_project: bool,
     pub package_json_path: Option<String>,
     pub app_name: Option<String>,
-    pub app_id: Option<String>,  // e.g., "com.example.myapp"
+    pub app_id: Option<String>, // e.g., "com.example.myapp"
     pub react_native_version: Option<String>,
     pub min_sdk_version: Option<u32>,
 }
@@ -704,10 +703,10 @@ pub struct AndroidSdkHealth {
 impl AndroidSdkHealth {
     /// Returns true if the SDK is ready for emulator execution
     pub fn is_ready(&self) -> bool {
-        self.node_ok 
-            && self.adb_ok 
-            && self.emulator_ok 
-            && self.avdmanager_ok 
+        self.node_ok
+            && self.adb_ok
+            && self.emulator_ok
+            && self.avdmanager_ok
             && self.java_ok
             && !self.system_images.is_empty()
     }
@@ -716,11 +715,14 @@ impl AndroidSdkHealth {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_emulator_target_requirements() {
         // Emulator requires Linux
-        assert_eq!(BuildTarget::ReactNativeAndroidEmulator.required_os(), RequiredOS::Linux);
+        assert_eq!(
+            BuildTarget::ReactNativeAndroidEmulator.required_os(),
+            RequiredOS::Linux
+        );
         // Non-mobile targets can run anywhere
         assert_eq!(BuildTarget::CppNative.required_os(), RequiredOS::Any);
         // Resource requirements
@@ -728,26 +730,26 @@ mod tests {
         assert_eq!(BuildTarget::ReactNativeAndroidEmulator.min_disk_gb(), 10);
         assert_eq!(BuildTarget::CppNative.min_ram_gb(), 2);
     }
-    
+
     #[test]
     fn test_capability_compatibility() {
         // Emulator target only works with emulator capability
         let targets = BuildTarget::ReactNativeAndroidEmulator.compatible_capabilities();
         assert!(targets.contains(&CapabilityClass::LinuxReactNativeEmulator));
         assert!(!targets.contains(&CapabilityClass::LinuxBasic));
-        
+
         // Basic targets work on both capability classes
         let cpp_targets = BuildTarget::CppNative.compatible_capabilities();
         assert!(cpp_targets.contains(&CapabilityClass::LinuxBasic));
         assert!(cpp_targets.contains(&CapabilityClass::LinuxReactNativeEmulator));
     }
-    
+
     #[test]
     fn test_capability_class_mobile_support() {
         assert!(CapabilityClass::LinuxReactNativeEmulator.supports_mobile());
         assert!(!CapabilityClass::LinuxBasic.supports_mobile());
     }
-    
+
     #[test]
     fn test_routing_error_retryable() {
         assert!(RoutingErrorCode::AllWorkersBusy.is_retryable());

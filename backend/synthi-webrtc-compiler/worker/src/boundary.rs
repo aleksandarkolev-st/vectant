@@ -160,17 +160,17 @@ impl BoundaryManifest {
             max_boundaries: MAX_BOUNDARIES_PER_MODULE,
         }
     }
-    
+
     pub fn with_boundary(mut self, decl: BoundaryDeclaration) -> Self {
         self.boundaries.push(decl);
         self
     }
-    
+
     pub fn with_ownership(mut self, rule: OwnershipRule) -> Self {
         self.ownership_rules.push(rule);
         self
     }
-    
+
     /// Validate that boundary count is within limits
     pub fn validate(&self) -> Result<(), String> {
         if self.boundaries.len() > self.max_boundaries {
@@ -180,7 +180,7 @@ impl BoundaryManifest {
                 self.max_boundaries
             ));
         }
-        
+
         // Check for duplicate boundary IDs
         let mut seen = HashSet::new();
         for decl in &self.boundaries {
@@ -188,7 +188,7 @@ impl BoundaryManifest {
                 return Err(format!("Duplicate boundary ID: {}", decl.id));
             }
         }
-        
+
         // Validate ownership rules reference valid boundaries
         for rule in &self.ownership_rules {
             if !self.boundaries.iter().any(|b| b.id == rule.owner_boundary) {
@@ -198,13 +198,17 @@ impl BoundaryManifest {
                 ));
             }
         }
-        
+
         Ok(())
     }
 }
 
 impl Boundary {
-    pub fn new(id: impl Into<String>, boundary_type: BoundaryType, parent: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        boundary_type: BoundaryType,
+        parent: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             boundary_type,
@@ -219,7 +223,7 @@ impl Boundary {
             manifest_validated: false,
         }
     }
-    
+
     /// Create boundary from explicit manifest declaration
     pub fn from_declaration(decl: &BoundaryDeclaration, parent: impl Into<String>) -> Self {
         let mut boundary = Self::new(&decl.id, decl.boundary_type, parent);
@@ -290,7 +294,9 @@ impl ReloadPlan {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.direct_changes.is_empty() && self.cascade_changes.is_empty() && !self.requires_full_reload
+        self.direct_changes.is_empty()
+            && self.cascade_changes.is_empty()
+            && !self.requires_full_reload
     }
 
     pub fn all_boundaries(&self) -> Vec<&BoundaryId> {
@@ -333,28 +339,28 @@ impl BoundaryTracker {
             total_boundary_count: 0,
         }
     }
-    
+
     /// Load and validate a manifest BEFORE registering boundaries
     pub fn load_manifest(&mut self, manifest: BoundaryManifest) -> Result<(), String> {
         manifest.validate()?;
-        
+
         // Check total boundary cap
         let new_total = self.total_boundary_count + manifest.boundaries.len();
         if new_total > MAX_TOTAL_BOUNDARIES {
             return Err(format!(
                 "Total boundary count would exceed cap: {} > {}",
-                new_total,
-                MAX_TOTAL_BOUNDARIES
+                new_total, MAX_TOTAL_BOUNDARIES
             ));
         }
-        
+
         // Register boundaries from manifest
         for decl in &manifest.boundaries {
             let boundary = Boundary::from_declaration(decl, &manifest.module_name);
             self.register_internal(boundary)?;
         }
-        
-        self.manifests.insert(manifest.module_name.clone(), manifest);
+
+        self.manifests
+            .insert(manifest.module_name.clone(), manifest);
         Ok(())
     }
 
@@ -368,10 +374,10 @@ impl BoundaryTracker {
                 boundary.id
             ));
         }
-        
+
         self.register_internal(boundary)
     }
-    
+
     /// Internal registration (bypasses manifest check for manifest-loaded boundaries)
     fn register_internal(&mut self, boundary: Boundary) -> Result<(), String> {
         // Check caps
@@ -381,14 +387,14 @@ impl BoundaryTracker {
                 MAX_TOTAL_BOUNDARIES
             ));
         }
-        
+
         // Validate dependencies exist
         for dep in &boundary.dependencies {
             if !self.boundaries.contains_key(dep) && dep != &boundary.id {
                 // Dependency will be registered later - track for later validation
             }
         }
-        
+
         // Update reverse dependency map
         for dep in &boundary.dependencies {
             self.dependents
@@ -401,7 +407,7 @@ impl BoundaryTracker {
         self.total_boundary_count += 1;
         Ok(())
     }
-    
+
     /// Legacy register for backward compatibility - marks as unvalidated
     #[deprecated(note = "Use load_manifest() instead of direct registration")]
     pub fn register_unvalidated(&mut self, mut boundary: Boundary) {
@@ -531,15 +537,20 @@ impl BoundaryTracker {
         BoundaryStats {
             total_boundaries: self.boundaries.len(),
             reload_count: self.reload_count.load(Ordering::Relaxed),
-            manifest_validated_count: self.boundaries.values().filter(|b| b.manifest_validated).count(),
-            unvalidated_count: self.boundaries.values().filter(|b| !b.manifest_validated).count(),
-            boundaries_by_type: self
+            manifest_validated_count: self
                 .boundaries
                 .values()
-                .fold(HashMap::new(), |mut acc, b| {
-                    *acc.entry(b.boundary_type.as_str().to_string()).or_insert(0) += 1;
-                    acc
-                }),
+                .filter(|b| b.manifest_validated)
+                .count(),
+            unvalidated_count: self
+                .boundaries
+                .values()
+                .filter(|b| !b.manifest_validated)
+                .count(),
+            boundaries_by_type: self.boundaries.values().fold(HashMap::new(), |mut acc, b| {
+                *acc.entry(b.boundary_type.as_str().to_string()).or_insert(0) += 1;
+                acc
+            }),
         }
     }
 }
@@ -650,7 +661,7 @@ pub mod presets {
             owned_file_patterns: vec![format!("src/gui/widgets/{}/**", widget_id)],
         }
     }
-    
+
     /// DEPRECATED: Old boundary creation - use manifests instead
     #[deprecated(note = "Use core_manifest() and load_manifest() instead")]
     pub fn core_boundaries() -> Vec<Boundary> {
@@ -676,13 +687,12 @@ impl BoundaryManifest {
             .map_err(|e| format!("Failed to read manifest file {}: {}", path.display(), e))?;
         Self::parse_json(&content)
     }
-    
+
     /// Parse manifest from JSON string
     pub fn parse_json(json: &str) -> Result<Self, String> {
-        serde_json::from_str(json)
-            .map_err(|e| format!("Failed to parse manifest JSON: {}", e))
+        serde_json::from_str(json).map_err(|e| format!("Failed to parse manifest JSON: {}", e))
     }
-    
+
     /// Save manifest to JSON file
     pub fn save_to_file(&self, path: &std::path::Path) -> Result<(), String> {
         let json = serde_json::to_string_pretty(self)
@@ -690,7 +700,7 @@ impl BoundaryManifest {
         std::fs::write(path, json)
             .map_err(|e| format!("Failed to write manifest to {}: {}", path.display(), e))
     }
-    
+
     /// Generate manifest from source file analysis
     pub fn generate_from_source(
         module_name: &str,
@@ -698,12 +708,16 @@ impl BoundaryManifest {
     ) -> Result<Self, String> {
         let mut manifest = BoundaryManifest::new(module_name);
         let detector = WidgetBoundaryDetector::new();
-        
+
         // Scan source directory for widget files
         if let Ok(entries) = std::fs::read_dir(source_root) {
             for entry in entries.filter_map(|e| e.ok()) {
                 let path = entry.path();
-                if path.extension().map(|e| e == "cpp" || e == "c" || e == "h").unwrap_or(false) {
+                if path
+                    .extension()
+                    .map(|e| e == "cpp" || e == "c" || e == "h")
+                    .unwrap_or(false)
+                {
                     if let Ok(content) = std::fs::read_to_string(&path) {
                         if let Some(widget) = detector.detect_widget(&content, &path) {
                             manifest.boundaries.push(widget);
@@ -712,7 +726,7 @@ impl BoundaryManifest {
                 }
             }
         }
-        
+
         manifest.validate()?;
         Ok(manifest)
     }
@@ -766,7 +780,7 @@ impl WidgetBoundaryDetector {
             cache: std::collections::HashMap::new(),
         }
     }
-    
+
     /// Default patterns for common widget/component patterns
     fn default_patterns() -> Vec<WidgetPattern> {
         vec![
@@ -836,17 +850,18 @@ impl WidgetBoundaryDetector {
             },
         ]
     }
-    
+
     /// Detect widget in source content
     pub fn detect_widget(
-        &self, 
-        content: &str, 
-        file_path: &std::path::Path
+        &self,
+        content: &str,
+        file_path: &std::path::Path,
     ) -> Option<BoundaryDeclaration> {
         let detected = self.detect_all_widgets(content, file_path);
-        
+
         // Return highest confidence detection as a boundary declaration
-        detected.into_iter()
+        detected
+            .into_iter()
             .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap())
             .map(|w| BoundaryDeclaration {
                 id: format!("widget_{}", w.name.to_lowercase()),
@@ -856,32 +871,32 @@ impl WidgetBoundaryDetector {
                 owned_file_patterns: vec![file_path.to_string_lossy().to_string()],
             })
     }
-    
+
     /// Detect all widgets in source content
     pub fn detect_all_widgets(
-        &self, 
-        content: &str, 
-        file_path: &std::path::Path
+        &self,
+        content: &str,
+        file_path: &std::path::Path,
     ) -> Vec<DetectedWidget> {
         let mut detected = Vec::new();
         let file_path_str = file_path.to_string_lossy().to_string();
-        
+
         for pattern in &self.widget_patterns {
             if let Ok(re) = regex::Regex::new(&pattern.pattern) {
                 for cap in re.captures_iter(content) {
                     if let Some(name_match) = cap.get(pattern.name_capture) {
                         let name = name_match.as_str().to_string();
-                        
+
                         // Find line numbers
                         let start_pos = name_match.start();
                         let start_line = content[..start_pos].lines().count();
-                        
+
                         // Detect exports (functions with this widget name prefix)
                         let exports = self.detect_exports(content, &name);
-                        
+
                         // Detect dependencies (includes/imports)
                         let dependencies = self.detect_dependencies(content);
-                        
+
                         detected.push(DetectedWidget {
                             name: name.clone(),
                             file_path: file_path_str.clone(),
@@ -896,28 +911,32 @@ impl WidgetBoundaryDetector {
                 }
             }
         }
-        
+
         // Deduplicate by name, keeping highest confidence
-        let mut seen: std::collections::HashMap<String, DetectedWidget> = std::collections::HashMap::new();
+        let mut seen: std::collections::HashMap<String, DetectedWidget> =
+            std::collections::HashMap::new();
         for widget in detected {
             let entry = seen.entry(widget.name.clone()).or_insert(widget.clone());
             if widget.confidence > entry.confidence {
                 *entry = widget;
             }
         }
-        
+
         seen.into_values().collect()
     }
-    
+
     /// Detect exported functions for a widget
     fn detect_exports(&self, content: &str, widget_name: &str) -> Vec<String> {
         let mut exports = Vec::new();
         let name_lower = widget_name.to_lowercase();
-        
+
         // Look for functions with widget name prefix
-        let func_pattern = format!(r"(?:void|int|bool|{name}[*\s])\s+({name_lower}_\w+)\s*\(", 
-            name = widget_name, name_lower = name_lower);
-        
+        let func_pattern = format!(
+            r"(?:void|int|bool|{name}[*\s])\s+({name_lower}_\w+)\s*\(",
+            name = widget_name,
+            name_lower = name_lower
+        );
+
         if let Ok(re) = regex::Regex::new(&func_pattern) {
             for cap in re.captures_iter(content) {
                 if let Some(func_match) = cap.get(1) {
@@ -925,14 +944,14 @@ impl WidgetBoundaryDetector {
                 }
             }
         }
-        
+
         exports
     }
-    
+
     /// Detect dependencies from includes
     fn detect_dependencies(&self, content: &str) -> Vec<String> {
         let mut deps = Vec::new();
-        
+
         // Match #include "..." (local includes)
         if let Ok(re) = regex::Regex::new(r#"#include\s+"([^"]+)""#) {
             for cap in re.captures_iter(content) {
@@ -951,15 +970,15 @@ impl WidgetBoundaryDetector {
                 }
             }
         }
-        
+
         deps
     }
-    
+
     /// Add custom pattern for project-specific widget detection
     pub fn add_pattern(&mut self, pattern: WidgetPattern) {
         self.widget_patterns.push(pattern);
     }
-    
+
     /// Clear detection cache
     pub fn clear_cache(&mut self) {
         self.cache.clear();
@@ -1019,33 +1038,33 @@ impl OwnershipValidator {
     /// Create validator from manifest ownership rules
     pub fn from_manifest(manifest: &BoundaryManifest) -> Result<Self, String> {
         let mut rules = Vec::new();
-        
+
         for rule in &manifest.ownership_rules {
             // Convert glob pattern to regex
             let regex_pattern = glob_to_regex(&rule.pattern)?;
             let compiled = regex::Regex::new(&regex_pattern)
                 .map_err(|e| format!("Invalid pattern '{}': {}", rule.pattern, e))?;
-            
+
             rules.push(CompiledOwnershipRule {
                 pattern: compiled,
                 owner: rule.owner_boundary.clone(),
                 exclusive: rule.exclusive,
             });
         }
-        
+
         Ok(Self { rules })
     }
-    
+
     /// Validate file ownership for a set of files
     pub fn validate(&self, files: &[String]) -> OwnershipValidationResult {
         let mut file_owners: HashMap<String, Vec<String>> = HashMap::new();
         let mut errors = Vec::new();
         let mut warnings = Vec::new();
-        
+
         for file in files {
             let mut owners = Vec::new();
             let mut has_exclusive = false;
-            
+
             for rule in &self.rules {
                 if rule.pattern.is_match(file) {
                     if rule.exclusive && !owners.is_empty() {
@@ -1064,7 +1083,7 @@ impl OwnershipValidator {
                     owners.push(rule.owner.clone());
                 }
             }
-            
+
             if owners.is_empty() {
                 warnings.push(format!("File '{}' has no boundary owner", file));
             } else if owners.len() > 1 && has_exclusive {
@@ -1077,10 +1096,10 @@ impl OwnershipValidator {
                     ),
                 });
             }
-            
+
             file_owners.insert(file.clone(), owners);
         }
-        
+
         OwnershipValidationResult {
             valid: errors.is_empty(),
             errors,
@@ -1088,7 +1107,7 @@ impl OwnershipValidator {
             file_owners,
         }
     }
-    
+
     /// Get owner boundary for a file
     pub fn get_owner(&self, file: &str) -> Option<String> {
         for rule in &self.rules {
@@ -1098,10 +1117,11 @@ impl OwnershipValidator {
         }
         None
     }
-    
+
     /// Get all files owned by a boundary
     pub fn get_owned_files(&self, boundary_id: &str, all_files: &[String]) -> Vec<String> {
-        all_files.iter()
+        all_files
+            .iter()
             .filter(|f| self.get_owner(f).as_deref() == Some(boundary_id))
             .cloned()
             .collect()
@@ -1112,7 +1132,7 @@ impl OwnershipValidator {
 fn glob_to_regex(glob: &str) -> Result<String, String> {
     let mut regex = String::from("^");
     let mut chars = glob.chars().peekable();
-    
+
     while let Some(c) = chars.next() {
         match c {
             '*' => {
@@ -1136,7 +1156,7 @@ fn glob_to_regex(glob: &str) -> Result<String, String> {
             _ => regex.push(c),
         }
     }
-    
+
     regex.push('$');
     Ok(regex)
 }
@@ -1149,17 +1169,17 @@ mod tests {
     fn test_boundary_registration_with_manifest() {
         let mut tracker = BoundaryTracker::new();
         let manifest = presets::core_manifest();
-        
+
         // Should succeed with manifest
         assert!(tracker.load_manifest(manifest).is_ok());
         assert!(tracker.boundaries.len() > 0);
     }
-    
+
     #[test]
     fn test_boundary_registration_without_manifest_fails() {
         let mut tracker = BoundaryTracker::new();
         let boundary = Boundary::new("b1", BoundaryType::CoreLogic, "core");
-        
+
         // Should fail without manifest validation
         assert!(tracker.register(boundary).is_err());
     }
@@ -1167,16 +1187,16 @@ mod tests {
     #[test]
     fn test_reload_plan_partial() {
         let mut tracker = BoundaryTracker::new();
-        
+
         // Create validated boundaries
         let mut render = Boundary::new("render", BoundaryType::GuiRender, "gui").with_hash(100);
         render.manifest_validated = true;
-        
+
         let mut events = Boundary::new("events", BoundaryType::GuiEvents, "gui")
             .with_hash(200)
             .with_dependency("render");
         events.manifest_validated = true;
-        
+
         tracker.register_internal(render).unwrap();
         tracker.register_internal(events).unwrap();
 
@@ -1205,7 +1225,7 @@ mod tests {
 
         assert!(plan.requires_full_reload);
     }
-    
+
     #[test]
     fn test_widget_detection() {
         let detector = WidgetBoundaryDetector::new();
@@ -1216,12 +1236,12 @@ mod tests {
                 bool handle_event(const SDL_Event* event);
             };
         "#;
-        
+
         let widgets = detector.detect_all_widgets(source, std::path::Path::new("button.cpp"));
         assert!(!widgets.is_empty());
         assert!(widgets.iter().any(|w| w.name == "ButtonWidget"));
     }
-    
+
     #[test]
     fn test_hmr_boundary_marker() {
         let detector = WidgetBoundaryDetector::new();
@@ -1231,12 +1251,14 @@ mod tests {
                 int x, y, width, height;
             };
         "#;
-        
+
         let widgets = detector.detect_all_widgets(source, std::path::Path::new("panel.cpp"));
         assert!(!widgets.is_empty());
-        assert!(widgets.iter().any(|w| w.name == "CustomPanel" && w.confidence == 1.0));
+        assert!(widgets
+            .iter()
+            .any(|w| w.name == "CustomPanel" && w.confidence == 1.0));
     }
-    
+
     #[test]
     fn test_ownership_validation() {
         let manifest = BoundaryManifest::new("gui")
@@ -1252,24 +1274,28 @@ mod tests {
                 owner_boundary: "gui_render".to_string(),
                 exclusive: true,
             });
-        
+
         let validator = OwnershipValidator::from_manifest(&manifest).unwrap();
         let files = vec![
             "src/gui/render/main.cpp".to_string(),
             "src/gui/render/utils.cpp".to_string(),
-            "src/gui/state/state.cpp".to_string(),  // No owner
+            "src/gui/state/state.cpp".to_string(), // No owner
         ];
-        
+
         let result = validator.validate(&files);
         assert!(!result.warnings.is_empty()); // Should warn about state.cpp
-        assert!(result.file_owners.get("src/gui/render/main.cpp").unwrap().contains(&"gui_render".to_string()));
+        assert!(result
+            .file_owners
+            .get("src/gui/render/main.cpp")
+            .unwrap()
+            .contains(&"gui_render".to_string()));
     }
-    
+
     #[test]
     fn test_glob_to_regex() {
         let pattern = glob_to_regex("src/**/*.cpp").unwrap();
         let re = regex::Regex::new(&pattern).unwrap();
-        
+
         assert!(re.is_match("src/gui/render.cpp"));
         assert!(re.is_match("src/core/state/manager.cpp"));
         assert!(!re.is_match("src/gui/render.h"));
