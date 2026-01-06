@@ -37,6 +37,8 @@ pub struct EmulatorVideoConfig {
     pub endx: Option<i32>,
     /// Optional capture region: end Y coordinate (exclusive)
     pub endy: Option<i32>,
+    /// Pixels to crop from the right side (to remove SDK toolbar)
+    pub crop_right: u32,
 }
 
 impl Default for EmulatorVideoConfig {
@@ -52,6 +54,7 @@ impl Default for EmulatorVideoConfig {
             starty: None,
             endx: None,
             endy: None,
+            crop_right: 0,
         }
     }
 }
@@ -182,6 +185,32 @@ fn pipeline_string(cfg: &EmulatorVideoConfig) -> String {
         )
     };
 
+    // Crop the right side to remove the SDK toolbar if crop_right > 0
+    // Also check for env var override: SYNTHI_ANDROID_CROP_RIGHT_PX
+    // The crop happens immediately after capture, before any conversion.
+    let crop_right_px = std::env::var("SYNTHI_ANDROID_CROP_RIGHT_PX")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(cfg.crop_right);
+    
+    let crop_toolbar = if crop_right_px > 0 {
+        if gst::ElementFactory::find("videocrop").is_some() {
+            eprintln!("[video-pipeline] Cropping {} pixels from right side (SDK toolbar) using videocrop", crop_right_px);
+            format!("videoconvert ! videocrop right={} ! ", crop_right_px)
+        } else {
+            // Fallback: use videobox if videocrop isn't available
+            if gst::ElementFactory::find("videobox").is_some() {
+                eprintln!("[video-pipeline] Cropping {} pixels from right side (SDK toolbar) using videobox", crop_right_px);
+                format!("videoconvert ! videobox right=-{} ! ", crop_right_px)
+            } else {
+                eprintln!("[video-pipeline] WARNING: Neither videocrop nor videobox available, cannot crop toolbar!");
+                String::new()
+            }
+        }
+    } else {
+        String::new()
+    };
+
     // ximagesrc cannot always accept width/height caps directly.
     // Convert/scale/rate first, then apply a single capsfilter.
     // Crop to the desired aspect ratio (best-effort, opt-in).
@@ -196,10 +225,19 @@ fn pipeline_string(cfg: &EmulatorVideoConfig) -> String {
     } else {
         String::new()
     };
-    let caps = format!(
-        "videoconvert ! videoscale ! videorate ! {}video/x-raw,framerate={},width={},height={} ! queue ! ",
-        crop, framerate, cfg.width, cfg.height
-    );
+    
+    // Build the processing pipeline: crop first, then scale to output dimensions
+    let caps = if crop_toolbar.is_empty() {
+        format!(
+            "videoconvert ! videoscale ! videorate ! {}video/x-raw,framerate={},width={},height={} ! queue ! ",
+            crop, framerate, cfg.width, cfg.height
+        )
+    } else {
+        format!(
+            "{}videoscale ! videorate ! {}video/x-raw,framerate={},width={},height={} ! queue ! ",
+            crop_toolbar, crop, framerate, cfg.width, cfg.height
+        )
+    };
 
     // Payloader output must be RTP packet bytes for Packet::unmarshal.
     // pt=96 is the common dynamic payload type.
@@ -235,6 +273,7 @@ impl EmulatorVideoPipeline {
         require_element("videorate")?;
         require_element("queue")?;
         require_element("appsink")?;
+        // videocrop is optional - we check at runtime
         match cfg.codec {
             VideoCodec::Vp8 => {
                 require_element("vp8enc")?;

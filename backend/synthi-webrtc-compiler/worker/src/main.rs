@@ -113,6 +113,14 @@ struct FileEntry {
     content: String,
 }
 
+/// Request to cancel a running mobile emulator job
+#[derive(Debug, Deserialize)]
+struct CancelMobileJobRequest {
+    #[serde(rename = "type")]
+    msg_type: String,  // Should be "cancel-mobile-job"
+    session_id: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct CompileRequest {
     language: String,
@@ -687,6 +695,18 @@ async fn main() -> Result<()> {
                         let incremental_cache = incremental_cache_outer.clone();
                         async move {
                             if msg.is_string {
+                                // Try to parse as a CancelMobileJobRequest first
+                                if let Ok(cancel_req) = serde_json::from_slice::<CancelMobileJobRequest>(&msg.data) {
+                                    if cancel_req.msg_type == "cancel-mobile-job" {
+                                        eprintln!("[Main] Received cancel-mobile-job for session: {}", cancel_req.session_id);
+                                        // Mark the session as cancelled
+                                        crate::android::webrtc::input::cancel_session(&cancel_req.session_id);
+                                        // Also unregister the input session
+                                        crate::android::webrtc::input::unregister_session_sync(&cancel_req.session_id);
+                                        return;
+                                    }
+                                }
+                                
                                 // Try to parse as a CompileRequest
                                 if let Ok(req) = serde_json::from_slice::<CompileRequest>(&msg.data) {
                                     eprintln!("[Main] Received CompileRequest: is_gui={}, use_ai_split={}, lang={}, target={:?}", 

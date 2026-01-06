@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Power, Home, RotateCcw, X } from 'lucide-react';
+import { Power, Home, RotateCcw, X, Minus, Plus } from 'lucide-react';
 import EmulatorScreen from './EmulatorScreen';
 import {
   EMULATOR_STATES,
@@ -15,6 +15,7 @@ import {
  * 
  * A floating, draggable Android emulator frame that looks like a real device.
  * Controls are integrated inside the device bezel.
+ * Uses fixed phone aspect ratio (9:19.5) - video will be fit inside with object-contain.
  */
 export default function FloatingEmulatorWindow({
   defaultState,
@@ -45,12 +46,76 @@ export default function FloatingEmulatorWindow({
   const dragOffset = useRef({ x: 0, y: 0 });
   const containerRef = useRef(null);
 
-  // Device frame dimensions (portrait mode base)
-  const deviceWidth = 320;
-  const deviceHeight = 640;
+  // Scale factor for resizing (0.5 to 1.5)
+  const [scale, setScale] = useState(1.0);
+  
+  // Target height at scale 1.0 - width will be calculated from video aspect ratio
+  const BASE_HEIGHT = 600;
 
   // Debug: WebRTC/media diagnostics
   const [webrtcDiagnostics, setWebrtcDiagnostics] = useState('');
+
+  // Track video dimensions when stream loads - must be declared before getDeviceDimensions
+  const [videoDimensions, setVideoDimensions] = useState({ width: 0, height: 0 });
+
+  // Calculate device dimensions based on video aspect ratio and scale
+  // If we have video dimensions, use those. Otherwise use a reasonable phone ratio.
+  const getDeviceDimensions = useCallback(() => {
+    const isLandscape = orientation === 'landscape';
+    const targetHeight = Math.round(BASE_HEIGHT * scale);
+    
+    // Use actual video aspect ratio if available, else default phone ratio
+    let aspectRatio = 9 / 16; // Default to 9:16 phone ratio
+    if (videoDimensions.width > 0 && videoDimensions.height > 0) {
+      aspectRatio = videoDimensions.width / videoDimensions.height;
+    }
+    
+    const targetWidth = Math.round(targetHeight * aspectRatio);
+    
+    if (isLandscape) {
+      return {
+        width: targetHeight,  // swap
+        height: targetWidth,
+      };
+    }
+    return {
+      width: targetWidth,
+      height: targetHeight,
+    };
+  }, [orientation, scale, videoDimensions.width, videoDimensions.height]);
+
+  const { width: deviceWidth, height: deviceHeight } = getDeviceDimensions();
+  
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const handleLoadedMetadata = () => {
+      if (video.videoWidth && video.videoHeight) {
+        console.debug('[FloatingEmulator] Video dimensions:', video.videoWidth, 'x', video.videoHeight);
+        setVideoDimensions({ width: video.videoWidth, height: video.videoHeight });
+      }
+    };
+
+    // Also check periodically in case metadata event fires before we attach
+    const checkDimensions = () => {
+      if (video.videoWidth && video.videoHeight && 
+          (videoDimensions.width !== video.videoWidth || videoDimensions.height !== video.videoHeight)) {
+        setVideoDimensions({ width: video.videoWidth, height: video.videoHeight });
+      }
+    };
+
+    video.addEventListener('loadedmetadata', handleLoadedMetadata);
+    const intervalId = setInterval(checkDimensions, 1000);
+
+    // Initial check
+    handleLoadedMetadata();
+
+    return () => {
+      video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      clearInterval(intervalId);
+    };
+  }, [videoDimensions.width, videoDimensions.height]);
 
   // Initialize position on mount
   useEffect(() => {
@@ -315,12 +380,23 @@ export default function FloatingEmulatorWindow({
     }
   };
 
+  // Scale up/down handlers
+  const handleScaleUp = (e) => {
+    e.stopPropagation();
+    setScale(prev => Math.min(1.5, prev + 0.15));
+  };
+
+  const handleScaleDown = (e) => {
+    e.stopPropagation();
+    setScale(prev => Math.max(0.5, prev - 0.15));
+  };
+
   // Don't render until position is calculated
   if (!position) return null;
 
-  const isLandscape = orientation === 'landscape';
-  const frameWidth = isLandscape ? deviceHeight : deviceWidth;
-  const frameHeight = isLandscape ? deviceWidth : deviceHeight;
+  // Frame dimensions (already account for orientation in getDeviceDimensions)
+  const frameWidth = deviceWidth;
+  const frameHeight = deviceHeight;
 
   // Container styles
   const containerStyle = {
@@ -328,7 +404,7 @@ export default function FloatingEmulatorWindow({
     left: position.x,
     top: position.y,
     zIndex: 9999,
-    transition: isDragging ? 'none' : 'transform 0.2s ease',
+    transition: isDragging ? 'none' : 'transform 0.1s ease',
   };
 
   return (
@@ -343,14 +419,14 @@ export default function FloatingEmulatorWindow({
         className={`relative ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
         style={{
           width: frameWidth + 24, // bezel width
-          height: frameHeight + 80, // bezel height (more at bottom for controls)
+          height: frameHeight + 70, // bezel height (more at bottom for controls)
         }}
       >
         {/* Outer bezel - dark metal frame */}
-        <div className="absolute inset-0 bg-gradient-to-b from-[#1a1a1e] to-[#0a0a0c] rounded-[2.5rem] shadow-2xl border border-[#2a2a2e]">
+        <div className="absolute inset-0 bg-gradient-to-b from-[#1a1a1e] to-[#0a0a0c] rounded-[2rem] shadow-2xl border border-[#2a2a2e]">
           
           {/* Inner bezel highlight */}
-          <div className="absolute inset-[2px] rounded-[2.4rem] bg-gradient-to-b from-[#252528] to-[#151518] border border-[#333]">
+          <div className="absolute inset-[2px] rounded-[1.9rem] bg-gradient-to-b from-[#252528] to-[#151518] border border-[#333]">
             
             {/* Top speaker/camera area */}
             <div className="absolute top-3 left-1/2 -translate-x-1/2 flex items-center gap-2">
@@ -376,7 +452,7 @@ export default function FloatingEmulatorWindow({
             {/* Screen area */}
             <div 
               data-emulator-screen
-              className="absolute left-3 right-3 top-10 bottom-16 rounded-[1.5rem] bg-black overflow-hidden"
+              className="absolute left-3 right-3 top-8 bottom-14 rounded-xl bg-black overflow-hidden flex items-center justify-center"
               style={{ cursor: 'default' }}
             >
               <EmulatorScreen
@@ -390,32 +466,52 @@ export default function FloatingEmulatorWindow({
             </div>
 
             {/* Bottom control area - inside the bezel */}
-            <div className="absolute bottom-3 left-0 right-0 flex items-center justify-center gap-4">
+<div className="absolute bottom-2 left-0 right-0 flex items-center justify-center gap-2">
+              {/* Scale down button */}
+              <button
+                onClick={handleScaleDown}
+                className="w-7 h-7 rounded-full bg-[#1a1a1e] hover:bg-[#2a2a2e] border border-[#333] hover:border-blue-500/50 flex items-center justify-center transition-all group"
+                aria-label="Smaller"
+                title="Make smaller"
+              >
+                <Minus className="w-3 h-3 text-gray-500 group-hover:text-blue-400" />
+              </button>
+
               {/* Power button */}
               <button
                 onClick={handlePower}
-                className="w-10 h-10 rounded-full bg-[#1a1a1e] hover:bg-[#2a2a2e] border border-[#333] hover:border-emerald-500/50 flex items-center justify-center transition-all group"
+                className="w-8 h-8 rounded-full bg-[#1a1a1e] hover:bg-[#2a2a2e] border border-[#333] hover:border-emerald-500/50 flex items-center justify-center transition-all group"
                 aria-label="Power"
               >
-                <Power className="w-4 h-4 text-gray-500 group-hover:text-emerald-400" />
+                <Power className="w-3.5 h-3.5 text-gray-500 group-hover:text-emerald-400" />
               </button>
 
               {/* Home button - larger, centered */}
               <button
                 onClick={handleHome}
-                className="w-12 h-12 rounded-full bg-[#1a1a1e] hover:bg-[#2a2a2e] border-2 border-[#333] hover:border-emerald-500/50 flex items-center justify-center transition-all group"
+                className="w-10 h-10 rounded-full bg-[#1a1a1e] hover:bg-[#2a2a2e] border-2 border-[#333] hover:border-emerald-500/50 flex items-center justify-center transition-all group"
                 aria-label="Home"
               >
-                <Home className="w-5 h-5 text-gray-500 group-hover:text-emerald-400" />
+                <Home className="w-4 h-4 text-gray-500 group-hover:text-emerald-400" />
               </button>
 
               {/* Rotate button */}
               <button
                 onClick={handleRotate}
-                className="w-10 h-10 rounded-full bg-[#1a1a1e] hover:bg-[#2a2a2e] border border-[#333] hover:border-emerald-500/50 flex items-center justify-center transition-all group"
+                className="w-8 h-8 rounded-full bg-[#1a1a1e] hover:bg-[#2a2a2e] border border-[#333] hover:border-emerald-500/50 flex items-center justify-center transition-all group"
                 aria-label="Rotate"
               >
-                <RotateCcw className="w-4 h-4 text-gray-500 group-hover:text-emerald-400" />
+                <RotateCcw className="w-3.5 h-3.5 text-gray-500 group-hover:text-emerald-400" />
+              </button>
+
+              {/* Scale up button */}
+              <button
+                onClick={handleScaleUp}
+                className="w-7 h-7 rounded-full bg-[#1a1a1e] hover:bg-[#2a2a2e] border border-[#333] hover:border-blue-500/50 flex items-center justify-center transition-all group"
+                aria-label="Larger"
+                title="Make larger"
+              >
+                <Plus className="w-3 h-3 text-gray-500 group-hover:text-blue-400" />
               </button>
             </div>
 
@@ -423,7 +519,7 @@ export default function FloatingEmulatorWindow({
         </div>
 
         {/* Status indicator - small LED style */}
-        <div className={`absolute top-4 left-4 w-1.5 h-1.5 rounded-full ${
+        <div className={`absolute top-3 left-3 w-1.5 h-1.5 rounded-full ${
           streamConnected ? 'bg-emerald-500 shadow-emerald-500/50 shadow-sm' : 
           state === EMULATOR_STATES.ERROR ? 'bg-red-500 shadow-red-500/50 shadow-sm' :
           state === EMULATOR_STATES.BOOTING ? 'bg-yellow-500 animate-pulse' :

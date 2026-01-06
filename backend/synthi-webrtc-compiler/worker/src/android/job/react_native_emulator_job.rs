@@ -17,6 +17,7 @@ use crate::android::fs::{
 };
 use crate::android::webrtc::{send_log, send_logcat, send_mobile_capabilities, send_status};
 use crate::android::webrtc::{input as emulator_input, video_pipeline};
+use crate::android::webrtc::input::{is_session_cancelled, clear_cancelled_session};
 use crate::android::emulator::{
     acquire_emulator_daemon, detect_kvm, ensure_emulator_ready, EmulatorConfig, EnsureReadyResult,
     LogcatEntry,
@@ -464,6 +465,13 @@ pub async fn handle_react_native_emulator_job(
             .await;
             (None, None, None)
         };
+
+    // Check for cancellation before starting the build
+    if is_session_cancelled(&session_id) {
+        eprintln!("[mobile-job] Session {} cancelled before build", session_id);
+        clear_cancelled_session(&session_id);
+        bail!("Session cancelled by user");
+    }
 
     // Step 3: Build APK
     send_status(&log_dc, &session_id, "building", "Building APK...", None).await;
@@ -1043,16 +1051,27 @@ pub async fn handle_react_native_emulator_job(
             cfg.starty = Some(y.max(0));
             cfg.endx = Some(x + w);
             cfg.endy = Some(y + h);
-            // Use the capture region size as output size (don't distort aspect ratio)
-            cfg.width = w as u32;
+            
+            // Crop the SDK toolbar from the right side (typically ~62-70 pixels)
+            // This can be overridden with SYNTHI_ANDROID_TOOLBAR_WIDTH env var
+            let toolbar_width = std::env::var("SYNTHI_ANDROID_TOOLBAR_WIDTH")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(72) as i32; // Default toolbar width (generous to ensure full crop)
+            cfg.crop_right = toolbar_width as u32;
+            
+            // Use the capture region size MINUS the crop as output size (don't distort aspect ratio)
+            // The actual video will be (w - toolbar_width) x h after cropping
+            cfg.width = (w - toolbar_width).max(100) as u32;
             cfg.height = h as u32;
+            
             send_log(
                 &log_dc,
                 &session_id,
                 &format!(
-                    "[video] capturing X11 root region x={}..{} y={}..{} ({}x{}) on DISPLAY={}",
+                    "[video] capturing X11 root region x={}..{} y={}..{} ({}x{}), crop_right={}, output={}x{} on DISPLAY={}",
                     cfg.startx.unwrap(), cfg.endx.unwrap(), cfg.starty.unwrap(), cfg.endy.unwrap(),
-                    w, h, cfg.x11_display
+                    w, h, cfg.crop_right, cfg.width, cfg.height, cfg.x11_display
                 ),
                 "emulator",
             )
@@ -1205,6 +1224,13 @@ pub async fn handle_react_native_emulator_job(
     let mut last_rtp_log = Instant::now();
     let mut last_rtp_count: u64 = 0;
     loop {
+        // Check if the session was cancelled by the user
+        if is_session_cancelled(&session_id) {
+            eprintln!("[mobile-job] Session {} cancelled by user, stopping...", session_id);
+            send_log(&log_dc, &session_id, "[video] Session cancelled by user", "emulator").await;
+            break;
+        }
+        
         if Instant::now() >= stream_until {
             break;
         }
@@ -1240,25 +1266,46 @@ pub async fn handle_react_native_emulator_job(
         sleep(Duration::from_millis(250)).await;
     }
 
+    // Check if we exited due to cancellation
+    let was_cancelled = is_session_cancelled(&session_id);
+
     // Cleanup: stop streaming + unregister input.
     logcat_task.abort();
     let _ = daemon.session_mut().stop_logcat().await;
     daemon.release_keepalive().await;
     emulator_input::unregister_session_sync(&session_id);
+    // Clear the cancelled flag for this session
+    clear_cancelled_session(&session_id);
     pipeline.stop();
 
-    send_status(
-        &log_dc,
-        &session_id,
-        "done",
-        "Emulator session ended",
-        Some(json!({
-            "success": true,
-            "package_name": package_name,
-            "emulator_serial": emulator_serial,
-        })),
-    )
-    .await;
+    if was_cancelled {
+        send_status(
+            &log_dc,
+            &session_id,
+            "cancelled",
+            "Emulator session cancelled by user",
+            Some(json!({
+                "success": true,
+                "cancelled": true,
+                "package_name": package_name,
+                "emulator_serial": emulator_serial,
+            })),
+        )
+        .await;
+    } else {
+        send_status(
+            &log_dc,
+            &session_id,
+            "done",
+            "Emulator session ended",
+            Some(json!({
+                "success": true,
+                "package_name": package_name,
+                "emulator_serial": emulator_serial,
+            })),
+        )
+        .await;
+    }
 
     Ok(())
 }

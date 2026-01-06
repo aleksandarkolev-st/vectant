@@ -124,6 +124,7 @@ impl EmulatorSession {
             "-read-only",        // Don't modify system image
             "-no-snapshot-save", // Don't save snapshots
             "-no-snapshot-load", // Don't load snapshots
+            "-no-skin",          // Disable device skin/frame (removes side toolbar)
         ]);
 
         if !display.trim().is_empty() {

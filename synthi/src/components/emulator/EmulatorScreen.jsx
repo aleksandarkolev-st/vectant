@@ -270,10 +270,10 @@ export default function EmulatorScreen({
   if (state === EMULATOR_STATES.STREAMING) {
     return (
       <div className="h-full w-full bg-black relative" tabIndex={0} onKeyDown={onKeyDown}>
-        {/* Video element - fills container, maintains aspect ratio */}
+        {/* Video element - fills container, maintains aspect ratio with object-contain */}
         <video
           ref={videoRef}
-          className={hasVideoTrack ? "absolute inset-0 w-full h-full object-contain touch-none" : "hidden"}
+          className={hasVideoTrack ? "w-full h-full object-contain touch-none" : "hidden"}
           muted
           playsInline
           autoPlay
@@ -282,7 +282,9 @@ export default function EmulatorScreen({
         />
 
         {!hasVideoTrack && (
-          <MessageScreen title="Waiting for device stream…" subtitle="No video track yet." />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <MessageScreen title="Waiting for device stream…" subtitle="No video track yet." />
+          </div>
         )}
 
         {/* Hidden canvas for future use */}

@@ -368,6 +368,18 @@ export class CompilerClient {
                     event.track.onunmute = () => {
                         try {
                             this._emitWebrtcDiag(`[webrtc] track onunmute: kind=${kind} id=${id}`);
+                            
+                            // When video track unmutes (new data flowing), create a fresh MediaStream
+                            // and re-emit the media-track event. This ensures the frontend gets updated
+                            // when backend replaces the track source (same track object, new media).
+                            if (kind === 'video' && typeof window !== 'undefined' && window.dispatchEvent) {
+                                // Create a fresh MediaStream to ensure React detects the change
+                                const freshStream = new MediaStream([event.track]);
+                                this.currentStreams = [freshStream];
+                                console.debug('[CompilerClient] video track unmuted, emitting fresh MediaStream');
+                                const ev = new CustomEvent('synthi:media-track', { detail: { track: event.track, streams: [freshStream] } });
+                                window.dispatchEvent(ev);
+                            }
                         } catch (_) {}
                     };
                     event.track.onmute = () => {
@@ -922,6 +934,40 @@ export class CompilerClient {
         });
     }
 
+    /**
+     * Cancel/stop a running mobile emulator job.
+     * Sends a cancel message through the compile channel to terminate the job on the worker.
+     * @param {string} sessionId - The session ID of the mobile job to cancel
+     */
+    cancelMobileJob(sessionId) {
+        if (!sessionId) {
+            console.warn('[CompilerClient] cancelMobileJob called without sessionId');
+            return;
+        }
+        
+        try {
+            if (this.compileChannel && this.compileChannel.readyState === 'open') {
+                this.compileChannel.send(JSON.stringify({
+                    type: 'cancel-mobile-job',
+                    session_id: sessionId,
+                }));
+                console.debug('[CompilerClient] Sent cancel-mobile-job for session:', sessionId);
+            } else {
+                console.warn('[CompilerClient] Cannot cancel mobile job - compile channel not open');
+            }
+        } catch (e) {
+            console.error('[CompilerClient] Failed to send cancel-mobile-job:', e);
+        }
+        
+        // Clear active session if it matches
+        if (this.activeSessionId === sessionId) {
+            this.activeSessionId = null;
+        }
+        
+        // Clear WebRTC emitter
+        this._webrtcEmit = null;
+    }
+
     dispose() {
         if (this.ws) {
             this.ws.close();
@@ -969,4 +1015,9 @@ export const getMediaStream = () => {
 export const compileWithWorker = async (params) => {
     const client = getCompilerClient();
     return client.compile(params);
+};
+
+export const cancelMobileJob = (sessionId) => {
+    const client = getCompilerClient();
+    client.cancelMobileJob(sessionId);
 };

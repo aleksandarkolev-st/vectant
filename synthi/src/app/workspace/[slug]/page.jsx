@@ -64,7 +64,7 @@ export default function EditorPage({ params }) {
     const [isGuiRunning, setIsGuiRunning] = useState(false);
     const [editor, setEditor] = useState(null);
     const { analyzeCode, analyzeProactive, lastResult, isAnalyzing: isAnalyzingGateway } = useAnalyzerGateway();
-    const { compile, mediaStream } = useCompiler();
+    const { compile, cancelMobileJob, mediaStream } = useCompiler();
     useHMR();
     const [latestCompletion, setLatestCompletion] = useState(null);
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
@@ -1103,6 +1103,10 @@ export default function EditorPage({ params }) {
             mediaStream={mediaStream}
             forcedErrorMessage={emulatorForcedError}
             onClose={() => {
+                // Cancel the running mobile job on the worker
+                if (emulatorSessionId) {
+                    cancelMobileJob(emulatorSessionId);
+                }
                 dispatch(setEmulatorPreviewVisible(false));
                 setEmulatorSessionId(null);
                 setEmulatorForcedError('');

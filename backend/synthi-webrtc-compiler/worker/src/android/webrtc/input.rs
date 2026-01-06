@@ -3,17 +3,96 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::process::Command;
+use tokio::sync::Mutex as TokioMutex;
+use tokio::io::AsyncWriteExt;
+use tokio::process::{Child, ChildStdin};
 use std::sync::Mutex;
 
-#[derive(Debug, Clone)]
+/// Global store of cancelled mobile job session IDs.
+/// When a job is cancelled, its session_id is added here.
+/// Jobs should periodically check this to determine if they should stop.
+lazy_static! {
+    static ref CANCELLED_SESSIONS: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
+}
+
+/// Mark a mobile job session as cancelled
+pub fn cancel_session(session_id: &str) {
+    let mut g = CANCELLED_SESSIONS.lock().expect("CANCELLED_SESSIONS lock");
+    g.insert(session_id.to_string());
+    eprintln!("[input.rs] Session {} marked as cancelled", session_id);
+}
+
+/// Check if a mobile job session has been cancelled
+pub fn is_session_cancelled(session_id: &str) -> bool {
+    let g = CANCELLED_SESSIONS.lock().expect("CANCELLED_SESSIONS lock");
+    g.contains(session_id)
+}
+
+/// Remove a session from the cancelled set (cleanup after job finishes)
+pub fn clear_cancelled_session(session_id: &str) {
+    let mut g = CANCELLED_SESSIONS.lock().expect("CANCELLED_SESSIONS lock");
+    g.remove(session_id);
+}
+
+#[derive(Debug)]
 pub struct EmulatorInputSession {
     pub adb: PathBuf,
     pub serial: String,
     pub device_w: u32,
     pub device_h: u32,
+    /// Persistent adb shell process for low-latency input
+    shell_proc: Option<Arc<TokioMutex<PersistentShell>>>,
+}
+
+impl Clone for EmulatorInputSession {
+    fn clone(&self) -> Self {
+        Self {
+            adb: self.adb.clone(),
+            serial: self.serial.clone(),
+            device_w: self.device_w,
+            device_h: self.device_h,
+            shell_proc: self.shell_proc.clone(),
+        }
+    }
+}
+
+/// A persistent adb shell process for low-latency command execution
+struct PersistentShell {
+    stdin: ChildStdin,
+    #[allow(dead_code)]
+    child: Child,
+}
+
+impl std::fmt::Debug for PersistentShell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PersistentShell").finish_non_exhaustive()
+    }
+}
+
+impl PersistentShell {
+    async fn new(adb: &PathBuf, serial: &str) -> Result<Self> {
+        let mut child = Command::new(adb)
+            .args(["-s", serial, "shell"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .context("failed to spawn persistent adb shell")?;
+        
+        let stdin = child.stdin.take().context("failed to get stdin")?;
+        Ok(Self { stdin, child })
+    }
+
+    async fn send_command(&mut self, cmd: &str) -> Result<()> {
+        self.stdin.write_all(cmd.as_bytes()).await?;
+        self.stdin.write_all(b"\n").await?;
+        self.stdin.flush().await?;
+        Ok(())
+    }
 }
 
 lazy_static! {
@@ -43,6 +122,19 @@ pub struct EmulatorInputMessage {
 
 pub async fn register_session(session_id: &str, adb: PathBuf, serial: String) -> Result<()> {
     let (w, h) = query_device_size(&adb, &serial).await?;
+    
+    // Create a persistent shell for low-latency input
+    let shell_proc = match PersistentShell::new(&adb, &serial).await {
+        Ok(shell) => {
+            eprintln!("[input.rs] Created persistent shell for session {}", session_id);
+            Some(Arc::new(TokioMutex::new(shell)))
+        }
+        Err(e) => {
+            eprintln!("[input.rs] Failed to create persistent shell, falling back to per-command mode: {}", e);
+            None
+        }
+    };
+    
     let mut g = SESSIONS.lock().expect("SESSIONS lock");
     g.insert(
         session_id.to_string(),
@@ -51,6 +143,7 @@ pub async fn register_session(session_id: &str, adb: PathBuf, serial: String) ->
             serial,
             device_w: w,
             device_h: h,
+            shell_proc,
         },
     );
     Ok(())
@@ -74,34 +167,51 @@ pub async fn handle_input_message(msg: EmulatorInputMessage) -> Result<()> {
             .with_context(|| format!("no emulator input session registered for {}", sid))?
     };
 
+    // Use persistent shell for low-latency input when available
+    let use_persistent = session.shell_proc.is_some();
+
     match msg.kind.as_str() {
         "tap" => {
             let (x, y) = map_point(&msg, session.device_w, session.device_h)?;
-            adb_shell(
-                &session.adb,
-                &session.serial,
-                &["input", "tap", &x.to_string(), &y.to_string()],
-            )
-            .await?;
+            let cmd = format!("input tap {} {}", x, y);
+            if use_persistent {
+                let shell = session.shell_proc.as_ref().unwrap();
+                let mut shell_guard = shell.lock().await;
+                shell_guard.send_command(&cmd).await?;
+            } else {
+                adb_shell(
+                    &session.adb,
+                    &session.serial,
+                    &["input", "tap", &x.to_string(), &y.to_string()],
+                )
+                .await?;
+            }
         }
         "swipe" => {
             let (x1, y1) = map_point(&msg, session.device_w, session.device_h)?;
             let (x2, y2) = map_point2(&msg, session.device_w, session.device_h)?;
-            let dur = msg.duration_ms.unwrap_or(250).to_string();
-            adb_shell(
-                &session.adb,
-                &session.serial,
-                &[
-                    "input",
-                    "swipe",
-                    &x1.to_string(),
-                    &y1.to_string(),
-                    &x2.to_string(),
-                    &y2.to_string(),
-                    &dur,
-                ],
-            )
-            .await?;
+            let dur = msg.duration_ms.unwrap_or(250);
+            let cmd = format!("input swipe {} {} {} {} {}", x1, y1, x2, y2, dur);
+            if use_persistent {
+                let shell = session.shell_proc.as_ref().unwrap();
+                let mut shell_guard = shell.lock().await;
+                shell_guard.send_command(&cmd).await?;
+            } else {
+                adb_shell(
+                    &session.adb,
+                    &session.serial,
+                    &[
+                        "input",
+                        "swipe",
+                        &x1.to_string(),
+                        &y1.to_string(),
+                        &x2.to_string(),
+                        &y2.to_string(),
+                        &dur.to_string(),
+                    ],
+                )
+                .await?;
+            }
         }
         "key" => {
             let kc = msg
@@ -109,10 +219,18 @@ pub async fn handle_input_message(msg: EmulatorInputMessage) -> Result<()> {
                 .as_deref()
                 .context("key event missing keycode")?;
             let kc = if kc.starts_with("KEYCODE_") { kc.to_string() } else { format!("KEYCODE_{}", kc) };
-            adb_shell(&session.adb, &session.serial, &["input", "keyevent", &kc]).await?;
+            let cmd = format!("input keyevent {}", kc);
+            if use_persistent {
+                let shell = session.shell_proc.as_ref().unwrap();
+                let mut shell_guard = shell.lock().await;
+                shell_guard.send_command(&cmd).await?;
+            } else {
+                adb_shell(&session.adb, &session.serial, &["input", "keyevent", &kc]).await?;
+            }
         }
         "text" => {
             let text = msg.text.unwrap_or_default();
+            // Text input needs special quoting, use fallback method
             adb_shell_text(&session.adb, &session.serial, &text).await?;
         }
         "rotate" => {
