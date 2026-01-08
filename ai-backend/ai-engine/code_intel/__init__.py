@@ -17,17 +17,26 @@ Architecture:
     ├── summaries/      # Hierarchical summary generation
     ├── retrieval/      # Query-time context assembly
     ├── tools/          # AI-callable exploration tools  
-    ├── context/        # Token budget and eviction management
+    ├── eviction/       # Token budget and eviction management
     └── editing/        # Safe code modification workflow
 
 Key principle: The AI never has "repo context" - only temporary token context
 assembled just-in-time. This system answers: "Given user intent, which exact
 pieces of code matter right now?"
+
+Usage:
+    from code_intel import create_engine
+    
+    engine = create_engine("/workspace", openai_api_key="...")
+    await engine.index_workspace()
+    
+    context = await engine.get_context("How does auth work?", max_tokens=8000)
+    print(context.assembled_context)
 """
 
 from .core.types import (
     SemanticChunk,
-    SymbolType,
+    ChunkType,
     ChunkMetadata,
     SymbolNode,
     SymbolEdge,
@@ -38,14 +47,33 @@ from .core.types import (
     RetrievalResult,
 )
 
-from .core.config import CodeIntelConfig, get_config
+from .core.config import (
+    CodeIntelConfig,
+    ParserConfig,
+    IndexerConfig,
+    RetrievalConfig,
+    SummaryConfig,
+    EditingConfig,
+)
+
+from .engine import CodeIntelEngine, create_engine, EngineStats
+
+# Advanced imports for direct access
+from .retrieval.retrieval_pipeline import RetrievalPipeline
+from .tools.tool_registry import ToolRegistry
+from .tools.tool_executor import ToolExecutor
+from .editing.edit_session import EditSession, EditSessionManager
 
 __version__ = "1.0.0"
 
 __all__ = [
+    # Main API
+    "CodeIntelEngine",
+    "create_engine",
+    "EngineStats",
     # Core types
     "SemanticChunk",
-    "SymbolType", 
+    "ChunkType",
     "ChunkMetadata",
     "SymbolNode",
     "SymbolEdge",
@@ -56,5 +84,15 @@ __all__ = [
     "RetrievalResult",
     # Config
     "CodeIntelConfig",
-    "get_config",
+    "ParserConfig",
+    "IndexerConfig",
+    "RetrievalConfig",
+    "SummaryConfig",
+    "EditingConfig",
+    # Advanced
+    "RetrievalPipeline",
+    "ToolRegistry",
+    "ToolExecutor",
+    "EditSession",
+    "EditSessionManager",
 ]

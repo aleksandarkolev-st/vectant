@@ -1,0 +1,361 @@
+"""
+Code Intelligence FastAPI Routes.
+
+Exposes the code intelligence system through REST endpoints.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, HTTPException, BackgroundTasks
+from pydantic import BaseModel, Field
+
+from .engine import CodeIntelEngine, create_engine
+
+
+logger = logging.getLogger("code_intel.api")
+
+router = APIRouter(prefix="/code-intel", tags=["code-intelligence"])
+
+
+# ============================================================================
+# Request/Response Models
+# ============================================================================
+
+class IndexRequest(BaseModel):
+    """Request to index workspace."""
+    workspace_path: str = Field(..., description="Path to workspace")
+    incremental: bool = Field(True, description="Incremental indexing")
+
+
+class IndexResponse(BaseModel):
+    """Response from indexing."""
+    success: bool
+    files_indexed: int
+    chunks_indexed: int
+    symbols_tracked: int
+    duration_ms: float
+
+
+class ContextRequest(BaseModel):
+    """Request for context assembly."""
+    workspace_path: str = Field(..., description="Path to workspace")
+    query: str = Field(..., description="User query or intent")
+    max_tokens: int = Field(8000, description="Maximum tokens for context")
+    conversation_history: Optional[List[Dict[str, str]]] = Field(
+        None, description="Previous conversation messages"
+    )
+
+
+class ContextResponse(BaseModel):
+    """Response with assembled context."""
+    context: str = Field(..., description="Assembled context for LLM")
+    chunks_used: int = Field(..., description="Number of chunks in context")
+    tokens_used: int = Field(..., description="Estimated tokens used")
+    sources: List[Dict[str, Any]] = Field(..., description="Source chunks")
+
+
+class ToolCallRequest(BaseModel):
+    """Request to execute a tool."""
+    workspace_path: str = Field(..., description="Path to workspace")
+    tool_name: str = Field(..., description="Name of tool to execute")
+    arguments: Dict[str, Any] = Field(..., description="Tool arguments")
+
+
+class ToolCallResponse(BaseModel):
+    """Response from tool execution."""
+    success: bool
+    result: Dict[str, Any]
+
+
+class ToolDefinitionsRequest(BaseModel):
+    """Request for tool definitions."""
+    workspace_path: str = Field(..., description="Path to workspace")
+    format: str = Field("openai", description="Output format: openai or anthropic")
+
+
+class ToolDefinitionsResponse(BaseModel):
+    """Response with tool definitions."""
+    tools: List[Dict[str, Any]]
+
+
+class SummaryRequest(BaseModel):
+    """Request for summaries."""
+    workspace_path: str = Field(..., description="Path to workspace")
+    file_path: Optional[str] = Field(None, description="Specific file path")
+
+
+class SummaryResponse(BaseModel):
+    """Response with summary."""
+    summary: str
+    token_count: int
+
+
+class EditPlanRequest(BaseModel):
+    """Request to create an edit plan."""
+    workspace_path: str = Field(..., description="Path to workspace")
+    edits: List[Dict[str, Any]] = Field(..., description="List of edits")
+
+
+class EditPlanResponse(BaseModel):
+    """Response from edit execution."""
+    success: bool
+    files_modified: int
+    edits_applied: int
+    error: Optional[str] = None
+
+
+# ============================================================================
+# Engine Cache
+# ============================================================================
+
+# Cache engines by workspace path
+_engines: Dict[str, CodeIntelEngine] = {}
+
+
+def get_engine(workspace_path: str) -> CodeIntelEngine:
+    """Get or create engine for workspace."""
+    if workspace_path not in _engines:
+        _engines[workspace_path] = create_engine(workspace_path)
+    return _engines[workspace_path]
+
+
+# ============================================================================
+# Routes
+# ============================================================================
+
+@router.post("/index", response_model=IndexResponse)
+async def index_workspace(request: IndexRequest) -> IndexResponse:
+    """
+    Index a workspace.
+    
+    Parses all code files and builds vector + structural indices.
+    """
+    try:
+        engine = get_engine(request.workspace_path)
+        stats = await engine.index_workspace(incremental=request.incremental)
+        
+        return IndexResponse(
+            success=True,
+            files_indexed=stats.files_indexed,
+            chunks_indexed=stats.chunks_indexed,
+            symbols_tracked=stats.symbols_tracked,
+            duration_ms=stats.last_index_time_ms,
+        )
+    except Exception as e:
+        logger.exception("Index failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/context", response_model=ContextResponse)
+async def get_context(request: ContextRequest) -> ContextResponse:
+    """
+    Get context for a query.
+    
+    Assembles relevant code context for the given query within token budget.
+    """
+    try:
+        engine = get_engine(request.workspace_path)
+        
+        result = await engine.get_context(
+            query=request.query,
+            max_tokens=request.max_tokens,
+            conversation_history=request.conversation_history,
+        )
+        
+        return ContextResponse(
+            context=result.assembled_context,
+            chunks_used=len(result.chunks),
+            tokens_used=result.total_tokens,
+            sources=[
+                {
+                    "file": c.metadata.file_path,
+                    "start_line": c.metadata.start_line,
+                    "end_line": c.metadata.end_line,
+                    "symbol": c.metadata.symbol_name,
+                    "score": c.metadata.relevance_score,
+                }
+                for c in result.chunks
+            ],
+        )
+    except Exception as e:
+        logger.exception("Context retrieval failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/tools/definitions", response_model=ToolDefinitionsResponse)
+async def get_tool_definitions(request: ToolDefinitionsRequest) -> ToolDefinitionsResponse:
+    """
+    Get tool definitions for LLM.
+    
+    Returns tool schemas in OpenAI or Anthropic format.
+    """
+    try:
+        engine = get_engine(request.workspace_path)
+        tools = engine.get_tool_definitions(format=request.format)
+        
+        return ToolDefinitionsResponse(tools=tools)
+    except Exception as e:
+        logger.exception("Tool definitions failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/tools/execute", response_model=ToolCallResponse)
+async def execute_tool(request: ToolCallRequest) -> ToolCallResponse:
+    """
+    Execute an exploration tool.
+    
+    Runs a tool like find_usages, get_definition, etc.
+    """
+    try:
+        engine = get_engine(request.workspace_path)
+        
+        result = await engine.execute_tool(
+            tool_name=request.tool_name,
+            arguments=request.arguments,
+        )
+        
+        return ToolCallResponse(
+            success=True,
+            result=result,
+        )
+    except Exception as e:
+        logger.exception("Tool execution failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/summary/repo", response_model=SummaryResponse)
+async def get_repo_summary(request: SummaryRequest) -> SummaryResponse:
+    """
+    Get repository summary.
+    
+    Returns a high-level summary of the entire repository.
+    """
+    try:
+        engine = get_engine(request.workspace_path)
+        summary = engine.get_repo_summary()
+        
+        if not summary:
+            raise HTTPException(status_code=404, detail="No summary available")
+        
+        return SummaryResponse(
+            summary=summary.content,
+            token_count=summary.token_count,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Summary retrieval failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/summary/file", response_model=SummaryResponse)
+async def get_file_summary(request: SummaryRequest) -> SummaryResponse:
+    """
+    Get file summary.
+    
+    Returns a summary of a specific file.
+    """
+    try:
+        if not request.file_path:
+            raise HTTPException(status_code=400, detail="file_path required")
+        
+        engine = get_engine(request.workspace_path)
+        summary = engine.get_file_summary(request.file_path)
+        
+        if not summary:
+            raise HTTPException(status_code=404, detail="No summary available")
+        
+        return SummaryResponse(
+            summary=summary.content,
+            token_count=summary.token_count,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("File summary retrieval failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/edit", response_model=EditPlanResponse)
+async def execute_edits(request: EditPlanRequest) -> EditPlanResponse:
+    """
+    Execute code edits.
+    
+    Applies a set of edits with validation and rollback support.
+    """
+    try:
+        engine = get_engine(request.workspace_path)
+        
+        # Create session
+        session = engine.create_edit_session()
+        plan = session.create_plan()
+        
+        # Add edits
+        for edit in request.edits:
+            edit_type = edit.get("type", "replace")
+            
+            if edit_type == "insert":
+                plan.add_insert(
+                    file_path=edit["file_path"],
+                    line=edit["line"],
+                    content=edit["content"],
+                )
+            elif edit_type == "replace":
+                plan.add_replace(
+                    file_path=edit["file_path"],
+                    start_line=edit["start_line"],
+                    end_line=edit["end_line"],
+                    old_content=edit.get("old_content", ""),
+                    new_content=edit["new_content"],
+                )
+            elif edit_type == "delete":
+                plan.add_delete(
+                    file_path=edit["file_path"],
+                    start_line=edit["start_line"],
+                    end_line=edit["end_line"],
+                )
+            elif edit_type == "create_file":
+                plan.add_create_file(
+                    file_path=edit["file_path"],
+                    content=edit["content"],
+                )
+        
+        # Execute
+        result = session.execute()
+        
+        return EditPlanResponse(
+            success=result.success,
+            files_modified=result.files_modified,
+            edits_applied=result.edits_applied,
+            error=result.error,
+        )
+    except Exception as e:
+        logger.exception("Edit execution failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/save")
+async def save_state(request: SummaryRequest) -> Dict[str, bool]:
+    """Save engine state to disk."""
+    try:
+        engine = get_engine(request.workspace_path)
+        await engine.save()
+        return {"success": True}
+    except Exception as e:
+        logger.exception("Save failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/load")
+async def load_state(request: SummaryRequest) -> Dict[str, bool]:
+    """Load engine state from disk."""
+    try:
+        engine = get_engine(request.workspace_path)
+        loaded = await engine.load()
+        return {"success": loaded}
+    except Exception as e:
+        logger.exception("Load failed")
+        raise HTTPException(status_code=500, detail=str(e))
