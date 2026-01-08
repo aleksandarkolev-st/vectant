@@ -1047,18 +1047,41 @@ pub async fn handle_react_native_emulator_job(
     } else {
         // Use root capture with region crop to just the emulator window area
         if let Some((x, y, w, h)) = emulator_geom {
-            cfg.startx = Some(x.max(0));
+            let left_pad = std::env::var("SYNTHI_ANDROID_LEFT_PAD_PX")
+                .ok()
+                .and_then(|v| v.parse::<i32>().ok())
+                .unwrap_or(24);
+            cfg.startx = Some((x - left_pad).max(0));
             cfg.starty = Some(y.max(0));
             cfg.endx = Some(x + w);
             cfg.endy = Some(y + h);
             
-            // Crop the SDK toolbar from the right side (typically ~62-70 pixels)
-            // This can be overridden with SYNTHI_ANDROID_TOOLBAR_WIDTH env var
-            let toolbar_width = std::env::var("SYNTHI_ANDROID_TOOLBAR_WIDTH")
+            // Crop the SDK toolbar/right padding.
+            // Override via SYNTHI_ANDROID_TOOLBAR_WIDTH, else infer from device size vs window width.
+            let mut toolbar_width = std::env::var("SYNTHI_ANDROID_TOOLBAR_WIDTH")
                 .ok()
                 .and_then(|v| v.parse::<u32>().ok())
-                .unwrap_or(72) as i32; // Default toolbar width (generous to ensure full crop)
-            cfg.crop_right = toolbar_width as u32;
+                .map(|v| v as i32)
+                .unwrap_or(72); // Default toolbar width (generous to ensure full crop)
+            if std::env::var("SYNTHI_ANDROID_TOOLBAR_WIDTH").is_err() {
+                if let Ok((device_w, device_h)) =
+                    emulator_input::query_device_size(&adb_path, &emulator_serial).await
+                {
+                    if device_w > 0 && device_h > 0 && h > 0 {
+                        let scale = (h as f64) / (device_h as f64);
+                        let expected_w = (device_w as f64) * scale;
+                        let extra = (w as f64 - expected_w).round() as i32;
+                        if extra > 0 {
+                            let pad = std::env::var("SYNTHI_ANDROID_TOOLBAR_PAD_PX")
+                                .ok()
+                                .and_then(|v| v.parse::<u32>().ok())
+                                .unwrap_or(120) as i32;
+                            toolbar_width = extra + pad; // extra padding to fully remove toolbar gutter
+                        }
+                    }
+                }
+            }
+            cfg.crop_right = toolbar_width.max(0) as u32;
             
             // Use the capture region size MINUS the crop as output size (don't distort aspect ratio)
             // The actual video will be (w - toolbar_width) x h after cropping
@@ -1068,11 +1091,11 @@ pub async fn handle_react_native_emulator_job(
             send_log(
                 &log_dc,
                 &session_id,
-                &format!(
-                    "[video] capturing X11 root region x={}..{} y={}..{} ({}x{}), crop_right={}, output={}x{} on DISPLAY={}",
-                    cfg.startx.unwrap(), cfg.endx.unwrap(), cfg.starty.unwrap(), cfg.endy.unwrap(),
-                    w, h, cfg.crop_right, cfg.width, cfg.height, cfg.x11_display
-                ),
+                    &format!(
+                        "[video] capturing X11 root region x={}..{} y={}..{} ({}x{}), left_pad={}, crop_right={}, output={}x{} on DISPLAY={}",
+                        cfg.startx.unwrap(), cfg.endx.unwrap(), cfg.starty.unwrap(), cfg.endy.unwrap(),
+                        w, h, left_pad, cfg.crop_right, cfg.width, cfg.height, cfg.x11_display
+                    ),
                 "emulator",
             )
             .await;

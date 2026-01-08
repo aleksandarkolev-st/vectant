@@ -49,8 +49,9 @@ export default function FloatingEmulatorWindow({
   // Scale factor for resizing (0.5 to 1.5)
   const [scale, setScale] = useState(1.0);
   
-  // Target height at scale 1.0 - width will be calculated from video aspect ratio
+  // Target height at scale 1.0 - width is capped to a phone-like portrait ratio.
   const BASE_HEIGHT = 600;
+  const MAX_PORTRAIT_ASPECT = 9 / 19.5;
 
   // Debug: WebRTC/media diagnostics
   const [webrtcDiagnostics, setWebrtcDiagnostics] = useState('');
@@ -58,16 +59,16 @@ export default function FloatingEmulatorWindow({
   // Track video dimensions when stream loads - must be declared before getDeviceDimensions
   const [videoDimensions, setVideoDimensions] = useState({ width: 0, height: 0 });
 
-  // Calculate device dimensions based on video aspect ratio and scale
-  // If we have video dimensions, use those. Otherwise use a reasonable phone ratio.
+  // Calculate device dimensions with a capped portrait aspect ratio to avoid extra capture padding.
   const getDeviceDimensions = useCallback(() => {
     const isLandscape = orientation === 'landscape';
     const targetHeight = Math.round(BASE_HEIGHT * scale);
     
-    // Use actual video aspect ratio if available, else default phone ratio
-    let aspectRatio = 9 / 16; // Default to 9:16 phone ratio
+    let aspectRatio = MAX_PORTRAIT_ASPECT;
     if (videoDimensions.width > 0 && videoDimensions.height > 0) {
-      aspectRatio = videoDimensions.width / videoDimensions.height;
+      const rawAspect = videoDimensions.width / videoDimensions.height;
+      const portraitAspect = rawAspect > 1 ? 1 / rawAspect : rawAspect;
+      aspectRatio = Math.min(portraitAspect, MAX_PORTRAIT_ASPECT);
     }
     
     const targetWidth = Math.round(targetHeight * aspectRatio);
@@ -394,9 +395,21 @@ export default function FloatingEmulatorWindow({
   // Don't render until position is calculated
   if (!position) return null;
 
-  // Frame dimensions (already account for orientation in getDeviceDimensions)
-  const frameWidth = deviceWidth;
-  const frameHeight = deviceHeight;
+  // Frame dimensions - these are the SCREEN area dimensions (video fits inside)
+  // The outer bezel will add padding around this
+  const screenWidth = deviceWidth;
+  const screenHeight = deviceHeight;
+  
+  // Bezel padding values (must match the CSS classes on the screen area)
+  // Screen area uses: left-3 right-3 (12px each) and top-8 bottom-14 (32px top, 56px bottom)
+  const BEZEL_HORIZONTAL = 24; // left-3 + right-3 = 12 + 12
+  const BEZEL_TOP = 32; // top-8
+  const BEZEL_BOTTOM = 56; // bottom-14
+  const BEZEL_VERTICAL = BEZEL_TOP + BEZEL_BOTTOM;
+  
+  // Total frame size including bezel
+  const frameWidth = screenWidth + BEZEL_HORIZONTAL;
+  const frameHeight = screenHeight + BEZEL_VERTICAL;
 
   // Container styles
   const containerStyle = {
@@ -418,8 +431,8 @@ export default function FloatingEmulatorWindow({
       <div
         className={`relative ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
         style={{
-          width: frameWidth + 24, // bezel width
-          height: frameHeight + 70, // bezel height (more at bottom for controls)
+          width: frameWidth,
+          height: frameHeight,
         }}
       >
         {/* Outer bezel - dark metal frame */}
@@ -449,11 +462,17 @@ export default function FloatingEmulatorWindow({
               </button>
             )}
 
-            {/* Screen area */}
+            {/* Screen area - positioned inside the bezel with explicit dimensions */}
             <div 
               data-emulator-screen
-              className="absolute left-3 right-3 top-8 bottom-14 rounded-xl bg-black overflow-hidden flex items-center justify-center"
-              style={{ cursor: 'default' }}
+              className="absolute rounded-xl bg-black overflow-hidden"
+              style={{ 
+                cursor: 'default',
+                left: 12,
+                top: 32,
+                width: screenWidth,
+                height: screenHeight,
+              }}
             >
               <EmulatorScreen
                 state={state}

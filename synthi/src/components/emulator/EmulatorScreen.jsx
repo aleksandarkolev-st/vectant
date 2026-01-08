@@ -138,11 +138,9 @@ export default function EmulatorScreen({
   };
 
   /**
-   * Convert client coordinates to video coordinates, accounting for object-contain scaling.
-   * The video element may be letterboxed/pillarboxed, so we need to:
-   * 1. Calculate the actual rendered video size within the container
-   * 2. Calculate the offset from letterboxing
-   * 3. Map the click position to video pixel coordinates
+   * Convert client coordinates to video coordinates.
+   * The video is rendered with object-fit: contain,
+   * so we compute the rendered size and letterbox offset before scaling.
    */
   const clientToVideoCoords = (el, clientX, clientY) => {
     const rect = el.getBoundingClientRect();
@@ -151,33 +149,20 @@ export default function EmulatorScreen({
     const videoW = el.videoWidth || 1;
     const videoH = el.videoHeight || 1;
 
-    // Calculate the scale factor for object-contain
-    const containerAspect = containerW / containerH;
-    const videoAspect = videoW / videoH;
+    const scale = Math.max(containerW / videoW, containerH / videoH);
+    const drawW = videoW * scale;
+    const drawH = videoH * scale;
 
-    let renderedW, renderedH, offsetX, offsetY;
+    const offsetX = (containerW - drawW) / 2;
+    const offsetY = (containerH - drawH) / 2;
 
-    if (containerAspect > videoAspect) {
-      // Container is wider than video - letterboxed on sides (pillarboxed)
-      renderedH = containerH;
-      renderedW = containerH * videoAspect;
-      offsetX = (containerW - renderedW) / 2;
-      offsetY = 0;
-    } else {
-      // Container is taller than video - letterboxed on top/bottom
-      renderedW = containerW;
-      renderedH = containerW / videoAspect;
-      offsetX = 0;
-      offsetY = (containerH - renderedH) / 2;
-    }
+    // Get position relative to rendered video
+    const relX = clientX - rect.left - offsetX;
+    const relY = clientY - rect.top - offsetY;
 
-    // Get position relative to container
-    const relX = clientX - rect.left;
-    const relY = clientY - rect.top;
-
-    // Adjust for letterbox offset and scale to video resolution
-    const videoX = ((relX - offsetX) / renderedW) * videoW;
-    const videoY = ((relY - offsetY) / renderedH) * videoH;
+    // Scale to video resolution
+    const videoX = (relX / drawW) * videoW;
+    const videoY = (relY / drawH) * videoH;
 
     // Clamp to valid range
     return {
@@ -270,10 +255,11 @@ export default function EmulatorScreen({
   if (state === EMULATOR_STATES.STREAMING) {
     return (
       <div className="h-full w-full bg-black relative" tabIndex={0} onKeyDown={onKeyDown}>
-        {/* Video element - fills container, maintains aspect ratio with object-contain */}
+        {/* Video element - fills entire container (parent is pre-sized to match video aspect ratio) */}
         <video
           ref={videoRef}
-          className={hasVideoTrack ? "w-full h-full object-contain touch-none" : "hidden"}
+          className={hasVideoTrack ? "w-full h-full touch-none object-cover object-left" : "hidden"}
+          style={{ display: hasVideoTrack ? 'block' : 'none' }}
           muted
           playsInline
           autoPlay
