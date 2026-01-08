@@ -1611,6 +1611,17 @@ async def refactor_structural(req: StructuralUpdateRequest):
     return await refactor_delta(req)
 
 
+# =============================================================================
+# Code Intelligence Module - Context-aware code understanding
+# =============================================================================
+try:
+    from code_intel.api import router as code_intel_router
+    app.include_router(code_intel_router)
+    logger.info("Code Intelligence module loaded")
+except ImportError as e:
+    logger.warning(f"Code Intelligence module not available: {e}")
+
+
 @app.get("/")
 def root():
     return {
@@ -1621,6 +1632,7 @@ def root():
             "verification",
             "streaming",
             "provenance_tracking",
+            "code_intelligence",
         ],
     }
 
