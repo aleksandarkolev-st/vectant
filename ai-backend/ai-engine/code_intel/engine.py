@@ -205,22 +205,23 @@ class CodeIntelEngine:
         
         # Indexing
         self._embedder = Embedder(api_key=self.config.indexer.embedding_api_key)
-        self._vector_index = VectorIndex(dimension=self.config.indexer.embedding_dimension)
-        self._structural_index = StructuralIndex()
         self._dual_indexer = DualIndexer(
+            workspace_root=str(self.workspace_root),
+            persist_dir=str(self.workspace_root / ".code_intel"),
             embedder=self._embedder,
-            vector_index=self._vector_index,
-            structural_index=self._structural_index,
         )
+        # Expose indexes from dual indexer for retrieval pipeline
+        self._vector_index = self._dual_indexer.vector_index
+        self._structural_index = self._dual_indexer.structural_index
         
         # Summaries
         self._summary_store = SummaryStore(
             str(self.workspace_root / ".code_intel" / "summaries"),
         )
         self._file_summarizer = FileSummarizer()
-        self._repo_summarizer = RepoSummarizer()
+        self._repo_summarizer = RepoSummarizer(str(self.workspace_root))
         self._summary_manager = IncrementalSummaryManager(
-            summary_store=self._summary_store,
+            store=self._summary_store,
             file_summarizer=self._file_summarizer,
             repo_summarizer=self._repo_summarizer,
         )

@@ -150,22 +150,36 @@ export function useCodeIntelIndex({
         hasAutoIndexedRef.current = true;
         
         // Check backend availability before indexing
-        (async () => {
-            const isAvailable = await checkBackendHealth();
-            if (isAvailable) {
-                // Small delay to let workspace load first
-                setTimeout(() => {
-                    indexWorkspace(true);
-                }, 1000);
-            } else {
+        const doAutoIndex = async () => {
+            try {
+                const response = await fetch(`${CODE_INTEL_URL}/health`, {
+                    method: 'GET',
+                    signal: AbortSignal.timeout(3000),
+                });
+                if (response.ok) {
+                    // Small delay to let workspace load first
+                    setTimeout(() => {
+                        indexWorkspace(true);
+                    }, 1000);
+                } else {
+                    console.log('[CodeIntel] Backend not available, skipping auto-index');
+                }
+            } catch {
                 console.log('[CodeIntel] Backend not available, skipping auto-index');
             }
-        })();
-    }, [autoIndex, workspaceSlug, indexWorkspace, checkBackendHealth]);
+        };
+        
+        doAutoIndex();
+        // Intentionally only depend on workspaceSlug and autoIndex to avoid re-triggering
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [workspaceSlug, autoIndex]);
     
     // Reset auto-index flag when workspace changes
     useEffect(() => {
-        hasAutoIndexedRef.current = false;
+        return () => {
+            // Only reset on unmount/workspace change cleanup
+            hasAutoIndexedRef.current = false;
+        };
     }, [workspaceSlug]);
     
     return {
