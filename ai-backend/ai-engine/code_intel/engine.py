@@ -245,7 +245,10 @@ class CodeIntelEngine:
             file_reader=self._file_walker,
         )
         self._tool_registry = ToolRegistry()
-        self._tool_executor = ToolExecutor(self._tool_registry)
+        self._tool_executor = ToolExecutor(
+            tools=self._exploration_tools,
+            registry=self._tool_registry,
+        )
         
         # Eviction
         self._context_stabilizer = ContextStabilizer()
@@ -278,41 +281,32 @@ class CodeIntelEngine:
         
         self._initialize_components()
         
-        # Walk files
-        files = list(self._file_walker.walk())
-        logger.info(f"Found {len(files)} files to index")
-        
-        chunks_indexed = 0
-        
-        for file_info in files:
-            # Detect language
-            language = self._language_detector.detect(file_info.path)
-            if not language:
-                continue
-            
-            # Extract chunks
-            chunks = self._chunk_extractor.extract(
-                file_info.path,
-                language,
-            )
-            
-            # Normalize
-            normalized = [self._normalizer.normalize(c) for c in chunks]
-            
-            # Index
-            await self._dual_indexer.index_chunks(normalized)
-            chunks_indexed += len(normalized)
-        
-        # Generate summaries
-        await self._summary_manager.update_all()
+        # Use DualIndexer's index_repository method
+        if incremental:
+            # For incremental, only reindex changed files
+            result = self._dual_indexer.reindex_changed()
+            files_count = result.get("files_updated", 0)
+            chunks_count = result.get("chunks_updated", 0)
+        else:
+            # Full reindex
+            result = await self._dual_indexer.index_repository_async()
+            files_count = result.get("files", 0)
+            chunks_count = result.get("chunks", 0)
         
         # Update stats
-        self._stats.files_indexed = len(files)
-        self._stats.chunks_indexed = chunks_indexed
-        self._stats.symbols_tracked = len(self._structural_index._graph.nodes)
+        self._stats.files_indexed = files_count
+        self._stats.chunks_indexed = chunks_count
+        
+        # Get symbol count from structural index
+        try:
+            structural_stats = self._structural_index.stats()
+            self._stats.symbols_tracked = structural_stats.get("nodes", 0)
+        except Exception:
+            self._stats.symbols_tracked = 0
+        
         self._stats.last_index_time_ms = (time.time() - start) * 1000
         
-        logger.info(f"Indexed {chunks_indexed} chunks in {self._stats.last_index_time_ms:.0f}ms")
+        logger.info(f"Indexed {self._stats.chunks_indexed} chunks in {self._stats.last_index_time_ms:.0f}ms")
         
         return self._stats
     
@@ -321,27 +315,17 @@ class CodeIntelEngine:
         Index a single file.
         
         Args:
-            file_path: Path to file
+            file_path: Path to file (relative to workspace)
             
         Returns:
             Number of chunks indexed
         """
         self._initialize_components()
         
-        # Detect language
-        language = self._language_detector.detect(file_path)
-        if not language:
-            return 0
+        # Use DualIndexer's index_file method
+        chunks = self._dual_indexer.index_file(file_path)
         
-        # Extract and index
-        chunks = self._chunk_extractor.extract(file_path, language)
-        normalized = [self._normalizer.normalize(c) for c in chunks]
-        await self._dual_indexer.index_chunks(normalized)
-        
-        # Update summary
-        await self._summary_manager.update_file(file_path)
-        
-        return len(normalized)
+        return len(chunks)
     
     # =========================================================================
     # Context Retrieval API
@@ -370,55 +354,35 @@ class CodeIntelEngine:
         self._initialize_components()
         
         # Create budget
-        budget = ContextBudget(
-            max_tokens=max_tokens,
-            reserve_for_response=self.config.retrieval.reserve_tokens,
+        budget = ContextBudget(max_tokens=max_tokens)
+        
+        # Run retrieval pipeline (synchronous, so run in executor)
+        import asyncio
+        loop = asyncio.get_event_loop()
+        pipeline_result = await loop.run_in_executor(
+            None,
+            lambda: self._retrieval_pipeline.retrieve(query=query, budget=budget)
         )
         
-        # Use stabilizer for multi-turn
-        if conversation_history and self._context_stabilizer:
-            # Get stabilized context
-            result = await self._retrieval_pipeline.retrieve(
-                query=query,
-                budget=budget,
-            )
-            
-            # Track for stability
-            self._context_stabilizer.track_result(result)
-        else:
-            # Single-turn retrieval
-            result = await self._retrieval_pipeline.retrieve(
-                query=query,
-                budget=budget,
-            )
+        # Extract data from pipeline result
+        context = pipeline_result.context
         
-        # Run through deterministic controller to decide sufficiency
-        # The controller does NOT use the LLM - it applies hard rules
-        if self._retrieval_controller and result.chunks:
-            decision = self._retrieval_controller.decide(
-                query=query,
-                candidates=result.chunks,
-                max_tokens=max_tokens,
-            )
-            
-            # Add sufficiency to result
-            result.sufficiency = decision.sufficiency
-            result.refusal_reason = decision.refusal_reason
-            
-            # If controller says to use subset, apply it
-            if len(decision.selected_chunks) < len(result.chunks):
-                result.chunks = decision.selected_chunks
-                # Rebuild assembled context with selected chunks
-                result.assembled_context = self._build_context_string(
-                    result.chunks,
-                    result.sufficiency,
-                    result.refusal_reason,
-                )
-        else:
-            result.sufficiency = ContextSufficiency.UNKNOWN
-            result.refusal_reason = None
+        # Convert pipeline result to RetrievalResult
+        retrieval_result = RetrievalResult(
+            chunks=[],  # Pipeline doesn't expose raw chunks
+            file_summaries=[],
+            repo_summary=None,
+            query=query,
+            total_tokens=context.total_tokens,
+            budget=budget,
+            assembled_context=context.content,
+        )
         
-        return result
+        # Set sufficiency - the pipeline already did budget enforcement
+        retrieval_result.sufficiency = ContextSufficiency.SUFFICIENT if context.content else ContextSufficiency.EMPTY
+        retrieval_result.refusal_reason = None
+        
+        return retrieval_result
     
     def _build_context_string(
         self,

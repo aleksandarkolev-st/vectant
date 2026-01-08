@@ -77,6 +77,28 @@ class Embedder:
         
         return result['embedding']
     
+    def embed_query(self, query: str) -> List[float]:
+        """
+        Embed a query for retrieval.
+        
+        Uses RETRIEVAL_QUERY task type for better query embeddings.
+        
+        Args:
+            query: Search query to embed
+            
+        Returns:
+            Embedding vector
+        """
+        client = self._get_client()
+        
+        result = client.embed_content(
+            model=f"models/{self.model}",
+            content=query,
+            task_type="RETRIEVAL_QUERY",
+        )
+        
+        return result['embedding']
+    
     def embed_texts(self, texts: List[str]) -> List[List[float]]:
         """
         Embed multiple texts in batches.
