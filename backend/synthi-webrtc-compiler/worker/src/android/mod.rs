@@ -3,6 +3,7 @@ pub mod fs;
 
 // Next (split out of legacy files):
 pub mod emulator;
+pub mod emulator_grpc;
 pub mod react_native;
 pub mod job;
 pub mod webrtc;

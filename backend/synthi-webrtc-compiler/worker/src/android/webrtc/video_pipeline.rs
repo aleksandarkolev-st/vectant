@@ -2,8 +2,10 @@ use anyhow::{anyhow, Context, Result};
 use gstreamer as gst;
 use gstreamer::prelude::{Cast, ElementExt, GstBinExt, GstObjectExt, ObjectExt};
 use gstreamer_app as gst_app;
+use gstreamer_app::prelude::AppSrcExt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::str::FromStr;
 use tokio::sync::mpsc;
 use webrtc::rtp::packet::Packet;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
@@ -41,6 +43,27 @@ pub struct EmulatorVideoConfig {
     pub crop_right: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct EmulatorAppSrcConfig {
+    pub fps: u32,
+    pub width: u32,
+    pub height: u32,
+    pub format: String,
+    pub codec: VideoCodec,
+}
+
+impl Default for EmulatorAppSrcConfig {
+    fn default() -> Self {
+        Self {
+            fps: 30,
+            width: 1080,
+            height: 1920,
+            format: "RGBA".to_string(),
+            codec: VideoCodec::Vp8,
+        }
+    }
+}
+
 impl Default for EmulatorVideoConfig {
     fn default() -> Self {
         Self {
@@ -67,6 +90,7 @@ pub struct EmulatorVideoPipeline {
     pub rtp_packet_count: Arc<AtomicU64>,
     /// Counter for samples received in appsink callback
     pub appsink_sample_count: Arc<AtomicU64>,
+    appsrc: Option<gst_app::AppSrc>,
 }
 
 fn drain_pipeline_errors(pipeline: &gst::Pipeline, max_ms: u64) -> Vec<String> {
@@ -257,6 +281,23 @@ fn pipeline_string(cfg: &EmulatorVideoConfig) -> String {
     )
 }
 
+fn appsrc_pipeline_string(cfg: &EmulatorAppSrcConfig) -> String {
+    let framerate = format!("{}/1", cfg.fps.max(1));
+    let enc = match cfg.codec {
+        VideoCodec::Vp8 => {
+            "vp8enc deadline=1 cpu-used=8 error-resilient=partitions keyframe-max-dist=60 ! rtpvp8pay pt=96".to_string()
+        }
+        VideoCodec::H264 => {
+            "x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h264,stream-format=byte-stream,profile=baseline ! rtph264pay pt=96 config-interval=-1".to_string()
+        }
+    };
+
+    format!(
+        "appsrc name=emulator_frames is-live=true format=time do-timestamp=true ! videoconvert ! videoscale ! videorate ! video/x-raw,framerate={},width={},height={} ! queue ! {} ! queue ! appsink name=video_sink drop=true max-buffers=50",
+        framerate, cfg.width, cfg.height, enc
+    )
+}
+
 pub fn track_mime_type(codec: VideoCodec) -> String {
     match codec {
         VideoCodec::Vp8 => "video/VP8".to_string(),
@@ -291,6 +332,60 @@ impl EmulatorVideoPipeline {
             .downcast::<gst::Pipeline>()
             .map_err(|_| anyhow!("Expected gst::Pipeline"))?;
 
+        Self::finalize_pipeline(pipeline, cfg.codec, None, true)
+    }
+
+    pub fn start_appsrc(cfg: EmulatorAppSrcConfig) -> Result<Self> {
+        // Validate required plugins early (fail-fast).
+        require_element("appsrc")?;
+        require_element("videoconvert")?;
+        require_element("videoscale")?;
+        require_element("videorate")?;
+        require_element("queue")?;
+        require_element("appsink")?;
+        match cfg.codec {
+            VideoCodec::Vp8 => {
+                require_element("vp8enc")?;
+                require_element("rtpvp8pay")?;
+            }
+            VideoCodec::H264 => {
+                require_element("x264enc")?;
+                require_element("rtph264pay")?;
+            }
+        }
+
+        let gst_str = appsrc_pipeline_string(&cfg);
+        let pipeline = gst::parse_launch(&gst_str)
+            .context("Failed to parse GStreamer appsrc pipeline")?
+            .downcast::<gst::Pipeline>()
+            .map_err(|_| anyhow!("Expected gst::Pipeline"))?;
+
+        let appsrc = pipeline
+            .by_name("emulator_frames")
+            .context("emulator_frames appsrc not found")?
+            .downcast::<gst_app::AppSrc>()
+            .map_err(|_| anyhow!("Expected AppSrc"))?;
+
+        let caps_str = format!(
+            "video/x-raw,format={},width={},height={},framerate={}/1",
+            cfg.format,
+            cfg.width.max(1),
+            cfg.height.max(1),
+            cfg.fps.max(1)
+        );
+        let caps = gst::Caps::from_str(&caps_str)
+            .context("Failed to build appsrc caps")?;
+        appsrc.set_caps(Some(&caps));
+
+        Self::finalize_pipeline(pipeline, cfg.codec, Some(appsrc), false)
+    }
+
+    fn finalize_pipeline(
+        pipeline: gst::Pipeline,
+        codec: VideoCodec,
+        appsrc: Option<gst_app::AppSrc>,
+        verify_samples: bool,
+    ) -> Result<Self> {
         let appsink = pipeline
             .by_name("video_sink")
             .context("video_sink not found")?
@@ -334,8 +429,7 @@ impl EmulatorVideoPipeline {
             .set_state(gst::State::Playing)
             .context("Failed to set emulator video pipeline to Playing")?;
 
-        // Some X11/Xvfb capture failures only surface asynchronously on the bus.
-        // If we immediately see an error, fail-fast so callers can fall back (e.g. root capture).
+        // Some capture failures only surface asynchronously on the bus.
         let early_errors = drain_pipeline_errors(&pipeline, 250);
         if !early_errors.is_empty() {
             let _ = pipeline.set_state(gst::State::Null);
@@ -345,29 +439,29 @@ impl EmulatorVideoPipeline {
             ));
         }
 
-        // Give the pipeline a moment to start producing frames, then verify it's working.
-        // We check sample count from the callback rather than pulling directly to avoid
-        // competing with the callback for samples.
-        std::thread::sleep(std::time::Duration::from_millis(3000));
-        let initial_samples = appsink_sample_count.load(Ordering::Relaxed);
-        if initial_samples == 0 {
-            let errors = drain_pipeline_errors(&pipeline, 250);
-            let _ = pipeline.set_state(gst::State::Null);
-            if errors.is_empty() {
+        if verify_samples {
+            // Give the pipeline a moment to start producing frames, then verify it's working.
+            std::thread::sleep(std::time::Duration::from_millis(3000));
+            let initial_samples = appsink_sample_count.load(Ordering::Relaxed);
+            if initial_samples == 0 {
+                let errors = drain_pipeline_errors(&pipeline, 250);
+                let _ = pipeline.set_state(gst::State::Null);
+                if errors.is_empty() {
+                    return Err(anyhow!(
+                        "Emulator video pipeline produced no frames in first 500ms"
+                    ));
+                }
                 return Err(anyhow!(
-                    "Emulator video pipeline produced no frames in first 500ms"
+                    "Emulator video pipeline failed shortly after start: {}",
+                    errors.join(" | ")
                 ));
             }
-            return Err(anyhow!(
-                "Emulator video pipeline failed shortly after start: {}",
-                errors.join(" | ")
-            ));
+            eprintln!("[video-pipeline] Initial verification: {} samples in first 500ms", initial_samples);
         }
-        eprintln!("[video-pipeline] Initial verification: {} samples in first 500ms", initial_samples);
 
         let track = Arc::new(TrackLocalStaticRTP::new(
             webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
-                mime_type: track_mime_type(cfg.codec),
+                mime_type: track_mime_type(codec),
                 ..Default::default()
             },
             "video".to_string(),
@@ -402,6 +496,7 @@ impl EmulatorVideoPipeline {
             _rtp_task: rtp_task,
             rtp_packet_count,
             appsink_sample_count,
+            appsrc,
         })
     }
 
@@ -434,5 +529,30 @@ impl EmulatorVideoPipeline {
 
     pub fn debug_pipeline_string(cfg: &EmulatorVideoConfig) -> String {
         pipeline_string(cfg)
+    }
+
+    pub fn debug_appsrc_pipeline_string(cfg: &EmulatorAppSrcConfig) -> String {
+        appsrc_pipeline_string(cfg)
+    }
+
+    pub fn appsrc_clone(&self) -> Option<gst_app::AppSrc> {
+        self.appsrc.clone()
+    }
+
+    pub fn push_frame(&self, data: &[u8], pts_ns: Option<u64>) -> Result<()> {
+        let appsrc = self
+            .appsrc
+            .as_ref()
+            .context("appsrc not configured for this pipeline")?;
+        let mut buffer = gst::Buffer::from_slice(data);
+        if let Some(pts) = pts_ns {
+            if let Some(buf) = buffer.get_mut() {
+                buf.set_pts(gst::ClockTime::from_nseconds(pts));
+            }
+        }
+        appsrc
+            .push_buffer(buffer)
+            .map_err(|e| anyhow!("appsrc push_buffer failed: {:?}", e))?;
+        Ok(())
     }
 }

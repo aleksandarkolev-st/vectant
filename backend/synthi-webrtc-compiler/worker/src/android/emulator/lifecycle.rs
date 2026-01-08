@@ -101,7 +101,7 @@ impl EmulatorSession {
         // -gpu swiftshader_indirect = software rendering, but uses incompatible X11 visual (XID capture fails with BadMatch)
         // -gpu guest = software rendering inside Android VM, renders to standard X11 window
         // For video streaming with ximagesrc, -gpu guest is most compatible.
-        let gpu_mode = if cfg!(target_os = "windows") {
+        let default_gpu_mode = if cfg!(target_os = "windows") {
             std::env::var("SYNTHI_ANDROID_EMULATOR_GPU").unwrap_or_else(|_| "swiftshader_indirect".to_string())
         } else {
             std::env::var("SYNTHI_ANDROID_EMULATOR_GPU").unwrap_or_else(|_| {
@@ -109,14 +109,21 @@ impl EmulatorSession {
                 "guest".to_string()
             })
         };
+        let gpu_override = self
+            .core
+            .config
+            .extra_args
+            .iter()
+            .position(|v| v == "-gpu")
+            .and_then(|idx| self.core.config.extra_args.get(idx + 1))
+            .cloned();
+        let gpu_mode = gpu_override.clone().unwrap_or_else(|| default_gpu_mode);
         eprintln!("[emulator] Starting with -gpu {} on DISPLAY={}", gpu_mode, display);
         cmd.args([
             "-avd",
             &self.core.config.avd_name,
             "-no-audio",     // No audio
             "-no-boot-anim", // Skip boot animation
-            "-gpu",
-            &gpu_mode,
             "-memory",
             &self.core.config.ram_mb.to_string(),
             "-cores",
@@ -126,6 +133,9 @@ impl EmulatorSession {
             "-no-snapshot-load", // Don't load snapshots
             "-no-skin",          // Disable device skin/frame (removes side toolbar)
         ]);
+        if gpu_override.is_none() {
+            cmd.args(["-gpu", &gpu_mode]);
+        }
 
         if !display.trim().is_empty() {
             cmd.env("DISPLAY", &display);

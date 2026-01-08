@@ -11,6 +11,8 @@ use tokio::sync::Mutex as TokioMutex;
 use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, ChildStdin};
 use std::sync::Mutex;
+use crate::android::emulator_grpc;
+use super::stream_config::{EmulatorStreamConfig, EmulatorStreamMode};
 
 /// Global store of cancelled mobile job session IDs.
 /// When a job is cancelled, its session_id is added here.
@@ -44,6 +46,8 @@ pub struct EmulatorInputSession {
     pub serial: String,
     pub device_w: u32,
     pub device_h: u32,
+    pub stream_config: EmulatorStreamConfig,
+    pub grpc_frame_size: Option<(u32, u32)>,
     /// Persistent adb shell process for low-latency input
     shell_proc: Option<Arc<TokioMutex<PersistentShell>>>,
 }
@@ -55,6 +59,8 @@ impl Clone for EmulatorInputSession {
             serial: self.serial.clone(),
             device_w: self.device_w,
             device_h: self.device_h,
+            stream_config: self.stream_config.clone(),
+            grpc_frame_size: self.grpc_frame_size,
             shell_proc: self.shell_proc.clone(),
         }
     }
@@ -120,7 +126,12 @@ pub struct EmulatorInputMessage {
     pub video_h: Option<f64>,
 }
 
-pub async fn register_session(session_id: &str, adb: PathBuf, serial: String) -> Result<()> {
+pub async fn register_session(
+    session_id: &str,
+    adb: PathBuf,
+    serial: String,
+    stream_config: EmulatorStreamConfig,
+) -> Result<()> {
     let (w, h) = query_device_size(&adb, &serial).await?;
     
     // Create a persistent shell for low-latency input
@@ -143,6 +154,8 @@ pub async fn register_session(session_id: &str, adb: PathBuf, serial: String) ->
             serial,
             device_w: w,
             device_h: h,
+            stream_config,
+            grpc_frame_size: None,
             shell_proc,
         },
     );
@@ -152,6 +165,13 @@ pub async fn register_session(session_id: &str, adb: PathBuf, serial: String) ->
 pub fn unregister_session_sync(session_id: &str) {
     let mut g = SESSIONS.lock().expect("SESSIONS lock");
     g.remove(session_id);
+}
+
+pub fn update_grpc_frame_size(session_id: &str, width: u32, height: u32) {
+    let mut g = SESSIONS.lock().expect("SESSIONS lock");
+    if let Some(session) = g.get_mut(session_id) {
+        session.grpc_frame_size = Some((width, height));
+    }
 }
 
 pub async fn handle_input_message(msg: EmulatorInputMessage) -> Result<()> {
@@ -167,12 +187,66 @@ pub async fn handle_input_message(msg: EmulatorInputMessage) -> Result<()> {
             .with_context(|| format!("no emulator input session registered for {}", sid))?
     };
 
+    if session.stream_config.mode == EmulatorStreamMode::Grpc {
+        if let Err(err) = handle_input_grpc(&msg, &session).await {
+            eprintln!("[input.rs] gRPC input failed; falling back to ADB: {:#}", err);
+            handle_input_adb(&msg, &session).await?;
+        }
+        return Ok(());
+    }
+
+    handle_input_adb(&msg, &session).await
+}
+
+async fn handle_input_grpc(
+    msg: &EmulatorInputMessage,
+    session: &EmulatorInputSession,
+) -> Result<()> {
+    let (frame_w, frame_h) = session
+        .grpc_frame_size
+        .context("gRPC frame size unavailable for input mapping")?;
+
+    match msg.kind.as_str() {
+        "tap" => {
+            let (x, y) = map_point(msg, frame_w, frame_h)?;
+            emulator_grpc::inject_tap(&session.stream_config.grpc, x, y).await?;
+        }
+        "swipe" => {
+            let (x1, y1) = map_point(msg, frame_w, frame_h)?;
+            let (x2, y2) = map_point2(msg, frame_w, frame_h)?;
+            let dur = msg.duration_ms.unwrap_or(250);
+            emulator_grpc::inject_swipe(&session.stream_config.grpc, x1, y1, x2, y2, dur).await?;
+        }
+        "key" => {
+            let kc = msg
+                .keycode
+                .as_deref()
+                .context("key event missing keycode")?;
+            let kc = if kc.starts_with("KEYCODE_") { kc.to_string() } else { format!("KEYCODE_{}", kc) };
+            emulator_grpc::inject_key(&session.stream_config.grpc, &kc).await?;
+        }
+        "text" => {
+            let text = msg.text.clone().unwrap_or_default();
+            emulator_grpc::inject_text(&session.stream_config.grpc, &text).await?;
+        }
+        "rotate" => {
+            anyhow::bail!("rotate not implemented via gRPC");
+        }
+        _ => {
+            anyhow::bail!("unknown emulator input type: {}", msg.kind);
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_input_adb(msg: &EmulatorInputMessage, session: &EmulatorInputSession) -> Result<()> {
     // Use persistent shell for low-latency input when available
     let use_persistent = session.shell_proc.is_some();
 
     match msg.kind.as_str() {
         "tap" => {
-            let (x, y) = map_point(&msg, session.device_w, session.device_h)?;
+            let (x, y) = map_point(msg, session.device_w, session.device_h)?;
             let cmd = format!("input tap {} {}", x, y);
             if use_persistent {
                 let shell = session.shell_proc.as_ref().unwrap();
@@ -188,8 +262,8 @@ pub async fn handle_input_message(msg: EmulatorInputMessage) -> Result<()> {
             }
         }
         "swipe" => {
-            let (x1, y1) = map_point(&msg, session.device_w, session.device_h)?;
-            let (x2, y2) = map_point2(&msg, session.device_w, session.device_h)?;
+            let (x1, y1) = map_point(msg, session.device_w, session.device_h)?;
+            let (x2, y2) = map_point2(msg, session.device_w, session.device_h)?;
             let dur = msg.duration_ms.unwrap_or(250);
             let cmd = format!("input swipe {} {} {} {} {}", x1, y1, x2, y2, dur);
             if use_persistent {
@@ -229,7 +303,7 @@ pub async fn handle_input_message(msg: EmulatorInputMessage) -> Result<()> {
             }
         }
         "text" => {
-            let text = msg.text.unwrap_or_default();
+            let text = msg.text.clone().unwrap_or_default();
             // Text input needs special quoting, use fallback method
             adb_shell_text(&session.adb, &session.serial, &text).await?;
         }
@@ -256,36 +330,36 @@ async fn rotate_device(adb: &PathBuf, serial: &str) -> Result<()> {
     Ok(())
 }
 
-fn map_point(msg: &EmulatorInputMessage, device_w: u32, device_h: u32) -> Result<(u32, u32)> {
+fn map_point(msg: &EmulatorInputMessage, target_w: u32, target_h: u32) -> Result<(u32, u32)> {
     let x = msg.x.context("tap/swipe missing x")?;
     let y = msg.y.context("tap/swipe missing y")?;
-    map_xy(msg, x, y, device_w, device_h)
+    map_xy(msg, x, y, target_w, target_h)
 }
 
-fn map_point2(msg: &EmulatorInputMessage, device_w: u32, device_h: u32) -> Result<(u32, u32)> {
+fn map_point2(msg: &EmulatorInputMessage, target_w: u32, target_h: u32) -> Result<(u32, u32)> {
     let x = msg.x2.context("swipe missing x2")?;
     let y = msg.y2.context("swipe missing y2")?;
-    map_xy(msg, x, y, device_w, device_h)
+    map_xy(msg, x, y, target_w, target_h)
 }
 
 fn map_xy(
     msg: &EmulatorInputMessage,
     x: f64,
     y: f64,
-    device_w: u32,
-    device_h: u32,
+    target_w: u32,
+    target_h: u32,
 ) -> Result<(u32, u32)> {
     // Default assumption if client doesn't send geometry:
     // coordinates are already in device pixels.
     let Some(view_w) = msg.view_w else {
-        return Ok((x.round().clamp(0.0, device_w as f64) as u32, y.round().clamp(0.0, device_h as f64) as u32));
+        return Ok((x.round().clamp(0.0, target_w as f64) as u32, y.round().clamp(0.0, target_h as f64) as u32));
     };
     let Some(view_h) = msg.view_h else {
-        return Ok((x.round().clamp(0.0, device_w as f64) as u32, y.round().clamp(0.0, device_h as f64) as u32));
+        return Ok((x.round().clamp(0.0, target_w as f64) as u32, y.round().clamp(0.0, target_h as f64) as u32));
     };
 
-    let video_w = msg.video_w.unwrap_or(device_w as f64).max(1.0);
-    let video_h = msg.video_h.unwrap_or(device_h as f64).max(1.0);
+    let video_w = msg.video_w.unwrap_or(target_w as f64).max(1.0);
+    let video_h = msg.video_h.unwrap_or(target_h as f64).max(1.0);
 
     // object-fit: contain letterboxing model
     let scale = (view_w / video_w).min(view_h / video_h).max(1e-6);
@@ -297,8 +371,8 @@ fn map_xy(
     let nx = ((x - off_x) / content_w).clamp(0.0, 1.0);
     let ny = ((y - off_y) / content_h).clamp(0.0, 1.0);
 
-    let dx = (nx * device_w as f64).round().clamp(0.0, device_w as f64);
-    let dy = (ny * device_h as f64).round().clamp(0.0, device_h as f64);
+    let dx = (nx * target_w as f64).round().clamp(0.0, target_w as f64);
+    let dy = (ny * target_h as f64).round().clamp(0.0, target_h as f64);
     Ok((dx as u32, dy as u32))
 }
 

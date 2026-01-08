@@ -4,11 +4,14 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use gstreamer as gst;
+use gstreamer_app::prelude::AppSrcExt;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::sync::Mutex;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 use tokio::process::Command;
+use tokio::net::TcpStream;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 
@@ -17,7 +20,9 @@ use crate::android::fs::{
 };
 use crate::android::webrtc::{send_log, send_logcat, send_mobile_capabilities, send_status};
 use crate::android::webrtc::{input as emulator_input, video_pipeline};
+use crate::android::webrtc::{EmulatorStreamConfig, EmulatorStreamMode};
 use crate::android::webrtc::input::{is_session_cancelled, clear_cancelled_session};
+use crate::android::emulator_grpc;
 use crate::android::emulator::{
     acquire_emulator_daemon, detect_kvm, ensure_emulator_ready, EmulatorConfig, EnsureReadyResult,
     LogcatEntry,
@@ -181,6 +186,23 @@ async fn find_emulator_x11_window(display: &str) -> Option<(u64, u32, u32)> {
     Some((xid, 0, 0))
 }
 
+async fn wait_for_grpc_ready(host: &str, port: u16, total_timeout: Duration) -> Result<()> {
+    let addr = format!("{}:{}", host, port);
+    let start = Instant::now();
+    loop {
+        if start.elapsed() >= total_timeout {
+            bail!("gRPC port {} not reachable within {:?}", addr, total_timeout);
+        }
+
+        let attempt = timeout(Duration::from_millis(500), TcpStream::connect(&addr)).await;
+        if let Ok(Ok(_stream)) = attempt {
+            return Ok(());
+        }
+
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
 /// Handles a React Native emulator job.
 ///
 /// This orchestrates the full flow:
@@ -233,6 +255,21 @@ pub async fn handle_react_native_emulator_job(
 
     // Tell the frontend what streaming/input transports are available.
     send_mobile_capabilities(&log_dc, &session_id).await;
+
+    let stream_config = EmulatorStreamConfig::from_env();
+    send_log(
+        &log_dc,
+        &session_id,
+        &format!(
+            "[stream] mode={:?} grpc={}:{} token={}",
+            stream_config.mode,
+            stream_config.grpc.host,
+            stream_config.grpc.port,
+            stream_config.grpc.use_token
+        ),
+        "emulator",
+    )
+    .await;
 
     // Step 1: Detect React Native project by searching up from start_path
     send_status(
@@ -357,6 +394,23 @@ pub async fn handle_react_native_emulator_job(
 
     let mut emulator_config = EmulatorConfig::default();
     emulator_config.android_sdk_root = sdk_root.clone();
+
+    if stream_config.mode == EmulatorStreamMode::Grpc {
+        let grpc_gpu = std::env::var("SYNTHI_ANDROID_EMULATOR_GPU")
+            .unwrap_or_else(|_| "swiftshader_indirect".to_string());
+        emulator_config
+            .extra_args
+            .extend(vec![
+                "-no-window".to_string(),
+                "-grpc".to_string(),
+                stream_config.grpc.port.to_string(),
+                "-gpu".to_string(),
+                grpc_gpu,
+            ]);
+        if stream_config.grpc.use_token {
+            emulator_config.extra_args.push("-grpc-use-token".to_string());
+        }
+    }
 
     // Hardware accel (KVM) detection + logging.
     // We only enable `-accel on` if /dev/kvm exists AND is accessible.
@@ -842,6 +896,38 @@ pub async fn handle_react_native_emulator_job(
     )
     .await;
 
+    if stream_config.mode == EmulatorStreamMode::Grpc {
+        send_log(
+            &log_dc,
+            &session_id,
+            &format!(
+                "[grpc] waiting for emulator gRPC port {}:{} to become reachable",
+                stream_config.grpc.host, stream_config.grpc.port
+            ),
+            "emulator",
+        )
+        .await;
+
+        wait_for_grpc_ready(
+            &stream_config.grpc.host,
+            stream_config.grpc.port,
+            Duration::from_secs(15),
+        )
+        .await
+        .context("emulator gRPC port not reachable")?;
+
+        send_log(
+            &log_dc,
+            &session_id,
+            &format!(
+                "[grpc] emulator gRPC port ready at {}:{}",
+                stream_config.grpc.host, stream_config.grpc.port
+            ),
+            "emulator",
+        )
+        .await;
+    }
+
     // Step 5: Install APK
     send_status(&log_dc, &session_id, "installing", "Installing APK...", None).await;
 
@@ -949,230 +1035,388 @@ pub async fn handle_react_native_emulator_job(
         sdk_root.join("platform-tools/adb")
     };
 
-    emulator_input::register_session(&session_id, adb_path.clone(), emulator_serial.clone()).await?;
+    emulator_input::register_session(
+        &session_id,
+        adb_path.clone(),
+        emulator_serial.clone(),
+        stream_config.clone(),
+    )
+    .await?;
 
-    // Use the same X11 display as the emulator session.
-    let session_display = {
-        let d = daemon.session_mut().core.x11_display.lock().await.clone();
-        d
-    };
+    let mut grpc_frame_task: Option<tokio::task::JoinHandle<()>> = None;
 
-    let mut cfg = video_pipeline::EmulatorVideoConfig::default();
-    if !session_display.trim().is_empty() {
-        cfg.x11_display = session_display;
-    } else if let Ok(d) = std::env::var("DISPLAY") {
-        if !d.trim().is_empty() {
-            cfg.x11_display = d;
+    let (pipeline, display_label) = if stream_config.mode == EmulatorStreamMode::Grpc {
+        if !emulator_grpc::grpc_codegen_available() {
+            send_log(
+                &log_dc,
+                &session_id,
+                "[grpc] gRPC codegen unavailable (protoc/protos missing); cannot start grpc streaming",
+                "emulator",
+            )
+            .await;
+            emulator_input::unregister_session_sync(&session_id);
+            bail!("gRPC codegen unavailable; install protoc and provide emulator protos");
         }
-    }
 
-    // XID capture can cause X_GetImage BadMatch with some GPU modes due to incompatible X11 visuals.
-    // Default to root capture which is safer. XID capture can be enabled via SYNTHI_ANDROID_CAPTURE_XID=true.
-    let capture_xid = std::env::var("SYNTHI_ANDROID_CAPTURE_XID")
-        .ok()
-        .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false);
+        let mut app_cfg = video_pipeline::EmulatorAppSrcConfig::default();
+        if let Ok((w, h)) = emulator_input::query_device_size(&adb_path, &emulator_serial).await {
+            if w > 0 && h > 0 {
+                app_cfg.width = w;
+                app_cfg.height = h;
+            }
+        }
 
-    // Debug: try to locate the emulator window and report if it's likely off-screen.
-    // This helps diagnose "stream ready but blank" when root capture is used.
-    // Also capture geometry for region-based root capture.
-    let mut emulator_geom: Option<(i32, i32, i32, i32)> = None;
-    if !cfg!(target_os = "windows") {
-        if let Some((xid, _w, _h)) = find_emulator_x11_window(&cfg.x11_display).await {
-            if let Some((x, y, w, h)) = xdotool_window_geometry_xywh(&cfg.x11_display, xid).await {
-                emulator_geom = Some((x, y, w, h));
-                if let Some((sw, sh)) = parse_xvfb_resolution() {
-                    let offscreen = x >= sw || y >= sh || (x + w) <= 0 || (y + h) <= 0;
+        send_log(
+            &log_dc,
+            &session_id,
+            &format!(
+                "[video] starting GStreamer appsrc pipeline: {}",
+                video_pipeline::EmulatorVideoPipeline::debug_appsrc_pipeline_string(&app_cfg)
+            ),
+            "emulator",
+        )
+        .await;
+
+        let mut frame_rx = match emulator_grpc::stream_frames(&stream_config.grpc).await {
+            Ok(rx) => rx,
+            Err(e) => {
+                send_log(
+                    &log_dc,
+                    &session_id,
+                    &format!("[grpc] failed to start frame stream: {:#}", e),
+                    "emulator",
+                )
+                .await;
+                emulator_input::unregister_session_sync(&session_id);
+                return Err(e).context("failed to start emulator gRPC frame stream");
+            }
+        };
+
+        let pipeline = match video_pipeline::EmulatorVideoPipeline::start_appsrc(app_cfg.clone()) {
+            Ok(p) => p,
+            Err(e) => {
+                emulator_input::unregister_session_sync(&session_id);
+                return Err(e).context("failed to start emulator gRPC video pipeline");
+            }
+        };
+
+        let appsrc = pipeline
+            .appsrc_clone()
+            .context("gRPC pipeline missing appsrc")?;
+
+        let log_dc_for_grpc = log_dc.clone();
+        let session_id_for_grpc = session_id.clone();
+        let expected_w = app_cfg.width;
+        let expected_h = app_cfg.height;
+        let expected_format = app_cfg.format.clone();
+        grpc_frame_task = Some(tokio::spawn(async move {
+            let mut frames: u64 = 0;
+            let mut dropped: u64 = 0;
+            let mut last_log = Instant::now();
+            let mut mismatch_logged = false;
+            let mut last_frame_size: Option<(u32, u32)> = None;
+
+            while let Some(frame) = frame_rx.recv().await {
+                frames += 1;
+                if frame.width > 0 && frame.height > 0 {
+                    let size = (frame.width, frame.height);
+                    if last_frame_size != Some(size) {
+                        emulator_input::update_grpc_frame_size(
+                            &session_id_for_grpc,
+                            frame.width,
+                            frame.height,
+                        );
+                        last_frame_size = Some(size);
+                    }
+                }
+                if !mismatch_logged
+                    && (frame.width != expected_w
+                        || frame.height != expected_h
+                        || frame.format != expected_format)
+                {
+                    mismatch_logged = true;
                     send_log(
-                        &log_dc,
-                        &session_id,
+                        &log_dc_for_grpc,
+                        &session_id_for_grpc,
                         &format!(
-                            "[video] debug: Xvfb={}x{} display={} emulatorWindow xid={} geom x={} y={} w={} h={} offscreen={}",
-                            sw,
-                            sh,
-                            cfg.x11_display,
-                            xid,
-                            x,
-                            y,
-                            w,
-                            h,
-                            offscreen
-                        ),
-                        "emulator",
-                    )
-                    .await;
-                } else {
-                    send_log(
-                        &log_dc,
-                        &session_id,
-                        &format!(
-                            "[video] debug: display={} emulatorWindow xid={} geom x={} y={} w={} h={}",
-                            cfg.x11_display, xid, x, y, w, h
+                            "[grpc] frame format mismatch: stream={}x{} {} expected={}x{} {}",
+                            frame.width,
+                            frame.height,
+                            frame.format,
+                            expected_w,
+                            expected_h,
+                            expected_format
                         ),
                         "emulator",
                     )
                     .await;
                 }
+
+                if frame.format != expected_format {
+                    dropped += 1;
+                    continue;
+                }
+
+                let mut buffer = gst::Buffer::from_slice(frame.data);
+                if let Some(pts) = frame.timestamp_ns {
+                    if let Some(buf) = buffer.get_mut() {
+                        buf.set_pts(gst::ClockTime::from_nseconds(pts));
+                    }
+                }
+
+                if appsrc.push_buffer(buffer).is_err() {
+                    dropped += 1;
+                }
+
+                if last_log.elapsed() >= Duration::from_secs(5) {
+                    send_log(
+                        &log_dc_for_grpc,
+                        &session_id_for_grpc,
+                        &format!(
+                            "[grpc] frames={} dropped={} expected={}x{} {}",
+                            frames, dropped, expected_w, expected_h, expected_format
+                        ),
+                        "emulator",
+                    )
+                    .await;
+                    last_log = Instant::now();
+                }
+            }
+        }));
+
+        (
+            pipeline,
+            format!(
+                "grpc://{}:{}",
+                stream_config.grpc.host, stream_config.grpc.port
+            ),
+        )
+    } else {
+        // Use the same X11 display as the emulator session.
+        let session_display = {
+            let d = daemon.session_mut().core.x11_display.lock().await.clone();
+            d
+        };
+
+        let mut cfg = video_pipeline::EmulatorVideoConfig::default();
+        if !session_display.trim().is_empty() {
+            cfg.x11_display = session_display;
+        } else if let Ok(d) = std::env::var("DISPLAY") {
+            if !d.trim().is_empty() {
+                cfg.x11_display = d;
             }
         }
-    }
 
-    if capture_xid {
-        if let Some((xid, w, h)) = find_emulator_x11_window(&cfg.x11_display).await {
-            cfg.x11_xid = Some(xid);
-            let extra = if w > 0 && h > 0 {
-                format!(" ({}x{})", w, h)
-            } else {
-                String::new()
-            };
-            send_log(
-                &log_dc,
-                &session_id,
-                &format!("[video] capturing emulator X11 window xid={}{} on DISPLAY={}", xid, extra, cfg.x11_display),
-                "emulator",
-            )
-            .await;
-        } else {
-            send_log(
-                &log_dc,
-                &session_id,
-                &format!(
-                    "[video] no emulator X11 window found via xdotool; capturing X11 root on DISPLAY={} (may look black if emulator is off-screen)",
-                    cfg.x11_display
-                ),
-                "emulator",
-            )
-            .await;
+        // XID capture can cause X_GetImage BadMatch with some GPU modes due to incompatible X11 visuals.
+        // Default to root capture which is safer. XID capture can be enabled via SYNTHI_ANDROID_CAPTURE_XID=true.
+        let capture_xid = std::env::var("SYNTHI_ANDROID_CAPTURE_XID")
+            .ok()
+            .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false);
+
+        // Debug: try to locate the emulator window and report if it's likely off-screen.
+        // This helps diagnose "stream ready but blank" when root capture is used.
+        // Also capture geometry for region-based root capture.
+        let mut emulator_geom: Option<(i32, i32, i32, i32)> = None;
+        if !cfg!(target_os = "windows") {
+            if let Some((xid, _w, _h)) = find_emulator_x11_window(&cfg.x11_display).await {
+                if let Some((x, y, w, h)) = xdotool_window_geometry_xywh(&cfg.x11_display, xid).await {
+                    emulator_geom = Some((x, y, w, h));
+                    if let Some((sw, sh)) = parse_xvfb_resolution() {
+                        let offscreen = x >= sw || y >= sh || (x + w) <= 0 || (y + h) <= 0;
+                        send_log(
+                            &log_dc,
+                            &session_id,
+                            &format!(
+                                "[video] debug: Xvfb={}x{} display={} emulatorWindow xid={} geom x={} y={} w={} h={} offscreen={}",
+                                sw,
+                                sh,
+                                cfg.x11_display,
+                                xid,
+                                x,
+                                y,
+                                w,
+                                h,
+                                offscreen
+                            ),
+                            "emulator",
+                        )
+                        .await;
+                    } else {
+                        send_log(
+                            &log_dc,
+                            &session_id,
+                            &format!(
+                                "[video] debug: display={} emulatorWindow xid={} geom x={} y={} w={} h={}",
+                                cfg.x11_display, xid, x, y, w, h
+                            ),
+                            "emulator",
+                        )
+                        .await;
+                    }
+                }
+            }
         }
-    } else {
-        // Use root capture with region crop to just the emulator window area
-        if let Some((x, y, w, h)) = emulator_geom {
-            let left_pad = std::env::var("SYNTHI_ANDROID_LEFT_PAD_PX")
-                .ok()
-                .and_then(|v| v.parse::<i32>().ok())
-                .unwrap_or(24);
-            cfg.startx = Some((x - left_pad).max(0));
-            cfg.starty = Some(y.max(0));
-            cfg.endx = Some(x + w);
-            cfg.endy = Some(y + h);
-            
-            // Crop the SDK toolbar/right padding.
-            // Override via SYNTHI_ANDROID_TOOLBAR_WIDTH, else infer from device size vs window width.
-            let mut toolbar_width = std::env::var("SYNTHI_ANDROID_TOOLBAR_WIDTH")
-                .ok()
-                .and_then(|v| v.parse::<u32>().ok())
-                .map(|v| v as i32)
-                .unwrap_or(72); // Default toolbar width (generous to ensure full crop)
-            if std::env::var("SYNTHI_ANDROID_TOOLBAR_WIDTH").is_err() {
-                if let Ok((device_w, device_h)) =
-                    emulator_input::query_device_size(&adb_path, &emulator_serial).await
-                {
-                    if device_w > 0 && device_h > 0 && h > 0 {
-                        let scale = (h as f64) / (device_h as f64);
-                        let expected_w = (device_w as f64) * scale;
-                        let extra = (w as f64 - expected_w).round() as i32;
-                        if extra > 0 {
-                            let pad = std::env::var("SYNTHI_ANDROID_TOOLBAR_PAD_PX")
-                                .ok()
-                                .and_then(|v| v.parse::<u32>().ok())
-                                .unwrap_or(120) as i32;
-                            toolbar_width = extra + pad; // extra padding to fully remove toolbar gutter
+
+        if capture_xid {
+            if let Some((xid, w, h)) = find_emulator_x11_window(&cfg.x11_display).await {
+                cfg.x11_xid = Some(xid);
+                let extra = if w > 0 && h > 0 {
+                    format!(" ({}x{})", w, h)
+                } else {
+                    String::new()
+                };
+                send_log(
+                    &log_dc,
+                    &session_id,
+                    &format!("[video] capturing emulator X11 window xid={}{} on DISPLAY={}", xid, extra, cfg.x11_display),
+                    "emulator",
+                )
+                .await;
+            } else {
+                send_log(
+                    &log_dc,
+                    &session_id,
+                    &format!(
+                        "[video] no emulator X11 window found via xdotool; capturing X11 root on DISPLAY={} (may look black if emulator is off-screen)",
+                        cfg.x11_display
+                    ),
+                    "emulator",
+                )
+                .await;
+            }
+        } else {
+            // Use root capture with region crop to just the emulator window area
+            if let Some((x, y, w, h)) = emulator_geom {
+                let left_pad = std::env::var("SYNTHI_ANDROID_LEFT_PAD_PX")
+                    .ok()
+                    .and_then(|v| v.parse::<i32>().ok())
+                    .unwrap_or(24);
+                cfg.startx = Some((x - left_pad).max(0));
+                cfg.starty = Some(y.max(0));
+                cfg.endx = Some(x + w);
+                cfg.endy = Some(y + h);
+                
+                // Crop the SDK toolbar/right padding.
+                // Override via SYNTHI_ANDROID_TOOLBAR_WIDTH, else infer from device size vs window width.
+                let mut toolbar_width = std::env::var("SYNTHI_ANDROID_TOOLBAR_WIDTH")
+                    .ok()
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .map(|v| v as i32)
+                    .unwrap_or(72); // Default toolbar width (generous to ensure full crop)
+                if std::env::var("SYNTHI_ANDROID_TOOLBAR_WIDTH").is_err() {
+                    if let Ok((device_w, device_h)) =
+                        emulator_input::query_device_size(&adb_path, &emulator_serial).await
+                    {
+                        if device_w > 0 && device_h > 0 && h > 0 {
+                            let scale = (h as f64) / (device_h as f64);
+                            let expected_w = (device_w as f64) * scale;
+                            let extra = (w as f64 - expected_w).round() as i32;
+                            if extra > 0 {
+                                let pad = std::env::var("SYNTHI_ANDROID_TOOLBAR_PAD_PX")
+                                    .ok()
+                                    .and_then(|v| v.parse::<u32>().ok())
+                                    .unwrap_or(120) as i32;
+                                toolbar_width = extra + pad; // extra padding to fully remove toolbar gutter
+                            }
                         }
                     }
                 }
-            }
-            cfg.crop_right = toolbar_width.max(0) as u32;
-            
-            // Use the capture region size MINUS the crop as output size (don't distort aspect ratio)
-            // The actual video will be (w - toolbar_width) x h after cropping
-            cfg.width = (w - toolbar_width).max(100) as u32;
-            cfg.height = h as u32;
-            
-            send_log(
-                &log_dc,
-                &session_id,
-                    &format!(
-                        "[video] capturing X11 root region x={}..{} y={}..{} ({}x{}), left_pad={}, crop_right={}, output={}x{} on DISPLAY={}",
-                        cfg.startx.unwrap(), cfg.endx.unwrap(), cfg.starty.unwrap(), cfg.endy.unwrap(),
-                        w, h, left_pad, cfg.crop_right, cfg.width, cfg.height, cfg.x11_display
-                    ),
-                "emulator",
-            )
-            .await;
-        } else {
-            send_log(
-                &log_dc,
-                &session_id,
-                &format!("[video] capturing X11 root on DISPLAY={} (no emulator window found, may be black)", cfg.x11_display),
-                "emulator",
-            )
-            .await;
-        }
-    }
-
-    // Note: When using region capture, we use the region size directly to avoid distortion.
-    // The device resolution query is only used when we have no better size info.
-    if cfg.startx.is_none() {
-        // Only override dimensions if not using region capture
-        if let Ok((w, h)) = emulator_input::query_device_size(&adb_path, &emulator_serial).await {
-            if w > 0 && h > 0 {
-                cfg.width = w;
-                cfg.height = h;
-            }
-        }
-    }
-
-    send_log(
-        &log_dc,
-        &session_id,
-        &format!(
-            "[video] starting GStreamer pipeline: {}",
-            video_pipeline::EmulatorVideoPipeline::debug_pipeline_string(&cfg)
-        ),
-        "emulator",
-    )
-    .await;
-
-    let pipeline = match video_pipeline::EmulatorVideoPipeline::start(cfg.clone()) {
-        Ok(p) => p,
-        Err(e) => {
-            // If capturing a specific window fails (common under Xvfb / WMs), retry root capture.
-            if cfg.x11_xid.is_some() {
+                cfg.crop_right = toolbar_width.max(0) as u32;
+                
+                // Use the capture region size MINUS the crop as output size (don't distort aspect ratio)
+                // The actual video will be (w - toolbar_width) x h after cropping
+                cfg.width = (w - toolbar_width).max(100) as u32;
+                cfg.height = h as u32;
+                
                 send_log(
                     &log_dc,
                     &session_id,
-                    &format!(
-                        "[video] capture via xid failed; retrying root capture on DISPLAY={}: {:#}",
-                        cfg.x11_display, e
-                    ),
+                        &format!(
+                            "[video] capturing X11 root region x={}..{} y={}..{} ({}x{}), left_pad={}, crop_right={}, output={}x{} on DISPLAY={}",
+                            cfg.startx.unwrap(), cfg.endx.unwrap(), cfg.starty.unwrap(), cfg.endy.unwrap(),
+                            w, h, left_pad, cfg.crop_right, cfg.width, cfg.height, cfg.x11_display
+                        ),
                     "emulator",
                 )
                 .await;
-
-                cfg.x11_xid = None;
-                send_log(
-                    &log_dc,
-                    &session_id,
-                    &format!(
-                        "[video] starting GStreamer pipeline (root capture): {}",
-                        video_pipeline::EmulatorVideoPipeline::debug_pipeline_string(&cfg)
-                    ),
-                    "emulator",
-                )
-                .await;
-
-                match video_pipeline::EmulatorVideoPipeline::start(cfg.clone()) {
-                    Ok(p) => p,
-                    Err(e2) => {
-                        emulator_input::unregister_session_sync(&session_id);
-                        return Err(e2).context("failed to start emulator video pipeline (root capture retry)");
-                    }
-                }
             } else {
-                emulator_input::unregister_session_sync(&session_id);
-                return Err(e).context("failed to start emulator video pipeline");
+                send_log(
+                    &log_dc,
+                    &session_id,
+                    &format!("[video] capturing X11 root on DISPLAY={} (no emulator window found, may be black)", cfg.x11_display),
+                    "emulator",
+                )
+                .await;
             }
         }
+
+        // Note: When using region capture, we use the region size directly to avoid distortion.
+        // The device resolution query is only used when we have no better size info.
+        if cfg.startx.is_none() {
+            // Only override dimensions if not using region capture
+            if let Ok((w, h)) = emulator_input::query_device_size(&adb_path, &emulator_serial).await {
+                if w > 0 && h > 0 {
+                    cfg.width = w;
+                    cfg.height = h;
+                }
+            }
+        }
+
+        send_log(
+            &log_dc,
+            &session_id,
+            &format!(
+                "[video] starting GStreamer pipeline: {}",
+                video_pipeline::EmulatorVideoPipeline::debug_pipeline_string(&cfg)
+            ),
+            "emulator",
+        )
+        .await;
+
+        let pipeline = match video_pipeline::EmulatorVideoPipeline::start(cfg.clone()) {
+            Ok(p) => p,
+            Err(e) => {
+                // If capturing a specific window fails (common under Xvfb / WMs), retry root capture.
+                if cfg.x11_xid.is_some() {
+                    send_log(
+                        &log_dc,
+                        &session_id,
+                        &format!(
+                            "[video] capture via xid failed; retrying root capture on DISPLAY={}: {:#}",
+                            cfg.x11_display, e
+                        ),
+                        "emulator",
+                    )
+                    .await;
+
+                    cfg.x11_xid = None;
+                    send_log(
+                        &log_dc,
+                        &session_id,
+                        &format!(
+                            "[video] starting GStreamer pipeline (root capture): {}",
+                            video_pipeline::EmulatorVideoPipeline::debug_pipeline_string(&cfg)
+                        ),
+                        "emulator",
+                    )
+                    .await;
+
+                    match video_pipeline::EmulatorVideoPipeline::start(cfg.clone()) {
+                        Ok(p) => p,
+                        Err(e2) => {
+                            emulator_input::unregister_session_sync(&session_id);
+                            return Err(e2).context("failed to start emulator video pipeline (root capture retry)");
+                        }
+                    }
+                } else {
+                    emulator_input::unregister_session_sync(&session_id);
+                    return Err(e).context("failed to start emulator video pipeline");
+                }
+            }
+        };
+
+        (pipeline, cfg.x11_display.clone())
     };
 
     // Attach to existing video transceiver.
@@ -1230,7 +1474,7 @@ pub async fn handle_react_native_emulator_job(
             "success": true,
             "package_name": package_name,
             "emulator_serial": emulator_serial,
-            "display": cfg.x11_display,
+            "display": display_label,
             "logcat": logcat_started,
             "video_transceiver_attached": video_transceiver_found,
         })),
@@ -1294,6 +1538,9 @@ pub async fn handle_react_native_emulator_job(
 
     // Cleanup: stop streaming + unregister input.
     logcat_task.abort();
+    if let Some(task) = grpc_frame_task {
+        task.abort();
+    }
     let _ = daemon.session_mut().stop_logcat().await;
     daemon.release_keepalive().await;
     emulator_input::unregister_session_sync(&session_id);
