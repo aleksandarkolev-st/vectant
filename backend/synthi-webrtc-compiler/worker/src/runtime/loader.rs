@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::compiler::abi_version::{AbiVersionManager, CompatibilityResult, SymbolManifest};
+use crate::compiler::abi_version::AbiVersionManager;
 use crate::compiler::plugin_contract::ModuleSlot;
 use crate::safety::enhanced_fingerprint::{AbiFingerprint, extract_fingerprint_from_module};
 

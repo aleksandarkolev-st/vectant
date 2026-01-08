@@ -1426,6 +1426,58 @@ fn extract_string_literals(source: &str) -> Vec<String> {
             if c == '*' && chars.peek() == Some(&'/') {
                 chars.next();
                 in_block_comment = false;
+            }
+            continue;
+        }
+
+        if in_string {
+            if c == '\\' {
+                escape_next = true;
+            } else if c == '"' {
+                strings.push(current_string.clone());
+                current_string.clear();
+                in_string = false;
+            } else {
+                current_string.push(c);
+            }
+            continue;
+        }
+
+        if in_char {
+            if c == '\\' {
+                escape_next = true;
+            } else if c == '\'' {
+                in_char = false;
+            }
+            continue;
+        }
+
+        // Detect start of constructs
+        if c == '/' {
+            if chars.peek() == Some(&'/') {
+                chars.next();
+                in_line_comment = true;
+                continue;
+            }
+            if chars.peek() == Some(&'*') {
+                chars.next();
+                in_block_comment = true;
+                continue;
+            }
+        }
+        if c == '"' {
+            in_string = true;
+            continue;
+        }
+        if c == '\'' {
+            in_char = true;
+            continue;
+        }
+    }
+
+    strings
+}
+
 // ============================================================
 // GUARDRAIL HELPER FUNCTIONS
 // ============================================================
@@ -1605,16 +1657,6 @@ fn apply_core_guardrails(content: &str, shared_content: &str) -> String {
         } else {
             result = format!("#include \"shared.h\"\n{}", result);
         }
-
-        if in_string {
-            if c == '\\' {
-                escape_next = true;
-            } else if c == '"' {
-                strings.push(current_string.clone());
-                current_string.clear();
-                in_string = false;
-            } else {
-                current_string.push(c);
     }
 
     // FIX: Remove duplicate defines that are already in shared.h
@@ -1640,41 +1682,11 @@ fn apply_core_guardrails(content: &str, shared_content: &str) -> String {
                  }
             }
         }
-
-        if in_char {
-            if c == '\\' {
-                escape_next = true;
-            } else if c == '\'' {
-                in_char = false;
-            }
-            continue;
-        }
-
-        // Detect start of constructs
-        if c == '/' {
-            if chars.peek() == Some(&'/') {
-                chars.next();
-                in_line_comment = true;
-                continue;
-            }
-            if chars.peek() == Some(&'*') {
-                chars.next();
-                in_block_comment = true;
-                continue;
-            }
-        }
-        if c == '"' {
-            in_string = true;
-            continue;
-        }
-        if c == '\'' {
-            in_char = true;
-            continue;
-        }
     }
 
-    strings
+    result
 }
+
 
 /// Patch string literals in cached JSON result with new strings from source
 /// Returns (patched_result, did_patch_anything)
@@ -1713,72 +1725,8 @@ fn patch_strings_in_cached_result(
                     }
 
                     *content = serde_json::Value::String(patched);
-        
-        if let Some(start) = result.find("struct AppState {") {
-            if let Some(end) = result[start..].find("};") {
-                let block_end = start + end + "};".len();
-                let block = result[start..block_end].to_string();
-                if block.contains("{") {
-                    result = result.replace(&block, "// AppState defined in shared.h");
                 }
             }
-        }
-
-        // Handle Host KV structs
-        for struct_name in &["HostKvApiV1", "SynthiHostContextV1", "SynthiNamespaceSchemaV1"] {
-             let typedef_pattern = format!("typedef struct {} {};", struct_name, struct_name);
-             if result.contains(&typedef_pattern) {
-                 result = result.replace(&typedef_pattern, &format!("// {} forward-declared in shared.h", struct_name));
-             }
-             
-             if shared_has_full_hostkv {
-                 let struct_decl = format!("struct {} {{", struct_name);
-                 if let Some(start) = result.find(&struct_decl) {
-                     if let Some(end) = result[start..].find("};") {
-                         let block_end = start + end + "};".len();
-                         let block = result[start..block_end].to_string();
-                         result = result.replace(&block, &format!("// {} fully defined in shared.h", struct_name));
-                     }
-                 }
-             }
-        }
-        
-        // Inject Host KV definitions if needed
-        let uses_hostkv_types = result.contains("SynthiHostContextV1") || 
-                                result.contains("SynthiNamespaceSchemaV1") ||
-                                result.contains("HostKvApiV1") ||
-                                result.contains("g_core_schemas") ||
-                                result.contains("host_kv_schemas");
-        
-        if uses_hostkv_types && !shared_has_full_hostkv {
-            let hostkv_header = get_hostkv_header();
-            if let Some(include_end) = result.rfind("#include") {
-                if let Some(newline_pos) = result[include_end..].find('\n') {
-                    let insert_pos = include_end + newline_pos + 1;
-                    result.insert_str(insert_pos, &hostkv_header);
-                }
-            } else {
-                result = format!("{}{}", hostkv_header, result);
-            }
-        }
-    }
-
-    // FIX: Strip hallucinated fields
-    let hallucinated_fields = ["wbuffer", "write_buffer", "rbuffer", "read_buffer", "buffer_ptr"];
-    for field in &hallucinated_fields {
-        if !shared_content.contains(*field) && (result.contains(&format!("->{}", field)) || result.contains(&format!(".{}", field))) {
-            let pattern1 = format!("->{}", field);
-            let pattern2 = format!(".{}", field);
-            
-            let mut cleaned = Vec::new();
-            for line in result.lines() {
-                if line.contains(&pattern1) || line.contains(&pattern2) {
-                    cleaned.push(format!("// [Guardrail] Removed: {} (field not in AppState)", line.trim()));
-                } else {
-                    cleaned.push(line.to_string());
-                }
-            }
-            result = cleaned.join("\n");
         }
     }
 
@@ -1799,140 +1747,7 @@ fn is_semantic_string(s: &str) -> bool {
     color_names.iter().any(|c| lower == *c)
 }
 
-    // FIX: Inject button state initialization if needed
-    if shared_content.contains("btn_x") && shared_content.contains("btn_y") {
-        let has_btn_init = result.contains("btn_x =") || result.contains("btn_x=") ||
-                           result.contains("->btn_x =") || result.contains(".btn_x =");
-        
-        if !has_btn_init && result.contains("app_state.dx = 5;") {
-            let btn_init_code = "\n        app_state.btn_x = 200;\n        app_state.btn_y = 10;\n        app_state.btn_w = 120;\n        app_state.btn_h = 40;";
-            result = result.replace("app_state.dx = 5;", &format!("app_state.dx = 5;{}", btn_init_code));
-        }
-    }
 
-    // FIX: state->btn* -> app_state.btn* in init code
-    if result.contains("state->btn") && result.contains("static AppState app_state") {
-        let patterns = [
-            ("state->btn2_", "app_state.btn2_"),
-            ("state->btn3_", "app_state.btn3_"),
-            ("state->btn4_", "app_state.btn4_"),
-            ("state->new_btn_", "app_state.new_btn_"),
-            ("state->reset_btn_", "app_state.reset_btn_"),
-        ];
-        for (wrong, correct) in &patterns {
-            if result.contains(*wrong) {
-                result = result.replace(*wrong, *correct);
-            }
-        }
-    }
-
-    // FIX: cleanup_window not declared
-    if result.contains("cleanup_window(app_state.window)") && !result.contains("void cleanup_window") {
-        if let Some(idx) = result.rfind("#include") {
-            if let Some(end_idx) = result[idx..].find('\n') {
-                let insert_pos = idx + end_idx + 1;
-                let cleanup_impl = "\nvoid cleanup_window(SDL_Window* win) { if (win) SDL_DestroyWindow(win); }\n";
-                result.insert_str(insert_pos, cleanup_impl);
-            }
-        } else {
-             result = format!("void cleanup_window(SDL_Window* win) {{ if (win) SDL_DestroyWindow(win); }}\n{}", result);
-        }
-    }
-
-    // INJECT SAFETY PATCH: Safer dlopen
-    if result.contains("dlopen(") && result.contains("dlclose(") {
-         result = result.replace(
-            "gui_lib = dlopen(path, RTLD_NOW);",
-            "fprintf(stderr, \"Loading GUI from %s\\n\", path); void* new_lib = dlopen(path, RTLD_NOW); if(new_lib) { if(gui_lib) dlclose(gui_lib); gui_lib = new_lib; fprintf(stderr, \"GUI loaded OK\\n\"); } else { fprintf(stderr, \"dlopen failed: %s\\n\", dlerror()); }"
-         );
-         result = result.replace(
-            "if (gui_lib) {\n        dlclose(gui_lib);\n    }",
-            "// dlclose moved to safe block"
-         );
-         result = result.replace(
-            "if (gui_lib) dlclose(gui_lib);",
-            "// dlclose moved to safe block"
-         );
-    }
-
-    // INJECT PROBE: Check if GUI is loaded
-    if result.contains("if (ptr_gui_render)") {
-         result = result.replace(
-            "if (ptr_gui_render)",
-            "if (!ptr_gui_render) { static int null_cnt=0; if(++null_cnt%60==0) fprintf(stderr, \"WARNING: ptr_gui_render is NULL. GUI module not loaded!\\n\"); } if (ptr_gui_render)"
-         );
-    }
-
-    // FIX: Replace direct calls to gui functions with pointers
-    for func in &["gui_initialize", "gui_on_update", "gui_render", "gui_cleanup", "gui_on_event"] {
-        let ptr_name = format!("ptr_{}", func);
-        result = result.replace(&format!("{}(", func), &format!("{}(", ptr_name));
-        let double_ptr = format!("ptr_{}", ptr_name);
-        result = result.replace(&double_ptr, &ptr_name);
-        result = result.replace(&format!("void {}(", ptr_name), &format!("void {}(", func));
-    }
-
-    // Replace hard-wired GUI symbol assignments with null
-    for (from, to) in [
-        ("ptr_gui_initialize = gui_initialize;", "ptr_gui_initialize = nullptr;"),
-        ("ptr_gui_on_update = gui_on_update;", "ptr_gui_on_update = nullptr;"),
-        ("ptr_gui_render = gui_render;", "ptr_gui_render = nullptr;"),
-        ("ptr_gui_cleanup = gui_cleanup;", "ptr_gui_cleanup = nullptr;"),
-        ("ptr_gui_on_event = gui_on_event;", "ptr_gui_on_event = nullptr;")
-    ] {
-        if result.contains(from) {
-            result = result.replace(from, to);
-        }
-    }
-
-    // FIX: Comment out SDL_RenderPresent
-    let re_present = regex::Regex::new(r"SDL_RenderPresent\s*\([^)]*\)\s*;").unwrap();
-    result = re_present.replace_all(&result, "/* SDL_RenderPresent removed - runner handles this */").to_string();
-
-    // FIX: Correct Display** cast
-    if result.contains("(Display**)window_ptr") {
-        result = result.replace("(Display**)window_ptr", "(void**)window_ptr");
-    }
-
-    // FIX: Correct XCreateIC call
-    if result.contains("XCreateIC(*(Display**)state->window,") {
-        result = result.replace("XCreateIC(*(Display**)state->window,", "XCreateIC(");
-    }
-
-    // Add entrypoint if needed
-    if result.contains("main(") && !result.contains("extern \"C\" void* entrypoint") {
-         result.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
-    }
-
-    // Inject State Serialization Stubs
-    if result.contains("core_on_load") && 
-       !result.contains("core_on_save_state") && 
-       !result.contains("core_get_state_schema_hash") {
-        let fields = parse_appstate_int_fields_with_defaults(shared_content);
-        let state_serial_stubs = generate_state_serialization_code_with_defaults(&fields, "core");
-        result.push_str(&state_serial_stubs);
-    } else if result.contains("on_load") && 
-              !result.contains("on_save_state") && 
-              !result.contains("core_on_load") &&
-              !result.contains("get_state_schema_hash") {
-        let fields = parse_appstate_int_fields_with_defaults(shared_content);
-        let state_serial_stubs = generate_state_serialization_code_with_defaults(&fields, "legacy");
-        result.push_str(&state_serial_stubs);
-    }
-    
-    result
-}
-
-/// Parse AppState struct fields from shared.h content
-/// Returns a list of (field_name, field_type, default_value) tuples for int fields
-/// Default value is extracted from declarations like "int btn_x = 200;"
-fn parse_appstate_int_fields_with_defaults(
-    shared_content: &str,
-) -> Vec<(String, String, Option<i64>)> {
-    let mut fields = Vec::new();
-
-    // Find AppState struct definition
-    let struct_re = regex::Regex::new(r"struct\s+AppState\s*\{([^}]*)\}").ok();
 
 /// Apply guardrails to gui.cpp content (requires processed shared.h for context)
 fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
@@ -2222,129 +2037,11 @@ typedef struct HostKvApiV1 {
 "#
 }
 
-/// Extract all string literals from C/C++ source in order
-fn extract_string_literals(source: &str) -> Vec<String> {
-    let mut strings = Vec::new();
-    let mut chars = source.chars().peekable();
-    let mut in_string = false;
-    let mut in_char = false;
-    let mut in_line_comment = false;
-    let mut in_block_comment = false;
-    let mut escape_next = false;
-    let mut current_string = String::new();
-    
-    while let Some(c) = chars.next() {
-        if escape_next {
-            if in_string {
-                current_string.push('\\');
-                current_string.push(c);
-            }
-            escape_next = false;
-            continue;
-        }
-        
-        if in_line_comment {
-            if c == '\n' { in_line_comment = false; }
-            continue;
-        }
-        
-        if in_block_comment {
-            if c == '*' && chars.peek() == Some(&'/') {
-                chars.next();
-                in_block_comment = false;
-            }
-            continue;
-        }
-        
-        if in_string {
-            if c == '\\' {
-                escape_next = true;
-            } else if c == '"' {
-                strings.push(current_string.clone());
-                current_string.clear();
-                in_string = false;
-            } else {
-                current_string.push(c);
-            }
-            continue;
-        }
-        
-        if in_char {
-            if c == '\\' { escape_next = true; }
-            else if c == '\'' { in_char = false; }
-            continue;
-        }
-        
-        // Detect start of constructs
-        if c == '/' {
-            if chars.peek() == Some(&'/') { chars.next(); in_line_comment = true; continue; }
-            if chars.peek() == Some(&'*') { chars.next(); in_block_comment = true; continue; }
-        }
-        if c == '"' { in_string = true; continue; }
-        if c == '\'' { in_char = true; continue; }
-    }
-    
-    strings
-}
 
-/// Patch string literals in cached JSON result with new strings from source
-/// Returns (patched_result, did_patch_anything)
-fn patch_strings_in_cached_result(
-    cached: &serde_json::Value,
-    old_strings: &[String],
-    new_strings: &[String],
-) -> (serde_json::Value, bool) {
-    // Only patch if we have a reasonable mapping
-    if old_strings.is_empty() || new_strings.is_empty() {
-        return (cached.clone(), false);
-    }
-    
-    let mut result = cached.clone();
-    let mut any_patches_applied = false;
-    
-    // Patch each file's content in the split result
-    for key in &["core", "gui", "shared"] {
-        if let Some(file_obj) = result.get_mut(key) {
-            if let Some(content) = file_obj.get_mut("content") {
-                if let Some(content_str) = content.as_str() {
-                    let mut patched = content_str.to_string();
-                    
-                    // Replace old strings with new strings where they differ
-                    // Match by position in the string list (assuming order is preserved)
-                    for (old, new) in old_strings.iter().zip(new_strings.iter()) {
-                        if old != new && !old.is_empty() {
-                            // Use format with quotes to avoid partial matches
-                            let old_quoted = format!("\"{}\"", old);
-                            let new_quoted = format!("\"{}\"", new);
-                            if patched.contains(&old_quoted) {
-                                patched = patched.replace(&old_quoted, &new_quoted);
-                                any_patches_applied = true;
-                            }
-                        }
-                    }
-                    
-                    *content = serde_json::Value::String(patched);
-                }
-            }
-        }
-    }
-    
-    (result, any_patches_applied)
-}
 
-/// Check if a string looks like a semantic value that AI transforms (not just copies)
-/// These include: color names, font names, file paths, etc.
-fn is_semantic_string(s: &str) -> bool {
-    // X11/CSS color names
-    let color_names = [
-        "black", "white", "red", "green", "blue", "yellow", "cyan", "magenta",
-        "orange", "purple", "pink", "brown", "gray", "grey", "navy", "teal",
-        "lime", "aqua", "maroon", "olive", "silver", "fuchsia",
-    ];
-    
-    let lower = s.to_lowercase();
-    color_names.iter().any(|c| lower == *c)
-}
+
+
+
 
 /// Check if any changed strings are semantic (would need AI re-processing)
 fn has_semantic_string_changes(old_strings: &[String], new_strings: &[String]) -> bool {

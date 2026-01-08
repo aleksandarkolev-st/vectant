@@ -26,9 +26,6 @@ use std::time::{Duration, Instant};
 
 use libloading::{Library, Symbol};
 
-use crate::hmr::binary_state::{MsgPackState, SchemaMigrationResult, SchemaMigrator};
-use crate::safety::boundary::{Boundary, BoundaryId, BoundaryManifest, BoundaryType, ReloadPlan};
-use crate::infra::crash_recovery::CrashInfo;
 use crate::hmr::fast_refresh::{
     BoundaryCheckResult, BoundaryChecker, BoundaryViolationEvent, RefreshAction,
 };
@@ -41,11 +38,11 @@ use crate::hmr::reload_manager::{
     SnapshotManager,
 };
 use crate::compiler::source_map::SOURCE_MAP_CACHE;
-use crate::hmr::state_diff::{migrate_state_with_config, DiffConfig, DiffResult};
+use crate::hmr::state_diff::{migrate_state_with_config, DiffConfig};
 use crate::hmr::state_manager::{
-    MigrationResult, MigrationSchema, SchemaVersion, StateHandle, StateManager,
+    MigrationResult, MigrationSchema, SchemaVersion, StateManager,
 };
-use crate::runtime::supervisor::{CrashEvent, CrashSupervisor, RecoveryAction, SupervisorConfig};
+use crate::runtime::supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 use crate::infra::observability::{
     ReloadId, LogLevel, LogEntry, StructuredLogger, LogFormat,
     ReloadMetricsTracker, MetricsAggregator,
