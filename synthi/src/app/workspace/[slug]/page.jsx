@@ -33,6 +33,7 @@ import { getFileLanguage } from '@/utils/fileUtils';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
 import { useWorkspaceAnalysis } from '@/hooks/useWorkspaceAnalysis';
 import { useCompiler } from '@/hooks/useCompiler';
+import { useCodeIntelIndex } from '@/hooks/useCodeIntelIndex';
 import AIChatWindow from '@/components/chat/AIChatWindow';
 import { api } from '@/services/api';
 import { gitClient } from '@/services/gitClient';
@@ -72,6 +73,22 @@ export default function EditorPage({ params }) {
     const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway } = useAnalyzerGateway();
     const { compile, mediaStream } = useCompiler();
     useHMR();
+    
+    // Code Intelligence - auto-index workspace for AI context retrieval
+    const { 
+        isIndexing: isCodeIntelIndexing, 
+        isIndexed: isCodeIntelIndexed,
+        filesIndexed: codeIntelFilesIndexed,
+        indexWorkspace: triggerCodeIntelIndex,
+        indexFile: triggerCodeIntelFileIndex,
+    } = useCodeIntelIndex({
+        workspaceSlug: slug,
+        autoIndex: true, // Auto-index when workspace opens
+        onIndexComplete: (result) => {
+            console.log(`[Workspace] Code intelligence ready: ${result.files_indexed} files indexed`);
+        },
+    });
+    
     const [latestCompletion, setLatestCompletion] = useState(null);
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);

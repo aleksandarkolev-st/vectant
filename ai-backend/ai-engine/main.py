@@ -1637,6 +1637,12 @@ def root():
     }
 
 
+@app.get("/health")
+def health_check():
+    """Health check endpoint for service discovery."""
+    return {"status": "healthy", "service": "ai-engine"}
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         split_file(sys.argv[1])
