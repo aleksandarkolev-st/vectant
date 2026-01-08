@@ -64,10 +64,6 @@ async function fetchCodeIntelContext({ workspacePath, query, maxTokens = 6000, c
     }
 }
 
-const DEFAULT_GEMINI_MODEL = process.env.SYNTHI_AI_MODEL || process.env.GEMINI_MODEL || 'gemini-2.0-flash';
-const DEFAULT_OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-const DEFAULT_ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest';
-const UPSTREAM_TIMEOUT_MS = 45_000;
 
 const buildUserContent = ({ prompt, code, files, lang, focusPath, codeIntelContext }) => {
     const parts = [];
