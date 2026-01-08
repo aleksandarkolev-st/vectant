@@ -89,15 +89,20 @@ use webrtc::track::track_local::TrackLocal;
 use webrtc::track::track_local::TrackLocalWriter;
 use webrtc::util::Unmarshal;
 
-use printer::compile_context::CompileContext; // Need to fix this import path 
-// Wait, compile_context was moved to src/compiler/context.rs
+// use printer::compile_context::CompileContext; // Legacy path
 use compiler::context::CompileContext;
 use infra::constants::{GUI_TOOLS, REQUIRED_TOOLS};
 use infra::lsp_util::{LspSessionState, rewrite_uris};
 use infra::messages::{CompileRequest, FileEntry, IceServerEnv, SignalMessage};
 use runtime::runner_state::RunnerState;
-use hmr::orchestrator::HmrOrchestrator;
-use infra::utils::{make_chunks, get_wsl_host_ip, system_command};
+use hmr::orchestrator::{HmrOrchestrator, OrchestratorConfig};
+use infra::utils::{make_chunks, get_wsl_host_ip};
+
+use crate::safety::security;
+use crate::infra::watcher;
+use crate::compiler::builder;
+use crate::infra::server;
+use crate::infra::storage;
 
 
 
@@ -3339,11 +3344,33 @@ async fn handle_compile(
     restart_controller: Arc<tokio::sync::Mutex<RestartController>>,
     ipc_config: Arc<IpcConfig>,
 ) -> Result<()> {
-    crate::compiler::handler::handle_compile(
-        req, log_dc, terminal_store, sdl_input_store, runner_store, pc, workspace_path,
-        compile_cache, boundary_checker, incremental_cache, hmr_orchestrator, structured_logger,
-        metrics_aggregator, restart_controller, ipc_config
-    ).await
+    // Construct context object for cleaner passing
+    let ctx = CompileContext {
+        log_dc,
+        terminal_store,
+        sdl_input_store,
+        runner_store,
+        pc,
+        workspace_path,
+        compile_cache,
+        boundary_checker,
+        incremental_cache,
+        hmr_orchestrator,
+        structured_logger,
+        metrics_aggregator,
+        restart_controller,
+        ipc_config,
+    };
+    
+    // Call the unified handler
+    // We ignore the return value (JSON graph) for now as the void return type expects
+    let _ = crate::compiler::handler::handle_compile_request(
+        &ctx,
+        req,
+        "default_session".to_string(), // we might need a real session id?
+    ).await?;
+    
+    Ok(())
 }
 
 async fn verify_tooling() -> Result<()> {

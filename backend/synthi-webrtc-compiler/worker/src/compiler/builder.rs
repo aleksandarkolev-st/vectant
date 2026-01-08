@@ -967,7 +967,6 @@ impl WidgetDetector {
                 &widget_code,
                 &entry_point,
                 &[] as &[String],
-                &state_vars,
                 *is_class_based,
                 original_func.as_deref(),
             );

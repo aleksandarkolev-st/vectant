@@ -49,8 +49,11 @@ pub async fn handle_compile_request(
 
     // Initialize metrics
     let reload_id = ReloadId::new();
-    let tracker = ReloadMetricsTracker::new(reload_id, "compile_request".to_string());
-    tracker.record_step("start", "Handler started");
+    // Use start explicitly
+    let tracker = ReloadMetricsTracker::start(reload_id, "compile_request".to_string());
+    
+    // Manual logging instead of record_step for now
+    eprintln!("[Compile] Step: Handler started");
 
     // ============================================================
     // PHASE 1: AI SPLIT & PROCESSING
@@ -137,7 +140,8 @@ pub async fn handle_compile_request(
     // PHASE 3: COMPILATION
     // ============================================================
     
-    tracker.record_step("compilation_start", "Starting compilation");
+    // Manual logging
+    eprintln!("[Compile] Step: Starting compilation");
     
     // Compile Core
     let core_lib_path_opt = compile_core(
@@ -172,7 +176,8 @@ pub async fn handle_compile_request(
     // But `gui_lib_path_opt` returns existing path if not rebuilt.
     let gui_lib_path = gui_lib_path_opt.unwrap_or(prev_gui_path.unwrap_or_default());
     
-    tracker.record_step("compilation_end", "Compilation finished");
+    // Manual logging
+    eprintln!("[Compile] Step: Compilation finished");
 
     // ============================================================
     // PHASE 4: EXECUTION / HOT RELOAD

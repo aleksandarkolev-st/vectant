@@ -1,3 +1,7 @@
+pub mod platform;
+pub mod hot_reload;
+pub mod legacy_module_state;
+
 pub mod runner_bin;
 pub mod runner_logic;
 pub mod runner_state;

@@ -35,7 +35,7 @@ fn get_ai_split_structural_cache(
         .get_or_init(|| tokio::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-fn calculate_hash<T: Hash>(t: &T) -> u64 {
+pub fn calculate_hash<T: Hash>(t: &T) -> u64 {
     let mut s = DefaultHasher::new();
     t.hash(&mut s);
     s.finish()

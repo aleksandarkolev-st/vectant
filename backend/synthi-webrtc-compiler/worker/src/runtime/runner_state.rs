@@ -15,7 +15,7 @@ use crate::runtime::capability::HmrCapability;
 #[allow(dead_code)]
 pub struct RunnerState {
     pub process: Option<Child>, // Option to allow taking it if needed, or just drop
-    pub stdin: tokio::process::ChildStdin,
+    pub stdin: Option<tokio::process::ChildStdin>,
     pub output_tx: broadcast::Sender<String>,
     pub is_gui: bool,
     pub is_hmr_capable: bool, // True if runner was started with HMR-capable code (detected from exports)

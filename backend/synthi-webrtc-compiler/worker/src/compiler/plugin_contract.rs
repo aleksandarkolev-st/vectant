@@ -2,7 +2,7 @@
 // The dead_code warning is a false positive since these are FFI constants
 #![allow(dead_code)]
 
-use std::ffi::{c_char, c_double, c_uint, c_void};
+use std::ffi::{c_char, c_double, c_uint};
 use core::ffi::c_void;
 
 // ============================================================

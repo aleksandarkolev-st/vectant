@@ -21,41 +21,50 @@ use x11rb::protocol::shm::ConnectionExt as ShmConnectionExt;
 #[cfg(target_os = "linux")]
 use x11rb::protocol::xproto::*;
 
-mod abi_version;
-mod binary_state;
-mod boundary;
-mod capability; // Kept as mod for now, assume local
-mod crash_recovery;
-mod fast_refresh;
-mod hmr_orchestrator;
-mod host_kv;
+use crate::compiler::abi_version;
+use crate::hmr::binary_state;
+use crate::safety::boundary;
+use crate::runtime::capability;
+use crate::infra::crash_recovery;
+use crate::hmr::fast_refresh;
+use crate::hmr::orchestrator as hmr_orchestrator;
+use crate::infra::host_kv;
 use super::runner_logic;
-mod loader;
+use crate::runtime::loader;
 // mod plugin_contract; // Use crate::runtime::plugin_contract
-mod reload_manager;
-mod source_map;
-mod state_diff;
-mod state_manager;
-mod supervisor;
+use crate::hmr::reload_manager;
+use crate::compiler::source_map;
+use crate::hmr::state_diff;
+use crate::hmr::state_manager;
+use crate::runtime::supervisor;
 
 // safety / hardening
-mod process_isolation;
-mod enhanced_fingerprint; // Use crate::safety? No, kept as mod if existing
-mod strict_contract;
+use crate::runtime::process_isolation;
+use crate::safety::enhanced_fingerprint;
+use crate::safety::strict_contract;
 
 // public protocol + infra
-pub mod reload_protocol;
-pub mod state_type_id;
-pub mod hardened_ipc;
-pub mod quiescence;
-pub mod slot_isolation;
-pub mod restart_control;
-pub mod security;
-pub mod observability;
+use crate::hmr::reload_protocol;
+use crate::hmr::state_type_id;
+use crate::safety::hardened_ipc;
+use crate::safety::quiescence;
+use crate::safety::slot_isolation;
+use crate::safety::restart_control;
+use crate::safety::security;
+use crate::infra::observability;
 
 use crate::safety::hardened_ipc::{read_frame_validated, write_frame_with_checksum, IpcConfig};
 
 use crate::runtime::plugin_contract::{ModuleSlot, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION, RunnerApi, HotApi, HotGetApiFn, MAX_STATE_ALIGNMENT, RUNNER_API_VERSION, LOG_INFO, LOG_WARN, LOG_ERROR};
+use crate::compiler::plugin_contract::ModuleSlot as CompilerModuleSlot;
+
+fn to_compiler_slot(slot: ModuleSlot) -> CompilerModuleSlot {
+    match slot {
+        ModuleSlot::Core => CompilerModuleSlot::Core,
+        ModuleSlot::Gui => CompilerModuleSlot::Gui,
+        ModuleSlot::Main => CompilerModuleSlot::Main,
+    }
+}
 use capability::{HmrCapability, detect_capabilities, HmrStatus}; // Assuming capability is local mod
 
 use crash_recovery::{
@@ -100,11 +109,6 @@ use crate::runtime::legacy_module_state::{ModuleState, AppState};
 // ============================================================
 
 // Import new HotApi types for v2 ABI
-use plugin_contract::{
-    HotApi, HotGetApiFn, RunnerApi,
-    MAX_STATE_ALIGNMENT, RUNNER_API_VERSION,
-    LOG_INFO, LOG_WARN, LOG_ERROR,
-};
 use capability::{validate_hot_api, HotApiInfo};
 
 
@@ -858,7 +862,7 @@ fn main() {
                             // Enter crash supervisor context for this module
                             if supervisor_enabled {
                                 let slot = ModuleSlot::from_str(name).unwrap_or(ModuleSlot::Main);
-                                crash_supervisor.enter_context(slot);
+                                crash_supervisor.enter_context(to_compiler_slot(slot));
                             }
 
                             let state_ptr_wrapper = SendVoidPtr(state_ptr as usize);

@@ -554,17 +554,6 @@ impl SnapshotManager {
         // Collect state snapshots - LAZY: only store handles
         let mut state_snapshots = HashMap::new();
         for boundary_id in boundaries {
-            // Store handle + hash, not serialized state
-            // Actual serialization happens only on revert
-            state_snapshots.insert(
-                boundary_id.clone(),
-                StateSnapshot {
-                    boundary_id: boundary_id.clone(),
-                    state_handle: snapshot_id, // Would be actual handle
-                    state_hash: 0,             // Would compute hash
-                    abi_version: 1,
-                    source_hash: 0,
-                },
             // Store handle only, no serialized bytes
             // For proper cross-version migration, use create_snapshot_with_bytes
             state_snapshots.insert(

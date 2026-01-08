@@ -5,15 +5,23 @@ use std::str::FromStr;
 use libloading::{Library, Symbol};
 use crate::runtime::legacy_module_state::{ModuleState, AppState};
 use crate::runtime::loader::{ModuleLoader, LoadResult};
-use crate::runtime::hmr_orchestrator::{HmrOrchestrator, SavedState};
+use crate::hmr::orchestrator::{HmrOrchestrator, SavedState};
 use crate::runtime::capability::{detect_capabilities, HmrCapability, HmrStatus};
 use crate::runtime::plugin_contract::{ModuleSlot, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
+use crate::compiler::plugin_contract::ModuleSlot as CompilerModuleSlot;
+
+fn to_compiler_slot(slot: ModuleSlot) -> CompilerModuleSlot {
+    match slot {
+        ModuleSlot::Core => CompilerModuleSlot::Core,
+        ModuleSlot::Gui => CompilerModuleSlot::Gui,
+        ModuleSlot::Main => CompilerModuleSlot::Main,
+    }
+}
 use crate::runtime::hot_reload::v2::{validate_state_magic, get_module_abi_version};
 use crate::runtime::runner::validator;
 
-// Host KV is special - imported from sibling module via runner_bin
-// We assume this file is included in runner_bin via "mod runner_logic;"
-use super::host_kv::{self, create_kv_api, read_schema_table, module_slot_to_u32, HostKvSchemaEvent, SynthiHostContextV1, KV_STORE, HostKvApiV1};
+// Host KV
+use crate::infra::host_kv::{self, create_kv_api, read_schema_table, module_slot_to_u32, HostKvSchemaEvent, SynthiHostContextV1, KV_STORE, HostKvApiV1};
 
 pub unsafe fn process_load_command(
     name: &str,
@@ -42,6 +50,9 @@ pub unsafe fn process_load_command(
         }
     }
 
+    // Define module_slot early for use in all scopes
+    let module_slot = ModuleSlot::from_str(name).unwrap_or(ModuleSlot::Main);
+
     // ============================================================
     // ATOMIC-SWAP HMR: Zero-flicker hot module replacement
     // ============================================================
@@ -68,7 +79,7 @@ pub unsafe fn process_load_command(
 
             match module_loader.load(
                 std::path::Path::new(path),
-                slot,
+                to_compiler_slot(module_slot),
                 content_hash,
             ) {
                 LoadResult::Success {
@@ -245,7 +256,7 @@ pub unsafe fn process_load_command(
 
                 // Use orchestrator for unified save (binary-first with JSON fallback)
                 saved_state = Some(orchestrator.save_module_state(
-                    slot.unwrap_or(ModuleSlot::Main),
+                    to_compiler_slot(module_slot),
                     &old_lib,
                     state_to_save,
                 ));
@@ -358,13 +369,13 @@ pub unsafe fn process_load_command(
             if let Some(ref ss) = saved_state {
                 // Get template JSON for field-level diffing (if JSON path needed)
                 let template_json = orchestrator.get_template_json(
-                    slot.unwrap_or(ModuleSlot::Main),
+                    to_compiler_slot(module_slot),
                     &new_lib,
                 );
 
                 // Use orchestrator to load state
                 let loaded = orchestrator.load_module_state(
-                    slot.unwrap_or(ModuleSlot::Main),
+                    to_compiler_slot(module_slot),
                     &new_lib,
                     ss,
                     template_json.as_deref(),
@@ -428,12 +439,12 @@ pub unsafe fn process_load_command(
             // ============================================================
             // This allows the module to write to KV during on_load
             // ============================================================
-            let module_slot = slot.unwrap_or(ModuleSlot::Main);
-            let has_host_kv_support: bool;
-
+            let module_slot_compiler = to_compiler_slot(module_slot);
+            let mut has_host_kv_support = false;
+            
             if let Some(ref sid) = session_id {
                 // Read schema table from module
-                let schemas = read_schema_table(&new_lib, module_slot);
+                let schemas = read_schema_table(&new_lib, to_compiler_slot(module_slot));
                 has_host_kv_support = !schemas.is_empty();
 
                 if !schemas.is_empty() {
@@ -443,7 +454,7 @@ pub unsafe fn process_load_command(
                     // Register schemas and handle any resets
                     let host_kv_events = KV_STORE.register_schemas(
                         sid,
-                        module_slot_to_u32(module_slot),
+                        module_slot_to_u32(to_compiler_slot(module_slot)),
                         &schemas,
                     );
 
@@ -491,7 +502,7 @@ pub unsafe fn process_load_command(
             } else {
                 has_host_kv_support = false;
                 // Check if module tries to use Host KV without session set
-                let schemas = read_schema_table(&new_lib, module_slot);
+                let schemas = read_schema_table(&new_lib, to_compiler_slot(module_slot));
                 if !schemas.is_empty() {
                     eprintln!("[Runner] [HOST-KV] WARNING: Module '{}' exports schema table but no session set! Host KV will not work.", name);
                     eprintln!("[Runner] [HOST-KV] Call 'set_session <session_id>' before loading modules that use Host KV.");
@@ -544,7 +555,7 @@ pub unsafe fn process_load_command(
                         let host_ctx = SynthiHostContextV1::new(
                             kv_api,
                             sid_cstr,
-                            module_slot,
+                            to_compiler_slot(module_slot),
                             win_ptr,
                             win_ptr,
                         );
@@ -610,7 +621,7 @@ pub unsafe fn process_load_command(
                         let host_ctx = SynthiHostContextV1::new(
                             kv_api,
                             sid_cstr,
-                            module_slot,
+                            to_compiler_slot(module_slot),
                             win_ptr,
                             win_ptr,
                         );
@@ -671,7 +682,7 @@ pub unsafe fn process_load_command(
                         let host_ctx = SynthiHostContextV1::new(
                             kv_api,
                             sid_cstr,
-                            module_slot,
+                            to_compiler_slot(module_slot),
                             win_ptr,
                             win_ptr,
                         );
@@ -707,7 +718,7 @@ pub unsafe fn process_load_command(
                 let sid = session_id.as_ref().unwrap();
                 let preserved_namespaces = KV_STORE.get_preserved_namespaces(
                     sid,
-                    module_slot_to_u32(module_slot),
+                    module_slot_to_u32(to_compiler_slot(module_slot)),
                 );
                 if !preserved_namespaces.is_empty() {
                     let status = HmrStatus::host_kv_preserved(

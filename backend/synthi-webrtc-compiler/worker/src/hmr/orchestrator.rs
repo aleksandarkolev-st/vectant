@@ -49,12 +49,7 @@ use crate::infra::observability::{
 };
 use crate::safety::quiescence::{QuiescenceManager, QuiescenceConfig};
 use crate::hmr::reload_protocol::{ReloadOperation, ReloadConfig};
-use crate::hmr::state_manager::{MigrationResult, MigrationSchema, SchemaVersion, StateManager};
-use crate::hmr::state_diff::{migrate_state_with_config, DiffConfig};
-use crate::runtime::supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 use crate::infra::crash_recovery::CrashInfo;
-use crate::hmr::fast_refresh::{BoundaryChecker, BoundaryCheckResult, RefreshAction, BoundaryViolationEvent};
-use crate::compiler::source_map::SOURCE_MAP_CACHE;
 
 // ============================================================
 // HMR RESULT TYPES
@@ -1174,8 +1169,6 @@ impl HmrOrchestrator {
         boundary_id: BoundaryId,
         supports_checkpoint: bool,
     ) -> Arc<AtomicBool> {
-        self.task_registry
-            .register_task(task_id, boundary_id, supports_checkpoint)
         use crate::hmr::reload_manager::AsyncTaskType;
         self.task_registry.register(
             task_id,

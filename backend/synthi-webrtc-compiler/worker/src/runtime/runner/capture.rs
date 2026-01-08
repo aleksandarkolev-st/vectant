@@ -33,6 +33,8 @@ pub fn create_shm_segment(size: usize) -> Option<(i32, *mut u8)> {
     }
 }
 
+use x11rb::protocol::shm::Seg;
+
 #[cfg(target_os = "linux")]
 pub fn capture_frame(
     x11_conn: &impl Connection,
