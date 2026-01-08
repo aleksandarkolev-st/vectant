@@ -1,7 +1,7 @@
 """
 Embedder - Generate embeddings for semantic chunks.
 
-Uses OpenAI's text-embedding-3-small by default.
+Uses Google's text-embedding-004 by default.
 Can be swapped for local models or other providers.
 """
 
@@ -24,32 +24,33 @@ class Embedder:
     Generate embeddings for code chunks.
     
     Supports:
-    - OpenAI text-embedding-3-small (default)
+    - Google text-embedding-004 (default)
     - Batch processing for efficiency
     - Caching (optional)
     """
     
     def __init__(
         self,
-        model: str = "text-embedding-3-small",
+        model: str = "text-embedding-004",
         api_key: Optional[str] = None,
         batch_size: int = 100,
     ):
         self.model = model
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.batch_size = batch_size
         
         self._client = None
-        self._dimension = 1536  # text-embedding-3-small
+        self._dimension = 768  # text-embedding-004
     
     def _get_client(self):
-        """Lazy-load OpenAI client."""
+        """Lazy-load Google GenAI client."""
         if self._client is None:
             try:
-                import openai
-                self._client = openai.OpenAI(api_key=self.api_key)
+                import google.generativeai as genai
+                genai.configure(api_key=self.api_key)
+                self._client = genai
             except ImportError:
-                raise ImportError("openai package required for embeddings")
+                raise ImportError("google-generativeai package required for embeddings")
         return self._client
     
     def embed_text(self, text: str) -> List[float]:
@@ -64,16 +65,17 @@ class Embedder:
         """
         client = self._get_client()
         
-        # Truncate if too long (model limit is ~8k tokens)
+        # Truncate if too long (model limit is ~10k tokens)
         if len(text) > 30000:
             text = text[:30000]
         
-        response = client.embeddings.create(
-            model=self.model,
-            input=text,
+        result = client.embed_content(
+            model=f"models/{self.model}",
+            content=text,
+            task_type="RETRIEVAL_DOCUMENT",
         )
         
-        return response.data[0].embedding
+        return result['embedding']
     
     def embed_texts(self, texts: List[str]) -> List[List[float]]:
         """
@@ -96,21 +98,21 @@ class Embedder:
             batch = [t[:30000] if len(t) > 30000 else t for t in batch]
             
             try:
-                response = client.embeddings.create(
-                    model=self.model,
-                    input=batch,
+                # Gemini supports batch embedding
+                result = client.embed_content(
+                    model=f"models/{self.model}",
+                    content=batch,
+                    task_type="RETRIEVAL_DOCUMENT",
                 )
                 
                 # Extract embeddings in order
-                batch_embeddings = [d.embedding for d in response.data]
+                batch_embeddings = result['embedding']
                 all_embeddings.extend(batch_embeddings)
                 
             except Exception as e:
                 logger.error(f"Embedding batch failed: {e}")
                 # Fill with None for failed batch
                 all_embeddings.extend([None] * len(batch))
-        
-        return all_embeddings
     
     def embed_chunk(self, chunk: SemanticChunk) -> SemanticChunk:
         """
@@ -246,7 +248,7 @@ def get_embedder(
     Get or create the embedder.
     
     Args:
-        use_local: Use local model instead of OpenAI
+        use_local: Use local model instead of Gemini
         model: Override model name
     """
     global _embedder
@@ -258,7 +260,7 @@ def get_embedder(
             config = get_config()
             _embedder = Embedder(
                 model=model or config.indexer.embedding_model,
-                api_key=config.openai_api_key,
+                api_key=config.gemini_api_key,
             )
     
     return _embedder

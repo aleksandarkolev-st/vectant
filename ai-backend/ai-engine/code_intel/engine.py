@@ -170,22 +170,22 @@ class CodeIntelEngine:
     def create(
         cls,
         workspace_root: str,
-        openai_api_key: Optional[str] = None,
+        gemini_api_key: Optional[str] = None,
     ) -> "CodeIntelEngine":
         """
         Factory method to create and initialize the engine.
         
         Args:
             workspace_root: Path to workspace
-            openai_api_key: API key for embeddings
+            gemini_api_key: API key for embeddings
             
         Returns:
             Initialized CodeIntelEngine
         """
         config = CodeIntelConfig()
         
-        if openai_api_key:
-            config.indexer.embedding_api_key = openai_api_key
+        if gemini_api_key:
+            config.indexer.embedding_api_key = gemini_api_key
         
         engine = cls(workspace_root, config)
         engine._initialize_components()
@@ -607,16 +607,16 @@ class CodeIntelEngine:
 # Convenience function
 def create_engine(
     workspace_root: str,
-    openai_api_key: Optional[str] = None,
+    gemini_api_key: Optional[str] = None,
 ) -> CodeIntelEngine:
     """
     Create a code intelligence engine.
     
     Args:
         workspace_root: Path to workspace
-        openai_api_key: API key for embeddings
+        gemini_api_key: API key for embeddings
         
     Returns:
         CodeIntelEngine instance
     """
-    return CodeIntelEngine.create(workspace_root, openai_api_key)
+    return CodeIntelEngine.create(workspace_root, gemini_api_key)

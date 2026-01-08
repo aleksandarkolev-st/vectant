@@ -49,8 +49,9 @@ class ParserConfig:
 class IndexerConfig:
     """Configuration for the dual indexer."""
     # Vector index settings
-    embedding_model: str = "text-embedding-3-small"
-    embedding_dimension: int = 1536
+    embedding_model: str = "text-embedding-004"  # Gemini embedding model
+    embedding_dimension: int = 768
+    embedding_api_key: Optional[str] = field(default_factory=lambda: os.getenv("GEMINI_API_KEY"))
     
     # Structural index settings
     store_call_graph: bool = True
@@ -159,11 +160,11 @@ class CodeIntelConfig:
     log_level: str = "INFO"
     
     # API keys (from environment)
-    openai_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
     
     def __post_init__(self):
         # Load from environment
-        self.openai_api_key = os.getenv("OPENAI_API_KEY")
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         
         if os.getenv("CODE_INTEL_DEBUG"):
             self.debug = True

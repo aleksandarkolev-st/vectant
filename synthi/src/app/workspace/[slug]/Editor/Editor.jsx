@@ -538,7 +538,6 @@ const EditorPanel = ({
 
     // Hook up Yjs-based collaboration when an editor and activeFile are present.
     useEffect(() => {
-        console.log(`[Editor DEBUG] Collab effect triggered. ActiveFile: ${activeFile?.path}, Slug: ${slug}`);
         if (!editorInstance || !monacoInstance || !activeFile || !slug || isPrivateMode) {
             // Clear collab connected state if dependencies are missing
             setCollabConnected(false);
@@ -577,7 +576,6 @@ const EditorPanel = ({
             const cachedContent = fileCacheEntries.find(([path]) => path === activeFile.path)?.[1];
             const initialContent = typeof cachedContent === 'string' ? cachedContent : (typeof code === 'string' ? code : '');
             
-            console.log(`[Editor DEBUG] Attaching editor to collab session for ${activeFile.path}`);
             const bindingHandle = collabClient.attachEditor({ 
                 editor: editorInstance, 
                 monaco: monacoInstance, 
@@ -609,7 +607,6 @@ const EditorPanel = ({
         }
 
         return () => {
-            console.log(`[Editor DEBUG] Detaching editor from collab session for ${activeFile?.path}`);
             try { collabBindingRef.current?._awarenessUnsub?.(); } catch (e) { /* ignore */ }
             try { collabBindingRef.current?.dispose(); } catch (e) { /* ignore */ }
             collabBindingRef.current = null;
@@ -946,7 +943,7 @@ const EditorPanel = ({
             return tier !== 'ai' && !source.includes('ai');
         });
         
-        // console.log(`[Editor] Filtering diagnostics for "${currentFilePath}": ${proactiveDiagnostics.length} total -> ${currentFileDiagnostics.length} for current file`);
+        console.log(`[Editor] Filtering diagnostics for "${currentFilePath}": ${proactiveDiagnostics.length} total -> ${currentFileDiagnostics.length} for current file`);
         
         // Convert proactive diagnostics format to markers
             const proactiveMarkers = nonAiDiagnostics.map(diag => {

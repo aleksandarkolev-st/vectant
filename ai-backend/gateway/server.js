@@ -315,7 +315,7 @@ async function forwardProactiveAnalysis(socket, data, requestId) {
 
   // Optional: related files for cross-file analysis
   if (Array.isArray(data?.relatedFiles) && data.relatedFiles.length) {
-    // console.log(`[Gateway] Related files received: ${data.relatedFiles.length}`);
+    console.log(`[Gateway] Related files received: ${data.relatedFiles.length}`);
     const sanitized = data.relatedFiles
       .map((file) => {
         if (!file || typeof file !== "object") return null;
@@ -323,25 +323,25 @@ async function forwardProactiveAnalysis(socket, data, requestId) {
         const name = typeof file.name === "string" ? file.name : null;
         const content = typeof file.content === "string" ? file.content : "";
         if (!content.trim()) return null;
-        // console.log(`[Gateway]   Related file: ${path || name} (${content.length} chars)`);
+        console.log(`[Gateway]   Related file: ${path || name} (${content.length} chars)`);
         return { path, name, content };
       })
       .filter(Boolean);
     if (sanitized.length) {
       forwardBody.related_files = sanitized;
-      // console.log(`[Gateway] Forwarding ${sanitized.length} related files to backend`);
+      console.log(`[Gateway] Forwarding ${sanitized.length} related files to backend`);
     }
   } else {
-    // console.log(`[Gateway] No related files in request`);
+    console.log(`[Gateway] No related files in request`);
   }
 
-  // console.log(`[Gateway] === PROACTIVE ANALYSIS REQUEST ===`);
-  // console.log(`[Gateway] File: ${forwardBody.file_path}`);
-  // console.log(`[Gateway] Language: ${forwardBody.lang}`);
-  // console.log(`[Gateway] Code length: ${forwardBody.code?.length || 0} chars`);
-  // console.log(`[Gateway] Tiers: ${forwardBody.tiers || 'default'}`);
-  // console.log(`[Gateway] Include AI: ${forwardBody.include_ai || false}`);
-  // console.log(`[Gateway] Related files count: ${forwardBody.related_files?.length || 0}`);
+  console.log(`[Gateway] === PROACTIVE ANALYSIS REQUEST ===`);
+  console.log(`[Gateway] File: ${forwardBody.file_path}`);
+  console.log(`[Gateway] Language: ${forwardBody.lang}`);
+  console.log(`[Gateway] Code length: ${forwardBody.code?.length || 0} chars`);
+  console.log(`[Gateway] Tiers: ${forwardBody.tiers || 'default'}`);
+  console.log(`[Gateway] Include AI: ${forwardBody.include_ai || false}`);
+  console.log(`[Gateway] Related files count: ${forwardBody.related_files?.length || 0}`);
 
   let backendResponse;
   try {
@@ -360,7 +360,7 @@ async function forwardProactiveAnalysis(socket, data, requestId) {
   }
 
   const responseText = await backendResponse.text();
-  // console.log(`[Gateway] Backend response status: ${backendResponse.status}`);
+  console.log(`[Gateway] Backend response status: ${backendResponse.status}`);
 
   if (!backendResponse.ok) {
     console.error(`[Gateway] Backend error: ${responseText}`);
@@ -375,16 +375,16 @@ async function forwardProactiveAnalysis(socket, data, requestId) {
   // Log response diagnostics
   try {
     const respData = JSON.parse(responseText);
-    // console.log(`[Gateway] === PROACTIVE ANALYSIS RESPONSE ===`);
-    // console.log(`[Gateway] Diagnostics count: ${respData.diagnostics?.length || 0}`);
+    console.log(`[Gateway] === PROACTIVE ANALYSIS RESPONSE ===`);
+    console.log(`[Gateway] Diagnostics count: ${respData.diagnostics?.length || 0}`);
     if (respData.diagnostics?.length > 0) {
       respData.diagnostics.forEach((d, i) => {
-        // console.log(`[Gateway]   [${i}] ${d.tier}: ${d.message} @ line ${d.location?.line}`);
+        console.log(`[Gateway]   [${i}] ${d.tier}: ${d.message} @ line ${d.location?.line}`);
       });
     }
   } catch (e) {
     // Ignore parse error, just log raw
-    // console.log(`[Gateway] Response preview: ${responseText.substring(0, 200)}...`);
+    console.log(`[Gateway] Response preview: ${responseText.substring(0, 200)}...`);
   }
 
   let responseJson;
@@ -657,7 +657,7 @@ async function forwardUnifiedAnalysis(socket, data, requestId) {
       body: JSON.stringify(forwardBody),
     });
   } catch (err) {
-    console.error("[Gateway] Unified analysis backend request failed", err);
+    // console.error("[Gateway] Unified analysis backend request failed", err);
     sendError(socket, "Failed to reach unified analysis backend", {
       requestId,
       detail: err.message,
@@ -669,7 +669,7 @@ async function forwardUnifiedAnalysis(socket, data, requestId) {
   console.log(`[Gateway] Unified analysis response status: ${backendResponse.status}`);
 
   if (!backendResponse.ok) {
-    console.error(`[Gateway] Unified analysis error: ${responseText}`);
+    // console.error(`[Gateway] Unified analysis error: ${responseText}`);
     sendError(socket, "Unified analysis backend returned an error", {
       requestId,
       detail: responseText,
@@ -1065,6 +1065,6 @@ function safeSend(socket, payload) {
     console.log(`[Gateway DEBUG] Sending to client: ${str.substring(0, 200)}...`);
     socket.send(str);
   } catch (err) {
-    console.error("Failed to send payload", err);
+    // console.error("Failed to send payload", err);
   }
 }

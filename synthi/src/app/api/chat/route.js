@@ -357,11 +357,19 @@ export async function POST(request) {
     // This uses the deterministic retrieval controller - NOT the LLM
     let codeIntelContext = null;
     if (useCodeIntel && workspacePath && prompt) {
+        console.log('[CodeIntel] Fetching context for workspace:', workspacePath);
         codeIntelContext = await fetchCodeIntelContext({
             workspacePath,
             query: prompt,
             maxTokens: maxContextTokens,
             conversationHistory,
+        });
+        console.log('[CodeIntel] Context result:', {
+            hasContext: !!codeIntelContext?.context,
+            contextLength: codeIntelContext?.context?.length || 0,
+            sufficiency: codeIntelContext?.sufficiency,
+            sourcesCount: codeIntelContext?.sources?.length || 0,
+            tokensUsed: codeIntelContext?.tokensUsed,
         });
     }
 

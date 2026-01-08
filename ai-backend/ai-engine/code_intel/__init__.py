@@ -27,7 +27,7 @@ pieces of code matter right now?"
 Usage:
     from code_intel import create_engine
     
-    engine = create_engine("/workspace", openai_api_key="...")
+    engine = create_engine("/workspace", gemini_api_key="...")
     await engine.index_workspace()
     
     context = await engine.get_context("How does auth work?", max_tokens=8000)

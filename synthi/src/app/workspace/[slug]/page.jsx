@@ -620,7 +620,7 @@ export default function EditorPage({ params }) {
         }
         
         // DEBUG: Log content hash and preview to trace stale content issues
-        // console.log(`[page.jsx] Content changed - Hash: ${contentHash}, Length: ${contentToAnalyze.length}`);
+        console.log(`[page.jsx] Content changed - Hash: ${contentHash}, Length: ${contentToAnalyze.length}`);
         
         // Check if content actually changed for this file compared to last analysis
         const lastFastHash = lastFastHashMapRef.current.get(currentFilePath);
