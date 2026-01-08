@@ -7,6 +7,7 @@ Supports multi-file edits with:
 - Conflict detection
 - Rollback capability
 - Index updates after edits
+- SYMBOL-LEVEL diffs (not line diffs!)
 """
 
 from .edit_planner import (
@@ -38,6 +39,14 @@ from .edit_session import (
     SessionResult,
     SessionState,
 )
+from .symbol_diff import (
+    SymbolDiff,
+    SymbolChange,
+    SymbolChangeType,
+    SymbolDiffer,
+    IndexUpdater,
+    compute_symbol_diff,
+)
 
 
 __all__ = [
@@ -65,4 +74,11 @@ __all__ = [
     "EditSessionManager",
     "SessionResult",
     "SessionState",
+    # Symbol-Level Diffs
+    "SymbolDiff",
+    "SymbolChange",
+    "SymbolChangeType",
+    "SymbolDiffer",
+    "IndexUpdater",
+    "compute_symbol_diff",
 ]
