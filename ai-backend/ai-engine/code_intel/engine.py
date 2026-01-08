@@ -238,14 +238,13 @@ class CodeIntelEngine:
         self._retrieval_controller = RetrievalController()
         
         # Tools
-        tools = ExplorationTools(
+        self._exploration_tools = ExplorationTools(
             workspace_root=str(self.workspace_root),
             vector_index=self._vector_index,
             structural_index=self._structural_index,
             file_reader=self._file_walker,
         )
         self._tool_registry = ToolRegistry()
-        self._tool_registry.register_all(tools)
         self._tool_executor = ToolExecutor(self._tool_registry)
         
         # Eviction

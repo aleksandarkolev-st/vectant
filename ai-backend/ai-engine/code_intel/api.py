@@ -152,6 +152,38 @@ async def index_workspace(request: IndexRequest) -> IndexResponse:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class IndexFileRequest(BaseModel):
+    """Request to index a single file."""
+    workspace_path: str = Field(..., description="Path to workspace")
+    file_path: str = Field(..., description="Relative path to file within workspace")
+
+
+class IndexFileResponse(BaseModel):
+    """Response from single file indexing."""
+    success: bool
+    chunks_indexed: int
+
+
+@router.post("/index/file", response_model=IndexFileResponse)
+async def index_file(request: IndexFileRequest) -> IndexFileResponse:
+    """
+    Index a single file.
+    
+    Used for incremental updates after file edits.
+    """
+    try:
+        engine = get_engine(request.workspace_path)
+        chunks_indexed = await engine.index_file(request.file_path)
+        
+        return IndexFileResponse(
+            success=True,
+            chunks_indexed=chunks_indexed,
+        )
+    except Exception as e:
+        logger.exception("File index failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/context", response_model=ContextResponse)
 async def get_context(request: ContextRequest) -> ContextResponse:
     """
