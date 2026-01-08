@@ -1,5 +1,6 @@
 // ABI versioning is now actively used via ModuleLoader and HmrOrchestrator
 // Some advanced features are infrastructure for future use
+#![allow(dead_code)]
 #![allow(mismatched_lifetime_syntaxes)]
 
 // ============================================================
@@ -19,7 +20,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::ffi::CStr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 /// Semantic version for ABI
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

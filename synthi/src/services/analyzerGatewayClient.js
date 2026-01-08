@@ -163,6 +163,126 @@ export class AnalyzerGatewayClient {
   }
 
   /**
+   * Container-First proactive analysis (RECOMMENDED)
+   * 
+   * This endpoint does NOT require content - only file paths.
+   * The server fetches content directly from the container filesystem,
+   * ensuring the AI analyzes exactly what the compiler sees.
+   * 
+   * @param {Object} payload - Analysis request
+   * @param {string} payload.slug - Workspace slug (container ID)
+   * @param {string} payload.filePath - File path within workspace
+   * @param {string} payload.lang - Language identifier
+   * @param {string[]} [payload.relatedPaths] - Related file paths for cross-file analysis
+   * @param {boolean} [payload.includeAi] - Include AI analysis
+   * @param {string[]} [payload.tiers] - Analysis tiers: 'static', 'semantic', 'ai'
+   * @param {Object} [options] - Request options
+   * @param {Function} [options.onTierComplete] - Callback when a tier completes
+   * @returns {Promise<Object>} Analysis result with diagnostics
+   */
+  analyzeContainer(payload, options = {}) {
+    // Map from frontend naming to backend naming
+    const backendPayload = {
+      slug: payload.slug,
+      file_path: payload.filePath,
+      lang: payload.lang,
+      related_paths: payload.relatedPaths || [],
+      include_ai: payload.includeAi || false,
+      tiers: payload.tiers || ['static', 'semantic'],
+      max_diagnostics: payload.maxDiagnostics || 50,
+    };
+    
+    if (payload.model) backendPayload.model = payload.model;
+    if (payload.apiKey) backendPayload.api_key = payload.apiKey;
+    
+    return this._sendRequest('analyze/container', backendPayload, {
+      ...options,
+      onStream: (data) => {
+        if (data?.tier && typeof options.onTierComplete === 'function') {
+          options.onTierComplete({
+            tier: data.tier,
+            diagnostics: data.diagnostics || [],
+            elapsedMs: data.elapsedMs || 0,
+            fromCache: data.fromCache || false,
+          });
+        }
+        if (typeof options.onStream === 'function') {
+          options.onStream(data);
+        }
+      },
+    });
+  }
+
+  /**
+   * Unified Intelligence Pipeline analysis (RECOMMENDED)
+   * 
+   * This is the preferred endpoint that combines:
+   * - Layer A: Static analysis (syntax patterns)
+   * - Layer B: Semantic analysis (CppSemanticAnalyzer, etc.)
+   * - Layer C: AI analysis (on-demand, triggered when errors found)
+   * 
+   * Content is fetched from the container filesystem - the client sends only paths.
+   * This ensures the AI analyzes exactly what the compiler sees.
+   * 
+   * @param {Object} payload - Analysis request
+   * @param {string} payload.slug - Workspace slug (container ID)
+   * @param {string} payload.filePath - File path within workspace
+   * @param {string} payload.lang - Language identifier
+   * @param {number} [payload.version] - Document version for stale detection
+   * @param {string[]} [payload.layers] - Analysis layers: 'static', 'semantic', 'ai'
+   * @param {boolean} [payload.includeAi] - Force include AI layer
+   * @param {boolean} [payload.triggerAiOnErrors] - Auto-trigger AI if errors found (default: true)
+   * @param {number} [payload.maxDiagnostics] - Max diagnostics to return
+   * @param {string} [payload.model] - AI model to use
+   * @param {string} [payload.apiKey] - Custom API key for AI
+   * @param {Object} [options] - Request options
+   * @param {Function} [options.onLayerComplete] - Callback when a layer completes
+   * @returns {Promise<Object>} Unified analysis result with deduplicated diagnostics
+   */
+  analyzeUnified(payload, options = {}) {
+    // Map from frontend naming to backend naming (snake_case)
+    const backendPayload = {
+      slug: payload.slug,
+      file_path: payload.filePath,
+      lang: payload.lang,
+      layers: payload.layers || ['static', 'semantic'],
+      include_ai: payload.includeAi || false,
+      trigger_ai_on_errors: payload.triggerAiOnErrors !== false, // Default true
+      max_diagnostics: payload.maxDiagnostics || 50,
+    };
+    
+    // Include version for stale detection
+    if (typeof payload.version === 'number' || typeof payload.version === 'string') {
+      backendPayload.version = payload.version;
+    }
+
+    // Include content override if provided
+    if (typeof payload.content === 'string') {
+      backendPayload.content = payload.content;
+    }
+    
+    if (payload.model) backendPayload.model = payload.model;
+    if (payload.apiKey) backendPayload.api_key = payload.apiKey;
+    
+    return this._sendRequest('analyze/unified', backendPayload, {
+      ...options,
+      onStream: (data) => {
+        // Handle layer completion events (for streaming results)
+        if (data?.layer && typeof options.onLayerComplete === 'function') {
+          options.onLayerComplete({
+            layer: data.layer,
+            diagnostics: data.diagnostics || [],
+            elapsedMs: data.elapsedMs || 0,
+          });
+        }
+        if (typeof options.onStream === 'function') {
+          options.onStream(data);
+        }
+      },
+    });
+  }
+
+  /**
    * Run quick proactive analysis (static + semantic only, optimized for real-time)
    * @param {Object} payload - Analysis request
    * @param {string} payload.code - Code to analyze  

@@ -1,5 +1,6 @@
 // State manager is now actively used via HmrOrchestrator
 // #![allow(dead_code)] - REMOVED: This module is now wired up
+#![allow(dead_code)]
 
 // ============================================================
 // STATE MANAGER
@@ -17,8 +18,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::ptr;
-use std::sync::Arc;
 
 use crate::boundary::BoundaryId;
 use crate::plugin_contract::ModuleSlot;

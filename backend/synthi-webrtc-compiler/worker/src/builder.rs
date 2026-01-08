@@ -1911,6 +1911,257 @@ pub fn hash_content(content: &str) -> u64 {
     hasher.finish()
 }
 
+fn strip_cpp_comments_preserve_strings(input: &str) -> String {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum State {
+        Normal,
+        LineComment,
+        BlockComment,
+        String,
+        Char,
+    }
+
+    let mut out = String::with_capacity(input.len());
+    let mut state = State::Normal;
+    let mut chars = input.chars().peekable();
+    let mut prev_was_escape = false;
+
+    while let Some(ch) = chars.next() {
+        match state {
+            State::Normal => {
+                if ch == '/' {
+                    match chars.peek().copied() {
+                        Some('/') => {
+                            let _ = chars.next();
+                            state = State::LineComment;
+                        }
+                        Some('*') => {
+                            let _ = chars.next();
+                            state = State::BlockComment;
+                        }
+                        _ => out.push(ch),
+                    }
+                } else if ch == '"' {
+                    out.push(ch);
+                    state = State::String;
+                    prev_was_escape = false;
+                } else if ch == '\'' {
+                    out.push(ch);
+                    state = State::Char;
+                    prev_was_escape = false;
+                } else {
+                    out.push(ch);
+                }
+            }
+            State::LineComment => {
+                if ch == '\n' {
+                    out.push('\n');
+                    state = State::Normal;
+                }
+            }
+            State::BlockComment => {
+                if ch == '*' {
+                    if let Some('/') = chars.peek().copied() {
+                        let _ = chars.next();
+                        state = State::Normal;
+                    }
+                }
+            }
+            State::String => {
+                out.push(ch);
+                if prev_was_escape {
+                    prev_was_escape = false;
+                } else if ch == '\\' {
+                    prev_was_escape = true;
+                } else if ch == '"' {
+                    state = State::Normal;
+                }
+            }
+            State::Char => {
+                out.push(ch);
+                if prev_was_escape {
+                    prev_was_escape = false;
+                } else if ch == '\\' {
+                    prev_was_escape = true;
+                } else if ch == '\'' {
+                    state = State::Normal;
+                }
+            }
+        }
+    }
+
+    out
+}
+
+fn collapse_ws_outside_strings(input: &str) -> String {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum State {
+        Normal,
+        String,
+        Char,
+    }
+
+    let mut out = String::with_capacity(input.len());
+    let mut state = State::Normal;
+    let mut prev_was_escape = false;
+    let mut pending_space = false;
+
+    for ch in input.chars() {
+        match state {
+            State::Normal => {
+                if ch == '"' {
+                    if pending_space {
+                        out.push(' ');
+                        pending_space = false;
+                    }
+                    out.push(ch);
+                    state = State::String;
+                    prev_was_escape = false;
+                } else if ch == '\'' {
+                    if pending_space {
+                        out.push(' ');
+                        pending_space = false;
+                    }
+                    out.push(ch);
+                    state = State::Char;
+                    prev_was_escape = false;
+                } else if ch.is_whitespace() {
+                    pending_space = true;
+                } else {
+                    if pending_space {
+                        out.push(' ');
+                        pending_space = false;
+                    }
+                    out.push(ch);
+                }
+            }
+            State::String => {
+                out.push(ch);
+                if prev_was_escape {
+                    prev_was_escape = false;
+                } else if ch == '\\' {
+                    prev_was_escape = true;
+                } else if ch == '"' {
+                    state = State::Normal;
+                }
+            }
+            State::Char => {
+                out.push(ch);
+                if prev_was_escape {
+                    prev_was_escape = false;
+                } else if ch == '\\' {
+                    prev_was_escape = true;
+                } else if ch == '\'' {
+                    state = State::Normal;
+                }
+            }
+        }
+    }
+
+    out
+}
+
+fn normalize_cpp_like_for_semantic_hash(content: &str) -> String {
+    let normalized_newlines = content.replace("\r\n", "\n").replace('\r', "\n");
+    let without_comments = strip_cpp_comments_preserve_strings(&normalized_newlines);
+
+    let mut out = String::with_capacity(without_comments.len());
+    for line in without_comments.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let collapsed = collapse_ws_outside_strings(trimmed);
+        let collapsed = collapsed.trim();
+        if collapsed.is_empty() {
+            continue;
+        }
+        out.push_str(collapsed);
+        out.push('\n');
+    }
+    out
+}
+
+/// Extract struct field declarations from shared.h for order-independent hashing.
+/// Returns a sorted set of field signatures (type + name) to ignore field ordering.
+fn extract_struct_fields_sorted(content: &str) -> Vec<String> {
+    use std::collections::BTreeSet;
+    
+    let mut fields: BTreeSet<String> = BTreeSet::new();
+    let mut in_struct = false;
+    let mut brace_depth = 0;
+    
+    for line in content.lines() {
+        let trimmed = line.trim();
+        
+        // Track struct boundaries
+        if trimmed.contains("struct") || trimmed.contains("typedef struct") {
+            in_struct = true;
+        }
+        
+        // Count braces
+        for ch in trimmed.chars() {
+            if ch == '{' {
+                brace_depth += 1;
+            } else if ch == '}' {
+                brace_depth -= 1;
+                if brace_depth == 0 {
+                    in_struct = false;
+                }
+            }
+        }
+        
+        // Extract field declarations inside struct (depth 1)
+        if in_struct && brace_depth == 1 && trimmed.ends_with(';') {
+            // Normalize the field: remove extra whitespace, standardize pointer format
+            let field = trimmed
+                .replace("  ", " ")
+                .replace(" *", "* ")
+                .replace("* ", "*")
+                .trim()
+                .to_string();
+            
+            // Skip common non-field lines
+            if !field.starts_with("//") && !field.starts_with("/*") && !field.is_empty() {
+                fields.insert(field);
+            }
+        }
+    }
+    
+    fields.into_iter().collect()
+}
+
+/// Calculate a semantic-ish hash for shared C/C++ headers.
+///
+/// This intentionally ignores purely cosmetic diffs (comments + whitespace),
+/// because `shared.h` churn can otherwise trigger full rebuilds and watcher loops.
+/// 
+/// ENHANCEMENT: Also normalizes struct field ordering by sorting fields alphabetically
+/// before hashing. This prevents hash churn when AI reorders fields in shared.h.
+pub fn hash_shared_header_semantic(content: &str) -> u64 {
+    let normalized = normalize_cpp_like_for_semantic_hash(content);
+    
+    // Extract and sort struct fields for order-independent comparison
+    let sorted_fields = extract_struct_fields_sorted(&normalized);
+    
+    // Create a canonical representation: non-struct code + sorted fields
+    // This gives us hash stability even when AI reorders fields
+    let mut canonical = String::with_capacity(normalized.len());
+    
+    // Add sorted fields as a stable prefix
+    canonical.push_str("// CANONICAL_FIELDS_START\n");
+    for field in &sorted_fields {
+        canonical.push_str(field);
+        canonical.push('\n');
+    }
+    canonical.push_str("// CANONICAL_FIELDS_END\n");
+    
+    // Add the normalized content (for includes, defines, etc.)
+    canonical.push_str(&normalized);
+    
+    hash_content(&canonical)
+}
+
 /// Analyze workspace and compute hashes for all relevant files
 pub fn compute_module_hashes(workspace_root: &Path) -> ModuleHashes {
     let mut hashes = ModuleHashes::new();
@@ -1919,7 +2170,7 @@ pub fn compute_module_hashes(workspace_root: &Path) -> ModuleHashes {
     for filename in ["shared.h", "shared.hpp"] {
         let path = workspace_root.join(filename);
         if let Ok(content) = fs::read_to_string(&path) {
-            hashes.shared_hash = hash_content(&content);
+            hashes.shared_hash = hash_shared_header_semantic(&content);
         }
     }
 

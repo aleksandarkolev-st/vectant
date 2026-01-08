@@ -921,6 +921,581 @@ extern "C" void* on_load_from_json(const char* json) {{
 }
 
 // ============================================================
+// NEW HOTAPI V2 SHIM GENERATOR
+// ============================================================
+// Generates a single export (hot_get_api) + static HotApi table
+// that wraps internal Rust/C app functions to the new ABI.
+// ============================================================
+
+/// Configuration for HotApi v2 shim generation
+#[derive(Debug, Clone)]
+pub struct HotApiShimConfig {
+    /// State struct name
+    pub state_name: String,
+    /// State struct size in bytes
+    pub state_size: usize,
+    /// State alignment (must be power of 2)
+    pub state_align: usize,
+    /// State version (module-defined)
+    pub state_version: u32,
+    /// ABI fingerprint (hash of state layout)
+    pub abi_fingerprint: u64,
+    /// Fields for MsgPack serialization
+    pub fields: Vec<HotApiField>,
+}
+
+/// Field descriptor for serialization
+#[derive(Debug, Clone)]
+pub struct HotApiField {
+    pub name: String,
+    pub c_type: String,
+    pub offset: usize,
+    pub size: usize,
+    /// Default value as string (e.g., "0", "1.0")
+    pub default_value: Option<String>,
+}
+
+impl Default for HotApiShimConfig {
+    fn default() -> Self {
+        Self {
+            state_name: "AppState".to_string(),
+            state_size: 64,
+            state_align: 8,
+            state_version: 1,
+            abi_fingerprint: 0,
+            fields: Vec::new(),
+        }
+    }
+}
+
+/// Generate HotApi v2 shim for C/C++ code
+/// 
+/// This generates:
+/// - A static HotApi table with all function pointers
+/// - The single export: hot_get_api()
+/// - Wrapper functions for init, tick, render, event
+/// - MsgPack serialization using size-then-write pattern
+pub fn generate_hot_api_shim(source: &str, config: &HotApiShimConfig) -> ShimResult {
+    let state_name = &config.state_name;
+    let field_count = config.fields.len();
+    
+    // Calculate ABI fingerprint if not provided
+    let abi_fingerprint = if config.abi_fingerprint == 0 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        use std::hash::{Hash, Hasher};
+        config.state_name.hash(&mut hasher);
+        config.state_size.hash(&mut hasher);
+        for f in &config.fields {
+            f.name.hash(&mut hasher);
+            f.c_type.hash(&mut hasher);
+            f.offset.hash(&mut hasher);
+        }
+        hasher.finish()
+    } else {
+        config.abi_fingerprint
+    };
+    
+    // Generate field serialization code for MsgPack
+    let mut msgpack_size_code = String::new();
+    let mut msgpack_write_code = String::new();
+    let mut migrate_code = String::new();
+    
+    for field in &config.fields {
+        // Size calculation (MsgPack encoding overhead)
+        let type_overhead = match field.c_type.as_str() {
+            "int" | "int32_t" => 5,   // fixint or int32
+            "uint32_t" | "unsigned" => 5,
+            "int64_t" | "long" => 9,
+            "uint64_t" => 9,
+            "float" => 5,
+            "double" => 9,
+            "bool" | "char" => 2,
+            _ => 5,
+        };
+        let str_overhead = field.name.len() + 3; // fixstr header + name
+        
+        msgpack_size_code.push_str(&format!(
+            "    size += {}; // {} (key)\n    size += {}; // {} (value)\n",
+            str_overhead, field.name, type_overhead, field.c_type
+        ));
+        
+        // Write code
+        msgpack_write_code.push_str(&format!(
+            "    // Write field: {}\n    write_fixstr(out, out_cap, pos, \"{}\", {});\n",
+            field.name, field.name, field.name.len()
+        ));
+        
+        match field.c_type.as_str() {
+            "int" | "int32_t" => {
+                msgpack_write_code.push_str(&format!(
+                    "    write_int32(out, out_cap, pos, state->{});\n",
+                    field.name
+                ));
+            }
+            "float" => {
+                msgpack_write_code.push_str(&format!(
+                    "    write_float32(out, out_cap, pos, state->{});\n",
+                    field.name
+                ));
+            }
+            _ => {
+                msgpack_write_code.push_str(&format!(
+                    "    write_int32(out, out_cap, pos, (int32_t)state->{});\n",
+                    field.name
+                ));
+            }
+        }
+        
+        // Migration code - decode from MsgPack
+        let default_val = field.default_value.as_deref().unwrap_or("0");
+        migrate_code.push_str(&format!(
+            "    new_state->{} = decode_field_or_default(old_msgpack, old_msgpack_len, \"{}\", {});\n",
+            field.name, field.name, default_val
+        ));
+    }
+    
+    let shim = format!(r#"
+// ============================================================
+// SYNTHI HOTAPI V2 SHIM - Auto-generated
+// Single export ABI with MsgPack serialization
+// ============================================================
+
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+#include <string.h>
+#include <stdlib.h>
+
+#ifdef __cplusplus
+extern "C" {{
+#endif
+
+// ============================================================
+// RUNNER API (provided by host)
+// ============================================================
+
+typedef struct RunnerApi {{
+    uint32_t struct_size;
+    uint32_t api_version;
+    void (*log)(uint32_t level, const uint8_t* msg, size_t len);
+    uint64_t (*get_time_ns)(void);
+    size_t _reserved[8];
+}} RunnerApi;
+
+// ============================================================
+// EVENT (POD, no SDL types)
+// ============================================================
+
+typedef struct Event {{
+    uint32_t kind;
+    uint32_t a;
+    uint32_t b;
+    uint32_t c;
+    const void* payload_ptr;
+    size_t payload_len;
+}} Event;
+
+// ============================================================
+// STATE STRUCT
+// ============================================================
+
+// User's state struct should be defined before this shim is included
+// typedef struct {state_name} {{ ... }} {state_name};
+
+// ============================================================
+// FUNCTION POINTER TYPES
+// ============================================================
+
+typedef bool (*InitFn)(void* state, const RunnerApi* host);
+typedef void (*ShutdownFn)(void* state, const RunnerApi* host);
+typedef void (*TickFn)(void* state, const RunnerApi* host, float dt);
+typedef void (*RenderFn)(void* state, const RunnerApi* host);
+typedef void (*EventFn)(void* state, const Event* e, const RunnerApi* host);
+typedef size_t (*SaveSizeFn)(const void* state, uint32_t state_version, const RunnerApi* host);
+typedef bool (*SaveWriteFn)(const void* state, uint32_t state_version, const RunnerApi* host, uint8_t* out, size_t out_cap, size_t* out_written);
+typedef bool (*MigrateFn)(const void* old_blob, uint32_t old_ver, void* new_blob, uint32_t new_ver, const RunnerApi* host, const uint8_t* old_msgpack, size_t old_msgpack_len, const uint8_t* old_json, size_t old_json_len);
+
+// ============================================================
+// HOTAPI TABLE
+// ============================================================
+
+typedef struct HotApi {{
+    uint32_t struct_size;
+    uint32_t api_version;
+    uint32_t state_version;
+    uint64_t abi_fingerprint;
+    size_t state_size_bytes;
+    size_t state_align_bytes;
+    size_t state_min_size_bytes;
+    InitFn init;
+    ShutdownFn shutdown;
+    TickFn tick;
+    RenderFn render;
+    EventFn event;
+    MigrateFn migrate;
+    SaveSizeFn save_state_msgpack_size;
+    SaveWriteFn save_state_msgpack_write;
+    SaveSizeFn save_state_json_size;
+    SaveWriteFn save_state_json_write;
+}} HotApi;
+
+// ============================================================
+// MSGPACK HELPERS (allocation-free)
+// ============================================================
+
+static inline void write_fixstr(uint8_t* out, size_t cap, size_t* pos, const char* str, size_t len) {{
+    if (*pos + 1 + len > cap) return;
+    out[(*pos)++] = 0xa0 | (len & 0x1f);
+    memcpy(out + *pos, str, len);
+    *pos += len;
+}}
+
+static inline void write_int32(uint8_t* out, size_t cap, size_t* pos, int32_t val) {{
+    if (val >= 0 && val <= 127) {{
+        if (*pos + 1 > cap) return;
+        out[(*pos)++] = (uint8_t)val;
+    }} else if (val >= -32 && val < 0) {{
+        if (*pos + 1 > cap) return;
+        out[(*pos)++] = (uint8_t)val;
+    }} else {{
+        if (*pos + 5 > cap) return;
+        out[(*pos)++] = 0xd2;
+        out[(*pos)++] = (val >> 24) & 0xff;
+        out[(*pos)++] = (val >> 16) & 0xff;
+        out[(*pos)++] = (val >> 8) & 0xff;
+        out[(*pos)++] = val & 0xff;
+    }}
+}}
+
+static inline void write_float32(uint8_t* out, size_t cap, size_t* pos, float val) {{
+    if (*pos + 5 > cap) return;
+    out[(*pos)++] = 0xca;
+    union {{ float f; uint32_t u; }} conv = {{ .f = val }};
+    out[(*pos)++] = (conv.u >> 24) & 0xff;
+    out[(*pos)++] = (conv.u >> 16) & 0xff;
+    out[(*pos)++] = (conv.u >> 8) & 0xff;
+    out[(*pos)++] = conv.u & 0xff;
+}}
+
+static inline void write_map_header(uint8_t* out, size_t cap, size_t* pos, size_t count) {{
+    if (count <= 15) {{
+        if (*pos + 1 > cap) return;
+        out[(*pos)++] = 0x80 | (count & 0x0f);
+    }} else {{
+        if (*pos + 3 > cap) return;
+        out[(*pos)++] = 0xde;
+        out[(*pos)++] = (count >> 8) & 0xff;
+        out[(*pos)++] = count & 0xff;
+    }}
+}}
+
+// MsgPack field decoder - parses fixmap/map16 to find field by name
+static inline int32_t decode_field_or_default(const uint8_t* data, size_t len, const char* name, int32_t def) {{
+    if (!data || len == 0 || !name) return def;
+    
+    size_t pos = 0;
+    size_t name_len = 0;
+    while (name[name_len]) name_len++;
+    
+    // Parse map header
+    uint32_t map_count = 0;
+    if (pos >= len) return def;
+    
+    uint8_t header = data[pos++];
+    if ((header & 0xf0) == 0x80) {{
+        // fixmap: 1000xxxx where xxxx is count (0-15)
+        map_count = header & 0x0f;
+    }} else if (header == 0xde) {{
+        // map16: 0xde followed by 2 bytes count
+        if (pos + 2 > len) return def;
+        map_count = ((uint32_t)data[pos] << 8) | data[pos + 1];
+        pos += 2;
+    }} else if (header == 0xdf) {{
+        // map32: 0xdf followed by 4 bytes count
+        if (pos + 4 > len) return def;
+        map_count = ((uint32_t)data[pos] << 24) | ((uint32_t)data[pos+1] << 16) |
+                    ((uint32_t)data[pos+2] << 8) | data[pos+3];
+        pos += 4;
+    }} else {{
+        return def;  // Not a map
+    }}
+    
+    // Iterate through map entries
+    for (uint32_t i = 0; i < map_count && pos < len; i++) {{
+        // Parse key (expecting string)
+        size_t key_len = 0;
+        const uint8_t* key_data = NULL;
+        
+        uint8_t key_header = data[pos++];
+        if ((key_header & 0xe0) == 0xa0) {{
+            // fixstr: 101xxxxx where xxxxx is length (0-31)
+            key_len = key_header & 0x1f;
+        }} else if (key_header == 0xd9) {{
+            // str8
+            if (pos >= len) return def;
+            key_len = data[pos++];
+        }} else if (key_header == 0xda) {{
+            // str16
+            if (pos + 2 > len) return def;
+            key_len = ((size_t)data[pos] << 8) | data[pos + 1];
+            pos += 2;
+        }} else {{
+            // Skip this entry - key is not a string
+            continue;
+        }}
+        
+        if (pos + key_len > len) return def;
+        key_data = &data[pos];
+        pos += key_len;
+        
+        // Check if this is our field
+        int match = (key_len == name_len);
+        if (match) {{
+            for (size_t j = 0; j < name_len; j++) {{
+                if (key_data[j] != (uint8_t)name[j]) {{
+                    match = 0;
+                    break;
+                }}
+            }}
+        }}
+        
+        // Parse value
+        if (pos >= len) return def;
+        uint8_t val_header = data[pos++];
+        
+        if (match) {{
+            // Decode value as int32
+            if (val_header <= 0x7f) {{
+                // positive fixint
+                return (int32_t)val_header;
+            }} else if (val_header >= 0xe0) {{
+                // negative fixint
+                return (int32_t)(int8_t)val_header;
+            }} else if (val_header == 0xd0) {{
+                // int8
+                if (pos >= len) return def;
+                return (int32_t)(int8_t)data[pos];
+            }} else if (val_header == 0xd1) {{
+                // int16
+                if (pos + 2 > len) return def;
+                int16_t v = (int16_t)(((uint16_t)data[pos] << 8) | data[pos + 1]);
+                return (int32_t)v;
+            }} else if (val_header == 0xd2) {{
+                // int32
+                if (pos + 4 > len) return def;
+                return (int32_t)(((uint32_t)data[pos] << 24) | ((uint32_t)data[pos+1] << 16) |
+                                 ((uint32_t)data[pos+2] << 8) | data[pos+3]);
+            }} else if (val_header == 0xcc) {{
+                // uint8
+                if (pos >= len) return def;
+                return (int32_t)data[pos];
+            }} else if (val_header == 0xcd) {{
+                // uint16
+                if (pos + 2 > len) return def;
+                return (int32_t)(((uint16_t)data[pos] << 8) | data[pos + 1]);
+            }} else if (val_header == 0xce) {{
+                // uint32 - truncate to int32
+                if (pos + 4 > len) return def;
+                uint32_t v = ((uint32_t)data[pos] << 24) | ((uint32_t)data[pos+1] << 16) |
+                             ((uint32_t)data[pos+2] << 8) | data[pos+3];
+                return (int32_t)v;
+            }}
+            return def;  // Unsupported type
+        }}
+        
+        // Skip value if not matching
+        // We need to skip based on type
+        if (val_header <= 0x7f || val_header >= 0xe0) {{
+            // fixint - already consumed
+        }} else if ((val_header & 0xe0) == 0xa0) {{
+            // fixstr
+            pos += (val_header & 0x1f);
+        }} else if ((val_header & 0xf0) == 0x90) {{
+            // fixarray - skip elements (simplified: assumes flat values)
+            pos += (val_header & 0x0f);
+        }} else if ((val_header & 0xf0) == 0x80) {{
+            // fixmap - skip entries (simplified)
+            pos += (val_header & 0x0f) * 2;
+        }} else if (val_header == 0xc0 || val_header == 0xc2 || val_header == 0xc3) {{
+            // nil, false, true - no additional bytes
+        }} else if (val_header == 0xcc || val_header == 0xd0) {{
+            pos += 1;  // uint8/int8
+        }} else if (val_header == 0xcd || val_header == 0xd1) {{
+            pos += 2;  // uint16/int16
+        }} else if (val_header == 0xce || val_header == 0xd2 || val_header == 0xca) {{
+            pos += 4;  // uint32/int32/float32
+        }} else if (val_header == 0xcf || val_header == 0xd3 || val_header == 0xcb) {{
+            pos += 8;  // uint64/int64/float64
+        }} else if (val_header == 0xd9) {{
+            if (pos >= len) return def;
+            pos += 1 + data[pos];  // str8
+        }} else if (val_header == 0xda) {{
+            if (pos + 2 > len) return def;
+            size_t slen = ((size_t)data[pos] << 8) | data[pos + 1];
+            pos += 2 + slen;  // str16
+        }} else {{
+            // Unknown type - can't safely skip
+            return def;
+        }}
+    }}
+    
+    return def;  // Field not found
+}}
+
+// ============================================================
+// WRAPPER FUNCTIONS
+// ============================================================
+
+static bool hot_init(void* state, const RunnerApi* host) {{
+    {state_name}* s = ({state_name}*)state;
+    memset(s, 0, sizeof({state_name}));
+    // User init code can go here
+    return true;
+}}
+
+static void hot_shutdown(void* state, const RunnerApi* host) {{
+    {state_name}* s = ({state_name}*)state;
+    // User cleanup code can go here
+    (void)s; (void)host;
+}}
+
+static void hot_tick(void* state, const RunnerApi* host, float dt) {{
+    {state_name}* s = ({state_name}*)state;
+    // Call user's on_update if it exists
+    #ifdef USER_ON_UPDATE
+    on_update(s, (double)dt);
+    #endif
+    (void)host;
+}}
+
+static void hot_render(void* state, const RunnerApi* host) {{
+    {state_name}* s = ({state_name}*)state;
+    // Call user's render if it exists
+    #ifdef USER_ON_RENDER
+    on_render(s);
+    #endif
+    (void)host;
+}}
+
+static void hot_event(void* state, const Event* e, const RunnerApi* host) {{
+    {state_name}* s = ({state_name}*)state;
+    // Call user's event handler if it exists
+    #ifdef USER_ON_EVENT
+    on_event(s, e);
+    #endif
+    (void)host;
+}}
+
+// ============================================================
+// MSGPACK SERIALIZATION (size-then-write)
+// ============================================================
+
+static size_t hot_save_msgpack_size(const void* state, uint32_t state_version, const RunnerApi* host) {{
+    (void)state; (void)state_version; (void)host;
+    size_t size = 1; // Map header
+{msgpack_size_code}
+    return size;
+}}
+
+static bool hot_save_msgpack_write(const void* state_ptr, uint32_t state_version, const RunnerApi* host, uint8_t* out, size_t out_cap, size_t* out_written) {{
+    (void)state_version; (void)host;
+    const {state_name}* state = (const {state_name}*)state_ptr;
+    size_t pos = 0;
+    
+    // Write map header
+    write_map_header(out, out_cap, &pos, {field_count});
+    
+    // Write fields
+{msgpack_write_code}
+    
+    *out_written = pos;
+    return true;
+}}
+
+// ============================================================
+// MIGRATION (uses MsgPack, NOT old struct pointer)
+// ============================================================
+
+static bool hot_migrate(const void* old_blob, uint32_t old_ver, void* new_blob, uint32_t new_ver, const RunnerApi* host, const uint8_t* old_msgpack, size_t old_msgpack_len, const uint8_t* old_json, size_t old_json_len) {{
+    (void)old_blob; (void)old_ver; (void)new_ver; (void)host; (void)old_json; (void)old_json_len;
+    
+    if (!old_msgpack || old_msgpack_len == 0) {{
+        return false; // No serialized data to migrate from
+    }}
+    
+    {state_name}* new_state = ({state_name}*)new_blob;
+    memset(new_state, 0, sizeof({state_name}));
+    
+    // Decode fields from MsgPack (uses keyed lookup, not position)
+{migrate_code}
+    
+    return true;
+}}
+
+// ============================================================
+// STATIC HOTAPI TABLE
+// ============================================================
+
+static const HotApi HOT_API = {{
+    .struct_size = sizeof(HotApi),
+    .api_version = 2,
+    .state_version = {state_version},
+    .abi_fingerprint = 0x{abi_fingerprint:016X}ULL,
+    .state_size_bytes = sizeof({state_name}),
+    .state_align_bytes = {state_align},
+    .state_min_size_bytes = 0,
+    .init = hot_init,
+    .shutdown = hot_shutdown,
+    .tick = hot_tick,
+    .render = hot_render,
+    .event = hot_event,
+    .migrate = hot_migrate,
+    .save_state_msgpack_size = hot_save_msgpack_size,
+    .save_state_msgpack_write = hot_save_msgpack_write,
+    .save_state_json_size = NULL,
+    .save_state_json_write = NULL,
+}};
+
+// ============================================================
+// SINGLE EXPORT
+// ============================================================
+
+__attribute__((visibility("default")))
+const HotApi* hot_get_api(void) {{
+    return &HOT_API;
+}}
+
+#ifdef __cplusplus
+}}
+#endif
+
+// ============================================================
+// USER CODE FOLLOWS
+// ============================================================
+
+{source}
+"#,
+        state_name = state_name,
+        state_version = config.state_version,
+        abi_fingerprint = abi_fingerprint,
+        state_align = config.state_align,
+        field_count = field_count,
+        msgpack_size_code = msgpack_size_code,
+        msgpack_write_code = msgpack_write_code,
+        migrate_code = migrate_code,
+        source = source,
+    );
+    
+    ShimResult {
+        source: shim,
+        additional_files: vec![],
+        extra_flags: vec![
+            "-fvisibility=hidden".to_string(), // Hide all symbols except hot_get_api
+        ],
+    }
+}
+
+// ============================================================
 // SHIM DETECTION AND AUTO-SELECTION
 // ============================================================
 
