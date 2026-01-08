@@ -21,7 +21,7 @@
 use std::io::{Read, Write};
 use std::time::Duration;
 
-use crate::reload_protocol::{crc32_checksum, MsgPackDecodeLimits};
+use crate::hmr::reload_protocol::{crc32_checksum, MsgPackDecodeLimits};
 
 // ============================================================
 // FRAME FORMAT

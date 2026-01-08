@@ -26,38 +26,38 @@ use std::time::{Duration, Instant};
 
 use libloading::{Library, Symbol};
 
-use crate::binary_state::{MsgPackState, SchemaMigrationResult, SchemaMigrator};
-use crate::boundary::{Boundary, BoundaryId, BoundaryManifest, BoundaryType, ReloadPlan};
-use crate::crash_recovery::CrashInfo;
-use crate::fast_refresh::{
+use crate::hmr::binary_state::{MsgPackState, SchemaMigrationResult, SchemaMigrator};
+use crate::safety::boundary::{Boundary, BoundaryId, BoundaryManifest, BoundaryType, ReloadPlan};
+use crate::infra::crash_recovery::CrashInfo;
+use crate::hmr::fast_refresh::{
     BoundaryCheckResult, BoundaryChecker, BoundaryViolationEvent, RefreshAction,
 };
-use crate::binary_state::{MsgPackState, SchemaMigrationResult};
-use crate::boundary::{Boundary, BoundaryId, BoundaryManifest, ReloadPlan};
-use crate::loader::{LoadResult, ModuleLoader};
-use crate::plugin_contract::ModuleSlot;
-use crate::reload_manager::{
+use crate::hmr::binary_state::{MsgPackState, SchemaMigrationResult};
+use crate::safety::boundary::{Boundary, BoundaryId, BoundaryManifest, ReloadPlan};
+use crate::runtime::loader::{LoadResult, ModuleLoader};
+use crate::compiler::plugin_contract::ModuleSlot;
+use crate::hmr::reload_manager::{
     AsyncTaskRegistry, ReloadChanges, ReloadClass, ReloadClassifier, ReloadSnapshot,
     SnapshotManager,
 };
-use crate::source_map::SOURCE_MAP_CACHE;
-use crate::state_diff::{migrate_state_with_config, DiffConfig, DiffResult};
-use crate::state_manager::{
+use crate::compiler::source_map::SOURCE_MAP_CACHE;
+use crate::hmr::state_diff::{migrate_state_with_config, DiffConfig, DiffResult};
+use crate::hmr::state_manager::{
     MigrationResult, MigrationSchema, SchemaVersion, StateHandle, StateManager,
 };
-use crate::supervisor::{CrashEvent, CrashSupervisor, RecoveryAction, SupervisorConfig};
-use crate::observability::{
+use crate::runtime::supervisor::{CrashEvent, CrashSupervisor, RecoveryAction, SupervisorConfig};
+use crate::infra::observability::{
     ReloadId, LogLevel, LogEntry, StructuredLogger, LogFormat,
     ReloadMetricsTracker, MetricsAggregator,
 };
-use crate::quiescence::{QuiescenceManager, QuiescenceConfig};
-use crate::reload_protocol::{ReloadOperation, ReloadConfig};
-use crate::state_manager::{MigrationResult, MigrationSchema, SchemaVersion, StateManager};
-use crate::state_diff::{migrate_state_with_config, DiffConfig};
-use crate::supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
-use crate::crash_recovery::CrashInfo;
-use crate::fast_refresh::{BoundaryChecker, BoundaryCheckResult, RefreshAction, BoundaryViolationEvent};
-use crate::source_map::SOURCE_MAP_CACHE;
+use crate::safety::quiescence::{QuiescenceManager, QuiescenceConfig};
+use crate::hmr::reload_protocol::{ReloadOperation, ReloadConfig};
+use crate::hmr::state_manager::{MigrationResult, MigrationSchema, SchemaVersion, StateManager};
+use crate::hmr::state_diff::{migrate_state_with_config, DiffConfig};
+use crate::runtime::supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
+use crate::infra::crash_recovery::CrashInfo;
+use crate::hmr::fast_refresh::{BoundaryChecker, BoundaryCheckResult, RefreshAction, BoundaryViolationEvent};
+use crate::compiler::source_map::SOURCE_MAP_CACHE;
 
 // ============================================================
 // HMR RESULT TYPES
@@ -1179,7 +1179,7 @@ impl HmrOrchestrator {
     ) -> Arc<AtomicBool> {
         self.task_registry
             .register_task(task_id, boundary_id, supports_checkpoint)
-        use crate::reload_manager::AsyncTaskType;
+        use crate::hmr::reload_manager::AsyncTaskType;
         self.task_registry.register(
             task_id,
             AsyncTaskType::BackgroundComputation,
@@ -1249,7 +1249,7 @@ impl HmrOrchestrator {
                 result.violations.len()
             );
             for violation in &result.violations {
-                use crate::fast_refresh::BoundaryViolation;
+                use crate::hmr::fast_refresh::BoundaryViolation;
                 let v: &BoundaryViolation = violation;
                 eprintln!("  - {}", v.message());
             }
@@ -1305,7 +1305,7 @@ impl HmrOrchestrator {
         &self,
         lib_path: &Path,
         address: u64,
-    ) -> Option<crate::source_map::SourceLocation> {
+    ) -> Option<crate::compiler::source_map::SourceLocation> {
         SOURCE_MAP_CACHE.resolve(lib_path, address)
     }
 
@@ -1352,7 +1352,7 @@ impl HmrOrchestrator {
     // ============================================================
     
     /// Get reload metrics
-    pub fn get_reload_metrics(&self) -> &crate::observability::ReloadMetrics {
+    pub fn get_reload_metrics(&self) -> &crate::infra::observability::ReloadMetrics {
         self.metrics_aggregator.get_metrics()
     }
     
@@ -1401,7 +1401,7 @@ impl AsyncTaskRegistry {
         boundary_id: BoundaryId,
         supports_checkpoint: bool,
     ) -> Arc<AtomicBool> {
-        use crate::reload_manager::AsyncTaskType;
+        use crate::hmr::reload_manager::AsyncTaskType;
 
         self.register(
             task_id,

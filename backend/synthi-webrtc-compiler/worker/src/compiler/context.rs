@@ -5,13 +5,13 @@ use tokio::sync::{Mutex, mpsc};
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::data_channel::RTCDataChannel;
 
-use crate::runner_state::RunnerState;
-use crate::fast_refresh::BoundaryChecker;
-use crate::incremental_cache::IncrementalCache;
-use crate::hmr_orchestrator::HmrOrchestrator;
-use crate::observability::{StructuredLogger, MetricsAggregator};
-use crate::restart_control::RestartController;
-use crate::hardened_ipc::IpcConfig;
+use crate::runtime::runner_state::RunnerState;
+use crate::hmr::fast_refresh::BoundaryChecker;
+use crate::hmr::incremental_cache::IncrementalCache;
+use crate::hmr::orchestrator::HmrOrchestrator;
+use crate::infra::observability::{StructuredLogger, MetricsAggregator};
+use crate::safety::restart_control::RestartController;
+use crate::safety::hardened_ipc::IpcConfig;
 
 pub struct CompileContext {
     pub log_dc: Arc<RTCDataChannel>,

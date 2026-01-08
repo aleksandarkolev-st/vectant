@@ -26,7 +26,7 @@ use std::ffi::{c_char, c_uint, c_void};
 use std::ptr;
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::plugin_contract::ModuleSlot;
+use crate::compiler::plugin_contract::ModuleSlot;
 
 // ============================================================
 // RETURN CODES

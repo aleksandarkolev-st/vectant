@@ -19,11 +19,11 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::crash_recovery::{CrashInfo, ProtectionMode};
-use crate::plugin_contract::ModuleSlot;
+use crate::infra::crash_recovery::{CrashInfo, ProtectionMode};
+use crate::compiler::plugin_contract::ModuleSlot;
 
 // Note: observability imports available if needed in future:
-// use crate::observability::{CrashReason, CrashEvent as ObsCrashEvent, LogLevel, LogEntry, StructuredLogger, LogFormat};
+// use crate::infra::observability::{CrashReason, CrashEvent as ObsCrashEvent, LogLevel, LogEntry, StructuredLogger, LogFormat};
 
 /// Crash event for tracking
 #[derive(Debug, Clone)]

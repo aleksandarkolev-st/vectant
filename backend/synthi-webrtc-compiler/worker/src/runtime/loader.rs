@@ -19,9 +19,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::abi_version::{AbiVersionManager, CompatibilityResult, SymbolManifest};
-use crate::plugin_contract::ModuleSlot;
-use crate::enhanced_fingerprint::{AbiFingerprint, extract_fingerprint_from_module};
+use crate::compiler::abi_version::{AbiVersionManager, CompatibilityResult, SymbolManifest};
+use crate::compiler::plugin_contract::ModuleSlot;
+use crate::safety::enhanced_fingerprint::{AbiFingerprint, extract_fingerprint_from_module};
 
 /// Result of a module load operation
 #[derive(Debug)]
@@ -75,7 +75,7 @@ impl ModuleLoader {
         let mut abi_manager = AbiVersionManager::new();
 
         // Register standard manifests
-        use crate::abi_version::standard_manifests;
+        use crate::compiler::abi_version::standard_manifests;
         abi_manager.register_expected(standard_manifests::core_v1());
         abi_manager.register_expected(standard_manifests::gui_v1());
         abi_manager.register_expected(standard_manifests::main_v1());
@@ -110,7 +110,7 @@ impl ModuleLoader {
 
         // Extract manifest from loaded library
         let manifest =
-            unsafe { crate::abi_version::extract_manifest_from_library(&library, module_name) };
+            unsafe { crate::compiler::abi_version::extract_manifest_from_library(&library, module_name) };
 
         // Try to get state size for fingerprinting
         let state_size = unsafe {
@@ -140,7 +140,7 @@ impl ModuleLoader {
         
         if let Some((old_version, Some(old_fp))) = old_module_data {
             if let Some(new_fp) = &fingerprint {
-                use crate::enhanced_fingerprint::CompatibilityResult;
+                use crate::safety::enhanced_fingerprint::CompatibilityResult;
                 match old_fp.is_compatible_for_memcpy(new_fp) {
                     CompatibilityResult::Compatible => {
                         // OK
@@ -290,21 +290,21 @@ impl ModuleLoader {
         &self,
         slot: ModuleSlot,
         new_fingerprint: &Option<AbiFingerprint>,
-    ) -> crate::enhanced_fingerprint::CompatibilityResult {
+    ) -> crate::safety::enhanced_fingerprint::CompatibilityResult {
         if let Some(old_info) = self.get_info(slot) {
             match (&old_info.fingerprint, new_fingerprint) {
                 (Some(old), Some(new)) => old.is_compatible_for_memcpy(new),
-                (None, None) => crate::enhanced_fingerprint::CompatibilityResult::Compatible, // Both missing, assume compatible (legacy behavior)
-                (Some(_), None) => crate::enhanced_fingerprint::CompatibilityResult::Incompatible { 
+                (None, None) => crate::safety::enhanced_fingerprint::CompatibilityResult::Compatible, // Both missing, assume compatible (legacy behavior)
+                (Some(_), None) => crate::safety::enhanced_fingerprint::CompatibilityResult::Incompatible { 
                     reasons: vec!["New module missing fingerprint".to_string()] 
                 },
-                (None, Some(_)) => crate::enhanced_fingerprint::CompatibilityResult::Incompatible { 
+                (None, Some(_)) => crate::safety::enhanced_fingerprint::CompatibilityResult::Incompatible { 
                     reasons: vec!["Old module missing fingerprint".to_string()] 
                 },
             }
         } else {
             // No old module, always compatible
-            crate::enhanced_fingerprint::CompatibilityResult::Compatible
+            crate::safety::enhanced_fingerprint::CompatibilityResult::Compatible
         }
     }
 }
@@ -312,7 +312,7 @@ impl ModuleLoader {
 /// Helper to extract state size from loaded library
 unsafe fn get_module_state_size(lib: &libloading::Library, module_name: &str) -> usize {
     // Try v2.1 HotApi first
-    if let Ok(func) = lib.get::<unsafe extern "C" fn() -> *const crate::plugin_contract::HotApi>(b"hot_get_api\0") {
+    if let Ok(func) = lib.get::<unsafe extern "C" fn() -> *const crate::compiler::plugin_contract::HotApi>(b"hot_get_api\0") {
         let api = func();
         if !api.is_null() {
             return (*api).state_size_bytes;

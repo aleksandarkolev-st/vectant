@@ -24,8 +24,8 @@ use std::time::{Duration, Instant};
 // rand is used via full path
 
 // Import boundary types
-pub use crate::boundary::BoundaryId;
-use crate::state_manager::StateManager;
+pub use crate::safety::boundary::BoundaryId;
+use crate::hmr::state_manager::StateManager;
 
 // ============================================================
 // RELOAD CLASS TAXONOMY

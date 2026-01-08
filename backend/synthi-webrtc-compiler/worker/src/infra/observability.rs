@@ -24,7 +24,7 @@ use std::time::{Duration, Instant, SystemTime};
 // ============================================================
 
 // v2.1: Use ReloadId from reload_protocol for consistency
-pub use crate::reload_protocol::ReloadId;
+pub use crate::hmr::reload_protocol::ReloadId;
 
 // ============================================================
 // STRUCTURED LOGGING

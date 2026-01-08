@@ -53,7 +53,7 @@ pub mod restart_control;
 pub mod security;
 pub mod observability;
 
-use crate::hardened_ipc::{read_frame_validated, write_frame_with_checksum, IpcConfig};
+use crate::safety::hardened_ipc::{read_frame_validated, write_frame_with_checksum, IpcConfig};
 
 use plugin_contract::{ModuleSlot, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
 use capability::{HmrCapability, detect_capabilities, HmrStatus};
@@ -832,7 +832,7 @@ fn main() {
                         }
                         Err(e) => {
                             // Check if it's EOF
-                            if matches!(e, crate::hardened_ipc::IpcError::ConnectionClosed) {
+                            if matches!(e, crate::safety::hardened_ipc::IpcError::ConnectionClosed) {
                                 eprintln!("IPC connection closed (EOF)");
                             } else {
                                 eprintln!("IPC Read error: {:?}", e);

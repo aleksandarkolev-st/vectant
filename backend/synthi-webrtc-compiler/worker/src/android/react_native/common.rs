@@ -151,7 +151,7 @@ pub(crate) async fn ensure_gradle_distribution(
     let cache_root = android_dir.join(".synthi/gradle-dist");
     tokio::fs::create_dir_all(&cache_root).await.ok();
 
-    let url_hash = crate::builder::hash_content(distribution_url).to_string();
+    let url_hash = crate::compiler::builder::hash_content(distribution_url).to_string();
     let zip_path = cache_root.join(format!("dist_{}.zip", url_hash));
     let extract_root = cache_root.join(format!("dist_{}", url_hash));
 

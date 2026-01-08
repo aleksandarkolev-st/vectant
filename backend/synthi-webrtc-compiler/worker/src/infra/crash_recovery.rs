@@ -66,7 +66,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::source_map;
+use crate::compiler::source_map;
 
 #[cfg(unix)]
 use libc::{

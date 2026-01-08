@@ -719,7 +719,7 @@ pub unsafe fn atomic_state_swap(
 // BINARY STATE DIFFING (MessagePack-based, 10-50x faster than JSON)
 // ============================================================
 
-use crate::binary_state::MsgPackState;
+use crate::hmr::binary_state::MsgPackState;
 
 /// Result of binary state diff (matches DiffResult structure)
 #[derive(Debug, Clone)]

@@ -5,8 +5,8 @@ use tokio::sync::{broadcast, mpsc};
 use gstreamer as gst;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 
-use crate::builder::ModuleHashes;
-use crate::capability::HmrCapability;
+use crate::compiler::builder::ModuleHashes;
+use crate::runtime::capability::HmrCapability;
 
 // RunnerState tracks the state of a running plugin process
 // This is used by the worker to manage HMR, video streaming, and process lifecycle

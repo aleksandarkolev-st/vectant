@@ -21,7 +21,7 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 
 // v2.1: Import state_type_id for DWARF-based type identification
-use crate::state_type_id::{StateTypeId, TypeEquivalence, extract_state_type_id};
+use crate::hmr::state_type_id::{StateTypeId, TypeEquivalence, extract_state_type_id};
 
 /// Complete ABI fingerprint for safe state reuse
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

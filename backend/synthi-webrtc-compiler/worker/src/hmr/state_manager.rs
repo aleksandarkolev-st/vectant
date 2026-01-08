@@ -19,9 +19,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::c_void;
 
-use crate::boundary::BoundaryId;
-use crate::plugin_contract::ModuleSlot;
-use crate::state_diff::{diff_and_merge, DiffConfig, DiffResult};
+use crate::safety::boundary::BoundaryId;
+use crate::compiler::plugin_contract::ModuleSlot;
+use crate::hmr::state_diff::{diff_and_merge, DiffConfig, DiffResult};
 
 /// State pointer wrapper with metadata
 #[derive(Debug, Clone)]
@@ -565,18 +565,18 @@ impl StateManager {
         module: ModuleSlot,
         old_bytes: &[u8],
         new_field_names: &[String],
-        new_defaults: &crate::binary_state::MsgPackState,
+        new_defaults: &crate::hmr::binary_state::MsgPackState,
         _from_version: u32,
         _to_version: u32,
-    ) -> Result<(Vec<u8>, crate::binary_state::SchemaMigrationResult), String> {
+    ) -> Result<(Vec<u8>, crate::hmr::binary_state::SchemaMigrationResult), String> {
         let start = std::time::Instant::now();
 
         // 1. Parse binary state (FAST - no string parsing)
-        let old_state = crate::binary_state::MsgPackState::from_bytes(old_bytes)
+        let old_state = crate::hmr::binary_state::MsgPackState::from_bytes(old_bytes)
             .map_err(|e| format!("Failed to parse binary state: {}", e))?;
 
         // 2. Get schema migrator with proper defaults
-        let mut migrator = crate::binary_state::SchemaMigrator::default();
+        let mut migrator = crate::hmr::binary_state::SchemaMigrator::default();
 
         // Add module-specific rules
         match module {

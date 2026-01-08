@@ -14,7 +14,7 @@ use std::os::windows::process::ExitStatusExt;
 use super::common::{env_var_truthy, stable_project_cache_key, worker_cache_dir};
 use super::diagnostics::{parse_gradle_diagnostic, parse_metro_diagnostic};
 use super::LogCallback;
-use crate::mobile_routing::Diagnostic;
+use crate::android::routing::Diagnostic;
 
 pub(crate) async fn run_gradle_and_collect_diagnostics(
     mut cmd: Command,

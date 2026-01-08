@@ -36,17 +36,17 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 // v2.1 integrations
-use crate::hardened_ipc::{
+use crate::safety::hardened_ipc::{
     write_frame_with_checksum, read_frame_validated, IpcConfig,
     validate_msgpack_limits, IpcError,
 };
-use crate::restart_control::{
+use crate::safety::restart_control::{
     RestartController, RestartDecision, BackoffConfig, KnownGoodStore, SlotRestartStats,
 };
-use crate::observability::{
+use crate::infra::observability::{
     ReloadId, LogLevel, LogEntry, StructuredLogger, LogFormat,
 };
-use crate::slot_isolation::{
+use crate::safety::slot_isolation::{
     IsolationModel, IsolationManager, SlotConfig,
 };
 
@@ -472,11 +472,11 @@ impl ProcessSupervisor {
                     .unwrap_or(false);
                 
                 if seccomp_enabled {
-                    let seccomp_config = crate::security::SeccompConfig {
+                    let seccomp_config = crate::safety::security::SeccompConfig {
                         enabled: true,
                         ..Default::default()
                     };
-                    if let Err(e) = crate::security::apply_seccomp_filter(&seccomp_config) {
+                    if let Err(e) = crate::safety::security::apply_seccomp_filter(&seccomp_config) {
                         eprintln!("[Security] Failed to apply seccomp filter: {}", e);
                         // Continue without seccomp - log but don't fail
                     }
@@ -488,13 +488,13 @@ impl ProcessSupervisor {
                     .unwrap_or(false);
                 
                 if ns_enabled {
-                    let ns_config = crate::security::NamespaceConfig {
+                    let ns_config = crate::safety::security::NamespaceConfig {
                         new_pid_ns: true,
                         new_net_ns: !limits.allow_network,
                         new_mount_ns: true,
                         new_user_ns: true,
                     };
-                    if let Err(e) = crate::security::enter_namespaces(&ns_config) {
+                    if let Err(e) = crate::safety::security::enter_namespaces(&ns_config) {
                         eprintln!("[Security] Failed to enter namespaces: {}", e);
                         // Continue without namespaces - log but don't fail
                     }
@@ -507,13 +507,13 @@ impl ProcessSupervisor {
                 
                 if cgroup_enabled {
                     let cgroup_name = format!("synthi-worker-{}", std::process::id());
-                    let cgroup_limits = crate::security::CgroupLimits {
+                    let cgroup_limits = crate::safety::security::CgroupLimits {
                         memory_max: if limits.max_memory > 0 { Some(limits.max_memory) } else { None },
                         cpu_quota_us: None, // Use default
                         cpu_period_us: 100_000,
                         pids_max: Some(64),
                     };
-                    if let Err(e) = crate::security::apply_cgroup_limits(&cgroup_name, &cgroup_limits) {
+                    if let Err(e) = crate::safety::security::apply_cgroup_limits(&cgroup_name, &cgroup_limits) {
                         eprintln!("[Security] Failed to apply cgroup limits: {}", e);
                         // Continue without cgroups - log but don't fail
                     }
