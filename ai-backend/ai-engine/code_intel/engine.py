@@ -231,36 +231,25 @@ class CodeIntelEngine:
             vector_index=self._vector_index,
             structural_index=self._structural_index,
             embedder=self._embedder,
-            summary_store=self._summary_store,
         )
         
         # Deterministic retrieval controller
         # This decides what context goes into the prompt - NOT the LLM
-        self._retrieval_controller = RetrievalController(
-            max_files_total=20,
-            max_chunks_total=50,
-            max_chunks_per_file=10,
-        )
+        self._retrieval_controller = RetrievalController()
         
         # Tools
         tools = ExplorationTools(
             workspace_root=str(self.workspace_root),
-            dual_indexer=self._dual_indexer,
-            summary_store=self._summary_store,
+            vector_index=self._vector_index,
+            structural_index=self._structural_index,
+            file_reader=self._file_walker,
         )
         self._tool_registry = ToolRegistry()
         self._tool_registry.register_all(tools)
         self._tool_executor = ToolExecutor(self._tool_registry)
         
         # Eviction
-        tracker = ContextTracker()
-        policy = EvictionPolicy()
-        pinner = ContextPinner()
-        self._context_stabilizer = ContextStabilizer(
-            tracker=tracker,
-            policy=policy,
-            pinner=pinner,
-        )
+        self._context_stabilizer = ContextStabilizer()
         
         # Editing
         self._edit_session_manager = EditSessionManager(str(self.workspace_root))
