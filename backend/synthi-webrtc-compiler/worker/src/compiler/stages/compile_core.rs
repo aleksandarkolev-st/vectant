@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::time::{timeout, Duration};
 use std::collections::HashMap;
 use regex::Regex;
 use crate::compiler::context::CompileContext;
@@ -57,8 +58,36 @@ pub async fn compile_core(
                    .arg("-ldl")
                    .arg("-rdynamic");
                 cmd.current_dir(dir_path);
+
+                eprintln!("[CompileCore] Executing g++ in {:?} args: {:?}", dir_path, cmd.as_std().get_args());
                 
-                let output = cmd.output().await?;
+                cmd.kill_on_drop(true);
+                let mut child = cmd.spawn().context("Failed to spawn g++")?;
+                
+                let output_res = timeout(Duration::from_secs(30), child.wait_with_output()).await;
+                
+                let output = match output_res {
+                    Ok(Ok(out)) => out,
+                    Ok(Err(e)) => return Err(e.into()),
+                    Err(_) => {
+                        // child is dropped and killed due to kill_on_drop(true)
+                        eprintln!("[CompileCore] Timed out waiting for g++");
+                        let payload = serde_json::json!({
+                            "sessionId": session_id.clone(),
+                            "status": "done",
+                            "success": false,
+                            "stage": "compile_core",
+                            "error": "Compilation timed out after 30s"
+                        });
+                        if let Err(e) = ctx.log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await {
+                             eprintln!("Failed to send compiler error: {}", e);
+                        }
+                        return Ok(None);
+                    }
+                };
+
+                eprintln!("[CompileCore] g++ finished with status: {}", output.status);
+
                 if !output.status.success() {
                      let stderr = String::from_utf8_lossy(&output.stderr);
                      let payload = serde_json::json!({

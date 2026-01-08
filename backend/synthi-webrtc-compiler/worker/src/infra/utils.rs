@@ -72,7 +72,7 @@ pub fn get_wsl_host_ip() -> Option<String> {
 
 pub fn system_command(program: &str) -> Command {
     let mut cmd = Command::new(program);
-    cmd.stdin(Stdio::piped())
+    cmd.stdin(Stdio::null())
        .stdout(Stdio::piped())
        .stderr(Stdio::piped());
     cmd
