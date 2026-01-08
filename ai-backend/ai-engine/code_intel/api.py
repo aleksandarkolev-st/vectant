@@ -7,6 +7,8 @@ Exposes the code intelligence system through REST endpoints.
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
@@ -16,6 +18,72 @@ from .engine import CodeIntelEngine, create_engine
 
 
 logger = logging.getLogger("code_intel.api")
+
+
+# ============================================================================
+# Workspace Path Resolution
+# ============================================================================
+
+def resolve_workspace_path(workspace_path: str) -> str:
+    """
+    Resolve a workspace identifier to an actual filesystem path.
+    
+    The frontend typically passes a workspace slug (e.g., "cmgnslm7q0001u9bwhb4mdvfi"),
+    but the code intel system needs the actual filesystem path where the repo is stored.
+    
+    Resolution order:
+    1. If workspace_path is already an absolute path that exists, use it
+    2. If it's a slug, resolve to {project_root}/backend/collab-server/repos/{slug}
+    3. If that doesn't exist, try relative to current working directory
+    """
+    # If it's already an absolute path that exists, use it directly
+    if os.path.isabs(workspace_path) and os.path.exists(workspace_path):
+        logger.debug(f"Using absolute path directly: {workspace_path}")
+        return workspace_path
+    
+    # Check if it looks like a slug (alphanumeric, no path separators)
+    is_slug = (
+        not os.path.sep in workspace_path and
+        not "/" in workspace_path and
+        not "\\" in workspace_path
+    )
+    
+    if is_slug:
+        # Try to find the project root by looking for known markers
+        # Start from the current file's location and work upward
+        current_file = Path(__file__).resolve()
+        project_root = current_file.parent
+        
+        # Walk up to find the project root (where backend/ folder exists)
+        for _ in range(10):  # Safety limit
+            potential_repos = project_root / "backend" / "collab-server" / "repos" / workspace_path
+            if potential_repos.exists():
+                resolved = str(potential_repos)
+                logger.info(f"Resolved workspace slug '{workspace_path}' to: {resolved}")
+                return resolved
+            
+            parent = project_root.parent
+            if parent == project_root:  # Reached filesystem root
+                break
+            project_root = parent
+        
+        # Also try from environment variable or known locations
+        repos_base = os.environ.get("SYNTHI_REPOS_PATH")
+        if repos_base:
+            potential = os.path.join(repos_base, workspace_path)
+            if os.path.exists(potential):
+                logger.info(f"Resolved workspace from SYNTHI_REPOS_PATH: {potential}")
+                return potential
+    
+    # If it looks like a relative path, resolve from cwd
+    cwd_path = os.path.join(os.getcwd(), workspace_path)
+    if os.path.exists(cwd_path):
+        logger.info(f"Resolved workspace from cwd: {cwd_path}")
+        return cwd_path
+    
+    # Last resort: return as-is and let downstream fail with a clear error
+    logger.warning(f"Could not resolve workspace path: {workspace_path}")
+    return workspace_path
 
 router = APIRouter(prefix="/code-intel", tags=["code-intelligence"])
 
@@ -114,15 +182,18 @@ class EditPlanResponse(BaseModel):
 # Engine Cache
 # ============================================================================
 
-# Cache engines by workspace path
+# Cache engines by resolved workspace path
 _engines: Dict[str, CodeIntelEngine] = {}
 
 
 def get_engine(workspace_path: str) -> CodeIntelEngine:
-    """Get or create engine for workspace."""
-    if workspace_path not in _engines:
-        _engines[workspace_path] = create_engine(workspace_path)
-    return _engines[workspace_path]
+    """Get or create engine for workspace, resolving the path first."""
+    resolved_path = resolve_workspace_path(workspace_path)
+    
+    if resolved_path not in _engines:
+        logger.info(f"Creating new engine for: {resolved_path}")
+        _engines[resolved_path] = create_engine(resolved_path)
+    return _engines[resolved_path]
 
 
 # ============================================================================
