@@ -30,6 +30,15 @@ from .tools import (
 )
 from .tool_registry import ToolRegistry, tool_definitions
 from .tool_executor import ToolExecutor
+from .separation import (
+    ToolSeparator,
+    ToolCategory,
+    RateLimiter,
+    ToolRefusal,
+    READ_TOOLS,
+    SEARCH_TOOLS,
+    EDIT_TOOLS,
+)
 
 
 __all__ = [
@@ -46,4 +55,12 @@ __all__ = [
     "ToolRegistry",
     "tool_definitions",
     "ToolExecutor",
+    # Tool Separation
+    "ToolSeparator",
+    "ToolCategory",
+    "RateLimiter",
+    "ToolRefusal",
+    "READ_TOOLS",
+    "SEARCH_TOOLS",
+    "EDIT_TOOLS",
 ]

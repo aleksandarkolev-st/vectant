@@ -55,6 +55,9 @@ class ContextResponse(BaseModel):
     chunks_used: int = Field(..., description="Number of chunks in context")
     tokens_used: int = Field(..., description="Estimated tokens used")
     sources: List[Dict[str, Any]] = Field(..., description="Source chunks")
+    # Deterministic controller output
+    sufficiency: str = Field("UNKNOWN", description="Context sufficiency: SUFFICIENT, PARTIAL, INSUFFICIENT, EMPTY, UNKNOWN")
+    refusal: Optional[str] = Field(None, description="Refusal reason if context is insufficient")
 
 
 class ToolCallRequest(BaseModel):
@@ -155,6 +158,8 @@ async def get_context(request: ContextRequest) -> ContextResponse:
     Get context for a query.
     
     Assembles relevant code context for the given query within token budget.
+    Uses deterministic retrieval controller to decide what context to include.
+    Returns sufficiency indicator so LLM knows if context is complete.
     """
     try:
         engine = get_engine(request.workspace_path)
@@ -165,10 +170,28 @@ async def get_context(request: ContextRequest) -> ContextResponse:
             conversation_history=request.conversation_history,
         )
         
+        # Extract sufficiency from result if available
+        sufficiency = getattr(result, 'sufficiency', 'UNKNOWN')
+        if hasattr(sufficiency, 'value'):
+            sufficiency = sufficiency.value
+        elif hasattr(sufficiency, 'name'):
+            sufficiency = sufficiency.name
+        else:
+            sufficiency = str(sufficiency) if sufficiency else 'UNKNOWN'
+        
+        # Extract refusal reason if present
+        refusal = getattr(result, 'refusal_reason', None)
+        if refusal and hasattr(refusal, 'value'):
+            refusal = refusal.value
+        elif refusal and hasattr(refusal, 'name'):
+            refusal = refusal.name
+        
         return ContextResponse(
             context=result.assembled_context,
             chunks_used=len(result.chunks),
             tokens_used=result.total_tokens,
+            sufficiency=sufficiency,
+            refusal=refusal,
             sources=[
                 {
                     "file": c.metadata.file_path,

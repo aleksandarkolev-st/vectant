@@ -82,6 +82,7 @@ from .retrieval.graph_expander import GraphExpander
 from .retrieval.ranker import ContextRanker
 from .retrieval.budget_enforcer import BudgetEnforcer
 from .retrieval.context_assembler import ContextAssembler
+from .retrieval.controller import RetrievalController, ContextSufficiency, RefusalReason
 
 # Tools
 from .tools.tools import ExplorationTools
@@ -152,6 +153,7 @@ class CodeIntelEngine:
         self._summary_manager: Optional[IncrementalSummaryManager] = None
         
         self._retrieval_pipeline: Optional[RetrievalPipeline] = None
+        self._retrieval_controller: Optional[RetrievalController] = None
         
         self._tool_registry: Optional[ToolRegistry] = None
         self._tool_executor: Optional[ToolExecutor] = None
@@ -229,6 +231,14 @@ class CodeIntelEngine:
             structural_index=self._structural_index,
             embedder=self._embedder,
             summary_store=self._summary_store,
+        )
+        
+        # Deterministic retrieval controller
+        # This decides what context goes into the prompt - NOT the LLM
+        self._retrieval_controller = RetrievalController(
+            max_files_total=20,
+            max_chunks_total=50,
+            max_chunks_per_file=10,
         )
         
         # Tools
@@ -358,6 +368,7 @@ class CodeIntelEngine:
         Get relevant context for a query.
         
         This is the main API for context assembly.
+        Uses deterministic controller to decide what context to include.
         
         Args:
             query: User query or intent
@@ -365,7 +376,7 @@ class CodeIntelEngine:
             conversation_history: Previous messages for stability
             
         Returns:
-            RetrievalResult with assembled context
+            RetrievalResult with assembled context and sufficiency indicator
         """
         self._initialize_components()
         
@@ -385,14 +396,76 @@ class CodeIntelEngine:
             
             # Track for stability
             self._context_stabilizer.track_result(result)
-            
-            return result
+        else:
+            # Single-turn retrieval
+            result = await self._retrieval_pipeline.retrieve(
+                query=query,
+                budget=budget,
+            )
         
-        # Single-turn retrieval
-        return await self._retrieval_pipeline.retrieve(
-            query=query,
-            budget=budget,
-        )
+        # Run through deterministic controller to decide sufficiency
+        # The controller does NOT use the LLM - it applies hard rules
+        if self._retrieval_controller and result.chunks:
+            decision = self._retrieval_controller.decide(
+                query=query,
+                candidates=result.chunks,
+                max_tokens=max_tokens,
+            )
+            
+            # Add sufficiency to result
+            result.sufficiency = decision.sufficiency
+            result.refusal_reason = decision.refusal_reason
+            
+            # If controller says to use subset, apply it
+            if len(decision.selected_chunks) < len(result.chunks):
+                result.chunks = decision.selected_chunks
+                # Rebuild assembled context with selected chunks
+                result.assembled_context = self._build_context_string(
+                    result.chunks,
+                    result.sufficiency,
+                    result.refusal_reason,
+                )
+        else:
+            result.sufficiency = ContextSufficiency.UNKNOWN
+            result.refusal_reason = None
+        
+        return result
+    
+    def _build_context_string(
+        self,
+        chunks: List[SemanticChunk],
+        sufficiency: ContextSufficiency,
+        refusal_reason: Optional[RefusalReason],
+    ) -> str:
+        """Build context string with sufficiency indicator."""
+        parts = []
+        
+        # Group chunks by file
+        by_file = {}
+        for chunk in chunks:
+            path = chunk.metadata.file_path
+            if path not in by_file:
+                by_file[path] = []
+            by_file[path].append(chunk)
+        
+        # Build context
+        for file_path, file_chunks in by_file.items():
+            parts.append(f"### {file_path}")
+            for chunk in sorted(file_chunks, key=lambda c: c.metadata.start_line):
+                parts.append(f"# Lines {chunk.metadata.start_line}-{chunk.metadata.end_line}")
+                parts.append(chunk.content)
+                parts.append("")
+        
+        context = "\n".join(parts)
+        
+        # Add sufficiency warning if needed
+        if sufficiency == ContextSufficiency.INSUFFICIENT:
+            reason_text = refusal_reason.value if refusal_reason else "Unknown reason"
+            context += f"\n\n[CONTEXT INCOMPLETE: {reason_text}]"
+        elif sufficiency == ContextSufficiency.PARTIAL:
+            context += "\n\n[CONTEXT MAY BE PARTIAL]"
+        
+        return context
     
     def get_repo_summary(self) -> Optional[RepoSummary]:
         """Get the repository summary."""

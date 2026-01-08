@@ -431,6 +431,7 @@ class RetrievalResult:
     Result of context retrieval.
     
     This is what gets injected into AI prompts.
+    Includes sufficiency indicator from deterministic controller.
     """
     # Retrieved chunks
     chunks: List[SemanticChunk]
@@ -453,6 +454,14 @@ class RetrievalResult:
     
     # Missing context note
     missing_context_note: str = ""
+    
+    # Assembled context string
+    assembled_context: str = ""
+    
+    # Sufficiency indicator from deterministic controller
+    # This tells the LLM if it has enough context to answer
+    sufficiency: Any = None  # ContextSufficiency enum from controller
+    refusal_reason: Any = None  # RefusalReason enum from controller
     
     def format_for_prompt(self) -> str:
         """

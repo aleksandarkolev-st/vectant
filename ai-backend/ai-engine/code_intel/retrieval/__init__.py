@@ -15,11 +15,18 @@ Pipeline:
 
 from .query_processor import QueryProcessor, ParsedQuery, QueryIntent, process_query
 from .retriever import ContextRetriever, RetrievalCandidate, retrieve_context
-from .graph_expander import GraphExpander, ExpansionRule, expand_via_graph
+from .graph_expander import GraphExpander, ExpansionRule, ModuleLimit, expand_via_graph
 from .ranker import ContextRanker, RankingFactors, rank_chunks
 from .budget_enforcer import BudgetEnforcer, BudgetAllocation, enforce_budget
 from .context_assembler import ContextAssembler, AssembledContext, assemble_context
 from .pipeline import RetrievalPipeline, RetrievalPipelineResult, create_pipeline
+from .controller import (
+    RetrievalController,
+    ControllerDecision,
+    ContextSufficiency,
+    RefusalReason,
+    ModuleBudget,
+)
 
 
 __all__ = [
@@ -37,7 +44,15 @@ __all__ = [
     # Graph Expansion
     "GraphExpander",
     "ExpansionRule",
+    "ModuleLimit",
     "expand_via_graph",
+    
+    # Deterministic Controller
+    "RetrievalController",
+    "ControllerDecision",
+    "ContextSufficiency",
+    "RefusalReason",
+    "ModuleBudget",
     
     # Ranking
     "ContextRanker",
