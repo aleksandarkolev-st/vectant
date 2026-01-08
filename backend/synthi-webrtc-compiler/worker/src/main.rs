@@ -11,6 +11,9 @@ mod binary_state;
 mod boundary;
 mod builder;
 mod capability;
+mod compile_context;
+mod compile_handler;
+mod constants;
 mod crash_recovery;
 mod error_parser;
 pub mod fast_refresh;
@@ -18,8 +21,12 @@ mod hmr_orchestrator;
 mod host_kv;
 mod incremental_cache;
 mod loader;
+mod lsp_util;
+mod messages;
+
 mod plugin_contract;
 mod reload_manager;
+mod runner_state;
 mod server;
 mod shim;
 pub mod source_map;
@@ -143,278 +150,14 @@ use webrtc::track::track_local::TrackLocal;
 use webrtc::track::track_local::TrackLocalWriter;
 use webrtc::util::Unmarshal;
 
-#[derive(Debug, Deserialize)]
-struct IceServerEnv {
-    urls: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    username: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    credential: Option<String>,
-}
+use compile_context::CompileContext;
+use constants::{GUI_TOOLS, REQUIRED_TOOLS};
+use lsp_util::{LspSessionState, rewrite_uris};
+use messages::{CompileRequest, FileEntry, IceServerEnv, SignalMessage};
+use runner_state::RunnerState;
 
-const REQUIRED_TOOLS: &[&str] = &["g++", "rustc", "tsc", "clangd"];
-const GUI_TOOLS: &[&str] = &["xdotool", "Xvfb", "matchbox-window-manager"]; // Keeping these for now as SDL2 might use Xvfb on Linux
 
-#[derive(Debug, Serialize, Deserialize)]
-struct SignalMessage {
-    #[serde(rename = "type")]
-    msg_type: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    role: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    sdp: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    sdp_type: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    candidate: Option<RTCIceCandidateInit>,
-}
 
-#[derive(Debug, Serialize, Deserialize)]
-struct FileEntry {
-    name: String,
-    content: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct CompileRequest {
-    language: String,
-    filename: String,
-    source: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    session_id: Option<String>,
-    #[serde(default)]
-    files: Vec<FileEntry>,
-    #[serde(default)]
-    is_gui: bool,
-    #[serde(default)]
-    width: Option<u32>,
-    #[serde(default)]
-    height: Option<u32>,
-    #[serde(default)]
-    supports_h265: Option<bool>,
-    #[serde(default)]
-    use_ai_split: bool,
-    /// Target platform for execution: "native" (default), "react-native-emulator", etc.
-    #[serde(default)]
-    target: Option<String>,
-    /// Project root path for mobile builds (relative to workspace)
-    #[serde(default)]
-    project_root: Option<String>,
-    /// Workspace slug for mobile builds (to download synced files)
-    #[serde(default)]
-    slug: Option<String>,
-}
-
-// RunnerState tracks the state of a running plugin process
-// This is used by the worker to manage HMR, video streaming, and process lifecycle
-// Currently the runner uses individual fields directly, but this struct provides
-// the complete state model for future HMR orchestration integration
-#[allow(dead_code)]
-struct RunnerState {
-    process: Option<tokio::process::Child>, // Option to allow taking it if needed, or just drop
-    stdin: tokio::process::ChildStdin,
-    output_tx: tokio::sync::broadcast::Sender<String>,
-    is_gui: bool,
-    is_hmr_capable: bool, // True if runner was started with HMR-capable code (detected from exports)
-    hmr_capability: Option<capability::HmrCapability>, // Detailed capability level
-    xvfb_process: Option<tokio::process::Child>,
-    gst_pipeline: Option<gst::Pipeline>,
-    sdl_tx: Option<mpsc::UnboundedSender<String>>,
-    video_track: Option<Arc<TrackLocalStaticRTP>>,
-    audio_track: Option<Arc<TrackLocalStaticRTP>>,
-    width: u32,
-    height: u32,
-    wsl_display_str: String,
-    gst_display_str: String,
-    // Module hashes for differential rebuild
-    module_hashes: ModuleHashes,
-    // Loaded module paths (for determining what to reload)
-    loaded_core_path: Option<String>,
-    loaded_gui_path: Option<String>,
-    // Widget-level compilation state
-    loaded_widget_paths: HashMap<String, String>, // widget_id -> so_path
-    widget_hashes: HashMap<String, u64>,          // widget_id -> content_hash
-}
-
-/// RunnerState builder methods for fluent configuration
-#[allow(dead_code)]
-impl RunnerState {
-    /// Create a new RunnerState with required fields
-    pub fn new(
-        process: Option<tokio::process::Child>,
-        stdin: tokio::process::ChildStdin,
-        output_tx: tokio::sync::broadcast::Sender<String>,
-    ) -> Self {
-        Self {
-            process,
-            stdin,
-            output_tx,
-            is_gui: false,
-            is_hmr_capable: false,
-            hmr_capability: None,
-            xvfb_process: None,
-            gst_pipeline: None,
-            sdl_tx: None,
-            video_track: None,
-            audio_track: None,
-            width: 800,
-            height: 600,
-            wsl_display_str: String::new(),
-            gst_display_str: String::new(),
-            module_hashes: ModuleHashes::default(),
-            loaded_core_path: None,
-            loaded_gui_path: None,
-            loaded_widget_paths: HashMap::new(),
-            widget_hashes: HashMap::new(),
-        }
-    }
-
-    /// Configure GUI mode settings
-    pub fn with_gui(mut self, is_gui: bool, width: u32, height: u32) -> Self {
-        self.is_gui = is_gui;
-        self.width = width;
-        self.height = height;
-        self
-    }
-
-    /// Set HMR capability information
-    pub fn with_hmr_capability(
-        mut self,
-        is_capable: bool,
-        capability: Option<HmrCapability>,
-    ) -> Self {
-        self.is_hmr_capable = is_capable;
-        self.hmr_capability = capability;
-        self
-    }
-
-    /// Set Xvfb process for headless GUI rendering
-    pub fn with_xvfb(
-        mut self,
-        xvfb: Option<tokio::process::Child>,
-        display_str: String,
-        gst_display: String,
-    ) -> Self {
-        self.xvfb_process = xvfb;
-        self.wsl_display_str = display_str;
-        self.gst_display_str = gst_display;
-        self
-    }
-
-    /// Set GStreamer pipeline for video streaming
-    pub fn with_gst_pipeline(mut self, pipeline: Option<gst::Pipeline>) -> Self {
-        self.gst_pipeline = pipeline;
-        self
-    }
-
-    /// Set SDL event channel for GUI interaction
-    pub fn with_sdl_tx(mut self, sdl_tx: Option<mpsc::UnboundedSender<String>>) -> Self {
-        self.sdl_tx = sdl_tx;
-        self
-    }
-
-    /// Set WebRTC media tracks for streaming
-    pub fn with_media_tracks(
-        mut self,
-        video: Option<Arc<TrackLocalStaticRTP>>,
-        audio: Option<Arc<TrackLocalStaticRTP>>,
-    ) -> Self {
-        self.video_track = video;
-        self.audio_track = audio;
-        self
-    }
-
-    /// Update module hashes for differential rebuild tracking
-    pub fn update_module_hashes(&mut self, hashes: ModuleHashes) {
-        self.module_hashes = hashes;
-    }
-
-    /// Set loaded core module path
-    pub fn set_core_path(&mut self, path: Option<String>) {
-        self.loaded_core_path = path;
-    }
-
-    /// Set loaded GUI module path
-    pub fn set_gui_path(&mut self, path: Option<String>) {
-        self.loaded_gui_path = path;
-    }
-
-    /// Register a loaded widget module
-    pub fn register_widget(&mut self, widget_id: String, so_path: String, content_hash: u64) {
-        self.loaded_widget_paths.insert(widget_id.clone(), so_path);
-        self.widget_hashes.insert(widget_id, content_hash);
-    }
-
-    /// Unregister a widget module
-    pub fn unregister_widget(&mut self, widget_id: &str) {
-        self.loaded_widget_paths.remove(widget_id);
-        self.widget_hashes.remove(widget_id);
-    }
-
-    /// Check if a widget needs rebuild based on content hash
-    pub fn widget_needs_rebuild(&self, widget_id: &str, new_hash: u64) -> bool {
-        self.widget_hashes
-            .get(widget_id)
-            .map(|&h| h != new_hash)
-            .unwrap_or(true)
-    }
-
-    /// Get all loaded widget paths
-    pub fn get_widget_paths(&self) -> &HashMap<String, String> {
-        &self.loaded_widget_paths
-    }
-}
-
-struct LspSessionState {
-    client_root_uri: Option<String>,
-    server_root_uri: String,
-}
-
-fn rewrite_uris(val: &mut serde_json::Value, state: &LspSessionState, to_server: bool) {
-    if let Some(client_uri) = &state.client_root_uri {
-        let (from, to) = if to_server {
-            (client_uri.as_str(), state.server_root_uri.as_str())
-        } else {
-            (state.server_root_uri.as_str(), client_uri.as_str())
-        };
-
-        match val {
-            serde_json::Value::String(s) => {
-                if s.starts_with(from) {
-                    let suffix = &s[from.len()..];
-
-                    // Fix double slash issue: if 'to' ends with '/' and suffix starts with '/', strip one.
-                    let clean_suffix = if to.ends_with('/') && suffix.starts_with('/') {
-                        &suffix[1..]
-                    } else {
-                        suffix
-                    };
-
-                    let sep = if !to.ends_with('/')
-                        && !clean_suffix.starts_with('/')
-                        && !clean_suffix.is_empty()
-                    {
-                        "/"
-                    } else {
-                        ""
-                    };
-                    *s = format!("{}{}{}", to, sep, clean_suffix);
-                }
-            }
-            serde_json::Value::Array(arr) => {
-                for v in arr {
-                    rewrite_uris(v, state, to_server);
-                }
-            }
-            serde_json::Value::Object(map) => {
-                for (_, v) in map {
-                    rewrite_uris(v, state, to_server);
-                }
-            }
-            _ => {}
-        }
-    }
-}
 
 fn make_chunks(data: &[u8], msg_id: u32) -> Vec<Vec<u8>> {
     let chunk_size = 60000;
