@@ -69,7 +69,7 @@ export default function EditorPage({ params }) {
     const [editor, setEditor] = useState(null);
     // Track editor content version to force re-analysis on every change (including remote/undo)
     const [editorVersion, setEditorVersion] = useState(0);
-    const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway } = useAnalyzerGateway();
+    const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = useAnalyzerGateway();
     const { compile, mediaStream } = useCompiler();
     useHMR();
     const [latestCompletion, setLatestCompletion] = useState(null);
