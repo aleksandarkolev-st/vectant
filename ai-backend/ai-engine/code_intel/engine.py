@@ -72,25 +72,24 @@ from .indexer.structural_index import StructuralIndex
 # Summaries
 from .summaries.file_summarizer import FileSummarizer
 from .summaries.repo_summarizer import RepoSummarizer
-from .summaries.summary_store import SummaryStore
-from .summaries.incremental_manager import IncrementalSummaryManager
+from .summaries.summary_store import SummaryStore, IncrementalSummaryManager
 
 # Retrieval
-from .retrieval.retrieval_pipeline import RetrievalPipeline
+from .retrieval.pipeline import RetrievalPipeline
 from .retrieval.query_processor import QueryProcessor
-from .retrieval.context_retriever import ContextRetriever
+from .retrieval.retriever import ContextRetriever
 from .retrieval.graph_expander import GraphExpander
-from .retrieval.context_ranker import ContextRanker
+from .retrieval.ranker import ContextRanker
 from .retrieval.budget_enforcer import BudgetEnforcer
 from .retrieval.context_assembler import ContextAssembler
 
 # Tools
-from .tools.exploration_tools import ExplorationTools
+from .tools.tools import ExplorationTools
 from .tools.tool_registry import ToolRegistry
 from .tools.tool_executor import ToolExecutor
 
 # Eviction
-from .eviction.context_stabilizer import ContextStabilizer
+from .eviction.context_diff import ContextStabilizer
 from .eviction.context_tracker import ContextTracker
 from .eviction.eviction_policy import EvictionPolicy
 from .eviction.context_pinner import ContextPinner

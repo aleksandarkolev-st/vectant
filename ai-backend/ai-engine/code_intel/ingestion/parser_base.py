@@ -36,11 +36,15 @@ class ParsedSymbol:
     # Location
     start_line: int  # 0-indexed
     end_line: int
-    start_col: int = 0
-    end_col: int = 0
     
     # Content
     code: str  # Full source code of this symbol
+    
+    # Optional location
+    start_col: int = 0
+    end_col: int = 0
+    
+    # Optional content
     signature: str = ""  # Function/method signature
     docstring: str = ""
     

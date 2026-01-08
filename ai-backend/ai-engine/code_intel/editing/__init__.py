@@ -20,7 +20,6 @@ from .edit_validator import (
     EditValidator,
     ValidationResult,
     ValidationIssue,
-    ValidationSeverity,
 )
 from .edit_executor import (
     EditExecutor,
@@ -52,7 +51,6 @@ __all__ = [
     "EditValidator",
     "ValidationResult",
     "ValidationIssue",
-    "ValidationSeverity",
     # Executor
     "EditExecutor",
     "ExecutionResult",

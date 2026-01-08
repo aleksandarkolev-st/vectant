@@ -36,7 +36,7 @@ Usage:
 
 from .core.types import (
     SemanticChunk,
-    ChunkType,
+    SymbolType,
     ChunkMetadata,
     SymbolNode,
     SymbolEdge,
@@ -59,7 +59,7 @@ from .core.config import (
 from .engine import CodeIntelEngine, create_engine, EngineStats
 
 # Advanced imports for direct access
-from .retrieval.retrieval_pipeline import RetrievalPipeline
+from .retrieval.pipeline import RetrievalPipeline
 from .tools.tool_registry import ToolRegistry
 from .tools.tool_executor import ToolExecutor
 from .editing.edit_session import EditSession, EditSessionManager
@@ -73,7 +73,7 @@ __all__ = [
     "EngineStats",
     # Core types
     "SemanticChunk",
-    "ChunkType",
+    "SymbolType",
     "ChunkMetadata",
     "SymbolNode",
     "SymbolEdge",
