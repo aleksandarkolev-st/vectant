@@ -50,7 +50,7 @@ impl RunnerState {
     ) -> Self {
         Self {
             process,
-            stdin,
+            stdin: Some(stdin),
             output_tx,
             is_gui: false,
             is_hmr_capable: false,

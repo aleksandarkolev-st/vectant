@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::env;
@@ -14,10 +18,9 @@ pub mod safety;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use chrono::Utc;
 use futures::{FutureExt, SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
 
+/*
 use compiler::builder::{
     hash_content,
     hash_shared_header_semantic,
@@ -30,11 +33,12 @@ use compiler::builder::{
 use runtime::capability::{detect_capabilities, HmrCapability, HmrStatus};
 
 use compiler::error_parser::{parse_compiler_output, CompilerType, DiagnosticEvent};
+*/
 
 use hmr::fast_refresh::{
     BoundaryChecker,
-    BoundaryViolationEvent,
-    RefreshAction,
+    // BoundaryViolationEvent, // unused
+    // RefreshAction, // unused
     // PreemptiveConfig, PreemptiveMessage, SpeculativeCache // These seem to be in watcher.rs?
 };
 
@@ -44,9 +48,10 @@ use infra::observability::{
     LogLevel,
     LogEntry,
     MetricsAggregator,
-    ReloadMetricsTracker,
-    ReloadId,
+    // ReloadMetricsTracker, // unused
+    // ReloadId, // unused
 };
+
 
 use safety::slot_isolation::{IsolationModel, IsolationManager};
 use safety::restart_control::{RestartController, BackoffConfig, KnownGoodStore};
@@ -55,13 +60,13 @@ use safety::quiescence::QuiescenceConfig;
 
 use infra::watcher::{PreemptiveConfig, PreemptiveMessage, SpeculativeCache};
 
-use runtime::shim::{auto_shim, ShimMode, detect_shim_mode};
+// use runtime::shim::{auto_shim, ShimMode, detect_shim_mode};
 
 #[allow(unused_imports)]
 use hmr::incremental_cache::{IncrementalCache, compile_with_cache, link_objects};
 use gstreamer as gst;
-use gstreamer::prelude::{Cast, ElementExt, GstBinExt, GstObjectExt};
-use gstreamer_app as gst_app;
+// use gstreamer::prelude::{Cast, ElementExt, GstBinExt, GstObjectExt};
+// use gstreamer_app as gst_app;
 
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -72,28 +77,28 @@ use webrtc::api::APIBuilder;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::RTCDataChannel;
-use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+// use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::rtp::packet::Packet;
+// use webrtc::rtp::packet::Packet;
 use webrtc::rtp_transceiver::rtp_codec::{
     RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
 };
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
-use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
-use webrtc::track::track_local::TrackLocal;
-use webrtc::track::track_local::TrackLocalWriter;
-use webrtc::util::Unmarshal;
+// use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+// use webrtc::track::track_local::TrackLocal;
+// use webrtc::track::track_local::TrackLocalWriter;
+// use webrtc::util::Unmarshal;
 
 // use printer::compile_context::CompileContext; // Legacy path
 use compiler::context::CompileContext;
-use infra::constants::{GUI_TOOLS, REQUIRED_TOOLS};
+use infra::constants::{/*GUI_TOOLS,*/ REQUIRED_TOOLS};
 use infra::lsp_util::{LspSessionState, rewrite_uris};
-use infra::messages::{CompileRequest, FileEntry, IceServerEnv, SignalMessage};
+use infra::messages::{CompileRequest, /*FileEntry,*/ IceServerEnv, SignalMessage};
 use runtime::runner_state::RunnerState;
 use hmr::orchestrator::{HmrOrchestrator, OrchestratorConfig};
 use infra::utils::{make_chunks, get_wsl_host_ip};

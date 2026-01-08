@@ -653,6 +653,7 @@ pub const HOT_GET_API_SYMBOL: &[u8] = b"hot_get_api\0";
 // PLACEHOLDER EXPORT (modules override this)
 // ============================================================
 
+/*
 /// Default implementation - modules should replace this with their static table
 #[no_mangle]
 pub extern "C" fn hot_get_api() -> *const HotApi {
@@ -660,6 +661,7 @@ pub extern "C" fn hot_get_api() -> *const HotApi {
     // Real modules return &THEIR_HOT_API
     core::ptr::null()
 }
+*/
 
 /// Module slot identifiers
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
