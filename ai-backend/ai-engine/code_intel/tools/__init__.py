@@ -39,6 +39,16 @@ from .separation import (
     SEARCH_TOOLS,
     EDIT_TOOLS,
 )
+from .evaluation import (
+    EvaluationHarness,
+    EvalQuery,
+    EvalResult,
+    EvalSummary,
+    create_basic_test_suite,
+    create_code_navigation_suite,
+    save_eval_results,
+    print_eval_summary,
+)
 
 
 __all__ = [
@@ -63,4 +73,13 @@ __all__ = [
     "READ_TOOLS",
     "SEARCH_TOOLS",
     "EDIT_TOOLS",
+    # Evaluation
+    "EvaluationHarness",
+    "EvalQuery",
+    "EvalResult",
+    "EvalSummary",
+    "create_basic_test_suite",
+    "create_code_navigation_suite",
+    "save_eval_results",
+    "print_eval_summary",
 ]

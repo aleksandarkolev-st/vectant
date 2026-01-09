@@ -19,6 +19,15 @@ from .types import (
 
 from .config import CodeIntelConfig, get_config, set_config
 
+from .security import (
+    SecurityBoundary,
+    SecurityContext,
+    SecurityViolation,
+    SecretPattern,
+    SECRET_PATTERNS,
+    create_security_boundary,
+)
+
 __all__ = [
     # Types
     "SemanticChunk",
@@ -40,4 +49,11 @@ __all__ = [
     "CodeIntelConfig",
     "get_config",
     "set_config",
+    # Security
+    "SecurityBoundary",
+    "SecurityContext",
+    "SecurityViolation",
+    "SecretPattern",
+    "SECRET_PATTERNS",
+    "create_security_boundary",
 ]
