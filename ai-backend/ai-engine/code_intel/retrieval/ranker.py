@@ -366,28 +366,46 @@ class ContextRanker:
     
     def _combine_factors_additive(self, factors: RankingFactors) -> float:
         """
-        Combine factors using ADDITIVE scoring.
+        Combine factors using ADDITIVE scoring with NORMALIZED features.
         
+        CRITICAL: All features must be in [0, 1] range for fair weighting.
         Unlike multiplicative scoring (a × b × c), this uses:
         score = w1*a + w2*b + w3*c - penalties
         
         This prevents score collapse to near-zero when one factor is low.
+        
+        Normalization ensures:
+        - semantic_relevance: Already 0-1 (cosine similarity)
+        - symbol_match: Already 0-1 (computed in _compute_symbol_match)
+        - graph_distance: Already 0-1 (1 - depth * 0.15)
+        - file_importance: Already 0-1 (from _estimate_file_importance)
+        - public_api_bonus: Already 0-1
+        - namespace_bonus: Already 0-1 (from _compute_namespace_bonus)
         """
+        # Verify all factors are normalized (clamp to be safe)
+        semantic = max(0.0, min(1.0, factors.semantic_relevance))
+        symbol = max(0.0, min(1.0, factors.symbol_match))
+        graph = max(0.0, min(1.0, factors.graph_distance))
+        file_imp = max(0.0, min(1.0, factors.file_importance))
+        public = max(0.0, min(1.0, factors.public_api_bonus))
+        namespace = max(0.0, min(1.0, factors.namespace_bonus))
+        
+        # Additive combination of normalized factors
         score = 0.0
+        score += self.WEIGHTS["semantic_relevance"] * semantic
+        score += self.WEIGHTS["symbol_match"] * symbol
+        score += self.WEIGHTS["graph_distance"] * graph
+        score += self.WEIGHTS["file_importance"] * file_imp
+        score += self.WEIGHTS["public_api_bonus"] * public
+        score += self.WEIGHTS["namespace_bonus"] * namespace
         
-        # Additive combination of positive factors
-        score += self.WEIGHTS["semantic_relevance"] * factors.semantic_relevance
-        score += self.WEIGHTS["symbol_match"] * factors.symbol_match
-        score += self.WEIGHTS["graph_distance"] * factors.graph_distance
-        score += self.WEIGHTS["file_importance"] * factors.file_importance
-        score += self.WEIGHTS["public_api_bonus"] * factors.public_api_bonus
-        score += self.WEIGHTS["namespace_bonus"] * factors.namespace_bonus
+        # Subtract normalized penalties
+        test_pen = max(0.0, min(1.0, factors.test_penalty))
+        size_pen = max(0.0, min(1.0, factors.size_penalty))
+        score -= self.PENALTY_WEIGHTS["test_penalty"] * test_pen
+        score -= self.PENALTY_WEIGHTS["size_penalty"] * size_pen
         
-        # Subtract penalties
-        score -= self.PENALTY_WEIGHTS["test_penalty"] * factors.test_penalty
-        score -= self.PENALTY_WEIGHTS["size_penalty"] * factors.size_penalty
-        
-        # Normalize to 0-1 range
+        # Clamp to 0-1 range
         return max(0.0, min(1.0, score))
 
 
