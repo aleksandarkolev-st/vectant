@@ -27,6 +27,12 @@ from .controller import (
     RefusalReason,
     ModuleBudget,
 )
+from .reranker import (
+    LightweightReranker,
+    RerankerConfig,
+    RerankedResult,
+    rerank_results,
+)
 
 
 __all__ = [
@@ -73,4 +79,10 @@ __all__ = [
     "RetrievalPipeline",
     "RetrievalPipelineResult",
     "create_pipeline",
+    
+    # Reranking (false positive reduction)
+    "LightweightReranker",
+    "RerankerConfig",
+    "RerankedResult",
+    "rerank_results",
 ]
