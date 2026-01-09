@@ -32,8 +32,8 @@ class MonacoTextBinding {
         const normalize = (s) => s ? s.replace(/\r\n/g, '\n') : '';
         if (normalize(current) === normalize(newText)) return;
 
-        // console.log('[Collab] Remote change detected. Applying to Monaco.');
-        // console.log(`[Collab] Current length: ${current.length}, New length: ${newText.length}`);
+        console.log('[Collab] Remote change detected. Applying to Monaco.');
+        console.log(`[Collab] Current length: ${current.length}, New length: ${newText.length}`);
 
         // Use setTimeout to avoid reentrancy issues when Monaco fires view events
         // synchronously — scheduling to next event loop reduces chance of

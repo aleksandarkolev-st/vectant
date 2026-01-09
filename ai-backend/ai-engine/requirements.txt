@@ -6,3 +6,5 @@ google-generativeai
 python-dotenv
 openai
 requests
+numpy
+tiktoken

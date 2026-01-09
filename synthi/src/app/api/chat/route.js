@@ -8,13 +8,85 @@ const ANTHROPIC_BASE =
 const GEMINI_BASE =
     (process.env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
 
+// Code Intelligence Backend
+const CODE_INTEL_BASE = process.env.CODE_INTEL_URL || process.env.AI_ENGINE_URL || 'http://localhost:8000';
+
 const DEFAULT_GEMINI_MODEL = process.env.SYNTHI_AI_MODEL || process.env.GEMINI_MODEL || 'gemini-2.0-flash';
 const DEFAULT_OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const DEFAULT_ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest';
 const UPSTREAM_TIMEOUT_MS = 45_000;
 
-const buildUserContent = ({ prompt, code, files, lang, focusPath }) => {
+/**
+ * Fetch code intelligence context from the backend.
+ * This uses the deterministic retrieval controller to decide what context to include.
+ * 
+ * @param {Object} params - Parameters for context retrieval
+ * @param {string} params.workspacePath - Path to the workspace
+ * @param {string} params.query - User's query/prompt
+ * @param {number} params.maxTokens - Maximum tokens for context
+ * @param {Array} params.conversationHistory - Previous messages
+ * @returns {Promise<Object>} - Context response with sufficiency indicator
+ */
+async function fetchCodeIntelContext({ workspacePath, query, maxTokens = 6000, conversationHistory = [] }) {
+    if (!workspacePath) {
+        return { context: '', sufficiency: 'UNKNOWN', sources: [], refusal: null };
+    }
+    
+    try {
+        const response = await fetch(`${CODE_INTEL_BASE}/code-intel/context`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                workspace_path: workspacePath,
+                query: query,
+                max_tokens: maxTokens,
+                conversation_history: conversationHistory,
+            }),
+            signal: AbortSignal.timeout(10000), // 10s timeout for context retrieval
+        });
+        
+        if (!response.ok) {
+            console.warn(`Code intel context failed: ${response.status}`);
+            return { context: '', sufficiency: 'UNKNOWN', sources: [], refusal: null };
+        }
+        
+        const data = await response.json();
+        return {
+            context: data.context || '',
+            sufficiency: data.sufficiency || 'UNKNOWN',
+            sources: data.sources || [],
+            tokensUsed: data.tokens_used || 0,
+            refusal: data.refusal || null,
+        };
+    } catch (e) {
+        console.warn('Code intel fetch error:', e.message);
+        return { context: '', sufficiency: 'UNKNOWN', sources: [], refusal: null };
+    }
+}
+
+
+const buildUserContent = ({ prompt, code, files, lang, focusPath, codeIntelContext }) => {
     const parts = [];
+    
+    // If code intelligence provided context, include it first with clear boundaries
+    if (codeIntelContext?.context) {
+        parts.push('=== RELEVANT CODE CONTEXT (retrieved by deterministic controller) ===');
+        parts.push(codeIntelContext.context);
+        parts.push('=== END CODE CONTEXT ===');
+        
+        // Add sufficiency indicator so LLM knows if context is complete
+        if (codeIntelContext.sufficiency === 'INSUFFICIENT') {
+            parts.push('[CONTEXT WARNING: The retrieved context may be incomplete for this query. If you cannot confidently answer, please indicate what additional context would be needed.]');
+        } else if (codeIntelContext.sufficiency === 'PARTIAL') {
+            parts.push('[CONTEXT NOTE: Some relevant context may be missing. Consider asking for clarification if needed.]');
+        }
+        
+        // If there's a refusal reason, include it
+        if (codeIntelContext.refusal) {
+            parts.push(`[CONTEXT LIMITATION: ${codeIntelContext.refusal}]`);
+        }
+    }
+    
     if (prompt) parts.push(String(prompt));
     if (focusPath) parts.push(`Focus path: ${focusPath}`);
     if (lang) parts.push(`Language: ${lang}`);
@@ -274,9 +346,34 @@ export async function POST(request) {
         model = '',
         apiKey = '',
         provider = '',
+        // Code intelligence integration
+        workspacePath = '',
+        useCodeIntel = true, // Enable by default when workspacePath is provided
+        maxContextTokens = 6000,
+        conversationHistory = [],
     } = body || {};
 
-    const userContent = buildUserContent({ prompt, code, files, lang, focusPath });
+    // Fetch code intelligence context BEFORE building user content
+    // This uses the deterministic retrieval controller - NOT the LLM
+    let codeIntelContext = null;
+    if (useCodeIntel && workspacePath && prompt) {
+        console.log('[CodeIntel] Fetching context for workspace:', workspacePath);
+        codeIntelContext = await fetchCodeIntelContext({
+            workspacePath,
+            query: prompt,
+            maxTokens: maxContextTokens,
+            conversationHistory,
+        });
+        console.log('[CodeIntel] Context result:', {
+            hasContext: !!codeIntelContext?.context,
+            contextLength: codeIntelContext?.context?.length || 0,
+            sufficiency: codeIntelContext?.sufficiency,
+            sourcesCount: codeIntelContext?.sources?.length || 0,
+            tokensUsed: codeIntelContext?.tokensUsed,
+        });
+    }
+
+    const userContent = buildUserContent({ prompt, code, files, lang, focusPath, codeIntelContext });
     if (!userContent) {
         return NextResponse.json({ error: 'Empty prompt' }, { status: 400 });
     }
@@ -301,6 +398,9 @@ export async function POST(request) {
             headers: {
                 'content-type': 'application/x-ndjson',
                 'cache-control': 'no-cache',
+                // Include context metadata in headers for debugging
+                'x-code-intel-sufficiency': codeIntelContext?.sufficiency || 'NONE',
+                'x-code-intel-tokens': String(codeIntelContext?.tokensUsed || 0),
             },
         });
     } catch (e) {
