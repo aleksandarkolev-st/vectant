@@ -545,6 +545,7 @@ class VectorIndex:
                 "is_test": chunk.metadata.is_test,
                 "module_group": chunk.metadata.module_group,
                 "token_count": chunk.token_count,
+                "content_hash": chunk.content_hash,  # For lazy loading verification
                 # Note: code_body not saved - loaded lazily from disk
             }
         
@@ -618,6 +619,7 @@ class VectorIndex:
                         metadata=metadata,
                         embedding=embedding,
                         token_count=chunk_data.get("token_count", 0),
+                        content_hash=chunk_data.get("content_hash", ""),  # Load hash for verification
                     )
                     self._chunks[cid] = chunk
                 

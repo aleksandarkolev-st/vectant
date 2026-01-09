@@ -179,6 +179,22 @@ def compute_body_fingerprint(code_body: str) -> str:
     return hashlib.sha256(normalized.encode()).hexdigest()[:8]
 
 
+class HashVerificationError(Exception):
+    """Raised when file content hash doesn't match indexed hash."""
+    pass
+
+
+class FileReaderWithHash(Protocol):
+    """Extended FileReader that supports hash verification."""
+    def read_lines(self, file_path: str, start_line: int, end_line: int) -> str:
+        """Read lines from a file."""
+        ...
+    
+    def get_file_hash(self, file_path: str) -> str:
+        """Get the current content hash of a file."""
+        ...
+
+
 @dataclass
 class SemanticChunk:
     """
@@ -190,6 +206,9 @@ class SemanticChunk:
     
     LAZY CODE LOADING: To save memory, code_body can be loaded on-demand
     from disk using get_code() with a FileReader.
+    
+    HASH CONSISTENCY: Each chunk stores the content_hash at index time.
+    When loading lazily, we verify the file hasn't changed.
     """
     # Unique identifier (hash of content + qualified name + signature)
     id: str
@@ -207,6 +226,9 @@ class SemanticChunk:
     
     # Token count (for budget management) - counted with target model tokenizer
     token_count: int = 0
+    
+    # Content hash of file at index time (for lazy loading verification)
+    content_hash: str = ""
     
     # Whether code body is loaded
     _code_loaded: bool = field(default=False, repr=False)
@@ -242,20 +264,49 @@ class SemanticChunk:
         self._code_body = value
         self._code_loaded = True
     
-    def get_code(self, file_reader: Optional[FileReader] = None) -> str:
+    def get_code(
+        self, 
+        file_reader: Optional[FileReader] = None,
+        verify_hash: bool = True,
+        raise_on_mismatch: bool = False,
+    ) -> str:
         """
         Get the code body, loading lazily if needed.
         
+        HASH VERIFICATION: If content_hash was set at index time and file_reader
+        supports get_file_hash(), we verify the file hasn't changed.
+        
         Args:
             file_reader: FileReader to use for lazy loading
+            verify_hash: If True, verify file hash matches indexed hash
+            raise_on_mismatch: If True, raise HashVerificationError on mismatch
+                               If False, return empty string (caller should reindex)
             
         Returns:
-            The code body
+            The code body, or empty string if:
+            - No file_reader provided
+            - Hash mismatch (unless raise_on_mismatch=True)
+            
+        Raises:
+            HashVerificationError: If raise_on_mismatch=True and hash doesn't match
         """
         if self._code_body is not None:
             return self._code_body
         
         if file_reader is not None and self.metadata.file_path:
+            # Verify file hash hasn't changed (if we have hash support)
+            if verify_hash and self.content_hash and hasattr(file_reader, 'get_file_hash'):
+                current_hash = file_reader.get_file_hash(self.metadata.file_path)
+                if current_hash != self.content_hash:
+                    if raise_on_mismatch:
+                        raise HashVerificationError(
+                            f"File {self.metadata.file_path} has changed since indexing. "
+                            f"Expected hash {self.content_hash}, got {current_hash}. "
+                            f"Please reindex the file."
+                        )
+                    # File changed - return empty to signal need for reindex
+                    return ""
+            
             self._code_body = file_reader.read_lines(
                 self.metadata.file_path,
                 self.metadata.start_line,
@@ -265,6 +316,28 @@ class SemanticChunk:
             return self._code_body
         
         return ""
+    
+    def needs_reindex(self, file_reader: Optional[FileReaderWithHash] = None) -> bool:
+        """
+        Check if this chunk needs reindexing due to file changes.
+        
+        Args:
+            file_reader: FileReader with get_file_hash support
+            
+        Returns:
+            True if file has changed since indexing
+        """
+        if not self.content_hash:
+            return False  # No hash to verify
+        
+        if file_reader is None or not hasattr(file_reader, 'get_file_hash'):
+            return False  # Can't verify
+        
+        try:
+            current_hash = file_reader.get_file_hash(self.metadata.file_path)
+            return current_hash != self.content_hash
+        except Exception:
+            return True  # File missing or unreadable - needs reindex
     
     def is_code_loaded(self) -> bool:
         """Check if code body is currently loaded."""
@@ -314,6 +387,7 @@ class SemanticChunk:
             "exports": list(self.metadata.exports_provided),
             "tokens": self.token_count,
             "module_group": self.metadata.module_group,
+            "content_hash": self.content_hash,  # For lazy loading verification
         }
     
     def format_for_context(self, include_metadata: bool = True) -> str:
