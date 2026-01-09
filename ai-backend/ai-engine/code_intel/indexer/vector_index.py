@@ -6,9 +6,10 @@ This answers "what seems relevant" but NOT "what must be included".
 
 CRITICAL FIXES IMPLEMENTED:
 1. Binary storage (.npz) instead of JSON for vectors
-2. Vectorized search via matrix multiply (no Python loops)
-3. float32 storage for efficiency and precision
-4. Proper scaling path to FAISS/HNSW for >20k chunks
+2. ATOMIC WRITES: temp file + rename for crash safety
+3. Vectorized search via matrix multiply (no Python loops)
+4. float32 storage for efficiency and precision
+5. Proper scaling path to FAISS/HNSW for >20k chunks
 """
 
 from __future__ import annotations
@@ -16,6 +17,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
+import shutil
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 import numpy as np
@@ -322,7 +325,10 @@ class VectorIndex:
     
     def persist(self) -> None:
         """
-        Persist index to disk using BINARY format.
+        Persist index to disk using BINARY format with ATOMIC writes.
+        
+        ATOMIC WRITES: Write to temp file, then rename.
+        This prevents corruption if process crashes mid-write.
         
         Saves:
         - vectors.npz: Binary numpy compressed (ids + float32 matrix)
@@ -332,19 +338,31 @@ class VectorIndex:
             return
         
         # Ensure directory exists
-        os.makedirs(os.path.dirname(self.persist_path) or ".", exist_ok=True)
+        persist_dir = os.path.dirname(self.persist_path) or "."
+        os.makedirs(persist_dir, exist_ok=True)
         
-        # Save vectors in binary format
+        # Save vectors in binary format with ATOMIC write
         vectors_path = self._get_vectors_path()
         if self._matrix is not None and len(self._ids) > 0:
-            np.savez_compressed(
-                vectors_path,
-                ids=np.array(self._ids, dtype=object),
-                vectors=self._matrix.astype(np.float32),
-                dimension=np.array([self.dimension]),
-            )
+            # Write to temp file first
+            fd, temp_path = tempfile.mkstemp(suffix='.npz', dir=persist_dir)
+            try:
+                os.close(fd)  # Close fd, we'll use numpy to write
+                np.savez_compressed(
+                    temp_path,
+                    ids=np.array(self._ids, dtype=object),
+                    vectors=self._matrix.astype(np.float32),
+                    dimension=np.array([self.dimension]),
+                )
+                # Atomic rename (on same filesystem)
+                shutil.move(temp_path, vectors_path)
+            except Exception:
+                # Clean up temp file on failure
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                raise
         
-        # Save chunk metadata (without embeddings - those are in npz)
+        # Save chunk metadata with ATOMIC write
         meta_path = self._get_metadata_path()
         chunk_data = {}
         for cid, chunk in self._chunks.items():
@@ -366,11 +384,19 @@ class VectorIndex:
                 # Note: code_body not saved - loaded lazily from disk
             }
         
-        with open(meta_path, "w") as f:
-            json.dump({"dimension": self.dimension, "chunks": chunk_data}, f)
+        # Atomic write for metadata JSON
+        fd, temp_meta = tempfile.mkstemp(suffix='.json', dir=persist_dir)
+        try:
+            with os.fdopen(fd, 'w') as f:
+                json.dump({"dimension": self.dimension, "chunks": chunk_data}, f)
+            shutil.move(temp_meta, meta_path)
+        except Exception:
+            if os.path.exists(temp_meta):
+                os.remove(temp_meta)
+            raise
         
         self._dirty = False
-        logger.info(f"Persisted vector index: {len(self)} chunks (binary format)")
+        logger.info(f"Persisted vector index: {len(self)} chunks (binary format, atomic)")
     
     def _load(self) -> None:
         """Load index from disk."""
