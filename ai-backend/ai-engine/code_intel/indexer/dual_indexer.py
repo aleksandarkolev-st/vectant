@@ -3,6 +3,9 @@ Dual Indexer - Combines vector and structural indexing.
 
 This is the main entry point for indexing code.
 Coordinates both indexes and maintains consistency.
+
+THREAD-SAFETY: All reindex operations are protected by file-level locks
+to ensure atomic delete-then-insert semantics.
 """
 
 from __future__ import annotations
@@ -10,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
+from contextlib import contextmanager
 from typing import Dict, List, Optional, Set
 
 from .vector_index import VectorIndex
@@ -29,6 +34,9 @@ class DualIndexer:
     Combined vector and structural indexer.
     
     This is the main interface for indexing code.
+    
+    THREAD-SAFETY: File-level locking ensures atomic reindex operations.
+    Global lock protects the file locks dict itself.
     
     Key operations:
     - index_repository(path): Full index of a repo
@@ -71,12 +79,44 @@ class DualIndexer:
         # File hashes for change detection
         self._file_hashes: Dict[FilePath, str] = {}
         
+        # Thread-safety: per-file locks for atomic reindex operations
+        self._file_locks: Dict[str, threading.RLock] = {}
+        self._lock_dict_lock = threading.Lock()  # Protects _file_locks dict
+        
+        # Global index lock for batch operations
+        self._index_lock = threading.RLock()
+        
         # Stats
         self._stats = {
             "files_indexed": 0,
             "chunks_indexed": 0,
             "last_index_time": None,
         }
+    
+    def _get_file_lock(self, file_path: str) -> threading.RLock:
+        """
+        Get or create a lock for a specific file.
+        
+        Thread-safe: Uses a global lock to protect the locks dict.
+        """
+        with self._lock_dict_lock:
+            if file_path not in self._file_locks:
+                self._file_locks[file_path] = threading.RLock()
+            return self._file_locks[file_path]
+    
+    @contextmanager
+    def _file_transaction(self, file_path: str):
+        """
+        Context manager for atomic file operations.
+        
+        Ensures that reindex operations (delete + insert) are atomic.
+        """
+        lock = self._get_file_lock(file_path)
+        lock.acquire()
+        try:
+            yield
+        finally:
+            lock.release()
     
     def index_repository(
         self,
@@ -233,6 +273,9 @@ class DualIndexer:
         """
         Reindex a file with proper deletion semantics.
         
+        ATOMIC + THREAD-SAFE: Uses file-level locking to ensure
+        the delete-then-insert sequence is atomic.
+        
         This is the CORRECT way to handle incremental updates:
         1. Delete ALL old chunks for this file from vector index
         2. Delete ALL old chunks from structural index
@@ -247,58 +290,63 @@ class DualIndexer:
         """
         logger.info(f"Reindexing file: {file_path}")
         
-        # Step 1: Get all old chunk IDs for this file
-        old_chunk_ids = self.structural_index.get_chunks_for_file(file_path)
-        
-        # Step 2: Remove all old chunks from vector index
-        for chunk_id in old_chunk_ids:
-            self.vector_index.remove(chunk_id)
-        
-        # Step 3: Remove file from structural index (removes chunks + edges)
-        self.structural_index.remove_file(file_path)
-        
-        # Step 4: Re-extract new chunks
-        file = self.walker.get_file(file_path)
-        if not file:
-            logger.warning(f"File not found for reindex: {file_path}")
-            return []
-        
-        new_chunks = self._index_single_file(file, skip_embeddings=False)
-        
-        # Step 5: Generate embeddings
-        if new_chunks:
-            self.embedder.embed_chunks(new_chunks)
-        
-        # Step 6: Add to vector index
-        for chunk in new_chunks:
-            if chunk.embedding is not None:
-                self.vector_index.add(chunk)
-        
-        # Update hash
-        self._file_hashes[file_path] = file.content_hash
-        
-        logger.info(f"Reindexed {file_path}: {len(old_chunk_ids)} old -> {len(new_chunks)} new chunks")
-        return new_chunks
+        # ATOMIC TRANSACTION: Lock this file for the entire operation
+        with self._file_transaction(file_path):
+            # Step 1: Get all old chunk IDs for this file
+            old_chunk_ids = self.structural_index.get_chunks_for_file(file_path)
+            
+            # Step 2: Remove all old chunks from vector index
+            for chunk_id in old_chunk_ids:
+                self.vector_index.remove(chunk_id)
+            
+            # Step 3: Remove file from structural index (removes chunks + edges)
+            self.structural_index.remove_file(file_path)
+            
+            # Step 4: Re-extract new chunks
+            file = self.walker.get_file(file_path)
+            if not file:
+                logger.warning(f"File not found for reindex: {file_path}")
+                return []
+            
+            new_chunks = self._index_single_file(file, skip_embeddings=False)
+            
+            # Step 5: Generate embeddings
+            if new_chunks:
+                self.embedder.embed_chunks(new_chunks)
+            
+            # Step 6: Add to vector index
+            for chunk in new_chunks:
+                if chunk.embedding is not None:
+                    self.vector_index.add(chunk)
+            
+            # Update hash
+            self._file_hashes[file_path] = file.content_hash
+            
+            logger.info(f"Reindexed {file_path}: {len(old_chunk_ids)} old -> {len(new_chunks)} new chunks")
+            return new_chunks
     
     def remove_file(self, relative_path: str) -> None:
         """
         Remove a file from all indexes with proper deletion semantics.
         
+        THREAD-SAFE: Uses file-level locking.
+        
         Args:
             relative_path: Path relative to workspace root
         """
-        # Get ALL chunk IDs for this file (not just symbols)
-        chunk_ids = self.structural_index.get_chunks_for_file(relative_path)
-        
-        # Remove from vector index
-        for chunk_id in chunk_ids:
-            self.vector_index.remove(chunk_id)
-        
-        # Remove from structural index (handles edges too)
-        self.structural_index.remove_file(relative_path)
-        
-        # Remove from hash cache
-        self._file_hashes.pop(relative_path, None)
+        with self._file_transaction(relative_path):
+            # Get ALL chunk IDs for this file (not just symbols)
+            chunk_ids = self.structural_index.get_chunks_for_file(relative_path)
+            
+            # Remove from vector index
+            for chunk_id in chunk_ids:
+                self.vector_index.remove(chunk_id)
+            
+            # Remove from structural index (handles edges too)
+            self.structural_index.remove_file(relative_path)
+            
+            # Remove from hash cache
+            self._file_hashes.pop(relative_path, None)
     
     def _index_single_file(
         self,
