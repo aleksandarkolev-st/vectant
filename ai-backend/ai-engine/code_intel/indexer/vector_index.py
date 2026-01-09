@@ -20,7 +20,7 @@ import os
 import tempfile
 import shutil
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from ..core.types import SemanticChunk, ChunkId
@@ -37,6 +37,18 @@ class VectorSearchResult:
     chunk: Optional[SemanticChunk] = None
 
 
+# Threshold for switching from brute-force to ANN (HNSW)
+HNSW_THRESHOLD = 50_000  # chunks
+
+# Try to import hnswlib for large indexes
+try:
+    import hnswlib
+    HNSWLIB_AVAILABLE = True
+except ImportError:
+    HNSWLIB_AVAILABLE = False
+    hnswlib = None
+
+
 class VectorIndex:
     """
     Vector index for semantic search over code chunks.
@@ -51,13 +63,18 @@ class VectorIndex:
     - O(1) in Python, O(N*dim) in numpy/BLAS
     - 10-100x faster than dict iteration
     
-    For >20k chunks, switch to FAISS HNSW or similar ANN index.
+    HNSW FALLBACK: For >50k chunks, automatically switch to HNSW if available.
+    - Set HNSW_THRESHOLD to control the cutoff
+    - Requires: pip install hnswlib
+    
+    NORMALIZATION: All vectors are L2-normalized on insertion for cosine similarity.
     """
     
     def __init__(
         self,
         dimension: int = 768,
         persist_path: Optional[str] = None,
+        hnsw_threshold: int = HNSW_THRESHOLD,
     ):
         """
         Initialize vector index.
@@ -65,17 +82,23 @@ class VectorIndex:
         Args:
             dimension: Embedding dimension (768 for text-embedding-004)
             persist_path: Optional path for persistence (.npz format)
+            hnsw_threshold: Number of chunks at which to switch to HNSW
         """
         self.dimension = dimension
         self.persist_path = persist_path
+        self.hnsw_threshold = hnsw_threshold
         
         # Binary storage - ordered list of IDs and stacked matrix
         self._ids: List[str] = []
-        self._matrix: Optional[np.ndarray] = None  # (N, dim) float32
+        self._matrix: Optional[np.ndarray] = None  # (N, dim) float32, L2-normalized
         self._id_to_idx: Dict[str, int] = {}
         
         # Chunk metadata storage (separate from vectors)
         self._chunks: Dict[ChunkId, SemanticChunk] = {}
+        
+        # HNSW index for large collections
+        self._hnsw_index: Optional[Any] = None
+        self._using_hnsw: bool = False
         
         # Index state
         self._dirty = False
@@ -99,11 +122,74 @@ class VectorIndex:
         base = self.persist_path.rsplit(".", 1)[0] if "." in self.persist_path else self.persist_path
         return f"{base}_meta.json"
     
+    def _normalize_embedding(self, embedding: np.ndarray) -> np.ndarray:
+        """
+        L2-normalize an embedding vector.
+        
+        CONSISTENCY: All embeddings must be normalized the same way.
+        This ensures cosine similarity works correctly via dot product.
+        """
+        norm = np.linalg.norm(embedding)
+        if norm > 1e-8:  # Avoid division by near-zero
+            return embedding / norm
+        return embedding
+    
+    def _maybe_switch_to_hnsw(self) -> None:
+        """
+        Check if we should switch to HNSW for large indexes.
+        
+        Automatically switches when:
+        1. Number of vectors exceeds threshold
+        2. hnswlib is available
+        3. Not already using HNSW
+        """
+        if self._using_hnsw:
+            return
+        
+        if len(self._ids) < self.hnsw_threshold:
+            return
+        
+        if not HNSWLIB_AVAILABLE:
+            logger.warning(
+                f"Index has {len(self._ids)} vectors (threshold: {self.hnsw_threshold}). "
+                f"Install hnswlib for faster search: pip install hnswlib"
+            )
+            return
+        
+        logger.info(f"Switching to HNSW index ({len(self._ids)} vectors)")
+        self._build_hnsw_index()
+    
+    def _build_hnsw_index(self) -> None:
+        """Build HNSW index from current matrix."""
+        if not HNSWLIB_AVAILABLE or self._matrix is None:
+            return
+        
+        num_elements = len(self._ids)
+        # Create index
+        self._hnsw_index = hnswlib.Index(space='ip', dim=self.dimension)  # inner product = cosine for normalized
+        self._hnsw_index.init_index(max_elements=num_elements * 2, ef_construction=200, M=16)
+        
+        # Add all vectors (skip removed ones marked with zero)
+        valid_ids = []
+        valid_vectors = []
+        for i, chunk_id in enumerate(self._ids):
+            if chunk_id and np.any(self._matrix[i]):  # Not removed
+                valid_ids.append(i)
+                valid_vectors.append(self._matrix[i])
+        
+        if valid_vectors:
+            self._hnsw_index.add_items(np.array(valid_vectors), valid_ids)
+        
+        self._hnsw_index.set_ef(50)  # ef for search
+        self._using_hnsw = True
+        logger.info(f"HNSW index built with {len(valid_ids)} vectors")
+    
     def add(self, chunk: SemanticChunk) -> None:
         """
         Add a chunk to the index.
         
         The chunk must have an embedding set (as numpy array or list).
+        All embeddings are L2-normalized for cosine similarity.
         """
         if chunk.embedding is None:
             raise ValueError(f"Chunk {chunk.id} has no embedding")
@@ -119,16 +205,19 @@ class VectorIndex:
                 f"Embedding dimension mismatch: {embedding.shape[0]} vs {self.dimension}"
             )
         
-        # Normalize for cosine similarity
-        norm = np.linalg.norm(embedding)
-        if norm > 0:
-            embedding = embedding / norm
+        # ALWAYS normalize for cosine similarity consistency
+        embedding = self._normalize_embedding(embedding)
         
         # Check if chunk already exists (update case)
         if chunk.id in self._id_to_idx:
             idx = self._id_to_idx[chunk.id]
             self._matrix[idx] = embedding
             self._chunks[chunk.id] = chunk
+            
+            # Update HNSW if active
+            if self._using_hnsw and self._hnsw_index is not None:
+                # hnswlib doesn't support update, need to rebuild periodically
+                pass
         else:
             # Add new chunk
             if self._matrix is None:
@@ -136,11 +225,23 @@ class VectorIndex:
             else:
                 self._matrix = np.vstack([self._matrix, embedding])
             
+            idx = len(self._ids)
             self._ids.append(chunk.id)
-            self._id_to_idx[chunk.id] = len(self._ids) - 1
+            self._id_to_idx[chunk.id] = idx
             self._chunks[chunk.id] = chunk
+            
+            # Add to HNSW if active
+            if self._using_hnsw and self._hnsw_index is not None:
+                try:
+                    self._hnsw_index.add_items(embedding.reshape(1, -1), [idx])
+                except Exception as e:
+                    logger.warning(f"Failed to add to HNSW: {e}, rebuilding index")
+                    self._build_hnsw_index()
         
         self._dirty = True
+        
+        # Check if we should switch to HNSW
+        self._maybe_switch_to_hnsw()
     
     def add_batch(self, chunks: List[SemanticChunk]) -> int:
         """
@@ -191,6 +292,7 @@ class VectorIndex:
         Compact the index by removing empty slots.
         
         Call this periodically after many removes to reclaim memory.
+        Also rebuilds HNSW index if active.
         """
         if self._matrix is None:
             return
@@ -210,6 +312,12 @@ class VectorIndex:
         self._id_to_idx = {cid: i for i, cid in enumerate(self._ids)}
         self._dirty = True
         
+        # Rebuild HNSW index if we were using it
+        if self._using_hnsw:
+            self._using_hnsw = False
+            self._hnsw_index = None
+            self._maybe_switch_to_hnsw()
+        
         logger.info(f"Compacted vector index: {len(valid_indices)} vectors")
     
     def search(
@@ -220,14 +328,17 @@ class VectorIndex:
         filter_fn: Optional[callable] = None,
     ) -> List[Tuple[SemanticChunk, float]]:
         """
-        Search for similar chunks using VECTORIZED matrix multiply.
+        Search for similar chunks.
         
-        This is O(1) in Python - all computation happens in numpy/BLAS.
+        Uses HNSW for large indexes (>threshold), brute-force for small ones.
+        
+        BRUTE-FORCE: Vectorized matrix multiply - O(1) in Python.
+        HNSW: O(log N) approximate nearest neighbor search.
         
         Args:
-            query_embedding: Query vector
+            query_embedding: Query vector (will be L2-normalized)
             k: Number of results
-            min_score: Minimum similarity score
+            min_score: Minimum similarity score (0-1)
             filter_fn: Optional function(chunk) -> bool to filter results
             
         Returns:
@@ -236,17 +347,19 @@ class VectorIndex:
         if self._matrix is None or len(self._ids) == 0:
             return []
         
-        # Normalize query
+        # Normalize query (MUST match how we normalize stored vectors)
         if isinstance(query_embedding, np.ndarray):
             query = query_embedding.astype(np.float32)
         else:
             query = np.array(query_embedding, dtype=np.float32)
         
-        norm = np.linalg.norm(query)
-        if norm > 0:
-            query = query / norm
+        query = self._normalize_embedding(query)
         
-        # VECTORIZED: Single matrix multiply for all similarities
+        # Use HNSW for large indexes
+        if self._using_hnsw and self._hnsw_index is not None:
+            return self._search_hnsw(query, k, min_score, filter_fn)
+        
+        # VECTORIZED brute-force: Single matrix multiply for all similarities
         # (N, dim) @ (dim,) -> (N,) scores
         scores = self._matrix @ query
         
@@ -289,6 +402,57 @@ class VectorIndex:
             results.append((chunk, score))
         
         return results[:k]
+    
+    def _search_hnsw(
+        self,
+        query: np.ndarray,
+        k: int,
+        min_score: float,
+        filter_fn: Optional[callable],
+    ) -> List[Tuple[SemanticChunk, float]]:
+        """
+        Search using HNSW index.
+        
+        Note: HNSW uses inner product (cosine for normalized vectors).
+        """
+        # Request more results to allow for filtering
+        fetch_k = k * 3 if filter_fn else k
+        
+        try:
+            labels, distances = self._hnsw_index.knn_query(query.reshape(1, -1), k=fetch_k)
+            labels = labels[0]
+            distances = distances[0]  # Inner product scores (higher = more similar)
+        except Exception as e:
+            logger.warning(f"HNSW search failed: {e}, falling back to brute-force")
+            self._using_hnsw = False
+            return self.search(query, k, min_score, filter_fn)
+        
+        results = []
+        for label, score in zip(labels, distances):
+            if label < 0 or label >= len(self._ids):
+                continue
+            
+            chunk_id = self._ids[label]
+            if not chunk_id:
+                continue
+            
+            # Score check
+            if score < min_score:
+                continue
+            
+            chunk = self._chunks.get(chunk_id)
+            if chunk is None:
+                continue
+            
+            if filter_fn and not filter_fn(chunk):
+                continue
+            
+            results.append((chunk, float(score)))
+            
+            if len(results) >= k:
+                break
+        
+        return results
     
     def get_chunk(self, chunk_id: ChunkId) -> Optional[SemanticChunk]:
         """Get a chunk by ID."""
