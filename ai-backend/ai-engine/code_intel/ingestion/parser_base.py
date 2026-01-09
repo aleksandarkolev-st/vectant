@@ -57,6 +57,11 @@ class ParsedSymbol:
     exports: Set[str] = field(default_factory=set)
     references: Set[str] = field(default_factory=set)  # Symbols referenced in body
     
+    # Type information (for edge extraction with proper confidence)
+    bases: List[str] = field(default_factory=list)  # Base classes/interfaces
+    type_refs: List[str] = field(default_factory=list)  # Type references in body
+    calls: List[str] = field(default_factory=list)  # Function/method calls
+    
     # Metadata
     decorators: List[str] = field(default_factory=list)
     is_public: bool = True
@@ -141,9 +146,10 @@ class ParseResult:
 class ImportStatement:
     """Represents an import statement."""
     # What's being imported
-    module: str  # Module/package path
+    module: str  # Module/package path (the file doing the import)
     names: List[str]  # Specific names imported (empty for whole module)
     alias: Optional[str] = None  # Import alias
+    source: str = ""  # Where the import comes from (for edge extraction)
     
     # Location
     line: int = 0
