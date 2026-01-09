@@ -203,7 +203,10 @@ class DualIndexer:
         Returns:
             List of new chunks
         """
-        # Remove old entries
+        # INCREMENTAL DELETION SEMANTICS:
+        # 1. Delete ALL old chunks for this file
+        # 2. Delete all graph edges originating from this file
+        # 3. Re-extract and insert new chunks
         self.remove_file(relative_path)
         
         # Re-index
@@ -220,29 +223,78 @@ class DualIndexer:
             chunks = self._index_single_file(file, skip_embeddings=False)
             self.embedder.embed_chunks(chunks)
             for chunk in chunks:
-                if chunk.embedding:
+                if chunk.embedding is not None:
                     self.vector_index.add(chunk)
             return chunks
         else:
             return self.index_file(relative_path)
     
+    def reindex_file(self, file_path: str) -> List[SemanticChunk]:
+        """
+        Reindex a file with proper deletion semantics.
+        
+        This is the CORRECT way to handle incremental updates:
+        1. Delete ALL old chunks for this file from vector index
+        2. Delete ALL old chunks from structural index
+        3. Delete all graph edges originating from this file
+        4. Re-extract and insert new chunks
+        
+        Args:
+            file_path: Path relative to workspace root
+            
+        Returns:
+            List of new chunks
+        """
+        logger.info(f"Reindexing file: {file_path}")
+        
+        # Step 1: Get all old chunk IDs for this file
+        old_chunk_ids = self.structural_index.get_chunks_for_file(file_path)
+        
+        # Step 2: Remove all old chunks from vector index
+        for chunk_id in old_chunk_ids:
+            self.vector_index.remove(chunk_id)
+        
+        # Step 3: Remove file from structural index (removes chunks + edges)
+        self.structural_index.remove_file(file_path)
+        
+        # Step 4: Re-extract new chunks
+        file = self.walker.get_file(file_path)
+        if not file:
+            logger.warning(f"File not found for reindex: {file_path}")
+            return []
+        
+        new_chunks = self._index_single_file(file, skip_embeddings=False)
+        
+        # Step 5: Generate embeddings
+        if new_chunks:
+            self.embedder.embed_chunks(new_chunks)
+        
+        # Step 6: Add to vector index
+        for chunk in new_chunks:
+            if chunk.embedding is not None:
+                self.vector_index.add(chunk)
+        
+        # Update hash
+        self._file_hashes[file_path] = file.content_hash
+        
+        logger.info(f"Reindexed {file_path}: {len(old_chunk_ids)} old -> {len(new_chunks)} new chunks")
+        return new_chunks
+    
     def remove_file(self, relative_path: str) -> None:
         """
-        Remove a file from all indexes.
+        Remove a file from all indexes with proper deletion semantics.
         
         Args:
             relative_path: Path relative to workspace root
         """
-        # Get symbols to remove
-        symbols = self.structural_index.get_file_symbols(relative_path)
+        # Get ALL chunk IDs for this file (not just symbols)
+        chunk_ids = self.structural_index.get_chunks_for_file(relative_path)
         
         # Remove from vector index
-        for symbol in symbols:
-            chunk_id = self.structural_index.graph.get_chunk_id(symbol)
-            if chunk_id:
-                self.vector_index.remove(chunk_id)
+        for chunk_id in chunk_ids:
+            self.vector_index.remove(chunk_id)
         
-        # Remove from structural index
+        # Remove from structural index (handles edges too)
         self.structural_index.remove_file(relative_path)
         
         # Remove from hash cache

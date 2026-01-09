@@ -3,6 +3,12 @@ Embedder - Generate embeddings for semantic chunks.
 
 Uses Google's text-embedding-004 by default.
 Can be swapped for local models or other providers.
+
+CRITICAL FIXES IMPLEMENTED:
+1. Structured embed text instead of raw code
+2. Key line extraction (returns, raises, external calls)
+3. Semantic enrichment for better retrieval
+4. Proper handling of long functions
 """
 
 from __future__ import annotations
@@ -10,13 +16,134 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import List, Optional
+import re
+from typing import List, Optional, Set
+
+import numpy as np
 
 from ..core.types import SemanticChunk
 from ..core.config import get_config
 
 
 logger = logging.getLogger("code_intel.indexer.embedder")
+
+
+def extract_key_lines(code: str, max_lines: int = 10) -> str:
+    """
+    Extract key lines from code for embedding.
+    
+    Key lines include:
+    - Return statements
+    - Raise/throw statements
+    - External function calls
+    - Important assignments
+    
+    This preserves semantic meaning even when full code is truncated.
+    
+    Args:
+        code: Full code body
+        max_lines: Maximum number of key lines to extract
+        
+    Returns:
+        Key lines joined by newlines
+    """
+    key_lines = []
+    lines = code.split('\n')
+    
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        
+        # Return statements
+        if stripped.startswith('return '):
+            key_lines.append(stripped)
+        # Raise/throw statements
+        elif stripped.startswith(('raise ', 'throw ')):
+            key_lines.append(stripped)
+        # Yield statements
+        elif stripped.startswith('yield '):
+            key_lines.append(stripped)
+        # External calls (function calls with dots or specific patterns)
+        elif re.search(r'\w+\.\w+\(', stripped) and not stripped.startswith('#'):
+            # Extract just the call part
+            match = re.search(r'(\w+\.\w+\([^)]*\))', stripped)
+            if match:
+                key_lines.append(match.group(1))
+        # Important assignments (self., this., const, let, var)
+        elif re.match(r'(self\.|this\.|const |let |var )\w+\s*=', stripped):
+            key_lines.append(stripped.split('=')[0].strip() + ' = ...')
+    
+    # Deduplicate while preserving order
+    seen: Set[str] = set()
+    unique_lines = []
+    for line in key_lines:
+        if line not in seen:
+            seen.add(line)
+            unique_lines.append(line)
+    
+    return '\n'.join(unique_lines[:max_lines])
+
+
+def build_embed_text(chunk: SemanticChunk) -> str:
+    """
+    Build structured text for embedding a chunk.
+    
+    This produces MUCH better embeddings than raw code because:
+    1. Symbol identity is explicit
+    2. Docstring is prioritized
+    3. Key lines preserve semantics even for long functions
+    4. Import context provides semantic hints
+    
+    Format:
+        SYMBOL: module.Class.method
+        TYPE: method
+        SIGNATURE: def method(self, arg1: str) -> bool
+        DOC: Method docstring (capped at 500 chars)
+        KEY: return statements, raises, external calls
+        USES: import1, import2, ...
+    
+    Args:
+        chunk: SemanticChunk to embed
+        
+    Returns:
+        Structured text for embedding
+    """
+    parts = []
+    
+    # 1. Symbol identity
+    qualified_name = chunk.metadata.qualified_name or chunk.metadata.symbol_name
+    if qualified_name:
+        parts.append(f"SYMBOL: {qualified_name}")
+    
+    # 2. Symbol type
+    if chunk.metadata.symbol_type:
+        parts.append(f"TYPE: {chunk.metadata.symbol_type.value}")
+    
+    # 3. Signature (critical for API matching)
+    if chunk.metadata.signature:
+        parts.append(f"SIGNATURE: {chunk.metadata.signature}")
+    
+    # 4. Docstring (capped to preserve key info)
+    if chunk.metadata.docstring:
+        doc = chunk.metadata.docstring[:500]
+        if len(chunk.metadata.docstring) > 500:
+            doc += "..."
+        parts.append(f"DOC: {doc}")
+    
+    # 5. Key lines (semantic essence of the implementation)
+    code = chunk._code_body or ""
+    if code:
+        key_lines = extract_key_lines(code)
+        if key_lines:
+            parts.append(f"KEY: {key_lines}")
+    
+    # 6. Imports used (semantic context)
+    if chunk.metadata.imports_used:
+        imports_list = list(chunk.metadata.imports_used)[:10]
+        parts.append(f"USES: {', '.join(imports_list)}")
+    
+    return "\n".join(parts)
 
 
 class Embedder:
@@ -138,33 +265,29 @@ class Embedder:
     
     def embed_chunk(self, chunk: SemanticChunk) -> SemanticChunk:
         """
-        Embed a semantic chunk.
+        Embed a semantic chunk using STRUCTURED embed text.
         
-        Creates embedding from formatted chunk content.
+        This does NOT embed raw code. Instead it builds structured text
+        that captures the semantic meaning:
+        - Symbol identity
+        - Type and signature
+        - Docstring
+        - Key lines (returns, raises, calls)
+        - Import context
         
         Args:
             chunk: Chunk to embed
             
         Returns:
-            Chunk with embedding set
+            Chunk with embedding set (as numpy array)
         """
-        # Build text for embedding
-        # Include metadata for better semantic matching
-        parts = []
-        
-        if chunk.metadata.docstring:
-            parts.append(chunk.metadata.docstring)
-        
-        if chunk.metadata.signature:
-            parts.append(chunk.metadata.signature)
-        
-        parts.append(chunk.code_body)
-        
-        text = "\n".join(parts)
+        # Build structured text for embedding
+        text = build_embed_text(chunk)
         
         try:
             embedding = self.embed_text(text)
-            chunk.embedding = embedding
+            # Store as numpy array for efficiency
+            chunk.embedding = np.array(embedding, dtype=np.float32)
         except Exception as e:
             logger.warning(f"Failed to embed chunk {chunk.id}: {e}")
         
@@ -172,7 +295,7 @@ class Embedder:
     
     def embed_chunks(self, chunks: List[SemanticChunk]) -> List[SemanticChunk]:
         """
-        Embed multiple chunks in batches.
+        Embed multiple chunks in batches using STRUCTURED embed text.
         
         Args:
             chunks: Chunks to embed
@@ -180,24 +303,16 @@ class Embedder:
         Returns:
             Chunks with embeddings set
         """
-        # Build texts
-        texts = []
-        for chunk in chunks:
-            parts = []
-            if chunk.metadata.docstring:
-                parts.append(chunk.metadata.docstring)
-            if chunk.metadata.signature:
-                parts.append(chunk.metadata.signature)
-            parts.append(chunk.code_body)
-            texts.append("\n".join(parts))
+        # Build structured texts
+        texts = [build_embed_text(chunk) for chunk in chunks]
         
         # Embed
         embeddings = self.embed_texts(texts)
         
-        # Assign
+        # Assign as numpy arrays
         for chunk, embedding in zip(chunks, embeddings):
             if embedding:
-                chunk.embedding = embedding
+                chunk.embedding = np.array(embedding, dtype=np.float32)
         
         return chunks
     

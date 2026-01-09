@@ -112,6 +112,10 @@ class SummaryConfig:
 @dataclass
 class ContextConfig:
     """Configuration for context management."""
+    # Token limits
+    max_context_tokens: int = 8000
+    response_reserve_tokens: int = 500
+    
     # Eviction
     context_expires_each_turn: bool = True
     pin_summaries: bool = True

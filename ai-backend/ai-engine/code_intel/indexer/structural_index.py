@@ -8,6 +8,12 @@ This is what vectors cannot do. It stores:
 - Call graph (best effort)
 
 This answers "what must also be included" when given a set of candidates.
+
+CRITICAL FIXES IMPLEMENTED:
+1. Proper incremental deletion semantics (all chunks + edges for file)
+2. Edge confidence tracking (LSP > AST > heuristic)
+3. Expansion limits per confidence level
+4. Chunks-to-file mapping for efficient reindexing
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ from ..core.types import (
     SymbolEdge,
     SymbolNode,
     SymbolType,
+    EXPANSION_LIMITS,
 )
 
 
@@ -54,6 +61,11 @@ class SymbolGraph:
     
     Nodes are symbols (functions, classes, etc.)
     Edges are relationships (calls, imports, inherits, etc.)
+    
+    Edge extraction priority (highest confidence first):
+    1. LSP references (confidence=1.0)
+    2. Parser/AST extraction (confidence=0.9)
+    3. Heuristic fallbacks (confidence=0.6)
     """
     
     def __init__(self):
@@ -68,16 +80,31 @@ class SymbolGraph:
         
         # Symbol to chunk mapping
         self._symbol_to_chunk: Dict[QualifiedName, ChunkId] = {}
+        
+        # Chunk to symbol mapping (for deletion)
+        self._chunk_to_symbol: Dict[ChunkId, QualifiedName] = {}
+        
+        # File to symbols mapping (for deletion)
+        self._file_to_symbols: Dict[FilePath, Set[QualifiedName]] = defaultdict(set)
+        
+        # File to edges mapping (for deletion)
+        self._file_to_edges: Dict[FilePath, List[SymbolEdge]] = defaultdict(list)
     
     def add_node(self, node: SymbolNode, chunk_id: ChunkId) -> None:
         """Add a symbol node."""
         self._nodes[node.qualified_name] = node
         self._symbol_to_chunk[node.qualified_name] = chunk_id
+        self._chunk_to_symbol[chunk_id] = node.qualified_name
+        self._file_to_symbols[node.file_path].add(node.qualified_name)
     
     def add_edge(self, edge: SymbolEdge) -> None:
         """Add an edge between symbols."""
         self._edges[edge.source].append(edge)
         self._reverse_edges[edge.target].append(edge)
+        
+        # Track edge by file for deletion
+        if edge.file_path:
+            self._file_to_edges[edge.file_path].append(edge)
     
     def get_node(self, name: QualifiedName) -> Optional[SymbolNode]:
         """Get a symbol node by name."""
@@ -86,6 +113,10 @@ class SymbolGraph:
     def get_chunk_id(self, name: QualifiedName) -> Optional[ChunkId]:
         """Get chunk ID for a symbol."""
         return self._symbol_to_chunk.get(name)
+    
+    def get_symbol_for_chunk(self, chunk_id: ChunkId) -> Optional[QualifiedName]:
+        """Get symbol name for a chunk ID."""
+        return self._chunk_to_symbol.get(chunk_id)
     
     def get_outgoing_edges(
         self, name: QualifiedName, edge_types: Optional[Set[EdgeType]] = None
@@ -104,6 +135,38 @@ class SymbolGraph:
         if edge_types:
             edges = [e for e in edges if e.edge_type in edge_types]
         return edges
+    
+    def get_edges_by_confidence(
+        self,
+        name: QualifiedName,
+        direction: str = "outgoing",
+        min_confidence: float = 0.0,
+    ) -> List[SymbolEdge]:
+        """
+        Get edges filtered by confidence level.
+        
+        Args:
+            name: Symbol name
+            direction: "outgoing" or "incoming"
+            min_confidence: Minimum confidence threshold
+            
+        Returns:
+            Edges meeting the confidence threshold
+        """
+        if direction == "outgoing":
+            edges = self._edges.get(name, [])
+        else:
+            edges = self._reverse_edges.get(name, [])
+        
+        return [e for e in edges if e.confidence >= min_confidence]
+    
+    def get_expansion_limit(self, edge: SymbolEdge) -> int:
+        """Get expansion limit for an edge based on its confidence/source."""
+        return EXPANSION_LIMITS.get(edge.source_method, {}).get("max_per_source", 5)
+    
+    def get_max_hops(self, edge: SymbolEdge) -> int:
+        """Get max hops for an edge based on its confidence/source."""
+        return EXPANSION_LIMITS.get(edge.source_method, {}).get("max_hops", 2)
     
     def get_dependencies(
         self,
@@ -184,9 +247,15 @@ class SymbolGraph:
     def remove_symbol(self, name: QualifiedName) -> None:
         """Remove a symbol and its edges."""
         if name in self._nodes:
+            node = self._nodes[name]
+            self._file_to_symbols[node.file_path].discard(name)
             del self._nodes[name]
+        
         if name in self._symbol_to_chunk:
+            chunk_id = self._symbol_to_chunk[name]
             del self._symbol_to_chunk[name]
+            if chunk_id in self._chunk_to_symbol:
+                del self._chunk_to_symbol[chunk_id]
         
         # Remove outgoing edges
         if name in self._edges:
@@ -203,6 +272,59 @@ class SymbolGraph:
                     e for e in self._edges[edge.source] if e.target != name
                 ]
             del self._reverse_edges[name]
+    
+    def remove_edges_from_file(self, file_path: FilePath) -> int:
+        """
+        Remove all edges originating from a file.
+        
+        CRITICAL for incremental reindexing:
+        When a file is reindexed, we must remove ALL old edges
+        from that file before adding new ones.
+        
+        Args:
+            file_path: Path to the file
+            
+        Returns:
+            Number of edges removed
+        """
+        if file_path not in self._file_to_edges:
+            return 0
+        
+        edges_to_remove = self._file_to_edges[file_path]
+        removed = 0
+        
+        for edge in edges_to_remove:
+            # Remove from outgoing edges
+            if edge.source in self._edges:
+                self._edges[edge.source] = [
+                    e for e in self._edges[edge.source]
+                    if not (e.target == edge.target and e.edge_type == edge.edge_type)
+                ]
+            
+            # Remove from incoming edges
+            if edge.target in self._reverse_edges:
+                self._reverse_edges[edge.target] = [
+                    e for e in self._reverse_edges[edge.target]
+                    if not (e.source == edge.source and e.edge_type == edge.edge_type)
+                ]
+            
+            removed += 1
+        
+        del self._file_to_edges[file_path]
+        return removed
+    
+    def get_symbols_for_file(self, file_path: FilePath) -> Set[QualifiedName]:
+        """Get all symbols defined in a file."""
+        return self._file_to_symbols.get(file_path, set()).copy()
+    
+    def get_chunks_for_file(self, file_path: FilePath) -> Set[ChunkId]:
+        """Get all chunk IDs for a file."""
+        symbols = self._file_to_symbols.get(file_path, set())
+        return {
+            self._symbol_to_chunk[sym]
+            for sym in symbols
+            if sym in self._symbol_to_chunk
+        }
     
     def all_nodes(self) -> Iterator[SymbolNode]:
         """Iterate over all nodes."""
@@ -359,16 +481,19 @@ class StructuralIndex:
         
         file_entry = self._files[file_path]
         
-        # Remove symbols
-        for symbol in file_entry.symbols:
+        # 1. Remove all edges originating from this file FIRST
+        self._graph.remove_edges_from_file(file_path)
+        
+        # 2. Remove all symbols from this file
+        for symbol in list(file_entry.symbols):  # Copy to avoid mutation during iteration
             self._graph.remove_symbol(symbol)
         
-        # Update import relationships
+        # 3. Update import relationships
         for imported in file_entry.imports:
             if imported in self._files:
                 self._files[imported].imported_by.discard(file_path)
         
-        # Clean up chunk mappings
+        # 4. Clean up chunk mappings
         chunks_to_remove = [
             cid for cid, fp in self._chunk_to_file.items() if fp == file_path
         ]
@@ -377,6 +502,20 @@ class StructuralIndex:
         
         del self._files[file_path]
         self._dirty = True
+        
+        logger.debug(f"Removed file from index: {file_path} ({len(chunks_to_remove)} chunks)")
+    
+    def get_chunks_for_file(self, file_path: FilePath) -> Set[ChunkId]:
+        """
+        Get all chunk IDs for a file.
+        
+        CRITICAL for incremental deletion:
+        When reindexing, we need to remove ALL old chunks for a file.
+        """
+        return {
+            cid for cid, fp in self._chunk_to_file.items()
+            if fp == file_path
+        }
     
     def get_file_symbols(self, file_path: FilePath) -> Set[QualifiedName]:
         """Get all symbols defined in a file."""

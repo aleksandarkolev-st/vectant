@@ -9,8 +9,8 @@ This is step 5 of the retrieval pipeline:
 5. [BudgetEnforcer] Enforce hard token budget ← YOU ARE HERE
 6. [ContextAssembler] Assemble final context
 
-Critical constraint: AI models have hard token limits.
-This module ensures we never exceed them.
+CRITICAL: Uses target model tokenizer for accurate counting.
+If token counts don't match the model, context will overflow or underflow.
 
 Budget allocation:
 - Repo summary: ~300-500 tokens (fixed)
@@ -23,20 +23,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
-from ..core.types import SemanticChunk, FileSummary, RepoSummary, ContextBudget
+from ..core.types import SemanticChunk, FileSummary, RepoSummary, ContextBudget, TokenCounter
 from ..core.config import ContextConfig
 from .retriever import RetrievalCandidate
 
 
 logger = logging.getLogger("code_intel.retrieval.budget")
-
-
-# Approximate token estimation
-# Average English word ≈ 1.3 tokens
-# Code is more dense: ~0.5-0.7 tokens per character on average
-CHARS_PER_TOKEN = 4
 
 
 @dataclass
@@ -70,6 +64,8 @@ class BudgetEnforcer:
     """
     Enforce token budgets for context assembly.
     
+    CRITICAL: Uses target model tokenizer for accurate counting.
+    
     Strategy:
     1. Reserve tokens for fixed elements (repo summary, system prompt)
     2. Allocate tokens to code chunks by rank order
@@ -80,8 +76,10 @@ class BudgetEnforcer:
     def __init__(
         self,
         config: Optional[ContextConfig] = None,
+        target_model: str = "gpt-4",
     ):
         self.config = config or ContextConfig()
+        self.token_counter = TokenCounter(target_model)
     
     def enforce(
         self,
@@ -193,10 +191,15 @@ class BudgetEnforcer:
         return allocation
     
     def _estimate_tokens(self, text: str) -> int:
-        """Estimate token count from text."""
-        return len(text) // CHARS_PER_TOKEN
+        """
+        Estimate token count using target model tokenizer.
+        
+        CRITICAL: This must match the model being prompted.
+        """
+        return self.token_counter.count(text)
     
     def _estimate_chunk_tokens(self, chunk: SemanticChunk) -> int:
+        """Estimate tokens for a chunk using target tokenizer."""
         """Estimate tokens for a chunk."""
         total = 0
         

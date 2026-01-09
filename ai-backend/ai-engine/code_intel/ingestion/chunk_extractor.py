@@ -3,6 +3,8 @@ Chunk Extractor - Convert parsed results to semantic chunks.
 
 Responsible for creating properly structured SemanticChunk objects
 from parser output.
+
+CRITICAL: Sets stable chunk IDs and module groups for proper indexing.
 """
 
 from __future__ import annotations
@@ -18,6 +20,9 @@ from ..core.types import (
     ChunkMetadata,
     SemanticChunk,
     SymbolType,
+    get_module_group,
+    compute_chunk_id,
+    compute_body_fingerprint,
 )
 
 
@@ -105,10 +110,28 @@ class ChunkExtractor:
         # Build export set
         exported_names = {exp.name for exp in parse_result.exports}
         
+        # Compute module group for this file
+        module_group = get_module_group(file_path, parse_result.language)
+        
         for symbol in parse_result.symbols:
+            # Build qualified name
+            if symbol.parent:
+                qualified_name = f"{symbol.parent}.{symbol.name}"
+            else:
+                qualified_name = symbol.name
+            
             # Determine what this symbol imports/exports
             symbol_imports = symbol.imports if symbol.imports else frozenset()
             symbol_exports = frozenset([symbol.name]) if symbol.name in exported_names else frozenset()
+            
+            # Compute stable chunk ID
+            body_fingerprint = compute_body_fingerprint(symbol.code)
+            chunk_id = compute_chunk_id(
+                file_path,
+                qualified_name,
+                symbol.signature,
+                body_fingerprint
+            )
             
             # Create metadata
             metadata = ChunkMetadata(
@@ -118,6 +141,7 @@ class ChunkExtractor:
                 start_col=symbol.start_col,
                 end_col=symbol.end_col,
                 symbol_name=symbol.name,
+                qualified_name=qualified_name,
                 symbol_type=symbol.symbol_type,
                 signature=symbol.signature,
                 docstring=symbol.docstring,
@@ -127,14 +151,17 @@ class ChunkExtractor:
                 language=parse_result.language,
                 is_public=symbol.is_public,
                 is_test=self._is_test_code(file_path, symbol.name),
+                module_group=module_group,
             )
             
-            # Create chunk
+            # Create chunk with stable ID
             chunk = SemanticChunk(
-                id="",  # Will be auto-generated
-                code_body=symbol.code,
+                id=chunk_id,
                 metadata=metadata,
             )
+            # Set code body separately (for lazy loading support)
+            chunk._code_body = symbol.code
+            chunk._code_loaded = True
             
             chunks.append(chunk)
         
