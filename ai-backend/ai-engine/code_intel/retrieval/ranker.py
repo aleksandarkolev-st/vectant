@@ -65,6 +65,7 @@ class RankingFactors:
     # Penalties
     test_penalty: float = 0.0  # Tests usually less relevant
     size_penalty: float = 0.0  # Very large chunks may be noisy
+    generic_name_penalty: float = 0.0  # Generic names like "utils", "handler"
     
     # Namespace proximity
     namespace_bonus: float = 0.0  # Same package/dependency
@@ -73,12 +74,28 @@ class RankingFactors:
     final_score: float = 0.0
 
 
+# Generic names that need downranking beyond just stopwords
+GENERIC_NAME_PATTERNS = frozenset([
+    # Highly generic - severe penalty
+    "utils", "util", "helper", "helpers", "common", "shared", "misc",
+    "handler", "manager", "service", "controller", "processor", "worker",
+    # Moderately generic
+    "base", "abstract", "default", "generic", "core", "main", "app",
+    "model", "entity", "data", "dto", "vo", "item", "object",
+    # Index/container names
+    "index", "container", "factory", "builder", "provider", "wrapper",
+])
+
+
 class ContextRanker:
     """
     Rank retrieval candidates by multiple factors.
     
     Uses ADDITIVE weighted combination (not multiplicative).
     This prevents score collapse to near-zero.
+    
+    GENERIC NAME DOWNRANKING: Symbols with generic names (utils, handler, etc.)
+    are downranked to prefer more specific symbols in retrieval.
     """
     
     # Ranking weights for ADDITIVE scoring (sum to 1.0)
@@ -95,6 +112,7 @@ class ContextRanker:
     PENALTY_WEIGHTS = {
         "test_penalty": 0.05,
         "size_penalty": 0.03,
+        "generic_name_penalty": 0.08,  # Generic names hurt relevance
     }
     
     # File importance patterns
@@ -209,6 +227,9 @@ class ContextRanker:
         code_length = len(chunk.code_body) if chunk.code_body else 0
         if code_length > 2000:
             factors.size_penalty = min(1.0, (code_length - 2000) / 5000)
+        
+        # 9. Generic name penalty (utils, handler, manager, etc.)
+        factors.generic_name_penalty = self._compute_generic_name_penalty(chunk)
         
         # Compute final score using ADDITIVE combination
         factors.final_score = self._combine_factors_additive(factors)
@@ -364,6 +385,40 @@ class ContextRanker:
         indicators = ['test', 'spec', '__tests__', '_test.', '.test.']
         return any(ind in path_lower for ind in indicators)
     
+    def _compute_generic_name_penalty(self, chunk: SemanticChunk) -> float:
+        """
+        Compute penalty for generic symbol names.
+        
+        Generic names like "utils", "handler", "manager" are common
+        and often not what users are looking for specifically.
+        
+        Returns:
+            0.0 = no penalty (specific name)
+            0.5 = moderate penalty (somewhat generic)
+            1.0 = severe penalty (highly generic)
+        """
+        symbol_name = chunk.symbol_name.lower() if chunk.symbol_name else ""
+        file_path = chunk.file_path.lower() if chunk.file_path else ""
+        
+        # Check symbol name
+        symbol_parts = self._split_identifier(symbol_name)
+        generic_matches = sum(1 for p in symbol_parts if p in GENERIC_NAME_PATTERNS)
+        
+        # Check file path
+        file_parts = self._split_identifier(file_path.replace('/', '_').replace('\\', '_'))
+        file_generic = sum(1 for p in file_parts if p in GENERIC_NAME_PATTERNS)
+        
+        if generic_matches == 0 and file_generic == 0:
+            return 0.0
+        
+        # Compute penalty based on how generic
+        # Single generic word = 0.3, multiple = higher
+        symbol_penalty = min(1.0, generic_matches * 0.4)
+        file_penalty = min(0.5, file_generic * 0.15)  # File less important
+        
+        # Combined but capped
+        return min(1.0, symbol_penalty + file_penalty)
+    
     def _combine_factors_additive(self, factors: RankingFactors) -> float:
         """
         Combine factors using ADDITIVE scoring with NORMALIZED features.
@@ -402,8 +457,10 @@ class ContextRanker:
         # Subtract normalized penalties
         test_pen = max(0.0, min(1.0, factors.test_penalty))
         size_pen = max(0.0, min(1.0, factors.size_penalty))
+        generic_pen = max(0.0, min(1.0, factors.generic_name_penalty))
         score -= self.PENALTY_WEIGHTS["test_penalty"] * test_pen
         score -= self.PENALTY_WEIGHTS["size_penalty"] * size_pen
+        score -= self.PENALTY_WEIGHTS["generic_name_penalty"] * generic_pen
         
         # Clamp to 0-1 range
         return max(0.0, min(1.0, score))
@@ -417,22 +474,6 @@ def rank_chunks(
     """Convenience function for ranking."""
     ranker = ContextRanker()
     return ranker.rank(candidates, query_symbols, query_context=query_context)
-            if symbol_lower == query_lower:
-                return 1.0
-            
-            # Prefix match
-            if symbol_lower.startswith(query_lower):
-                best_match = max(best_match, 0.8)
-            
-            # Contains match
-            elif query_lower in symbol_lower:
-                best_match = max(best_match, 0.5)
-            
-            # Partial overlap (for camelCase/snake_case)
-            else:
-                # Split into parts
-                symbol_parts = self._split_identifier(symbol_lower)
-                query_parts = self._split_identifier(query_lower)
                 
                 overlap = len(set(symbol_parts) & set(query_parts))
                 if overlap > 0:
