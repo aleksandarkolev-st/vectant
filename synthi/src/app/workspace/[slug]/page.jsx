@@ -33,6 +33,7 @@ import { getFileLanguage } from '@/utils/fileUtils';
 import { useAnalyzerGateway } from '@/hooks/useAnalyzerGateway';
 import { useWorkspaceAnalysis } from '@/hooks/useWorkspaceAnalysis';
 import { useCompiler } from '@/hooks/useCompiler';
+import { useCodeIntelIndex } from '@/hooks/useCodeIntelIndex';
 import AIChatWindow from '@/components/chat/AIChatWindow';
 import { api } from '@/services/api';
 import { gitClient } from '@/services/gitClient';
@@ -69,9 +70,25 @@ export default function EditorPage({ params }) {
     const [editor, setEditor] = useState(null);
     // Track editor content version to force re-analysis on every change (including remote/undo)
     const [editorVersion, setEditorVersion] = useState(0);
-    const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway } = useAnalyzerGateway();
+    const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = useAnalyzerGateway();
     const { compile, mediaStream } = useCompiler();
     useHMR();
+    
+    // Code Intelligence - auto-index workspace for AI context retrieval
+    const { 
+        isIndexing: isCodeIntelIndexing, 
+        isIndexed: isCodeIntelIndexed,
+        filesIndexed: codeIntelFilesIndexed,
+        indexWorkspace: triggerCodeIntelIndex,
+        indexFile: triggerCodeIntelFileIndex,
+    } = useCodeIntelIndex({
+        workspaceSlug: slug,
+        autoIndex: true, // Auto-index when workspace opens
+        onIndexComplete: (result) => {
+            console.log(`[Workspace] Code intelligence ready: ${result.files_indexed} files indexed`);
+        },
+    });
+    
     const [latestCompletion, setLatestCompletion] = useState(null);
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
@@ -603,7 +620,7 @@ export default function EditorPage({ params }) {
         }
         
         // DEBUG: Log content hash and preview to trace stale content issues
-        // console.log(`[page.jsx] Content changed - Hash: ${contentHash}, Length: ${contentToAnalyze.length}`);
+        console.log(`[page.jsx] Content changed - Hash: ${contentHash}, Length: ${contentToAnalyze.length}`);
         
         // Check if content actually changed for this file compared to last analysis
         const lastFastHash = lastFastHashMapRef.current.get(currentFilePath);
