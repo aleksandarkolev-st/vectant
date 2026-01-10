@@ -385,15 +385,88 @@ pub async fn handle_runner_execution(
             });
         }
 
-        // ... (Runner Process Start)
-        // ...
+        // Spawn Runner Process
+        let runner_path = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.join("runner")))
+            .unwrap_or_else(|| std::path::PathBuf::from("runner"));
+
+        println!("Spawning runner: {:?}", runner_path);
+
+        let mut cmd = Command::new(runner_path);
+        cmd.env("DISPLAY", &wsl_display_str)
+           .env("LD_LIBRARY_PATH", std::env::var("LD_LIBRARY_PATH").unwrap_or_default())
+           .stdin(Stdio::piped())
+           .stdout(Stdio::piped())
+           .stderr(Stdio::piped())
+           .kill_on_drop(true);
+
+        if let Some(sid) = &session_id {
+            cmd.env("SYNTHI_SESSION_ID", sid);
+        }
+
+        let mut child = cmd.spawn().context("Failed to spawn runner process")?;
         
-        // ... (Status Monitoring)
+        // Capture stdout/stderr
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let stdin = child.stdin.take().unwrap();
         
+        let (log_tx, _) = tokio::sync::broadcast::channel::<String>(100);
+        let log_tx_clone = log_tx.clone();
+        
+        // Forward stdout/stderr to log_dc
+        let ctx_clone = ctx.clone();
+        let session_id_clone = session_id.clone();
+        
+        // Stdout Reader
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stdout).lines();
+            while let Ok(line) = reader.next_line().await {
+                match line {
+                    Some(l) => {
+                         let _ = log_tx_clone.send(l.clone());
+                         // Send to frontend
+                         let payload = serde_json::json!({
+                            "sessionId": session_id_clone,
+                            "type": "stdout",
+                            "line": l
+                         });
+                         let _ = ctx_clone.log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                    },
+                    None => break,
+                }
+            }
+        });
+
+        let ctx_clone2 = ctx.clone();
+        let session_id_clone2 = session_id.clone();
+        let log_tx_clone2 = log_tx.clone();
+
+        // Stderr Reader
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(line) = reader.next_line().await {
+                 match line {
+                    Some(l) => {
+                         let _ = log_tx_clone2.send(l.clone());
+                         // Send to frontend
+                         let payload = serde_json::json!({
+                            "sessionId": session_id_clone2,
+                            "type": "stderr",
+                            "line": l
+                         });
+                         let _ = ctx_clone2.log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                    },
+                    None => break,
+                }
+            }
+        });
+
         *guard = Some(RunnerState {
-            process: None, // Placeholder, needs actual child
-            stdin: None, // Placeholder matching type Option<ChildStdin>
-            output_tx: tokio::sync::broadcast::channel(1).0, // Placeholder
+            process: Some(child),
+            stdin: Some(stdin),
+            output_tx: log_tx,
             is_gui: req.is_gui,
             is_hmr_capable: has_on_update,
             hmr_capability: None,
@@ -416,13 +489,30 @@ pub async fn handle_runner_execution(
 
     if let Some(state) = guard.as_mut() {
         if !existing_runner_can_hmr {
-            // Attach tracks logic ...
-            // Subscribe output logic ...
+            if let Some(track) = &state.video_track {
+                println!("[Main] Adding video track to PeerConnection");
+                let _ = ctx.pc.add_track(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>).await?;
+            }
+            if let Some(track) = &state.audio_track {
+                println!("[Main] Adding audio track to PeerConnection");
+                let _ = ctx.pc.add_track(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>).await?;
+            }
         }
 
         // Load Modules
         for (name, path) in &modules_to_load {
-             // ...
+             if let Some(stdin) = state.stdin.as_mut() {
+                 let cmd = format!("load {} {}\n", name, path);
+                 println!("[Main] Sending command to runner: {}", cmd.trim());
+                 if let Err(e) = stdin.write_all(cmd.as_bytes()).await {
+                      eprintln!("Failed to write to runner stdin: {}", e);
+                 }
+                 if let Err(e) = stdin.flush().await {
+                      eprintln!("Failed to flush runner stdin: {}", e);
+                 }
+                 // Give it a moment to load
+                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+             }
         }
         
         // Update RunnerState
