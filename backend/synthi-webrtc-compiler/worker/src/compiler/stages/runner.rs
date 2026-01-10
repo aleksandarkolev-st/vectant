@@ -165,6 +165,19 @@ pub async fn handle_runner_execution(
                 // Try finding a free display or use separate ones per worker? 
                 // For simplified single-worker model, we can use :99
                 let display_num = 99;
+                
+                // [Fix] Clean up stale lock files from previous runs
+                let lock_file = format!("/tmp/.X11-unix/X{}", display_num);
+                if std::path::Path::new(&lock_file).exists() {
+                    println!("Removing stale Xvfb lock file: {}", lock_file);
+                    let _ = std::fs::remove_file(&lock_file);
+                }
+                let lock_file_tmp = format!("/tmp/.X{}-lock", display_num);
+                if std::path::Path::new(&lock_file_tmp).exists() {
+                     println!("Removing stale Xvfb lock file: {}", lock_file_tmp);
+                     let _ = std::fs::remove_file(&lock_file_tmp);
+                }
+
                 wsl_display_str = format!(":{}", display_num);
                 gst_display_str = wsl_display_str.clone();
                 
@@ -214,11 +227,12 @@ pub async fn handle_runner_execution(
                 println!("Trying encoder: {}", encoder);
 
                 // ximagesrc -> videoscale -> videoconvert -> encoder -> payloader -> appsink
-                // pulsesrc -> audioconvert -> opusenc -> rtpopuspay -> appsink
+                // audiotestsrc (silence) -> opusenc -> rtpopuspay -> appsink
+                // We use audiotestsrc instead of pulsesrc to be robust in headless environments
                 
                 let pipeline_str = format!(
                     "ximagesrc display-name=\"{}\" use-damage=0 ! video/x-raw,framerate=30/1 ! videoscale ! videoconvert ! {} ! {} name=video_pay ! appsink name=video_sink sync=false \
-                     pulsesrc ! audioconvert ! opusenc ! rtpopuspay name=audio_pay ! appsink name=audio_sink sync=false",
+                     audiotestsrc is-live=true wave=silence ! opusenc ! rtpopuspay name=audio_pay ! appsink name=audio_sink sync=false",
                      gst_display_str, encoder, payloader
                 );
 
