@@ -2,6 +2,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
+use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, Endpoint};
 use tonic::Request;
 
@@ -43,27 +44,46 @@ impl EmulatorGrpcClients {
             .await
             .context("failed to connect to emulator gRPC endpoint")?;
 
-        // TODO: Apply token auth once the emulator gRPC auth mechanism is wired.
-        let _ = cfg.use_token;
-        let _ = cfg.token_path.as_deref();
+        if cfg.use_token {
+            let _ = read_grpc_token(cfg)?;
+        }
 
         Ok(Self { channel })
     }
 
-    pub fn display_client(&self) -> Result<()> {
-        // TODO: Replace with real display stream client once proto services are available.
-        let _ = &self.channel;
-        bail!("TODO: emulator gRPC display client is not wired yet");
+    #[cfg(not(synthi_no_protoc))]
+    pub fn display_client(
+        &self,
+    ) -> Result<generated::emulator_controller_client::EmulatorControllerClient<Channel>> {
+        Ok(generated::emulator_controller_client::EmulatorControllerClient::new(
+            self.channel.clone(),
+        ))
     }
 
-    pub fn input_client(&self) -> Result<()> {
-        // TODO: Replace with real input/control client once proto services are available.
-        let _ = &self.channel;
-        bail!("TODO: emulator gRPC input client is not wired yet");
+    #[cfg(synthi_no_protoc)]
+    pub fn display_client(&self) -> Result<generated::Placeholder> {
+        bail!("emulator gRPC codegen unavailable (protoc missing)");
+    }
+
+    #[cfg(not(synthi_no_protoc))]
+    pub fn input_client(
+        &self,
+    ) -> Result<generated::emulator_controller_client::EmulatorControllerClient<Channel>> {
+        Ok(generated::emulator_controller_client::EmulatorControllerClient::new(
+            self.channel.clone(),
+        ))
+    }
+
+    #[cfg(synthi_no_protoc)]
+    pub fn input_client(&self) -> Result<generated::Placeholder> {
+        bail!("emulator gRPC codegen unavailable (protoc missing)");
     }
 }
 
-async fn connect_controller(cfg: &EmulatorGrpcConfig) -> Result<generated::emulator_controller_client::EmulatorControllerClient<Channel>> {
+#[cfg(not(synthi_no_protoc))]
+async fn connect_controller(
+    cfg: &EmulatorGrpcConfig,
+) -> Result<generated::emulator_controller_client::EmulatorControllerClient<Channel>> {
     let endpoint = format!("http://{}:{}", cfg.host, cfg.port);
     let channel = Endpoint::from_shared(endpoint)
         .context("invalid gRPC endpoint")?
@@ -73,14 +93,23 @@ async fn connect_controller(cfg: &EmulatorGrpcConfig) -> Result<generated::emula
         .await
         .context("failed to connect to emulator gRPC endpoint")?;
 
-    // TODO: Apply token auth once the emulator gRPC auth mechanism is wired.
-    let _ = cfg.use_token;
-    let _ = cfg.token_path.as_deref();
+    if cfg.use_token {
+        let _ = read_grpc_token(cfg)?;
+    }
 
     Ok(generated::emulator_controller_client::EmulatorControllerClient::new(channel))
 }
 
+#[cfg(synthi_no_protoc)]
+async fn connect_controller(
+    _cfg: &EmulatorGrpcConfig,
+) -> Result<generated::Placeholder> {
+    bail!("emulator gRPC codegen unavailable (protoc missing)");
+}
+
+#[cfg(not(synthi_no_protoc))]
 pub async fn stream_frames(cfg: &EmulatorGrpcConfig) -> Result<mpsc::UnboundedReceiver<EmulatorFrame>> {
+    let token = read_grpc_token(cfg)?;
     let mut client = connect_controller(cfg).await?;
 
     let format = generated::ImageFormat {
@@ -89,13 +118,20 @@ pub async fn stream_frames(cfg: &EmulatorGrpcConfig) -> Result<mpsc::UnboundedRe
         width: 0,
         height: 0,
         display: 0,
-        transport: None,
+        transport: Some(generated::ImageTransport {
+            channel: 0,
+            handle: String::new(),
+        }),
         folded_display: None,
-        display_mode: None,
+        display_mode: 0,
     };
 
+    let mut request = Request::new(format);
+    if let Some(token) = token.as_deref() {
+        apply_grpc_token(&mut request, token)?;
+    }
     let response = client
-        .stream_screenshot(Request::new(format))
+        .stream_screenshot(request)
         .await
         .context("streamScreenshot RPC failed")?;
 
@@ -178,7 +214,14 @@ pub async fn stream_frames(cfg: &EmulatorGrpcConfig) -> Result<mpsc::UnboundedRe
     Ok(rx)
 }
 
+#[cfg(synthi_no_protoc)]
+pub async fn stream_frames(_cfg: &EmulatorGrpcConfig) -> Result<mpsc::UnboundedReceiver<EmulatorFrame>> {
+    bail!("emulator gRPC codegen unavailable (protoc missing)");
+}
+
+#[cfg(not(synthi_no_protoc))]
 pub async fn inject_tap(_cfg: &EmulatorGrpcConfig, _x: u32, _y: u32) -> Result<()> {
+    let token = read_grpc_token(_cfg)?;
     let mut client = connect_controller(_cfg).await?;
     let identifier = 0;
     let down = generated::Touch {
@@ -188,14 +231,18 @@ pub async fn inject_tap(_cfg: &EmulatorGrpcConfig, _x: u32, _y: u32) -> Result<(
         pressure: 1,
         touch_major: 0,
         touch_minor: 0,
-        expiration: generated::touch::EventExpiration::EventExpirationUnspecified as i32,
+        expiration: 0,
         orientation: 0,
     };
     let event = generated::TouchEvent {
         touches: vec![down],
         display: 0,
     };
-    client.send_touch(Request::new(event)).await?;
+    let mut request = Request::new(event);
+    if let Some(token) = token.as_deref() {
+        apply_grpc_token(&mut request, token)?;
+    }
+    client.send_touch(request).await?;
 
     sleep(Duration::from_millis(40)).await;
 
@@ -206,18 +253,28 @@ pub async fn inject_tap(_cfg: &EmulatorGrpcConfig, _x: u32, _y: u32) -> Result<(
         pressure: 0,
         touch_major: 0,
         touch_minor: 0,
-        expiration: generated::touch::EventExpiration::EventExpirationUnspecified as i32,
+        expiration: 0,
         orientation: 0,
     };
     let event = generated::TouchEvent {
         touches: vec![up],
         display: 0,
     };
-    client.send_touch(Request::new(event)).await?;
+    let mut request = Request::new(event);
+    if let Some(token) = token.as_deref() {
+        apply_grpc_token(&mut request, token)?;
+    }
+    client.send_touch(request).await?;
 
     Ok(())
 }
 
+#[cfg(synthi_no_protoc)]
+pub async fn inject_tap(_cfg: &EmulatorGrpcConfig, _x: u32, _y: u32) -> Result<()> {
+    bail!("emulator gRPC codegen unavailable (protoc missing)");
+}
+
+#[cfg(not(synthi_no_protoc))]
 pub async fn inject_swipe(
     cfg: &EmulatorGrpcConfig,
     x1: u32,
@@ -226,6 +283,7 @@ pub async fn inject_swipe(
     y2: u32,
     duration_ms: u64,
 ) -> Result<()> {
+    let token = read_grpc_token(cfg)?;
     let mut client = connect_controller(cfg).await?;
     let identifier = 0;
     let steps = (duration_ms / 16).max(1).min(30) as u32;
@@ -242,14 +300,18 @@ pub async fn inject_swipe(
         pressure: 1,
         touch_major: 0,
         touch_minor: 0,
-        expiration: generated::touch::EventExpiration::EventExpirationUnspecified as i32,
+        expiration: 0,
         orientation: 0,
     };
     let event = generated::TouchEvent {
         touches: vec![down],
         display: 0,
     };
-    client.send_touch(Request::new(event)).await?;
+    let mut request = Request::new(event);
+    if let Some(token) = token.as_deref() {
+        apply_grpc_token(&mut request, token)?;
+    }
+    client.send_touch(request).await?;
 
     for i in 1..=steps {
         let t = i as f64 / steps as f64;
@@ -262,14 +324,18 @@ pub async fn inject_swipe(
             pressure: 1,
             touch_major: 0,
             touch_minor: 0,
-            expiration: generated::touch::EventExpiration::EventExpirationUnspecified as i32,
+            expiration: 0,
             orientation: 0,
         };
         let event = generated::TouchEvent {
             touches: vec![move_evt],
             display: 0,
         };
-        client.send_touch(Request::new(event)).await?;
+        let mut request = Request::new(event);
+        if let Some(token) = token.as_deref() {
+            apply_grpc_token(&mut request, token)?;
+        }
+        client.send_touch(request).await?;
         sleep(delay).await;
     }
 
@@ -280,19 +346,37 @@ pub async fn inject_swipe(
         pressure: 0,
         touch_major: 0,
         touch_minor: 0,
-        expiration: generated::touch::EventExpiration::EventExpirationUnspecified as i32,
+        expiration: 0,
         orientation: 0,
     };
     let event = generated::TouchEvent {
         touches: vec![up],
         display: 0,
     };
-    client.send_touch(Request::new(event)).await?;
+    let mut request = Request::new(event);
+    if let Some(token) = token.as_deref() {
+        apply_grpc_token(&mut request, token)?;
+    }
+    client.send_touch(request).await?;
 
     Ok(())
 }
 
+#[cfg(synthi_no_protoc)]
+pub async fn inject_swipe(
+    _cfg: &EmulatorGrpcConfig,
+    _x1: u32,
+    _y1: u32,
+    _x2: u32,
+    _y2: u32,
+    _duration_ms: u64,
+) -> Result<()> {
+    bail!("emulator gRPC codegen unavailable (protoc missing)");
+}
+
+#[cfg(not(synthi_no_protoc))]
 pub async fn inject_key(cfg: &EmulatorGrpcConfig, keycode: &str) -> Result<()> {
+    let token = read_grpc_token(cfg)?;
     let mapped = map_keycode_to_w3c(keycode)
         .ok_or_else(|| anyhow!("unsupported keycode for gRPC: {}", keycode))?;
 
@@ -304,12 +388,23 @@ pub async fn inject_key(cfg: &EmulatorGrpcConfig, keycode: &str) -> Result<()> {
         key: mapped,
         text: String::new(),
     };
-    client.send_key(Request::new(event)).await?;
+    let mut request = Request::new(event);
+    if let Some(token) = token.as_deref() {
+        apply_grpc_token(&mut request, token)?;
+    }
+    client.send_key(request).await?;
 
     Ok(())
 }
 
+#[cfg(synthi_no_protoc)]
+pub async fn inject_key(_cfg: &EmulatorGrpcConfig, _keycode: &str) -> Result<()> {
+    bail!("emulator gRPC codegen unavailable (protoc missing)");
+}
+
+#[cfg(not(synthi_no_protoc))]
 pub async fn inject_text(cfg: &EmulatorGrpcConfig, text: &str) -> Result<()> {
+    let token = read_grpc_token(cfg)?;
     let mut client = connect_controller(cfg).await?;
     let event = generated::KeyboardEvent {
         code_type: generated::keyboard_event::KeyCodeType::Usb as i32,
@@ -318,12 +413,62 @@ pub async fn inject_text(cfg: &EmulatorGrpcConfig, text: &str) -> Result<()> {
         key: String::new(),
         text: text.to_string(),
     };
-    client.send_key(Request::new(event)).await?;
+    let mut request = Request::new(event);
+    if let Some(token) = token.as_deref() {
+        apply_grpc_token(&mut request, token)?;
+    }
+    client.send_key(request).await?;
     Ok(())
+}
+
+#[cfg(synthi_no_protoc)]
+pub async fn inject_text(_cfg: &EmulatorGrpcConfig, _text: &str) -> Result<()> {
+    bail!("emulator gRPC codegen unavailable (protoc missing)");
 }
 
 pub fn grpc_codegen_available() -> bool {
     !cfg!(synthi_no_protoc)
+}
+
+fn read_grpc_token(cfg: &EmulatorGrpcConfig) -> Result<Option<String>> {
+    if !cfg.use_token {
+        return Ok(None);
+    }
+
+    let token_path = cfg.token_path.clone().or_else(|| {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .ok()?;
+        Some(format!("{}/.emulator_console_auth_token", home.trim_end_matches('/')))
+    });
+
+    let Some(path) = token_path else {
+        bail!("gRPC token requested but SYNTHI_ANDROID_GRPC_TOKEN_PATH is not set");
+    };
+
+    let token = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read gRPC token from {}", path))?
+        .trim()
+        .to_string();
+    if token.is_empty() {
+        bail!("gRPC token file was empty: {}", path);
+    }
+    Ok(Some(token))
+}
+
+fn apply_grpc_token<T>(req: &mut Request<T>, token: &str) -> Result<()> {
+    let bearer = format!("Bearer {}", token);
+    let metadata = req.metadata_mut();
+    metadata.insert(
+        "authorization",
+        MetadataValue::try_from(bearer.as_str())
+            .context("invalid gRPC authorization metadata value")?,
+    );
+    metadata.insert(
+        "x-android-emulator-token",
+        MetadataValue::try_from(token).context("invalid gRPC token metadata value")?,
+    );
+    Ok(())
 }
 
 fn map_keycode_to_w3c(keycode: &str) -> Option<String> {

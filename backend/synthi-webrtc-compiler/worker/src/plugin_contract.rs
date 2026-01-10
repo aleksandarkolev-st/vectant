@@ -3,7 +3,6 @@
 #![allow(dead_code)]
 
 use std::ffi::{c_char, c_double, c_uint, c_void};
-use core::ffi::c_void;
 
 // ============================================================
 // SYNTHI PLUGIN ABI v2.1 - SINGLE-EXPORT ABI

@@ -1,5 +1,4 @@
 use libloading::{Library, Symbol};
-use libloading::{Library, Symbol};
 use std::collections::HashMap;
 use std::ffi::{c_int, c_uint, c_void, CString};
 use std::io::{self, BufRead, Write};
@@ -32,6 +31,7 @@ mod hmr_orchestrator;
 mod host_kv;
 mod loader;
 mod plugin_contract;
+mod security;
 mod reload_manager;
 mod source_map;
 mod state_diff;
@@ -1563,11 +1563,13 @@ fn main() {
                                     && new_schema_hash != 0
                                     && old_schema_hash != new_schema_hash
                                 {
-                                let mut _force_cold_reload = false;
-                                
-                                if old_schema_hash != 0 && new_schema_hash != 0 && old_schema_hash != new_schema_hash {
-                                    eprintln!("[Runner] [HMR] CRITICAL: Schema hash mismatch (Old: {:016X}, New: {:016X})", old_schema_hash, new_schema_hash);
-                                    eprintln!("[Runner] [HMR] Forcing COLD RELOAD - JSON migration will attempt data rescue.");
+                                    eprintln!(
+                                        "[Runner] [HMR] CRITICAL: Schema hash mismatch (Old: {:016X}, New: {:016X})",
+                                        old_schema_hash, new_schema_hash
+                                    );
+                                    eprintln!(
+                                        "[Runner] [HMR] Forcing COLD RELOAD - JSON migration will attempt data rescue."
+                                    );
 
                                     let status = HmrStatus::rejected(
                                         name,
@@ -1577,17 +1579,19 @@ fn main() {
                                         ),
                                     );
                                     eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
-                                    _force_cold_reload = true;
+                                    force_cold_reload = true;
                                     new_state = std::ptr::null_mut();
                                 } else if new_schema_hash == 0 && old_schema_hash != 0 {
-                                    eprintln!("[Runner] [HMR] WARNING: New module missing schema hash. Assuming unsafe.");
+                                    eprintln!(
+                                        "[Runner] [HMR] WARNING: New module missing schema hash. Assuming unsafe."
+                                    );
 
                                     let status = HmrStatus::rejected(
                                         name,
                                         "Missing schema hash (Cold Reload)",
                                     );
                                     eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
-                                    _force_cold_reload = true;
+                                    force_cold_reload = true;
                                     new_state = std::ptr::null_mut();
                                 }
 

@@ -32,8 +32,6 @@ use crate::crash_recovery::CrashInfo;
 use crate::fast_refresh::{
     BoundaryCheckResult, BoundaryChecker, BoundaryViolationEvent, RefreshAction,
 };
-use crate::binary_state::{MsgPackState, SchemaMigrationResult};
-use crate::boundary::{Boundary, BoundaryId, BoundaryManifest, ReloadPlan};
 use crate::loader::{LoadResult, ModuleLoader};
 use crate::plugin_contract::ModuleSlot;
 use crate::reload_manager::{
@@ -52,12 +50,6 @@ use crate::observability::{
 };
 use crate::quiescence::{QuiescenceManager, QuiescenceConfig};
 use crate::reload_protocol::{ReloadOperation, ReloadConfig};
-use crate::state_manager::{MigrationResult, MigrationSchema, SchemaVersion, StateManager};
-use crate::state_diff::{migrate_state_with_config, DiffConfig};
-use crate::supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
-use crate::crash_recovery::CrashInfo;
-use crate::fast_refresh::{BoundaryChecker, BoundaryCheckResult, RefreshAction, BoundaryViolationEvent};
-use crate::source_map::SOURCE_MAP_CACHE;
 
 // ============================================================
 // HMR RESULT TYPES
@@ -1178,14 +1170,6 @@ impl HmrOrchestrator {
     ) -> Arc<AtomicBool> {
         self.task_registry
             .register_task(task_id, boundary_id, supports_checkpoint)
-        use crate::reload_manager::AsyncTaskType;
-        self.task_registry.register(
-            task_id,
-            AsyncTaskType::BackgroundComputation,
-            boundary_id,
-            supports_checkpoint,
-            false, // supports_pause
-        )
     }
 
     /// Unregister a task

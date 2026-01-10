@@ -725,7 +725,6 @@ impl HostKvStore {
         // tracking access timestamps per (session_id, module_slot)
         let _ = ttl_secs;
         let _ = now;
-        0
         
         let mut storage = match self.storage.write() {
             Ok(s) => s,

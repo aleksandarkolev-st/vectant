@@ -2,7 +2,6 @@ use anyhow::{anyhow, Context, Result};
 use gstreamer as gst;
 use gstreamer::prelude::{Cast, ElementExt, GstBinExt, GstObjectExt, ObjectExt};
 use gstreamer_app as gst_app;
-use gstreamer_app::prelude::AppSrcExt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::str::FromStr;
@@ -544,7 +543,7 @@ impl EmulatorVideoPipeline {
             .appsrc
             .as_ref()
             .context("appsrc not configured for this pipeline")?;
-        let mut buffer = gst::Buffer::from_slice(data);
+        let mut buffer = gst::Buffer::from_slice(data.to_vec());
         if let Some(pts) = pts_ns {
             if let Some(buf) = buffer.get_mut() {
                 buf.set_pts(gst::ClockTime::from_nseconds(pts));

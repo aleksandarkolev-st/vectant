@@ -29,12 +29,6 @@ mod storage;
 mod supervisor;
 mod watcher;
 
-
-// Re-export orchestrator for external use
-pub use hmr_orchestrator::{
-    HmrOrchestrator, HmrResult, HmrStatus, LoadedState, MigrationSummary, OrchestratorConfig,
-    SavedState, SchemaCompatibility,
-mod hmr_orchestrator;
 // New safety-critical modules
 mod process_isolation;
 mod enhanced_fingerprint;
@@ -54,14 +48,19 @@ pub mod observability;         // #10: Structured logging, metrics, crash classi
 
 // Re-export orchestrator for external use
 pub use hmr_orchestrator::{
-    HmrOrchestrator, HmrResult, HmrStatus as OrchestratorHmrStatus, OrchestratorConfig,
-    SavedState, LoadedState, MigrationSummary, SchemaCompatibility,
+    HmrOrchestrator,
+    HmrResult,
+    HmrStatus as OrchestratorHmrStatus,
+    OrchestratorConfig,
+    SavedState,
+    LoadedState,
+    MigrationSummary,
+    SchemaCompatibility,
 };
+
 // Android compilation pipeline is housed under `src/android/*`.
 mod mobile_routing;
 // Android pipeline workspace reconciliation lives under `android::fs`.
-
-
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use chrono::Utc;
@@ -77,7 +76,7 @@ use builder::{
     WidgetDetector,
 };
 
-use capability::{detect_capabilities, HmrCapability, HmrStatus};
+use capability::{detect_capabilities, HmrCapability, HmrStatus as CapabilityHmrStatus};
 
 use error_parser::{parse_compiler_output, CompilerType, DiagnosticEvent};
 
@@ -111,16 +110,11 @@ use incremental_cache::{IncrementalCache, compile_with_cache, link_objects};
 use gstreamer as gst;
 use gstreamer::prelude::{Cast, ElementExt, GstBinExt, GstObjectExt};
 use gstreamer_app as gst_app;
-#[allow(unused_imports)]
-use incremental_cache::{compile_with_cache, link_objects, IncrementalCache};
-use serde::{Deserialize, Serialize};
-use shim::{auto_shim, detect_shim_mode, ShimMode};
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use watcher::{PreemptiveConfig, PreemptiveMessage, SpeculativeCache};
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
@@ -1772,38 +1766,6 @@ fn calculate_hash<T: Hash>(t: &T) -> u64 {
     s.finish()
 }
 
-/// Extract all string literals from C/C++ source in order
-fn extract_string_literals(source: &str) -> Vec<String> {
-    let mut strings = Vec::new();
-    let mut chars = source.chars().peekable();
-    let mut in_string = false;
-    let mut in_char = false;
-    let mut in_line_comment = false;
-    let mut in_block_comment = false;
-    let mut escape_next = false;
-    let mut current_string = String::new();
-
-    while let Some(c) = chars.next() {
-        if escape_next {
-            if in_string {
-                current_string.push('\\');
-                current_string.push(c);
-            }
-            escape_next = false;
-            continue;
-        }
-
-        if in_line_comment {
-            if c == '\n' {
-                in_line_comment = false;
-            }
-            continue;
-        }
-
-        if in_block_comment {
-            if c == '*' && chars.peek() == Some(&'/') {
-                chars.next();
-                in_block_comment = false;
 // ============================================================
 // GUARDRAIL HELPER FUNCTIONS
 // ============================================================
@@ -1983,16 +1945,6 @@ fn apply_core_guardrails(content: &str, shared_content: &str) -> String {
         } else {
             result = format!("#include \"shared.h\"\n{}", result);
         }
-
-        if in_string {
-            if c == '\\' {
-                escape_next = true;
-            } else if c == '"' {
-                strings.push(current_string.clone());
-                current_string.clear();
-                in_string = false;
-            } else {
-                current_string.push(c);
     }
 
     // FIX: Remove duplicate defines that are already in shared.h
@@ -2019,79 +1971,6 @@ fn apply_core_guardrails(content: &str, shared_content: &str) -> String {
             }
         }
 
-        if in_char {
-            if c == '\\' {
-                escape_next = true;
-            } else if c == '\'' {
-                in_char = false;
-            }
-            continue;
-        }
-
-        // Detect start of constructs
-        if c == '/' {
-            if chars.peek() == Some(&'/') {
-                chars.next();
-                in_line_comment = true;
-                continue;
-            }
-            if chars.peek() == Some(&'*') {
-                chars.next();
-                in_block_comment = true;
-                continue;
-            }
-        }
-        if c == '"' {
-            in_string = true;
-            continue;
-        }
-        if c == '\'' {
-            in_char = true;
-            continue;
-        }
-    }
-
-    strings
-}
-
-/// Patch string literals in cached JSON result with new strings from source
-/// Returns (patched_result, did_patch_anything)
-fn patch_strings_in_cached_result(
-    cached: &serde_json::Value,
-    old_strings: &[String],
-    new_strings: &[String],
-) -> (serde_json::Value, bool) {
-    // Only patch if we have a reasonable mapping
-    if old_strings.is_empty() || new_strings.is_empty() {
-        return (cached.clone(), false);
-    }
-
-    let mut result = cached.clone();
-    let mut any_patches_applied = false;
-
-    // Patch each file's content in the split result
-    for key in &["core", "gui", "shared"] {
-        if let Some(file_obj) = result.get_mut(key) {
-            if let Some(content) = file_obj.get_mut("content") {
-                if let Some(content_str) = content.as_str() {
-                    let mut patched = content_str.to_string();
-
-                    // Replace old strings with new strings where they differ
-                    // Match by position in the string list (assuming order is preserved)
-                    for (old, new) in old_strings.iter().zip(new_strings.iter()) {
-                        if old != new && !old.is_empty() {
-                            // Use format with quotes to avoid partial matches
-                            let old_quoted = format!("\"{}\"", old);
-                            let new_quoted = format!("\"{}\"", new);
-                            if patched.contains(&old_quoted) {
-                                patched = patched.replace(&old_quoted, &new_quoted);
-                                any_patches_applied = true;
-                            }
-                        }
-                    }
-
-                    *content = serde_json::Value::String(patched);
-        
         if let Some(start) = result.find("struct AppState {") {
             if let Some(end) = result[start..].find("};") {
                 let block_end = start + end + "};".len();
@@ -2159,23 +2038,6 @@ fn patch_strings_in_cached_result(
             result = cleaned.join("\n");
         }
     }
-
-    (result, any_patches_applied)
-}
-
-/// Check if a string looks like a semantic value that AI transforms (not just copies)
-/// These include: color names, font names, file paths, etc.
-fn is_semantic_string(s: &str) -> bool {
-    // X11/CSS color names
-    let color_names = [
-        "black", "white", "red", "green", "blue", "yellow", "cyan", "magenta", "orange", "purple",
-        "pink", "brown", "gray", "grey", "navy", "teal", "lime", "aqua", "maroon", "olive",
-        "silver", "fuchsia",
-    ];
-
-    let lower = s.to_lowercase();
-    color_names.iter().any(|c| lower == *c)
-}
 
     // FIX: Inject button state initialization if needed
     if shared_content.contains("btn_x") && shared_content.contains("btn_y") {
@@ -2300,17 +2162,6 @@ fn is_semantic_string(s: &str) -> bool {
     
     result
 }
-
-/// Parse AppState struct fields from shared.h content
-/// Returns a list of (field_name, field_type, default_value) tuples for int fields
-/// Default value is extracted from declarations like "int btn_x = 200;"
-fn parse_appstate_int_fields_with_defaults(
-    shared_content: &str,
-) -> Vec<(String, String, Option<i64>)> {
-    let mut fields = Vec::new();
-
-    // Find AppState struct definition
-    let struct_re = regex::Regex::new(r"struct\s+AppState\s*\{([^}]*)\}").ok();
 
 /// Apply guardrails to gui.cpp content (requires processed shared.h for context)
 fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
@@ -2551,7 +2402,6 @@ extern "C" void synthi_free_json(char* json) {
     
     result
 }
-
 /// Get the Host KV header definitions
 fn get_hostkv_header() -> &'static str {
     r#"
@@ -4330,11 +4180,6 @@ async fn handle_compile(
             new_hashes.shared_hash, new_hashes.core_hash, new_hashes.gui_hash
         );
 
-        let rebuild_scope = if prev_hashes.shared_hash == 0
-            && prev_hashes.core_hash == 0
-            && prev_hashes.gui_hash == 0
-        {
-        
         // ============================================================
         // PHASE 3: DETERMINE REBUILD SCOPE FROM POST-GUARDRAIL HASHES
         // ============================================================
@@ -4451,33 +4296,6 @@ async fn handle_compile(
         // Validate gui.cpp required exports
         if let Some(gui) = split_data.get("gui") {
             let content = gui["content"].as_str().unwrap_or("");
-
-            // Required GUI exports (check for both new and legacy symbol names)
-            // Support both inline: `extern "C" void gui_render(...)`
-            // and block: `extern "C" { ... void gui_render(...) ... }`
-            let has_extern_c_block = content.contains("extern \"C\" {");
-            let has_gui_render_fn =
-                content.contains("void gui_on_render") || content.contains("void gui_render");
-            let has_inline_extern = content.contains("extern \"C\" void gui_on_render")
-                || content.contains("extern \"C\" void gui_render");
-            let has_gui_render = has_inline_extern || (has_extern_c_block && has_gui_render_fn);
-
-            if !has_gui_render {
-                validation_errors.push(
-                    "gui.cpp missing required export: gui_render or gui_on_render".to_string(),
-                );
-            }
-
-            // Warning: GUI should not modify CoreState directly (HMR safety)
-            if content.contains("CoreState*") && content.contains("->") {
-                // Check if it's writing to CoreState (not just reading)
-                if content.contains("core_state->")
-                    && (content.contains("= ") || content.contains("++") || content.contains("--"))
-                {
-        
-        // Validate gui.cpp required exports
-        if let Some(gui) = split_data.get("gui") {
-            let content = gui["content"].as_str().unwrap_or("");
             
             // Required GUI exports (check for both new and legacy symbol names)
             // Support both inline: `extern "C" void gui_render(...)` 
@@ -4502,7 +4320,6 @@ async fn handle_compile(
             }
         }
 
-        
         // Report validation results
         if !validation_warnings.is_empty() {
             for warning in &validation_warnings {
@@ -4517,10 +4334,6 @@ async fn handle_compile(
             }
         }
 
-                let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
-            }
-        }
-        
         if !validation_errors.is_empty() {
             // Send all errors to frontend
             for error in &validation_errors {
@@ -4534,9 +4347,6 @@ async fn handle_compile(
                     .await;
             }
 
-                let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
-            }
-            
             // Don't fail completely - continue with compilation but warn
             let payload = serde_json::json!({
                 "sessionId": session_id.clone(),
@@ -5423,101 +5233,55 @@ typedef struct HostKvApiV1 {
                         }
 
                         core_lib_path = core_out.to_string_lossy().to_string();
-            let _ = log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
-        }
-
-        // Reuse previous paths if not rebuilding that module
-        if rebuild_scope == RebuildScope::GuiOnly {
-            if let Some(ref path) = prev_core_path {
-                core_lib_path = path.clone();
-                eprintln!("[Main] Reusing existing core library: {}", core_lib_path);
-            }
-        }
-
-        // Write shared.h (already processed by guardrails in Phase 1)
-        // IMPORTANT: avoid rewriting when semantically unchanged, otherwise a file-watcher can
-        // see generated `shared.h` churn and trigger redundant builds/restarts.
-        if split_data.get("shared").is_some() {
-            let fname = split_data
-                .get("shared")
-                .and_then(|s| s["filename"].as_str())
-                .unwrap_or("shared.h");
-
-            let shared_path = dir_path.join(fname);
-            let shared_exists = tokio::fs::try_exists(&shared_path).await.unwrap_or(false);
-
-            let shared_semantically_changed = prev_hashes.shared_hash == 0
-                || prev_hashes.shared_hash != new_hashes.shared_hash;
-
-            if !shared_exists || shared_semantically_changed {
-                println!("Writing shared library file: {}", fname);
-                tokio::fs::write(shared_path, &processed_shared).await?;
-            } else {
-                eprintln!("[Main] shared.h unchanged (semantic) - skipping write");
-            }
-        }
-
-        // Skip core compilation if GUI-only rebuild (reuse existing core.so)
-        if rebuild_scope == RebuildScope::Both || rebuild_scope == RebuildScope::CoreOnly {
-        if split_data.get("core").is_some() {
-            let fname = split_data.get("core")
-                .and_then(|s| s["filename"].as_str())
-                .unwrap_or("core.cpp");
-            
-            // Use the already-processed content from Phase 1 (guardrails already applied)
-            let content = processed_core.clone();
-
-                        // Detect Core module capabilities from exports
-                        if let Ok(core_report) =
-                            detect_capabilities(std::path::Path::new(&core_lib_path))
-                        {
-                            eprintln!(
-                                "[Capability] Core module: {:?}, HMR: {:?}",
-                                core_report.module_type, core_report.hmr_capability
-                            );
-                            let status =
-                                CapabilityHmrStatus::capability_detected("core", &core_report);
-                            let payload = serde_json::json!({
-                                "sessionId": session_id.clone(),
-                                "type": "hmr-status",
-                                "data": serde_json::from_str::<serde_json::Value>(&status.to_json()).unwrap_or_default()
-                            });
-                            let _ = log_dc
-                                .send_text(serde_json::to_string(&payload).unwrap_or_default())
-                                .await;
-                        }
-
-                        // Store in persistent content-addressable cache
-                        if let Ok(so_data) = tokio::fs::read(&core_lib_path).await {
-                            let source_hash = content_hash;
-                            let flags_hash = calculate_hash(&"-shared-fPIC");
-                            let headers_hash = 0u64;
-                            if let Err(e) = incremental_cache
-                                .put(
-                                    cache_key.clone(),
-                                    source_hash,
-                                    flags_hash,
-                                    headers_hash,
-                                    &so_data,
-                                )
-                                .await
-                            {
-                                eprintln!(
-                                    "[Cache] Failed to store core in persistent cache: {}",
-                                    e
-                                );
-                            } else {
-                                eprintln!("[Cache] Stored core module in persistent cache");
-                            }
-                        }
-
-                        // Also update legacy in-memory cache for fast path
-                        let mut cache = compile_cache.lock().await;
-                        cache.insert("core".to_string(), (content_hash, core_lib_path.clone()));
                     }
                 }
 
                 if !core_lib_path.is_empty() {
+                    // Detect Core module capabilities from exports
+                    if let Ok(core_report) =
+                        detect_capabilities(std::path::Path::new(&core_lib_path))
+                    {
+                        eprintln!(
+                            "[Capability] Core module: {:?}, HMR: {:?}",
+                            core_report.module_type, core_report.hmr_capability
+                        );
+                        let status =
+                            CapabilityHmrStatus::capability_detected("core", &core_report);
+                        let payload = serde_json::json!({
+                            "sessionId": session_id.clone(),
+                            "type": "hmr-status",
+                            "data": serde_json::from_str::<serde_json::Value>(&status.to_json()).unwrap_or_default()
+                        });
+                        let _ = log_dc
+                            .send_text(serde_json::to_string(&payload).unwrap_or_default())
+                            .await;
+                    }
+
+                    // Store in persistent content-addressable cache
+                    if let Ok(so_data) = tokio::fs::read(&core_lib_path).await {
+                        let source_hash = content_hash;
+                        let flags_hash = calculate_hash(&"-shared-fPIC");
+                        let headers_hash = 0u64;
+                        if let Err(e) = incremental_cache
+                            .put(
+                                cache_key.clone(),
+                                source_hash,
+                                flags_hash,
+                                headers_hash,
+                                &so_data,
+                            )
+                            .await
+                        {
+                            eprintln!("[Cache] Failed to store core in persistent cache: {}", e);
+                        } else {
+                            eprintln!("[Cache] Stored core module in persistent cache");
+                        }
+                    }
+
+                    // Also update legacy in-memory cache for fast path
+                    let mut cache = compile_cache.lock().await;
+                    cache.insert("core".to_string(), (content_hash, core_lib_path.clone()));
+
                     // Create symlink ./core.so -> core_lib_path so gui can dlopen("./core.so")
                     #[cfg(unix)]
                     {
@@ -5633,7 +5397,7 @@ typedef struct HostKvApiV1 {
                 .await;
         }
 
-        if split_data.get("gui").is_some() {
+        if let Some(gui) = split_data.get("gui") {
             // Only compile GUI if scope includes it
             if rebuild_scope == RebuildScope::Both || rebuild_scope == RebuildScope::GuiOnly {
                 let fname = gui["filename"].as_str().unwrap_or("gui.cpp");
@@ -6080,6 +5844,8 @@ extern "C" void synthi_free_json(char* json) {
 "#;
                     content.push_str(gui_serial_stubs);
                     eprintln!("[Guardrail] Injected GUI state serialization stubs for Full HMR capability");
+                }
+
             let fname = split_data.get("gui")
                 .and_then(|s| s["filename"].as_str())
                 .unwrap_or("gui.cpp");
@@ -6141,7 +5907,8 @@ extern "C" void synthi_free_json(char* json) {
                      let _ = log_dc.send_text(serde_json::to_string(&diag_payload).unwrap_or_default()).await;
                      
                      // Send compile error HMR status - rollback behavior keeps old module
-                     let status = HmrStatus::compile_error("gui", vec![stderr.to_string()]);
+                     let status =
+                         CapabilityHmrStatus::compile_error("gui", vec![stderr.to_string()]);
                      let hmr_payload = serde_json::json!({
                         "sessionId": session_id.clone(),
                         "type": "hmr-status",
@@ -6154,7 +5921,10 @@ extern "C" void synthi_free_json(char* json) {
                          let guard = runner_store.lock().await;
                          if let Some(state) = guard.as_ref() {
                              if state.loaded_gui_path.is_some() {
-                                 let rejected = HmrStatus::rejected("gui", "Compilation failed - keeping previous GUI module");
+                                let rejected = CapabilityHmrStatus::rejected(
+                                    "gui",
+                                    "Compilation failed - keeping previous GUI module",
+                                );
                                  let payload = serde_json::json!({
                                      "sessionId": session_id.clone(),
                                      "type": "hmr-status",
@@ -6184,7 +5954,8 @@ extern "C" void synthi_free_json(char* json) {
                 // Detect GUI module capabilities from exports
                 if let Ok(gui_report) = detect_capabilities(std::path::Path::new(&gui_lib_path)) {
                     eprintln!("[Capability] GUI module: {:?}, HMR: {:?}", gui_report.module_type, gui_report.hmr_capability);
-                    let status = HmrStatus::capability_detected("gui", &gui_report);
+                    let status =
+                        CapabilityHmrStatus::capability_detected("gui", &gui_report);
                     let payload = serde_json::json!({
                         "sessionId": session_id.clone(),
                         "type": "hmr-status",
@@ -6555,7 +6326,8 @@ extern "C" void synthi_free_json(char* json) {
                         gui_lib_path
                     );
                 }
-            } else {
+            }
+            if rebuild_scope != RebuildScope::Both && rebuild_scope != RebuildScope::GuiOnly {
                 // Reuse existing GUI path if not rebuilding
                 if let Some(ref existing_gui) = _prev_gui_path {
                     gui_lib_path = existing_gui.clone();
@@ -6979,6 +6751,7 @@ extern "C" void synthi_free_json(char* json) {
 
         // Store the policy decisions for use in runner logic
         // These are declared outside the else block but assigned here
+    };
     }
 
     // Unified Runner Logic

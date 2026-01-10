@@ -151,7 +151,7 @@ pub fn extract_state_type_id(module_path: &Path) -> Result<StateTypeId, String> 
     
     // Try method 2: Read from ELF note section
     #[cfg(unix)]
-    if let Some(type_id) = try_extract_from_elf_note(module_path, module_name) {
+    if let Some(type_id) = try_extract_state_id_from_elf_note(module_path, module_name) {
         return Ok(type_id);
     }
     
@@ -222,7 +222,7 @@ fn try_extract_from_symbol(module_path: &Path, module_name: &str) -> Option<Stat
 
 /// Try to extract type ID from ELF note section
 #[cfg(unix)]
-fn try_extract_from_elf_note(module_path: &Path, module_name: &str) -> Option<StateTypeId> {
+fn try_extract_state_id_from_elf_note(module_path: &Path, module_name: &str) -> Option<StateTypeId> {
     use std::fs::File;
     use object::{Object, ObjectSection};
     

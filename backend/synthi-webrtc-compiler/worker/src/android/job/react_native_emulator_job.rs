@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use gstreamer as gst;
-use gstreamer_app::prelude::AppSrcExt;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::sync::Mutex;
@@ -1113,11 +1112,49 @@ pub async fn handle_react_native_emulator_job(
             let mut frames: u64 = 0;
             let mut dropped: u64 = 0;
             let mut last_log = Instant::now();
+            let mut last_frame_at = Instant::now();
             let mut mismatch_logged = false;
             let mut last_frame_size: Option<(u32, u32)> = None;
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
 
-            while let Some(frame) = frame_rx.recv().await {
-                frames += 1;
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        if frames == 0 {
+                            send_log(
+                                &log_dc_for_grpc,
+                                &session_id_for_grpc,
+                                "[grpc] no frames received yet (display may be inactive or stream stalled)",
+                                "emulator",
+                            )
+                            .await;
+                        } else if last_frame_at.elapsed() >= Duration::from_secs(5) {
+                            send_log(
+                                &log_dc_for_grpc,
+                                &session_id_for_grpc,
+                                &format!(
+                                    "[grpc] stream stalled: last_frame_age_ms={}",
+                                    last_frame_at.elapsed().as_millis()
+                                ),
+                                "emulator",
+                            )
+                            .await;
+                        }
+                    }
+                    maybe = frame_rx.recv() => {
+                        let Some(frame) = maybe else {
+                            send_log(
+                                &log_dc_for_grpc,
+                                &session_id_for_grpc,
+                                "[grpc] frame stream closed by emulator",
+                                "emulator",
+                            )
+                            .await;
+                            break;
+                        };
+
+                        frames += 1;
+                        last_frame_at = Instant::now();
                 if frame.width > 0 && frame.height > 0 {
                     let size = (frame.width, frame.height);
                     if last_frame_size != Some(size) {
@@ -1180,6 +1217,8 @@ pub async fn handle_react_native_emulator_job(
                     )
                     .await;
                     last_log = Instant::now();
+                }
+                    }
                 }
             }
         }));

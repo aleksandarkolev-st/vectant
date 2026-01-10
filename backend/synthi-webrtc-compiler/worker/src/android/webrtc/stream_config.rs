@@ -20,6 +20,8 @@ pub struct EmulatorStreamConfig {
 
 impl EmulatorStreamConfig {
     pub fn from_env() -> Self {
+        crate::android::env::load_android_env_file();
+
         let mode = match std::env::var("SYNTHI_ANDROID_STREAM_MODE") {
             Ok(v) => match v.trim().to_lowercase().as_str() {
                 "grpc" => EmulatorStreamMode::Grpc,
