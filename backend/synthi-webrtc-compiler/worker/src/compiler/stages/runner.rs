@@ -136,7 +136,7 @@ pub async fn handle_runner_execution(
 
         let mut wsl_display_str = reused_wsl_display;
         let mut gst_display_str = reused_gst_display;
-        let xvfb_process: Option<tokio::process::Child> = reused_xvfb;
+        let mut xvfb_process: Option<tokio::process::Child> = reused_xvfb;
         let mut gst_pipeline: Option<gst::Pipeline> = reused_pipeline;
         let mut sdl_tx_opt: Option<mpsc::UnboundedSender<String>> = reused_sdl_tx;
         let mut video_src_opt: Option<gst_app::AppSrc> = None;
@@ -161,9 +161,35 @@ pub async fn handle_runner_execution(
                     }
                 }
 
-                wsl_display_str = "".to_string();
-                gst_display_str = "".to_string();
-                println!("Falling back to DISPLAY {}", wsl_display_str);
+                // Start Xvfb (Virtual Framebuffer)
+                // Try finding a free display or use separate ones per worker? 
+                // For simplified single-worker model, we can use :99
+                let display_num = 99;
+                wsl_display_str = format!(":{}", display_num);
+                gst_display_str = wsl_display_str.clone();
+                
+                println!("Starting Xvfb on display {}", wsl_display_str);
+
+                let mut xvfb_cmd = Command::new("Xvfb");
+                xvfb_cmd.arg(&wsl_display_str)
+                        .arg("-screen").arg("0").arg(format!("{}x{}x24", width, height))
+                        .arg("-ac"); // Disable access control
+                
+                xvfb_cmd.kill_on_drop(true);
+                let child = xvfb_cmd.spawn().context("Failed to spawn Xvfb")?;
+                xvfb_process = Some(child);
+                
+                // Give Xvfb a moment to start
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+                // Start Matchbox Window Manager (to handle window sizing/borders)
+                let mut wm_cmd = Command::new("matchbox-window-manager");
+                wm_cmd.env("DISPLAY", &wsl_display_str);
+                wm_cmd.kill_on_drop(true);
+                // We don't keep the WM handle, assuming it dies when Xvfb dies or worker dies
+                let _ = wm_cmd.spawn().context("Failed to spawn matchbox-window-manager")?;
+
+                println!("Xvfb and Window Manager started.");
             }
 
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
