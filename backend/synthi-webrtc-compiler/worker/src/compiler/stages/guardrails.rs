@@ -61,7 +61,7 @@ pub fn apply_shared_guardrails(content: &str) -> String {
 }
 
 /// Apply guardrails to core.cpp content (requires processed shared.h for context)
-pub fn apply_core_guardrails(content: &str, shared_content: &str) -> String {
+pub fn apply_core_guardrails(content: &str, shared_content: &str, allow_gui: bool) -> String {
     let mut result = content.to_string();
     
     // Fix common AI mistakes in core.cpp before compilation.
@@ -70,25 +70,28 @@ pub fn apply_core_guardrails(content: &str, shared_content: &str) -> String {
     }
 
     // CRITICAL: Strip X11-related functions that the AI incorrectly preserved from the input.
-    let x11_type_patterns = [
-        "Display*", "Display *", "Window*", "XIM", "XIC", "Atom", "Colormap", "Pixmap", "GC ",
-        "XEvent", "XOpenDisplay", "XCloseDisplay", "XCreateWindow", "XDestroyWindow",
-        "XOpenIM", "XCreateIC", "XCreateGC", "XFreeGC", "XCreatePixmap", "XFreePixmap",
-    ];
-    
-    let mut cleaned_lines = Vec::new();
-    for line in result.lines() {
-        let has_x11 = x11_type_patterns.iter().any(|pat| line.contains(pat));
-        let is_comment = line.trim_start().starts_with("//") || line.trim_start().starts_with("/*");
-        let is_include = line.trim_start().starts_with("#include");
+    // Only applies if we are strictly enforcing core/gui split (allow_gui = false)
+    if !allow_gui {
+        let x11_type_patterns = [
+            "Display*", "Display *", "Window*", "XIM", "XIC", "Atom", "Colormap", "Pixmap", "GC ",
+            "XEvent", "XOpenDisplay", "XCloseDisplay", "XCreateWindow", "XDestroyWindow",
+            "XOpenIM", "XCreateIC", "XCreateGC", "XFreeGC", "XCreatePixmap", "XFreePixmap",
+        ];
         
-        if has_x11 && !is_comment && !is_include {
-            cleaned_lines.push(format!("// [X11-stripped] {}", line));
-        } else {
-            cleaned_lines.push(line.to_string());
+        let mut cleaned_lines = Vec::new();
+        for line in result.lines() {
+            let has_x11 = x11_type_patterns.iter().any(|pat| line.contains(pat));
+            let is_comment = line.trim_start().starts_with("//") || line.trim_start().starts_with("/*");
+            let is_include = line.trim_start().starts_with("#include");
+            
+            if has_x11 && !is_comment && !is_include {
+                cleaned_lines.push(format!("// [X11-stripped] {}", line));
+            } else {
+                cleaned_lines.push(line.to_string());
+            }
         }
+        result = cleaned_lines.join("\n");
     }
-    result = cleaned_lines.join("\n");
 
     // CRITICAL: Ensure shared.h is included FIRST
     if !result.contains("#include \"shared.h\"") {

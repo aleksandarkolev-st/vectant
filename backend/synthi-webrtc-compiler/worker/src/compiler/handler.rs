@@ -78,7 +78,9 @@ pub async fn handle_compile_request(
     
     // 3. Apply Guardrails
     let processed_shared = apply_shared_guardrails(shared_raw);
-    let processed_core = apply_core_guardrails(core_raw, &processed_shared);
+    // Allow GUI in core if we are NOT using AI split (legacy/direct mode)
+    let allow_gui_in_core = !req.use_ai_split;
+    let processed_core = apply_core_guardrails(core_raw, &processed_shared, allow_gui_in_core);
     let processed_gui = apply_gui_guardrails(gui_raw, &processed_shared);
 
     // ============================================================
@@ -142,6 +144,14 @@ pub async fn handle_compile_request(
     
     // Manual logging
     eprintln!("[Compile] Step: Starting compilation");
+
+    // Ensure shared header exists before compilation starts
+    if rebuild_scope != RebuildScope::None {
+        let shared_fname = split_data.get("shared")
+            .and_then(|s| s["filename"].as_str())
+            .unwrap_or("shared.h");
+        tokio::fs::write(ctx.workspace_path.join(shared_fname), &processed_shared).await?;
+    }
     
     // Compile Core
     let core_lib_path_opt = compile_core(
