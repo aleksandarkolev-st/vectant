@@ -195,37 +195,162 @@ pub async fn handle_runner_execution(
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
-            let (v_tx, mut v_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-            let (a_tx, mut a_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-
-            // Encoders list omitted for brevity, adding simplified version
+            // Start GStreamer Pipeline
             let encoders = [
                 ("nvh264enc preset=low-latency-hp zerolatency=true", "rtph264pay", "video/H264"),
                 ("vaapih264enc", "rtph264pay", "video/H264"),
-                ("msdkh264enc", "rtph264pay", "video/H264"),
                 ("x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h264,stream-format=byte-stream", "rtph264pay", "video/H264"),
+                ("vp8enc deadline=1 cpu-used=4 end-usage=cbr target-bitrate=2000000", "rtpvp8pay", "video/VP8"),
             ];
 
             let mut selected_mime_type = "video/H264".to_owned();
-            let mut audio_source = "pulsesrc".to_string();
             let mut encoder_idx = 0;
+            let mut pipeline = None;
+            let width = req_width;
+            let height = req_height;
 
             while encoder_idx < encoders.len() {
                 let (encoder, payloader, mime_type) = encoders[encoder_idx];
-                // Simplify encoder selection logic for refactor
-                 match gst::Pipeline::new() { // Placeholder for actual gst::parse_launch logic
-                     _ => {
-                        // Logic preserved
-                     }
-                 }
-                 encoder_idx += 1;
-                 break; // Force break to avoid unreachable code warning for now, loop really needs logic
+                println!("Trying encoder: {}", encoder);
+
+                // ximagesrc -> videoscale -> videoconvert -> encoder -> payloader -> appsink
+                // pulsesrc -> audioconvert -> opusenc -> rtpopuspay -> appsink
+                
+                let pipeline_str = format!(
+                    "ximagesrc display-name=\"{}\" use-damage=0 ! video/x-raw,framerate=30/1 ! videoscale ! videoconvert ! {} ! {} name=video_pay ! appsink name=video_sink sync=false \
+                     pulsesrc ! audioconvert ! opusenc ! rtpopuspay name=audio_pay ! appsink name=audio_sink sync=false",
+                     gst_display_str, encoder, payloader
+                );
+
+                match gst::parse_launch(&pipeline_str) {
+                    Ok(p) => {
+                        if let Ok(pipe) = p.dynamic_cast::<gst::Pipeline>() {
+                            match pipe.set_state(gst::State::Playing) {
+                                Ok(_) => {
+                                    // Check if it actually runs for a bit?
+                                    // ideally we wait for state change success
+                                    let bus = pipe.bus().unwrap();
+                                    // wait up to 0.5s for error
+                                    if let Some(msg) = bus.timed_pop(gst::ClockTime::from_milli_seconds(500)) {
+                                         if let gst::MessageView::Error(err) = msg.view() {
+                                            println!("Encoder {} failed: {}", encoder, err.error());
+                                            let _ = pipe.set_state(gst::State::Null);
+                                         } else {
+                                            println!("Encoder {} started successfully.", encoder);
+                                            pipeline = Some(pipe);
+                                            selected_mime_type = mime_type.to_string();
+                                            break;
+                                         }
+                                    } else {
+                                        println!("Encoder {} started successfully (no immediate error).", encoder);
+                                        pipeline = Some(pipe);
+                                        selected_mime_type = mime_type.to_string();
+                                        break;
+                                    }
+                                },
+                                Err(err) => {
+                                     println!("Failed to set state for encoder {}: {}", encoder, err);
+                                }
+                            }
+                        }
+                    },
+                    Err(err) => {
+                        println!("Failed to parse pipeline with {}: {}", encoder, err);
+                    }
+                }
+                encoder_idx += 1;
             }
 
-            // ... (Rest of GStreamer setup code)
-            // Ideally I should copy the EXACT content.
-            // Since I am an AI, I can copy the *content I read*.
-            // I will paste the content I read from `read_file` output above.
+            if pipeline.is_none() {
+                 let msg = "Error: Failed to initialize any video encoder. Please check GStreamer installation.";
+                 let payload = serde_json::json!({
+                    "sessionId": session_id.clone(),
+                    "type": "stderr",
+                    "line": msg
+                 });
+                 let _ = ctx.log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                 return Ok(());
+            }
+
+            gst_pipeline = pipeline;
+            let pipeline_ref = gst_pipeline.as_ref().unwrap();
+            
+            // Get AppSinks
+            let video_sink = pipeline_ref.by_name("video_sink").unwrap().dynamic_cast::<gst_app::AppSink>().unwrap();
+            let audio_sink = pipeline_ref.by_name("audio_sink").unwrap().dynamic_cast::<gst_app::AppSink>().unwrap();
+
+            // Setup Video Track
+            let mime = selected_mime_type.clone();
+            let video_track = Arc::new(TrackLocalStaticRTP::new(
+                RTCRtpCodecCapability {
+                    mime_type: mime,
+                    ..Default::default()
+                },
+                "video".to_owned(),
+                "synthi_stream".to_owned(),
+            ));
+            video_track_opt = Some(video_track.clone());
+
+            let v_track_clone = video_track.clone(); // Clone for closure
+            video_sink.set_callbacks(
+                gst_app::AppSinkCallbacks::builder()
+                .new_sample(move |sink| {
+                    match sink.pull_sample() {
+                        Ok(sample) => {
+                            if let Some(buffer) = sample.buffer() {
+                                if let Ok(map) = buffer.map_readable() {
+                                    let data = map.as_slice();
+                                    // This is a blocking write, but usually fast for RTP packets
+                                    if let Err(e) = v_track_clone.write(data) {
+                                         if e.to_string().contains("closed") {
+                                             return Err(gst::FlowError::Eos);
+                                         }
+                                         eprintln!("RTP write error: {}", e);
+                                    }
+                                }
+                            }
+                            Ok(gst::FlowSuccess::Ok)
+                        }
+                        Err(_) => Err(gst::FlowError::Eos),
+                    }
+                })
+                .build()
+            );
+
+            // Setup Audio Track
+            let audio_track = Arc::new(TrackLocalStaticRTP::new(
+                RTCRtpCodecCapability {
+                    mime_type: "audio/opus".to_owned(),
+                    ..Default::default()
+                },
+                "audio".to_owned(),
+                "synthi_stream".to_owned(),
+            ));
+            audio_track_opt = Some(audio_track.clone());
+
+            let a_track_clone = audio_track.clone();
+            audio_sink.set_callbacks(
+                gst_app::AppSinkCallbacks::builder()
+                .new_sample(move |sink| {
+                    match sink.pull_sample() {
+                        Ok(sample) => {
+                             if let Some(buffer) = sample.buffer() {
+                                if let Ok(map) = buffer.map_readable() {
+                                    let data = map.as_slice();
+                                    if let Err(e) = a_track_clone.write(data) {
+                                         if e.to_string().contains("closed") {
+                                             return Err(gst::FlowError::Eos);
+                                         }
+                                    }
+                                }
+                            }
+                            Ok(gst::FlowSuccess::Ok)
+                        }
+                        Err(_) => Err(gst::FlowError::Eos),
+                    }
+                })
+                .build()
+            );
         }
 
         // ... (Runner Process Start)
