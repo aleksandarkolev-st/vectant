@@ -231,7 +231,7 @@ pub async fn handle_runner_execution(
                                     // ideally we wait for state change success
                                     let bus = pipe.bus().unwrap();
                                     // wait up to 0.5s for error
-                                    if let Some(msg) = bus.timed_pop(gst::ClockTime::from_milli_seconds(500)) {
+                                    if let Some(msg) = bus.timed_pop(gst::ClockTime::from_mseconds(500)) {
                                          if let gst::MessageView::Error(err) = msg.view() {
                                             println!("Encoder {} failed: {}", encoder, err.error());
                                             let _ = pipe.set_state(gst::State::Null);
@@ -272,6 +272,9 @@ pub async fn handle_runner_execution(
                  return Ok(());
             }
 
+            let (v_tx, mut v_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+            let (a_tx, mut a_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+
             gst_pipeline = pipeline;
             let pipeline_ref = gst_pipeline.as_ref().unwrap();
             
@@ -291,7 +294,7 @@ pub async fn handle_runner_execution(
             ));
             video_track_opt = Some(video_track.clone());
 
-            let v_track_clone = video_track.clone(); // Clone for closure
+            let v_tx_clone = v_tx.clone();
             video_sink.set_callbacks(
                 gst_app::AppSinkCallbacks::builder()
                 .new_sample(move |sink| {
@@ -299,14 +302,8 @@ pub async fn handle_runner_execution(
                         Ok(sample) => {
                             if let Some(buffer) = sample.buffer() {
                                 if let Ok(map) = buffer.map_readable() {
-                                    let data = map.as_slice();
-                                    // This is a blocking write, but usually fast for RTP packets
-                                    if let Err(e) = v_track_clone.write(data) {
-                                         if e.to_string().contains("closed") {
-                                             return Err(gst::FlowError::Eos);
-                                         }
-                                         eprintln!("RTP write error: {}", e);
-                                    }
+                                    let data = map.as_slice().to_vec();
+                                    let _ = v_tx_clone.send(data);
                                 }
                             }
                             Ok(gst::FlowSuccess::Ok)
@@ -316,6 +313,19 @@ pub async fn handle_runner_execution(
                 })
                 .build()
             );
+
+            // Spawn async task to write video RTP packets
+            let v_track_clone = video_track.clone();
+            tokio::spawn(async move {
+                while let Some(data) = v_rx.recv().await {
+                    if let Err(e) = v_track_clone.write(&data).await {
+                         if e.to_string().contains("closed") {
+                             break;
+                         }
+                         eprintln!("RTP write error: {}", e);
+                    }
+                }
+            });
 
             // Setup Audio Track
             let audio_track = Arc::new(TrackLocalStaticRTP::new(
@@ -328,7 +338,7 @@ pub async fn handle_runner_execution(
             ));
             audio_track_opt = Some(audio_track.clone());
 
-            let a_track_clone = audio_track.clone();
+            let a_tx_clone = a_tx.clone();
             audio_sink.set_callbacks(
                 gst_app::AppSinkCallbacks::builder()
                 .new_sample(move |sink| {
@@ -336,12 +346,8 @@ pub async fn handle_runner_execution(
                         Ok(sample) => {
                              if let Some(buffer) = sample.buffer() {
                                 if let Ok(map) = buffer.map_readable() {
-                                    let data = map.as_slice();
-                                    if let Err(e) = a_track_clone.write(data) {
-                                         if e.to_string().contains("closed") {
-                                             return Err(gst::FlowError::Eos);
-                                         }
-                                    }
+                                    let data = map.as_slice().to_vec();
+                                    let _ = a_tx_clone.send(data);
                                 }
                             }
                             Ok(gst::FlowSuccess::Ok)
@@ -351,6 +357,18 @@ pub async fn handle_runner_execution(
                 })
                 .build()
             );
+
+            // Spawn async task to write audio RTP packets
+            let a_track_clone = audio_track.clone();
+            tokio::spawn(async move {
+                while let Some(data) = a_rx.recv().await {
+                   if let Err(e) = a_track_clone.write(&data).await {
+                         if e.to_string().contains("closed") {
+                             break;
+                         }
+                    }
+                }
+            });
         }
 
         // ... (Runner Process Start)
