@@ -58,10 +58,11 @@ wss.on("connection", (socket, request) => {
   });
 });
 
-server.listen(gatewayPort, () => {
+server.listen(gatewayPort, '0.0.0.0', () => {
   console.info(
     `Gateway listening on port ${gatewayPort} (WS path ${websocketPath})`
   );
+  console.info('[Gateway DEBUG] Listening on 0.0.0.0 for WSL connectivity');
 });
 
 function handleHttpRequest(req, res) {

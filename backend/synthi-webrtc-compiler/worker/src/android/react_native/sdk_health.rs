@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 use crate::android;
-use crate::mobile_routing::AndroidSdkHealth;
+use crate::android::routing::AndroidSdkHealth;
 
 /// Checks Android SDK and emulator toolchain health for React Native
 pub async fn check_android_sdk() -> Result<AndroidSdkHealth> {
