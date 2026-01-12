@@ -16,7 +16,7 @@ use super::gradle_runner::{
 };
 use super::project_init::ensure_android_gradle_project;
 use super::LogCallback;
-use crate::mobile_routing::Diagnostic;
+use crate::android::routing::Diagnostic;
 
 /// Configuration for building a React Native APK for emulator
 #[derive(Debug, Clone)]

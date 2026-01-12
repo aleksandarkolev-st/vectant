@@ -1,4 +1,4 @@
-use crate::mobile_routing::{Diagnostic, DiagnosticSeverity};
+use crate::android::routing::{Diagnostic, DiagnosticSeverity};
 
 /// Parses a line for Gradle build errors
 pub(crate) fn parse_gradle_diagnostic(line: &str) -> Option<Diagnostic> {
