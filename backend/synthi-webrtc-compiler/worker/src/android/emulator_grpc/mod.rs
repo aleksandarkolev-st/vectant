@@ -57,7 +57,8 @@ impl EmulatorGrpcClients {
     ) -> Result<generated::emulator_controller_client::EmulatorControllerClient<Channel>> {
         Ok(generated::emulator_controller_client::EmulatorControllerClient::new(
             self.channel.clone(),
-        ))
+        )
+        .max_decoding_message_size(16 * 1024 * 1024))
     }
 
     #[cfg(synthi_no_protoc)]
@@ -71,7 +72,8 @@ impl EmulatorGrpcClients {
     ) -> Result<generated::emulator_controller_client::EmulatorControllerClient<Channel>> {
         Ok(generated::emulator_controller_client::EmulatorControllerClient::new(
             self.channel.clone(),
-        ))
+        )
+        .max_decoding_message_size(16 * 1024 * 1024))
     }
 
     #[cfg(synthi_no_protoc)]
@@ -85,10 +87,11 @@ async fn connect_controller(
     cfg: &EmulatorGrpcConfig,
 ) -> Result<generated::emulator_controller_client::EmulatorControllerClient<Channel>> {
     let endpoint = format!("http://{}:{}", cfg.host, cfg.port);
+    // Note: Do NOT apply a global timeout here as it affects streaming RPC calls.
+    // Individual streaming calls manage their own timeouts via keep-alive and other mechanisms.
     let channel = Endpoint::from_shared(endpoint)
         .context("invalid gRPC endpoint")?
         .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(10))
         .connect()
         .await
         .context("failed to connect to emulator gRPC endpoint")?;
@@ -97,7 +100,8 @@ async fn connect_controller(
         let _ = read_grpc_token(cfg)?;
     }
 
-    Ok(generated::emulator_controller_client::EmulatorControllerClient::new(channel))
+    Ok(generated::emulator_controller_client::EmulatorControllerClient::new(channel)
+        .max_decoding_message_size(16 * 1024 * 1024))
 }
 
 #[cfg(synthi_no_protoc)]
@@ -113,10 +117,10 @@ pub async fn stream_frames(cfg: &EmulatorGrpcConfig) -> Result<mpsc::UnboundedRe
     let mut client = connect_controller(cfg).await?;
 
     let format = generated::ImageFormat {
-        format: generated::image_format::ImgFormat::Rgba8888 as i32,
+        format: generated::image_format::ImgFormat::Rgb888 as i32,
         rotation: None,
-        width: 0,
-        height: 0,
+        width: cfg.target_width.unwrap_or(0),
+        height: cfg.target_height.unwrap_or(0),
         display: 0,
         transport: Some(generated::ImageTransport {
             channel: 0,
@@ -140,73 +144,89 @@ pub async fn stream_frames(cfg: &EmulatorGrpcConfig) -> Result<mpsc::UnboundedRe
 
     tokio::spawn(async move {
         let mut last_seq: Option<u32> = None;
-        while let Ok(Some(image)) = stream.message().await {
-            if let Some(seq) = if image.seq > 0 { Some(image.seq) } else { None } {
-                if let Some(prev) = last_seq {
-                    if seq > prev + 1 {
-                        eprintln!("[grpc] screenshot stream dropped frames: prev={} current={}", prev, seq);
+        loop {
+            match stream.message().await {
+                Ok(Some(image)) => {
+                    let seq = image.seq;
+                    if let Some(s) = if seq > 0 { Some(seq) } else { None } {
+                        if let Some(prev) = last_seq {
+                            if s > prev + 1 {
+                                eprintln!("[grpc] screenshot stream dropped frames: prev={} current={}", prev, s);
+                            }
+                        }
+                        last_seq = Some(s);
+                    }
+
+                    let mut width = 0u32;
+                    let mut height = 0u32;
+                    let mut format = "RGBA".to_string();
+
+                    if let Some(fmt) = image.format.as_ref() {
+                        if fmt.width > 0 {
+                            width = fmt.width;
+                        }
+                        if fmt.height > 0 {
+                            height = fmt.height;
+                        }
+                        match generated::image_format::ImgFormat::from_i32(fmt.format)
+                            .unwrap_or(generated::image_format::ImgFormat::Png)
+                        {
+                            generated::image_format::ImgFormat::Rgba8888 => format = "RGBA".to_string(),
+                            generated::image_format::ImgFormat::Rgb888 => format = "RGB".to_string(),
+                            // Some emulators return generic "Raw" or other types, but if width*height*3 == size, it's RGB.
+                            // We will default to RGB if it's ambiguous but size matches.
+                            generated::image_format::ImgFormat::Png => format = "PNG".to_string(),
+                        }
+                    }
+
+                    if width == 0 {
+                        width = image.width;
+                    }
+                    if height == 0 {
+                        height = image.height;
+                    }
+
+                    if image.image.is_empty() {
+                        continue;
+                    }
+
+                    // if format != "RGBA" {
+                    //     eprintln!("[grpc] unsupported image format: {}", format);
+                    //     continue;
+                    // }
+
+                    if width == 0 || height == 0 {
+                        eprintln!("[grpc] missing image dimensions; skipping frame");
+                        continue;
+                    }
+
+                    let timestamp_ns = if image.timestamp_us > 0 {
+                        Some(image.timestamp_us.saturating_mul(1000))
+                    } else {
+                        None
+                    };
+
+                    let frame = EmulatorFrame {
+                        width,
+                        height,
+                        format,
+                        data: image.image,
+                        timestamp_ns,
+                    };
+
+                    if tx.send(frame).is_err() {
+                        eprintln!("[grpc] frame receiver dropped, stopping stream");
+                        break;
                     }
                 }
-                last_seq = Some(seq);
-            }
-
-            let mut width = 0u32;
-            let mut height = 0u32;
-            let mut format = "RGBA".to_string();
-
-            if let Some(fmt) = image.format.as_ref() {
-                if fmt.width > 0 {
-                    width = fmt.width;
+                Ok(None) => {
+                    eprintln!("[grpc] stream ended normally");
+                    break;
                 }
-                if fmt.height > 0 {
-                    height = fmt.height;
+                Err(e) => {
+                    eprintln!("[grpc] stream error: {:#}", e);
+                    break;
                 }
-                match generated::image_format::ImgFormat::from_i32(fmt.format)
-                    .unwrap_or(generated::image_format::ImgFormat::Png)
-                {
-                    generated::image_format::ImgFormat::Rgba8888 => format = "RGBA".to_string(),
-                    generated::image_format::ImgFormat::Rgb888 => format = "RGB".to_string(),
-                    generated::image_format::ImgFormat::Png => format = "PNG".to_string(),
-                }
-            }
-
-            if width == 0 {
-                width = image.width;
-            }
-            if height == 0 {
-                height = image.height;
-            }
-
-            if image.image.is_empty() {
-                continue;
-            }
-
-            if format != "RGBA" {
-                eprintln!("[grpc] unsupported image format: {}", format);
-                continue;
-            }
-
-            if width == 0 || height == 0 {
-                eprintln!("[grpc] missing image dimensions; skipping frame");
-                continue;
-            }
-
-            let timestamp_ns = if image.timestamp_us > 0 {
-                Some(image.timestamp_us.saturating_mul(1000))
-            } else {
-                None
-            };
-
-            let frame = EmulatorFrame {
-                width,
-                height,
-                format,
-                data: image.image,
-                timestamp_ns,
-            };
-
-            if tx.send(frame).is_err() {
-                break;
             }
         }
     });

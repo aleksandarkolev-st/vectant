@@ -10,6 +10,8 @@ pub struct EmulatorGrpcConfig {
     pub port: u16,
     pub use_token: bool,
     pub token_path: Option<String>,
+    pub target_width: Option<u32>,
+    pub target_height: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +58,8 @@ impl EmulatorStreamConfig {
                 port,
                 use_token,
                 token_path,
+                target_width: None,
+                target_height: None,
             },
         }
     }

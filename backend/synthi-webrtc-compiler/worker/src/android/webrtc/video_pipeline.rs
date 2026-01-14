@@ -291,9 +291,18 @@ fn appsrc_pipeline_string(cfg: &EmulatorAppSrcConfig) -> String {
         }
     };
 
+    let decoder = if cfg.format == "PNG" {
+        // Use queues around pngdec to offload decoding to a separate thread
+        "queue max-size-buffers=2 ! pngdec ! queue max-size-buffers=2 ! "
+    } else if cfg.format == "JPEG" || cfg.format == "JPG" {
+        "queue max-size-buffers=2 ! jpegdec ! queue max-size-buffers=2 ! "
+    } else {
+        ""
+    };
+
     format!(
-        "appsrc name=emulator_frames is-live=true format=time do-timestamp=true ! videoconvert ! videoscale ! videorate ! video/x-raw,framerate={},width={},height={} ! queue ! {} ! queue ! appsink name=video_sink drop=true max-buffers=50",
-        framerate, cfg.width, cfg.height, enc
+        "appsrc name=emulator_frames is-live=true format=time do-timestamp=true ! {}videoconvert ! videoscale ! videorate ! video/x-raw,framerate={},width={},height={} ! queue ! {} ! queue ! appsink name=video_sink drop=true max-buffers=50",
+        decoder, framerate, cfg.width, cfg.height, enc
     )
 }
 
@@ -365,13 +374,29 @@ impl EmulatorVideoPipeline {
             .downcast::<gst_app::AppSrc>()
             .map_err(|_| anyhow!("Expected AppSrc"))?;
 
-        let caps_str = format!(
-            "video/x-raw,format={},width={},height={},framerate={}/1",
-            cfg.format,
-            cfg.width.max(1),
-            cfg.height.max(1),
-            cfg.fps.max(1)
-        );
+        let caps_str = if cfg.format == "PNG" {
+            format!(
+                "image/png,width={},height={},framerate={}/1",
+                cfg.width.max(1),
+                cfg.height.max(1),
+                cfg.fps.max(1)
+            )
+        } else if cfg.format == "JPEG" || cfg.format == "JPG" {
+            format!(
+                "image/jpeg,width={},height={},framerate={}/1",
+                cfg.width.max(1),
+                cfg.height.max(1),
+                cfg.fps.max(1)
+            )
+        } else {
+            format!(
+                "video/x-raw,format={},width={},height={},framerate={}/1",
+                cfg.format,
+                cfg.width.max(1),
+                cfg.height.max(1),
+                cfg.fps.max(1)
+            )
+        };
         let caps = gst::Caps::from_str(&caps_str)
             .context("Failed to build appsrc caps")?;
         appsrc.set_caps(Some(&caps));

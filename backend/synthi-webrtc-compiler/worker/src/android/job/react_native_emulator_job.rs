@@ -255,7 +255,7 @@ pub async fn handle_react_native_emulator_job(
     // Tell the frontend what streaming/input transports are available.
     send_mobile_capabilities(&log_dc, &session_id).await;
 
-    let stream_config = EmulatorStreamConfig::from_env();
+    let mut stream_config = EmulatorStreamConfig::from_env();
     send_log(
         &log_dc,
         &session_id,
@@ -1058,10 +1058,19 @@ pub async fn handle_react_native_emulator_job(
         }
 
         let mut app_cfg = video_pipeline::EmulatorAppSrcConfig::default();
+        // Use RGB (scaled to 540x1140 typically). 
+        // Note: The emulator returns RGB even if we ask for RGBA, so we must expect RGB here.
+        app_cfg.format = "RGB".to_string();
+        
         if let Ok((w, h)) = emulator_input::query_device_size(&adb_path, &emulator_serial).await {
             if w > 0 && h > 0 {
-                app_cfg.width = w;
-                app_cfg.height = h;
+                // Request 1/2 scale from the emulator to reduce bandwidth (10MB -> 2.5MB) 
+                // and avoid encoding latency.
+                stream_config.grpc.target_width = Some(w / 2);
+                stream_config.grpc.target_height = Some(h / 2);
+                
+                app_cfg.width = w / 2;
+                app_cfg.height = h / 2;
             }
         }
 
@@ -1076,6 +1085,20 @@ pub async fn handle_react_native_emulator_job(
         )
         .await;
 
+        let pipeline = match video_pipeline::EmulatorVideoPipeline::start_appsrc(app_cfg.clone()) {
+            Ok(p) => p,
+            Err(e) => {
+                emulator_input::unregister_session_sync(&session_id);
+                return Err(e).context("failed to start emulator gRPC video pipeline");
+            }
+        };
+
+        // Note: we must update the stream config passed to stream_frames, 
+        // effectively using the updated width/height set above.
+        // Start the pipeline BEFORE gRPC simply to ensure caps are ready? 
+        // Actually, logic order: start gRPC stream (to get frames), then start main pipeline?
+        // Let's keep original order: gRPC first, then pipeline, but stream_frames needs updated config.
+        
         let mut frame_rx = match emulator_grpc::stream_frames(&stream_config.grpc).await {
             Ok(rx) => rx,
             Err(e) => {
@@ -1102,6 +1125,20 @@ pub async fn handle_react_native_emulator_job(
         let appsrc = pipeline
             .appsrc_clone()
             .context("gRPC pipeline missing appsrc")?;
+
+        // Wait 5000ms and then try to interact with the device to wake it up
+        let adb_path_clone = adb_path.clone();
+        let serial_clone = emulator_serial.clone();
+        
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(5000)).await;
+            
+            // Wake up
+            let _ = tokio::process::Command::new(&adb_path_clone)
+                .arg("-s").arg(&serial_clone)
+                .arg("shell").arg("input").arg("keyevent").arg("82") // MENU/UNLOCK
+                .output().await;
+        });
 
         let log_dc_for_grpc = log_dc.clone();
         let session_id_for_grpc = session_id.clone();
@@ -1195,11 +1232,15 @@ pub async fn handle_react_native_emulator_job(
                 }
 
                 let mut buffer = gst::Buffer::from_slice(frame.data);
+                // We let appsrc handle timestamping (do-timestamp=true) based on arrival time.
+                // Emulator timestamps can be inconsistent or non-monotonic, causing player stutter/black screen.
+                /*
                 if let Some(pts) = frame.timestamp_ns {
                     if let Some(buf) = buffer.get_mut() {
                         buf.set_pts(gst::ClockTime::from_nseconds(pts));
                     }
                 }
+                */
 
                 if appsrc.push_buffer(buffer).is_err() {
                     dropped += 1;
