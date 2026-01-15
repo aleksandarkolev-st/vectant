@@ -70,6 +70,26 @@ function MessageScreen({ title, subtitle }) {
   );
 }
 
+function Ripple({ x, y, onComplete }) {
+  React.useEffect(() => {
+    const timer = setTimeout(onComplete, 600);
+    return () => clearTimeout(timer);
+  }, [onComplete]);
+
+  return (
+    <div
+      className="absolute bg-white/30 rounded-full pointer-events-none animate-ping origin-center"
+      style={{
+        left: x,
+        top: y,
+        width: 40,
+        height: 40,
+        transform: 'translate(-50%, -50%)',
+      }}
+    />
+  );
+}
+
 export default function EmulatorScreen({
   state,
   errorMessage,
@@ -80,6 +100,7 @@ export default function EmulatorScreen({
 }) {
   // All hooks MUST be called before any conditional returns (React Rules of Hooks)
   const pointerStateRef = React.useRef(null);
+  const [ripples, setRipples] = React.useState([]);
 
   const hasVideoTrack =
     !!mediaStream &&
@@ -179,6 +200,14 @@ export default function EmulatorScreen({
     const el = e.currentTarget;
     const coords = clientToVideoCoords(el, e.clientX, e.clientY);
     pointerStateRef.current = { ...coords, t: Date.now(), clientX: e.clientX, clientY: e.clientY };
+    
+    // Add client-side prediction ripple
+    const rect = el.getBoundingClientRect();
+    const rippleX = e.clientX - rect.left;
+    const rippleY = e.clientY - rect.top;
+    const id = Date.now();
+    setRipples(prev => [...prev, { id, x: rippleX, y: rippleY }]);
+
     try { el.setPointerCapture?.(e.pointerId); } catch (_) {}
   };
 
@@ -275,6 +304,16 @@ export default function EmulatorScreen({
 
         {/* Hidden canvas for future use */}
         <canvas ref={canvasRef} className="hidden" />
+
+        {/* Client Prediction: Render input ripples overlay */}
+        {ripples.map(r => (
+          <Ripple 
+            key={r.id} 
+            x={r.x} 
+            y={r.y} 
+            onComplete={() => setRipples(prev => prev.filter(rx => rx.id !== r.id))} 
+          />
+        ))}
       </div>
     );
   }

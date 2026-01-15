@@ -40,6 +40,8 @@ pub struct EmulatorVideoConfig {
     pub endy: Option<i32>,
     /// Pixels to crop from the right side (to remove SDK toolbar)
     pub crop_right: u32,
+    /// RTP payload type explicitly negotiated (defaults to 96 if not set, but vital for H.264)
+    pub payload_type: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +51,7 @@ pub struct EmulatorAppSrcConfig {
     pub height: u32,
     pub format: String,
     pub codec: VideoCodec,
+    pub payload_type: u8,
 }
 
 impl Default for EmulatorAppSrcConfig {
@@ -59,6 +62,7 @@ impl Default for EmulatorAppSrcConfig {
             height: 1920,
             format: "RGBA".to_string(),
             codec: VideoCodec::Vp8,
+            payload_type: 96,
         }
     }
 }
@@ -77,6 +81,7 @@ impl Default for EmulatorVideoConfig {
             endx: None,
             endy: None,
             crop_right: 0,
+            payload_type: 96,
         }
     }
 }
@@ -169,7 +174,8 @@ fn get_h264_encoder_string() -> String {
         // Software fallback (x264)
         // tune=zerolatency: Optimize for streaming
         // speed-preset=ultrafast: Sacrifice compression for CPU speed
-        "x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h264,profile=baseline"
+        // profile=constrained-baseline: Required for broad WebRTC compatibility (Chrome/Safari)
+        "x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=30 ! video/x-h264,profile=constrained-baseline,level=(string)3.1,stream-format=byte-stream"
             .to_string()
     }
 }
@@ -273,14 +279,15 @@ fn pipeline_string(cfg: &EmulatorVideoConfig) -> String {
     };
     
     // Build the processing pipeline: crop first, then scale to output dimensions
+    // Use leaky queues to drop frames if processing is too slow (prevent lag buildup)
     let caps = if crop_toolbar.is_empty() {
         format!(
-            "videoconvert ! videoscale ! videorate ! {}video/x-raw,framerate={},width={},height={} ! queue ! ",
+            "videoconvert ! videoscale ! videorate ! {}video/x-raw,framerate={},width={},height={} ! queue leaky=downstream max-size-buffers=1 ! ",
             crop, framerate, cfg.width, cfg.height
         )
     } else {
         format!(
-            "{}videoscale ! videorate ! {}video/x-raw,framerate={},width={},height={} ! queue ! ",
+            "{}videoscale ! videorate ! {}video/x-raw,framerate={},width={},height={} ! queue leaky=downstream max-size-buffers=1 ! ",
             crop_toolbar, crop, framerate, cfg.width, cfg.height
         )
     };
@@ -289,17 +296,20 @@ fn pipeline_string(cfg: &EmulatorVideoConfig) -> String {
     // pt=96 is the common dynamic payload type.
     let enc = match cfg.codec {
         VideoCodec::Vp8 => {
-            "vp8enc deadline=1 cpu-used=8 error-resilient=partitions keyframe-max-dist=60 ! rtpvp8pay pt=96".to_string()
+            format!("vp8enc deadline=1 cpu-used=8 error-resilient=partitions keyframe-max-dist=60 ! rtpvp8pay pt={}", cfg.payload_type)
         }
         VideoCodec::H264 => {
             // Use hardware acceleration if available
             let encoder = get_h264_encoder_string();
-            format!("{} ! rtph264pay pt=96 config-interval=-1 aggregate-mode=zero-latency", encoder)
+            // config-interval=1 sends SPS/PPS with every keyframe (essential for WebRTC join/recovery)
+            format!("{} ! rtph264pay pt={} config-interval=-1 aggregate-mode=zero-latency mtu=1200", encoder, cfg.payload_type)
         }
     };
 
+    // Final queue before appsink: also leaky 1 frame.
+    // Appsink max-buffers=1 ensures we only hold the absolute latest frame for consumption.
     format!(
-        "{}{}{} ! queue ! appsink name=video_sink drop=true max-buffers=50",
+        "{}{}{} ! queue leaky=downstream max-size-buffers=200 ! appsink name=video_sink drop=true max-buffers=1",
         src, caps, enc
     )
 }
@@ -308,26 +318,29 @@ fn appsrc_pipeline_string(cfg: &EmulatorAppSrcConfig) -> String {
     let framerate = format!("{}/1", cfg.fps.max(1));
     let enc = match cfg.codec {
         VideoCodec::Vp8 => {
-            "vp8enc deadline=1 cpu-used=8 error-resilient=partitions keyframe-max-dist=60 ! rtpvp8pay pt=96".to_string()
+            format!("vp8enc deadline=1 cpu-used=8 error-resilient=partitions keyframe-max-dist=60 ! rtpvp8pay pt={}", cfg.payload_type)
         }
         VideoCodec::H264 => {
             // Use hardware acceleration if available
             let encoder = get_h264_encoder_string();
-            format!("{} ! rtph264pay pt=96 config-interval=-1 aggregate-mode=zero-latency", encoder)
+            // config-interval=1 sends SPS/PPS with every keyframe
+            format!("{} ! rtph264pay pt={} config-interval=-1 aggregate-mode=zero-latency mtu=1200", encoder, cfg.payload_type)
         }
     };
 
     let decoder = if cfg.format == "PNG" {
         // Use queues around pngdec to offload decoding to a separate thread
-        "queue max-size-buffers=2 ! pngdec ! queue max-size-buffers=2 ! "
+        "queue max-size-buffers=1 ! pngdec ! queue max-size-buffers=1 ! "
     } else if cfg.format == "JPEG" || cfg.format == "JPG" {
-        "queue max-size-buffers=2 ! jpegdec ! queue max-size-buffers=2 ! "
+        "queue max-size-buffers=1 ! jpegdec ! queue max-size-buffers=1 ! "
     } else {
         ""
     };
 
+    // Low latency appsrc pipeline: leaky queues + drop=true appsink
+    // We already drop frames in the gRPC loop if appsrc is full, but this ensures GStreamer doesn't buffer internally.
     format!(
-        "appsrc name=emulator_frames is-live=true format=time do-timestamp=true ! {}videoconvert ! videoscale ! videorate ! video/x-raw,framerate={},width={},height={} ! queue ! {} ! queue ! appsink name=video_sink drop=true max-buffers=50",
+        "appsrc name=emulator_frames is-live=true format=time do-timestamp=true ! {}videoconvert ! videoscale ! videorate ! video/x-raw,framerate={},width={},height={} ! queue leaky=downstream max-size-buffers=1 ! {} ! queue leaky=downstream max-size-buffers=200 ! appsink name=video_sink drop=true max-buffers=1",
         decoder, framerate, cfg.width, cfg.height, enc
     )
 }

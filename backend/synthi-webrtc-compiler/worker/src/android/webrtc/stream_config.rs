@@ -28,9 +28,9 @@ impl EmulatorStreamConfig {
             Ok(v) => match v.trim().to_lowercase().as_str() {
                 "grpc" => EmulatorStreamMode::Grpc,
                 "x11" => EmulatorStreamMode::X11,
-                _ => EmulatorStreamMode::X11,
+                _ => EmulatorStreamMode::Grpc, // Default to gRPC if unknown
             },
-            Err(_) => EmulatorStreamMode::X11,
+            Err(_) => EmulatorStreamMode::Grpc, // Default to gRPC if unset
         };
 
         let host = std::env::var("SYNTHI_ANDROID_GRPC_HOST")

@@ -1067,6 +1067,33 @@ pub async fn handle_react_native_emulator_job(
         // Use RGB (scaled to 540x1140 typically). 
         // Note: The emulator returns RGB even if we ask for RGBA, so we must expect RGB here.
         app_cfg.format = "RGB".to_string();
+
+        // -------------------------
+        // DYNAMIC PAYLOAD TYPE DETECTION
+        // -------------------------
+        {
+             let transceivers = pc.get_transceivers().await;
+             for t in transceivers {
+                 if t.kind() == RTPCodecType::Video {
+                     let sender = t.sender().await;
+                     let params = sender.get_parameters().await;
+                     for codec in params.rtp_parameters.codecs {
+                         // Check if this codec matches our selected codec
+                         let mime = codec.capability.mime_type.to_lowercase();
+                         let match_found = match app_cfg.codec {
+                             video_pipeline::VideoCodec::H264 => mime.contains("h264"),
+                             video_pipeline::VideoCodec::Vp8 => mime.contains("vp8"),
+                         };
+                         
+                         if match_found {
+                             eprintln!("[mobile-job] Found negotiated codec {} with PT {} fmtp={}", codec.capability.mime_type, codec.payload_type, codec.capability.sdp_fmtp_line);
+                             app_cfg.payload_type = codec.payload_type;
+                             break;
+                         }
+                     }
+                 }
+             }
+        }
         
         if let Ok((w, h)) = emulator_input::query_device_size(&adb_path, &emulator_serial).await {
             if w > 0 && h > 0 {
@@ -1092,20 +1119,15 @@ pub async fn handle_react_native_emulator_job(
             &log_dc,
             &session_id,
             &format!(
-                "[video] starting GStreamer appsrc pipeline: {}",
+                "[video] starting GStreamer appsrc pipeline (pt={}): {}",
+                app_cfg.payload_type,
                 video_pipeline::EmulatorVideoPipeline::debug_appsrc_pipeline_string(&app_cfg)
             ),
             "emulator",
         )
         .await;
 
-        let pipeline = match video_pipeline::EmulatorVideoPipeline::start_appsrc(app_cfg.clone()) {
-            Ok(p) => p,
-            Err(e) => {
-                emulator_input::unregister_session_sync(&session_id);
-                return Err(e).context("failed to start emulator gRPC video pipeline");
-            }
-        };
+        // REMOVED REDUNDANT PIPELINE START
 
         // Note: we must update the stream config passed to stream_frames, 
         // effectively using the updated width/height set above.
@@ -1464,11 +1486,40 @@ pub async fn handle_react_native_emulator_job(
             }
         }
 
+        // Detect negotiated payload type to ensure GStreamer matches the SDP
+        {
+             let transceivers = pc.get_transceivers().await;
+             for t in transceivers {
+                 if t.kind() == RTPCodecType::Video {
+                     let sender = t.sender().await;
+                     let params = sender.get_parameters().await;
+                     for codec in params.rtp_parameters.codecs {
+                         // Check if this codec matches our selected codec
+                         let mime = codec.capability.mime_type.to_lowercase();
+                         let match_found = match cfg.codec {
+                             video_pipeline::VideoCodec::H264 => mime.contains("h264"),
+                             video_pipeline::VideoCodec::Vp8 => mime.contains("vp8"),
+                         };
+                         
+                         if match_found {
+                             eprintln!("[mobile-job] Found negotiated codec {} with PT {}", codec.capability.mime_type, codec.payload_type);
+                             cfg.payload_type = codec.payload_type;
+                             
+                             // If H.264, try to find packetization mode if it matters (usually 1)
+                             // But PT is the most critical match.
+                             break;
+                         }
+                     }
+                 }
+             }
+        }
+
         send_log(
             &log_dc,
             &session_id,
             &format!(
-                "[video] starting GStreamer pipeline: {}",
+                "[video] starting GStreamer pipeline (pt={}): {}",
+                cfg.payload_type,
                 video_pipeline::EmulatorVideoPipeline::debug_pipeline_string(&cfg)
             ),
             "emulator",
