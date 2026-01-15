@@ -1061,6 +1061,9 @@ pub async fn handle_react_native_emulator_job(
         }
 
         let mut app_cfg = video_pipeline::EmulatorAppSrcConfig::default();
+        // Use H.264
+        app_cfg.codec = video_pipeline::VideoCodec::H264;
+        
         // Use RGB (scaled to 540x1140 typically). 
         // Note: The emulator returns RGB even if we ask for RGBA, so we must expect RGB here.
         app_cfg.format = "RGB".to_string();
@@ -1292,6 +1295,9 @@ pub async fn handle_react_native_emulator_job(
         };
 
         let mut cfg = video_pipeline::EmulatorVideoConfig::default();
+        // Use H.264
+        cfg.codec = video_pipeline::VideoCodec::H264;
+        
         if !session_display.trim().is_empty() {
             cfg.x11_display = session_display;
         } else if let Ok(d) = std::env::var("DISPLAY") {
@@ -1299,6 +1305,8 @@ pub async fn handle_react_native_emulator_job(
                 cfg.x11_display = d;
             }
         }
+        // Use H.264 for better quality/performance
+        cfg.codec = video_pipeline::VideoCodec::H264;
 
         // XID capture can cause X_GetImage BadMatch with some GPU modes due to incompatible X11 visuals.
         // Default to root capture which is safer. XID capture can be enabled via SYNTHI_ANDROID_CAPTURE_XID=true.

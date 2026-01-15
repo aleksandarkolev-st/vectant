@@ -151,6 +151,29 @@ fn ximagesrc_disable_shm_arg() -> String {
     }
 }
 
+/// Helper to select the best available H.264 encoder
+/// Checks for NVENV (NVIDIA) -> VAAPI (Intel/AMD) -> x264 (Software)
+fn get_h264_encoder_string() -> String {
+    if gst::ElementFactory::find("nvh264enc").is_some() {
+        // NVIDIA hardware encoding
+        // preset=low-latency-hp: High performance low latency
+        // zerolatency=true: Removes buffering
+        // gop-size=60: Keyframe every 2s at 30fps
+        "nvh264enc preset=low-latency-hp zerolatency=true bitrate=2000 gop-size=60 ! video/x-h264,profile=high"
+            .to_string()
+    } else if gst::ElementFactory::find("vaapih264enc").is_some() {
+        // Intel/AMD hardware encoding via VAAPI
+        "vaapih264enc rate-control=cbr bitrate=2000 keyframe-period=60 ! video/x-h264,profile=high"
+            .to_string()
+    } else {
+        // Software fallback (x264)
+        // tune=zerolatency: Optimize for streaming
+        // speed-preset=ultrafast: Sacrifice compression for CPU speed
+        "x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h264,profile=baseline"
+            .to_string()
+    }
+}
+
 fn gcd_u32(mut a: u32, mut b: u32) -> u32 {
     while b != 0 {
         let t = a % b;
@@ -269,8 +292,9 @@ fn pipeline_string(cfg: &EmulatorVideoConfig) -> String {
             "vp8enc deadline=1 cpu-used=8 error-resilient=partitions keyframe-max-dist=60 ! rtpvp8pay pt=96".to_string()
         }
         VideoCodec::H264 => {
-            // Baseline-ish settings + frequent keyframes for low-latency.
-            "x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h264,stream-format=byte-stream,profile=baseline ! rtph264pay pt=96 config-interval=-1".to_string()
+            // Use hardware acceleration if available
+            let encoder = get_h264_encoder_string();
+            format!("{} ! rtph264pay pt=96 config-interval=-1 aggregate-mode=zero-latency", encoder)
         }
     };
 
@@ -287,7 +311,9 @@ fn appsrc_pipeline_string(cfg: &EmulatorAppSrcConfig) -> String {
             "vp8enc deadline=1 cpu-used=8 error-resilient=partitions keyframe-max-dist=60 ! rtpvp8pay pt=96".to_string()
         }
         VideoCodec::H264 => {
-            "x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=60 ! video/x-h264,stream-format=byte-stream,profile=baseline ! rtph264pay pt=96 config-interval=-1".to_string()
+            // Use hardware acceleration if available
+            let encoder = get_h264_encoder_string();
+            format!("{} ! rtph264pay pt=96 config-interval=-1 aggregate-mode=zero-latency", encoder)
         }
     };
 
