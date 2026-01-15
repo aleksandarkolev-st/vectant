@@ -202,18 +202,19 @@ async fn handle_input_grpc(
     msg: &EmulatorInputMessage,
     session: &EmulatorInputSession,
 ) -> Result<()> {
-    let (frame_w, frame_h) = session
-        .grpc_frame_size
-        .context("gRPC frame size unavailable for input mapping")?;
+    // Input coordinates must be in device native pixels, not the scaled video resolution.
+    // So we use device_w/device_h, not the frame size.
+    let target_w = session.device_w;
+    let target_h = session.device_h;
 
     match msg.kind.as_str() {
         "tap" => {
-            let (x, y) = map_point(msg, frame_w, frame_h)?;
+            let (x, y) = map_point(msg, target_w, target_h)?;
             emulator_grpc::inject_tap(&session.stream_config.grpc, x, y).await?;
         }
         "swipe" => {
-            let (x1, y1) = map_point(msg, frame_w, frame_h)?;
-            let (x2, y2) = map_point2(msg, frame_w, frame_h)?;
+            let (x1, y1) = map_point(msg, target_w, target_h)?;
+            let (x2, y2) = map_point2(msg, target_w, target_h)?;
             let dur = msg.duration_ms.unwrap_or(250);
             emulator_grpc::inject_swipe(&session.stream_config.grpc, x1, y1, x2, y2, dur).await?;
         }

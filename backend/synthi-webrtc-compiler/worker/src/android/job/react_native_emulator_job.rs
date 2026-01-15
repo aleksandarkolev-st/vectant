@@ -1153,6 +1153,7 @@ pub async fn handle_react_native_emulator_job(
             let mut mismatch_logged = false;
             let mut last_frame_size: Option<(u32, u32)> = None;
             let mut interval = tokio::time::interval(Duration::from_secs(5));
+            let mut last_push_buffer: Option<gst::Buffer> = None;
 
             loop {
                 tokio::select! {
@@ -1178,6 +1179,12 @@ pub async fn handle_react_native_emulator_job(
                             .await;
                         }
                     }
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                        // Heartbeat: Re-push last buffer if no new frames arrive to keep RTP stream alive.
+                        if let Some(buf) = &last_push_buffer {
+                            let _ = appsrc.push_buffer(buf.clone());
+                        }
+                    }
                     maybe = frame_rx.recv() => {
                         let Some(frame) = maybe else {
                             send_log(
@@ -1192,73 +1199,68 @@ pub async fn handle_react_native_emulator_job(
 
                         frames += 1;
                         last_frame_at = Instant::now();
-                if frame.width > 0 && frame.height > 0 {
-                    let size = (frame.width, frame.height);
-                    if last_frame_size != Some(size) {
-                        emulator_input::update_grpc_frame_size(
-                            &session_id_for_grpc,
-                            frame.width,
-                            frame.height,
-                        );
-                        last_frame_size = Some(size);
-                    }
-                }
-                if !mismatch_logged
-                    && (frame.width != expected_w
-                        || frame.height != expected_h
-                        || frame.format != expected_format)
-                {
-                    mismatch_logged = true;
-                    send_log(
-                        &log_dc_for_grpc,
-                        &session_id_for_grpc,
-                        &format!(
-                            "[grpc] frame format mismatch: stream={}x{} {} expected={}x{} {}",
-                            frame.width,
-                            frame.height,
-                            frame.format,
-                            expected_w,
-                            expected_h,
-                            expected_format
-                        ),
-                        "emulator",
-                    )
-                    .await;
-                }
+                        
+                        if frame.width > 0 && frame.height > 0 {
+                            let size = (frame.width, frame.height);
+                            if last_frame_size != Some(size) {
+                                emulator_input::update_grpc_frame_size(
+                                    &session_id_for_grpc,
+                                    frame.width,
+                                    frame.height,
+                                );
+                                last_frame_size = Some(size);
+                            }
+                        }
 
-                if frame.format != expected_format {
-                    dropped += 1;
-                    continue;
-                }
+                        if !mismatch_logged
+                            && (frame.width != expected_w
+                                || frame.height != expected_h
+                                || frame.format != expected_format)
+                        {
+                            mismatch_logged = true;
+                            send_log(
+                                &log_dc_for_grpc,
+                                &session_id_for_grpc,
+                                &format!(
+                                    "[grpc] frame format mismatch: stream={}x{} {} expected={}x{} {}",
+                                    frame.width,
+                                    frame.height,
+                                    frame.format,
+                                    expected_w,
+                                    expected_h,
+                                    expected_format
+                                ),
+                                "emulator",
+                            )
+                            .await;
+                        }
 
-                let mut buffer = gst::Buffer::from_slice(frame.data);
-                // We let appsrc handle timestamping (do-timestamp=true) based on arrival time.
-                // Emulator timestamps can be inconsistent or non-monotonic, causing player stutter/black screen.
-                /*
-                if let Some(pts) = frame.timestamp_ns {
-                    if let Some(buf) = buffer.get_mut() {
-                        buf.set_pts(gst::ClockTime::from_nseconds(pts));
-                    }
-                }
-                */
+                        if frame.format != expected_format {
+                            dropped += 1;
+                            continue;
+                        }
 
-                if appsrc.push_buffer(buffer).is_err() {
-                    dropped += 1;
-                }
+                        let buffer = gst::Buffer::from_slice(frame.data);
+                        last_push_buffer = Some(buffer.clone());
 
-                if last_log.elapsed() >= Duration::from_secs(5) {
-                    send_log(
-                        &log_dc_for_grpc,
-                        &session_id_for_grpc,
-                        &format!(
-                            "[grpc] frames={} dropped={} expected={}x{} {}",
-                            frames, dropped, expected_w, expected_h, expected_format
-                        ),
-                        "emulator",
-                    )
-                    .await;
-                    last_log = Instant::now();
-                }
+                        // We let appsrc handle timestamping (do-timestamp=true) based on arrival time.
+                        if appsrc.push_buffer(buffer).is_err() {
+                            dropped += 1;
+                        }
+
+                        if last_log.elapsed() >= Duration::from_secs(5) {
+                            send_log(
+                                &log_dc_for_grpc,
+                                &session_id_for_grpc,
+                                &format!(
+                                    "[grpc] frames={} dropped={} expected={}x{} {}",
+                                    frames, dropped, expected_w, expected_h, expected_format
+                                ),
+                                "emulator",
+                            )
+                            .await;
+                            last_log = Instant::now();
+                        }
                     }
                 }
             }
