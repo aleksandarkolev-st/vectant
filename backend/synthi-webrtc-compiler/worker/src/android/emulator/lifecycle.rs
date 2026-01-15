@@ -166,6 +166,9 @@ impl EmulatorSession {
             let state = self.core.state.clone();
             tokio::spawn(async move {
                 while let Ok(Some(line)) = reader.next_line().await {
+                    // Log all stderr output for debugging boot failures
+                    eprintln!("[emulator-err] {}", line);
+                    
                     // If emulator output indicates crash, mark state
                     if line.contains("panic") || line.contains("FATAL") {
                         *state.lock().await = EmulatorState::Failed;
@@ -186,6 +189,22 @@ impl EmulatorSession {
             Ok(Ok(serial)) => {
                 *self.core.serial.lock().await = Some(serial.clone());
                 *self.core.state.lock().await = EmulatorState::Ready;
+
+                // Verification: Log actual display configuration
+                let adb = self.core.config.android_sdk_root.join("platform-tools/adb");
+                let size_out = Command::new(&adb)
+                    .args(["-s", &serial, "shell", "wm", "size"])
+                    .output().await;
+                let density_out = Command::new(&adb)
+                    .args(["-s", &serial, "shell", "wm", "density"])
+                    .output().await;
+                    
+                if let (Ok(s), Ok(d)) = (size_out, density_out) {
+                     eprintln!("[boot] Verified display: {} | {}", 
+                        String::from_utf8_lossy(&s.stdout).trim(),
+                        String::from_utf8_lossy(&d.stdout).trim()
+                     );
+                }
 
                 Ok(EmulatorBootResult {
                     success: true,
@@ -241,12 +260,30 @@ impl EmulatorSession {
 
     async fn wait_for_adb_device(&self, adb: &std::path::Path) -> Result<String> {
         // `adb devices` can list multiple devices; pick the first emulator.
-        for _ in 0..60 {
+        // Loop "forever" here, relying on the outer `timeout` in `wait_for_emulator_ready` to stop us.
+        loop {
+            // Check if emulator process actually failed while we were waiting
+            {
+                let state = self.core.state.lock().await;
+                if matches!(*state, EmulatorState::Failed) {
+                     bail!("Emulator process failed (crashed or exited prematurely) while waiting for ADB");
+                }
+                
+                // Also check if process exited without setting state (e.g. clean exit or unknown error)
+                let mut proc_guard = self.core.emulator_process.lock().await;
+                if let Some(child) = proc_guard.as_mut() {
+                    if let Ok(Some(status)) = child.try_wait() {
+                        bail!("Emulator process exited unexpectedly with status: {:?}", status);
+                    }
+                }
+            }
+
             let output = Command::new(adb).arg("devices").output().await?;
             let stdout = String::from_utf8_lossy(&output.stdout);
 
             for line in stdout.lines() {
                 let line = line.trim();
+                // Ensure we pick up a running device, not 'offline' or 'unauthorized'
                 if line.starts_with("emulator-") && line.contains("\tdevice") {
                     let serial = line.split_whitespace().next().unwrap_or("").to_string();
                     if !serial.is_empty() {
@@ -257,8 +294,6 @@ impl EmulatorSession {
 
             tokio::time::sleep(Duration::from_millis(BOOT_POLL_INTERVAL_MS)).await;
         }
-
-        bail!("No emulator device detected via adb");
     }
 
     async fn wait_for_boot_complete(&self, adb: &std::path::Path, serial: &str) -> Result<()> {

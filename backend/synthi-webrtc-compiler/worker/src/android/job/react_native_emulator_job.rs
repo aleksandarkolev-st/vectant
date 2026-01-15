@@ -442,6 +442,9 @@ pub async fn handle_react_native_emulator_job(
         )
         .await;
 
+        // Force a slightly longer wait before prewarm to reduce CPU contention on start
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+
         let res = ensure_emulator_ready(prewarm_config).await;
         match &res {
             Ok(info) => {
@@ -1064,13 +1067,21 @@ pub async fn handle_react_native_emulator_job(
         
         if let Ok((w, h)) = emulator_input::query_device_size(&adb_path, &emulator_serial).await {
             if w > 0 && h > 0 {
-                // Request 1/2 scale from the emulator to reduce bandwidth (10MB -> 2.5MB) 
-                // and avoid encoding latency.
-                stream_config.grpc.target_width = Some(w / 2);
-                stream_config.grpc.target_height = Some(h / 2);
-                
-                app_cfg.width = w / 2;
-                app_cfg.height = h / 2;
+                if w > 720 {
+                    // High-res device: request 1/2 scale from the emulator to reduce bandwidth 
+                    stream_config.grpc.target_width = Some(w / 2);
+                    stream_config.grpc.target_height = Some(h / 2);
+                    
+                    app_cfg.width = w / 2;
+                    app_cfg.height = h / 2;
+                } else {
+                    // Already low-res (native 540p/720p): use as is
+                    stream_config.grpc.target_width = Some(w);
+                    stream_config.grpc.target_height = Some(h);
+                    
+                    app_cfg.width = w;
+                    app_cfg.height = h;
+                }
             }
         }
 

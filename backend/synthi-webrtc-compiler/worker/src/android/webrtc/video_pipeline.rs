@@ -340,7 +340,7 @@ impl EmulatorVideoPipeline {
             .downcast::<gst::Pipeline>()
             .map_err(|_| anyhow!("Expected gst::Pipeline"))?;
 
-        Self::finalize_pipeline(pipeline, cfg.codec, None, true)
+        Self::finalize_pipeline(pipeline, cfg.codec, None, true, cfg.width, cfg.height)
     }
 
     pub fn start_appsrc(cfg: EmulatorAppSrcConfig) -> Result<Self> {
@@ -401,7 +401,7 @@ impl EmulatorVideoPipeline {
             .context("Failed to build appsrc caps")?;
         appsrc.set_caps(Some(&caps));
 
-        Self::finalize_pipeline(pipeline, cfg.codec, Some(appsrc), false)
+        Self::finalize_pipeline(pipeline, cfg.codec, Some(appsrc), false, cfg.width, cfg.height)
     }
 
     fn finalize_pipeline(
@@ -409,6 +409,8 @@ impl EmulatorVideoPipeline {
         codec: VideoCodec,
         appsrc: Option<gst_app::AppSrc>,
         verify_samples: bool,
+        width: u32,
+        height: u32,
     ) -> Result<Self> {
         let appsink = pipeline
             .by_name("video_sink")
@@ -497,14 +499,31 @@ impl EmulatorVideoPipeline {
         let track_clone = track.clone();
         let rtp_task = tokio::spawn(async move {
             let mut last_log_time = std::time::Instant::now();
+            let mut last_packet_count = 0u64;
+            
+            let target_bitrate = match codec {
+                VideoCodec::Vp8 => "auto",
+                VideoCodec::H264 => "2000k",
+            };
+
             while let Some(buf) = rtp_rx.recv().await {
                 if let Ok(packet) = Packet::unmarshal(&mut &buf[..]) {
                     let _ = track_clone.write_rtp(&packet).await;
                     let count = rtp_packet_count_clone.fetch_add(1, Ordering::Relaxed) + 1;
-                    // Log every 5 seconds to show the pipeline is producing packets
-                    if last_log_time.elapsed() >= std::time::Duration::from_secs(5) {
-                        eprintln!("[video-pipeline] RTP packets written: {} (continuing...)", count);
+                    
+                    // Log telemetry every ~2s
+                    let elapsed = last_log_time.elapsed();
+                    if elapsed >= std::time::Duration::from_secs(2) {
+                        let packets_since = count - last_packet_count;
+                        let pps = (packets_since as f64 / elapsed.as_secs_f64()) as u64;
+                        
+                        eprintln!(
+                            "[perf telemetry] res={}x{} codec={:?} target_br={} pps={} total_packets={}",
+                            width, height, codec, target_bitrate, pps, count
+                        );
+
                         last_log_time = std::time::Instant::now();
+                        last_packet_count = count;
                     }
                 }
             }

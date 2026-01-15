@@ -17,9 +17,9 @@ pub(crate) const EMULATOR_BOOT_TIMEOUT_SECS: u64 = 1200;
 
 /// Maximum time to wait for adb to connect.
 ///
-/// Note: we primarily rely on the overall emulator boot timeout now; this value
-/// is kept only for legacy callers.
-pub(crate) const ADB_CONNECT_TIMEOUT_SECS: u64 = 30;
+/// Note: Cold boot on software rendering can be slow to initialize USB/ADB.
+/// Increased from 30s -> 180s to prevent premature timeouts.
+pub(crate) const ADB_CONNECT_TIMEOUT_SECS: u64 = 180;
 
 /// Maximum time for APK installation (120 seconds)
 pub(crate) const APK_INSTALL_TIMEOUT_SECS: u64 = 120;
@@ -120,10 +120,26 @@ pub struct EmulatorConfig {
 
     /// Android SDK root path
     pub android_sdk_root: PathBuf,
+
+    /// Native LCD width (default: 540)
+    pub native_width: u32,
+
+    /// Native LCD height (default: 960)
+    pub native_height: u32,
+
+    /// Native LCD density (default: 240)
+    pub native_density: u32,
 }
 
 impl Default for EmulatorConfig {
     fn default() -> Self {
+        // Default to 540x1170 (19.5:9 aspect ratio) to match modern device frames
+        let (w, h, d) = if std::env::var("SYNTHI_ANDROID_720P").is_ok() {
+            (720, 1560, 320) // 720p 19.5:9
+        } else {
+            (540, 1170, 240) // 540p 19.5:9
+        };
+
         Self {
             avd_name: DEFAULT_AVD_NAME.to_string(),
             system_image: DEFAULT_SYSTEM_IMAGE.to_string(),
@@ -134,6 +150,10 @@ impl Default for EmulatorConfig {
             use_hw_accel: false, // Default to software rendering for cloud
             extra_args: vec![],
             android_sdk_root: PathBuf::from("/opt/android-sdk"),
+            // Step 1: Default to 540x960 @ 240 dpi for native low-res rendering
+            native_width: w,
+            native_height: h,
+            native_density: d,
         }
     }
 }
