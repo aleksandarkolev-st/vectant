@@ -404,6 +404,7 @@ export default function EmulatorPanel({
               videoRef={videoRef}
               canvasRef={canvasRef}
               mediaStream={mediaStream}
+              bootStatus={workerMessage}
             />
           </div>
         </EmulatorFrame>

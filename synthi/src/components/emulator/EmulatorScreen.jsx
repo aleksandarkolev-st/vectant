@@ -48,12 +48,14 @@ function HomeScreenMock() {
   );
 }
 
-function BootingScreen() {
+function BootingScreen({ message }) {
   return (
     <div className="h-full w-full bg-black flex items-center justify-center">
       <div className="flex flex-col items-center gap-3">
         <div className="w-10 h-10 rounded-full border-2 border-white/20 border-t-white/80 animate-spin" />
-        <div className="text-xs text-gray-300 tracking-wide">booting…</div>
+        <div className="text-xs text-gray-300 tracking-wide text-center px-4 max-w-[80%] break-words">
+          {message || 'booting…'}
+        </div>
       </div>
     </div>
   );
@@ -71,10 +73,17 @@ function MessageScreen({ title, subtitle }) {
 }
 
 function Ripple({ x, y, onComplete }) {
+  const onCompleteRef = React.useRef(onComplete);
+  onCompleteRef.current = onComplete;
+
   React.useEffect(() => {
-    const timer = setTimeout(onComplete, 600);
+    const timer = setTimeout(() => {
+      if (onCompleteRef.current) {
+        onCompleteRef.current();
+      }
+    }, 600);
     return () => clearTimeout(timer);
-  }, [onComplete]);
+  }, []);
 
   return (
     <div
@@ -97,6 +106,7 @@ export default function EmulatorScreen({
   videoRef,
   canvasRef,
   mediaStream,
+  bootStatus,
 }) {
   // All hooks MUST be called before any conditional returns (React Rules of Hooks)
   const pointerStateRef = React.useRef(null);
@@ -165,25 +175,17 @@ export default function EmulatorScreen({
    */
   const clientToVideoCoords = (el, clientX, clientY) => {
     const rect = el.getBoundingClientRect();
-    const containerW = rect.width;
-    const containerH = rect.height;
     const videoW = el.videoWidth || 1;
     const videoH = el.videoHeight || 1;
 
-    const scale = Math.max(containerW / videoW, containerH / videoH);
-    const drawW = videoW * scale;
-    const drawH = videoH * scale;
-
-    const offsetX = (containerW - drawW) / 2;
-    const offsetY = (containerH - drawH) / 2;
-
-    // Get position relative to rendered video
-    const relX = clientX - rect.left - offsetX;
-    const relY = clientY - rect.top - offsetY;
+    // Since we use css centering (flex) and max-w/h, the rect matches the visible video.
+    // No manual letterbox offset calculation needed.
+    const relX = clientX - rect.left;
+    const relY = clientY - rect.top;
 
     // Scale to video resolution
-    const videoX = (relX / drawW) * videoW;
-    const videoY = (relY / drawH) * videoH;
+    const videoX = (relX / rect.width) * videoW;
+    const videoY = (relY / rect.height) * videoH;
 
     // Clamp to valid range
     return {
@@ -191,8 +193,8 @@ export default function EmulatorScreen({
       y: Math.max(0, Math.min(videoH - 1, Math.round(videoY))),
       videoW,
       videoH,
-      viewW: containerW,
-      viewH: containerH,
+      viewW: rect.width,
+      viewH: rect.height,
     };
   };
 
@@ -227,10 +229,12 @@ export default function EmulatorScreen({
 
     if (dist < 8 && dur < 250) {
       // Tap - use start coordinates
-      emitInput({ type: 'tap', x: st.x, y: st.y, videoW: st.videoW, videoH: st.videoH, viewW: st.viewW, viewH: st.viewH });
+      // Note: Coordinates are already mapped to video resolution by clientToVideoCoords.
+      // We do NOT send viewW/viewH to avoid double-scaling in the backend.
+      emitInput({ type: 'tap', x: st.x, y: st.y, videoW: st.videoW, videoH: st.videoH });
     } else {
       // Swipe - use start and end coordinates
-      emitInput({ type: 'swipe', x: st.x, y: st.y, x2: coords.x, y2: coords.y, durationMs: dur, videoW: coords.videoW, videoH: coords.videoH, viewW: coords.viewW, viewH: coords.viewH });
+      emitInput({ type: 'swipe', x: st.x, y: st.y, x2: coords.x, y2: coords.y, durationMs: dur, videoW: coords.videoW, videoH: coords.videoH });
     }
   };
 
@@ -270,7 +274,7 @@ export default function EmulatorScreen({
   };
 
   if (state === EMULATOR_STATES.BOOTING) {
-    return <BootingScreen />;
+    return <BootingScreen message={bootStatus} />;
   }
 
   if (state === EMULATOR_STATES.IDLE) {
@@ -283,11 +287,11 @@ export default function EmulatorScreen({
 
   if (state === EMULATOR_STATES.STREAMING) {
     return (
-      <div className="h-full w-full bg-black relative" tabIndex={0} onKeyDown={onKeyDown}>
-        {/* Video element - fills entire container (parent is pre-sized to match video aspect ratio) */}
+      <div className="h-full w-full bg-black relative flex items-center justify-center" tabIndex={0} onKeyDown={onKeyDown}>
+        {/* Video element - uses flex centering and max dimensions to strictly match aspect ratio without math */}
         <video
           ref={videoRef}
-          className={hasVideoTrack ? "w-full h-full touch-none object-cover object-left" : "hidden"}
+          className={hasVideoTrack ? "max-w-full max-h-full touch-none" : "hidden"}
           style={{ display: hasVideoTrack ? 'block' : 'none' }}
           muted
           playsInline

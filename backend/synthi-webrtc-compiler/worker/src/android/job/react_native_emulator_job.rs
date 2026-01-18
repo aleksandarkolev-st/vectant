@@ -1597,7 +1597,6 @@ pub async fn handle_react_native_emulator_job(
                     // Critical: Retrieve the negotiated SSRC from the sender
                     // and inject it into the video pipeline.
                     let params = sender.get_parameters().await;
-                    eprintln!("[mobile-job] Sender Parameters: {:#?}", params);
                     
                     if !params.encodings.is_empty() {
                         let ssrc = params.encodings[0].ssrc;
