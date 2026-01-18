@@ -10,4 +10,4 @@ linker = "/usr/bin/gcc"
 # Use Rust's bundled LLD to avoid requiring MSVC's `link.exe` on dev machines
 # where Visual Studio Build Tools aren't installed or PATH resolves a non-MSVC
 # `link.exe`.
-linker = "rust-lld.exe"
+# linker = "rust-lld.exe"

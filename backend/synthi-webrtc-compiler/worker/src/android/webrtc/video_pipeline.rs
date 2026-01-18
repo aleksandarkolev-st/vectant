@@ -3,12 +3,17 @@ use gstreamer as gst;
 use gstreamer::prelude::{Cast, ElementExt, GstBinExt, GstObjectExt, ObjectExt};
 use gstreamer_app as gst_app;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
 use std::str::FromStr;
 use tokio::sync::mpsc;
 use webrtc::rtp::packet::Packet;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocalWriter;
+use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
+use webrtc::rtp_transceiver::RTCPFeedback;
+use webrtc::rtp::header::Header;
+use webrtc::rtp::extension::audio_level_extension::AudioLevelExtension;
+use webrtc::rtp::extension::HeaderExtension;
 use webrtc_util::Unmarshal;
 
 #[derive(Debug, Clone, Copy)]
@@ -88,6 +93,7 @@ impl Default for EmulatorVideoConfig {
 
 pub struct EmulatorVideoPipeline {
     pipeline: gst::Pipeline,
+    codec: VideoCodec,
     pub track: Arc<TrackLocalStaticRTP>,
     _rtp_task: tokio::task::JoinHandle<()>,
     /// Counter for RTP packets written to the track (can be read externally for diagnostics)
@@ -95,6 +101,8 @@ pub struct EmulatorVideoPipeline {
     /// Counter for samples received in appsink callback
     pub appsink_sample_count: Arc<AtomicU64>,
     appsrc: Option<gst_app::AppSrc>,
+    /// SSRC to force on outgoing packets (0 = no force)
+    pub forced_ssrc: Arc<AtomicU32>,
 }
 
 fn drain_pipeline_errors(pipeline: &gst::Pipeline, max_ms: u64) -> Vec<String> {
@@ -164,18 +172,18 @@ fn get_h264_encoder_string() -> String {
         // preset=low-latency-hp: High performance low latency
         // zerolatency=true: Removes buffering
         // gop-size=60: Keyframe every 2s at 30fps
-        "nvh264enc preset=low-latency-hp zerolatency=true bitrate=2000 gop-size=60 ! video/x-h264,profile=high"
+        "nvh264enc name=video_encoder preset=low-latency-hp zerolatency=true bitrate=2000 gop-size=60 ! video/x-h264,profile=high"
             .to_string()
     } else if gst::ElementFactory::find("vaapih264enc").is_some() {
         // Intel/AMD hardware encoding via VAAPI
-        "vaapih264enc rate-control=cbr bitrate=2000 keyframe-period=60 ! video/x-h264,profile=high"
+        "vaapih264enc name=video_encoder rate-control=cbr bitrate=2000 keyframe-period=60 ! video/x-h264,profile=high"
             .to_string()
     } else {
         // Software fallback (x264)
         // tune=zerolatency: Optimize for streaming
         // speed-preset=ultrafast: Sacrifice compression for CPU speed
         // profile=constrained-baseline: Required for broad WebRTC compatibility (Chrome/Safari)
-        "x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=30 ! video/x-h264,profile=constrained-baseline,level=(string)3.1,stream-format=byte-stream"
+        "x264enc name=video_encoder tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=30 ! video/x-h264,profile=constrained-baseline,level=(string)3.1,stream-format=byte-stream"
             .to_string()
     }
 }
@@ -296,7 +304,7 @@ fn pipeline_string(cfg: &EmulatorVideoConfig) -> String {
     // pt=96 is the common dynamic payload type.
     let enc = match cfg.codec {
         VideoCodec::Vp8 => {
-            format!("vp8enc deadline=1 cpu-used=8 error-resilient=partitions keyframe-max-dist=60 ! rtpvp8pay pt={}", cfg.payload_type)
+            format!("vp8enc name=video_encoder deadline=1 cpu-used=8 error-resilient=partitions keyframe-max-dist=60 ! rtpvp8pay pt={}", cfg.payload_type)
         }
         VideoCodec::H264 => {
             // Use hardware acceleration if available
@@ -318,7 +326,7 @@ fn appsrc_pipeline_string(cfg: &EmulatorAppSrcConfig) -> String {
     let framerate = format!("{}/1", cfg.fps.max(1));
     let enc = match cfg.codec {
         VideoCodec::Vp8 => {
-            format!("vp8enc deadline=1 cpu-used=8 error-resilient=partitions keyframe-max-dist=60 ! rtpvp8pay pt={}", cfg.payload_type)
+            format!("vp8enc name=video_encoder deadline=1 cpu-used=8 error-resilient=partitions keyframe-max-dist=60 ! rtpvp8pay pt={}", cfg.payload_type)
         }
         VideoCodec::H264 => {
             // Use hardware acceleration if available
@@ -379,7 +387,7 @@ impl EmulatorVideoPipeline {
             .downcast::<gst::Pipeline>()
             .map_err(|_| anyhow!("Expected gst::Pipeline"))?;
 
-        Self::finalize_pipeline(pipeline, cfg.codec, None, true, cfg.width, cfg.height)
+        Self::finalize_pipeline(pipeline, cfg.codec, cfg.payload_type, None, true, cfg.width, cfg.height)
     }
 
     pub fn start_appsrc(cfg: EmulatorAppSrcConfig) -> Result<Self> {
@@ -440,12 +448,13 @@ impl EmulatorVideoPipeline {
             .context("Failed to build appsrc caps")?;
         appsrc.set_caps(Some(&caps));
 
-        Self::finalize_pipeline(pipeline, cfg.codec, Some(appsrc), false, cfg.width, cfg.height)
+        Self::finalize_pipeline(pipeline, cfg.codec, cfg.payload_type, Some(appsrc), false, cfg.width, cfg.height)
     }
 
     fn finalize_pipeline(
         pipeline: gst::Pipeline,
         codec: VideoCodec,
+        payload_type: u8,
         appsrc: Option<gst_app::AppSrc>,
         verify_samples: bool,
         width: u32,
@@ -525,8 +534,14 @@ impl EmulatorVideoPipeline {
         }
 
         let track = Arc::new(TrackLocalStaticRTP::new(
-            webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+            RTCRtpCodecCapability {
                 mime_type: track_mime_type(codec),
+                rtcp_feedback: vec![
+                    RTCPFeedback { typ: "transport-cc".to_string(), parameter: "".to_string() },
+                    RTCPFeedback { typ: "ccm".to_string(), parameter: "fir".to_string() },
+                    RTCPFeedback { typ: "nack".to_string(), parameter: "".to_string() },
+                    RTCPFeedback { typ: "nack".to_string(), parameter: "pli".to_string() },
+                ],
                 ..Default::default()
             },
             "video".to_string(),
@@ -535,6 +550,8 @@ impl EmulatorVideoPipeline {
 
         let rtp_packet_count = Arc::new(AtomicU64::new(0));
         let rtp_packet_count_clone = rtp_packet_count.clone();
+        let forced_ssrc = Arc::new(AtomicU32::new(0));
+        let forced_ssrc_clone = forced_ssrc.clone();
         let track_clone = track.clone();
         let rtp_task = tokio::spawn(async move {
             let mut last_log_time = std::time::Instant::now();
@@ -546,7 +563,27 @@ impl EmulatorVideoPipeline {
             };
 
             while let Some(buf) = rtp_rx.recv().await {
-                if let Ok(packet) = Packet::unmarshal(&mut &buf[..]) {
+                if let Ok(mut packet) = Packet::unmarshal(&mut &buf[..]) {
+                    // Critical: Interceptors (like TWCC) often rely on header extensions.
+                    // However, webrtc-rs InterceptorChain running on TrackLocalStaticRTP usually handles
+                    // automatic stamping if the extension is negotiated.
+                    // But if packets_sent=0 in stats, it might imply the interceptor isn't seeing the packets
+                    // or isn't associating them with the SSRC.
+                    
+                    // Cleanup any GStreamer junk extensions
+                    packet.header.extensions.clear(); 
+
+                    // Force SSRC if configured
+                    let ssrc = forced_ssrc_clone.load(Ordering::Relaxed);
+                    if ssrc != 0 {
+                        packet.header.ssrc = ssrc;
+                    }
+                    
+                    // Force Payload Type (Negotiated)
+                    if payload_type != 0 {
+                         packet.header.payload_type = payload_type;
+                    }
+
                     let _ = track_clone.write_rtp(&packet).await;
                     let count = rtp_packet_count_clone.fetch_add(1, Ordering::Relaxed) + 1;
                     
@@ -574,12 +611,19 @@ impl EmulatorVideoPipeline {
 
         Ok(Self {
             pipeline,
+            codec,
             track,
             _rtp_task: rtp_task,
             rtp_packet_count,
             appsink_sample_count,
             appsrc,
+            forced_ssrc,
         })
+    }
+
+    pub fn set_ssrc(&self, ssrc: u32) {
+        self.forced_ssrc.store(ssrc, Ordering::Relaxed);
+        eprintln!("[video-pipeline] Forced SSRC updated to {}", ssrc);
     }
 
     /// Get the current count of RTP packets written to the track
@@ -603,7 +647,7 @@ impl EmulatorVideoPipeline {
         drain_pipeline_errors(&self.pipeline, 0)
     }
 
-    pub fn stop(mut self) {
+    pub fn stop(&self) {
         eprintln!("[video-pipeline] Stopping pipeline...");
         let _ = self.pipeline.set_state(gst::State::Null);
         self._rtp_task.abort();
@@ -635,6 +679,39 @@ impl EmulatorVideoPipeline {
         appsrc
             .push_buffer(buffer)
             .map_err(|e| anyhow!("appsrc push_buffer failed: {:?}", e))?;
+        Ok(())
+    }
+
+    pub fn set_target_bitrate(&self, bitrate_kbits: u32) -> Result<()> {
+        let encoder = self
+            .pipeline
+            .by_name("video_encoder")
+            .ok_or_else(|| anyhow!("video_encoder element not found in pipeline"))?;
+
+        // Clamp to sane values (500k - 8000k)
+        let bitrate_kbits = bitrate_kbits.max(500).min(8000);
+
+        match self.codec {
+            VideoCodec::Vp8 => {
+                // vp8enc uses bits per second (target-bitrate)
+                let bitrate_bps = (bitrate_kbits * 1000) as i32;
+                if encoder.has_property("target-bitrate", None) {
+                   encoder.set_property("target-bitrate", bitrate_bps);
+                   eprintln!("[video-pipeline] Updated VP8 bitrate to {} bps", bitrate_bps);
+                } else {
+                   eprintln!("[video-pipeline] WARNING: VP8 encoder does not support 'target-bitrate'");
+                }
+            }
+            VideoCodec::H264 => {
+                // x264enc, nvh264enc, vaapih264enc use kbit/sec for 'bitrate'
+                if encoder.has_property("bitrate", None) {
+                    encoder.set_property("bitrate", bitrate_kbits);
+                    eprintln!("[video-pipeline] Updated H.264 bitrate to {} kbps", bitrate_kbits);
+                } else {
+                    eprintln!("[video-pipeline] WARNING: H.264 encoder does not support 'bitrate'");
+                }
+            }
+        }
         Ok(())
     }
 }

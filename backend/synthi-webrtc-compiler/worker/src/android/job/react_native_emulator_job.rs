@@ -37,6 +37,7 @@ use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::track::track_local::TrackLocal;
+use webrtc::stats::StatsReportType;
 
 async fn xdotool_search(display: &str, args: &[&str]) -> Option<Vec<u64>> {
     let out = Command::new("xdotool")
@@ -1151,7 +1152,7 @@ pub async fn handle_react_native_emulator_job(
         };
 
         let pipeline = match video_pipeline::EmulatorVideoPipeline::start_appsrc(app_cfg.clone()) {
-            Ok(p) => p,
+            Ok(p) => Arc::new(p),
             Err(e) => {
                 emulator_input::unregister_session_sync(&session_id);
                 return Err(e).context("failed to start emulator gRPC video pipeline");
@@ -1161,6 +1162,9 @@ pub async fn handle_react_native_emulator_job(
         let appsrc = pipeline
             .appsrc_clone()
             .context("gRPC pipeline missing appsrc")?;
+
+        // Start bitrate adaptation
+        spawn_video_bitrate_adaptation(pc.clone(), pipeline.clone(), log_dc.clone(), session_id.clone());
 
         // Wait 5000ms and then try to interact with the device to wake it up
         let adb_path_clone = adb_path.clone();
@@ -1194,25 +1198,29 @@ pub async fn handle_react_native_emulator_job(
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
+                        let elapsed = last_frame_at.elapsed();
                         if frames == 0 {
                             send_log(
                                 &log_dc_for_grpc,
                                 &session_id_for_grpc,
-                                "[grpc] no frames received yet (display may be inactive or stream stalled)",
+                                "[grpc] no frames received yet (display may be inactive)",
                                 "emulator",
                             )
                             .await;
-                        } else if last_frame_at.elapsed() >= Duration::from_secs(5) {
-                            send_log(
-                                &log_dc_for_grpc,
-                                &session_id_for_grpc,
-                                &format!(
-                                    "[grpc] stream stalled: last_frame_age_ms={}",
-                                    last_frame_at.elapsed().as_millis()
-                                ),
-                                "emulator",
-                            )
-                            .await;
+                        } else if elapsed >= Duration::from_secs(10) {
+                             // Only log every ~30s if idle
+                             if elapsed.as_secs() % 30 < 5 {
+                                send_log(
+                                    &log_dc_for_grpc,
+                                    &session_id_for_grpc,
+                                    &format!(
+                                        "[grpc] display idle: last update {}s ago (heartbeat active)",
+                                        elapsed.as_secs()
+                                    ),
+                                    "emulator",
+                                )
+                                .await;
+                             }
                         }
                     }
                     _ = tokio::time::sleep(Duration::from_millis(100)) => {
@@ -1527,7 +1535,7 @@ pub async fn handle_react_native_emulator_job(
         .await;
 
         let pipeline = match video_pipeline::EmulatorVideoPipeline::start(cfg.clone()) {
-            Ok(p) => p,
+            Ok(p) => Arc::new(p),
             Err(e) => {
                 // If capturing a specific window fails (common under Xvfb / WMs), retry root capture.
                 if cfg.x11_xid.is_some() {
@@ -1555,7 +1563,7 @@ pub async fn handle_react_native_emulator_job(
                     .await;
 
                     match video_pipeline::EmulatorVideoPipeline::start(cfg.clone()) {
-                        Ok(p) => p,
+                        Ok(p) => Arc::new(p),
                         Err(e2) => {
                             emulator_input::unregister_session_sync(&session_id);
                             return Err(e2).context("failed to start emulator video pipeline (root capture retry)");
@@ -1585,6 +1593,32 @@ pub async fn handle_react_native_emulator_job(
             {
                 Ok(_) => {
                     eprintln!("[mobile-job] Video track attached successfully");
+                    
+                    // Critical: Retrieve the negotiated SSRC from the sender
+                    // and inject it into the video pipeline.
+                    let params = sender.get_parameters().await;
+                    eprintln!("[mobile-job] Sender Parameters: {:#?}", params);
+                    
+                    if !params.encodings.is_empty() {
+                        let ssrc = params.encodings[0].ssrc;
+                        eprintln!("[mobile-job] Found Sender SSRC: {}", ssrc);
+                        if ssrc != 0 {
+                            pipeline.set_ssrc(ssrc);
+                        }
+                    } else {
+                        eprintln!("[mobile-job] WARNING: No encodings found in Sender parameters!");
+                    }
+
+                    // Start RTCP reader for the video sender.
+                    // This is REQUIRED for Interceptors (like TWCC/GCC) to process feedback packets (ACKs).
+                    // Without this loop, the bandwidth estimator will never receive feedback and will stay at 0 bitrate.
+                    let rtcp_sender = sender.clone();
+                    tokio::spawn(async move {
+                        let mut buf = vec![0u8; 1500];
+                        while let Ok((_, _)) = rtcp_sender.read(&mut buf).await {}
+                        eprintln!("[mobile-job] RTCP reader loop ended for video sender");
+                    });
+
                     send_log(
                         &log_dc,
                         &session_id,
@@ -1730,4 +1764,98 @@ pub async fn handle_react_native_emulator_job(
     }
 
     Ok(())
+}
+
+fn spawn_video_bitrate_adaptation(
+    pc: Arc<RTCPeerConnection>,
+    pipeline: Arc<video_pipeline::EmulatorVideoPipeline>,
+    log_dc: Arc<RTCDataChannel>,
+    session_id: String,
+) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(3));
+        let mut current_bitrate = 2000u32;
+
+        loop {
+            interval.tick().await;
+
+            if pc.connection_state() == RTCPeerConnectionState::Closed ||
+               pc.connection_state() == RTCPeerConnectionState::Failed {
+                break;
+            }
+
+            // Fetch capabilities / stats
+            let stats = pc.get_stats().await;
+            let mut available_bitrate: Option<f64> = None;
+
+            for (_, stat) in &stats.reports {
+                if let StatsReportType::CandidatePair(cp) = stat {
+                     // Check if this pair is actually sending packets.
+                     if cp.packets_sent > 0 && cp.available_outgoing_bitrate > 0.0 {
+                        // available_bitrate = Some(cp.available_outgoing_bitrate);
+                        // eprintln!("[webrtc-adapt] Active pair found: available_outgoing_bitrate={}", cp.available_outgoing_bitrate);
+                        available_bitrate = Some(cp.available_outgoing_bitrate);
+                        break;
+                     }
+                } else if let StatsReportType::OutboundRTP(_out) = stat {
+                    // Also check outbound RTP stats for diagnostics
+                    /* if out.packets_sent > 0 {
+                        eprintln!("[webrtc-adapt] OutboundRTP SSRC={}: packets_sent={} bytes_sent={}", out.ssrc, out.packets_sent, out.bytes_sent);
+                    } */
+                }
+            }
+            
+            if let Some(avail_bits) = available_bitrate {
+                 let avail_kbps = (avail_bits / 1000.0) as u32;
+                 // eprintln!("[webrtc-adapt] Found bandwidth estimate: {} kbps", avail_kbps); // DEBUG LOG
+                 
+                 // Apply conservative factor (80%)
+                 let target_kbps = (avail_kbps as f64 * 0.8) as u32;
+                 
+                 // Smoothing: New = 0.7 * Current + 0.3 * Target
+                 let new_bitrate = (0.7 * current_bitrate as f64 + 0.3 * target_kbps as f64) as u32;
+                 
+                 // Clamp (500kbps - 6000kbps)
+                 let clamped_bitrate = new_bitrate.max(500).min(6000);
+                 
+                 // Threshold > 10% change to avoid spam
+                 let diff = (clamped_bitrate as i32 - current_bitrate as i32).abs();
+                 // ALWAYS log for now to see what's happening
+                 if diff > (current_bitrate as i32 / 10) {
+                 // if true {
+                     eprintln!("[webrtc-adapt] est={} kbps -> target={} kbps (current={})", avail_kbps, clamped_bitrate, current_bitrate);
+                     if diff > (current_bitrate as i32 / 10) { 
+                         if let Err(e) = pipeline.set_target_bitrate(clamped_bitrate) {
+                             eprintln!("[webrtc-adapt] set_target_bitrate failed: {}", e);
+                         } else {
+                             current_bitrate = clamped_bitrate;
+                             crate::android::webrtc::send_log(
+                                 &log_dc, 
+                                 &session_id, 
+                                 &format!("[adapt] Bitrate adjusted to {} kbps (est available: {} kbps)", clamped_bitrate, avail_kbps),
+                                 "system"
+                             ).await;
+                         }
+                     }
+                 }
+            } else {
+                 // Simplified fallback logging
+                 if stats.reports.len() > 0 {
+                    // Only log every 10th failure to reduce spam, or just log simplified info
+                    let mut found_succeeded = false;
+                    for (id, stat) in &stats.reports {
+                        if let StatsReportType::CandidatePair(cp) = stat {
+                            if cp.state.to_string() == "succeeded" {
+                                eprintln!("[webrtc-adapt] Succeeded Pair [{}]: sent={} recv={} outgoing={}", id, cp.packets_sent, cp.packets_received, cp.available_outgoing_bitrate);
+                                found_succeeded = true;
+                            }
+                        }
+                    }
+                    if !found_succeeded {
+                        eprintln!("[webrtc-adapt] No SUCCEEDED CandidatePair found yet...");
+                    }
+                 }
+            }
+        }
+    });
 }

@@ -115,8 +115,10 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
+use webrtc::interceptor::registry::Registry;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
@@ -127,10 +129,11 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp::packet::Packet;
 use webrtc::rtp_transceiver::rtp_codec::{
-    RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
+    RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType, RTCRtpHeaderExtensionCapability,
 };
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
+use webrtc::rtp_transceiver::RTCPFeedback;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocal;
 use webrtc::track::track_local::TrackLocalWriter;
@@ -1545,6 +1548,11 @@ async fn main() -> Result<()> {
                     let answer = pc.create_answer(None).await?;
                     pc.set_local_description(answer.clone()).await?;
                     eprintln!("[WebRTC-signal] Sending answer, new state={:?}", pc.signaling_state());
+                    if let Some(pos) = answer.sdp.find("transport-wide-cc") {
+                        eprintln!("[WebRTC-signal] TWCC found in Answer SDP at index {}", pos);
+                    } else {
+                        eprintln!("[WebRTC-signal] WARNING: TWCC missing from Answer SDP!");
+                    }
                     signal_tx.send(SignalMessage {
                         msg_type: "answer".into(),
                         role: None,
@@ -1580,7 +1588,10 @@ async fn create_peer(
                 clock_rate: 90000,
                 channels: 0,
                 sdp_fmtp_line: "".to_owned(),
-                rtcp_feedback: vec![],
+                rtcp_feedback: vec![RTCPFeedback {
+                    typ: "transport-cc".to_owned(),
+                    parameter: "".to_owned(),
+                }],
             },
             payload_type: 96,
             ..Default::default()
@@ -1588,7 +1599,52 @@ async fn create_peer(
         RTPCodecType::Video,
     );
 
-    let api = APIBuilder::new().with_media_engine(m).build();
+    // Explicitly register H264 (Baseline) with transport-cc
+    // This matches standard Android emulator / RN output (profile-level-id=42001f)
+    let _ = m.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: "video/H264".to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f".to_owned(),
+                rtcp_feedback: vec![RTCPFeedback {
+                    typ: "transport-cc".to_owned(),
+                    parameter: "".to_owned(),
+                }],
+            },
+            payload_type: 103, // Match common dynamic PT
+            ..Default::default()
+        },
+        RTPCodecType::Video,
+    );
+
+    // Explicitly register H264 with transport-cc (Constrained Baseline - 42e01f)
+    let _ = m.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: "video/H264".to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
+                rtcp_feedback: vec![RTCPFeedback {
+                    typ: "transport-cc".to_owned(),
+                    parameter: "".to_owned(),
+                }],
+            },
+            payload_type: 102, 
+            ..Default::default()
+        },
+        RTPCodecType::Video,
+    );
+
+    let mut registry = Registry::new();
+    registry = register_default_interceptors(registry, &mut m)?;
+
+    let api = APIBuilder::new()
+        .with_media_engine(m)
+        .with_interceptor_registry(registry)
+        .build();
     // Allow configuring ICE servers via COMPILER_ICE_SERVERS environment variable as JSON
     // Example: COMPILER_ICE_SERVERS='[{"urls":["stun:stun.l.google.com:19302"]},{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]'
     let ice_servers_env = env::var("COMPILER_ICE_SERVERS").ok();
@@ -1657,7 +1713,12 @@ async fn create_peer(
     {
         let placeholder_video = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
-                mime_type: "video/VP8".to_owned(),
+                mime_type: "video/H264".to_owned(),
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
+                rtcp_feedback: vec![RTCPFeedback {
+                    typ: "transport-cc".to_owned(),
+                    parameter: "".to_owned(),
+                }],
                 ..Default::default()
             },
             "video".to_owned(),
