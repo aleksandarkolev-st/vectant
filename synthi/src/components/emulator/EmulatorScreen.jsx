@@ -275,6 +275,45 @@ export default function EmulatorScreen({
     }
   };
 
+  const lastScrollTime = React.useRef(0);
+  const onWheel = (e) => {
+    e.preventDefault();
+    if (!sessionId) return;
+    
+    // Throttle (50ms)
+    const now = Date.now();
+    if (now - lastScrollTime.current < 50) return;
+    lastScrollTime.current = now;
+
+    const video = videoRef.current;
+    if (!video) return;
+
+    const coords = clientToVideoCoords(video, e.clientX, e.clientY);
+    
+    // Scroll Down (positive delta) -> Content moves UP -> Finger moves UP (Negative Y)
+    // Scroll Up (negative delta) -> Content moves DOWN -> Finger moves DOWN (Positive Y)
+    // Reduce distance to 40px for granular scrolling (prevents "jumping" too far)
+    const direction = e.deltaY > 0 ? -1 : 1;
+    const distance = 50; 
+    
+    // Calculate end point clamped to video bounds
+    const targetY = Math.max(0, Math.min(coords.videoH, coords.y + (direction * distance)));
+    
+    // Only send if we actually moved
+    if (targetY !== coords.y) {
+         emitInput({
+            type: 'swipe',
+            x: coords.x,
+            y: coords.y,
+            x2: coords.x,
+            y2: targetY,
+            durationMs: 50, // Slightly faster swipe for snappy feel
+            videoW: coords.videoW,
+            videoH: coords.videoH
+        });
+    }
+  };
+
   const onKeyDown = (e) => {
     // Debug log to confirm key capture
     console.debug('[EmulatorScreen] Key:', e.key, 'Session:', sessionId);
@@ -363,8 +402,7 @@ export default function EmulatorScreen({
         tabIndex={0} 
         onKeyDown={onKeyDown}
         onPaste={onPaste}
-        onClick={onContainerClick}
-      >
+        onClick={onContainerClick}        onWheel={onWheel}      >
         {/* Video element - uses flex centering and max dimensions to strictly match aspect ratio without math */}
         <video
           ref={videoRef}
