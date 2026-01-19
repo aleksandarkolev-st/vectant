@@ -28,6 +28,7 @@ export class CompilerClient {
         this.url = url;
         this.ws = null;
         this.pc = null;
+        this.pendingCompilationMap = new Map(); // session_id -> { resolve, reject }
         this.compileChannel = null;
         this.buildLogChannel = null;
         this.terminalChannel = null;
@@ -757,165 +758,170 @@ export class CompilerClient {
         // Also log to console for immediate visibility
         console.log('[webrtc] client-diag=v5 - sessionId:', sessionId);
 
-        // Flush any pre-session WebRTC diagnostics captured during auto-connect.
-        if (this._pendingWebrtcLines && this._pendingWebrtcLines.length > 0) {
-            const pending = this._pendingWebrtcLines.slice();
-            this._pendingWebrtcLines.length = 0;
-            for (const item of pending) {
-                const l = item?.line;
-                if (typeof l === 'string' && l.length > 0) {
-                    this._webrtcEmit(`[webrtc] (pre-session) ${l.replace(/^\[webrtc\]\s*/i, '')}`);
+        return new Promise(async (resolve, reject) => {
+            // Register promise callbacks so that cancelMobileJob can resolve/reject locally
+            this.pendingCompilationMap.set(sessionId, { resolve, reject });
+
+            // Flush any pre-session WebRTC diagnostics captured during auto-connect.
+            if (this._pendingWebrtcLines && this._pendingWebrtcLines.length > 0) {
+                const pending = this._pendingWebrtcLines.slice();
+                this._pendingWebrtcLines.length = 0;
+                for (const item of pending) {
+                    const l = item?.line;
+                    if (typeof l === 'string' && l.length > 0) {
+                        this._webrtcEmit(`[webrtc] (pre-session) ${l.replace(/^\[webrtc\]\s*/i, '')}`);
+                    }
                 }
             }
-        }
 
-        await this.connect();
-
-        // For mobile runs: sample WebRTC stats briefly to confirm inbound video bytes/frames.
-        // This helps distinguish “UI issue” from “no media flowing / black frames”.
-        const stopStats = () => {
             try {
-                if (this._webrtcStatsTimer) {
-                    clearInterval(this._webrtcStatsTimer);
-                    this._webrtcStatsTimer = null;
-                }
-            } catch (_) {}
-        };
-        stopStats();
-        if (effectiveTarget === 'react-native-emulator') {
-            let ticks = 0;
-            let lastBytes = null;
-            let sawNonZero = false;
-            this._webrtcStatsTimer = setInterval(async () => {
-                ticks += 1;
-                if (!this.pc || this.pc.connectionState === 'closed') {
-                    stopStats();
-                    return;
-                }
-                // Run for 60 ticks (2 min) to capture video after build completes.
-                // Stop early if we've seen data flowing for a while.
-                if (ticks > 60 || (sawNonZero && ticks > 30)) {
-                    this._webrtcEmit?.(`[webrtc] stats timer stopping after ${ticks} ticks`);
-                    stopStats();
-                    return;
-                }
-                try {
-                    const stats = await this.pc.getStats();
-                    let bytesReceived = 0;
-                    let packetsReceived = 0;
-                    let framesDecoded = null;
-                    let framesDropped = null;
-                    let packetsLost = 0;
-                    let jitter = null;
-                    stats.forEach((r) => {
-                        const isInbound = r.type === 'inbound-rtp';
-                        const isVideo = r.kind === 'video' || r.mediaType === 'video';
-                        if (!isInbound || !isVideo) return;
-                        if (typeof r.bytesReceived === 'number') bytesReceived += r.bytesReceived;
-                        if (typeof r.packetsReceived === 'number') packetsReceived += r.packetsReceived;
-                        if (typeof r.framesDecoded === 'number') framesDecoded = (framesDecoded ?? 0) + r.framesDecoded;
-                        if (typeof r.framesDropped === 'number') framesDropped = (framesDropped ?? 0) + r.framesDropped;
-                        if (typeof r.packetsLost === 'number') packetsLost += r.packetsLost;
-                        if (typeof r.jitter === 'number') jitter = r.jitter;
-                    });
+                await this.connect();
 
-                    if (bytesReceived > 0) sawNonZero = true;
-                    const muted = this._remoteVideoTrack ? !!this._remoteVideoTrack.muted : null;
-                    const changed = (lastBytes === null) || (bytesReceived !== lastBytes);
-                    lastBytes = bytesReceived;
-                    // Always log during first 15 ticks, then only when changed
-                    if (changed || bytesReceived > 0 || ticks <= 15) {
-                        const fd = framesDecoded === null ? 'n/a' : String(framesDecoded);
-                        const fdrop = framesDropped === null ? 'n/a' : String(framesDropped);
-                        const jitterStr = jitter === null ? 'n/a' : jitter.toFixed(3);
-                        this._webrtcEmit?.(`[webrtc] stats(video): bytes=${bytesReceived} packets=${packetsReceived} lost=${packetsLost} jitter=${jitterStr} framesDecoded=${fd} framesDropped=${fdrop} trackMuted=${muted}`);
+                // For mobile runs: sample WebRTC stats briefly to confirm inbound video bytes/frames.
+                // This helps distinguish “UI issue” from “no media flowing / black frames”.
+                const stopStats = () => {
+                    try {
+                        if (this._webrtcStatsTimer) {
+                            clearInterval(this._webrtcStatsTimer);
+                            this._webrtcStatsTimer = null;
+                        }
+                    } catch (_) {}
+                };
+                stopStats();
+                if (effectiveTarget === 'react-native-emulator') {
+                    let ticks = 0;
+                    let lastBytes = null;
+                    let sawNonZero = false;
+                    this._webrtcStatsTimer = setInterval(async () => {
+                        ticks += 1;
+                        if (!this.pc || this.pc.connectionState === 'closed') {
+                            stopStats();
+                            return;
+                        }
+                        // Run for 60 ticks (2 min) to capture video after build completes.
+                        // Stop early if we've seen data flowing for a while.
+                        if (ticks > 60 || (sawNonZero && ticks > 30)) {
+                            this._webrtcEmit?.(`[webrtc] stats timer stopping after ${ticks} ticks`);
+                            stopStats();
+                            return;
+                        }
+                        try {
+                            const stats = await this.pc.getStats();
+                            let bytesReceived = 0;
+                            let packetsReceived = 0;
+                            let framesDecoded = null;
+                            let framesDropped = null;
+                            let packetsLost = 0;
+                            let jitter = null;
+                            stats.forEach((r) => {
+                                const isInbound = r.type === 'inbound-rtp';
+                                const isVideo = r.kind === 'video' || r.mediaType === 'video';
+                                if (!isInbound || !isVideo) return;
+                                if (typeof r.bytesReceived === 'number') bytesReceived += r.bytesReceived;
+                                if (typeof r.packetsReceived === 'number') packetsReceived += r.packetsReceived;
+                                if (typeof r.framesDecoded === 'number') framesDecoded = (framesDecoded ?? 0) + r.framesDecoded;
+                                if (typeof r.framesDropped === 'number') framesDropped = (framesDropped ?? 0) + r.framesDropped;
+                                if (typeof r.packetsLost === 'number') packetsLost += r.packetsLost;
+                                if (typeof r.jitter === 'number') jitter = r.jitter;
+                            });
+
+                            if (bytesReceived > 0) sawNonZero = true;
+                            const muted = this._remoteVideoTrack ? !!this._remoteVideoTrack.muted : null;
+                            const changed = (lastBytes === null) || (bytesReceived !== lastBytes);
+                            lastBytes = bytesReceived;
+                            // Always log during first 15 ticks, then only when changed
+                            if (changed || bytesReceived > 0 || ticks <= 15) {
+                                const fd = framesDecoded === null ? 'n/a' : String(framesDecoded);
+                                const fdrop = framesDropped === null ? 'n/a' : String(framesDropped);
+                                const jitterStr = jitter === null ? 'n/a' : jitter.toFixed(3);
+                                this._webrtcEmit?.(`[webrtc] stats(video): bytes=${bytesReceived} packets=${packetsReceived} lost=${packetsLost} jitter=${jitterStr} framesDecoded=${fd} framesDropped=${fdrop} trackMuted=${muted}`);
+                            }
+                        } catch (_) {
+                            // ignore
+                        }
+                    }, 2000);
+                }
+
+                // Mobile emulator streams video over WebRTC. If the browser connected earlier without
+                // negotiating an m=video section, ontrack will never fire. Ensure recvonly video now.
+                if (effectiveTarget === 'react-native-emulator') {
+                    // Fire-and-forget; we don't want to block the job on renegotiation.
+                    this._ensureRecvTransceivers({ video: true, audio: false, forceRenegotiate: true, sessionId, onLog: (l) => clientLog(l, sessionId) })
+                        .catch(() => {});
+                }
+
+                const handleLog = (msg) => {
+                    // `msg` is normalized to a string by notifyLog. Ensure we have a string.
+                    const line = typeof msg === 'string' ? msg : String(msg);
+
+                    // Try to parse JSON to determine session and status.
+                    let parsed = null;
+                    try { parsed = JSON.parse(line); } catch (_) { parsed = null; }
+
+                    // If the worker included a sessionId and it doesn't match this run, ignore.
+                    if (parsed && parsed.sessionId && parsed.sessionId !== sessionId) return;
+
+                    // Forward raw log line to caller callback if provided
+                    try { if (onLog) onLog(line); } catch (e) { /* ignore */ }
+
+                    // Determine which sessionId to expose to UI consumers: prefer worker-provided sessionId
+                    const sidToExpose = parsed && parsed.sessionId ? parsed.sessionId : sessionId;
+
+                    // Keep activeSessionId aligned with worker-provided sessionId (best-effort).
+                    if (sidToExpose && this.activeSessionId !== sidToExpose) {
+                        this.activeSessionId = sidToExpose;
                     }
-                } catch (_) {
-                    // ignore
-                }
-            }, 2000);
-        }
 
-        return new Promise((resolve, reject) => {
+                    // Emit a stream event for UI consumers that want session-scoped streaming
+                    try {
+                        if (typeof window !== 'undefined' && window.dispatchEvent) {
+                            const ev = new CustomEvent('synthi:build-stream', { detail: { sessionId: sidToExpose, line } });
+                            window.dispatchEvent(ev);
+                        }
+                    } catch (e) { /* ignore */ }
 
-            // Mobile emulator streams video over WebRTC. If the browser connected earlier without
-            // negotiating an m=video section, ontrack will never fire. Ensure recvonly video now.
-            if (effectiveTarget === 'react-native-emulator') {
-                // Fire-and-forget; we don't want to block the job on renegotiation.
-                this._ensureRecvTransceivers({ video: true, audio: false, forceRenegotiate: true, sessionId, onLog: (l) => clientLog(l, sessionId) })
-                    .catch(() => {});
-            }
-
-            const handleLog = (msg) => {
-                // `msg` is normalized to a string by notifyLog. Ensure we have a string.
-                const line = typeof msg === 'string' ? msg : String(msg);
-
-                // Try to parse JSON to determine session and status.
-                let parsed = null;
-                try { parsed = JSON.parse(line); } catch (_) { parsed = null; }
-
-                // If the worker included a sessionId and it doesn't match this run, ignore.
-                if (parsed && parsed.sessionId && parsed.sessionId !== sessionId) return;
-
-                // Forward raw log line to caller callback if provided
-                try { if (onLog) onLog(line); } catch (e) { /* ignore */ }
-
-                // Determine which sessionId to expose to UI consumers: prefer worker-provided sessionId
-                const sidToExpose = parsed && parsed.sessionId ? parsed.sessionId : sessionId;
-
-                // Keep activeSessionId aligned with worker-provided sessionId (best-effort).
-                if (sidToExpose && this.activeSessionId !== sidToExpose) {
-                    this.activeSessionId = sidToExpose;
-                }
-
-                // Emit a stream event for UI consumers that want session-scoped streaming
-                try {
-                    if (typeof window !== 'undefined' && window.dispatchEvent) {
-                        const ev = new CustomEvent('synthi:build-stream', { detail: { sessionId: sidToExpose, line } });
-                        window.dispatchEvent(ev);
+                    // Check for mobile job completion
+                    if (parsed && parsed.type === 'mobile-status' && parsed.status === 'done') {
+                        this.logHandlers.delete(handleLog);
+                        this.pendingCompilationMap.delete(sessionId);
+                        // Clear per-run WebRTC emitter.
+                        this._webrtcEmit = null;
+                        stopStats();
+                        if (parsed.data?.success) {
+                            resolve(parsed);
+                        } else {
+                            reject(new SynthiException('Mobile build failed', parsed.message || 'Mobile emulator job failed'));
+                        }
+                        return;
                     }
-                } catch (e) { /* ignore */ }
 
-                // Check for mobile job completion
-                if (parsed && parsed.type === 'mobile-status' && parsed.status === 'done') {
-                    this.logHandlers.delete(handleLog);
-                    // Clear per-run WebRTC emitter.
-                    this._webrtcEmit = null;
-                    stopStats();
-                    if (parsed.data?.success) {
-                        resolve(parsed);
-                    } else {
+                    // Check for mobile job error
+                    if (parsed && parsed.type === 'mobile-status' && parsed.status === 'error') {
+                        this.logHandlers.delete(handleLog);
+                        this.pendingCompilationMap.delete(sessionId);
+                        this._webrtcEmit = null;
+                        stopStats();
                         reject(new SynthiException('Mobile build failed', parsed.message || 'Mobile emulator job failed'));
+                        return;
                     }
-                    return;
-                }
 
-                // Check for mobile job error
-                if (parsed && parsed.type === 'mobile-status' && parsed.status === 'error') {
-                    this.logHandlers.delete(handleLog);
-                    this._webrtcEmit = null;
-                    stopStats();
-                    reject(new SynthiException('Mobile build failed', parsed.message || 'Mobile emulator job failed'));
-                    return;
-                }
-
-                // Check for final JSON status message to resolve/reject for this session
-                if (parsed && parsed.status === 'done') {
-                    // cleanup
-                    this.logHandlers.delete(handleLog);
-                    this._webrtcEmit = null;
-                    stopStats();
-                    if (parsed.success) {
-                        resolve(parsed);
-                    } else {
-                        reject(new SynthiException('Compilation failed', 'The compilation process returned an error status.'));
+                    // Check for final JSON status message to resolve/reject for this session
+                    if (parsed && parsed.status === 'done') {
+                        // cleanup
+                        this.logHandlers.delete(handleLog);
+                        this.pendingCompilationMap.delete(sessionId);
+                        this._webrtcEmit = null;
+                        stopStats();
+                        if (parsed.success) {
+                            resolve(parsed);
+                        } else {
+                            reject(new SynthiException('Compilation failed', 'The compilation process returned an error status.'));
+                        }
+                        return;
                     }
-                    return;
-                }
-            };
-            this.logHandlers.add(handleLog);
+                };
+                this.logHandlers.add(handleLog);
 
-            try {
                 this.compileChannel.send(JSON.stringify({
                     language: lang,
                     filename: filename || `main.${lang}`,
@@ -932,7 +938,7 @@ export class CompilerClient {
                     slug: slug || this.slug
                 }));
             } catch (e) {
-                this.logHandlers.delete(handleLog);
+                this.pendingCompilationMap.delete(sessionId);
                 if (onLog) this.logHandlers.delete(onLog);
                 reject(e);
             }
@@ -948,6 +954,13 @@ export class CompilerClient {
         if (!sessionId) {
             console.warn('[CompilerClient] cancelMobileJob called without sessionId');
             return;
+        }
+
+        // Check if there is a pending local promise for this session and reject it
+        if (this.pendingCompilationMap.has(sessionId)) {
+            const { reject } = this.pendingCompilationMap.get(sessionId);
+            reject(new SynthiException('Cancelled', 'Compilation cancelled by user'));
+            this.pendingCompilationMap.delete(sessionId);
         }
         
         try {

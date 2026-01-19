@@ -39,6 +39,15 @@ use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::track::track_local::TrackLocal;
 use webrtc::stats::StatsReportType;
 
+async fn wait_for_cancel(session_id: &str) {
+    loop {
+        if is_session_cancelled(session_id) {
+            return;
+        }
+        sleep(Duration::from_millis(500)).await;
+    }
+}
+
 async fn xdotool_search(display: &str, args: &[&str]) -> Option<Vec<u64>> {
     let out = Command::new("xdotool")
         .env("DISPLAY", display)
@@ -606,7 +615,16 @@ pub async fn handle_react_native_emulator_job(
         });
     }
 
-    let build_result = match build_apk_for_emulator(&build_config, Some(log_callback)).await {
+    let build_res_inner = tokio::select! {
+        r = build_apk_for_emulator(&build_config, Some(log_callback)) => r,
+        _ = wait_for_cancel(&session_id) => {
+            let _ = build_done_tx.send(true);
+            emulator_prewarm.abort();
+            anyhow::bail!("Session cancelled by user during build");
+        }
+    };
+
+    let build_result = match build_res_inner {
         Ok(r) => {
             let _ = build_done_tx.send(true);
             r
@@ -616,6 +634,11 @@ pub async fn handle_react_native_emulator_job(
 
             // Don't leave a background boot task running for a failed job.
             emulator_prewarm.abort();
+
+            // If cancelled, skip lengthy reconciliation and failure reporting
+            if e.to_string().contains("Session cancelled") {
+                return Err(e);
+            }
 
             send_status(
                 &log_dc,
@@ -802,15 +825,20 @@ pub async fn handle_react_native_emulator_job(
             });
         }
 
-        let sync_res = reconcile_and_stream_with_rules(
-            log_dc.clone(),
-            &session_id,
-            &workspace_path,
-            snapshot,
-            rules,
-            cfg,
-        )
-        .await;
+        let sync_res = tokio::select! {
+            r = reconcile_and_stream_with_rules(
+                log_dc.clone(),
+                &session_id,
+                &workspace_path,
+                snapshot,
+                rules,
+                cfg,
+            ) => r,
+            _ = wait_for_cancel(&session_id) => {
+                let _ = sync_done_tx.send(true);
+                anyhow::bail!("Session cancelled by user during reconcile");
+            }
+        };
         let _ = sync_done_tx.send(true);
 
         if let Err(sync_err) = sync_res {
@@ -878,10 +906,15 @@ pub async fn handle_react_native_emulator_job(
         });
     }
 
-    let (mut daemon, ready): (tokio::sync::MutexGuard<'static, _>, EnsureReadyResult) =
-        acquire_emulator_daemon(emulator_config)
-            .await
-            .context("Failed to acquire emulator daemon")?;
+    let (mut daemon, ready): (tokio::sync::MutexGuard<'static, _>, EnsureReadyResult) = tokio::select! {
+        res = acquire_emulator_daemon(emulator_config) => {
+            res.context("Failed to acquire emulator daemon")?
+        }
+        _ = wait_for_cancel(&session_id) => {
+            let _ = boot_done_tx.send(true);
+            anyhow::bail!("Session cancelled by user during emulator boot");
+        }
+    };
     let _ = boot_done_tx.send(true);
 
     let emulator_serial = ready.serial.clone();
@@ -1780,6 +1813,12 @@ fn spawn_video_bitrate_adaptation(
 
             if pc.connection_state() == RTCPeerConnectionState::Closed ||
                pc.connection_state() == RTCPeerConnectionState::Failed {
+                break;
+            }
+
+            // Check if cancelled
+            if crate::android::webrtc::input::is_session_cancelled(&session_id) {
+                eprintln!("[webrtc-adapt] Session {} cancelled, stopping adaptation loop", session_id);
                 break;
             }
 

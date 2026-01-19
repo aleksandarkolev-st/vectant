@@ -6,6 +6,7 @@ import { CompilerClient, CompilerStatus, getCompilerClient } from '@/services/co
 export function useCompiler() {
     const clientRef = useRef(null);
     const [status, setStatus] = useState(CompilerStatus.IDLE);
+    const [isCompiling, setIsCompiling] = useState(false);
     const [mediaStream, setMediaStream] = useState(null);
 
     useEffect(() => {
@@ -75,6 +76,7 @@ export function useCompiler() {
 
     const compile = useCallback(async (params) => {
         console.log('[useCompiler] Compile requested:', params);
+        setIsCompiling(true);
         const client = clientRef.current || getCompilerClient();
         try {
             const result = await client.compile(params);
@@ -83,6 +85,8 @@ export function useCompiler() {
         } catch (e) {
             console.error('[useCompiler] Compile error:', e);
             throw e;
+        } finally {
+            setIsCompiling(false);
         }
     }, []);
 
@@ -98,6 +102,7 @@ export function useCompiler() {
         compile,
         cancelMobileJob,
         status,
+        isCompiling,
         mediaStream
     };
 }

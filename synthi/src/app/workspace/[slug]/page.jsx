@@ -70,7 +70,7 @@ export default function EditorPage({ params }) {
     // Track editor content version to force re-analysis on every change (including remote/undo)
     const [editorVersion, setEditorVersion] = useState(0);
     const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = useAnalyzerGateway();
-    const { compile, mediaStream } = useCompiler();
+    const { compile, mediaStream, cancelMobileJob, isCompiling, status: compilerStatus } = useCompiler();
     useHMR();
     const [latestCompletion, setLatestCompletion] = useState(null);
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
@@ -1462,6 +1462,16 @@ export default function EditorPage({ params }) {
         }
     }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, useAiSplit]);
 
+    const handleStop = useCallback(() => {
+        if (emulatorSessionId) {
+            cancelMobileJob(emulatorSessionId);
+            setEmulatorForcedError('Compilation stopped by user.');
+            dispatch(setEmulatorPreviewVisible(false));
+            // Ensure status shows as stopped/failed immediately to clear UI
+            appendBuildLog('Stopped by user.');
+        }
+    }, [emulatorSessionId, cancelMobileJob, dispatch]);
+
     const handleSave = useCallback(async () => {
         if (!activeFile) return;
 
@@ -1642,6 +1652,9 @@ export default function EditorPage({ params }) {
             <TopNav
                 title={activeFile ? activeFile.name : 'Synthi Workspace'}
                 onRun={handleRun}
+                onStop={handleStop}
+                onReload={handleRun}
+                isRunning={isCompiling}
                 onToggleTerminal={() => dispatch(toggleTerminal())}
                 onUndo={handleUndo}
                 onRedo={handleRedo}

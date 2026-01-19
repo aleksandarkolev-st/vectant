@@ -20,6 +20,7 @@ pub(crate) async fn run_gradle_and_collect_diagnostics(
     mut cmd: Command,
     log_callback: Option<&LogCallback>,
 ) -> Result<(std::process::ExitStatus, Vec<Diagnostic>, bool)> {
+    cmd.kill_on_drop(true);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().context("Failed to spawn gradle")?;
 
