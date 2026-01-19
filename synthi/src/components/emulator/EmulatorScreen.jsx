@@ -100,27 +100,37 @@ function Ripple({ x, y, onComplete }) {
 }
 
 const KEY_MAP = {
-  // Navigation
-  'ArrowUp': 'DPAD_UP',
-  'ArrowDown': 'DPAD_DOWN',
-  'ArrowLeft': 'DPAD_LEFT',
-  'ArrowRight': 'DPAD_RIGHT',
+  // We will mostly rely on explicit checks in the helper function below
+  // to avoid any dictionary lookup issues, but keeping this for fallbacks.
   'Tab': 'TAB',
-  'Enter': 'ENTER',
-
-  // Editing
-  'Backspace': 'DEL',
-  'Delete': 'FORWARD_DEL',
-
-  // System
   'Escape': 'BACK',
-  
-  // Movement / Cursor
   'PageUp': 'PAGE_UP',
   'PageDown': 'PAGE_DOWN',
   'End': 'MOVE_END',
-  'Home': 'MOVE_HOME', // Default to cursor movement
+  'Home': 'MOVE_HOME',
 };
+
+// Helper to reliably map browser events to Android KeyCodes
+function getAndroidKeycode(e) {
+    const k = e.key;
+    const c = e.code;
+
+    // Navigation (Explicit checks)
+    if (k === 'ArrowUp' || c === 'ArrowUp') return 'DPAD_UP';
+    if (k === 'ArrowDown' || c === 'ArrowDown') return 'DPAD_DOWN';
+    if (k === 'ArrowLeft' || c === 'ArrowLeft') return 'DPAD_LEFT';
+    if (k === 'ArrowRight' || c === 'ArrowRight') return 'DPAD_RIGHT';
+    if (k === 'Enter' || c === 'Enter' || c === 'NumpadEnter') return 'ENTER';
+    if (k === 'Tab' || c === 'Tab') return 'TAB';
+    if (k === 'Escape' || c === 'Escape') return 'BACK';
+
+    // Editing (Explicit checks)
+    if (k === 'Backspace' || c === 'Backspace') return 'DEL';
+    if (k === 'Delete' || c === 'Delete') return 'FORWARD_DEL';
+
+    // Map Lookup Fallback
+    return KEY_MAP[k] || KEY_MAP[c];
+}
 
 export default function EmulatorScreen({
   state,
@@ -281,13 +291,12 @@ export default function EmulatorScreen({
       return;
     }
 
-    // 2. Mapped Keys
-    // Check e.key (value) and e.code (physical location) for robustness
-    let mappedCode = KEY_MAP[e.key] || KEY_MAP[e.code];
+    // 2. Mapped Keys (using robust helper)
+    const mappedCode = getAndroidKeycode(e);
     
-    // Explicit backspace check in case of browser oddities
-    if ((e.key === 'Backspace' || e.code === 'Backspace') && !mappedCode) {
-        mappedCode = 'DEL';
+    // Debug log to trace exactly what is matched
+    if (mappedCode || e.key === 'ArrowUp' || e.key === 'Backspace' || e.key === 'Enter') {
+         console.debug('[EmulatorScreen] Key Mapping:', { key: e.key, code: e.code, mapped: mappedCode });
     }
 
     if (mappedCode) {
