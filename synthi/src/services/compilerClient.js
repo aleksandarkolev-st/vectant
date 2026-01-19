@@ -298,9 +298,14 @@ export class CompilerClient {
         try {
             const d = ev?.detail || {};
             const payload = JSON.stringify(d);
+            
+            // Debug log to confirm it hits the client
+            console.debug('[CompilerClient] Sending emulator input:', payload);
+
             if (this.emulatorInputChannel && this.emulatorInputChannel.readyState === 'open') {
                 this.emulatorInputChannel.send(payload);
             } else {
+                console.warn('[CompilerClient] emulator-input channel not open, buffering. State:', this.emulatorInputChannel?.readyState);
                 this.emulatorInputBuffer.push(payload);
             }
         } catch (e) {

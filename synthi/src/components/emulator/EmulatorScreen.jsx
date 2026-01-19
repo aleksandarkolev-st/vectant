@@ -99,6 +99,29 @@ function Ripple({ x, y, onComplete }) {
   );
 }
 
+const KEY_MAP = {
+  // Navigation
+  'ArrowUp': 'DPAD_UP',
+  'ArrowDown': 'DPAD_DOWN',
+  'ArrowLeft': 'DPAD_LEFT',
+  'ArrowRight': 'DPAD_RIGHT',
+  'Tab': 'TAB',
+  'Enter': 'ENTER',
+
+  // Editing
+  'Backspace': 'DEL',
+  'Delete': 'FORWARD_DEL',
+
+  // System
+  'Escape': 'BACK',
+  
+  // Movement / Cursor
+  'PageUp': 'PAGE_UP',
+  'PageDown': 'PAGE_DOWN',
+  'End': 'MOVE_END',
+  'Home': 'MOVE_HOME', // Default to cursor movement
+};
+
 export default function EmulatorScreen({
   state,
   errorMessage,
@@ -110,6 +133,7 @@ export default function EmulatorScreen({
 }) {
   // All hooks MUST be called before any conditional returns (React Rules of Hooks)
   const pointerStateRef = React.useRef(null);
+  const containerRef = React.useRef(null);
   const [ripples, setRipples] = React.useState([]);
 
   const hasVideoTrack =
@@ -199,6 +223,9 @@ export default function EmulatorScreen({
   };
 
   const onPointerDown = (e) => {
+    // Focus container to capture keyboard input
+    containerRef.current?.focus({ preventScroll: true });
+
     const el = e.currentTarget;
     const coords = clientToVideoCoords(el, e.clientX, e.clientY);
     pointerStateRef.current = { ...coords, t: Date.now(), clientX: e.clientX, clientY: e.clientY };
@@ -238,38 +265,65 @@ export default function EmulatorScreen({
     }
   };
 
-  const mapKey = (k) => {
-    switch (k) {
-      case 'Enter': return 'ENTER';
-      case 'Backspace': return 'DEL';
-      case 'Escape': return 'BACK';
-      case 'Tab': return 'TAB';
-      case 'ArrowUp': return 'DPAD_UP';
-      case 'ArrowDown': return 'DPAD_DOWN';
-      case 'ArrowLeft': return 'DPAD_LEFT';
-      case 'ArrowRight': return 'DPAD_RIGHT';
-      case ' ': return null;
-      default: return null;
-    }
-  };
-
   const onKeyDown = (e) => {
-    if (!sessionId) return;
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
-    const k = e.key;
-    if (!k) return;
+    // Debug log to confirm key capture
+    console.debug('[EmulatorScreen] Key:', e.key, 'Session:', sessionId);
 
-    // Printable single-character keys -> text.
-    if (k.length === 1 && k !== '\n' && k !== '\r') {
-      emitInput({ type: 'text', text: k });
+    if (!sessionId) {
+        console.warn('[EmulatorScreen] No sessionId, ignoring input');
+        return;
+    }
+
+    // 1. Special Mappings (e.g. System HOME with Modifier)
+    if (e.key === 'Home' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
+      emitInput({ type: 'key', keycode: 'HOME' });
       return;
     }
 
-    const kc = mapKey(k);
-    if (kc) {
-      emitInput({ type: 'key', keycode: kc });
+    // 2. Mapped Keys
+    // Check e.key (value) and e.code (physical location) for robustness
+    let mappedCode = KEY_MAP[e.key] || KEY_MAP[e.code];
+    
+    // Explicit backspace check in case of browser oddities
+    if ((e.key === 'Backspace' || e.code === 'Backspace') && !mappedCode) {
+        mappedCode = 'DEL';
+    }
+
+    if (mappedCode) {
       e.preventDefault();
+      emitInput({ type: 'key', keycode: mappedCode });
+      return;
+    }
+
+    // 3. Printable Characters & Text Injection
+    // Ignore standalone modifier keys
+    if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(e.key)) {
+      return;
+    }
+
+    // Ignore command combos (Ctrl+C, Alt+Tab, etc), but allow Shift for capitals.
+    if (e.ctrlKey || e.metaKey || e.altKey) {
+      return;
+    }
+
+    // Single character printables
+    if (e.key.length === 1) {
+       // Prevent scrolling for Space, otherwise let browser handle it
+      if (e.key === ' ') {
+        e.preventDefault();
+      }
+      emitInput({ type: 'text', text: e.key });
+      return;
+    }
+  };
+
+  const onPaste = (e) => {
+    if (!sessionId) return;
+    const text = e.clipboardData?.getData('text') ?? '';
+    if (text.length > 0) {
+      e.preventDefault();
+      emitInput({ type: 'text', text });
     }
   };
 
@@ -285,9 +339,23 @@ export default function EmulatorScreen({
     return <MessageScreen title="No app running" subtitle="Start an app to preview it here." />;
   }
 
+  // Ensure container gets focus when clicking anywhere in the area
+  const onContainerClick = (e) => {
+    if (containerRef.current) {
+        containerRef.current.focus({ preventScroll: true });
+    }
+  };
+
   if (state === EMULATOR_STATES.STREAMING) {
     return (
-      <div className="h-full w-full bg-black relative flex items-center justify-center" tabIndex={0} onKeyDown={onKeyDown}>
+      <div 
+        ref={containerRef}
+        className="h-full w-full bg-black relative flex items-center justify-center outline-none focus:ring-1 focus:ring-green-500/50" 
+        tabIndex={0} 
+        onKeyDown={onKeyDown}
+        onPaste={onPaste}
+        onClick={onContainerClick}
+      >
         {/* Video element - uses flex centering and max dimensions to strictly match aspect ratio without math */}
         <video
           ref={videoRef}
@@ -296,6 +364,7 @@ export default function EmulatorScreen({
           muted
           playsInline
           autoPlay
+          tabIndex={-1}
           onPointerDown={onPointerDown}
           onPointerUp={onPointerUp}
         />
