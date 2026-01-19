@@ -1507,10 +1507,16 @@ async fn main() -> Result<()> {
                         if !msg.is_string {
                             return;
                         }
+                        
+                        // Log raw message arrival
+                        // eprintln!("[emulator-input] Received raw message: {}", String::from_utf8_lossy(&msg.data));
+
                         if let Ok(v) = serde_json::from_slice::<crate::android::webrtc::input::EmulatorInputMessage>(&msg.data) {
                             if let Err(e) = crate::android::webrtc::input::handle_input_message(v).await {
                                 eprintln!("[emulator-input] error: {:#}", e);
                             }
+                        } else {
+                            eprintln!("[emulator-input] failed to deserialize message: {}", String::from_utf8_lossy(&msg.data));
                         }
                     }
                     .boxed()

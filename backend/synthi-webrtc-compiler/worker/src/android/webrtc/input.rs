@@ -108,6 +108,7 @@ lazy_static! {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmulatorInputMessage {
+    // Frontend sends "sessionId" (camelCase), ensuring serde recognizes it.
     pub session_id: Option<String>,
     #[serde(rename = "type")]
     pub kind: String,
@@ -180,6 +181,9 @@ pub async fn handle_input_message(msg: EmulatorInputMessage) -> Result<()> {
         .as_deref()
         .context("emulator input missing sessionId")?;
 
+    // Debug log to confirm routing
+    // eprintln!("[input.rs] Handling message for session {}: type={}", sid, msg.kind);
+
     let session = {
         let g = SESSIONS.lock().expect("SESSIONS lock");
         g.get(sid)
@@ -219,16 +223,14 @@ async fn handle_input_grpc(
             emulator_grpc::inject_swipe(&session.stream_config.grpc, x1, y1, x2, y2, dur).await?;
         }
         "key" => {
-            let kc = msg
-                .keycode
-                .as_deref()
-                .context("key event missing keycode")?;
-            let kc = if kc.starts_with("KEYCODE_") { kc.to_string() } else { format!("KEYCODE_{}", kc) };
-            emulator_grpc::inject_key(&session.stream_config.grpc, &kc).await?;
+            // Force ADB for keys as well. gRPC injection for keys (especially navigation/editing)
+            // has proven unreliable or silent-failing on this emulator version.
+            anyhow::bail!("prefer ADB for key");
         }
         "text" => {
-            let text = msg.text.clone().unwrap_or_default();
-            emulator_grpc::inject_text(&session.stream_config.grpc, &text).await?;
+            // gRPC text injection can be flaky on some emulator versions.
+            // Force safe fallback to ADB shell which is robust.
+            anyhow::bail!("prefer ADB for text");
         }
         "rotate" => {
             anyhow::bail!("rotate not implemented via gRPC");
@@ -294,6 +296,9 @@ async fn handle_input_adb(msg: &EmulatorInputMessage, session: &EmulatorInputSes
                 .as_deref()
                 .context("key event missing keycode")?;
             let kc = if kc.starts_with("KEYCODE_") { kc.to_string() } else { format!("KEYCODE_{}", kc) };
+            
+            // Force ADB for keys to avoid gRPC silent failures (especially DEL/ENTER)
+            // This ensures reliability over speed for control keys.
             let cmd = format!("input keyevent {}", kc);
             if use_persistent {
                 let shell = session.shell_proc.as_ref().unwrap();
@@ -305,8 +310,18 @@ async fn handle_input_adb(msg: &EmulatorInputMessage, session: &EmulatorInputSes
         }
         "text" => {
             let text = msg.text.clone().unwrap_or_default();
-            // Text input needs special quoting, use fallback method
-            adb_shell_text(&session.adb, &session.serial, &text).await?;
+            // Quote the text to ensure the shell treats it as a single argument (handling spaces, etc.)
+            let quoted = shell_single_quote(&text);
+            let cmd = format!("input text {}", quoted);
+
+            if use_persistent {
+                let shell = session.shell_proc.as_ref().unwrap();
+                let mut shell_guard = shell.lock().await;
+                shell_guard.send_command(&cmd).await?;
+            } else {
+                // Avoid using sh -c wrapper which can cause argument splitting issues on some platforms
+                adb_shell(&session.adb, &session.serial, &["input", "text", &quoted]).await?;
+            }
         }
         "rotate" => {
             rotate_device(&session.adb, &session.serial).await?;

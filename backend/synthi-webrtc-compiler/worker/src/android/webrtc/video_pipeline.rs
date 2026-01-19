@@ -290,12 +290,12 @@ fn pipeline_string(cfg: &EmulatorVideoConfig) -> String {
     // Use leaky queues to drop frames if processing is too slow (prevent lag buildup)
     let caps = if crop_toolbar.is_empty() {
         format!(
-            "videoconvert ! videoscale ! videorate ! {}video/x-raw,framerate={},width={},height={} ! queue leaky=downstream max-size-buffers=1 ! ",
+            "videoconvert ! videoscale ! videorate ! {}video/x-raw,framerate={},width={},height={} ! ",
             crop, framerate, cfg.width, cfg.height
         )
     } else {
         format!(
-            "{}videoscale ! videorate ! {}video/x-raw,framerate={},width={},height={} ! queue leaky=downstream max-size-buffers=1 ! ",
+            "{}videoscale ! videorate ! {}video/x-raw,framerate={},width={},height={} ! ",
             crop_toolbar, crop, framerate, cfg.width, cfg.height
         )
     };
@@ -316,8 +316,9 @@ fn pipeline_string(cfg: &EmulatorVideoConfig) -> String {
 
     // Final queue before appsink: also leaky 1 frame.
     // Appsink max-buffers=1 ensures we only hold the absolute latest frame for consumption.
+    // sync=false prevents GStreamer from holding frames to match timestamps, ensuring min latency.
     format!(
-        "{}{}{} ! queue leaky=downstream max-size-buffers=200 ! appsink name=video_sink drop=true max-buffers=1",
+        "{}{}{} ! queue leaky=downstream max-size-buffers=1 ! appsink name=video_sink drop=true max-buffers=1 sync=false",
         src, caps, enc
     )
 }
