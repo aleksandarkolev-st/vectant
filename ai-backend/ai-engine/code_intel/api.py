@@ -164,6 +164,19 @@ class SummaryResponse(BaseModel):
     token_count: int
 
 
+class MetricsRequest(BaseModel):
+    """Request for metrics."""
+    workspace_path: str = Field(..., description="Path to workspace")
+
+
+class MetricsResponse(BaseModel):
+    """Response for metrics."""
+    latency: Dict[str, Dict[str, float]]
+    counters: Dict[str, int]
+    budgets: Dict[str, int]
+    index_generation: Optional[str] = None
+
+
 class EditPlanRequest(BaseModel):
     """Request to create an edit plan."""
     workspace_path: str = Field(..., description="Path to workspace")
@@ -402,6 +415,23 @@ async def get_file_summary(request: SummaryRequest) -> SummaryResponse:
         raise
     except Exception as e:
         logger.exception("File summary retrieval failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/metrics", response_model=MetricsResponse)
+async def get_metrics(request: MetricsRequest) -> MetricsResponse:
+    """Get retrieval latency and budget metrics."""
+    try:
+        engine = get_engine(request.workspace_path)
+        metrics = engine.get_retrieval_metrics()
+        return MetricsResponse(
+            latency=metrics.get("latency", {}),
+            counters=metrics.get("counters", {}),
+            budgets=metrics.get("budgets", {}),
+            index_generation=metrics.get("index_generation"),
+        )
+    except Exception as e:
+        logger.exception("Metrics retrieval failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 

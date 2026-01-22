@@ -544,6 +544,7 @@ class VectorIndex:
                 "is_public": chunk.metadata.is_public,
                 "is_test": chunk.metadata.is_test,
                 "module_group": chunk.metadata.module_group,
+                "chunking_version": chunk.metadata.chunking_version,
                 "token_count": chunk.token_count,
                 "content_hash": chunk.content_hash,  # For lazy loading verification
                 # Note: code_body not saved - loaded lazily from disk
@@ -605,6 +606,7 @@ class VectorIndex:
                         is_public=chunk_data.get("is_public", True),
                         is_test=chunk_data.get("is_test", False),
                         module_group=chunk_data.get("module_group", ""),
+                        chunking_version=chunk_data.get("chunking_version", ""),
                     )
                     
                     # Get embedding from matrix if available

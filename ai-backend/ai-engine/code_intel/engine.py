@@ -72,7 +72,9 @@ from .indexer.structural_index import StructuralIndex
 # Summaries
 from .summaries.file_summarizer import FileSummarizer
 from .summaries.repo_summarizer import RepoSummarizer
+from .summaries.module_summarizer import ModuleSummarizer
 from .summaries.summary_store import SummaryStore, IncrementalSummaryManager
+from .summaries.facts_store import FactsStore
 
 # Retrieval
 from .retrieval.pipeline import RetrievalPipeline
@@ -83,6 +85,7 @@ from .retrieval.ranker import ContextRanker
 from .retrieval.budget_enforcer import BudgetEnforcer
 from .retrieval.context_assembler import ContextAssembler
 from .retrieval.controller import RetrievalController, ContextSufficiency, RefusalReason
+from .routing.router import QueryRouter
 
 # Tools
 from .tools.tools import ExplorationTools
@@ -151,6 +154,7 @@ class CodeIntelEngine:
         self._repo_summarizer: Optional[RepoSummarizer] = None
         self._summary_store: Optional[SummaryStore] = None
         self._summary_manager: Optional[IncrementalSummaryManager] = None
+        self._facts_store: Optional[FactsStore] = None
         
         self._retrieval_pipeline: Optional[RetrievalPipeline] = None
         self._retrieval_controller: Optional[RetrievalController] = None
@@ -213,24 +217,40 @@ class CodeIntelEngine:
         # Expose indexes from dual indexer for retrieval pipeline
         self._vector_index = self._dual_indexer.vector_index
         self._structural_index = self._dual_indexer.structural_index
+        self._lexical_index = self._dual_indexer.lexical_index
         
         # Summaries
         self._summary_store = SummaryStore(
             str(self.workspace_root / ".code_intel" / "summaries"),
         )
+        self._facts_store = FactsStore(
+            str(self.workspace_root / ".code_intel" / "summaries"),
+        )
         self._file_summarizer = FileSummarizer()
         self._repo_summarizer = RepoSummarizer(str(self.workspace_root))
+        self._module_summarizer = ModuleSummarizer()
         self._summary_manager = IncrementalSummaryManager(
             store=self._summary_store,
             file_summarizer=self._file_summarizer,
             repo_summarizer=self._repo_summarizer,
+            module_summarizer=self._module_summarizer,
+            file_reader=self._file_walker,
+            facts_store=self._facts_store,
         )
         
         # Retrieval pipeline
         self._retrieval_pipeline = RetrievalPipeline(
             vector_index=self._vector_index,
             structural_index=self._structural_index,
+            lexical_index=self._lexical_index,
             embedder=self._embedder,
+            file_reader=self._file_walker,
+                router=QueryRouter(
+                    structural_index=self._structural_index,
+                    lexical_index=self._lexical_index,
+                    vector_index=self._vector_index,
+                    file_reader=self._file_walker,
+                ),
         )
         
         # Deterministic retrieval controller
@@ -284,7 +304,10 @@ class CodeIntelEngine:
         # Use DualIndexer's index_repository method
         if incremental:
             # For incremental, only reindex changed files
-            result = self._dual_indexer.reindex_changed()
+            if getattr(self._dual_indexer, "_rebuild_required", False):
+                result = await self._dual_indexer.index_repository_async()
+            else:
+                result = self._dual_indexer.reindex_changed()
             files_count = result.get("files_updated", 0)
             chunks_count = result.get("chunks_updated", 0)
         else:
@@ -307,6 +330,24 @@ class CodeIntelEngine:
         self._stats.last_index_time_ms = (time.time() - start) * 1000
         
         logger.info(f"Indexed {self._stats.chunks_indexed} chunks in {self._stats.last_index_time_ms:.0f}ms")
+
+        # Sync summaries and facts store
+        try:
+            if self._summary_manager:
+                file_hashes = self._file_walker.get_all_hashes()
+                file_chunks = {}
+                for file_path in file_hashes.keys():
+                    chunk_ids = self._structural_index.get_chunks_for_file(file_path)
+                    chunks = []
+                    for cid in chunk_ids:
+                        chunk = self._vector_index.get_chunk(cid)
+                        if chunk:
+                            chunks.append(chunk)
+                    if chunks:
+                        file_chunks[file_path] = chunks
+                self._summary_manager.sync(file_hashes=file_hashes, file_chunks=file_chunks)
+        except Exception as e:
+            logger.warning(f"Summary sync failed: {e}")
         
         return self._stats
     
@@ -355,6 +396,29 @@ class CodeIntelEngine:
         
         # Create budget
         budget = ContextBudget(max_tokens=max_tokens)
+
+        # Refresh summaries for retrieval
+        try:
+            if self._summary_store and self._retrieval_pipeline:
+                repo_summary = self._summary_store.get_repo_summary()
+                file_summaries = self._summary_store.get_all_file_summaries()
+                module_summaries = self._summary_store.get_all_module_summaries()
+                self._retrieval_pipeline.update_summaries(
+                    repo_summary=repo_summary,
+                    file_summaries=file_summaries,
+                    module_summaries=module_summaries,
+                )
+            if self._facts_store and self._file_walker:
+                try:
+                    self._facts_store.purge_stale(
+                        self._file_walker,
+                        self.config.indexer.chunking_version,
+                        max_scan=200,
+                    )
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.debug(f"Failed to update summaries for retrieval: {e}")
         
         # Run retrieval pipeline (synchronous, so run in executor)
         import asyncio
@@ -429,6 +493,26 @@ class CodeIntelEngine:
         """Get summary for a specific file."""
         self._initialize_components()
         return self._summary_store.get_file_summary(file_path)
+
+    def get_retrieval_metrics(self) -> Dict[str, Any]:
+        """Get retrieval latency and budget metrics."""
+        self._initialize_components()
+        metrics = {}
+        counters = {}
+        if self._retrieval_pipeline:
+            metrics = self._retrieval_pipeline.get_metrics()
+            counters = self._retrieval_pipeline.get_counters()
+        return {
+            "latency": metrics,
+            "counters": counters,
+            "budgets": {
+                "bm25_top_k": self.config.retrieval.bm25_top_k,
+                "vector_top_k": self.config.retrieval.vector_top_k,
+                "rerank_top_k": self.config.retrieval.rerank_top_k,
+                "final_max_chunks": self.config.retrieval.final_max_chunks,
+            },
+            "index_generation": getattr(self._dual_indexer, "index_generation", None),
+        }
     
     # =========================================================================
     # Tools API

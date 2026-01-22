@@ -23,7 +23,10 @@ from ..core.types import (
     get_module_group,
     compute_chunk_id,
     compute_body_fingerprint,
+    canonicalize_signature,
+    compute_stable_symbol_id,
 )
+from ..core.config import get_config
 
 
 logger = logging.getLogger("code_intel.ingestion.chunk_extractor")
@@ -112,10 +115,13 @@ class ChunkExtractor:
         
         # Compute module group for this file
         module_group = get_module_group(file_path, parse_result.language)
+        chunking_version = get_config().indexer.chunking_version
         
         for symbol in parse_result.symbols:
             # Build qualified name
-            if symbol.parent:
+            if symbol.qualified_name:
+                qualified_name = symbol.qualified_name
+            elif symbol.parent:
                 qualified_name = f"{symbol.parent}.{symbol.name}"
             else:
                 qualified_name = symbol.name
@@ -126,11 +132,19 @@ class ChunkExtractor:
             
             # Compute stable chunk ID
             body_fingerprint = compute_body_fingerprint(symbol.code)
+            signature_canon = canonicalize_signature(symbol.signature)
+            stable_symbol_id = compute_stable_symbol_id(
+                parse_result.language,
+                symbol.symbol_type,
+                signature_canon,
+                body_fingerprint,
+            )
+            symbol_identity = f"{parse_result.language}|{symbol.symbol_type.value}|{stable_symbol_id}"
             chunk_id = compute_chunk_id(
-                file_path,
-                qualified_name,
-                symbol.signature,
-                body_fingerprint
+                symbol_identity=symbol_identity,
+                signature_fingerprint=signature_canon,
+                body_fingerprint=body_fingerprint,
+                chunking_version=chunking_version,
             )
             
             # Create metadata
@@ -152,6 +166,8 @@ class ChunkExtractor:
                 is_public=symbol.is_public,
                 is_test=self._is_test_code(file_path, symbol.name),
                 module_group=module_group,
+                chunking_version=chunking_version,
+                stable_symbol_id=stable_symbol_id,
             )
             
             # Create chunk with stable ID
@@ -162,6 +178,7 @@ class ChunkExtractor:
             # Set code body separately (for lazy loading support)
             chunk._code_body = symbol.code
             chunk._code_loaded = True
+            chunk.content_hash = content_hash
             
             chunks.append(chunk)
         

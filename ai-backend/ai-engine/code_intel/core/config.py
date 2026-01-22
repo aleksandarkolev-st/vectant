@@ -48,6 +48,8 @@ class ParserConfig:
 @dataclass
 class IndexerConfig:
     """Configuration for the dual indexer."""
+    # Chunking version (bump to force rebuild when chunking changes)
+    chunking_version: str = "1"
     # Vector index settings
     embedding_model: str = "text-embedding-004"  # Gemini embedding model
     embedding_dimension: int = 768
@@ -70,8 +72,23 @@ class IndexerConfig:
 class RetrievalConfig:
     """Configuration for context retrieval."""
     # Vector search
+    top_k: int = 12  # Primary candidate count (alias for top_k_candidates)
     top_k_candidates: int = 12  # Initial vector search
     min_similarity: float = 0.5  # Minimum cosine similarity
+
+    # Explicit candidate budgets
+    vector_top_k: int = 80
+    rerank_top_k: int = 40
+    final_max_chunks: int = 30
+
+    # Lexical/BM25 search
+    enable_lexical: bool = True
+    bm25_top_k: int = 200  # Candidate pool size for lexical search
+    bm25_min_score: float = 0.0
+
+    # Definition pull (symbol hops)
+    definition_pull_top_k: int = 30
+    definition_pull_symbols_per_chunk: int = 30
     
     # Structural expansion
     max_expansion_depth: int = 2
@@ -108,6 +125,34 @@ class SummaryConfig:
     regenerate_on_change: bool = True
     summary_staleness_hours: int = 24
 
+    # LLM summarization (Gemini)
+    enable_llm_summaries: bool = True
+    gemini_summary_model: str = "gemini-2.5-flash-lite"
+    module_summary_max_tokens: int = 600
+    symbol_summary_max_tokens: int = 200
+
+
+@dataclass
+class RoutingConfig:
+    """Configuration for query routing."""
+    enable_router: bool = True
+    use_gemini_intent: bool = True
+    gemini_intent_model: str = "gemini-2.5-flash-lite"
+    max_seed_symbols: int = 12
+    max_seed_files: int = 12
+    max_seed_chunks: int = 25
+    max_graph_hops: int = 2
+    recent_edit_window_hours: int = 72
+    hot_path_boost: float = 0.2
+    recent_edit_boost: float = 0.2
+
+
+@dataclass
+class LspConfig:
+    """Configuration for LSP enrichment."""
+    enable_lsp_import: bool = False
+    lsp_index_path: str = ".synthi/code_intel/lsp_index.json"
+
 
 @dataclass
 class ContextConfig:
@@ -115,6 +160,9 @@ class ContextConfig:
     # Token limits
     max_context_tokens: int = 8000
     response_reserve_tokens: int = 500
+
+    # Chunk cap for final context
+    max_chunks: int = 30
     
     # Eviction
     context_expires_each_turn: bool = True
@@ -156,6 +204,8 @@ class CodeIntelConfig:
     indexer: IndexerConfig = field(default_factory=IndexerConfig)
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     summary: SummaryConfig = field(default_factory=SummaryConfig)
+    routing: RoutingConfig = field(default_factory=RoutingConfig)
+    lsp: LspConfig = field(default_factory=LspConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
     editing: EditingConfig = field(default_factory=EditingConfig)
     
@@ -198,6 +248,16 @@ class CodeIntelConfig:
             for k, v in data["summary"].items():
                 if hasattr(config.summary, k):
                     setattr(config.summary, k, v)
+
+        if "routing" in data:
+            for k, v in data["routing"].items():
+                if hasattr(config.routing, k):
+                    setattr(config.routing, k, v)
+
+        if "lsp" in data:
+            for k, v in data["lsp"].items():
+                if hasattr(config.lsp, k):
+                    setattr(config.lsp, k, v)
         
         if "context" in data:
             for k, v in data["context"].items():

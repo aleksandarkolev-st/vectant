@@ -14,11 +14,13 @@ import asyncio
 import logging
 import os
 import threading
+import time
 from contextlib import contextmanager
 from typing import Dict, List, Optional, Set
 
 from .vector_index import VectorIndex
 from .structural_index import StructuralIndex
+from .lexical_index import LexicalIndex
 from .embedder import Embedder, get_embedder
 
 from ..core.types import SemanticChunk, ChunkId, FilePath
@@ -52,9 +54,13 @@ class DualIndexer:
         embedder: Optional[Embedder] = None,
     ):
         self.workspace_root = os.path.abspath(workspace_root)
-        self.persist_dir = persist_dir or os.path.join(
+        self.base_dir = persist_dir or os.path.join(
             workspace_root, ".synthi", "code_intel"
         )
+        self.pointer_path = f"{self.base_dir}_current_gen.txt"
+        self.persist_dir = self._resolve_persist_dir(self.base_dir, self.pointer_path)
+        self.config = get_config()
+        self.chunking_version = self.config.indexer.chunking_version
         
         # Create persist directory
         os.makedirs(self.persist_dir, exist_ok=True)
@@ -66,6 +72,12 @@ class DualIndexer:
         self.structural_index = StructuralIndex(
             persist_path=os.path.join(self.persist_dir, "structure.json")
         )
+        self.lexical_index = LexicalIndex(
+            persist_path=os.path.join(self.persist_dir, "lexical.json")
+        )
+
+        # Enforce chunking version invariants
+        self._ensure_chunking_version()
         
         # Embedder
         self.embedder = embedder or get_embedder()
@@ -92,6 +104,131 @@ class DualIndexer:
             "chunks_indexed": 0,
             "last_index_time": None,
         }
+        self.index_generation = None
+        self._rebuild_required = False
+        self._pending_generation = None
+
+    def _resolve_persist_dir(self, base_dir: str, pointer_path: str) -> str:
+        """Resolve the active generation directory using a pointer file."""
+        try:
+            if os.path.exists(pointer_path):
+                with open(pointer_path, "r", encoding="utf-8") as f:
+                    target = f.read().strip()
+                if target and os.path.exists(target):
+                    return target
+        except Exception:
+            pass
+
+        # Default to base_dir and set pointer atomically
+        os.makedirs(base_dir, exist_ok=True)
+        self._atomic_write_pointer(pointer_path, base_dir)
+        return base_dir
+
+    def _atomic_write_pointer(self, pointer_path: str, target: str) -> None:
+        """Atomically swap the current generation pointer file."""
+        try:
+            tmp_path = f"{pointer_path}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(target)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, pointer_path)
+            # fsync parent dir for durability
+            parent_dir = os.path.dirname(pointer_path) or "."
+            try:
+                dir_fd = os.open(parent_dir, os.O_DIRECTORY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _cleanup_orphan_generations(self, keep_dir: str) -> None:
+        """Best-effort cleanup of orphaned generation directories."""
+        try:
+            parent = os.path.dirname(self.base_dir)
+            prefix = os.path.basename(self.base_dir) + "_gen_"
+            for name in os.listdir(parent):
+                if not name.startswith(prefix):
+                    continue
+                path = os.path.join(parent, name)
+                if path == keep_dir:
+                    continue
+                try:
+                    for root, dirs, files in os.walk(path, topdown=False):
+                        for file in files:
+                            os.remove(os.path.join(root, file))
+                        for d in dirs:
+                            os.rmdir(os.path.join(root, d))
+                    os.rmdir(path)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    def _ensure_chunking_version(self) -> None:
+        """Ensure persisted indexes match current chunking version."""
+        version_path = os.path.join(self.persist_dir, "chunking_version.txt")
+        gen_path = os.path.join(self.persist_dir, "index_generation.txt")
+        existing = None
+        if os.path.exists(version_path):
+            try:
+                with open(version_path, "r", encoding="utf-8") as f:
+                    existing = f.read().strip()
+            except Exception:
+                existing = None
+
+        if existing and existing != self.chunking_version:
+            logger.warning(
+                f"Chunking version mismatch: {existing} -> {self.chunking_version}. Clearing indexes."
+            )
+            self._rebuild_required = True
+            self._pending_generation = str(int(time.time() * 1000))
+            self.index_generation = None
+
+        try:
+            with open(version_path, "w", encoding="utf-8") as f:
+                f.write(self.chunking_version)
+        except Exception:
+            pass
+
+        if os.path.exists(gen_path):
+            try:
+                with open(gen_path, "r", encoding="utf-8") as f:
+                    self.index_generation = f.read().strip()
+            except Exception:
+                self.index_generation = None
+        if not self.index_generation and not self._rebuild_required:
+            self.index_generation = str(int(time.time() * 1000))
+            try:
+                with open(gen_path, "w", encoding="utf-8") as f:
+                    f.write(self.index_generation)
+            except Exception:
+                pass
+
+    def _reset_indexes(self) -> None:
+        """Clear persisted index files and reset in-memory indexes."""
+        for name in ("vectors.json", "structure.json", "lexical.json", "vectors.npz", "vectors.npz.tmp"):
+            try:
+                path = os.path.join(self.persist_dir, name)
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+
+        self.vector_index = VectorIndex(
+            persist_path=os.path.join(self.persist_dir, "vectors.json")
+        )
+        self.structural_index = StructuralIndex(
+            persist_path=os.path.join(self.persist_dir, "structure.json")
+        )
+        self.lexical_index = LexicalIndex(
+            persist_path=os.path.join(self.persist_dir, "lexical.json")
+        )
+        self._file_hashes.clear()
     
     def _get_file_lock(self, file_path: str) -> threading.RLock:
         """
@@ -135,6 +272,25 @@ class DualIndexer:
         """
         logger.info(f"Starting repository index: {self.workspace_root}")
         
+        # If we need a clean rebuild, build a new generation and swap atomically
+        if self._rebuild_required:
+            new_gen = self._pending_generation or str(int(time.time() * 1000))
+            new_dir = os.path.join(os.path.dirname(self.base_dir), f"{os.path.basename(self.base_dir)}_gen_{new_gen}")
+            temp = DualIndexer(self.workspace_root, persist_dir=new_dir, embedder=self.embedder)
+            result = temp.index_repository(progress_callback, skip_embeddings)
+            # Swap indexes
+            self._atomic_write_pointer(self.pointer_path, temp.persist_dir)
+            self.persist_dir = temp.persist_dir
+            self.vector_index = temp.vector_index
+            self.structural_index = temp.structural_index
+            self.lexical_index = temp.lexical_index
+            self._file_hashes = temp._file_hashes
+            self.index_generation = new_gen
+            self._rebuild_required = False
+            self._pending_generation = None
+            self._cleanup_orphan_generations(self.persist_dir)
+            return result
+
         # Walk all files
         files = list(self.walker.walk())
         total_files = len(files)
@@ -165,10 +321,23 @@ class DualIndexer:
         for chunk in all_chunks:
             if chunk.embedding:
                 self.vector_index.add(chunk)
+
+        # Add to lexical index
+        for chunk in all_chunks:
+            self.lexical_index.add(chunk)
+
+        # Optional LSP enrichment
+        try:
+            if self.config.lsp.enable_lsp_import:
+                from ..lsp.lsp_importer import ingest_lsp_index
+                ingest_lsp_index(self.structural_index, self.config.lsp.lsp_index_path)
+        except Exception:
+            pass
         
         # Persist
         self.vector_index.persist()
         self.structural_index.persist()
+        self.lexical_index.persist()
         
         self._stats["files_indexed"] = total_files
         self._stats["chunks_indexed"] = len(all_chunks)
@@ -223,6 +392,10 @@ class DualIndexer:
             for chunk in chunks:
                 if chunk.embedding:
                     self.vector_index.add(chunk)
+
+        # Add to lexical index
+        for chunk in chunks:
+            self.lexical_index.add(chunk)
         
         self._file_hashes[relative_path] = file.content_hash
         
@@ -265,6 +438,8 @@ class DualIndexer:
             for chunk in chunks:
                 if chunk.embedding is not None:
                     self.vector_index.add(chunk)
+            for chunk in chunks:
+                self.lexical_index.add(chunk)
             return chunks
         else:
             return self.index_file(relative_path)
@@ -298,6 +473,7 @@ class DualIndexer:
             # Step 2: Remove all old chunks from vector index
             for chunk_id in old_chunk_ids:
                 self.vector_index.remove(chunk_id)
+                self.lexical_index.remove(chunk_id)
             
             # Step 3: Remove file from structural index (removes chunks + edges)
             self.structural_index.remove_file(file_path)
@@ -318,6 +494,10 @@ class DualIndexer:
             for chunk in new_chunks:
                 if chunk.embedding is not None:
                     self.vector_index.add(chunk)
+
+            # Step 7: Add to lexical index
+            for chunk in new_chunks:
+                self.lexical_index.add(chunk)
             
             # Update hash
             self._file_hashes[file_path] = file.content_hash
@@ -341,6 +521,7 @@ class DualIndexer:
             # Remove from vector index
             for chunk_id in chunk_ids:
                 self.vector_index.remove(chunk_id)
+                self.lexical_index.remove(chunk_id)
             
             # Remove from structural index (handles edges too)
             self.structural_index.remove_file(relative_path)
@@ -430,6 +611,7 @@ class DualIndexer:
         # Persist
         self.vector_index.persist()
         self.structural_index.persist()
+        self.lexical_index.persist()
         
         return {
             "files_updated": len(changed),
@@ -440,12 +622,14 @@ class DualIndexer:
         """Persist both indexes."""
         self.vector_index.persist()
         self.structural_index.persist()
+        self.lexical_index.persist()
     
     def stats(self) -> Dict:
         """Get combined statistics."""
         return {
             "vector": self.vector_index.stats(),
             "structural": self.structural_index.stats(),
+            "lexical": self.lexical_index.stats(),
             "files_indexed": self._stats["files_indexed"],
             "chunks_indexed": self._stats["chunks_indexed"],
         }
