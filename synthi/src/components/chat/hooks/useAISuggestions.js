@@ -813,6 +813,7 @@ If image attachments are present, read/ocr the images and extract any text or co
                     workspacePath: workspaceSlug || null,
                     useCodeIntel: true,
                     maxContextTokens: 6000,
+                    fullRepoContext: true,
                 }),
             });
 

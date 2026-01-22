@@ -12,6 +12,7 @@ import { selectFileCacheEntries } from '@/redux/workspaceSlice';
 import { useChatSessions } from './hooks/useChatSessions';
 import { useChatInput } from './hooks/useChatInput';
 import { useAISuggestions } from './hooks/useAISuggestions';
+import { useCodeIntelMetrics } from '@/hooks/useCodeIntelMetrics';
 import { useChatAttachments } from './hooks/useChatAttachments';
 import { renderDiffChunkList, diffStats } from './utils/diffUtils';
 import { fileSuggestionStatusClasses, fileSuggestionStatusLabel } from './utils/fileSuggestionsUtils';
@@ -55,6 +56,11 @@ const AIChatWindow = ({
     const fileCacheEntries = useAppSelector(selectFileCacheEntries);
     const workspaceSlug = useAppSelector((state) => state.workspace.slug);
     const rawFiles = useAppSelector((state) => state.workspace.rawFiles || []);
+    const { metrics: codeIntelMetrics, isLoading: isMetricsLoading, error: metricsError, refresh: refreshMetrics } = useCodeIntelMetrics({
+        workspacePath: workspaceSlug,
+        enabled: isVisible,
+        pollMs: 12000,
+    });
 
     const {
         chatSessions,
@@ -298,6 +304,54 @@ const AIChatWindow = ({
                         </button>
                     </div>
                 </div>
+
+                {isVisible && (
+                    <div className="mx-3 mb-2 rounded-md border border-[#1a1b24] bg-[#0b0c11] px-2.5 py-1.5 text-[10px] text-[#9ba2b8]">
+                        <div className="flex items-center justify-between gap-2">
+                            <div className="font-semibold uppercase tracking-[0.2em] text-[9px] text-[#6b7280]">
+                                Code Intel
+                            </div>
+                            <button
+                                onClick={refreshMetrics}
+                                className="text-[9px] uppercase tracking-[0.18em] text-[#5a6178] hover:text-[#9ba2b8]"
+                                title="Refresh metrics"
+                            >
+                                Refresh
+                            </button>
+                        </div>
+                        {metricsError && (
+                            <div className="mt-1 text-[10px] text-rose-400">{metricsError}</div>
+                        )}
+                        {!metricsError && (
+                            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                                <span className="text-[#8b93a7]">p95:</span>
+                                {Object.entries(codeIntelMetrics?.latency || {}).map(([stage, vals]) => (
+                                    <span key={stage} className="text-[#c7ccd9]">
+                                        {stage} {Math.round(vals?.p95 || 0)}ms
+                                    </span>
+                                ))}
+                                <span className="text-[#8b93a7]">counters:</span>
+                                {Object.entries(codeIntelMetrics?.counters || {}).map(([k, v]) => (
+                                    <span key={k} className="text-[#c7ccd9]">
+                                        {k}:{v}
+                                    </span>
+                                ))}
+                                <span className="text-[#8b93a7]">budgets:</span>
+                                {Object.entries(codeIntelMetrics?.budgets || {}).map(([k, v]) => (
+                                    <span key={k} className="text-[#c7ccd9]">
+                                        {k}:{v}
+                                    </span>
+                                ))}
+                                {codeIntelMetrics?.index_generation && (
+                                    <span className="text-[#8b93a7]">gen:{codeIntelMetrics.index_generation}</span>
+                                )}
+                                {isMetricsLoading && (
+                                    <span className="text-[#5a6178]">loading…</span>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                )}
 
                 <div className="px-2 pb-2 flex items-center gap-1.5 overflow-x-auto">
                     {chatSessions.map((session) => {
