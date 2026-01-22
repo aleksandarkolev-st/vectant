@@ -113,6 +113,40 @@ class RetrievalConfig:
     
     # Budget
     default_budget_tokens: int = 12000
+
+    # Dynamic budgets by query intent
+    enable_dynamic_budgets: bool = True
+    intent_budget_tokens: Dict[str, int] = field(default_factory=lambda: {
+        "find": 6000,
+        "understand": 12000,
+        "modify": 14000,
+        "debug": 14000,
+        "create": 12000,
+        "review": 10000,
+    })
+    intent_max_chunks: Dict[str, int] = field(default_factory=lambda: {
+        "find": 20,
+        "understand": 35,
+        "modify": 40,
+        "debug": 40,
+        "create": 30,
+        "review": 30,
+    })
+
+    # Multi-pass retrieval (relax thresholds if too few candidates)
+    enable_multi_pass: bool = True
+    multi_pass_min_candidates: int = 8
+    multi_pass_min_similarity: float = 0.35
+    multi_pass_vector_top_k: int = 120
+    multi_pass_bm25_top_k: int = 300
+    multi_pass_include_tests: bool = True
+
+    # LLM reranker (optional)
+    enable_llm_rerank: bool = False
+    llm_rerank_model: str = "gemini-2.5-flash-lite"
+    llm_rerank_top_k: int = 20
+    llm_rerank_min_score: float = 0.15
+    llm_rerank_timeout_ms: int = 6000
     
     # Safeguards
     max_files_per_subsystem: int = 5
@@ -240,6 +274,13 @@ class CodeIntelConfig:
     def __post_init__(self):
         # Load from environment
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+
+        if os.getenv("CODE_INTEL_LLM_RERANK", "").lower() == "true":
+            self.retrieval.enable_llm_rerank = True
+        if os.getenv("CODE_INTEL_MULTI_PASS", "").lower() == "false":
+            self.retrieval.enable_multi_pass = False
+        if os.getenv("CODE_INTEL_DYNAMIC_BUDGETS", "").lower() == "false":
+            self.retrieval.enable_dynamic_budgets = False
         
         if os.getenv("CODE_INTEL_DEBUG"):
             self.debug = True

@@ -144,7 +144,13 @@ class ChunkExtractor:
                 full_body_fingerprint,
             )
             symbol_identity = f"{parse_result.language}|{symbol.symbol_type.value}|{stable_symbol_id}"
-            subchunks = self._split_symbol_code(symbol.code, symbol.start_line, max_chunk_tokens)
+            subchunks = self._split_symbol_code(
+                symbol.code,
+                symbol.start_line,
+                max_chunk_tokens,
+                parse_result.language,
+                symbol.symbol_type,
+            )
             for index, subchunk in enumerate(subchunks):
                 sub_code, sub_start_line, sub_end_line = subchunk
                 sub_body_fingerprint = compute_body_fingerprint(sub_code)
@@ -223,6 +229,8 @@ class ChunkExtractor:
         code: str,
         start_line: int,
         max_chunk_tokens: int,
+        language: str,
+        symbol_type: SymbolType,
     ) -> List[tuple[str, int, int]]:
         line_count = max(1, len(code.splitlines())) if code else 0
         if max_chunk_tokens <= 0:
@@ -230,6 +238,11 @@ class ChunkExtractor:
         estimated_tokens = len(code) // 4 + 1
         if estimated_tokens <= max_chunk_tokens:
             return [(code, start_line, start_line + max(0, line_count - 1))]
+
+        if language == "python" and symbol_type == SymbolType.CLASS:
+            structured = self._split_python_class(code, start_line, max_chunk_tokens)
+            if structured:
+                return structured
 
         lines = code.splitlines(keepends=True)
         chunks: List[tuple[str, int, int]] = []
@@ -254,6 +267,86 @@ class ChunkExtractor:
             chunk_code = "".join(current_lines)
             end_line = current_start_line + len(current_lines) - 1
             chunks.append((chunk_code, current_start_line, end_line))
+
+        return chunks
+
+    def _split_python_class(
+        self,
+        code: str,
+        start_line: int,
+        max_chunk_tokens: int,
+    ) -> List[tuple[str, int, int]]:
+        """Split large Python classes on method boundaries using AST."""
+        try:
+            import ast
+        except Exception:
+            return []
+
+        try:
+            tree = ast.parse(code)
+        except Exception:
+            return []
+
+        class_node = None
+        for node in getattr(tree, "body", []):
+            if isinstance(node, ast.ClassDef):
+                class_node = node
+                break
+        if not class_node:
+            return []
+
+        lines = code.splitlines(keepends=True)
+        line_count = len(lines)
+        method_ranges = []
+        for node in getattr(class_node, "body", []):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if getattr(node, "lineno", None) and getattr(node, "end_lineno", None):
+                    method_ranges.append((node.lineno - 1, node.end_lineno - 1))
+        if not method_ranges:
+            return []
+
+        method_ranges.sort(key=lambda r: r[0])
+        blocks: List[tuple[int, int]] = []
+        cursor = 0
+        for start, end in method_ranges:
+            if start > cursor:
+                blocks.append((cursor, start - 1))
+            blocks.append((start, end))
+            cursor = end + 1
+        if cursor < line_count:
+            blocks.append((cursor, line_count - 1))
+
+        chunks: List[tuple[str, int, int]] = []
+        current_start = None
+        current_end = None
+        current_tokens = 0
+
+        for block_start, block_end in blocks:
+            block_code = "".join(lines[block_start:block_end + 1])
+            block_tokens = len(block_code) // 4 + 1
+            if current_start is not None and (current_tokens + block_tokens) > max_chunk_tokens:
+                chunk_code = "".join(lines[current_start:current_end + 1])
+                chunks.append((
+                    chunk_code,
+                    start_line + current_start,
+                    start_line + current_end,
+                ))
+                current_start = block_start
+                current_end = block_end
+                current_tokens = block_tokens
+            else:
+                if current_start is None:
+                    current_start = block_start
+                current_end = block_end if current_end is None else max(current_end, block_end)
+                current_tokens += block_tokens
+
+        if current_start is not None and current_end is not None:
+            chunk_code = "".join(lines[current_start:current_end + 1])
+            chunks.append((
+                chunk_code,
+                start_line + current_start,
+                start_line + current_end,
+            ))
 
         return chunks
 

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 import re
 
 import numpy as np
@@ -36,7 +36,7 @@ from .graph_expander import GraphExpander
 from .ranker import ContextRanker
 from .budget_enforcer import BudgetEnforcer, BudgetAllocation
 from .context_assembler import ContextAssembler, AssembledContext
-from .reranker import LightweightReranker
+from .reranker import LightweightReranker, GeminiReranker
 
 
 logger = logging.getLogger("code_intel.retrieval.pipeline")
@@ -122,6 +122,13 @@ class RetrievalPipeline:
         
         self.ranker = ContextRanker(config=self.config.retrieval)
         self.reranker = LightweightReranker()
+        self.llm_reranker = None
+        if self.config.retrieval.enable_llm_rerank:
+            self.llm_reranker = GeminiReranker(
+                api_key=self.config.gemini_api_key,
+                model=self.config.retrieval.llm_rerank_model,
+                timeout_ms=self.config.retrieval.llm_rerank_timeout_ms,
+            )
         self.budget_enforcer = BudgetEnforcer(config=self.config.context)
         self.assembler = ContextAssembler(config=self.config.context)
 
@@ -174,6 +181,15 @@ class RetrievalPipeline:
         query_start = time.time()
         parsed_query = self.query_processor.process(query)
 
+        # Dynamic budgets by intent
+        dynamic_max_chunks = None
+        if self.config.retrieval.enable_dynamic_budgets and parsed_query.intent:
+            intent_key = parsed_query.intent.value
+            override_tokens = self.config.retrieval.intent_budget_tokens.get(intent_key)
+            if override_tokens:
+                budget.max_tokens = int(override_tokens)
+            dynamic_max_chunks = self.config.retrieval.intent_max_chunks.get(intent_key)
+
         # Route query (intent + seed selection)
         route_result = None
         query_symbols = list(parsed_query.symbol_names or [])
@@ -208,6 +224,24 @@ class RetrievalPipeline:
         )
         retrieval_time = (time.time() - retrieval_start) * 1000
         candidates_found = len(candidates)
+
+        # Multi-pass retrieval (relaxed thresholds)
+        multi_pass_used = False
+        if self.config.retrieval.enable_multi_pass and candidates_found < self.config.retrieval.multi_pass_min_candidates:
+            relaxed_candidates, relaxed_stats = self._relaxed_retrieve(
+                query_embedding=query_embedding,
+                query_text=query_text_aug,
+                query_symbols=query_symbols,
+                query_files=query_files,
+                top_k=max(vector_top_k, self.config.retrieval.multi_pass_vector_top_k),
+                filter_language=filter_language,
+                include_tests=self.config.retrieval.multi_pass_include_tests,
+            )
+            if len(relaxed_candidates) > candidates_found:
+                candidates = relaxed_candidates
+                retrieval_stats = relaxed_stats
+                candidates_found = len(candidates)
+                multi_pass_used = True
 
         # Inject routed seed chunks (highest priority)
         if route_result and route_result.seed_chunks:
@@ -302,13 +336,45 @@ class RetrievalPipeline:
                     new_candidates.append(cand)
                 candidates = new_candidates
             post_rerank_count = len(candidates)
+
+        # Stage 4c: Optional LLM rerank
+        llm_rerank_time = 0.0
+        post_llm_rerank = len(candidates)
+        if self.llm_reranker and candidates:
+            llm_top_k = max(self.config.retrieval.llm_rerank_top_k, self.config.retrieval.final_max_chunks)
+            llm_candidates = candidates[:llm_top_k]
+            llm_start = time.time()
+            llm_results = self.llm_reranker.rerank(
+                [(c.chunk, c.combined_score) for c in llm_candidates],
+                query,
+                max_results=llm_top_k,
+            )
+            llm_rerank_time = (time.time() - llm_start) * 1000
+            if llm_results:
+                by_id = {c.chunk.id: c for c in llm_candidates}
+                new_candidates: List[RetrievalCandidate] = []
+                for r in llm_results:
+                    if r.score < self.config.retrieval.llm_rerank_min_score:
+                        continue
+                    cand = by_id.get(r.chunk_id)
+                    if not cand:
+                        continue
+                    cand.combined_score = r.score
+                    new_candidates.append(cand)
+                if new_candidates:
+                    candidates = new_candidates
+            post_llm_rerank = len(candidates)
         
         # Stage 5: Budget Enforcement
         budget_start = time.time()
         filtered_summaries = self._filter_file_summaries(self.file_summaries, snapshot_hashes)
         # Apply final chunk cap from retrieval config
         if hasattr(self.budget_enforcer.config, "max_chunks"):
-            self.budget_enforcer.config.max_chunks = self.config.retrieval.final_max_chunks
+            self.budget_enforcer.config.max_chunks = (
+                int(dynamic_max_chunks)
+                if dynamic_max_chunks is not None
+                else self.config.retrieval.final_max_chunks
+            )
 
         allocation = self.budget_enforcer.enforce(
             candidates,
@@ -388,12 +454,15 @@ class RetrievalPipeline:
             "post_graph": candidates_expanded,
             "post_staleness": post_staleness_count,
             "post_rerank": post_rerank_count,
+            "post_llm_rerank": post_llm_rerank,
             "final": len(allocation.included_chunks),
             "candidates_found": candidates_found,
             "graph_expanded_count": max(0, candidates_expanded - candidates_found),
             "dropped_chunks_stale": dropped_stale,
             "dropped_chunks_version": 0,
             "rerank_latency_ms": int(rerank_time),
+            "llm_rerank_latency_ms": int(llm_rerank_time),
+            "multi_pass_used": int(1 if multi_pass_used else 0),
         }
 
         return RetrievalPipelineResult(
@@ -412,6 +481,42 @@ class RetrievalPipeline:
             stage_p95_ms=stage_p95,
             trace=trace,
         )
+
+    def _relaxed_retrieve(
+        self,
+        query_embedding,
+        query_text: str,
+        query_symbols: List[str],
+        query_files: List[str],
+        top_k: int,
+        filter_language: Optional[str],
+        include_tests: bool,
+    ):
+        """Run a relaxed retrieval pass with lower thresholds."""
+        prev = {
+            "min_similarity": self.config.retrieval.min_similarity,
+            "vector_top_k": self.config.retrieval.vector_top_k,
+            "bm25_top_k": self.config.retrieval.bm25_top_k,
+        }
+        try:
+            self.config.retrieval.min_similarity = self.config.retrieval.multi_pass_min_similarity
+            self.config.retrieval.vector_top_k = max(self.config.retrieval.vector_top_k, self.config.retrieval.multi_pass_vector_top_k)
+            self.config.retrieval.bm25_top_k = max(self.config.retrieval.bm25_top_k, self.config.retrieval.multi_pass_bm25_top_k)
+            self.retriever.config = self.config.retrieval
+            return self.retriever.retrieve(
+                query_embedding=query_embedding,
+                query_text=query_text,
+                query_symbols=query_symbols,
+                query_files=query_files,
+                top_k=top_k,
+                filter_language=filter_language,
+                exclude_test_files=not include_tests,
+            )
+        finally:
+            self.config.retrieval.min_similarity = prev["min_similarity"]
+            self.config.retrieval.vector_top_k = prev["vector_top_k"]
+            self.config.retrieval.bm25_top_k = prev["bm25_top_k"]
+            self.retriever.config = self.config.retrieval
 
     def _record_metrics(self, sample: Dict[str, float]) -> Dict[str, float]:
         p95 = {}

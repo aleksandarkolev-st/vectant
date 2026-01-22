@@ -75,12 +75,27 @@ async function fetchCodeIntelContext({ workspacePath, query, maxTokens = 6000, c
             sources: data.sources || [],
             tokensUsed: data.tokens_used || 0,
             refusal: data.refusal || null,
+            trace: Array.isArray(data.trace) ? data.trace : [],
         };
     } catch (e) {
         console.warn('Code intel fetch error:', e.message);
         return { context: '', sufficiency: 'UNKNOWN', sources: [], refusal: null };
     }
 }
+
+const buildTraceSummary = (trace = []) => {
+    if (!Array.isArray(trace) || trace.length === 0) return '';
+    const included = trace.filter((t) => t?.reason === 'included');
+    const top = (included.length ? included : trace).slice(0, 6);
+    const parts = top.map((t) => {
+        const file = t?.file || 'unknown';
+        const symbol = t?.symbol ? `:${t.symbol}` : '';
+        const score = typeof t?.score === 'number' ? `(${t.score.toFixed(2)})` : '';
+        return `${file}${symbol}${score}`;
+    });
+    const text = parts.join(' | ');
+    return text.length > 380 ? `${text.slice(0, 377)}...` : text;
+};
 
 
 const buildUserContent = ({ prompt, code, files, lang, focusPath, codeIntelContext }) => {
@@ -536,6 +551,8 @@ export async function POST(request) {
                 ? streamOpenAI({ model, apiKey, userContent, signal })
                 : streamGemini({ model, apiKey, userContent, signal }));
 
+        const traceSummary = buildTraceSummary(codeIntelContext?.trace || []);
+
         return new NextResponse(stream, {
             headers: {
                 'content-type': 'application/x-ndjson',
@@ -543,6 +560,8 @@ export async function POST(request) {
                 // Include context metadata in headers for debugging
                 'x-code-intel-sufficiency': codeIntelContext?.sufficiency || 'NONE',
                 'x-code-intel-tokens': String(codeIntelContext?.tokensUsed || 0),
+                'x-code-intel-trace-count': String(codeIntelContext?.trace?.length || 0),
+                ...(traceSummary ? { 'x-code-intel-trace-summary': traceSummary } : {}),
             },
         });
     } catch (e) {

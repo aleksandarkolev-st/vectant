@@ -820,6 +820,15 @@ If image attachments are present, read/ocr the images and extract any text or co
             if (!resp.ok) {
                 throw new Error(`AI request failed (status ${resp.status})`);
             }
+            const traceSummary = resp.headers.get('x-code-intel-trace-summary');
+            const traceCount = resp.headers.get('x-code-intel-trace-count');
+            if (traceSummary) {
+                const message = traceCount && traceCount !== '0'
+                    ? `Context trace (${traceCount}): ${traceSummary}`
+                    : `Context trace: ${traceSummary}`;
+                onLog?.(message);
+                appendProgressLog(message);
+            }
             onLog?.('Connected to model');
             appendProgressLog('Drafting answer');
 
