@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
 from pydantic import BaseModel, Field
 
 from .engine import CodeIntelEngine, create_engine
@@ -36,8 +36,12 @@ def resolve_workspace_path(workspace_path: str) -> str:
     2. If it's a slug, resolve to {project_root}/backend/collab-server/repos/{slug}
     3. If that doesn't exist, try relative to current working directory
     """
-    # If it's already an absolute path that exists, use it directly
+    # If it's already an absolute path that exists, use it directly (unless slug-only is enforced)
+    require_slug = os.getenv("CODE_INTEL_REQUIRE_SLUG", "false").lower() == "true"
     if os.path.isabs(workspace_path) and os.path.exists(workspace_path):
+        if require_slug:
+            logger.warning("Absolute workspace paths are disabled by CODE_INTEL_REQUIRE_SLUG")
+            return "__INVALID__"
         logger.debug(f"Using absolute path directly: {workspace_path}")
         return workspace_path
     
@@ -88,6 +92,15 @@ def resolve_workspace_path(workspace_path: str) -> str:
 router = APIRouter(prefix="/code-intel", tags=["code-intelligence"])
 
 
+def _require_api_key(request: Request) -> None:
+    required = os.getenv("CODE_INTEL_API_KEY")
+    if not required:
+        return
+    provided = request.headers.get("x-code-intel-key") or request.headers.get("X-Code-Intel-Key")
+    if not provided or provided != required:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
 # ============================================================================
 # Request/Response Models
 # ============================================================================
@@ -126,6 +139,7 @@ class ContextResponse(BaseModel):
     # Deterministic controller output
     sufficiency: str = Field("UNKNOWN", description="Context sufficiency: SUFFICIENT, PARTIAL, INSUFFICIENT, EMPTY, UNKNOWN")
     refusal: Optional[str] = Field(None, description="Refusal reason if context is insufficient")
+    trace: Optional[List[Dict[str, Any]]] = Field(None, description="Selection trace for observability")
 
 
 class ToolCallRequest(BaseModel):
@@ -202,6 +216,8 @@ _engines: Dict[str, CodeIntelEngine] = {}
 def get_engine(workspace_path: str) -> CodeIntelEngine:
     """Get or create engine for workspace, resolving the path first."""
     resolved_path = resolve_workspace_path(workspace_path)
+    if resolved_path == "__INVALID__":
+        raise HTTPException(status_code=403, detail="Absolute workspace paths are not allowed")
     
     if resolved_path not in _engines:
         logger.info(f"Creating new engine for: {resolved_path}")
@@ -214,13 +230,14 @@ def get_engine(workspace_path: str) -> CodeIntelEngine:
 # ============================================================================
 
 @router.post("/index", response_model=IndexResponse)
-async def index_workspace(request: IndexRequest) -> IndexResponse:
+async def index_workspace(request: IndexRequest, http_request: Request) -> IndexResponse:
     """
     Index a workspace.
     
     Parses all code files and builds vector + structural indices.
     """
     try:
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         stats = await engine.index_workspace(incremental=request.incremental)
         
@@ -249,13 +266,14 @@ class IndexFileResponse(BaseModel):
 
 
 @router.post("/index/file", response_model=IndexFileResponse)
-async def index_file(request: IndexFileRequest) -> IndexFileResponse:
+async def index_file(request: IndexFileRequest, http_request: Request) -> IndexFileResponse:
     """
     Index a single file.
     
     Used for incremental updates after file edits.
     """
     try:
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         chunks_indexed = await engine.index_file(request.file_path)
         
@@ -269,7 +287,7 @@ async def index_file(request: IndexFileRequest) -> IndexFileResponse:
 
 
 @router.post("/context", response_model=ContextResponse)
-async def get_context(request: ContextRequest) -> ContextResponse:
+async def get_context(request: ContextRequest, http_request: Request) -> ContextResponse:
     """
     Get context for a query.
     
@@ -278,6 +296,7 @@ async def get_context(request: ContextRequest) -> ContextResponse:
     Returns sufficiency indicator so LLM knows if context is complete.
     """
     try:
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         
         result = await engine.get_context(
@@ -302,6 +321,12 @@ async def get_context(request: ContextRequest) -> ContextResponse:
         elif refusal and hasattr(refusal, 'name'):
             refusal = refusal.name
         
+        trace = result.trace if result.trace else None
+        if os.getenv("CODE_INTEL_DEBUG") and result.debug:
+            if trace is None:
+                trace = []
+            trace.append({"debug": result.debug})
+
         return ContextResponse(
             context=result.assembled_context,
             chunks_used=len(result.chunks),
@@ -318,6 +343,7 @@ async def get_context(request: ContextRequest) -> ContextResponse:
                 }
                 for c in result.chunks
             ],
+            trace=trace,
         )
     except Exception as e:
         logger.exception("Context retrieval failed")
@@ -325,13 +351,14 @@ async def get_context(request: ContextRequest) -> ContextResponse:
 
 
 @router.post("/tools/definitions", response_model=ToolDefinitionsResponse)
-async def get_tool_definitions(request: ToolDefinitionsRequest) -> ToolDefinitionsResponse:
+async def get_tool_definitions(request: ToolDefinitionsRequest, http_request: Request) -> ToolDefinitionsResponse:
     """
     Get tool definitions for LLM.
     
     Returns tool schemas in OpenAI or Anthropic format.
     """
     try:
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         tools = engine.get_tool_definitions(format=request.format)
         
@@ -342,13 +369,14 @@ async def get_tool_definitions(request: ToolDefinitionsRequest) -> ToolDefinitio
 
 
 @router.post("/tools/execute", response_model=ToolCallResponse)
-async def execute_tool(request: ToolCallRequest) -> ToolCallResponse:
+async def execute_tool(request: ToolCallRequest, http_request: Request) -> ToolCallResponse:
     """
     Execute an exploration tool.
     
     Runs a tool like find_usages, get_definition, etc.
     """
     try:
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         
         result = await engine.execute_tool(
@@ -366,13 +394,14 @@ async def execute_tool(request: ToolCallRequest) -> ToolCallResponse:
 
 
 @router.post("/summary/repo", response_model=SummaryResponse)
-async def get_repo_summary(request: SummaryRequest) -> SummaryResponse:
+async def get_repo_summary(request: SummaryRequest, http_request: Request) -> SummaryResponse:
     """
     Get repository summary.
     
     Returns a high-level summary of the entire repository.
     """
     try:
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         summary = engine.get_repo_summary()
         
@@ -391,7 +420,7 @@ async def get_repo_summary(request: SummaryRequest) -> SummaryResponse:
 
 
 @router.post("/summary/file", response_model=SummaryResponse)
-async def get_file_summary(request: SummaryRequest) -> SummaryResponse:
+async def get_file_summary(request: SummaryRequest, http_request: Request) -> SummaryResponse:
     """
     Get file summary.
     
@@ -401,6 +430,7 @@ async def get_file_summary(request: SummaryRequest) -> SummaryResponse:
         if not request.file_path:
             raise HTTPException(status_code=400, detail="file_path required")
         
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         summary = engine.get_file_summary(request.file_path)
         
@@ -419,9 +449,10 @@ async def get_file_summary(request: SummaryRequest) -> SummaryResponse:
 
 
 @router.post("/metrics", response_model=MetricsResponse)
-async def get_metrics(request: MetricsRequest) -> MetricsResponse:
+async def get_metrics(request: MetricsRequest, http_request: Request) -> MetricsResponse:
     """Get retrieval latency and budget metrics."""
     try:
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         metrics = engine.get_retrieval_metrics()
         return MetricsResponse(
@@ -436,13 +467,14 @@ async def get_metrics(request: MetricsRequest) -> MetricsResponse:
 
 
 @router.post("/edit", response_model=EditPlanResponse)
-async def execute_edits(request: EditPlanRequest) -> EditPlanResponse:
+async def execute_edits(request: EditPlanRequest, http_request: Request) -> EditPlanResponse:
     """
     Execute code edits.
     
     Applies a set of edits with validation and rollback support.
     """
     try:
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         
         # Create session
@@ -494,9 +526,10 @@ async def execute_edits(request: EditPlanRequest) -> EditPlanResponse:
 
 
 @router.post("/save")
-async def save_state(request: SummaryRequest) -> Dict[str, bool]:
+async def save_state(request: SummaryRequest, http_request: Request) -> Dict[str, bool]:
     """Save engine state to disk."""
     try:
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         await engine.save()
         return {"success": True}
@@ -506,9 +539,10 @@ async def save_state(request: SummaryRequest) -> Dict[str, bool]:
 
 
 @router.post("/load")
-async def load_state(request: SummaryRequest) -> Dict[str, bool]:
+async def load_state(request: SummaryRequest, http_request: Request) -> Dict[str, bool]:
     """Load engine state from disk."""
     try:
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         loaded = await engine.load()
         return {"success": loaded}

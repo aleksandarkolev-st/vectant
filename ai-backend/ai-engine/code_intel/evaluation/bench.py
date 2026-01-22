@@ -20,11 +20,14 @@ class RetrievalBenchmark:
         results = []
         total_recall = 0.0
         total_precision = 0.0
+        total_symbol_recall = 0.0
+        total_file_recall = 0.0
 
         for q in queries:
             query = q.get("query", "")
             expected_chunks = set(q.get("expected_chunks", []))
             expected_files = set(q.get("expected_files", []))
+            expected_symbols = set(q.get("expected_symbols", []))
 
             start = time.time()
             result = self.engine._retrieval_pipeline.retrieve(query=query)
@@ -32,17 +35,24 @@ class RetrievalBenchmark:
 
             retrieved_chunks = set(result.context.included_chunk_ids or [])
             retrieved_files = set(result.context.included_files or [])
+            retrieved_symbols = set(result.context.included_symbols or [])
 
             recall = self._recall(expected_chunks or expected_files, retrieved_chunks or retrieved_files)
             precision = self._precision(expected_chunks or expected_files, retrieved_chunks or retrieved_files)
+            symbol_recall = self._recall(expected_symbols, retrieved_symbols)
+            file_recall = self._recall(expected_files, retrieved_files)
             total_recall += recall
             total_precision += precision
+            total_symbol_recall += symbol_recall
+            total_file_recall += file_recall
 
             results.append({
                 "id": q.get("id"),
                 "query": query,
                 "recall": recall,
                 "precision": precision,
+                "symbol_recall": symbol_recall,
+                "file_recall": file_recall,
                 "latency_ms": latency_ms,
             })
 
@@ -50,6 +60,8 @@ class RetrievalBenchmark:
         return {
             "avg_recall": total_recall / count,
             "avg_precision": total_precision / count,
+            "avg_symbol_recall": total_symbol_recall / count,
+            "avg_file_recall": total_file_recall / count,
             "results": results,
         }
 

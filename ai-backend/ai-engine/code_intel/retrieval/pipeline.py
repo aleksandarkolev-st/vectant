@@ -69,6 +69,9 @@ class RetrievalPipelineResult:
     # Rolling p95 metrics
     stage_p95_ms: Dict[str, float] = field(default_factory=dict)
 
+    # Observability trace
+    trace: List[Dict[str, Any]] = field(default_factory=list)
+
 
 class RetrievalPipeline:
     """
@@ -120,7 +123,7 @@ class RetrievalPipeline:
         self.ranker = ContextRanker(config=self.config.retrieval)
         self.reranker = LightweightReranker()
         self.budget_enforcer = BudgetEnforcer(config=self.config.context)
-        self.assembler = ContextAssembler()
+        self.assembler = ContextAssembler(config=self.config.context)
 
         # Latency tracking
         self._latency_samples: Dict[str, List[float]] = {
@@ -328,6 +331,39 @@ class RetrievalPipeline:
         assembly_time = (time.time() - assembly_start) * 1000
         
         total_time = (time.time() - total_start) * 1000
+
+        # Build observability trace
+        trace: List[Dict[str, Any]] = []
+        for cand in allocation.included_chunks:
+            trace.append({
+                "chunk_id": cand.chunk.id,
+                "file": cand.chunk.file_path,
+                "symbol": cand.chunk.symbol_name,
+                "source": cand.source,
+                "score": cand.combined_score,
+                "reason": "included",
+                "expansion_depth": cand.expansion_depth,
+            })
+        for cand in allocation.truncated_chunks:
+            trace.append({
+                "chunk_id": cand.chunk.id,
+                "file": cand.chunk.file_path,
+                "symbol": cand.chunk.symbol_name,
+                "source": cand.source,
+                "score": cand.combined_score,
+                "reason": "truncated",
+                "expansion_depth": cand.expansion_depth,
+            })
+        for cand in allocation.excluded_chunks:
+            trace.append({
+                "chunk_id": cand.chunk.id,
+                "file": cand.chunk.file_path,
+                "symbol": cand.chunk.symbol_name,
+                "source": cand.source,
+                "score": cand.combined_score,
+                "reason": "budget_excluded",
+                "expansion_depth": cand.expansion_depth,
+            })
         
         stage_p95 = self._record_metrics({
             "query": query_time,
@@ -374,6 +410,7 @@ class RetrievalPipeline:
             assembly_time_ms=assembly_time,
             total_time_ms=total_time,
             stage_p95_ms=stage_p95,
+            trace=trace,
         )
 
     def _record_metrics(self, sample: Dict[str, float]) -> Dict[str, float]:

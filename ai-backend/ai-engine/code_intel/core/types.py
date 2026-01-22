@@ -847,6 +847,10 @@ class RetrievalResult:
     # This tells the LLM if it has enough context to answer
     sufficiency: Any = None  # ContextSufficiency enum from controller
     refusal_reason: Any = None  # RefusalReason enum from controller
+
+    # Observability trace (optional)
+    trace: List[Dict[str, Any]] = field(default_factory=list)
+    debug: Dict[str, Any] = field(default_factory=dict)
     
     def format_for_prompt(self) -> str:
         """
@@ -897,6 +901,8 @@ class RetrievalResult:
             },
             "truncated": self.truncated_chunks,
             "missingNote": self.missing_context_note,
+            "trace": self.trace,
+            "debug": self.debug,
         }
 
 
@@ -980,8 +986,22 @@ def _resolve_ts_module(file_path: str) -> str:
     """Resolve TypeScript module (file path based)."""
     import os
     
-    # Remove extension
-    base = file_path.rsplit(".", 1)[0] if "." in file_path else file_path
+    # Normalize path and remove extension
+    normalized = file_path.replace("\\", "/")
+    base = normalized.rsplit(".", 1)[0] if "." in normalized else normalized
+
+    # Strip common root folders to stabilize module grouping
+    for root in ("src/", "lib/", "app/"):
+        if base.startswith(root):
+            base = base[len(root):]
+            break
+
+    # Monorepo patterns: packages/<pkg>/src -> <pkg>/...
+    for scope_root in ("packages", "apps"):
+        parts = base.split("/")
+        if len(parts) >= 3 and parts[0] == scope_root and parts[2] in ("src", "lib", "app"):
+            base = "/".join([parts[1]] + parts[3:])
+            break
     
     # Handle index files
     if base.endswith("/index"):

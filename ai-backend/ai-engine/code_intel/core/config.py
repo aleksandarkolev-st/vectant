@@ -49,11 +49,22 @@ class ParserConfig:
 class IndexerConfig:
     """Configuration for the dual indexer."""
     # Chunking version (bump to force rebuild when chunking changes)
-    chunking_version: str = "1"
+    chunking_version: str = "2"
+    # Chunk sizing
+    max_chunk_tokens: int = 2000
+    language_chunk_tokens: Dict[str, int] = field(default_factory=lambda: {
+        "typescript": 1800,
+        "javascript": 1800,
+        "python": 1400,
+        "go": 1600,
+        "rust": 1600,
+    })
     # Vector index settings
     embedding_model: str = "text-embedding-004"  # Gemini embedding model
     embedding_dimension: int = 768
     embedding_api_key: Optional[str] = field(default_factory=lambda: os.getenv("GEMINI_API_KEY"))
+    # Embedding throughput
+    embedding_batch_size: int = 128
     
     # Structural index settings
     store_call_graph: bool = True
@@ -91,8 +102,8 @@ class RetrievalConfig:
     definition_pull_symbols_per_chunk: int = 30
     
     # Structural expansion
-    max_expansion_depth: int = 2
-    max_expanded_chunks: int = 20
+    max_expansion_depth: int = 3
+    max_expanded_chunks: int = 30
     
     # Ranking weights
     weight_relevance: float = 0.4
@@ -101,7 +112,7 @@ class RetrievalConfig:
     weight_recency: float = 0.1
     
     # Budget
-    default_budget_tokens: int = 8000
+    default_budget_tokens: int = 12000
     
     # Safeguards
     max_files_per_subsystem: int = 5
@@ -113,11 +124,11 @@ class RetrievalConfig:
 class SummaryConfig:
     """Configuration for summary generation."""
     # File summary
-    file_summary_max_lines: int = 8
-    file_summary_max_tokens: int = 150
+    file_summary_max_lines: int = 6
+    file_summary_max_tokens: int = 120
     
     # Repo summary
-    repo_summary_max_tokens: int = 800
+    repo_summary_max_tokens: int = 600
     repo_summary_max_entry_points: int = 5
     repo_summary_max_subsystems: int = 8
     
@@ -128,8 +139,8 @@ class SummaryConfig:
     # LLM summarization (Gemini)
     enable_llm_summaries: bool = True
     gemini_summary_model: str = "gemini-2.5-flash-lite"
-    module_summary_max_tokens: int = 600
-    symbol_summary_max_tokens: int = 200
+    module_summary_max_tokens: int = 400
+    symbol_summary_max_tokens: int = 150
 
 
 @dataclass
@@ -158,8 +169,8 @@ class LspConfig:
 class ContextConfig:
     """Configuration for context management."""
     # Token limits
-    max_context_tokens: int = 8000
-    response_reserve_tokens: int = 500
+    max_context_tokens: int = 12000
+    response_reserve_tokens: int = 700
 
     # Chunk cap for final context
     max_chunks: int = 30
@@ -174,6 +185,16 @@ class ContextConfig:
     
     # Safety
     max_context_age_turns: int = 3  # Force eviction after N turns
+
+    # Redaction (security)
+    redact_secrets: bool = True
+    redaction_patterns: List[str] = field(default_factory=lambda: [
+        r"(?i)api[_-]?key\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{16,}['\"]?",
+        r"(?i)secret\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{16,}['\"]?",
+        r"(?i)token\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{16,}['\"]?",
+        r"(?i)access[_-]?token\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{16,}['\"]?",
+        r"-----BEGIN(?:.|\n)*?PRIVATE KEY-----[\s\S]*?-----END(?:.|\n)*?PRIVATE KEY-----",
+    ])
 
 
 @dataclass

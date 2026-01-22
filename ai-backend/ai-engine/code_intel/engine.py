@@ -208,7 +208,10 @@ class CodeIntelEngine:
         self._normalizer = Normalizer()
         
         # Indexing
-        self._embedder = Embedder(api_key=self.config.indexer.embedding_api_key)
+        self._embedder = Embedder(
+            api_key=self.config.indexer.embedding_api_key,
+            batch_size=self.config.indexer.embedding_batch_size,
+        )
         self._dual_indexer = DualIndexer(
             workspace_root=str(self.workspace_root),
             persist_dir=str(self.workspace_root / ".code_intel"),
@@ -430,23 +433,58 @@ class CodeIntelEngine:
         
         # Extract data from pipeline result
         context = pipeline_result.context
-        
+
+        # Build included chunks list for coverage + trace
+        included_chunks = []
+        for item in pipeline_result.trace:
+            if item.get("reason") == "included" and item.get("chunk_id"):
+                chunk = self._vector_index.get_chunk(item.get("chunk_id"))
+                if chunk:
+                    included_chunks.append(chunk)
+
         # Convert pipeline result to RetrievalResult
         retrieval_result = RetrievalResult(
-            chunks=[],  # Pipeline doesn't expose raw chunks
+            chunks=included_chunks,
             file_summaries=[],
             repo_summary=None,
             query=query,
             total_tokens=context.total_tokens,
             budget=budget,
             assembled_context=context.content,
+            trace=pipeline_result.trace,
+            debug={
+                "timings_ms": {
+                    "query": pipeline_result.query_time_ms,
+                    "retrieval": pipeline_result.retrieval_time_ms,
+                    "expansion": pipeline_result.expansion_time_ms,
+                    "ranking": pipeline_result.ranking_time_ms,
+                    "assembly": pipeline_result.assembly_time_ms,
+                    "total": pipeline_result.total_time_ms,
+                },
+                "counters": self._last_metrics(),
+            },
         )
-        
-        # Set sufficiency - the pipeline already did budget enforcement
-        retrieval_result.sufficiency = ContextSufficiency.SUFFICIENT if context.content else ContextSufficiency.EMPTY
-        retrieval_result.refusal_reason = None
+
+        required_symbols = list(pipeline_result.parsed_query.symbol_names or [])
+        required_files = list(pipeline_result.parsed_query.file_patterns or [])
+
+        sufficiency, refusal = self._retrieval_controller.assess_coverage(
+            included_chunks=included_chunks,
+            required_files=required_files,
+            required_symbols=required_symbols,
+            had_exclusions=pipeline_result.candidates_excluded > 0,
+        )
+
+        retrieval_result.sufficiency = sufficiency
+        retrieval_result.refusal_reason = refusal
         
         return retrieval_result
+
+    def _last_metrics(self) -> Dict[str, Any]:
+        try:
+            return self._retrieval_pipeline._last_counters if self._retrieval_pipeline else {}
+        except Exception:
+            return {}
     
     def _build_context_string(
         self,

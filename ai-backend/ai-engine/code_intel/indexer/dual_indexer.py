@@ -594,11 +594,17 @@ class DualIndexer:
             Statistics about the reindexing
         """
         changed = self.get_changed_files()
+
+        # Purge deleted files from indices
+        current_files = {f.relative_path for f in self.walker.walk()}
+        deleted_files = [p for p in list(self._file_hashes.keys()) if p not in current_files]
+        for deleted in deleted_files:
+            self.remove_file(deleted)
         
-        if not changed:
+        if not changed and not deleted_files:
             return {"files_updated": 0, "chunks_updated": 0}
         
-        logger.info(f"Re-indexing {len(changed)} changed files")
+        logger.info(f"Re-indexing {len(changed)} changed files (deleted={len(deleted_files)})")
         
         total_chunks = 0
         for i, path in enumerate(changed):
@@ -616,6 +622,7 @@ class DualIndexer:
         return {
             "files_updated": len(changed),
             "chunks_updated": total_chunks,
+            "files_deleted": len(deleted_files),
         }
     
     def persist(self) -> None:

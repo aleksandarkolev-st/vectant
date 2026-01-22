@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from ..core.types import SemanticChunk, FileSummary, RepoSummary, ModuleSummary
+from ..core.config import ContextConfig
 from .retriever import RetrievalCandidate
 from .budget_enforcer import BudgetAllocation
 
@@ -72,8 +73,8 @@ class ContextAssembler:
     - Note what's missing for transparency
     """
     
-    def __init__(self):
-        pass
+    def __init__(self, config: Optional[ContextConfig] = None):
+        self.config = config or ContextConfig()
     
     def assemble(
         self,
@@ -139,6 +140,10 @@ class ContextAssembler:
         
         # Combine sections
         content = "\n\n".join(sections)
+
+        # Redact secrets from assembled context
+        if getattr(self.config, "redact_secrets", False):
+            content = self._redact(content)
         
         # Collect metadata
         included_files = list(set(
@@ -164,6 +169,18 @@ class ContextAssembler:
             excluded_count=len(allocation.excluded_chunks),
             truncation_note=self._get_truncation_note(allocation),
         )
+
+    def _redact(self, text: str) -> str:
+        import re
+
+        redacted = text
+        patterns = getattr(self.config, "redaction_patterns", []) or []
+        for pattern in patterns:
+            try:
+                redacted = re.sub(pattern, "[REDACTED]", redacted)
+            except re.error:
+                continue
+        return redacted
     
     def _format_repo_section(self, summary: RepoSummary) -> str:
         """Format repository overview section."""
