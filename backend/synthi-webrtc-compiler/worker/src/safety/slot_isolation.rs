@@ -46,13 +46,13 @@ pub enum IsolationModel {
     /// - Acceptable for small number of modules
     /// - Lower resource overhead
     SingleWorker,
-    
+
     /// One worker per module slot (true isolation)
     /// - Module reload only affects that slot's worker
     /// - Other modules continue running
     /// - Higher resource overhead
     WorkerPerSlot,
-    
+
     /// Grouped workers (compromise)
     /// - Critical modules in isolated workers
     /// - Less critical modules share a worker
@@ -226,12 +226,12 @@ impl IsolationManager {
             group_to_worker: HashMap::new(),
         }
     }
-    
+
     /// Register a slot
     pub fn register_slot(&mut self, config: SlotConfig) {
         self.slots.insert(config.slot_id.clone(), config);
     }
-    
+
     /// Plan worker allocation based on model and registered slots
     pub fn plan_allocation(&mut self) -> WorkerAllocationPlan {
         match self.model {
@@ -240,27 +240,25 @@ impl IsolationManager {
             IsolationModel::GroupedWorkers => self.plan_grouped_workers(),
         }
     }
-    
+
     fn plan_single_worker(&self) -> WorkerAllocationPlan {
         let worker_id = WorkerId::new();
         let slots: Vec<String> = self.slots.keys().cloned().collect();
-        
+
         WorkerAllocationPlan {
             workers: vec![WorkerPlan {
                 worker_id,
                 slots: slots.clone(),
                 group: Some("all".to_string()),
             }],
-            slot_to_worker: slots.into_iter()
-                .map(|s| (s, worker_id))
-                .collect(),
+            slot_to_worker: slots.into_iter().map(|s| (s, worker_id)).collect(),
         }
     }
-    
+
     fn plan_worker_per_slot(&self) -> WorkerAllocationPlan {
         let mut workers = Vec::new();
         let mut slot_to_worker = HashMap::new();
-        
+
         for slot_id in self.slots.keys() {
             let worker_id = WorkerId::new();
             workers.push(WorkerPlan {
@@ -270,27 +268,29 @@ impl IsolationManager {
             });
             slot_to_worker.insert(slot_id.clone(), worker_id);
         }
-        
-        WorkerAllocationPlan { workers, slot_to_worker }
+
+        WorkerAllocationPlan {
+            workers,
+            slot_to_worker,
+        }
     }
-    
+
     fn plan_grouped_workers(&self) -> WorkerAllocationPlan {
         let mut group_slots: HashMap<String, Vec<String>> = HashMap::new();
-        
+
         // Group slots by isolation group
         for (slot_id, config) in &self.slots {
-            let group = config.isolation_group
+            let group = config
+                .isolation_group
                 .clone()
                 .unwrap_or_else(|| config.module_type.recommended_group().to_string());
-            
-            group_slots.entry(group)
-                .or_default()
-                .push(slot_id.clone());
+
+            group_slots.entry(group).or_default().push(slot_id.clone());
         }
-        
+
         let mut workers = Vec::new();
         let mut slot_to_worker = HashMap::new();
-        
+
         for (group, slots) in group_slots {
             let worker_id = WorkerId::new();
             workers.push(WorkerPlan {
@@ -298,27 +298,31 @@ impl IsolationManager {
                 slots: slots.clone(),
                 group: Some(group),
             });
-            
+
             for slot in slots {
                 slot_to_worker.insert(slot, worker_id);
             }
         }
-        
-        WorkerAllocationPlan { workers, slot_to_worker }
+
+        WorkerAllocationPlan {
+            workers,
+            slot_to_worker,
+        }
     }
-    
+
     /// Get the worker for a given slot
     pub fn get_worker_for_slot(&self, slot_id: &str) -> Option<WorkerId> {
         self.slot_to_worker.get(slot_id).copied()
     }
-    
+
     /// Get all slots for a worker
     pub fn get_slots_for_worker(&self, worker_id: WorkerId) -> Vec<String> {
-        self.workers.get(&worker_id)
+        self.workers
+            .get(&worker_id)
             .map(|w| w.slots.clone())
             .unwrap_or_default()
     }
-    
+
     /// Determine restart scope for a slot reload
     pub fn get_restart_scope(&self, slot_id: &str) -> RestartScope {
         match self.model {
@@ -344,13 +348,16 @@ impl IsolationManager {
                         };
                     }
                 }
-                RestartScope::SingleSlot { slot: slot_id.to_string() }
+                RestartScope::SingleSlot {
+                    slot: slot_id.to_string(),
+                }
             }
         }
     }
-    
+
     fn get_group_for_slot(&self, slot_id: &str) -> Option<String> {
-        self.slots.get(slot_id)
+        self.slots
+            .get(slot_id)
             .and_then(|c| c.isolation_group.clone())
     }
 }
@@ -376,7 +383,10 @@ pub enum RestartScope {
     /// Only the specified slot restarts
     SingleSlot { slot: String },
     /// A group of slots restart together
-    SlotGroup { slots: Vec<String>, group: Option<String> },
+    SlotGroup {
+        slots: Vec<String>,
+        group: Option<String>,
+    },
     /// All slots restart
     AllSlots { slots: Vec<String> },
 }
@@ -390,7 +400,7 @@ impl RestartScope {
             RestartScope::AllSlots { slots } => slots.len(),
         }
     }
-    
+
     /// Check if a slot is affected
     pub fn affects_slot(&self, slot_id: &str) -> bool {
         match self {
@@ -408,11 +418,11 @@ impl RestartScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_single_worker_model() {
         let mut manager = IsolationManager::new(IsolationModel::SingleWorker);
-        
+
         manager.register_slot(SlotConfig {
             slot_id: "core".to_string(),
             ..Default::default()
@@ -421,19 +431,19 @@ mod tests {
             slot_id: "gui".to_string(),
             ..Default::default()
         });
-        
+
         let plan = manager.plan_allocation();
-        
+
         // Should have exactly one worker
         assert_eq!(plan.workers.len(), 1);
         // Worker should have both slots
         assert_eq!(plan.workers[0].slots.len(), 2);
     }
-    
+
     #[test]
     fn test_worker_per_slot_model() {
         let mut manager = IsolationManager::new(IsolationModel::WorkerPerSlot);
-        
+
         manager.register_slot(SlotConfig {
             slot_id: "core".to_string(),
             ..Default::default()
@@ -442,9 +452,9 @@ mod tests {
             slot_id: "gui".to_string(),
             ..Default::default()
         });
-        
+
         let plan = manager.plan_allocation();
-        
+
         // Should have two workers
         assert_eq!(plan.workers.len(), 2);
         // Each worker should have one slot
@@ -452,11 +462,11 @@ mod tests {
             assert_eq!(worker.slots.len(), 1);
         }
     }
-    
+
     #[test]
     fn test_grouped_workers_model() {
         let mut manager = IsolationManager::new(IsolationModel::GroupedWorkers);
-        
+
         manager.register_slot(SlotConfig {
             slot_id: "core".to_string(),
             isolation_group: Some("main".to_string()),
@@ -472,20 +482,20 @@ mod tests {
             isolation_group: Some("audio".to_string()),
             ..Default::default()
         });
-        
+
         let plan = manager.plan_allocation();
-        
+
         // Should have two workers (main group, audio group)
         assert_eq!(plan.workers.len(), 2);
     }
-    
+
     #[test]
     fn test_restart_scope() {
         let scope = RestartScope::SlotGroup {
             slots: vec!["a".to_string(), "b".to_string()],
             group: Some("test".to_string()),
         };
-        
+
         assert_eq!(scope.affected_count(), 2);
         assert!(scope.affects_slot("a"));
         assert!(scope.affects_slot("b"));

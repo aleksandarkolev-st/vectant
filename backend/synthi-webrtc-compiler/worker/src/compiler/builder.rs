@@ -2084,19 +2084,19 @@ fn normalize_cpp_like_for_semantic_hash(content: &str) -> String {
 /// Returns a sorted set of field signatures (type + name) to ignore field ordering.
 fn extract_struct_fields_sorted(content: &str) -> Vec<String> {
     use std::collections::BTreeSet;
-    
+
     let mut fields: BTreeSet<String> = BTreeSet::new();
     let mut in_struct = false;
     let mut brace_depth = 0;
-    
+
     for line in content.lines() {
         let trimmed = line.trim();
-        
+
         // Track struct boundaries
         if trimmed.contains("struct") || trimmed.contains("typedef struct") {
             in_struct = true;
         }
-        
+
         // Count braces
         for ch in trimmed.chars() {
             if ch == '{' {
@@ -2108,7 +2108,7 @@ fn extract_struct_fields_sorted(content: &str) -> Vec<String> {
                 }
             }
         }
-        
+
         // Extract field declarations inside struct (depth 1)
         if in_struct && brace_depth == 1 && trimmed.ends_with(';') {
             // Normalize the field: remove extra whitespace, standardize pointer format
@@ -2118,14 +2118,14 @@ fn extract_struct_fields_sorted(content: &str) -> Vec<String> {
                 .replace("* ", "*")
                 .trim()
                 .to_string();
-            
+
             // Skip common non-field lines
             if !field.starts_with("//") && !field.starts_with("/*") && !field.is_empty() {
                 fields.insert(field);
             }
         }
     }
-    
+
     fields.into_iter().collect()
 }
 
@@ -2133,19 +2133,19 @@ fn extract_struct_fields_sorted(content: &str) -> Vec<String> {
 ///
 /// This intentionally ignores purely cosmetic diffs (comments + whitespace),
 /// because `shared.h` churn can otherwise trigger full rebuilds and watcher loops.
-/// 
+///
 /// ENHANCEMENT: Also normalizes struct field ordering by sorting fields alphabetically
 /// before hashing. This prevents hash churn when AI reorders fields in shared.h.
 pub fn hash_shared_header_semantic(content: &str) -> u64 {
     let normalized = normalize_cpp_like_for_semantic_hash(content);
-    
+
     // Extract and sort struct fields for order-independent comparison
     let sorted_fields = extract_struct_fields_sorted(&normalized);
-    
+
     // Create a canonical representation: non-struct code + sorted fields
     // This gives us hash stability even when AI reorders fields
     let mut canonical = String::with_capacity(normalized.len());
-    
+
     // Add sorted fields as a stable prefix
     canonical.push_str("// CANONICAL_FIELDS_START\n");
     for field in &sorted_fields {
@@ -2153,10 +2153,10 @@ pub fn hash_shared_header_semantic(content: &str) -> u64 {
         canonical.push('\n');
     }
     canonical.push_str("// CANONICAL_FIELDS_END\n");
-    
+
     // Add the normalized content (for includes, defines, etc.)
     canonical.push_str(&normalized);
-    
+
     hash_content(&canonical)
 }
 

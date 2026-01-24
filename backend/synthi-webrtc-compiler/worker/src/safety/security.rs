@@ -84,7 +84,6 @@ pub const SECURITY_FEATURES: &[SecurityFeature] = &[
         bypass_scenarios: "Symlinks could point outside allowed directory. \
                           TOCTOU between check and load.",
     },
-    
     // --- PARTIAL ---
     SecurityFeature {
         name: "Process Isolation",
@@ -103,7 +102,6 @@ pub const SECURITY_FEATURES: &[SecurityFeature] = &[
         bypass_scenarios: "Limit only checked after serialization completes. \
                           Malicious plugin could exhaust memory during serialize.",
     },
-    
     // --- OPT-IN ---
     SecurityFeature {
         name: "Seccomp-BPF Filtering",
@@ -115,7 +113,6 @@ pub const SECURITY_FEATURES: &[SecurityFeature] = &[
         bypass_scenarios: "Not enabled by default. Requires explicit opt-in. \
                           Filter may be too permissive for untrusted code.",
     },
-    
     // --- STUB ---
     SecurityFeature {
         name: "Namespace Isolation",
@@ -143,7 +140,6 @@ pub const SECURITY_FEATURES: &[SecurityFeature] = &[
                              to drop CAP_NET_RAW, CAP_SYS_ADMIN, etc.",
         bypass_scenarios: "N/A - not implemented",
     },
-    
     // --- NOT IMPLEMENTED ---
     SecurityFeature {
         name: "Filesystem Sandboxing",
@@ -276,14 +272,14 @@ impl Default for SeccompConfig {
             // Minimal set of syscalls for basic operation
             allowed_syscalls: vec![
                 // File operations
-                0,   // read
-                1,   // write
-                3,   // close
+                0, // read
+                1, // write
+                3, // close
                 // Memory
-                9,   // mmap
-                10,  // mprotect
-                11,  // munmap
-                12,  // brk
+                9,  // mmap
+                10, // mprotect
+                11, // munmap
+                12, // brk
                 // Misc
                 60,  // exit
                 231, // exit_group
@@ -300,20 +296,22 @@ pub fn apply_seccomp_filter(config: &SeccompConfig) -> io::Result<()> {
     if !config.enabled {
         return Ok(());
     }
-    
+
     // STUB: Real implementation would use libseccomp or raw BPF
-    // 
+    //
     // use seccomp::*;
     // let mut ctx = Context::default(Action::Errno(libc::EPERM))?;
     // for syscall in &config.allowed_syscalls {
     //     ctx.add_rule(Rule::new(Action::Allow, *syscall))?;
     // }
     // ctx.load()?;
-    
-    eprintln!("[Security] STUB: Seccomp filter would be applied with {} allowed syscalls",
-              config.allowed_syscalls.len());
+
+    eprintln!(
+        "[Security] STUB: Seccomp filter would be applied with {} allowed syscalls",
+        config.allowed_syscalls.len()
+    );
     eprintln!("[Security] WARNING: Seccomp is not actually implemented");
-    
+
     Ok(())
 }
 
@@ -357,7 +355,7 @@ pub fn enter_namespaces(config: &NamespaceConfig) -> io::Result<()> {
     if !config.new_pid_ns && !config.new_net_ns && !config.new_mount_ns && !config.new_user_ns {
         return Ok(());
     }
-    
+
     // STUB: Real implementation would use unshare(2)
     //
     // use nix::sched::{unshare, CloneFlags};
@@ -367,11 +365,13 @@ pub fn enter_namespaces(config: &NamespaceConfig) -> io::Result<()> {
     // if config.new_mount_ns { flags |= CloneFlags::CLONE_NEWNS; }
     // if config.new_user_ns { flags |= CloneFlags::CLONE_NEWUSER; }
     // unshare(flags)?;
-    
+
     eprintln!("[Security] STUB: Namespace isolation requested but NOT IMPLEMENTED");
-    eprintln!("[Security] Requested: pid={}, net={}, mount={}, user={}",
-              config.new_pid_ns, config.new_net_ns, config.new_mount_ns, config.new_user_ns);
-    
+    eprintln!(
+        "[Security] Requested: pid={}, net={}, mount={}, user={}",
+        config.new_pid_ns, config.new_net_ns, config.new_mount_ns, config.new_user_ns
+    );
+
     Ok(())
 }
 
@@ -402,8 +402,8 @@ impl Default for CgroupLimits {
     fn default() -> Self {
         Self {
             memory_max: Some(512 * 1024 * 1024), // 512 MB
-            cpu_quota_us: Some(100_000),          // 100ms per period
-            cpu_period_us: 100_000,               // 100ms period (= 100% of one core)
+            cpu_quota_us: Some(100_000),         // 100ms per period
+            cpu_period_us: 100_000,              // 100ms period (= 100% of one core)
             pids_max: Some(64),
         }
     }
@@ -416,7 +416,7 @@ pub fn apply_cgroup_limits(cgroup_name: &str, limits: &CgroupLimits) -> io::Resu
     //
     // let cgroup_path = format!("/sys/fs/cgroup/{}", cgroup_name);
     // std::fs::create_dir_all(&cgroup_path)?;
-    // 
+    //
     // if let Some(mem) = limits.memory_max {
     //     std::fs::write(format!("{}/memory.max", cgroup_path), mem.to_string())?;
     // }
@@ -428,15 +428,17 @@ pub fn apply_cgroup_limits(cgroup_name: &str, limits: &CgroupLimits) -> io::Resu
     // }
     // // Move self to cgroup
     // std::fs::write(format!("{}/cgroup.procs", cgroup_path), std::process::id().to_string())?;
-    
+
     eprintln!("[Security] STUB: Cgroup limits requested but NOT IMPLEMENTED");
-    eprintln!("[Security] Requested: memory={:?}, cpu={:?}/{}, pids={:?}",
-              limits.memory_max.map(|m| format!("{}MB", m / 1024 / 1024)),
-              limits.cpu_quota_us,
-              limits.cpu_period_us,
-              limits.pids_max);
+    eprintln!(
+        "[Security] Requested: memory={:?}, cpu={:?}/{}, pids={:?}",
+        limits.memory_max.map(|m| format!("{}MB", m / 1024 / 1024)),
+        limits.cpu_quota_us,
+        limits.cpu_period_us,
+        limits.pids_max
+    );
     let _ = cgroup_name;
-    
+
     Ok(())
 }
 
@@ -471,7 +473,7 @@ pub fn audit_security() -> SecurityAudit {
         not_implemented_count: 0,
         warnings: Vec::new(),
     };
-    
+
     for feature in SECURITY_FEATURES {
         match feature.status {
             SecurityStatus::Enforced => audit.enforced_count += 1,
@@ -499,14 +501,14 @@ pub fn audit_security() -> SecurityAudit {
             }
         }
     }
-    
+
     audit
 }
 
 /// Print security audit to stderr
 pub fn print_security_audit() {
     let audit = audit_security();
-    
+
     eprintln!("\n========== SECURITY AUDIT ==========");
     eprintln!("Enforced:        {}", audit.enforced_count);
     eprintln!("Partial:         {}", audit.partial_count);
@@ -514,14 +516,14 @@ pub fn print_security_audit() {
     eprintln!("Stub only:       {}", audit.stub_count);
     eprintln!("Not implemented: {}", audit.not_implemented_count);
     eprintln!();
-    
+
     if !audit.warnings.is_empty() {
         eprintln!("WARNINGS:");
         for warning in &audit.warnings {
             eprintln!("  - {}", warning);
         }
     }
-    
+
     eprintln!("====================================\n");
 }
 
@@ -532,39 +534,45 @@ pub fn print_security_audit() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_all_features_documented() {
         // Every feature should have non-empty descriptions
         for feature in SECURITY_FEATURES {
             assert!(!feature.name.is_empty(), "Feature name should not be empty");
-            assert!(!feature.description.is_empty(), 
-                    "Feature '{}' should have description", feature.name);
-            assert!(!feature.enforcement_details.is_empty(),
-                    "Feature '{}' should have enforcement details", feature.name);
+            assert!(
+                !feature.description.is_empty(),
+                "Feature '{}' should have description",
+                feature.name
+            );
+            assert!(
+                !feature.enforcement_details.is_empty(),
+                "Feature '{}' should have enforcement details",
+                feature.name
+            );
         }
     }
-    
+
     #[test]
     fn test_audit_counts() {
         let audit = audit_security();
-        let total = audit.enforced_count 
-            + audit.partial_count 
-            + audit.opt_in_count 
-            + audit.stub_count 
+        let total = audit.enforced_count
+            + audit.partial_count
+            + audit.opt_in_count
+            + audit.stub_count
             + audit.not_implemented_count;
         assert_eq!(total, SECURITY_FEATURES.len());
     }
-    
+
     #[test]
     fn test_default_configs() {
         let seccomp = SeccompConfig::default();
         assert!(!seccomp.enabled); // Disabled by default
         assert!(!seccomp.allowed_syscalls.is_empty());
-        
+
         let ns = NamespaceConfig::default();
         assert!(!ns.new_pid_ns); // All disabled by default
-        
+
         let cgroup = CgroupLimits::default();
         assert!(cgroup.memory_max.is_some());
     }

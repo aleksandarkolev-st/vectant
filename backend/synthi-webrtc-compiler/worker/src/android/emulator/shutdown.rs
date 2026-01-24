@@ -20,11 +20,7 @@ impl EmulatorSession {
 
         // Try graceful shutdown via adb
         if let Some(serial) = self.serial().await {
-            let adb = self
-                .core
-                .config
-                .android_sdk_root
-                .join("platform-tools/adb");
+            let adb = self.core.config.android_sdk_root.join("platform-tools/adb");
 
             // Send shutdown command
             let _ = Command::new(&adb)

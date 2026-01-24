@@ -1,9 +1,9 @@
+use crate::runtime::hot_reload::v2::HotModuleState;
+use crate::runtime::legacy_module_state::ModuleState;
+use crate::runtime::platform::sdl_defs::SDL_Window;
+use libloading::Library;
 use std::collections::HashMap;
 use std::ffi::c_void;
-use libloading::Library;
-use crate::runtime::legacy_module_state::ModuleState;
-use crate::runtime::hot_reload::v2::HotModuleState;
-use crate::runtime::platform::sdl_defs::SDL_Window;
 
 pub struct RunnerContext {
     pub modules: HashMap<String, Library>,

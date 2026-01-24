@@ -1,5 +1,5 @@
-use tokio::process::Command;
 use std::process::Stdio;
+use tokio::process::Command;
 
 pub fn make_chunks(data: &[u8], msg_id: u32) -> Vec<Vec<u8>> {
     let chunk_size = 60000;
@@ -33,7 +33,7 @@ pub fn get_wsl_host_ip() -> Option<String> {
     // METHOD 1: Try `ip route` (most reliable)
     if let Ok(output) = std::process::Command::new("ip")
         .args(&["route", "show", "default"])
-        .output() 
+        .output()
     {
         let s = String::from_utf8_lossy(&output.stdout);
         // Look for "via <IP>"
@@ -53,7 +53,10 @@ pub fn get_wsl_host_ip() -> Option<String> {
             if parts.len() >= 3 && parts[1] == "00000000" {
                 if let Ok(val) = u32::from_str_radix(parts[2], 16) {
                     let bytes = val.to_le_bytes();
-                     return Some(format!("{}.{}.{}.{}", bytes[0], bytes[1], bytes[2], bytes[3]));
+                    return Some(format!(
+                        "{}.{}.{}.{}",
+                        bytes[0], bytes[1], bytes[2], bytes[3]
+                    ));
                 }
             }
         }
@@ -73,8 +76,7 @@ pub fn get_wsl_host_ip() -> Option<String> {
 pub fn system_command(program: &str) -> Command {
     let mut cmd = Command::new(program);
     cmd.stdin(Stdio::null())
-       .stdout(Stdio::piped())
-       .stderr(Stdio::piped());
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     cmd
 }
-
