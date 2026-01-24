@@ -135,7 +135,10 @@ pub async fn download(
         })?;
         println!("Created local directory: {}", local_dir.display());
     } else {
-        println!("Directory already exists: {} (updating in place)", local_dir.display());
+        println!(
+            "Directory already exists: {} (updating in place)",
+            local_dir.display()
+        );
     }
 
     // Maintain a manifest of previously downloaded paths so we can prune removed upstream files
@@ -179,7 +182,9 @@ pub async fn download(
                     if p == local_dir {
                         break;
                     }
-                    let is_empty = fs::read_dir(p).map(|mut it| it.next().is_none()).unwrap_or(false);
+                    let is_empty = fs::read_dir(p)
+                        .map(|mut it| it.next().is_none())
+                        .unwrap_or(false);
                     if is_empty {
                         let _ = fs::remove_dir(p);
                         cur = p.parent();

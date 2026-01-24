@@ -8,11 +8,11 @@
 // 1. Supervisor sends ReloadModule(slot, path)
 // 2. Worker enters quiescence for that slot:
 //    - Stops callbacks and timers
-//    - Joins/cancels owned threads  
+//    - Joins/cancels owned threads
 //    - Drains message queues
 //    - Flushes pending I/O
 // 3. Worker produces snapshot (or explicit NoSnapshotPossible)
-// 4. Worker sends Snapshot(slot, bytes, version) 
+// 4. Worker sends Snapshot(slot, bytes, version)
 // 5. Worker sends ReadyForKill(slot)
 // 6. Supervisor validates snapshot, kills worker
 // 7. Supervisor spawns new worker
@@ -20,7 +20,7 @@
 //
 // KEY INVARIANTS:
 // - Supervisor NEVER assumes worker is idle
-// - Worker MUST explicitly acknowledge quiescence  
+// - Worker MUST explicitly acknowledge quiescence
 // - All state transitions have hard timeouts
 // - Failures trigger clean restart, not retry loops
 // ============================================================
@@ -41,7 +41,7 @@ impl ReloadId {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
         ReloadId(COUNTER.fetch_add(1, Ordering::SeqCst))
     }
-    
+
     /// Get the raw ID value
     pub fn as_u64(&self) -> u64 {
         self.0
@@ -84,7 +84,10 @@ pub enum ReloadState {
     /// Reload completed successfully
     Completed { duration: Duration },
     /// Reload failed
-    Failed { error: ReloadError, duration: Duration },
+    Failed {
+        error: ReloadError,
+        duration: Duration,
+    },
 }
 
 /// Errors that can occur during reload
@@ -116,10 +119,18 @@ impl std::fmt::Display for ReloadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ReloadError::QuiescenceTimeout { slot, timeout_ms } => {
-                write!(f, "Quiescence timeout for slot '{}' after {}ms", slot, timeout_ms)
+                write!(
+                    f,
+                    "Quiescence timeout for slot '{}' after {}ms",
+                    slot, timeout_ms
+                )
             }
             ReloadError::SnapshotTimeout { slot, timeout_ms } => {
-                write!(f, "Snapshot timeout for slot '{}' after {}ms", slot, timeout_ms)
+                write!(
+                    f,
+                    "Snapshot timeout for slot '{}' after {}ms",
+                    slot, timeout_ms
+                )
             }
             ReloadError::SnapshotNotPossible { slot, reason } => {
                 write!(f, "Snapshot not possible for slot '{}': {}", slot, reason)
@@ -128,7 +139,11 @@ impl std::fmt::Display for ReloadError {
                 write!(f, "Invalid snapshot for slot '{}': {}", slot, reason)
             }
             ReloadError::ReadyForKillTimeout { slot, timeout_ms } => {
-                write!(f, "ReadyForKill timeout for slot '{}' after {}ms", slot, timeout_ms)
+                write!(
+                    f,
+                    "ReadyForKill timeout for slot '{}' after {}ms",
+                    slot, timeout_ms
+                )
             }
             ReloadError::SpawnFailed { reason } => {
                 write!(f, "Failed to spawn worker: {}", reason)
@@ -170,7 +185,7 @@ pub enum SupervisorMessage {
         /// Hard timeout for snapshot production
         snapshot_timeout_ms: u32,
     },
-    
+
     /// Load module with optional snapshot (sent to new worker after respawn)
     LoadModule {
         reload_id: ReloadId,
@@ -178,22 +193,20 @@ pub enum SupervisorMessage {
         module_path: String,
         snapshot: Option<ValidatedSnapshot>,
     },
-    
+
     /// Request snapshot without reload (for periodic backups)
     RequestSnapshot {
         reload_id: ReloadId,
         slot: String,
         timeout_ms: u32,
     },
-    
+
     /// Graceful shutdown request
-    Shutdown {
-        timeout_ms: u32,
-    },
-    
+    Shutdown { timeout_ms: u32 },
+
     /// Heartbeat ping
     Ping { seq: u64 },
-    
+
     /// Acknowledge quiescence received (supervisor -> worker)
     QuiescenceAcknowledged { reload_id: ReloadId },
 }
@@ -208,7 +221,7 @@ pub enum WorkerMessage {
         /// Details about what was quiesced
         quiescence_report: QuiescenceReport,
     },
-    
+
     /// Worker failed to reach quiescence
     QuiescenceFailed {
         reload_id: ReloadId,
@@ -217,7 +230,7 @@ pub enum WorkerMessage {
         /// Can supervisor do a hard restart instead?
         hard_restart_ok: bool,
     },
-    
+
     /// Snapshot of module state
     Snapshot {
         reload_id: ReloadId,
@@ -228,7 +241,7 @@ pub enum WorkerMessage {
         /// CRC32 checksum for corruption detection
         checksum: u32,
     },
-    
+
     /// Snapshot not possible (e.g., active transactions)
     SnapshotNotPossible {
         reload_id: ReloadId,
@@ -237,13 +250,10 @@ pub enum WorkerMessage {
         /// Supervisor should do cold restart
         cold_restart_required: bool,
     },
-    
+
     /// Worker is ready to be killed (all cleanup done)
-    ReadyForKill {
-        reload_id: ReloadId,
-        slot: String,
-    },
-    
+    ReadyForKill { reload_id: ReloadId, slot: String },
+
     /// Module loaded successfully (sent by new worker after spawn)
     ModuleLoaded {
         reload_id: ReloadId,
@@ -253,14 +263,14 @@ pub enum WorkerMessage {
         layout_hash: Option<u64>,
         semantic_hash: u64,
     },
-    
+
     /// Module load failed
     ModuleLoadFailed {
         reload_id: ReloadId,
         slot: String,
         reason: String,
     },
-    
+
     /// Generic error report
     Error {
         reload_id: Option<ReloadId>,
@@ -268,13 +278,13 @@ pub enum WorkerMessage {
         message: String,
         fatal: bool,
     },
-    
+
     /// Worker is ready (sent on startup)
     Ready,
-    
+
     /// Heartbeat response
     Pong { seq: u64 },
-    
+
     /// Worker is shutting down
     ShuttingDown,
 }
@@ -335,7 +345,7 @@ impl Subsystem {
     pub fn as_str(&self) -> &'static str {
         match self {
             Subsystem::Audio => "audio",
-            Subsystem::Render => "render", 
+            Subsystem::Render => "render",
             Subsystem::Input => "input",
             Subsystem::Network => "network",
             Subsystem::FileIO => "file_io",
@@ -377,10 +387,11 @@ impl ValidatedSnapshot {
         if data.len() > max_size {
             return Err(format!(
                 "Snapshot too large: {} bytes > {} max",
-                data.len(), max_size
+                data.len(),
+                max_size
             ));
         }
-        
+
         // Verify checksum
         let computed = crc32_checksum(&data);
         if computed != checksum {
@@ -389,7 +400,7 @@ impl ValidatedSnapshot {
                 checksum, computed
             ));
         }
-        
+
         Ok(ValidatedSnapshot {
             data,
             state_version,
@@ -407,7 +418,7 @@ impl ValidatedSnapshot {
 pub fn crc32_checksum(data: &[u8]) -> u32 {
     // CRC32-C (Castagnoli) polynomial - same as used in iSCSI, ext4, etc.
     const CRC32C_TABLE: [u32; 256] = crc32c_table();
-    
+
     let mut crc = 0xFFFFFFFF_u32;
     for &byte in data {
         let index = ((crc ^ byte as u32) & 0xFF) as usize;
@@ -499,12 +510,13 @@ impl ReloadOperation {
             slot_max_snapshot_size: None,
         }
     }
-    
+
     /// Get the effective max snapshot size for this slot
     pub fn max_snapshot_size(&self) -> usize {
-        self.slot_max_snapshot_size.unwrap_or(self.config.max_snapshot_size)
+        self.slot_max_snapshot_size
+            .unwrap_or(self.config.max_snapshot_size)
     }
-    
+
     /// Check if operation has timed out in current state
     pub fn is_timed_out(&self) -> bool {
         match &self.state {
@@ -515,9 +527,9 @@ impl ReloadOperation {
             ReloadState::AwaitingSnapshot { quiesced_at } => {
                 quiesced_at.elapsed() > self.config.snapshot_timeout
             }
-            ReloadState::AwaitingReadyForKill { snapshot_received_at } => {
-                snapshot_received_at.elapsed() > self.config.ready_for_kill_timeout
-            }
+            ReloadState::AwaitingReadyForKill {
+                snapshot_received_at,
+            } => snapshot_received_at.elapsed() > self.config.ready_for_kill_timeout,
             ReloadState::ReadyToKill { .. } => false,
             ReloadState::Respawning { killed_at } => {
                 killed_at.elapsed() > self.config.spawn_timeout
@@ -528,43 +540,33 @@ impl ReloadOperation {
             ReloadState::Completed { .. } | ReloadState::Failed { .. } => false,
         }
     }
-    
+
     /// Get timeout error for current state
     pub fn timeout_error(&self) -> Option<ReloadError> {
         match &self.state {
-            ReloadState::AwaitingQuiescence { .. } => {
-                Some(ReloadError::QuiescenceTimeout {
-                    slot: self.slot.clone(),
-                    timeout_ms: self.config.quiescence_timeout.as_millis() as u64,
-                })
-            }
-            ReloadState::AwaitingSnapshot { .. } => {
-                Some(ReloadError::SnapshotTimeout {
-                    slot: self.slot.clone(),
-                    timeout_ms: self.config.snapshot_timeout.as_millis() as u64,
-                })
-            }
-            ReloadState::AwaitingReadyForKill { .. } => {
-                Some(ReloadError::ReadyForKillTimeout {
-                    slot: self.slot.clone(),
-                    timeout_ms: self.config.ready_for_kill_timeout.as_millis() as u64,
-                })
-            }
-            ReloadState::Respawning { .. } => {
-                Some(ReloadError::SpawnFailed {
-                    reason: "Spawn timeout".to_string(),
-                })
-            }
-            ReloadState::LoadingModule { .. } => {
-                Some(ReloadError::LoadFailed {
-                    slot: self.slot.clone(),
-                    reason: "Load timeout".to_string(),
-                })
-            }
+            ReloadState::AwaitingQuiescence { .. } => Some(ReloadError::QuiescenceTimeout {
+                slot: self.slot.clone(),
+                timeout_ms: self.config.quiescence_timeout.as_millis() as u64,
+            }),
+            ReloadState::AwaitingSnapshot { .. } => Some(ReloadError::SnapshotTimeout {
+                slot: self.slot.clone(),
+                timeout_ms: self.config.snapshot_timeout.as_millis() as u64,
+            }),
+            ReloadState::AwaitingReadyForKill { .. } => Some(ReloadError::ReadyForKillTimeout {
+                slot: self.slot.clone(),
+                timeout_ms: self.config.ready_for_kill_timeout.as_millis() as u64,
+            }),
+            ReloadState::Respawning { .. } => Some(ReloadError::SpawnFailed {
+                reason: "Spawn timeout".to_string(),
+            }),
+            ReloadState::LoadingModule { .. } => Some(ReloadError::LoadFailed {
+                slot: self.slot.clone(),
+                reason: "Load timeout".to_string(),
+            }),
             _ => None,
         }
     }
-    
+
     /// Transition to next state
     pub fn transition(&mut self, new_state: ReloadState) {
         let old_state = std::mem::replace(&mut self.state, new_state);
@@ -573,17 +575,14 @@ impl ReloadOperation {
             self.id, old_state, self.state
         );
     }
-    
+
     /// Mark as completed
     pub fn complete(&mut self) {
         let duration = self.started_at.elapsed();
         self.state = ReloadState::Completed { duration };
-        eprintln!(
-            "[{}] Reload completed in {:?}",
-            self.id, duration
-        );
+        eprintln!("[{}] Reload completed in {:?}", self.id, duration);
     }
-    
+
     /// Mark as failed
     pub fn fail(&mut self, error: ReloadError) {
         let duration = self.started_at.elapsed();
@@ -641,8 +640,8 @@ impl Default for MsgPackDecodeLimits {
             max_depth: 32,
             max_map_size: 10_000,
             max_array_size: 100_000,
-            max_string_len: 1024 * 1024,     // 1 MB
-            max_bin_len: 8 * 1024 * 1024,    // 8 MB
+            max_string_len: 1024 * 1024,  // 1 MB
+            max_bin_len: 8 * 1024 * 1024, // 8 MB
         }
     }
 }
@@ -654,14 +653,14 @@ impl Default for MsgPackDecodeLimits {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_reload_id_unique() {
         let id1 = ReloadId::new();
         let id2 = ReloadId::new();
         assert_ne!(id1, id2);
     }
-    
+
     #[test]
     fn test_crc32_checksum() {
         let data = b"hello world";
@@ -671,32 +670,20 @@ mod tests {
         // Verify different data gives different checksum
         assert_ne!(checksum, crc32_checksum(b"hello world!"));
     }
-    
+
     #[test]
     fn test_snapshot_validation() {
         let data = vec![1, 2, 3, 4, 5];
         let checksum = crc32_checksum(&data);
-        
+
         // Valid snapshot
-        let result = ValidatedSnapshot::validate(
-            data.clone(),
-            1,
-            12345,
-            checksum,
-            1024,
-        );
+        let result = ValidatedSnapshot::validate(data.clone(), 1, 12345, checksum, 1024);
         assert!(result.is_ok());
-        
+
         // Wrong checksum
-        let result = ValidatedSnapshot::validate(
-            data.clone(),
-            1,
-            12345,
-            checksum + 1,
-            1024,
-        );
+        let result = ValidatedSnapshot::validate(data.clone(), 1, 12345, checksum + 1, 1024);
         assert!(result.is_err());
-        
+
         // Too large
         let result = ValidatedSnapshot::validate(
             data.clone(),
@@ -707,24 +694,21 @@ mod tests {
         );
         assert!(result.is_err());
     }
-    
+
     #[test]
     fn test_reload_timeout_detection() {
         let config = ReloadConfig {
             quiescence_timeout: Duration::from_millis(10),
             ..Default::default()
         };
-        
-        let mut op = ReloadOperation::new(
-            "test".to_string(),
-            "/path/to/module".to_string(),
-            config,
-        );
-        
-        op.state = ReloadState::AwaitingQuiescence { 
-            sent_at: Instant::now() - Duration::from_millis(20) 
+
+        let mut op =
+            ReloadOperation::new("test".to_string(), "/path/to/module".to_string(), config);
+
+        op.state = ReloadState::AwaitingQuiescence {
+            sent_at: Instant::now() - Duration::from_millis(20),
         };
-        
+
         assert!(op.is_timed_out());
         assert!(matches!(
             op.timeout_error(),

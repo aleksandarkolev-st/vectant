@@ -41,47 +41,47 @@ use std::io::Cursor;
 pub trait StateWriter {
     /// Write bytes to the output
     fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), StateWriteError>;
-    
+
     /// Write a single byte
     fn write_u8(&mut self, value: u8) -> Result<(), StateWriteError> {
         self.write_bytes(&[value])
     }
-    
+
     /// Write a u16 in little-endian
     fn write_u16(&mut self, value: u16) -> Result<(), StateWriteError> {
         self.write_bytes(&value.to_le_bytes())
     }
-    
+
     /// Write a u32 in little-endian
     fn write_u32(&mut self, value: u32) -> Result<(), StateWriteError> {
         self.write_bytes(&value.to_le_bytes())
     }
-    
+
     /// Write a u64 in little-endian
     fn write_u64(&mut self, value: u64) -> Result<(), StateWriteError> {
         self.write_bytes(&value.to_le_bytes())
     }
-    
+
     /// Write an i32 in little-endian
     fn write_i32(&mut self, value: i32) -> Result<(), StateWriteError> {
         self.write_bytes(&value.to_le_bytes())
     }
-    
+
     /// Write an i64 in little-endian
     fn write_i64(&mut self, value: i64) -> Result<(), StateWriteError> {
         self.write_bytes(&value.to_le_bytes())
     }
-    
+
     /// Write an f32 in little-endian
     fn write_f32(&mut self, value: f32) -> Result<(), StateWriteError> {
         self.write_bytes(&value.to_le_bytes())
     }
-    
+
     /// Write an f64 in little-endian
     fn write_f64(&mut self, value: f64) -> Result<(), StateWriteError> {
         self.write_bytes(&value.to_le_bytes())
     }
-    
+
     /// Get total bytes written so far
     fn bytes_written(&self) -> usize;
 }
@@ -99,7 +99,11 @@ impl std::fmt::Display for StateWriteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             StateWriteError::BufferOverflow { needed, available } => {
-                write!(f, "Buffer overflow: needed {} bytes, only {} available", needed, available)
+                write!(
+                    f,
+                    "Buffer overflow: needed {} bytes, only {} available",
+                    needed, available
+                )
             }
             StateWriteError::InvalidData(msg) => write!(f, "Invalid data: {}", msg),
         }
@@ -118,7 +122,7 @@ impl CountingWriter {
     pub fn new() -> Self {
         Self { count: 0 }
     }
-    
+
     pub fn count(&self) -> usize {
         self.count
     }
@@ -135,7 +139,7 @@ impl StateWriter for CountingWriter {
         self.count += bytes.len();
         Ok(())
     }
-    
+
     fn bytes_written(&self) -> usize {
         self.count
     }
@@ -150,13 +154,16 @@ pub struct SliceWriter<'a> {
 
 impl<'a> SliceWriter<'a> {
     pub fn new(buffer: &'a mut [u8]) -> Self {
-        Self { buffer, position: 0 }
+        Self {
+            buffer,
+            position: 0,
+        }
     }
-    
+
     pub fn position(&self) -> usize {
         self.position
     }
-    
+
     pub fn remaining(&self) -> usize {
         self.buffer.len().saturating_sub(self.position)
     }
@@ -174,7 +181,7 @@ impl<'a> StateWriter for SliceWriter<'a> {
         self.position += bytes.len();
         Ok(())
     }
-    
+
     fn bytes_written(&self) -> usize {
         self.position
     }
@@ -199,33 +206,33 @@ impl<W: StateWriter> MsgPackSerializer<W> {
             use_stable_keys: true, // Always use stable keys to avoid ABI churn
         }
     }
-    
+
     pub fn into_writer(self) -> W {
         self.writer
     }
-    
+
     /// Write MsgPack nil
     pub fn write_nil(&mut self) -> Result<(), StateWriteError> {
         self.writer.write_u8(0xc0)
     }
-    
+
     /// Write MsgPack boolean
     pub fn write_bool(&mut self, value: bool) -> Result<(), StateWriteError> {
         self.writer.write_u8(if value { 0xc3 } else { 0xc2 })
     }
-    
+
     /// Write MsgPack fixint (0-127)
     pub fn write_fixint(&mut self, value: u8) -> Result<(), StateWriteError> {
         debug_assert!(value <= 127);
         self.writer.write_u8(value)
     }
-    
+
     /// Write MsgPack negative fixint (-1 to -32)
     pub fn write_neg_fixint(&mut self, value: i8) -> Result<(), StateWriteError> {
         debug_assert!((-32..0).contains(&value));
         self.writer.write_u8(value as u8)
     }
-    
+
     /// Write MsgPack u8
     pub fn write_uint8(&mut self, value: u8) -> Result<(), StateWriteError> {
         if value <= 127 {
@@ -235,7 +242,7 @@ impl<W: StateWriter> MsgPackSerializer<W> {
             self.writer.write_u8(value)
         }
     }
-    
+
     /// Write MsgPack u16
     pub fn write_uint16(&mut self, value: u16) -> Result<(), StateWriteError> {
         if value <= 127 {
@@ -248,7 +255,7 @@ impl<W: StateWriter> MsgPackSerializer<W> {
             self.writer.write_bytes(&value.to_be_bytes())
         }
     }
-    
+
     /// Write MsgPack u32
     pub fn write_uint32(&mut self, value: u32) -> Result<(), StateWriteError> {
         if value <= 127 {
@@ -264,7 +271,7 @@ impl<W: StateWriter> MsgPackSerializer<W> {
             self.writer.write_bytes(&value.to_be_bytes())
         }
     }
-    
+
     /// Write MsgPack u64
     pub fn write_uint64(&mut self, value: u64) -> Result<(), StateWriteError> {
         if value <= 127 {
@@ -276,7 +283,7 @@ impl<W: StateWriter> MsgPackSerializer<W> {
             self.writer.write_bytes(&value.to_be_bytes())
         }
     }
-    
+
     /// Write MsgPack i32
     pub fn write_int32(&mut self, value: i32) -> Result<(), StateWriteError> {
         if value >= 0 {
@@ -294,7 +301,7 @@ impl<W: StateWriter> MsgPackSerializer<W> {
             self.writer.write_bytes(&value.to_be_bytes())
         }
     }
-    
+
     /// Write MsgPack i64
     pub fn write_int64(&mut self, value: i64) -> Result<(), StateWriteError> {
         if value >= 0 && value <= i32::MAX as i64 {
@@ -306,24 +313,24 @@ impl<W: StateWriter> MsgPackSerializer<W> {
             self.writer.write_bytes(&value.to_be_bytes())
         }
     }
-    
+
     /// Write MsgPack f32
     pub fn write_float32(&mut self, value: f32) -> Result<(), StateWriteError> {
         self.writer.write_u8(0xca)?;
         self.writer.write_bytes(&value.to_be_bytes())
     }
-    
+
     /// Write MsgPack f64
     pub fn write_float64(&mut self, value: f64) -> Result<(), StateWriteError> {
         self.writer.write_u8(0xcb)?;
         self.writer.write_bytes(&value.to_be_bytes())
     }
-    
+
     /// Write MsgPack string (fixstr, str8, str16, str32)
     pub fn write_str(&mut self, value: &str) -> Result<(), StateWriteError> {
         let bytes = value.as_bytes();
         let len = bytes.len();
-        
+
         if len <= 31 {
             self.writer.write_u8(0xa0 | len as u8)?;
         } else if len <= 255 {
@@ -336,14 +343,14 @@ impl<W: StateWriter> MsgPackSerializer<W> {
             self.writer.write_u8(0xdb)?;
             self.writer.write_bytes(&(len as u32).to_be_bytes())?;
         }
-        
+
         self.writer.write_bytes(bytes)
     }
-    
+
     /// Write MsgPack binary (bin8, bin16, bin32)
     pub fn write_bin(&mut self, bytes: &[u8]) -> Result<(), StateWriteError> {
         let len = bytes.len();
-        
+
         if len <= 255 {
             self.writer.write_u8(0xc4)?;
             self.writer.write_u8(len as u8)?;
@@ -354,10 +361,10 @@ impl<W: StateWriter> MsgPackSerializer<W> {
             self.writer.write_u8(0xc6)?;
             self.writer.write_bytes(&(len as u32).to_be_bytes())?;
         }
-        
+
         self.writer.write_bytes(bytes)
     }
-    
+
     /// Write MsgPack map header (fixmap, map16, map32)
     pub fn write_map_header(&mut self, count: usize) -> Result<(), StateWriteError> {
         if count <= 15 {
@@ -370,7 +377,7 @@ impl<W: StateWriter> MsgPackSerializer<W> {
             self.writer.write_bytes(&(count as u32).to_be_bytes())
         }
     }
-    
+
     /// Write MsgPack array header (fixarray, array16, array32)
     pub fn write_array_header(&mut self, count: usize) -> Result<(), StateWriteError> {
         if count <= 15 {
@@ -383,7 +390,7 @@ impl<W: StateWriter> MsgPackSerializer<W> {
             self.writer.write_bytes(&(count as u32).to_be_bytes())
         }
     }
-    
+
     /// Get bytes written so far
     pub fn bytes_written(&self) -> usize {
         self.writer.bytes_written()

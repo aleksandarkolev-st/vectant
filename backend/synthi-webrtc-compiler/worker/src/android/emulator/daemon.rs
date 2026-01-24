@@ -67,7 +67,10 @@ impl EmulatorDaemon {
             let mut fallback = config.clone();
             fallback.use_hw_accel = false;
             let mut session2 = EmulatorSession::new(fallback);
-            boot = session2.boot().await.context("Failed to boot emulator (fallback)")?;
+            boot = session2
+                .boot()
+                .await
+                .context("Failed to boot emulator (fallback)")?;
             session = session2;
         }
 
@@ -179,7 +182,10 @@ fn start_reaper_task_once() {
 /// NOTE: This returns a MutexGuard; while held, no other job can use the emulator.
 pub async fn acquire_emulator_daemon(
     config: EmulatorConfig,
-) -> Result<(tokio::sync::MutexGuard<'static, EmulatorDaemon>, EnsureReadyResult)> {
+) -> Result<(
+    tokio::sync::MutexGuard<'static, EmulatorDaemon>,
+    EnsureReadyResult,
+)> {
     start_reaper_task_once();
 
     let mut daemon = GLOBAL_DAEMON.lock().await;

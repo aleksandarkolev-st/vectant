@@ -980,7 +980,7 @@ impl Default for HotApiShimConfig {
 }
 
 /// Generate HotApi v2 shim for C/C++ code
-/// 
+///
 /// This generates:
 /// - A static HotApi table with all function pointers
 /// - The single export: hot_get_api()
@@ -989,7 +989,7 @@ impl Default for HotApiShimConfig {
 pub fn generate_hot_api_shim(source: &str, config: &HotApiShimConfig) -> ShimResult {
     let state_name = &config.state_name;
     let field_count = config.fields.len();
-    
+
     // Calculate ABI fingerprint if not provided
     let abi_fingerprint = if config.abi_fingerprint == 0 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -1005,16 +1005,16 @@ pub fn generate_hot_api_shim(source: &str, config: &HotApiShimConfig) -> ShimRes
     } else {
         config.abi_fingerprint
     };
-    
+
     // Generate field serialization code for MsgPack
     let mut msgpack_size_code = String::new();
     let mut msgpack_write_code = String::new();
     let mut migrate_code = String::new();
-    
+
     for field in &config.fields {
         // Size calculation (MsgPack encoding overhead)
         let type_overhead = match field.c_type.as_str() {
-            "int" | "int32_t" => 5,   // fixint or int32
+            "int" | "int32_t" => 5, // fixint or int32
             "uint32_t" | "unsigned" => 5,
             "int64_t" | "long" => 9,
             "uint64_t" => 9,
@@ -1024,18 +1024,20 @@ pub fn generate_hot_api_shim(source: &str, config: &HotApiShimConfig) -> ShimRes
             _ => 5,
         };
         let str_overhead = field.name.len() + 3; // fixstr header + name
-        
+
         msgpack_size_code.push_str(&format!(
             "    size += {}; // {} (key)\n    size += {}; // {} (value)\n",
             str_overhead, field.name, type_overhead, field.c_type
         ));
-        
+
         // Write code
         msgpack_write_code.push_str(&format!(
             "    // Write field: {}\n    write_fixstr(out, out_cap, pos, \"{}\", {});\n",
-            field.name, field.name, field.name.len()
+            field.name,
+            field.name,
+            field.name.len()
         ));
-        
+
         match field.c_type.as_str() {
             "int" | "int32_t" => {
                 msgpack_write_code.push_str(&format!(
@@ -1056,7 +1058,7 @@ pub fn generate_hot_api_shim(source: &str, config: &HotApiShimConfig) -> ShimRes
                 ));
             }
         }
-        
+
         // Migration code - decode from MsgPack
         let default_val = field.default_value.as_deref().unwrap_or("0");
         migrate_code.push_str(&format!(
@@ -1064,8 +1066,9 @@ pub fn generate_hot_api_shim(source: &str, config: &HotApiShimConfig) -> ShimRes
             field.name, field.name, default_val
         ));
     }
-    
-    let shim = format!(r#"
+
+    let shim = format!(
+        r#"
 // ============================================================
 // SYNTHI HOTAPI V2 SHIM - Auto-generated
 // Single export ABI with MsgPack serialization
@@ -1496,7 +1499,7 @@ const HotApi* hot_get_api(void) {{
         migrate_code = migrate_code,
         source = source,
     );
-    
+
     ShimResult {
         source: shim,
         additional_files: vec![],
@@ -1514,18 +1517,18 @@ const HotApi* hot_get_api(void) {{
 pub fn detect_shim_mode(source: &str) -> ShimConfig {
     let has_sdl = source.contains("SDL_") || source.contains("<SDL2/SDL.h>");
     let has_x11 = source.contains("XOpenDisplay") || source.contains("<X11/");
-    
+
     let has_main = source.contains("int main(") || source.contains("int main (");
     let has_sdl_main = source.contains("SDL_main");
     let has_on_load = source.contains("on_load(") || source.contains("extern \"C\" void* on_load");
-    let has_on_update = source.contains("on_update(") || source.contains("extern \"C\" void on_update");
-    let has_event_loop = source.contains("while") && (
-        source.contains("SDL_PollEvent") || 
-        source.contains("running") || 
-        source.contains("XNextEvent") ||
-        source.contains("XPending")
-    );
-    
+    let has_on_update =
+        source.contains("on_update(") || source.contains("extern \"C\" void on_update");
+    let has_event_loop = source.contains("while")
+        && (source.contains("SDL_PollEvent")
+            || source.contains("running")
+            || source.contains("XNextEvent")
+            || source.contains("XPending"));
+
     // We only use Full shim (SDL replacement) for SDL apps.
     // X11 apps fall through to WrapBlocking but with has_gui=true.
     let mode = if has_on_load && has_on_update {
@@ -1556,7 +1559,7 @@ pub fn detect_shim_mode(source: &str) -> ShimConfig {
 /// Apply appropriate shim based on source analysis
 pub fn auto_shim(source: &str) -> ShimResult {
     let config = detect_shim_mode(source);
-    
+
     // Only use the special SDL GUI shim if we are in Full mode (SDL app replacement).
     // For WrapBlocking (which includes X11 GUI apps), we want the standard threaded C++ shim
     // so that the main loop runs in a thread and doesn't block the runner.

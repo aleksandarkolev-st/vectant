@@ -59,18 +59,18 @@ impl SubsystemId {
             SubsystemId::Custom(_) => "custom",
         }
     }
-    
+
     /// Get default timeout for this subsystem
     pub fn default_timeout(&self) -> Duration {
         match self {
-            SubsystemId::Audio => Duration::from_millis(500),   // Audio needs low latency
-            SubsystemId::Render => Duration::from_secs(2),      // GPU fences can take time
-            SubsystemId::Input => Duration::from_millis(100),   // Should be fast
-            SubsystemId::Network => Duration::from_secs(5),     // Connections may need graceful close
-            SubsystemId::FileIO => Duration::from_secs(3),      // Flush pending writes
-            SubsystemId::Timers => Duration::from_millis(100),  // Just cancel
-            SubsystemId::Workers => Duration::from_secs(2),     // Join threads
-            SubsystemId::Custom(_) => Duration::from_secs(1),   // Default
+            SubsystemId::Audio => Duration::from_millis(500), // Audio needs low latency
+            SubsystemId::Render => Duration::from_secs(2),    // GPU fences can take time
+            SubsystemId::Input => Duration::from_millis(100), // Should be fast
+            SubsystemId::Network => Duration::from_secs(5),   // Connections may need graceful close
+            SubsystemId::FileIO => Duration::from_secs(3),    // Flush pending writes
+            SubsystemId::Timers => Duration::from_millis(100), // Just cancel
+            SubsystemId::Workers => Duration::from_secs(2),   // Join threads
+            SubsystemId::Custom(_) => Duration::from_secs(1), // Default
         }
     }
 }
@@ -86,23 +86,23 @@ pub struct AudioQuiescenceReqs {
     /// - Unregister from audio device
     /// - Wait for callback to complete (not just unregister)
     pub callback_stopped: bool,
-    
+
     /// Flush ring buffers (REQUIRED for snapshot)
     /// - Process remaining samples OR discard
     /// - Record what was discarded for snapshot
     pub ring_buffer_flushed: bool,
-    
+
     /// Acknowledge from audio driver (REQUIRED)
     /// - Some drivers need explicit stop + ack
     /// - Without ack, callback might still fire
     pub stop_acknowledged: bool,
-    
+
     /// DSP threads joined (if any)
     pub dsp_threads_joined: u32,
-    
+
     /// Samples discarded (for metrics)
     pub samples_discarded: u64,
-    
+
     /// Snapshot includes audio state?
     /// - If false, audio will restart from silence
     pub audio_state_snapshotted: bool,
@@ -128,21 +128,21 @@ pub struct RenderQuiescenceReqs {
     /// - Submit fence, wait for completion
     /// - All in-flight draws must complete
     pub gpu_work_fenced: bool,
-    
+
     /// Render thread stopped (REQUIRED)
     /// - Signal stop, join thread
     pub render_thread_stopped: bool,
-    
+
     /// Frame queue drained (REQUIRED)
     /// - Process or discard pending frames
     pub frame_queue_drained: bool,
-    
+
     /// Swap chain idle
     pub swap_chain_idle: bool,
-    
+
     /// Frames discarded (for metrics)
     pub frames_discarded: u32,
-    
+
     /// Render state snapshotted?
     /// - Camera position, animation state, etc.
     pub render_state_snapshotted: bool,
@@ -168,16 +168,16 @@ pub struct InputQuiescenceReqs {
     /// - Option A: Process all pending events
     /// - Option B: Snapshot queue content for replay
     pub queue_handled: bool,
-    
+
     /// How queue was handled
     pub queue_handling: QueueHandling,
-    
+
     /// Events in queue at quiescence
     pub events_pending: u32,
-    
+
     /// Events snapshotted (if applicable)
     pub events_snapshotted: u32,
-    
+
     /// Gesture recognizers reset
     pub gesture_state_reset: bool,
 }
@@ -214,16 +214,16 @@ pub enum QueueHandling {
 pub struct NetworkQuiescenceReqs {
     /// All connections closed gracefully
     pub connections_closed: bool,
-    
+
     /// Pending requests completed or cancelled
     pub requests_handled: bool,
-    
+
     /// Connections open at quiescence
     pub connections_open: u32,
-    
+
     /// Requests pending at quiescence
     pub requests_pending: u32,
-    
+
     /// Requests cancelled (for metrics)
     pub requests_cancelled: u32,
 }
@@ -252,7 +252,10 @@ pub enum QuiescenceState {
     /// Quiescence requested, in progress
     Quiescing { started_at_ms: u64 },
     /// Successfully quiesced
-    Quiescent { achieved_at_ms: u64, duration_ms: u64 },
+    Quiescent {
+        achieved_at_ms: u64,
+        duration_ms: u64,
+    },
     /// Failed to quiesce within timeout
     Failed { reason: String, elapsed_ms: u64 },
     /// Forcibly terminated (hard restart)
@@ -284,7 +287,7 @@ impl Default for QuiescenceConfig {
         subsystem_timeouts.insert(SubsystemId::FileIO, Duration::from_secs(3));
         subsystem_timeouts.insert(SubsystemId::Timers, Duration::from_millis(100));
         subsystem_timeouts.insert(SubsystemId::Workers, Duration::from_secs(2));
-        
+
         Self {
             subsystem_timeouts,
             global_timeout: Duration::from_secs(10),
@@ -325,16 +328,16 @@ pub struct QuiescenceManager {
 pub trait QuiescenceHandler: Send {
     /// Request quiescence for this subsystem
     fn request_quiescence(&mut self) -> Result<(), String>;
-    
+
     /// Check if quiescence is complete
     fn is_quiescent(&self) -> bool;
-    
+
     /// Get detailed report
     fn get_report(&self) -> SubsystemQuiescenceReport;
-    
+
     /// Force terminate (if timeout)
     fn force_terminate(&mut self);
-    
+
     /// Exit quiescence (if reload cancelled)
     fn exit_quiescence(&mut self);
 }
@@ -362,46 +365,51 @@ impl QuiescenceManager {
             quiescence_handlers: HashMap::new(),
         }
     }
-    
+
     /// Register a handler for a subsystem
     pub fn register_handler(&mut self, id: SubsystemId, handler: Box<dyn QuiescenceHandler>) {
         self.quiescence_handlers.insert(id, handler);
         self.states.insert(id, QuiescenceState::Active);
     }
-    
+
     /// Start quiescence process for all subsystems
     pub fn start_quiescence(&mut self) -> Result<(), String> {
         if self.started_at.is_some() {
             return Err("Quiescence already in progress".to_string());
         }
-        
+
         self.started_at = Some(Instant::now());
         let now_ms = timestamp_ms();
-        
+
         // Request quiescence from all handlers
         let mut errors = Vec::new();
         for (id, handler) in &mut self.quiescence_handlers {
-            self.states.insert(*id, QuiescenceState::Quiescing { started_at_ms: now_ms });
-            
+            self.states.insert(
+                *id,
+                QuiescenceState::Quiescing {
+                    started_at_ms: now_ms,
+                },
+            );
+
             if let Err(e) = handler.request_quiescence() {
                 errors.push(format!("{}: {}", id.as_str(), e));
             }
         }
-        
+
         if !errors.is_empty() && !self.config.allow_partial {
             return Err(format!("Quiescence failed: {}", errors.join(", ")));
         }
-        
+
         Ok(())
     }
-    
+
     /// Poll for quiescence completion
     /// Returns Ok(true) if all done, Ok(false) if still waiting, Err if failed
     pub fn poll(&mut self) -> Result<bool, QuiescenceError> {
         let started = self.started_at.ok_or(QuiescenceError::NotStarted)?;
         let elapsed = started.elapsed();
         let now_ms = timestamp_ms();
-        
+
         // Check global timeout
         if elapsed > self.config.global_timeout {
             return Err(QuiescenceError::GlobalTimeout {
@@ -409,35 +417,43 @@ impl QuiescenceManager {
                 timeout_ms: self.config.global_timeout.as_millis() as u64,
             });
         }
-        
+
         let mut all_done = true;
         let mut failures = Vec::new();
-        
+
         for (id, handler) in &mut self.quiescence_handlers {
-            let timeout = self.config.subsystem_timeouts
+            let timeout = self
+                .config
+                .subsystem_timeouts
                 .get(id)
                 .copied()
                 .unwrap_or(id.default_timeout());
-            
+
             match self.states.get(id) {
                 Some(QuiescenceState::Quiescing { started_at_ms }) => {
                     let subsystem_elapsed = now_ms.saturating_sub(*started_at_ms);
-                    
+
                     if handler.is_quiescent() {
                         // Success
-                        self.states.insert(*id, QuiescenceState::Quiescent {
-                            achieved_at_ms: now_ms,
-                            duration_ms: subsystem_elapsed,
-                        });
+                        self.states.insert(
+                            *id,
+                            QuiescenceState::Quiescent {
+                                achieved_at_ms: now_ms,
+                                duration_ms: subsystem_elapsed,
+                            },
+                        );
                     } else if subsystem_elapsed > timeout.as_millis() as u64 {
                         // Timeout
                         let is_required = self.config.required_subsystems.contains(id);
-                        
+
                         if is_required {
-                            self.states.insert(*id, QuiescenceState::Failed {
-                                reason: "Timeout".to_string(),
-                                elapsed_ms: subsystem_elapsed,
-                            });
+                            self.states.insert(
+                                *id,
+                                QuiescenceState::Failed {
+                                    reason: "Timeout".to_string(),
+                                    elapsed_ms: subsystem_elapsed,
+                                },
+                            );
                             failures.push(*id);
                         } else {
                             // Force terminate non-required
@@ -459,31 +475,36 @@ impl QuiescenceManager {
                 }
             }
         }
-        
+
         if !failures.is_empty() {
             return Err(QuiescenceError::SubsystemFailed {
                 subsystems: failures,
             });
         }
-        
+
         Ok(all_done)
     }
-    
+
     /// Get full quiescence report
     pub fn get_report(&self) -> FullQuiescenceReport {
         let mut subsystem_reports = Vec::new();
-        
+
         for (_id, handler) in &self.quiescence_handlers {
             subsystem_reports.push(handler.get_report());
         }
-        
-        let total_duration = self.started_at
+
+        let total_duration = self
+            .started_at
             .map(|s| s.elapsed().as_millis() as u64)
             .unwrap_or(0);
-        
-        let all_quiescent = self.states.values()
-            .all(|s| matches!(s, QuiescenceState::Quiescent { .. } | QuiescenceState::Terminated));
-        
+
+        let all_quiescent = self.states.values().all(|s| {
+            matches!(
+                s,
+                QuiescenceState::Quiescent { .. } | QuiescenceState::Terminated
+            )
+        });
+
         FullQuiescenceReport {
             all_quiescent,
             total_duration_ms: total_duration,
@@ -491,17 +512,17 @@ impl QuiescenceManager {
             timeout_action: self.config.timeout_action,
         }
     }
-    
+
     /// Cancel quiescence and return to active state
     pub fn cancel(&mut self) {
         for handler in self.quiescence_handlers.values_mut() {
             handler.exit_quiescence();
         }
-        
+
         for state in self.states.values_mut() {
             *state = QuiescenceState::Active;
         }
-        
+
         self.started_at = None;
     }
 }
@@ -521,7 +542,10 @@ impl std::fmt::Display for QuiescenceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             QuiescenceError::NotStarted => write!(f, "Quiescence not started"),
-            QuiescenceError::GlobalTimeout { elapsed_ms, timeout_ms } => {
+            QuiescenceError::GlobalTimeout {
+                elapsed_ms,
+                timeout_ms,
+            } => {
                 write!(f, "Global timeout: {}ms > {}ms", elapsed_ms, timeout_ms)
             }
             QuiescenceError::SubsystemFailed { subsystems } => {
@@ -561,7 +585,10 @@ pub struct NoOpQuiescenceHandler {
 
 impl NoOpQuiescenceHandler {
     pub fn new(subsystem: SubsystemId) -> Self {
-        Self { subsystem, quiescent: false }
+        Self {
+            subsystem,
+            quiescent: false,
+        }
     }
 }
 
@@ -570,16 +597,19 @@ impl QuiescenceHandler for NoOpQuiescenceHandler {
         self.quiescent = true;
         Ok(())
     }
-    
+
     fn is_quiescent(&self) -> bool {
         self.quiescent
     }
-    
+
     fn get_report(&self) -> SubsystemQuiescenceReport {
         SubsystemQuiescenceReport {
             subsystem: self.subsystem,
             state: if self.quiescent {
-                QuiescenceState::Quiescent { achieved_at_ms: 0, duration_ms: 0 }
+                QuiescenceState::Quiescent {
+                    achieved_at_ms: 0,
+                    duration_ms: 0,
+                }
             } else {
                 QuiescenceState::Active
             },
@@ -591,11 +621,11 @@ impl QuiescenceHandler for NoOpQuiescenceHandler {
             details: "{}".to_string(),
         }
     }
-    
+
     fn force_terminate(&mut self) {
         self.quiescent = true;
     }
-    
+
     fn exit_quiescence(&mut self) {
         self.quiescent = false;
     }
@@ -608,34 +638,34 @@ impl QuiescenceHandler for NoOpQuiescenceHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_quiescence_flow() {
         let config = QuiescenceConfig::default();
         let mut manager = QuiescenceManager::new(config);
-        
+
         // Register handlers
         manager.register_handler(
             SubsystemId::Audio,
-            Box::new(NoOpQuiescenceHandler::new(SubsystemId::Audio))
+            Box::new(NoOpQuiescenceHandler::new(SubsystemId::Audio)),
         );
         manager.register_handler(
             SubsystemId::Render,
-            Box::new(NoOpQuiescenceHandler::new(SubsystemId::Render))
+            Box::new(NoOpQuiescenceHandler::new(SubsystemId::Render)),
         );
-        
+
         // Start quiescence
         manager.start_quiescence().unwrap();
-        
+
         // Should complete immediately with no-op handlers
         let result = manager.poll().unwrap();
         assert!(result);
-        
+
         // Report should show all quiescent
         let report = manager.get_report();
         assert!(report.all_quiescent);
     }
-    
+
     #[test]
     fn test_subsystem_defaults() {
         assert!(SubsystemId::Audio.default_timeout() < SubsystemId::Network.default_timeout());

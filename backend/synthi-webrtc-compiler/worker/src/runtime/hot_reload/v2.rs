@@ -1,12 +1,11 @@
+use crate::runtime::capability::{validate_hot_api, HotApiInfo};
+use crate::runtime::plugin_contract::{
+    self, HotApi, HotGetApiFn, RunnerApi, LOG_ERROR, LOG_INFO, LOG_WARN, MAX_STATE_ALIGNMENT,
+    RUNNER_API_VERSION,
+};
+use crate::safety::enhanced_fingerprint::{self, extract_fingerprint_from_module, AbiFingerprint};
 use libloading::{Library, Symbol};
 use std::ffi::c_void;
-use crate::runtime::plugin_contract::{
-    self, HotApi, HotGetApiFn, RunnerApi,
-    MAX_STATE_ALIGNMENT, RUNNER_API_VERSION,
-    LOG_INFO, LOG_WARN, LOG_ERROR,
-};
-use crate::runtime::capability::{validate_hot_api, HotApiInfo};
-use crate::safety::enhanced_fingerprint::{self, AbiFingerprint, extract_fingerprint_from_module};
 
 // ============================================================
 // NEW HOTAPI-BASED MODULE STATE (v2 ABI)
@@ -39,17 +38,17 @@ impl HotModuleState {
         if api.state_size_bytes == 0 {
             return Ok((Vec::new(), std::ptr::null_mut()));
         }
-        
+
         // Allocate extra space for alignment
         let extra = api.state_align_bytes;
         let total_size = api.state_size_bytes + extra;
         let mut memory = vec![0u8; total_size];
-        
+
         // Find aligned address
         let base_addr = memory.as_mut_ptr() as usize;
         let aligned_addr = (base_addr + extra - 1) & !(api.state_align_bytes - 1);
         let state_ptr = aligned_addr as *mut c_void;
-        
+
         Ok((memory, state_ptr))
     }
 }
@@ -60,7 +59,10 @@ pub enum HotReloadResult {
     /// Mode 1: Same version, state pointer reuse (fastest)
     SameVersion,
     /// Mode 2: Version changed, migration via serialized snapshot
-    Migrated { preserved_fields: usize, new_fields: usize },
+    Migrated {
+        preserved_fields: usize,
+        new_fields: usize,
+    },
     /// Mode 3: Cold reload, state reset
     ColdReload { reason: String },
     /// Error during reload
@@ -78,7 +80,9 @@ pub static RUNNER_API: RunnerApi = RunnerApi {
 
 /// Log callback for modules
 unsafe extern "C" fn runner_log(level: u32, msg: *const u8, len: usize) {
-    if msg.is_null() || len == 0 { return; }
+    if msg.is_null() || len == 0 {
+        return;
+    }
     let bytes = std::slice::from_raw_parts(msg, len);
     if let Ok(s) = std::str::from_utf8(bytes) {
         let prefix = match level {
@@ -99,7 +103,7 @@ unsafe extern "C" fn runner_get_time_ns() -> u64 {
 }
 
 /// Perform the 3-mode hot reload algorithm for new HotApi modules
-/// 
+///
 /// Mode 1: Same ABI fingerprint (ROBUST CHECK) -> reuse state pointer
 ///         CRITICAL: Now uses full AbiFingerprint including compiler, target, layout hash
 /// Mode 2: Different version -> save via MsgPack, migrate, restore
@@ -117,24 +121,29 @@ pub fn hot_reload_v2(
         return Err("Module does not export hot_get_api".to_string());
     }
     if !validation.errors.is_empty() {
-        return Err(format!("HotApi validation failed: {}", validation.errors.join(", ")));
+        return Err(format!(
+            "HotApi validation failed: {}",
+            validation.errors.join(", ")
+        ));
     }
-    
+
     let api_info = validation.api.ok_or("HotApi info not available")?;
-    
+
     // Get the HotApi pointer
     let hot_get_api: Symbol<HotGetApiFn> = unsafe {
-        new_lib.get(b"hot_get_api").map_err(|e| format!("Failed to get hot_get_api: {}", e))?
+        new_lib
+            .get(b"hot_get_api")
+            .map_err(|e| format!("Failed to get hot_get_api: {}", e))?
     };
     let api_ptr: *const HotApi = unsafe { hot_get_api() };
     if api_ptr.is_null() {
         return Err("hot_get_api() returned NULL".to_string());
     }
     let api = unsafe { &*api_ptr };
-    
+
     // 2. Additional validation checks
     // Reject if struct_size < offset of last required field
-    let min_struct_size = std::mem::offset_of!(HotApi, migrate) 
+    let min_struct_size = std::mem::offset_of!(HotApi, migrate)
         + std::mem::size_of::<Option<plugin_contract::MigrateFn>>();
     if (api.struct_size as usize) < min_struct_size {
         return Err(format!(
@@ -142,15 +151,21 @@ pub fn hot_reload_v2(
             api.struct_size, min_struct_size
         ));
     }
-    
+
     // Enforce state_align_bytes is power of two and <= max
     if !api.state_align_bytes.is_power_of_two() {
-        return Err(format!("state_align_bytes {} is not a power of 2", api.state_align_bytes));
+        return Err(format!(
+            "state_align_bytes {} is not a power of 2",
+            api.state_align_bytes
+        ));
     }
     if api.state_align_bytes > MAX_STATE_ALIGNMENT {
-        return Err(format!("state_align_bytes {} exceeds maximum {}", api.state_align_bytes, MAX_STATE_ALIGNMENT));
+        return Err(format!(
+            "state_align_bytes {} exceeds maximum {}",
+            api.state_align_bytes, MAX_STATE_ALIGNMENT
+        ));
     }
-    
+
     // 3. Extract FULL ABI fingerprint for robust compatibility check
     let new_fingerprint = if let Some(path) = new_lib_path {
         match extract_fingerprint_from_module(
@@ -168,20 +183,20 @@ pub fn hot_reload_v2(
     } else {
         None
     };
-    
+
     // 4. Allocate state memory
     let (state_memory, state_ptr) = HotModuleState::allocate_state(api)?;
-    
+
     // 5. Determine reload mode using STRICT fingerprint comparison
     // CRITICAL: NO MEMCPY WITHOUT LAYOUT HASH
     // If we don't have a layout hash, we CANNOT safely memcpy state between versions.
     // The only options are: serialized migration or cold reload.
     let (reload_result, needs_init) = if let Some(old) = old_hot_state {
         // First: Check if we can even consider memcpy (same version, same everything)
-        let basic_match = old.api_info.state_version == api_info.state_version 
+        let basic_match = old.api_info.state_version == api_info.state_version
             && old.api_info.abi_fingerprint == api_info.abi_fingerprint
             && old.api_info.state_size_bytes == api_info.state_size_bytes;
-        
+
         // ENHANCED CHECK: Use full AbiFingerprint if available
         let can_memcpy = match (&old.full_fingerprint, &new_fingerprint) {
             (Some(old_fp), Some(new_fp)) => {
@@ -195,7 +210,9 @@ pub fn hot_reload_v2(
                     // Robust check using full fingerprint
                     let result = old_fp.is_compatible_for_memcpy(new_fp);
                     if !result.is_compatible() {
-                        if let enhanced_fingerprint::CompatibilityResult::Incompatible { reasons } = &result {
+                        if let enhanced_fingerprint::CompatibilityResult::Incompatible { reasons } =
+                            &result
+                        {
                             eprintln!("[HMR] Fingerprint mismatch - memcpy BLOCKED:");
                             for reason in reasons {
                                 eprintln!("[HMR]   - {}", reason);
@@ -209,13 +226,19 @@ pub fn hot_reload_v2(
                 // NO FALLBACK TO BASIC CHECK
                 // This is the critical change - without full fingerprints, NO memcpy.
                 eprintln!("[HMR] BLOCKED: Cannot memcpy without full fingerprint");
-                eprintln!("[HMR]   Old fingerprint present: {}", old.full_fingerprint.is_some());
-                eprintln!("[HMR]   New fingerprint present: {}", new_fingerprint.is_some());
+                eprintln!(
+                    "[HMR]   Old fingerprint present: {}",
+                    old.full_fingerprint.is_some()
+                );
+                eprintln!(
+                    "[HMR]   New fingerprint present: {}",
+                    new_fingerprint.is_some()
+                );
                 eprintln!("[HMR]   Will use serialized migration or cold reload");
                 false
             }
         };
-        
+
         if can_memcpy && basic_match {
             // Mode 1: Same version hot swap - ONLY if fingerprints fully match
             // Copy old state to new location
@@ -233,17 +256,17 @@ pub fn hot_reload_v2(
             // Mode 2: Migration via serialized snapshot
             // This is the SAFE path - uses structured data, not raw memory
             let migrate_fn = api.migrate.unwrap();
-            
+
             let msgpack_ptr = old_msgpack.map(|b| b.as_ptr()).unwrap_or(std::ptr::null());
             let msgpack_len = old_msgpack.map(|b| b.len()).unwrap_or(0);
             let json_ptr = old_json.map(|s| s.as_ptr()).unwrap_or(std::ptr::null());
             let json_len = old_json.map(|s| s.len()).unwrap_or(0);
-            
+
             let success = unsafe {
                 migrate_fn(
-                    old.state_ptr,          // old_blob (opaque, for size reference only)
+                    old.state_ptr, // old_blob (opaque, for size reference only)
                     old.api_info.state_version,
-                    state_ptr,              // new_blob (write here)
+                    state_ptr, // new_blob (write here)
                     api.state_version,
                     &RUNNER_API,
                     msgpack_ptr,
@@ -252,32 +275,53 @@ pub fn hot_reload_v2(
                     json_len,
                 )
             };
-            
+
             if success {
                 eprintln!("[HMR] Migration via serialization succeeded");
-                (HotReloadResult::Migrated { preserved_fields: 0, new_fields: 0 }, false)
+                (
+                    HotReloadResult::Migrated {
+                        preserved_fields: 0,
+                        new_fields: 0,
+                    },
+                    false,
+                )
             } else {
                 // Migration failed, fall through to cold reload
                 eprintln!("[HMR] Migration failed, falling back to cold reload");
-                (HotReloadResult::ColdReload { reason: "Migration failed".to_string() }, true)
+                (
+                    HotReloadResult::ColdReload {
+                        reason: "Migration failed".to_string(),
+                    },
+                    true,
+                )
             }
         } else {
             // Mode 3: Cold reload - SAFE fallback
             let reason = if !can_memcpy && basic_match {
                 "Cannot verify memory layout compatibility (no layout_hash)"
-            } else if api.migrate.is_none() { 
-                "No migrate function" 
-            } else { 
+            } else if api.migrate.is_none() {
+                "No migrate function"
+            } else {
                 "No serialized state available"
             };
             eprintln!("[HMR] Cold reload required: {}", reason);
-            (HotReloadResult::ColdReload { reason: reason.to_string() }, true)
+            (
+                HotReloadResult::ColdReload {
+                    reason: reason.to_string(),
+                },
+                true,
+            )
         }
     } else {
         // First load - need init
-        (HotReloadResult::ColdReload { reason: "First load".to_string() }, true)
+        (
+            HotReloadResult::ColdReload {
+                reason: "First load".to_string(),
+            },
+            true,
+        )
     };
-    
+
     // 5. Initialize if needed
     let initialized = if needs_init {
         if let Some(init_fn) = api.init {
@@ -288,11 +332,11 @@ pub fn hot_reload_v2(
     } else {
         true
     };
-    
+
     if !initialized && needs_init {
         return Err("Module init() failed".to_string());
     }
-    
+
     let hot_state = HotModuleState {
         api_ptr,
         api_info,
@@ -307,30 +351,34 @@ pub fn hot_reload_v2(
         full_fingerprint: new_fingerprint,
         lib_path: new_lib_path.map(|s| s.to_string()),
     };
-    
+
     Ok((hot_state, reload_result))
 }
 
 /// Save state using size-then-write pattern (no module allocation)
 pub fn save_state_msgpack_v2(hot_state: &HotModuleState) -> Option<Vec<u8>> {
     let api = unsafe { &*hot_state.api_ptr };
-    
+
     let size_fn = api.save_state_msgpack_size?;
     let write_fn = api.save_state_msgpack_write?;
-    
+
     // Get size
     let size = unsafe {
-        size_fn(hot_state.state_ptr, hot_state.api_info.state_version, &RUNNER_API)
+        size_fn(
+            hot_state.state_ptr,
+            hot_state.api_info.state_version,
+            &RUNNER_API,
+        )
     };
-    
+
     if size == 0 {
         return None;
     }
-    
+
     // Allocate and write
     let mut buffer = vec![0u8; size];
     let mut written: usize = 0;
-    
+
     let success = unsafe {
         write_fn(
             hot_state.state_ptr,
@@ -341,7 +389,7 @@ pub fn save_state_msgpack_v2(hot_state: &HotModuleState) -> Option<Vec<u8>> {
             &mut written,
         )
     };
-    
+
     if success && written <= buffer.len() {
         buffer.truncate(written);
         Some(buffer)

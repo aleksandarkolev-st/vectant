@@ -21,19 +21,19 @@ use x11rb::protocol::shm::ConnectionExt as ShmConnectionExt;
 #[cfg(target_os = "linux")]
 use x11rb::protocol::xproto::*;
 
+use super::runner_logic;
 use crate::compiler::abi_version;
 use crate::hmr::binary_state;
-use crate::safety::boundary;
-use crate::runtime::capability;
-use crate::infra::crash_recovery;
 use crate::hmr::fast_refresh;
 use crate::hmr::orchestrator as hmr_orchestrator;
+use crate::infra::crash_recovery;
 use crate::infra::host_kv;
-use super::runner_logic;
+use crate::runtime::capability;
 use crate::runtime::loader;
+use crate::safety::boundary;
 // mod plugin_contract; // Use crate::runtime::plugin_contract
-use crate::hmr::reload_manager;
 use crate::compiler::source_map;
+use crate::hmr::reload_manager;
 use crate::hmr::state_diff;
 use crate::hmr::state_manager;
 use crate::runtime::supervisor;
@@ -46,17 +46,21 @@ use crate::safety::strict_contract;
 // public protocol + infra
 use crate::hmr::reload_protocol;
 use crate::hmr::state_type_id;
+use crate::infra::observability;
 use crate::safety::hardened_ipc;
 use crate::safety::quiescence;
-use crate::safety::slot_isolation;
 use crate::safety::restart_control;
 use crate::safety::security;
-use crate::infra::observability;
+use crate::safety::slot_isolation;
 
 use crate::safety::hardened_ipc::{read_frame_validated, write_frame_with_checksum, IpcConfig};
 
-use crate::runtime::plugin_contract::{ModuleSlot, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION, RunnerApi, HotApi, HotGetApiFn, MAX_STATE_ALIGNMENT, RUNNER_API_VERSION, LOG_INFO, LOG_WARN, LOG_ERROR};
 use crate::compiler::plugin_contract::ModuleSlot as CompilerModuleSlot;
+use crate::runtime::plugin_contract::{
+    HotApi, HotGetApiFn, ModuleSlot, RunnerApi, CORE_STATE_MAGIC, GUI_STATE_MAGIC, LOG_ERROR,
+    LOG_INFO, LOG_WARN, MAX_STATE_ALIGNMENT, RUNNER_API_VERSION, SYNTHI_CORE_ABI_VERSION,
+    SYNTHI_GUI_ABI_VERSION,
+};
 
 fn to_compiler_slot(slot: ModuleSlot) -> CompilerModuleSlot {
     match slot {
@@ -65,24 +69,17 @@ fn to_compiler_slot(slot: ModuleSlot) -> CompilerModuleSlot {
         ModuleSlot::Main => CompilerModuleSlot::Main,
     }
 }
-use capability::{HmrCapability, detect_capabilities, HmrStatus}; // Assuming capability is local mod
+use capability::{detect_capabilities, HmrCapability, HmrStatus}; // Assuming capability is local mod
 
 use crash_recovery::{
-    execute_with_protection,
-    generate_crash_report,
-    install_crash_handlers,
-    set_current_lib_path,
+    execute_with_protection, generate_crash_report, install_crash_handlers, set_current_lib_path,
     HmrCrashStatus,
 };
 
 use hmr_orchestrator::{HmrOrchestrator, SavedState};
 
 use host_kv::{
-    create_kv_api,
-    module_slot_to_u32,
-    read_schema_table,
-    HostKvSchemaEvent,
-    SynthiHostContextV1,
+    create_kv_api, module_slot_to_u32, read_schema_table, HostKvSchemaEvent, SynthiHostContextV1,
     KV_STORE,
 };
 
@@ -91,12 +88,14 @@ use loader::{LoadResult, ModuleLoader};
 use state_manager::StateManager;
 use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 
-use enhanced_fingerprint::{AbiFingerprint, extract_fingerprint_from_module};
+use enhanced_fingerprint::{extract_fingerprint_from_module, AbiFingerprint};
 
+use crate::runtime::hot_reload::v2::{
+    get_module_abi_version, hot_reload_v2, save_state_msgpack_v2, validate_state_magic,
+    HotModuleState, HotReloadResult, RUNNER_API,
+};
+use crate::runtime::legacy_module_state::{AppState, ModuleState};
 use crate::runtime::platform::sdl_defs::*;
-use crate::runtime::hot_reload::v2::{hot_reload_v2, HotModuleState, HotReloadResult, RUNNER_API, save_state_msgpack_v2, validate_state_magic, get_module_abi_version};
-use crate::runtime::legacy_module_state::{ModuleState, AppState};
-
 
 // ============================================================
 // INDEPENDENT SWAP DOMAINS: Separate state for each module
@@ -110,8 +109,6 @@ use crate::runtime::legacy_module_state::{ModuleState, AppState};
 
 // Import new HotApi types for v2 ABI
 use capability::{validate_hot_api, HotApiInfo};
-
-
 
 // ModuleState moved to legacy_module_state.rs
 
@@ -133,10 +130,6 @@ struct HostContext {
     renderer: *mut c_void,
 }
 
-
-
-
-
 // Command enum to handle both legacy text commands and binary IPC messages
 #[derive(Debug)]
 enum RunnerCommand {
@@ -153,14 +146,14 @@ fn main() {
     //    - Safe: dlclose UB is contained in disposable process
     //    - Automatic restart on crash
     //    - State preserved via IPC snapshots
-    // 
+    //
     // 2. UNSAFE IN-PROCESS (legacy, deprecated): Direct library loading
     //    - DANGEROUS: dlclose UB can corrupt parent process
     //    - Only enabled with SYNTHI_UNSAFE_INPROCESS=1
     //    - Exists only for debugging/profiling where isolation overhead is unacceptable
     // ============================================================
     let execution_mode = process_isolation::ExecutionMode::from_env();
-    
+
     match execution_mode {
         process_isolation::ExecutionMode::ProcessIsolated => {
             // This is the SAFE path - we should be running under a supervisor.
@@ -169,25 +162,25 @@ fn main() {
                 // We are the top-level process - start the supervisor
                 eprintln!("[Runner] Starting in PROCESS-ISOLATED mode (safe default)");
                 eprintln!("[Runner] Spawning supervisor to manage worker process...");
-                
+
                 // Mark that we're now supervising
                 std::env::set_var("SYNTHI_SUPERVISED", "1");
-                
+
                 let config = process_isolation::IsolationConfig::default();
                 let mut supervisor = process_isolation::ProcessSupervisor::new(config);
-                
+
                 if let Err(e) = supervisor.start() {
                     eprintln!("[Runner] FATAL: Failed to start supervisor: {}", e);
                     std::process::exit(1);
                 }
-                
+
                 // Run the full supervisor event loop
                 eprintln!("[Runner] Supervisor started, entering event loop");
                 if let Err(e) = supervisor.run_event_loop() {
                     eprintln!("[Runner] Supervisor event loop error: {}", e);
                     std::process::exit(1);
                 }
-                
+
                 eprintln!("[Runner] Supervisor event loop completed, exiting");
                 std::process::exit(0);
             } else {
@@ -205,7 +198,7 @@ fn main() {
             eprintln!("[Runner] ============================================================");
         }
     }
-    
+
     // Install crash handlers for runtime error recovery
     if let Err(e) = install_crash_handlers() {
         eprintln!("[Runner] Warning: Failed to install crash handlers: {}", e);
@@ -227,7 +220,8 @@ fn main() {
     #[cfg(target_os = "linux")]
     let (shm_seg, shm_ptr) = {
         let size = 800 * 600 * 4;
-        let (id, ptr) = crate::runtime::runner::capture::create_shm_segment(size).expect("Failed to create SHM");
+        let (id, ptr) = crate::runtime::runner::capture::create_shm_segment(size)
+            .expect("Failed to create SHM");
         let seg = x11_conn.generate_id().unwrap();
         x11_conn.shm_attach(seg, id as u32, false).unwrap();
         (seg, ptr)
@@ -236,7 +230,6 @@ fn main() {
     // Initialize SDL2
     #[cfg(target_os = "linux")]
     let (window, renderer) = unsafe { init_sdl() };
-
 
     #[cfg(target_os = "linux")]
     let _sdl_texture = unsafe {
@@ -274,7 +267,10 @@ fn main() {
     #[cfg(target_os = "linux")]
     {
         // Only spawn video writer if NOT in ProcessIsolated mode to prevent IPC corruption
-        if !matches!(execution_mode, process_isolation::ExecutionMode::ProcessIsolated) {
+        if !matches!(
+            execution_mode,
+            process_isolation::ExecutionMode::ProcessIsolated
+        ) {
             std::thread::spawn(move || {
                 let mut stdout = io::stdout();
                 while let Ok(buf) = frame_rx.recv() {
@@ -289,24 +285,23 @@ fn main() {
             eprintln!("[Runner] Raw video output DISABLED in ProcessIsolated mode (IPC active)");
         }
     }
-    
+
     // Spawn input reader thread based on execution mode
     let tx_clone = tx.clone();
     let mode_for_thread = execution_mode;
-    
 
     // Spawn stdin reader thread
     thread::spawn(move || {
         eprintln!("Input reader thread started (Mode: {:?})", mode_for_thread);
         let stdin = io::stdin();
         let mut handle = stdin.lock();
-        
+
         match mode_for_thread {
             process_isolation::ExecutionMode::ProcessIsolated => {
                 // Binary IPC reader (MsgPack frames)
                 // Use default config for now
                 let config = IpcConfig::default();
-                
+
                 loop {
                     match read_frame_validated(&mut handle, &config, None) {
                         Ok(payload) => {
@@ -323,7 +318,8 @@ fn main() {
                         }
                         Err(e) => {
                             // Check if it's EOF
-                            if matches!(e, crate::safety::hardened_ipc::IpcError::ConnectionClosed) {
+                            if matches!(e, crate::safety::hardened_ipc::IpcError::ConnectionClosed)
+                            {
                                 eprintln!("IPC connection closed (EOF)");
                             } else {
                                 eprintln!("IPC Read error: {:?}", e);
@@ -456,7 +452,7 @@ fn main() {
         let mut stdout = io::stdout();
         let msg = process_isolation::IpcMessage::Ready;
         let payload = rmp_serde::to_vec(&msg).unwrap();
-        
+
         if let Err(e) = write_frame_with_checksum(&mut stdout, &payload) {
             eprintln!("[Runner] Failed to send Ready message: {}", e);
         } else {
@@ -533,13 +529,19 @@ fn main() {
                             // Map numeric events back to legacy string commands
                             match kind {
                                 0 => format!("input motion {} {}", a, b), // x, y
-                                1 => format!("input button {} {} {} {}", 
+                                1 => format!(
+                                    "input button {} {} {} {}",
                                     if b == 1 { "down" } else { "up" }, // state
-                                    a, // button
-                                    (c >> 16) as i16, (c & 0xFFFF) as i16), // x, y packed
-                                2 => format!("input key {} {}", 
-                                    if a == 1 { "down" } else { "up" }, b), // state, keycode
-                                _ => String::new()
+                                    a,                                  // button
+                                    (c >> 16) as i16,
+                                    (c & 0xFFFF) as i16
+                                ), // x, y packed
+                                2 => format!(
+                                    "input key {} {}",
+                                    if a == 1 { "down" } else { "up" },
+                                    b
+                                ), // state, keycode
+                                _ => String::new(),
                             }
                         }
                         process_isolation::IpcMessage::Ping { seq } => {
@@ -554,7 +556,9 @@ fn main() {
                 }
             };
 
-            if cmd.is_empty() { continue; }
+            if cmd.is_empty() {
+                continue;
+            }
 
             // Route command logs to stderr so stdout stays dedicated to the video stream.
             eprintln!("[Runner] Processing command: {}", cmd);
@@ -1009,16 +1013,16 @@ fn main() {
 
         #[cfg(target_os = "linux")]
         {
-             crate::runtime::runner::capture::capture_frame(
-                 &x11_conn,
-                 x11_root,
-                 shm_seg,
-                 shm_ptr,
-                 &frame_tx,
-                 &mut frame_count,
-                 &mut frames_sent,
-                 &mut last_frame_log
-             );
+            crate::runtime::runner::capture::capture_frame(
+                &x11_conn,
+                x11_root,
+                shm_seg,
+                shm_ptr,
+                &frame_tx,
+                &mut frame_count,
+                &mut frames_sent,
+                &mut last_frame_log,
+            );
         }
 
         // Cap at ~60 FPS

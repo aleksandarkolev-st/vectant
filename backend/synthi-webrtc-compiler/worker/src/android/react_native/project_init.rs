@@ -97,9 +97,11 @@ pub(crate) async fn ensure_android_gradle_project(
             .with_context(|| format!("Failed to create {}", dst_root.display()))?;
 
         // Iterative walk to avoid recursive async fn.
-        let mut stack: Vec<(PathBuf, PathBuf, String)> = vec![
-            (src_root.to_path_buf(), dst_root.to_path_buf(), String::new()),
-        ];
+        let mut stack: Vec<(PathBuf, PathBuf, String)> = vec![(
+            src_root.to_path_buf(),
+            dst_root.to_path_buf(),
+            String::new(),
+        )];
 
         while let Some((src_dir, dst_dir, rel_prefix)) = stack.pop() {
             let mut rd = tokio::fs::read_dir(&src_dir)
@@ -275,7 +277,11 @@ pub(crate) async fn ensure_android_gradle_project(
                 ]);
             }
             RnInitStrategy::PackagePinned => {
-                cmd.args([&format!("react-native@{}", rn_ver), "init", temp_project_name]);
+                cmd.args([
+                    &format!("react-native@{}", rn_ver),
+                    "init",
+                    temp_project_name,
+                ]);
             }
             RnInitStrategy::VersionFlagPinned => {
                 cmd.args([
@@ -469,7 +475,12 @@ Ensure `npx` can download react-native@{} and that Node/npm are available in the
     }
 
     // Copy only android/ back into the user's project.
-    copy_dir_selective(&generated_android_dir, android_dir, &should_overwrite_android).await?;
+    copy_dir_selective(
+        &generated_android_dir,
+        android_dir,
+        &should_overwrite_android,
+    )
+    .await?;
 
     // Best-effort: populate worker cache for this RN version so future runs can restore instantly.
     // Write to a staging dir then rename to reduce partial-cache risk.
@@ -494,7 +505,10 @@ Ensure `npx` can download react-native@{} and that Node/npm are available in the
 
     if let Some(cb) = log_callback {
         match cache_write_res {
-            Ok(_) => cb(format!("Cached android/ template at {}", cache_target.display())),
+            Ok(_) => cb(format!(
+                "Cached android/ template at {}",
+                cache_target.display()
+            )),
             Err(e) => cb(format!("Non-fatal: failed to write android/ cache: {e:#}")),
         }
     }

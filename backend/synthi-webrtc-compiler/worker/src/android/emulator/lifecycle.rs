@@ -35,8 +35,10 @@ impl EmulatorSession {
             match std::env::var("DISPLAY") {
                 Ok(d) if !d.trim().is_empty() => d,
                 _ => {
-                    let d = std::env::var("SYNTHI_ANDROID_XVFB_DISPLAY").unwrap_or_else(|_| ":99".to_string());
-                    let res = std::env::var("SYNTHI_ANDROID_XVFB_RESOLUTION").unwrap_or_else(|_| "1080x1920".to_string());
+                    let d = std::env::var("SYNTHI_ANDROID_XVFB_DISPLAY")
+                        .unwrap_or_else(|_| ":99".to_string());
+                    let res = std::env::var("SYNTHI_ANDROID_XVFB_RESOLUTION")
+                        .unwrap_or_else(|_| "1080x1920".to_string());
                     let screen = format!("{}x24", res);
 
                     // Spawn Xvfb and keep it alive for the lifetime of this emulator session.
@@ -67,11 +69,7 @@ impl EmulatorSession {
         };
 
         // Build emulator command
-        let emulator_path = self
-            .core
-            .config
-            .android_sdk_root
-            .join("emulator/emulator");
+        let emulator_path = self.core.config.android_sdk_root.join("emulator/emulator");
 
         let mut cmd = Command::new(&emulator_path);
         cmd.args([
@@ -172,11 +170,7 @@ impl EmulatorSession {
     }
 
     async fn wait_for_emulator_ready(&self) -> Result<String> {
-        let adb = self
-            .core
-            .config
-            .android_sdk_root
-            .join("platform-tools/adb");
+        let adb = self.core.config.android_sdk_root.join("platform-tools/adb");
 
         // Wait for adb to see the emulator device
         let serial = timeout(

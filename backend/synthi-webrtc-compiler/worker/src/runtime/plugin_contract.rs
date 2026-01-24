@@ -2,15 +2,15 @@
 // The dead_code warning is a false positive since these are FFI constants
 #![allow(dead_code)]
 
-use std::ffi::{c_char, c_double, c_uint};
 use core::ffi::c_void;
+use std::ffi::{c_char, c_double, c_uint};
 
 // ============================================================
 // SYNTHI PLUGIN ABI v2.1 - SINGLE-EXPORT ABI
 // ============================================================
 // This module defines the frozen ABI contract between the runner
 // and dynamically loaded hot modules.
-// 
+//
 // KEY CHANGES IN v2.1:
 // - Single export: hot_get_api() returns pointer to static HotApi table
 // - All structs are #[repr(C)] for stable ABI
@@ -209,47 +209,28 @@ impl Default for Event {
 /// state: pointer to allocated state memory (state_size_bytes, aligned to state_align_bytes)
 /// host: runner services
 /// Returns true on success
-pub type InitFn = unsafe extern "C" fn(
-    state: *mut c_void,
-    host: *const RunnerApi,
-) -> bool;
+pub type InitFn = unsafe extern "C" fn(state: *mut c_void, host: *const RunnerApi) -> bool;
 
 /// Shutdown/cleanup state. Called before module unload.
-pub type ShutdownFn = unsafe extern "C" fn(
-    state: *mut c_void,
-    host: *const RunnerApi,
-);
+pub type ShutdownFn = unsafe extern "C" fn(state: *mut c_void, host: *const RunnerApi);
 
 /// Per-frame tick/update
-pub type TickFn = unsafe extern "C" fn(
-    state: *mut c_void,
-    host: *const RunnerApi,
-    dt: f32,
-);
+pub type TickFn = unsafe extern "C" fn(state: *mut c_void, host: *const RunnerApi, dt: f32);
 
 /// Render frame
-pub type RenderFn = unsafe extern "C" fn(
-    state: *mut c_void,
-    host: *const RunnerApi,
-);
+pub type RenderFn = unsafe extern "C" fn(state: *mut c_void, host: *const RunnerApi);
 
 /// Handle input event
-pub type EventFn = unsafe extern "C" fn(
-    state: *mut c_void,
-    e: *const Event,
-    host: *const RunnerApi,
-);
+pub type EventFn =
+    unsafe extern "C" fn(state: *mut c_void, e: *const Event, host: *const RunnerApi);
 
 /// Get serialized state size (for size-then-write pattern)
 /// state: current state
 /// state_version: module's state_version
 /// host: runner services
 /// Returns: number of bytes needed to serialize state
-pub type SaveSizeFn = unsafe extern "C" fn(
-    state: *const c_void,
-    state_version: u32,
-    host: *const RunnerApi,
-) -> usize;
+pub type SaveSizeFn =
+    unsafe extern "C" fn(state: *const c_void, state_version: u32, host: *const RunnerApi) -> usize;
 
 /// Write state as MsgPack to provided buffer (size-then-write pattern)
 /// state: current state
@@ -279,7 +260,7 @@ pub type SaveWriteJsonFn = unsafe extern "C" fn(
 ) -> bool;
 
 /// Migrate state from old version to new version
-/// 
+///
 /// CRITICAL: old_blob is OPAQUE - do NOT cast to old struct type!
 /// Use old_msgpack or old_json as the canonical source for migration.
 ///
@@ -357,20 +338,14 @@ pub type GetLayoutHashFn = unsafe extern "C" fn() -> u64;
 /// host: runner services
 /// timeout_ms: hard timeout - MUST complete before this
 /// Returns: true if quiescence achieved, false if failed
-pub type EnterQuiescenceFn = unsafe extern "C" fn(
-    state: *mut c_void,
-    host: *const RunnerApi,
-    timeout_ms: u32,
-) -> bool;
+pub type EnterQuiescenceFn =
+    unsafe extern "C" fn(state: *mut c_void, host: *const RunnerApi, timeout_ms: u32) -> bool;
 
 /// Exit quiescence mode. Called after hot reload if reload was cancelled.
 ///
 /// state: current state
 /// host: runner services
-pub type ExitQuiescenceFn = unsafe extern "C" fn(
-    state: *mut c_void,
-    host: *const RunnerApi,
-);
+pub type ExitQuiescenceFn = unsafe extern "C" fn(state: *mut c_void, host: *const RunnerApi);
 
 /// Quiescence report structure
 #[repr(C)]
@@ -417,102 +392,99 @@ pub struct HotApi {
     /// Size of this struct in bytes (for version detection)
     /// CRITICAL: Check this before accessing fields added in later versions
     pub struct_size: u32,
-    
+
     /// API version (must be >= HOT_API_MIN_VERSION)
     pub api_version: u32,
-    
+
     /// State version (module-defined, for migration)
     pub state_version: u32,
-    
+
     /// ABI fingerprint for fast compatibility check
     /// Should be stable hash of state layout + function signatures
     pub abi_fingerprint: u64,
-    
+
     /// Size of state struct in bytes
     pub state_size_bytes: usize,
-    
+
     /// Required alignment of state struct (must be power of 2, <= MAX_STATE_ALIGNMENT)
     pub state_align_bytes: usize,
-    
+
     /// Minimum size for partial compatibility (0 if unused)
     pub state_min_size_bytes: usize,
-    
+
     // === Lifecycle functions ===
-    
     /// Initialize state (required)
     pub init: Option<InitFn>,
-    
+
     /// Shutdown/cleanup (optional)
     pub shutdown: Option<ShutdownFn>,
-    
+
     /// Per-frame tick (optional, but usually needed)
     pub tick: Option<TickFn>,
-    
+
     /// Render frame (optional)
     pub render: Option<RenderFn>,
-    
+
     /// Handle event (optional)
     pub event: Option<EventFn>,
-    
+
     /// Migrate from old state version (optional but recommended)
     pub migrate: Option<MigrateFn>,
-    
+
     // === State serialization (size-then-write pattern) ===
-    
     /// Get MsgPack serialization size
     pub save_state_msgpack_size: Option<SaveSizeFn>,
-    
+
     /// Write state as MsgPack
     pub save_state_msgpack_write: Option<SaveWriteMsgpackFn>,
-    
+
     /// Get JSON serialization size (debug/fallback)
     pub save_state_json_size: Option<SaveSizeFn>,
-    
+
     /// Write state as JSON (debug/fallback)
     pub save_state_json_write: Option<SaveWriteJsonFn>,
-    
+
     // ============================================================
     // v2.1 ADDITIONS - Check struct_size before accessing
     // ============================================================
-    
     /// Semantic hash for reload safety (v2.1+)
     /// Changes when state semantics change, even if layout matches.
     /// 0 = not provided (forces migration on any change)
     pub semantic_hash: u64,
-    
+
     /// Check if state can be reused (v2.1+, optional)
     /// Called to verify both layout AND semantic compatibility.
     pub can_reuse_state: Option<CanReuseStateFn>,
-    
+
     /// Get semantic hash (v2.1+, optional)
     /// Alternative to static semantic_hash field - can compute at runtime.
     pub get_semantic_hash: Option<GetSemanticHashFn>,
-    
+
     /// Get state type identifier (v2.1+, optional but recommended)
     /// Returns stable type name for DWARF lookup.
     pub get_state_type_id: Option<GetStateTypeIdFn>,
-    
+
     /// Get precomputed layout hash (v2.1+, optional)
     /// Should be computed at build time from actual struct layout.
     pub get_layout_hash: Option<GetLayoutHashFn>,
-    
+
     /// Enter quiescence mode (v2.1+, optional but recommended)
     /// Called before hot reload to stop all activity.
     pub enter_quiescence: Option<EnterQuiescenceFn>,
-    
+
     /// Exit quiescence mode (v2.1+, optional)
     /// Called if reload is cancelled.
     pub exit_quiescence: Option<ExitQuiescenceFn>,
-    
+
     /// Get quiescence report (v2.1+, optional)
     /// Returns details about quiescence state.
     pub get_quiescence_report: Option<GetQuiescenceReportFn>,
-    
+
     /// Error message from last failed operation (v2.1+)
     /// Pointer to static or thread-local null-terminated string.
     /// NULL if no error or not supported.
     pub error_message: *const c_char,
-    
+
     /// Reserved for future expansion
     pub _reserved: [usize; 4],
 }
@@ -554,12 +526,12 @@ impl HotApi {
             _reserved: [0; 4],
         }
     }
-    
+
     /// Check if this HotApi has v2.1 fields
     pub fn has_v21_fields(&self) -> bool {
         (self.struct_size as usize) >= core::mem::size_of::<HotApi>()
     }
-    
+
     /// Get semantic hash (from field or function)
     pub unsafe fn get_semantic_hash_value(&self) -> u64 {
         if !self.has_v21_fields() {
@@ -571,7 +543,7 @@ impl HotApi {
             self.semantic_hash
         }
     }
-    
+
     /// Check if state can be reused
     pub unsafe fn check_can_reuse_state(
         &self,
@@ -583,56 +555,56 @@ impl HotApi {
             // v2.0 modules: only allow reuse if fingerprints match exactly
             return old_fingerprint == new_fingerprint;
         }
-        
+
         if let Some(func) = self.can_reuse_state {
             func(old_fingerprint, new_fingerprint, old_semantic_hash)
         } else {
             // Default: require both fingerprint and semantic hash to match
-            old_fingerprint == new_fingerprint 
+            old_fingerprint == new_fingerprint
                 && old_semantic_hash == self.get_semantic_hash_value()
         }
     }
-    
+
     /// Validate that this HotApi meets minimum requirements
     pub fn validate(&self) -> Result<(), &'static str> {
         // Check struct_size is reasonable
         if (self.struct_size as usize) < core::mem::offset_of!(HotApi, migrate) {
             return Err("struct_size too small - missing required fields");
         }
-        
+
         // Check API version
         if self.api_version < HOT_API_MIN_VERSION {
             return Err("api_version too old");
         }
-        
+
         // Check alignment is power of 2
         if self.state_align_bytes == 0 || !self.state_align_bytes.is_power_of_two() {
             return Err("state_align_bytes must be a power of 2");
         }
-        
+
         // Check alignment is sane
         if self.state_align_bytes > MAX_STATE_ALIGNMENT {
             return Err("state_align_bytes exceeds maximum");
         }
-        
+
         // Check state size is aligned
         if self.state_size_bytes % self.state_align_bytes != 0 {
             return Err("state_size_bytes must be multiple of state_align_bytes");
         }
-        
+
         // Must have init function
         if self.init.is_none() {
             return Err("init function is required");
         }
-        
+
         Ok(())
     }
-    
+
     /// Check if this module supports state serialization
     pub fn has_serialization(&self) -> bool {
         self.save_state_msgpack_size.is_some() && self.save_state_msgpack_write.is_some()
     }
-    
+
     /// Check if this module supports migration
     pub fn has_migration(&self) -> bool {
         self.migrate.is_some()

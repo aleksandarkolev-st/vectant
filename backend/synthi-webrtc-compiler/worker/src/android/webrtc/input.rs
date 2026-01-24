@@ -5,8 +5,8 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::process::Command;
 use std::sync::Mutex;
+use tokio::process::Command;
 
 #[derive(Debug, Clone)]
 pub struct EmulatorInputSession {
@@ -108,7 +108,11 @@ pub async fn handle_input_message(msg: EmulatorInputMessage) -> Result<()> {
                 .keycode
                 .as_deref()
                 .context("key event missing keycode")?;
-            let kc = if kc.starts_with("KEYCODE_") { kc.to_string() } else { format!("KEYCODE_{}", kc) };
+            let kc = if kc.starts_with("KEYCODE_") {
+                kc.to_string()
+            } else {
+                format!("KEYCODE_{}", kc)
+            };
             adb_shell(&session.adb, &session.serial, &["input", "keyevent", &kc]).await?;
         }
         "text" => {
@@ -145,10 +149,16 @@ fn map_xy(
     // Default assumption if client doesn't send geometry:
     // coordinates are already in device pixels.
     let Some(view_w) = msg.view_w else {
-        return Ok((x.round().clamp(0.0, device_w as f64) as u32, y.round().clamp(0.0, device_h as f64) as u32));
+        return Ok((
+            x.round().clamp(0.0, device_w as f64) as u32,
+            y.round().clamp(0.0, device_h as f64) as u32,
+        ));
     };
     let Some(view_h) = msg.view_h else {
-        return Ok((x.round().clamp(0.0, device_w as f64) as u32, y.round().clamp(0.0, device_h as f64) as u32));
+        return Ok((
+            x.round().clamp(0.0, device_w as f64) as u32,
+            y.round().clamp(0.0, device_h as f64) as u32,
+        ));
     };
 
     let video_w = msg.video_w.unwrap_or(device_w as f64).max(1.0);
@@ -224,8 +234,7 @@ pub async fn query_device_size(adb: &PathBuf, serial: &str) -> Result<(u32, u32)
         .context("adb shell wm size failed")?;
 
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let re = Regex::new(r"(Physical size:|Override size:)?\s*(\d+)x(\d+)")
-        .expect("regex");
+    let re = Regex::new(r"(Physical size:|Override size:)?\s*(\d+)x(\d+)").expect("regex");
     if let Some(c) = re.captures(&stdout) {
         let w: u32 = c.get(2).unwrap().as_str().parse().unwrap_or(0);
         let h: u32 = c.get(3).unwrap().as_str().parse().unwrap_or(0);

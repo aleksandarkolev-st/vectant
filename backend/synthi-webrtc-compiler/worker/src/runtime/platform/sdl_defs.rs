@@ -105,7 +105,7 @@ pub unsafe fn init_sdl() -> (*mut SDL_Window, *mut c_void) {
         eprintln!("SDL_Init failed");
         return (std::ptr::null_mut(), std::ptr::null_mut());
     }
-    
+
     eprintln!("SDL_Init successful.");
     let title = std::ffi::CString::new("Synthi Runner").unwrap();
     let win = SDL_CreateWindow(
@@ -116,22 +116,21 @@ pub unsafe fn init_sdl() -> (*mut SDL_Window, *mut c_void) {
         600,
         SDL_WINDOW_SHOWN,
     );
-    
+
     if win.is_null() {
         eprintln!("SDL_CreateWindow failed");
         return (std::ptr::null_mut(), std::ptr::null_mut());
     }
-    
+
     eprintln!("SDL_CreateWindow successful. Window ptr: {:p}", win);
     let mut ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
     if ren.is_null() {
         ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
     }
-    
+
     if ren.is_null() {
         eprintln!("SDL_CreateRenderer failed");
     }
-    
+
     (win, ren)
 }
-
