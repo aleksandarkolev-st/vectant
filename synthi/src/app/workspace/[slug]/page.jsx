@@ -1419,6 +1419,12 @@ export default function EditorPage({ params }) {
         // Auto-open the emulator panel when we run a mobile build.
         let mobileSid = null;
         if (isReactNative) {
+            // Cancel previous session if restart
+            if (emulatorSessionId) {
+                console.log('[handleRun] Restarting - cancelling previous session:', emulatorSessionId);
+                await cancelMobileJob(emulatorSessionId);
+            }
+
             mobileSid = `sess-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
             setEmulatorSessionId(mobileSid);
             setEmulatorForcedError('');
@@ -1454,13 +1460,18 @@ export default function EditorPage({ params }) {
             });
             appendBuildLog('Build succeeded.');
         } catch (err) {
+            const msg = err?.message || String(err);
+            if (msg.includes('cancelled by user') || msg.includes('Cancelled')) {
+                 console.log('Build cancelled (probably due to restart/stop)');
+                 return;
+            }
             console.error('Compile failed', err);
-            appendBuildLog(`error: ${err?.message || err}`);
+            appendBuildLog(`error: ${msg}`);
             if (isReactNative) {
-                setEmulatorForcedError(err?.message || String(err));
+                setEmulatorForcedError(msg);
             }
         }
-    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, useAiSplit]);
+    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, useAiSplit, emulatorSessionId, cancelMobileJob]);
 
     const handleStop = useCallback(() => {
         if (emulatorSessionId) {

@@ -143,6 +143,9 @@ pub async fn stream_frames(cfg: &EmulatorGrpcConfig) -> Result<mpsc::UnboundedRe
     let (tx, rx) = mpsc::unbounded_channel::<EmulatorFrame>();
 
     tokio::spawn(async move {
+        // Start with a small flush to ensure no stale data in channel? Not needed as it is new.
+        eprintln!("[grpc] stream_frames task started"); 
+
         let mut last_seq: Option<u32> = None;
         loop {
             match stream.message().await {

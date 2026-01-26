@@ -238,13 +238,22 @@ export async function POST(request) {
     const cleaned = sanitize(completionText);
     const dedupedCleaned = suppressEcho(cleaned, typeof bodyForContext?.code === 'string' ? bodyForContext.code : '');
 
-    // Extract JSON between <JSON>...</JSON> markers
+    // Extract JSON between <JSON>...</JSON> markers, or fallback to markdown blocks
     let parsed = null;
     try {
       const markerMatch = cleaned.match(/<JSON>[\s\S]*?<\/JSON>/i);
       if (markerMatch) {
         const jsonText = markerMatch[0].replace(/^<JSON>/i, '').replace(/<\/JSON>$/i, '');
         parsed = JSON.parse(jsonText);
+      } else {
+        // Fallback: try to find markdown code block
+        const codeBlockMatch = cleaned.match(/```json([\s\S]*?)```/i) || cleaned.match(/```([\s\S]*?)```/i);
+        if (codeBlockMatch) {
+          parsed = JSON.parse(codeBlockMatch[1]);
+        } else if (cleaned.trim().startsWith('{') && cleaned.trim().endsWith('}')) {
+          // Fallback: try to parse raw JSON
+          parsed = JSON.parse(cleaned);
+        }
       }
     } catch (e) {
       parsed = null;

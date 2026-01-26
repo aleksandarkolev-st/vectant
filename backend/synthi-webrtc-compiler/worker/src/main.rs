@@ -575,7 +575,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    let pc = create_peer(signal_tx.clone()).await?;
+    let mut pc = create_peer(signal_tx.clone()).await?;
     let log_channel_store: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
     let compile_store = log_channel_store.clone();
     // Store of sessionId -> stdin sender so datachannel 'terminal' messages can be
@@ -826,12 +826,13 @@ async fn main() -> Result<()> {
     let metrics_aggregator_for_callback = metrics_aggregator.clone();
     let restart_controller_for_callback = restart_controller.clone();
     let ipc_config_for_callback = ipc_config.clone();
+    let sdl_input_store_for_callback = sdl_input_store.clone();
     pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
         let store = compile_store.clone();
         let term_store = term_store.clone();
         let pc_for_callback = pc_clone.clone();
         let workspace_path_for_dc = workspace_path_for_callback.clone();
-        let sdl_store_outer = sdl_input_store.clone();
+        let sdl_store_outer = sdl_input_store_for_callback.clone();
         let runner_store_outer = runner_store_for_callback.clone();
         let compile_cache_outer = compile_cache_for_callback.clone();
         let boundary_checker_outer = boundary_checker_for_callback.clone();
@@ -866,6 +867,7 @@ async fn main() -> Result<()> {
                         let ipc_config = ipc_config_outer.clone();
                         async move {
                             if msg.is_string {
+                                eprintln!("[Main] Received message on 'compile' channel. Length: {}", msg.data.len());
                                 // Try to parse as a CancelMobileJobRequest first
                                 if let Ok(cancel_req) = serde_json::from_slice::<CancelMobileJobRequest>(&msg.data) {
                                     if cancel_req.msg_type == "cancel-mobile-job" {
@@ -884,6 +886,7 @@ async fn main() -> Result<()> {
                                         req.is_gui, req.use_ai_split, req.language, req.target);
                                     let log_dc = { store.lock().await.clone() };
                                     if let Some(log) = log_dc {
+                                        eprintln!("[Main] Found active build-log channel, proceeding with build...");
                                         // Check if this is a mobile emulator target
                                         if let Some(ref target) = req.target {
                                             if target == "react-native-emulator" {
@@ -1076,7 +1079,11 @@ async fn main() -> Result<()> {
                                                 }
                                             }
                                         }
+                                    } else {
+                                        eprintln!("[Main] ERROR: No build-log channel found in store! Dropping compile request.");
                                     }
+                                } else {
+                                     eprintln!("[Main] Failed to parse CompileRequest. Data preview: {}", String::from_utf8_lossy(&msg.data).chars().take(100).collect::<String>());
                                 }
                             }
                         }
@@ -1571,6 +1578,51 @@ async fn main() -> Result<()> {
             "candidate" => {
                 if let Some(c) = parsed.candidate {
                     let _ = pc.add_ice_candidate(c).await;
+                }
+            }
+            "reset" => {
+                eprintln!("[WebRTC-signal] Received reset command, clearing WebRTC state (SOFT RESET)...");
+                
+                // 1. Close the existing PeerConnection
+                if let Err(e) = pc.close().await {
+                    eprintln!("[WebRTC-signal] Warning: failed to close old PC: {:?}", e);
+                }
+
+                // 2. Clear runner state (Terminates Emulator/GStreamer pipeline)
+                {
+                    let mut guard = runner_store.lock().await;
+                    if guard.is_some() {
+                        eprintln!("[WebRTC-signal] Dropping old RunnerState...");
+                        *guard = None;
+                    }
+                }
+
+                // 3. Clear other session stores
+                {
+                     let mut guard = log_channel_store.lock().await;
+                     *guard = None;
+                }
+                {
+                     let mut guard = terminal_input_store.lock().await;
+                     guard.clear();
+                }
+                {
+                     let mut guard = sdl_input_store.lock().await;
+                     guard.clear();
+                }
+
+                // 4. Create a fresh PeerConnection
+                match create_peer(signal_tx.clone()).await {
+                    Ok(new_pc) => {
+                         pc = new_pc;
+                         eprintln!("[WebRTC-signal] Soft reset complete. New PeerConnection ready.");
+                    },
+                    Err(e) => {
+                         eprintln!("[WebRTC-signal] CRITICAL ERROR: Failed to re-create peer connection: {:?}", e);
+                         // Panic? Return? Try to continue?
+                         // If we can't create a peer, we're likely dead anyway.
+                         return Err(e);
+                    }
                 }
             }
             _ => {}

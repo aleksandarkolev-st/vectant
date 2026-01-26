@@ -452,8 +452,8 @@ pub async fn handle_react_native_emulator_job(
         )
         .await;
 
-        // Force a slightly longer wait before prewarm to reduce CPU contention on start
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        // Start immediately (min delay) to maximize concurrency with build
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         let res = ensure_emulator_ready(prewarm_config).await;
         match &res {
@@ -1080,6 +1080,7 @@ pub async fn handle_react_native_emulator_job(
     .await?;
 
     let mut grpc_frame_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut adaptation_task: Option<tokio::task::JoinHandle<()>> = None;
 
     let (pipeline, display_label) = if stream_config.mode == EmulatorStreamMode::Grpc {
         if !emulator_grpc::grpc_codegen_available() {
@@ -1197,19 +1198,27 @@ pub async fn handle_react_native_emulator_job(
             .context("gRPC pipeline missing appsrc")?;
 
         // Start bitrate adaptation
-        spawn_video_bitrate_adaptation(pc.clone(), pipeline.clone(), log_dc.clone(), session_id.clone());
+        adaptation_task = Some(spawn_video_bitrate_adaptation(pc.clone(), pipeline.clone(), log_dc.clone(), session_id.clone()));
 
-        // Wait 5000ms and then try to interact with the device to wake it up
+        // Wait a bit and then try to interact with the device to wake it up
         let adb_path_clone = adb_path.clone();
         let serial_clone = emulator_serial.clone();
         
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(5000)).await;
+            tokio::time::sleep(Duration::from_millis(1500)).await;
             
             // Wake up
             let _ = tokio::process::Command::new(&adb_path_clone)
                 .arg("-s").arg(&serial_clone)
-                .arg("shell").arg("input").arg("keyevent").arg("82") // MENU/UNLOCK
+                .arg("shell").arg("input").arg("keyevent").arg("KEYCODE_WAKEUP")
+                .output().await;
+
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            // Unlock (Menu key often helps dismiss lock screen on emulator)
+            let _ = tokio::process::Command::new(&adb_path_clone)
+                .arg("-s").arg(&serial_clone)
+                .arg("shell").arg("input").arg("keyevent").arg("82") // MENU
                 .output().await;
         });
 
@@ -1759,6 +1768,9 @@ pub async fn handle_react_native_emulator_job(
     if let Some(task) = grpc_frame_task {
         task.abort();
     }
+    if let Some(task) = adaptation_task {
+        task.abort();
+    }
     let _ = daemon.session_mut().stop_logcat().await;
     daemon.release_keepalive().await;
     emulator_input::unregister_session_sync(&session_id);
@@ -1803,7 +1815,7 @@ fn spawn_video_bitrate_adaptation(
     pipeline: Arc<video_pipeline::EmulatorVideoPipeline>,
     log_dc: Arc<RTCDataChannel>,
     session_id: String,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(3));
         let mut current_bitrate = 2000u32;
@@ -1895,5 +1907,5 @@ fn spawn_video_bitrate_adaptation(
                  }
             }
         }
-    });
+    })
 }

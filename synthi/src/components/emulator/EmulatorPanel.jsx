@@ -34,6 +34,7 @@ export default function EmulatorPanel({
   const [errorMessage, setErrorMessage] = useState('');
   const [workerStatus, setWorkerStatus] = useState(null);
   const [workerMessage, setWorkerMessage] = useState('');
+  const [lastLog, setLastLog] = useState(''); // Real-time boot logs
   const [streamConnected, setStreamConnected] = useState(false);
   const lastEventAtRef = useRef(0);
   const capabilitiesRef = useRef(null);
@@ -280,6 +281,11 @@ export default function EmulatorPanel({
         if (/Generated project does not contain a Gradle Android build|APK build failed/i.test(l)) {
           setErrorMessage(l);
           setState(EMULATOR_STATES.ERROR);
+          return;
+        }
+        // Update detailed log for BootingScreen (if not empty)
+        if (l.trim()) {
+           setLastLog(l.trim());
         }
       }
     };
@@ -405,6 +411,7 @@ export default function EmulatorPanel({
               canvasRef={canvasRef}
               mediaStream={mediaStream}
               bootStatus={workerMessage}
+              bootDetail={lastLog}
             />
           </div>
         </EmulatorFrame>

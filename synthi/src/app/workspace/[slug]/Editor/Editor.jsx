@@ -1732,9 +1732,9 @@ const EditorPanel = ({
                                                 key={activeFileIdentity}
                                                 height="100%"
                                                 path={activeFile ? `/synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}` : undefined}
-                                                // Always pass value on initial mount, then let collab take over
-                                                // This ensures Monaco has valid content before Yjs binds
-                                                value={code ?? ''}
+                                                // Use defaultValue for initial content to prevent cursor jumping issues during typing.
+                                                // The key={activeFileIdentity} ensures component remounts on file switch.
+                                                defaultValue={code ?? ''}
                                                 language={activeLanguage}
                                                 theme="synthi-theme"
                                                 options={{

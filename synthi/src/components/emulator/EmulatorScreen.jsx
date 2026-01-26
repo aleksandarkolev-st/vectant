@@ -48,7 +48,7 @@ function HomeScreenMock() {
   );
 }
 
-function BootingScreen({ message }) {
+function BootingScreen({ message, detail }) {
   return (
     <div className="h-full w-full bg-black flex items-center justify-center">
       <div className="flex flex-col items-center gap-3">
@@ -56,6 +56,11 @@ function BootingScreen({ message }) {
         <div className="text-xs text-gray-300 tracking-wide text-center px-4 max-w-[80%] break-words">
           {message || 'booting…'}
         </div>
+        {detail && (
+          <div className="text-[10px] text-gray-500 font-mono text-center px-4 w-full break-words opacity-80 leading-tight">
+            {detail}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -140,6 +145,7 @@ export default function EmulatorScreen({
   canvasRef,
   mediaStream,
   bootStatus,
+  bootDetail,
 }) {
   // All hooks MUST be called before any conditional returns (React Rules of Hooks)
   const pointerStateRef = React.useRef(null);
@@ -376,7 +382,7 @@ export default function EmulatorScreen({
   };
 
   if (state === EMULATOR_STATES.BOOTING) {
-    return <BootingScreen message={bootStatus} />;
+    return <BootingScreen message={bootStatus} detail={bootDetail} />;
   }
 
   if (state === EMULATOR_STATES.IDLE) {

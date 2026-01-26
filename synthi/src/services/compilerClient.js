@@ -62,6 +62,9 @@ export class CompilerClient {
         this._negotiationInProgress = false;
         this._pendingNegotiation = null;
         
+        // Timer for retrying initial connection offer
+        this._offerRetryInterval = null;
+        
         this._handleTerminalInput = this._handleTerminalInput.bind(this);
         this._handleGuiInput = this._handleGuiInput.bind(this);
         this._handleEmulatorInput = this._handleEmulatorInput.bind(this);
@@ -548,7 +551,28 @@ export class CompilerClient {
                         signalingState: this.pc?.signalingState,
                     });
                 } catch (_) {}
-                this.ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp, sdp_type: offer.type }));
+                
+                const offerPayload = JSON.stringify({ type: 'offer', sdp: offer.sdp, sdp_type: offer.type });
+                this.ws.send(offerPayload);
+
+                // Retry sending the offer periodically until we receive an Answer.
+                // This prevents the connection from hanging if the Worker process is restarting 
+                // and hasn't connected to the Signaling Server yet when we send the first offer.
+                if (this._offerRetryInterval) clearInterval(this._offerRetryInterval);
+                this._offerRetryInterval = setInterval(() => {
+                    const isWaiting = this.pc && this.pc.signalingState === 'have-local-offer';
+                    const isOpen = this.ws && this.ws.readyState === WebSocket.OPEN;
+                    
+                    if (isWaiting && isOpen) {
+                        console.log('[CompilerClient] Retrying offer transmission (worker might not be ready)...');
+                        this.ws.send(offerPayload);
+                    } else {
+                        if (this._offerRetryInterval) {
+                            clearInterval(this._offerRetryInterval);
+                            this._offerRetryInterval = null;
+                        }
+                    }
+                }, 2000);
 
                 this.compileChannel.onopen = () => resolve(true);
                 
@@ -716,6 +740,53 @@ export class CompilerClient {
         return channel;
     }
 
+    async reconnect() {
+        console.log('[CompilerClient] Forcing reconnection to clear WebRTC state...');
+        
+        // Try to signal the worker to reset/exit before we close the socket.
+        // This ensures the worker restarts and gives us a fresh PeerConnection,
+        // avoiding GStreamer timestamp issues and renegotiation stalls.
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            try {
+                console.log('[CompilerClient] Sending reset command to worker...');
+                this.ws.send(JSON.stringify({ type: 'reset' }));
+            } catch (e) {
+                console.warn('[CompilerClient] Failed to send reset command', e);
+            }
+        }
+
+        if (this._offerRetryInterval) {
+            clearInterval(this._offerRetryInterval);
+            this._offerRetryInterval = null;
+        }
+
+        if (this.ws) {
+            this.ws.close();
+        }
+        if (this.pc) {
+            this.pc.close();
+        }
+        
+        // Wait for close events to propagate and backend to cleanup
+        await new Promise(r => setTimeout(r, 1000));
+
+        // Reset connection state but keep listeners
+        this.ws = null;
+        this.pc = null;
+        this.compileChannel = null;
+        this.buildLogChannel = null;
+        this.terminalChannel = null;
+        this.emulatorInputChannel = null;
+        this.lspChannel = null;
+        this.readyPromise = null;
+        this._setStatus(CompilerStatus.IDLE);
+        
+        // Clear streaming state
+        this.currentStreams = [];
+        
+        return this.connect();
+    }
+
     async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false, target = null, projectRoot = null, slug = null, sessionId: providedSessionId = null } = {}) {
         // Auto-detect React Native from source if no target specified and file is JS/JSX/TSX
         const ext = (filename || '').split('.').pop().toLowerCase();
@@ -727,6 +798,10 @@ export class CompilerClient {
             console.log('[CompilerClient] Auto-detected React Native project from source imports');
         }
         
+        // REMOVED: Force a clean WebRTC connection for mobile emulator runs.
+        // This was causing unnecessary resets/disconnects on every "Run" click.
+        // The reset should only happen on explicit Stop/Restart actions if needed.
+
         // For mobile targets, language detection is optional
         const lang = effectiveTarget === 'react-native-emulator' ? (language || 'javascript') : (language || this._mapLanguage(filename));
         if (!effectiveTarget && !lang) throw new SynthiException('Unsupported language for compilation', 'The file extension is not supported by the compiler.');
@@ -775,7 +850,10 @@ export class CompilerClient {
             }
 
             try {
-                await this.connect();
+                // If we didn't reconnect above (non-mobile targets), ensure we're connected
+                if (!this.pc || this.pc.connectionState === 'closed') {
+                   await this.connect();
+                }
 
                 // For mobile runs: sample WebRTC stats briefly to confirm inbound video bytes/frames.
                 // This helps distinguish “UI issue” from “no media flowing / black frames”.
@@ -950,7 +1028,7 @@ export class CompilerClient {
      * Sends a cancel message through the compile channel to terminate the job on the worker.
      * @param {string} sessionId - The session ID of the mobile job to cancel
      */
-    cancelMobileJob(sessionId) {
+    async cancelMobileJob(sessionId) {
         if (!sessionId) {
             console.warn('[CompilerClient] cancelMobileJob called without sessionId');
             return;
@@ -976,6 +1054,48 @@ export class CompilerClient {
         } catch (e) {
             console.error('[CompilerClient] Failed to send cancel-mobile-job:', e);
         }
+
+        // Wait for cancellation confirmation from worker
+        await new Promise((resolve) => {
+            let timer = null;
+            const handler = (msg) => {
+                const line = typeof msg === 'string' ? msg : String(msg);
+                
+                // Matches log: [mobile-job] Session ... cancelled by user
+                // Also matches: [input.rs] Session ... marked as cancelled
+                if (line.includes(sessionId) && (
+                    line.includes('cancelled by user') || 
+                    line.includes('marked as cancelled')
+                )) {
+                    cleanup();
+                    resolve();
+                    return;
+                }
+                
+                // Check for JSON status if applicable
+                try {
+                    const parsed = JSON.parse(line);
+                    if (parsed && parsed.sessionId === sessionId && 
+                       (parsed.type === 'mobile-status' && (parsed.status === 'done' || parsed.status === 'error'))) {
+                           cleanup();
+                           resolve();
+                    }
+                } catch(_) {}
+            };
+
+            const cleanup = () => {
+                this.logHandlers.delete(handler);
+                if (timer) clearTimeout(timer);
+            };
+
+            // Set a timeout so we don't wait forever if the backend is silent or crashed
+            timer = setTimeout(() => {
+                cleanup();
+                resolve();
+            }, 5000); // 5s timeout
+
+            this.logHandlers.add(handler);
+        });
         
         // Clear active session if it matches
         if (this.activeSessionId === sessionId) {

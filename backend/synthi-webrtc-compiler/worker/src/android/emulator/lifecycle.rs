@@ -130,7 +130,8 @@ impl EmulatorSession {
             &self.core.config.cores.to_string(),
             "-read-only",        // Don't modify system image
             "-no-snapshot-save", // Don't save snapshots
-            "-no-snapshot-load", // Don't load snapshots
+            // Enable quick boot (re-enable snapshot load)
+            // "-no-snapshot-load", 
             "-no-skin",          // Disable device skin/frame (removes side toolbar)
         ]);
         if gpu_override.is_none() {

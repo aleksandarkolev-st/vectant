@@ -92,7 +92,7 @@ export function useCompiler() {
 
     const cancelMobileJob = useCallback((sessionId) => {
         const client = clientRef.current || getCompilerClient();
-        client.cancelMobileJob(sessionId);
+        return client.cancelMobileJob(sessionId);
     }, []);
 
     const client = typeof window !== 'undefined' ? getCompilerClient() : null;
