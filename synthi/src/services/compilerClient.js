@@ -57,6 +57,9 @@ export class CompilerClient {
         // Optional emitter used to mirror WebRTC diagnostics into the active build log output.
         // Set by `compile()` and cleared when the compile finishes.
         this._webrtcEmit = null;
+
+        // Track target per session to support correct cancellation behavior.
+        this._sessionTargets = new Map();
         
         // Track pending negotiation to avoid overlapping offer/answer cycles
         this._negotiationInProgress = false;
@@ -816,6 +819,9 @@ export class CompilerClient {
             ? providedSessionId
             : `sess-${Date.now()}-${Math.floor(Math.random()*100000)}`;
 
+        // Record target for cancellation behavior (mobile vs non-mobile).
+        this._sessionTargets.set(sessionId, effectiveTarget || 'native');
+
         // If a mobile session is already running, cancel it first and wait briefly
         // to allow the worker to teardown pipelines before starting a new run.
         if (effectiveTarget === 'react-native-emulator') {
@@ -992,6 +998,7 @@ export class CompilerClient {
                         // Clear per-run WebRTC emitter.
                         this._webrtcEmit = null;
                         stopStats();
+                        this._sessionTargets.delete(sessionId);
                         if (parsed.data?.success) {
                             resolve(parsed);
                         } else {
@@ -1006,6 +1013,7 @@ export class CompilerClient {
                         this.pendingCompilationMap.delete(sessionId);
                         this._webrtcEmit = null;
                         stopStats();
+                        this._sessionTargets.delete(sessionId);
                         reject(new SynthiException('Mobile build failed', parsed.message || 'Mobile emulator job failed'));
                         return;
                     }
@@ -1018,8 +1026,10 @@ export class CompilerClient {
                         this._webrtcEmit = null;
                         stopStats();
                         if (parsed.success) {
+                            this._sessionTargets.delete(sessionId);
                             resolve(parsed);
                         } else {
+                            this._sessionTargets.delete(sessionId);
                             reject(new SynthiException('Compilation failed', 'The compilation process returned an error status.'));
                         }
                         return;
@@ -1128,9 +1138,11 @@ export class CompilerClient {
         if (this.activeSessionId === sessionId) {
             this.activeSessionId = null;
         }
-        
+
         // Clear WebRTC emitter
         this._webrtcEmit = null;
+
+        this._sessionTargets.delete(sessionId);
 
         return result;
     }
@@ -1171,6 +1183,8 @@ export class CompilerClient {
             let timer = null;
             const handler = (msg) => {
                 const line = typeof msg === 'string' ? msg : String(msg);
+                const target = this._sessionTargets.get(sessionId);
+                const isMobile = target === 'react-native-emulator';
                 if (line.includes(sessionId) && (
                     line.includes('cancelled by user') ||
                     line.includes('cancelled')
@@ -1182,10 +1196,17 @@ export class CompilerClient {
 
                 try {
                     const parsed = JSON.parse(line);
-                    if (parsed && parsed.sessionId === sessionId && parsed.type === 'build-status' && parsed.status === 'cancelled') {
-                        cleanup();
-                        resolve({ cancelled: true, timedOut: false });
-                        return;
+                    if (parsed && parsed.sessionId === sessionId) {
+                        if (!isMobile && parsed.type === 'build-status' && parsed.status === 'cancelled') {
+                            cleanup();
+                            resolve({ cancelled: true, timedOut: false });
+                            return;
+                        }
+                        if (parsed.type === 'mobile-status' && parsed.status === 'cancelled') {
+                            cleanup();
+                            resolve({ cancelled: true, timedOut: false });
+                            return;
+                        }
                     }
                 } catch (_) {}
             };
@@ -1206,6 +1227,8 @@ export class CompilerClient {
         if (this.activeSessionId === sessionId) {
             this.activeSessionId = null;
         }
+
+        this._sessionTargets.delete(sessionId);
 
         return result;
     }

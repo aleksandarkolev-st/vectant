@@ -174,6 +174,15 @@ fn get_signaling_url() -> String {
     "ws://localhost:9000".to_string()
 }
 
+fn extract_fingerprint(sdp: &str) -> Option<String> {
+    for line in sdp.lines() {
+        if let Some(rest) = line.strip_prefix("a=fingerprint:") {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     println!("Worker starting...");
@@ -592,6 +601,7 @@ async fn main() -> Result<()> {
         ipc_config.clone(),
     ).await?;
 
+    let mut current_remote_fingerprint: Option<String> = None;
     while let Some(msg) = ws_read.next().await {
         let msg = msg?;
         if !msg.is_text() {
@@ -612,6 +622,57 @@ async fn main() -> Result<()> {
                         "rollback" => RTCSdpType::Rollback,
                         _ => RTCSdpType::Offer,
                     };
+                    let new_fingerprint = extract_fingerprint(&sdp);
+                    let fingerprint_changed = match (&current_remote_fingerprint, &new_fingerprint) {
+                        (Some(old_fp), Some(new_fp)) => old_fp != new_fp,
+                        (Some(_), None) => true,
+                        _ => false,
+                    };
+
+                    if fingerprint_changed {
+                        eprintln!(
+                            "[WebRTC-signal] Detected new peer fingerprint, recreating PeerConnection for fresh browser session"
+                        );
+                        if let Err(e) = pc.close().await {
+                            eprintln!("[WebRTC-signal] Warning: failed to close old PC: {:?}", e);
+                        }
+                        {
+                            let mut guard = log_channel_store.lock().await;
+                            *guard = None;
+                        }
+                        match create_peer(signal_tx.clone()).await {
+                            Ok(new_pc) => {
+                                wire_peer_channels(
+                                    &new_pc,
+                                    log_channel_store.clone(),
+                                    terminal_input_store.clone(),
+                                    sdl_input_store.clone(),
+                                    runner_store.clone(),
+                                    compile_task_store.clone(),
+                                    workspace_path_arc.clone(),
+                                    compile_cache.clone(),
+                                    boundary_checker.clone(),
+                                    incremental_cache.clone(),
+                                    hmr_orchestrator.clone(),
+                                    structured_logger.clone(),
+                                    metrics_aggregator.clone(),
+                                    restart_controller.clone(),
+                                    ipc_config.clone(),
+                                )
+                                .await?;
+                                pc = new_pc;
+                                current_remote_fingerprint = None;
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "[WebRTC-signal] CRITICAL ERROR: Failed to re-create peer connection: {:?}",
+                                    e
+                                );
+                                return Err(e);
+                            }
+                        }
+                    }
+
                     eprintln!("[WebRTC-signal] Received offer (type={:?}), current state={:?}", sdp_type, pc.signaling_state());
                     let mut desc = RTCSessionDescription::default();
                     desc.sdp_type = sdp_type;
@@ -632,6 +693,9 @@ async fn main() -> Result<()> {
                         sdp_type: Some(answer.sdp_type.to_string()),
                         candidate: None,
                     })?;
+                    if let Some(fp) = new_fingerprint {
+                        current_remote_fingerprint = Some(fp);
+                    }
                 }
             }
             "candidate" => {
@@ -646,6 +710,7 @@ async fn main() -> Result<()> {
                 if let Err(e) = pc.close().await {
                     eprintln!("[WebRTC-signal] Warning: failed to close old PC: {:?}", e);
                 }
+                current_remote_fingerprint = None;
 
                 // 2. Clear runner state (Terminates Emulator/GStreamer pipeline)
                 {
@@ -1004,9 +1069,11 @@ async fn wire_peer_channels(
                         let workspace_path_for_compile = workspace_path_for_dc.clone();
                         let sdl_store = sdl_store_outer.clone();
                         let runner_store = runner_store_outer.clone();
+                        let runner_store_for_msg = runner_store_outer.clone();
                         let compile_cache = compile_cache_outer.clone();
                         let boundary_checker = boundary_checker_outer.clone();
                         let incremental_cache = incremental_cache_outer.clone();
+                        let compile_task_store_for_msg = compile_task_store_outer.clone();
                         // v2.1 inner clones
                         let hmr_orchestrator = hmr_orchestrator_outer.clone();
                         let structured_logger = structured_logger_outer.clone();
@@ -1032,7 +1099,7 @@ async fn wire_peer_channels(
                                         }
 
                                         // Abort active compile task if it matches
-                                        let mut task_guard = compile_task_store_outer.lock().await;
+                                        let mut task_guard = compile_task_store_for_msg.lock().await;
                                         let mut cancelled_session = target_session.clone();
                                         if let Some((current_id, handle)) = task_guard.take() {
                                             if target_session.as_ref().map_or(true, |sid| sid == &current_id) {
@@ -1047,7 +1114,7 @@ async fn wire_peer_channels(
 
                                         // Stop any running runner process/pipeline
                                         {
-                                            let mut guard = runner_store_outer.lock().await;
+                                            let mut guard = runner_store_for_msg.lock().await;
                                             if let Some(state) = guard.take() {
                                                 if let Some(mut child) = state.process {
                                                     let _ = child.kill().await;
@@ -1205,7 +1272,7 @@ async fn wire_peer_channels(
                                         if req.session_id.is_none() {
                                             req.session_id = Some(session_id.clone());
                                         }
-                                        let task_store = compile_task_store_outer.clone();
+                                        let task_store = compile_task_store_for_msg.clone();
                                         let log_clone = log.clone();
                                         let task_session = session_id.clone();
                                         let handle = tokio::spawn(async move {
@@ -1220,7 +1287,7 @@ async fn wire_peer_channels(
                                             }
                                         });
                                         {
-                                            let mut guard = compile_task_store_outer.lock().await;
+                                            let mut guard = compile_task_store_for_msg.lock().await;
                                             if let Some((_, existing)) = guard.take() {
                                                 existing.abort();
                                             }

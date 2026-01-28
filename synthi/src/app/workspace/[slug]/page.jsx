@@ -1495,7 +1495,16 @@ export default function EditorPage({ params }) {
     const handleStop = useCallback(async () => {
         const activeSessionId = client?.getActiveSessionId?.();
         if (activeSessionId) {
-            await client.cancelBuild(activeSessionId);
+            const result = await client.cancelBuild(activeSessionId);
+            if (!result || !result.cancelled) {
+                if (typeof window !== 'undefined' && window.alert) {
+                    window.alert(
+                        `Build did not fully stop yet (session ${activeSessionId}).\n` +
+                        `Please wait a moment and try again.`
+                    );
+                }
+                return;
+            }
         }
         if (emulatorSessionId) {
             setEmulatorForcedError('Compilation stopped by user.');
@@ -1514,7 +1523,16 @@ export default function EditorPage({ params }) {
     const handleRestart = useCallback(async () => {
         const activeSessionId = client?.getActiveSessionId?.();
         if (activeSessionId) {
-            await client.cancelBuild(activeSessionId);
+            const result = await client.cancelBuild(activeSessionId);
+            if (!result || !result.cancelled) {
+                if (typeof window !== 'undefined' && window.alert) {
+                    window.alert(
+                        `Build did not fully stop yet (session ${activeSessionId}).\n` +
+                        `Please wait a moment and try again.`
+                    );
+                }
+                return;
+            }
         }
         if (client?.reconnect) {
             await client.reconnect();
