@@ -144,6 +144,15 @@ struct CancelMobileJobRequest {
     session_id: String,
 }
 
+/// Request to cancel a running build (all targets)
+#[derive(Debug, Deserialize)]
+struct CancelBuildRequest {
+    #[serde(rename = "type")]
+    msg_type: String, // Should be "cancel-build"
+    #[serde(default)]
+    session_id: Option<String>,
+}
+
 
 // Auto-detect WSL host IP
 fn get_wsl_backend_url() -> String {
@@ -351,6 +360,9 @@ async fn main() -> Result<()> {
         Arc::new(Mutex::new(HashMap::new()));
     // Store for persistent runner process
     let runner_store: Arc<Mutex<Option<RunnerState>>> = Arc::new(Mutex::new(None));
+    // Store for currently running compile task (any target)
+    let compile_task_store: Arc<Mutex<Option<(String, tokio::task::JoinHandle<()>)>>> =
+        Arc::new(Mutex::new(None));
     // Simple in-memory cache for tracking compiled lib paths (legacy, used alongside IncrementalCache)
     let compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -568,6 +580,7 @@ async fn main() -> Result<()> {
         terminal_input_store.clone(),
         sdl_input_store.clone(),
         runner_store.clone(),
+        compile_task_store.clone(),
         workspace_path_arc.clone(),
         compile_cache.clone(),
         boundary_checker.clone(),
@@ -660,16 +673,17 @@ async fn main() -> Result<()> {
                 // 4. Create a fresh PeerConnection
                 match create_peer(signal_tx.clone()).await {
                     Ok(new_pc) => {
-                         wire_peer_channels(
-                             &new_pc,
-                             log_channel_store.clone(),
-                             terminal_input_store.clone(),
-                             sdl_input_store.clone(),
-                             runner_store.clone(),
-                             workspace_path_arc.clone(),
-                             compile_cache.clone(),
-                             boundary_checker.clone(),
-                             incremental_cache.clone(),
+                        wire_peer_channels(
+                            &new_pc,
+                            log_channel_store.clone(),
+                            terminal_input_store.clone(),
+                            sdl_input_store.clone(),
+                            runner_store.clone(),
+                            compile_task_store.clone(),
+                            workspace_path_arc.clone(),
+                            compile_cache.clone(),
+                            boundary_checker.clone(),
+                            incremental_cache.clone(),
                              hmr_orchestrator.clone(),
                              structured_logger.clone(),
                              metrics_aggregator.clone(),
@@ -917,6 +931,7 @@ async fn wire_peer_channels(
     terminal_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
     sdl_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
     runner_store: Arc<Mutex<Option<RunnerState>>>,
+    compile_task_store: Arc<Mutex<Option<(String, tokio::task::JoinHandle<()>)>>>,
     workspace_path_arc: Arc<std::path::PathBuf>,
     compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>>,
     boundary_checker: Arc<Mutex<BoundaryChecker>>,
@@ -948,6 +963,7 @@ async fn wire_peer_channels(
     let pc_clone = pc.clone();
     let workspace_path_for_callback = workspace_path_arc.clone();
     let runner_store_for_callback = runner_store.clone();
+    let compile_task_store_for_callback = compile_task_store.clone();
     let compile_cache_for_callback = compile_cache.clone();
     let boundary_checker_for_callback = boundary_checker.clone();
     let incremental_cache_for_callback = incremental_cache.clone();
@@ -965,6 +981,7 @@ async fn wire_peer_channels(
         let workspace_path_for_dc = workspace_path_for_callback.clone();
         let sdl_store_outer = sdl_input_store_for_callback.clone();
         let runner_store_outer = runner_store_for_callback.clone();
+        let compile_task_store_outer = compile_task_store_for_callback.clone();
         let compile_cache_outer = compile_cache_for_callback.clone();
         let boundary_checker_outer = boundary_checker_for_callback.clone();
         let incremental_cache_outer = incremental_cache_for_callback.clone();
@@ -999,7 +1016,70 @@ async fn wire_peer_channels(
                         async move {
                             if msg.is_string {
                                 eprintln!("[Main] Received message on 'compile' channel. Length: {}", msg.data.len());
-                                // Try to parse as a CancelMobileJobRequest first
+                                // Try to parse as a CancelBuildRequest first
+                                if let Ok(cancel_req) = serde_json::from_slice::<CancelBuildRequest>(&msg.data) {
+                                    if cancel_req.msg_type == "cancel-build" {
+                                        let target_session = cancel_req.session_id.clone();
+                                        eprintln!(
+                                            "[Main] Received cancel-build for session: {:?}",
+                                            target_session
+                                        );
+
+                                        // For mobile sessions, also mark cancellation
+                                        if let Some(ref sid) = target_session {
+                                            crate::android::webrtc::input::cancel_session(sid);
+                                            crate::android::webrtc::input::unregister_session_sync(sid);
+                                        }
+
+                                        // Abort active compile task if it matches
+                                        let mut task_guard = compile_task_store_outer.lock().await;
+                                        let mut cancelled_session = target_session.clone();
+                                        if let Some((current_id, handle)) = task_guard.take() {
+                                            if target_session.as_ref().map_or(true, |sid| sid == &current_id) {
+                                                handle.abort();
+                                                if cancelled_session.is_none() {
+                                                    cancelled_session = Some(current_id.clone());
+                                                }
+                                            } else {
+                                                *task_guard = Some((current_id, handle));
+                                            }
+                                        }
+
+                                        // Stop any running runner process/pipeline
+                                        {
+                                            let mut guard = runner_store_outer.lock().await;
+                                            if let Some(state) = guard.take() {
+                                                if let Some(mut child) = state.process {
+                                                    let _ = child.kill().await;
+                                                }
+                                                if let Some(mut child) = state.xvfb_process {
+                                                    let _ = child.kill().await;
+                                                }
+                                                if let Some(pipeline) = state.gst_pipeline {
+                                                    let _ = pipeline.set_state(gst::State::Null);
+                                                }
+                                            }
+                                        }
+
+                                        // Notify frontend
+                                        if let Some(sid) = cancelled_session {
+                                            if let Some(log) = { store.lock().await.clone() } {
+                                                let payload = serde_json::json!({
+                                                    "type": "build-status",
+                                                    "status": "cancelled",
+                                                    "sessionId": sid,
+                                                    "message": "Build cancelled by user"
+                                                });
+                                                let _ = log.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                            } else {
+                                                eprintln!("[Main] Build cancelled by user (session {})", sid);
+                                            }
+                                        }
+                                        return;
+                                    }
+                                }
+
+                                // Try to parse as a CancelMobileJobRequest next
                                 if let Ok(cancel_req) = serde_json::from_slice::<CancelMobileJobRequest>(&msg.data) {
                                     if cancel_req.msg_type == "cancel-mobile-job" {
                                         eprintln!("[Main] Received cancel-mobile-job for session: {}", cancel_req.session_id);
@@ -1117,7 +1197,35 @@ async fn wire_peer_channels(
                                         let ma = metrics_aggregator.clone();
                                         let rc = restart_controller.clone();
                                         let ipc = ipc_config.clone();
-                                        tokio::spawn(handle_compile(req, log, ts, sdls, rs, pc_clone, wp.to_path_buf(), cc, bc, ic, ho, sl, ma, rc, ipc));
+                                        let session_id = req
+                                            .session_id
+                                            .clone()
+                                            .unwrap_or_else(|| format!("sess-{}-{}", chrono::Utc::now().timestamp_millis(), uuid::Uuid::new_v4().as_u128() % 100000));
+                                        let mut req = req;
+                                        if req.session_id.is_none() {
+                                            req.session_id = Some(session_id.clone());
+                                        }
+                                        let task_store = compile_task_store_outer.clone();
+                                        let log_clone = log.clone();
+                                        let task_session = session_id.clone();
+                                        let handle = tokio::spawn(async move {
+                                            if let Err(e) = handle_compile(req, log_clone, ts, sdls, rs, pc_clone, wp.to_path_buf(), cc, bc, ic, ho, sl, ma, rc, ipc).await {
+                                                eprintln!("[Main] Compile task failed: {:?}", e);
+                                            }
+                                            let mut guard = task_store.lock().await;
+                                            if let Some((current_id, _)) = guard.as_ref() {
+                                                if current_id == &task_session {
+                                                    *guard = None;
+                                                }
+                                            }
+                                        });
+                                        {
+                                            let mut guard = compile_task_store_outer.lock().await;
+                                            if let Some((_, existing)) = guard.take() {
+                                                existing.abort();
+                                            }
+                                            *guard = Some((session_id, handle));
+                                        }
                                     }
                                     return;
                                 }
@@ -3832,12 +3940,11 @@ async fn handle_compile(
 
     // Call the unified handler
     // We ignore the return value (JSON graph) for now as the void return type expects
-    let _ = crate::compiler::handler::handle_compile_request(
-        &ctx,
-        req,
-        "default_session".to_string(), // we might need a real session id?
-    )
-    .await?;
+    let session_id = req
+        .session_id
+        .clone()
+        .unwrap_or_else(|| "default_session".to_string());
+    let _ = crate::compiler::handler::handle_compile_request(&ctx, req, session_id).await?;
 
     Ok(())
 }

@@ -82,6 +82,10 @@ export class CompilerClient {
         return null;
     }
 
+    getActiveSessionId() {
+        return this.activeSessionId;
+    }
+
     _emitWebrtcDiag(line) {
         try {
             if (typeof this._webrtcEmit === 'function') {
@@ -1127,6 +1131,81 @@ export class CompilerClient {
         
         // Clear WebRTC emitter
         this._webrtcEmit = null;
+
+        return result;
+    }
+
+    /**
+     * Cancel/stop a running build (all targets).
+     * Sends a cancel message through the compile channel to terminate the job on the worker.
+     * @param {string} sessionId - The session ID of the job to cancel
+     */
+    async cancelBuild(sessionId, { timeoutMs = 5000 } = {}) {
+        if (!sessionId) {
+            console.warn('[CompilerClient] cancelBuild called without sessionId');
+            return { cancelled: false, timedOut: false };
+        }
+
+        // Check if there is a pending local promise for this session and reject it
+        if (this.pendingCompilationMap.has(sessionId)) {
+            const { reject } = this.pendingCompilationMap.get(sessionId);
+            reject(new SynthiException('Cancelled', 'Compilation cancelled by user'));
+            this.pendingCompilationMap.delete(sessionId);
+        }
+
+        try {
+            if (this.compileChannel && this.compileChannel.readyState === 'open') {
+                this.compileChannel.send(JSON.stringify({
+                    type: 'cancel-build',
+                    session_id: sessionId,
+                }));
+                console.debug('[CompilerClient] Sent cancel-build for session:', sessionId);
+            } else {
+                console.warn('[CompilerClient] Cannot cancel build - compile channel not open');
+            }
+        } catch (e) {
+            console.error('[CompilerClient] Failed to send cancel-build:', e);
+        }
+
+        const result = await new Promise((resolve) => {
+            let timer = null;
+            const handler = (msg) => {
+                const line = typeof msg === 'string' ? msg : String(msg);
+                if (line.includes(sessionId) && (
+                    line.includes('cancelled by user') ||
+                    line.includes('cancelled')
+                )) {
+                    cleanup();
+                    resolve({ cancelled: true, timedOut: false });
+                    return;
+                }
+
+                try {
+                    const parsed = JSON.parse(line);
+                    if (parsed && parsed.sessionId === sessionId && parsed.type === 'build-status' && parsed.status === 'cancelled') {
+                        cleanup();
+                        resolve({ cancelled: true, timedOut: false });
+                        return;
+                    }
+                } catch (_) {}
+            };
+
+            const cleanup = () => {
+                this.logHandlers.delete(handler);
+                if (timer) clearTimeout(timer);
+            };
+
+            timer = setTimeout(() => {
+                cleanup();
+                resolve({ cancelled: false, timedOut: true });
+            }, timeoutMs);
+
+            this.logHandlers.add(handler);
+        });
+
+        if (this.activeSessionId === sessionId) {
+            this.activeSessionId = null;
+        }
 
         return result;
     }

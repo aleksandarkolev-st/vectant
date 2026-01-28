@@ -1493,27 +1493,34 @@ export default function EditorPage({ params }) {
     }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, useAiSplit, emulatorSessionId, cancelMobileJob]);
 
     const handleStop = useCallback(async () => {
+        const activeSessionId = client?.getActiveSessionId?.();
+        if (activeSessionId) {
+            await client.cancelBuild(activeSessionId);
+        }
         if (emulatorSessionId) {
-            cancelMobileJob(emulatorSessionId);
             setEmulatorForcedError('Compilation stopped by user.');
             dispatch(setEmulatorPreviewVisible(false));
             // Ensure status shows as stopped/failed immediately to clear UI
             appendBuildLog('Stopped by user.');
         }
+        if (!emulatorSessionId) {
+            appendBuildLog('Stopped by user.');
+        }
         if (client?.reconnect) {
             await client.reconnect();
         }
-    }, [emulatorSessionId, cancelMobileJob, dispatch, appendBuildLog, client]);
+    }, [emulatorSessionId, dispatch, appendBuildLog, client]);
 
     const handleRestart = useCallback(async () => {
-        if (emulatorSessionId) {
-            await cancelMobileJob(emulatorSessionId);
+        const activeSessionId = client?.getActiveSessionId?.();
+        if (activeSessionId) {
+            await client.cancelBuild(activeSessionId);
         }
         if (client?.reconnect) {
             await client.reconnect();
         }
         await handleRun({ skipCancel: true });
-    }, [emulatorSessionId, cancelMobileJob, client, handleRun]);
+    }, [client, handleRun]);
 
     const handleSave = useCallback(async () => {
         if (!activeFile) return;
