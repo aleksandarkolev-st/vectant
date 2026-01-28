@@ -64,6 +64,7 @@ export class CompilerClient {
         
         // Timer for retrying initial connection offer
         this._offerRetryInterval = null;
+
         
         this._handleTerminalInput = this._handleTerminalInput.bind(this);
         this._handleGuiInput = this._handleGuiInput.bind(this);
@@ -811,6 +812,28 @@ export class CompilerClient {
             ? providedSessionId
             : `sess-${Date.now()}-${Math.floor(Math.random()*100000)}`;
 
+        // If a mobile session is already running, cancel it first and wait briefly
+        // to allow the worker to teardown pipelines before starting a new run.
+        if (effectiveTarget === 'react-native-emulator') {
+            const previousSessionId = this.activeSessionId;
+            if (previousSessionId && previousSessionId !== sessionId) {
+                console.log('[CompilerClient] Waiting for previous session to cancel before starting new compile:', previousSessionId);
+                const cancelResult = await this.cancelMobileJob(previousSessionId, { timeoutMs: 5000 });
+                if (!cancelResult || !cancelResult.cancelled) {
+                    if (typeof window !== 'undefined' && window.alert) {
+                        window.alert(
+                            `Previous build did not fully stop within 5 seconds (session ${previousSessionId}).\n` +
+                            `Please wait a moment and try Run again.`
+                        );
+                    }
+                    throw new SynthiException(
+                        'Previous build still stopping',
+                        'Previous build did not fully stop. Please wait and retry.'
+                    );
+                }
+            }
+        }
+
         // Associate client-side WebRTC logs with this run.
         this.activeSessionId = sessionId;
 
@@ -1028,10 +1051,10 @@ export class CompilerClient {
      * Sends a cancel message through the compile channel to terminate the job on the worker.
      * @param {string} sessionId - The session ID of the mobile job to cancel
      */
-    async cancelMobileJob(sessionId) {
+    async cancelMobileJob(sessionId, { timeoutMs = 5000 } = {}) {
         if (!sessionId) {
             console.warn('[CompilerClient] cancelMobileJob called without sessionId');
-            return;
+            return { cancelled: false, timedOut: false };
         }
 
         // Check if there is a pending local promise for this session and reject it
@@ -1056,7 +1079,7 @@ export class CompilerClient {
         }
 
         // Wait for cancellation confirmation from worker
-        await new Promise((resolve) => {
+        const result = await new Promise((resolve) => {
             let timer = null;
             const handler = (msg) => {
                 const line = typeof msg === 'string' ? msg : String(msg);
@@ -1068,7 +1091,7 @@ export class CompilerClient {
                     line.includes('marked as cancelled')
                 )) {
                     cleanup();
-                    resolve();
+                    resolve({ cancelled: true, timedOut: false });
                     return;
                 }
                 
@@ -1078,7 +1101,7 @@ export class CompilerClient {
                     if (parsed && parsed.sessionId === sessionId && 
                        (parsed.type === 'mobile-status' && (parsed.status === 'done' || parsed.status === 'error'))) {
                            cleanup();
-                           resolve();
+                           resolve({ cancelled: true, timedOut: false });
                     }
                 } catch(_) {}
             };
@@ -1091,8 +1114,8 @@ export class CompilerClient {
             // Set a timeout so we don't wait forever if the backend is silent or crashed
             timer = setTimeout(() => {
                 cleanup();
-                resolve();
-            }, 5000); // 5s timeout
+                resolve({ cancelled: false, timedOut: true });
+            }, timeoutMs); // timeout for cancellation confirmation
 
             this.logHandlers.add(handler);
         });
@@ -1104,6 +1127,8 @@ export class CompilerClient {
         
         // Clear WebRTC emitter
         this._webrtcEmit = null;
+
+        return result;
     }
 
     dispose() {

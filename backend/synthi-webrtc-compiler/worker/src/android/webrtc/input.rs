@@ -11,7 +11,6 @@ use tokio::process::Command;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, ChildStdin};
-use std::sync::Mutex;
 use crate::android::emulator_grpc;
 use super::stream_config::{EmulatorStreamConfig, EmulatorStreamMode};
 

@@ -72,7 +72,7 @@ export default function EditorPage({ params }) {
     // Track editor content version to force re-analysis on every change (including remote/undo)
     const [editorVersion, setEditorVersion] = useState(0);
     const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = useAnalyzerGateway();
-    const { compile, mediaStream, cancelMobileJob, isCompiling, status: compilerStatus } = useCompiler();
+    const { client, compile, mediaStream, cancelMobileJob, isCompiling, status: compilerStatus } = useCompiler();
     useHMR();
     
     // Code Intelligence - auto-index workspace for AI context retrieval
@@ -1378,7 +1378,7 @@ export default function EditorPage({ params }) {
         }
     }, [rawFiles, slug]);
 
-    const handleRun = useCallback(async () => {
+    const handleRun = useCallback(async ({ skipCancel = false } = {}) => {
         if (!activeFile) {
             console.warn('No active file selected for compilation.');
             return;
@@ -1438,7 +1438,7 @@ export default function EditorPage({ params }) {
         let mobileSid = null;
         if (isReactNative) {
             // Cancel previous session if restart
-            if (emulatorSessionId) {
+            if (emulatorSessionId && !skipCancel) {
                 console.log('[handleRun] Restarting - cancelling previous session:', emulatorSessionId);
                 await cancelMobileJob(emulatorSessionId);
             }
@@ -1492,7 +1492,7 @@ export default function EditorPage({ params }) {
         }
     }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, useAiSplit, emulatorSessionId, cancelMobileJob]);
 
-    const handleStop = useCallback(() => {
+    const handleStop = useCallback(async () => {
         if (emulatorSessionId) {
             cancelMobileJob(emulatorSessionId);
             setEmulatorForcedError('Compilation stopped by user.');
@@ -1500,7 +1500,20 @@ export default function EditorPage({ params }) {
             // Ensure status shows as stopped/failed immediately to clear UI
             appendBuildLog('Stopped by user.');
         }
-    }, [emulatorSessionId, cancelMobileJob, dispatch]);
+        if (client?.reconnect) {
+            await client.reconnect();
+        }
+    }, [emulatorSessionId, cancelMobileJob, dispatch, appendBuildLog, client]);
+
+    const handleRestart = useCallback(async () => {
+        if (emulatorSessionId) {
+            await cancelMobileJob(emulatorSessionId);
+        }
+        if (client?.reconnect) {
+            await client.reconnect();
+        }
+        await handleRun({ skipCancel: true });
+    }, [emulatorSessionId, cancelMobileJob, client, handleRun]);
 
     const handleSave = useCallback(async () => {
         if (!activeFile) return;
@@ -1661,6 +1674,9 @@ export default function EditorPage({ params }) {
                 if (emulatorSessionId) {
                     cancelMobileJob(emulatorSessionId);
                 }
+                if (client?.reconnect) {
+                    client.reconnect();
+                }
                 dispatch(setEmulatorPreviewVisible(false));
                 setEmulatorSessionId(null);
                 setEmulatorForcedError('');
@@ -1687,7 +1703,7 @@ export default function EditorPage({ params }) {
                 useAiSplit={useAiSplit}
                 setUseAiSplit={setUseAiSplit}
                 onStop={handleStop}
-                onReload={handleRun}
+                onReload={handleRestart}
                 isRunning={isCompiling}
                 onToggleTerminal={() => dispatch(toggleTerminal())}
                 onUndo={handleUndo}
