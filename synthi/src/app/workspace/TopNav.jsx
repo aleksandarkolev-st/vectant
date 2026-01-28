@@ -13,6 +13,10 @@ import { toast } from 'sonner';
 export default function TopNav({ 
   title, 
   onRun, 
+  runInGuiMode,
+  setRunInGuiMode,
+  useAiSplit,
+  setUseAiSplit,
   onStop,
   onReload,
   isRunning,
@@ -135,6 +139,37 @@ export default function TopNav({
         >
           <MessageSquare className="w-4 h-4" strokeWidth={2} />
         </Button>
+
+        {/* GUI Mode Toggle */}
+        <Button
+          variant="ghost"
+          size="sm"
+          className={`h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all ${
+            runInGuiMode 
+              ? 'text-[#327464] bg-[#32746415] border border-[#32746440]' 
+              : 'text-[#a8adc0] hover:bg-[#1c1d26] hover:text-[#f0f2f5]'
+          }`}
+          onClick={() => setRunInGuiMode(!runInGuiMode)}
+          title={runInGuiMode ? "Run in GUI Mode" : "Run in Console Mode"}
+        >
+          {runInGuiMode ? "GUI" : "Console"}
+        </Button>
+
+        {/* AI Split Toggle */}
+        <Button
+          variant="ghost"
+          size="sm"
+          className={`h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all ${
+            useAiSplit 
+              ? 'text-[#327464] bg-[#32746415] border border-[#32746440]' 
+              : 'text-[#a8adc0] hover:bg-[#1c1d26] hover:text-[#f0f2f5]'
+          }`}
+          onClick={() => setUseAiSplit(!useAiSplit)}
+          title={useAiSplit ? "AI HMR Enabled" : "AI HMR Disabled"}
+        >
+          {useAiSplit ? "AI HMR" : "Std HMR"}
+        </Button>
+
         {isRunning ? (
             <>
                 <Button

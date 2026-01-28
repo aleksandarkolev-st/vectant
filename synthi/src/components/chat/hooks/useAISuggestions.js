@@ -809,6 +809,10 @@ If image attachments are present, read/ocr the images and extract any text or co
                     focusPath: activeFile?.path || activeFile?.name || null,
                     model: aiModel,
                     apiKey: aiApiKey,
+                    // Code intelligence integration
+                    workspacePath: workspaceSlug || null,
+                    useCodeIntel: true,
+                    maxContextTokens: 6000,
                 }),
             });
 

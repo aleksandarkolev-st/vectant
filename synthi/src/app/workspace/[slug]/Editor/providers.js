@@ -433,7 +433,7 @@ export const useEditorProviders = ({
                         
                         for (const fix of diagnostic.fixes) {
                             // DEBUG: Log fix object to check replacementText
-                            // console.log('[providers.js] Processing fix:', fix);
+                            console.log('[providers.js] Processing fix:', fix);
 
                             // Handle both camelCase and snake_case (backend compatibility)
                             const text = fix.replacementText ?? fix.replacement_text ?? '';

@@ -151,7 +151,7 @@ pub(crate) async fn ensure_gradle_distribution(
     let cache_root = android_dir.join(".synthi/gradle-dist");
     tokio::fs::create_dir_all(&cache_root).await.ok();
 
-    let url_hash = crate::builder::hash_content(distribution_url).to_string();
+    let url_hash = crate::compiler::builder::hash_content(distribution_url).to_string();
     let zip_path = cache_root.join(format!("dist_{}.zip", url_hash));
     let extract_root = cache_root.join(format!("dist_{}", url_hash));
 
@@ -271,7 +271,11 @@ pub(crate) async fn ensure_gradle_distribution(
     Ok(gradle_bin)
 }
 
-pub(crate) async fn list_dir_for_debug(path: &Path, log_callback: Option<&LogCallback>, label: &str) {
+pub(crate) async fn list_dir_for_debug(
+    path: &Path,
+    log_callback: Option<&LogCallback>,
+    label: &str,
+) {
     if let Some(cb) = log_callback {
         cb(format!("{label}: {}", path.display()));
         let mut entries: Vec<String> = Vec::new();
@@ -474,9 +478,7 @@ pub(crate) fn worker_cache_dir() -> PathBuf {
         if let Ok(p) = std::env::var("HOME") {
             let p = p.trim();
             if !p.is_empty() {
-                return PathBuf::from(p)
-                    .join(".cache")
-                    .join("synthi-worker-cache");
+                return PathBuf::from(p).join(".cache").join("synthi-worker-cache");
             }
         }
     }

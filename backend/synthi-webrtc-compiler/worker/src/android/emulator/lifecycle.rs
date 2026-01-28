@@ -112,6 +112,26 @@ impl EmulatorSession {
         let gpu_override = self
             .core
             .config
+            .android_sdk_root
+            .join("emulator/emulator");
+
+        let mut cmd = Command::new(&emulator_path);
+        // GPU mode: ximagesrc capture requires the emulator to render into the X11 window.
+        // -gpu off = no rendering at all (headless, no X11 output)
+        // -gpu swiftshader_indirect = software rendering, but uses incompatible X11 visual (XID capture fails with BadMatch)
+        // -gpu guest = software rendering inside Android VM, renders to standard X11 window
+        // For video streaming with ximagesrc, -gpu guest is most compatible.
+        let default_gpu_mode = if cfg!(target_os = "windows") {
+            std::env::var("SYNTHI_ANDROID_EMULATOR_GPU").unwrap_or_else(|_| "swiftshader_indirect".to_string())
+        } else {
+            std::env::var("SYNTHI_ANDROID_EMULATOR_GPU").unwrap_or_else(|_| {
+                // Use guest mode for X11 capture compatibility
+                "guest".to_string()
+            })
+        };
+        let gpu_override = self
+            .core
+            .config
             .extra_args
             .iter()
             .position(|v| v == "-gpu")
@@ -239,11 +259,7 @@ impl EmulatorSession {
     }
 
     async fn wait_for_emulator_ready(&self) -> Result<String> {
-        let adb = self
-            .core
-            .config
-            .android_sdk_root
-            .join("platform-tools/adb");
+        let adb = self.core.config.android_sdk_root.join("platform-tools/adb");
 
         // Wait for adb to see the emulator device
         let serial = timeout(

@@ -115,7 +115,7 @@ export function useAnalyzerGateway({
         } catch (e) {}
       };
       const response = await clientRef.current.analyzeAi(payload, options);
-      // console.log(`AI Response is ${JSON.stringify(response)}`)
+      console.log(`AI Response is ${JSON.stringify(response)}`)
       const result = response?.data ?? response;
       setLastResult(result);
       return result;

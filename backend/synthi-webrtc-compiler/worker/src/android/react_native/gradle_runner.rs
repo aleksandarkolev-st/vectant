@@ -14,7 +14,7 @@ use std::os::windows::process::ExitStatusExt;
 use super::common::{env_var_truthy, stable_project_cache_key, worker_cache_dir};
 use super::diagnostics::{parse_gradle_diagnostic, parse_metro_diagnostic};
 use super::LogCallback;
-use crate::mobile_routing::Diagnostic;
+use crate::android::routing::Diagnostic;
 
 pub(crate) async fn run_gradle_and_collect_diagnostics(
     mut cmd: Command,
@@ -159,9 +159,9 @@ pub(crate) async fn create_isolated_gradle_user_home(project_root: &Path) -> Res
         let p = p.trim();
         if !p.is_empty() {
             let home = PathBuf::from(p);
-            tokio::fs::create_dir_all(&home)
-                .await
-                .with_context(|| format!("Failed to create GRADLE_USER_HOME at {}", home.display()))?;
+            tokio::fs::create_dir_all(&home).await.with_context(|| {
+                format!("Failed to create GRADLE_USER_HOME at {}", home.display())
+            })?;
             return Ok(home);
         }
     }

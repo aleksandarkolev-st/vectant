@@ -18,7 +18,6 @@ use crate::android::fs::{
     reconcile_and_stream_with_rules, take_snapshot_with_rules, ReconcileConfig, SyncRules,
 };
 use crate::android::webrtc::{send_log, send_logcat, send_mobile_capabilities, send_status};
-use crate::android::webrtc::{input as emulator_input, video_pipeline};
 use crate::android::webrtc::{EmulatorStreamConfig, EmulatorStreamMode};
 use crate::android::webrtc::input::{is_session_cancelled, clear_cancelled_session};
 use crate::android::emulator_grpc;
@@ -30,6 +29,8 @@ use crate::android::react_native::{
     build_apk_for_emulator, check_android_sdk, detect_react_native_project, BuildVariant,
     EmulatorBuildConfig,
 };
+use crate::android::webrtc::{input as emulator_input};
+use crate::android::webrtc::video_pipeline;
 
 use super::project_detection::find_react_native_project_root;
 
@@ -432,7 +433,11 @@ pub async fn handle_react_native_emulator_job(
             "[kvm] exists={} accessible={} -> accel {} ({})",
             kvm.exists,
             kvm.accessible,
-            if emulator_config.use_hw_accel { "on" } else { "off" },
+            if emulator_config.use_hw_accel {
+                "on"
+            } else {
+                "off"
+            },
             kvm.reason
         ),
         "emulator",
@@ -510,9 +515,7 @@ pub async fn handle_react_native_emulator_job(
                     send_log(
                         &log_dc,
                         &session_id,
-                        &format!(
-                            "Workspace snapshot failed (will skip reconciliation): {e:#}"
-                        ),
+                        &format!("Workspace snapshot failed (will skip reconciliation): {e:#}"),
                         "system",
                     )
                     .await;
@@ -564,7 +567,8 @@ pub async fn handle_react_native_emulator_job(
 
     // Keep a small rolling buffer of recent Gradle output so we can surface a useful
     // error snippet to the frontend on failure.
-    let recent_lines: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::with_capacity(200)));
+    let recent_lines: Arc<Mutex<VecDeque<String>>> =
+        Arc::new(Mutex::new(VecDeque::with_capacity(200)));
 
     // Create log callback that forwards to the frontend
     let log_dc_for_build = log_dc.clone();
@@ -923,7 +927,11 @@ pub async fn handle_react_native_emulator_job(
         &log_dc,
         &session_id,
         "emulator-ready",
-        if ready.reused { "Emulator reused" } else { "Emulator booted" },
+        if ready.reused {
+            "Emulator reused"
+        } else {
+            "Emulator booted"
+        },
         Some(json!({
             "serial": emulator_serial,
             "boot_time_ms": ready.boot_time_ms,
@@ -965,7 +973,14 @@ pub async fn handle_react_native_emulator_job(
     }
 
     // Step 5: Install APK
-    send_status(&log_dc, &session_id, "installing", "Installing APK...", None).await;
+    send_status(
+        &log_dc,
+        &session_id,
+        "installing",
+        "Installing APK...",
+        None,
+    )
+    .await;
 
     let install_result = daemon
         .session_mut()

@@ -894,7 +894,7 @@ server.on('upgrade', (request, socket, head) => {
   });
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`Collaboration server (y-websocket) listening on port ${PORT}`);
   console.log(`[Collab DEBUG] Server started with persistence: ${LeveldbPersistence ? 'LevelDB' : 'In-Memory'}`);
 });

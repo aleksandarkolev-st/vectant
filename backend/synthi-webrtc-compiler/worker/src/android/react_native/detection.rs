@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use std::path::Path;
 
 use super::common::PackageJson;
-use crate::mobile_routing::ReactNativeProjectInfo;
+use crate::android::routing::ReactNativeProjectInfo;
 
 /// Detects if a directory contains a React Native project
 pub async fn detect_react_native_project(project_root: &Path) -> Result<ReactNativeProjectInfo> {

@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use tokio::process::Command;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::io::AsyncWriteExt;
@@ -460,8 +461,7 @@ pub async fn query_device_size(adb: &PathBuf, serial: &str) -> Result<(u32, u32)
         .context("adb shell wm size failed")?;
 
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let re = Regex::new(r"(Physical size:|Override size:)?\s*(\d+)x(\d+)")
-        .expect("regex");
+    let re = Regex::new(r"(Physical size:|Override size:)?\s*(\d+)x(\d+)").expect("regex");
     if let Some(c) = re.captures(&stdout) {
         let w: u32 = c.get(2).unwrap().as_str().parse().unwrap_or(0);
         let h: u32 = c.get(3).unwrap().as_str().parse().unwrap_or(0);

@@ -6,17 +6,17 @@ use tokio::process::Command;
 
 use super::common::{
     android_dir_is_ready_for_first_gradle_invocation, android_dir_missing_required_files,
-    check_wrapper_jar_health, env_var_truthy, ensure_gradle_distribution, read_gradle_distribution_url,
-    list_child_dirs, list_dir_for_debug, system_gradle_available, worker_cache_dir,
+    check_wrapper_jar_health, ensure_gradle_distribution, env_var_truthy, list_child_dirs,
+    list_dir_for_debug, read_gradle_distribution_url, system_gradle_available, worker_cache_dir,
 };
 use super::detection::{detect_react_native_project, extract_android_app_id};
 use super::gradle_runner::{
-    apply_gradle_common_args_and_env, create_isolated_gradle_user_home, run_gradle_and_collect_diagnostics,
-    resolve_java_home,
+    apply_gradle_common_args_and_env, create_isolated_gradle_user_home, resolve_java_home,
+    run_gradle_and_collect_diagnostics,
 };
 use super::project_init::ensure_android_gradle_project;
 use super::LogCallback;
-use crate::mobile_routing::Diagnostic;
+use crate::android::routing::Diagnostic;
 
 /// Configuration for building a React Native APK for emulator
 #[derive(Debug, Clone)]
@@ -206,7 +206,9 @@ pub async fn build_apk_for_emulator(
 
     // If wrapper jar looks missing/corrupt, prefer system gradle immediately (if available).
     let wrapper_health = check_wrapper_jar_health(&android_dir).await;
-    if (!wrapper_health.exists || wrapper_health.size_bytes < 1024 || !wrapper_health.looks_like_zip)
+    if (!wrapper_health.exists
+        || wrapper_health.size_bytes < 1024
+        || !wrapper_health.looks_like_zip)
         && system_gradle_available().await
     {
         if let Some(cb) = log_callback.as_ref() {
@@ -246,7 +248,8 @@ pub async fn build_apk_for_emulator(
 
     // If wrapper jar is missing/corrupt AND system gradle is not available, download the
     // Gradle distribution and run its bundled `bin/gradle` directly.
-    if !wrapper_health.exists || wrapper_health.size_bytes < 1024 || !wrapper_health.looks_like_zip {
+    if !wrapper_health.exists || wrapper_health.size_bytes < 1024 || !wrapper_health.looks_like_zip
+    {
         if let Some(url) = read_gradle_distribution_url(&android_dir).await {
             if let Some(cb) = log_callback.as_ref() {
                 cb(format!(
@@ -544,7 +547,11 @@ async fn ensure_gradle_user_home_properties(gradle_user_home: &Path) {
     // Allow Gradle toolchain provisioning (if the build enables toolchain auto-provisioning).
     lines.push(format!(
         "org.gradle.java.installations.auto-download={}",
-        if autodownload_enabled { "true" } else { "false" }
+        if autodownload_enabled {
+            "true"
+        } else {
+            "false"
+        }
     ));
 
     let content = lines.join("\n") + "\n";

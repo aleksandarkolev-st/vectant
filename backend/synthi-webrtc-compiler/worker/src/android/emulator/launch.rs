@@ -20,11 +20,7 @@ impl EmulatorSession {
             .await
             .ok_or_else(|| anyhow::anyhow!("No emulator serial"))?;
 
-        let adb = self
-            .core
-            .config
-            .android_sdk_root
-            .join("platform-tools/adb");
+        let adb = self.core.config.android_sdk_root.join("platform-tools/adb");
 
         // Get main activity using pm dump
         let activity = self.get_main_activity(&adb, &serial, package_name).await?;
@@ -48,9 +44,9 @@ impl EmulatorSession {
                 ])
                 .output(),
         )
-                .await
-                .context("App launch timeout")?
-                .context("Failed to run am start")?;
+        .await
+        .context("App launch timeout")?
+        .context("Failed to run am start")?;
 
         let stderr = String::from_utf8_lossy(&output.stderr);
 
