@@ -19,7 +19,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::compiler::plugin_contract::ModuleSlot;
+use crate::runtime::plugin_contract::ModuleSlot;
 use crate::infra::crash_recovery::{CrashInfo, ProtectionMode};
 
 // Note: observability imports available if needed in future:

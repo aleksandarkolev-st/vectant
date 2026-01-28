@@ -26,12 +26,12 @@ use std::time::{Duration, Instant};
 
 use libloading::{Library, Symbol};
 
-use crate::compiler::plugin_contract::ModuleSlot;
 use crate::compiler::source_map::SOURCE_MAP_CACHE;
 use crate::hmr::binary_state::{MsgPackState, SchemaMigrationResult};
 use crate::hmr::fast_refresh::{
     BoundaryCheckResult, BoundaryChecker, BoundaryViolationEvent, RefreshAction,
 };
+use crate::runtime::plugin_contract::ModuleSlot;
 use crate::hmr::reload_manager::{
     AsyncTaskRegistry, ReloadChanges, ReloadClass, ReloadClassifier, ReloadSnapshot,
     SnapshotManager,
@@ -48,6 +48,8 @@ use crate::runtime::loader::{LoadResult, ModuleLoader};
 use crate::runtime::supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 use crate::safety::boundary::{Boundary, BoundaryId, BoundaryManifest, ReloadPlan};
 use crate::safety::quiescence::{QuiescenceConfig, QuiescenceManager};
+// use crate::quiescence::{QuiescenceManager, QuiescenceConfig}; // DUP
+// use crate::reload_protocol::{ReloadOperation, ReloadConfig}; // DUP
 
 // ============================================================
 // HMR RESULT TYPES

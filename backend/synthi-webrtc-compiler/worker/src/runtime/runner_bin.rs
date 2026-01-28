@@ -55,20 +55,12 @@ use crate::safety::slot_isolation;
 
 use crate::safety::hardened_ipc::{read_frame_validated, write_frame_with_checksum, IpcConfig};
 
-use crate::compiler::plugin_contract::ModuleSlot as CompilerModuleSlot;
 use crate::runtime::plugin_contract::{
     HotApi, HotGetApiFn, ModuleSlot, RunnerApi, CORE_STATE_MAGIC, GUI_STATE_MAGIC, LOG_ERROR,
     LOG_INFO, LOG_WARN, MAX_STATE_ALIGNMENT, RUNNER_API_VERSION, SYNTHI_CORE_ABI_VERSION,
     SYNTHI_GUI_ABI_VERSION,
 };
 
-fn to_compiler_slot(slot: ModuleSlot) -> CompilerModuleSlot {
-    match slot {
-        ModuleSlot::Core => CompilerModuleSlot::Core,
-        ModuleSlot::Gui => CompilerModuleSlot::Gui,
-        ModuleSlot::Main => CompilerModuleSlot::Main,
-    }
-}
 use capability::{detect_capabilities, HmrCapability, HmrStatus}; // Assuming capability is local mod
 
 use crash_recovery::{
@@ -866,7 +858,7 @@ fn main() {
                             // Enter crash supervisor context for this module
                             if supervisor_enabled {
                                 let slot = ModuleSlot::from_str(name).unwrap_or(ModuleSlot::Main);
-                                crash_supervisor.enter_context(to_compiler_slot(slot));
+                                crash_supervisor.enter_context(slot);
                             }
 
                             let state_ptr_wrapper = SendVoidPtr(state_ptr as usize);

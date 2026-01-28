@@ -32,6 +32,8 @@ webrtc-util = "0.8"
 bytes = "1"
 gstreamer = "0.21"
 gstreamer-app = "0.21"
+tonic = { version = "0.11", features = ["transport"] }
+prost = "0.12"
 chrono = { version = "0.4", features = ["serde", "alloc"] }
 notify = "8.2.0"
 uuid = "1.19.0"
@@ -58,3 +60,7 @@ sha2 = "0.10"
 object = { version = "0.36", default-features = false, features = ["read", "elf"] }
 gimli = { version = "0.31", default-features = false, features = ["read", "std"] }
 memmap2 = "0.9"
+
+[build-dependencies]
+tonic-build = "0.11"
+protoc-bin-vendored = "3.2.0"
