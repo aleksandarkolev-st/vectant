@@ -583,10 +583,48 @@ impl ProcessSupervisor {
     fn wait_for_ready(&mut self, timeout: Duration) -> Result<(), String> {
         let start = Instant::now();
         while start.elapsed() < timeout {
-            if let Some(msg) = self.recv_message(Duration::from_millis(100))? {
-                if matches!(msg, IpcMessage::Ready) {
-                    eprintln!("[Supervisor] Worker ready");
-                    return Ok(());
+            // Check for exit FIRST
+            if let Some(worker) = self.worker.as_mut() {
+                if let Ok(Some(status)) = worker.child.try_wait() {
+                    let code = status.code().unwrap_or(-1);
+                    eprintln!("[Supervisor] FATAL: Worker exited during startup. Code: {}", code);
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::ExitStatusExt;
+                        if let Some(signal) = status.signal() {
+                            eprintln!("[Supervisor] Worker killed by signal: {} (SIGSEGV=11, SIGABRT=6)", signal);
+                        }
+                    }
+                    return Err(format!("Worker exited prematurely: {}", status));
+                }
+            }
+
+            // Then check for messages
+            match self.recv_message(Duration::from_millis(100)) {
+                Ok(Some(msg)) => {
+                    if matches!(msg, IpcMessage::Ready) {
+                        eprintln!("[Supervisor] Worker ready");
+                        return Ok(());
+                    }
+                },
+                Ok(None) => {}, // Timeout, loop again
+                Err(e) => {
+                     // Check one last time for exit
+                    if let Some(worker) = self.worker.as_mut() {
+                        if let Ok(Some(status)) = worker.child.try_wait() {
+                            let code = status.code().unwrap_or(-1);
+                            eprintln!("[Supervisor] FATAL: Worker exited during msg recv: {} (Error: {})", status, e);
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::process::ExitStatusExt;
+                                if let Some(signal) = status.signal() {
+                                    eprintln!("[Supervisor] Worker killed by signal: {}", signal);
+                                }
+                            }
+                             return Err(format!("Worker died: {}", status));
+                        }
+                    }
+                    return Err(e);
                 }
             }
         }
