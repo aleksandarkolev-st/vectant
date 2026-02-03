@@ -211,6 +211,19 @@ export const selectFileThunk = createAsyncThunk(
 
             loadScheduler.prefetch(slug, Array.from(medium.values()), { priority: 'medium' });
 
+            // Prefetch direct imports from server-side import index
+            try {
+                const importRes = await api.fetchFileImports(slug, targetPath);
+                const importPaths = Array.isArray(importRes?.resolved) ? importRes.resolved : [];
+                const MAX_IMPORT_PREFETCH = 50;
+                const uniqueImports = Array.from(new Set(importPaths)).slice(0, MAX_IMPORT_PREFETCH);
+                if (uniqueImports.length) {
+                    loadScheduler.prefetch(slug, uniqueImports, { priority: 'high' });
+                }
+            } catch (_) {
+                // ignore
+            }
+
             // Lowest priority crawl pool (remaining files)
             loadScheduler.setLowPriorityPool(slug, all.map(n => n.path).filter(p => p && p !== targetPath));
         } catch (e) {

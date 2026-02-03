@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Protocol, Set, Tuple
@@ -124,59 +125,151 @@ class ChunkMetadata:
     
     # Module grouping (for canonical module limits)
     module_group: str = ""  # Canonical grouping (see language-specific rules)
+
+    # Chunking version (for staleness protection)
+    chunking_version: str = ""
+
+    # Stable symbol identity (rename/move resilient)
+    stable_symbol_id: str = ""
     
     def __hash__(self) -> int:
         return hash((
             self.file_path, self.start_line, self.end_line,
-            self.symbol_name, self.symbol_type
+            self.symbol_name, self.symbol_type, self.chunking_version
         ))
 
 
-def compute_chunk_id(file_path: str, qualified_name: str, signature: str, body_fingerprint: str) -> str:
+def compute_chunk_id(
+    symbol_identity: str,
+    signature_fingerprint: str,
+    body_fingerprint: str,
+    chunking_version: str = "",
+    anchor: str = "",
+) -> str:
     """
     Compute a stable chunk ID from content-stable properties.
-    
+
+    CRITICAL: This ID must be stable across file renames and line shifts.
+
     This ID is STABLE across:
     - Adding lines above (no line number dependency)
-    - Whitespace changes (via normalized body fingerprint)
-    
+    - Whitespace-only edits (via normalized fingerprint)
+    - File moves/renames (no raw file_path)
+
     This ID CHANGES when:
-    - Symbol is renamed (qualified_name changes)
-    - Signature changes (different API)
-    - Body semantics change (fingerprint changes)
-    
+    - Symbol identity changes (module/scope/name/type)
+    - Signature changes (canonical signature changes)
+    - Body semantics change (semantic fingerprint changes)
+
     Args:
-        file_path: Path to the file
-        qualified_name: Full qualified name (module.Class.method)
-        signature: Function/method signature
-        body_fingerprint: AST-based fingerprint of normalized body
-        
+        symbol_identity: Stable symbol identity (language/type/name/scope)
+        signature_fingerprint: Canonical signature fingerprint
+        body_fingerprint: Semantic body fingerprint
+        chunking_version: Chunking version for staleness protection
+        anchor: Optional stable anchor (e.g., structural symbol ID)
+
     Returns:
-        16-character hex ID
+        32-character hex ID (128-bit)
     """
-    content = f"{file_path}|{qualified_name}|{signature}|{body_fingerprint}"
-    return hashlib.sha256(content.encode()).hexdigest()[:16]
+    content = f"{symbol_identity}|{signature_fingerprint}|{body_fingerprint}|{chunking_version}|{anchor}"
+    return hashlib.sha256(content.encode()).hexdigest()[:32]
+
+
+def compute_stable_symbol_id(
+    language: str,
+    symbol_type: SymbolType,
+    signature_fingerprint: str,
+    body_fingerprint: str,
+) -> str:
+    """
+    Compute a stable symbol identity that is resilient to renames/moves.
+
+    This intentionally omits file path and qualified name.
+    """
+    content = f"{language}|{symbol_type.value}|{signature_fingerprint}|{body_fingerprint}"
+    return hashlib.sha256(content.encode()).hexdigest()[:24]
+
+
+def canonicalize_signature(signature: str) -> str:
+    """
+    Canonicalize a symbol signature for stability.
+
+    This is a structural-ish normalization intended to reduce noise from
+    formatting differences (whitespace, line breaks). It does NOT perform
+    language-specific AST canonicalization.
+    """
+    if not signature:
+        return ""
+    # Normalize unicode and collapse whitespace
+    canon = unicodedata.normalize("NFC", signature)
+    canon = re.sub(r"\s+", " ", canon).strip()
+    # Remove spaces around common punctuation
+    canon = re.sub(r"\s*([(),:<>\[\]{}=\-\+*/])\s*", r"\1", canon)
+    return canon
+
+
+_GENERIC_KEYWORDS = frozenset({
+    # Common keywords across languages
+    "class", "def", "function", "fn", "return", "if", "else", "elif", "for", "while",
+    "switch", "case", "break", "continue", "try", "except", "catch", "finally",
+    "import", "from", "export", "module", "namespace", "public", "private", "protected",
+    "static", "const", "let", "var", "new", "this", "self", "super", "extends",
+    "implements", "interface", "enum", "struct", "trait", "impl", "yield", "async",
+    "await", "lambda", "with", "in", "is", "as", "raise", "throw", "match",
+    "true", "false", "null", "none", "nil", "undefined", "void",
+})
+
+
+def _strip_comments(text: str) -> str:
+    # Remove block comments first
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.DOTALL)
+    # Remove line comments
+    text = re.sub(r"//.*?$", " ", text, flags=re.MULTILINE)
+    text = re.sub(r"#.*?$", " ", text, flags=re.MULTILINE)
+    return text
+
+
+def _normalize_literals(text: str) -> str:
+    # Normalize strings (single, double, backtick)
+    text = re.sub(r"'(?:\\.|[^'\\])*'", "'str'", text)
+    text = re.sub(r'"(?:\\.|[^"\\])*"', '"str"', text)
+    text = re.sub(r"`(?:\\.|[^`\\])*`", "`str`", text)
+    # Normalize numeric literals
+    text = re.sub(r"\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b", "0", text)
+    return text
+
+
+def _normalize_identifiers(text: str) -> str:
+    def _replace(match: re.Match) -> str:
+        token = match.group(0)
+        if token.lower() in _GENERIC_KEYWORDS:
+            return token
+        return "id"
+    return re.sub(r"\b[A-Za-z_][A-Za-z0-9_]*\b", _replace, text)
 
 
 def compute_body_fingerprint(code_body: str) -> str:
     """
-    Compute a whitespace-insensitive fingerprint of code body.
-    
+    Compute a semantic-lite fingerprint of code body.
+
     Normalizes the body to be insensitive to:
-    - Leading/trailing whitespace
-    - Indentation changes
-    - Blank lines
-    
-    Args:
-        code_body: The raw code body
-        
-    Returns:
-        8-character hex fingerprint
+    - Whitespace and indentation
+    - Comments
+    - Literal values (strings/numbers)
+    - Local identifier renames (heuristic)
+
+    NOTE: This is language-agnostic and regex-based. It does not
+    perform full AST canonicalization.
     """
-    # Normalize: strip each line, remove blanks, join
-    lines = [line.strip() for line in code_body.split('\n') if line.strip()]
-    normalized = '\n'.join(lines)
-    return hashlib.sha256(normalized.encode()).hexdigest()[:8]
+    if not code_body:
+        return ""
+    text = unicodedata.normalize("NFC", code_body)
+    text = _strip_comments(text)
+    text = _normalize_literals(text)
+    text = _normalize_identifiers(text)
+    # Normalize whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
 class HashVerificationError(Exception):
@@ -240,13 +333,16 @@ class SemanticChunk:
             if self._code_body:
                 body_fingerprint = compute_body_fingerprint(self._code_body)
                 self._code_loaded = True
-            
+
             qualified_name = self.metadata.qualified_name or self.metadata.symbol_name
+            signature_canon = canonicalize_signature(self.metadata.signature)
+            stable_symbol_id = self.metadata.stable_symbol_id
+            symbol_identity = f"{self.metadata.language}|{self.metadata.symbol_type.value}|{stable_symbol_id or qualified_name}"
             self.id = compute_chunk_id(
-                self.metadata.file_path,
-                qualified_name,
-                self.metadata.signature,
-                body_fingerprint
+                symbol_identity=symbol_identity,
+                signature_fingerprint=signature_canon,
+                body_fingerprint=body_fingerprint,
+                chunking_version=self.metadata.chunking_version,
             )
         
         if self.token_count == 0 and self._code_body:
@@ -306,12 +402,29 @@ class SemanticChunk:
                         )
                     # File changed - return empty to signal need for reindex
                     return ""
-            
+
+            # Snapshot mtime/size if supported
+            pre_stat = None
+            if hasattr(file_reader, "get_file_stat"):
+                try:
+                    pre_stat = file_reader.get_file_stat(self.metadata.file_path)
+                except Exception:
+                    pre_stat = None
+
             self._code_body = file_reader.read_lines(
                 self.metadata.file_path,
                 self.metadata.start_line,
                 self.metadata.end_line
             )
+
+            # Recheck stat to avoid reading newer bytes
+            if pre_stat and hasattr(file_reader, "get_file_stat"):
+                try:
+                    post_stat = file_reader.get_file_stat(self.metadata.file_path)
+                    if not post_stat or post_stat.get("mtime_ns") != pre_stat.get("mtime_ns") or post_stat.get("size") != pre_stat.get("size"):
+                        return ""
+                except Exception:
+                    return ""
             self._code_loaded = True
             return self._code_body
         
@@ -387,6 +500,7 @@ class SemanticChunk:
             "exports": list(self.metadata.exports_provided),
             "tokens": self.token_count,
             "module_group": self.metadata.module_group,
+            "stable_symbol_id": self.metadata.stable_symbol_id,
             "content_hash": self.content_hash,  # For lazy loading verification
         }
     
@@ -425,6 +539,9 @@ class SymbolNode:
     
     # Chunk ID this symbol belongs to
     chunk_id: str
+
+    # Stable symbol ID (rename/move resilient)
+    stable_symbol_id: str = ""
     
     # Visibility
     is_public: bool = True
@@ -497,6 +614,13 @@ class FileSummary:
     
     # Hash of content when summary was generated
     content_hash: str
+
+    # Chunking version used to generate summary
+    chunking_version: str = ""
+
+    # Provenance
+    chunk_ids: List[str] = field(default_factory=list)
+    evidence: Dict[str, List[str]] = field(default_factory=dict)
     
     # Token count of summary
     token_count: int = 0
@@ -522,13 +646,46 @@ class FileSummary:
     
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "file": self.file_path,
+            "file_path": self.file_path,
             "language": self.language,
             "responsibility": self.responsibility,
-            "publicApi": self.public_api,
+            "public_api": self.public_api,
             "dependencies": self.dependencies,
-            "sideEffects": self.side_effects,
-            "contentHash": self.content_hash,
+            "side_effects": self.side_effects,
+            "content_hash": self.content_hash,
+            "chunking_version": self.chunking_version,
+            "chunk_ids": self.chunk_ids,
+            "evidence": self.evidence,
+        }
+
+
+@dataclass
+class ModuleSummary:
+    """
+    Summary of a module or subsystem.
+
+    Generated by LLM; used for high-level context.
+    """
+    module_path: str
+    summary: str
+    key_symbols: List[str]
+    dependencies: List[str]
+    content_hash: str
+    chunking_version: str = ""
+    token_count: int = 0
+
+    def __post_init__(self):
+        if self.token_count == 0:
+            self.token_count = len(self.summary) // 4 + 1
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "module_path": self.module_path,
+            "summary": self.summary,
+            "key_symbols": self.key_symbols,
+            "dependencies": self.dependencies,
+            "content_hash": self.content_hash,
+            "chunking_version": self.chunking_version,
         }
 
 
@@ -690,6 +847,10 @@ class RetrievalResult:
     # This tells the LLM if it has enough context to answer
     sufficiency: Any = None  # ContextSufficiency enum from controller
     refusal_reason: Any = None  # RefusalReason enum from controller
+
+    # Observability trace (optional)
+    trace: List[Dict[str, Any]] = field(default_factory=list)
+    debug: Dict[str, Any] = field(default_factory=dict)
     
     def format_for_prompt(self) -> str:
         """
@@ -740,6 +901,8 @@ class RetrievalResult:
             },
             "truncated": self.truncated_chunks,
             "missingNote": self.missing_context_note,
+            "trace": self.trace,
+            "debug": self.debug,
         }
 
 
@@ -823,8 +986,22 @@ def _resolve_ts_module(file_path: str) -> str:
     """Resolve TypeScript module (file path based)."""
     import os
     
-    # Remove extension
-    base = file_path.rsplit(".", 1)[0] if "." in file_path else file_path
+    # Normalize path and remove extension
+    normalized = file_path.replace("\\", "/")
+    base = normalized.rsplit(".", 1)[0] if "." in normalized else normalized
+
+    # Strip common root folders to stabilize module grouping
+    for root in ("src/", "lib/", "app/"):
+        if base.startswith(root):
+            base = base[len(root):]
+            break
+
+    # Monorepo patterns: packages/<pkg>/src -> <pkg>/...
+    for scope_root in ("packages", "apps"):
+        parts = base.split("/")
+        if len(parts) >= 3 and parts[0] == scope_root and parts[2] in ("src", "lib", "app"):
+            base = "/".join([parts[1]] + parts[3:])
+            break
     
     # Handle index files
     if base.endswith("/index"):

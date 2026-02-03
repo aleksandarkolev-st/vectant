@@ -1,7 +1,71 @@
 const simpleGit = require('simple-git');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
+
+const TEXT_EXTENSIONS = new Set([
+    'js','jsx','ts','tsx','json','md','txt','py','rs','go','java','c','h','cpp','hpp','cs','html','css','yml','yaml','toml','xml','sh',
+    'env','gitignore','dockerfile','makefile','gradle','lock'
+]);
+
+const BINARY_EXTENSIONS = new Set([
+    'png','jpg','jpeg','gif','bmp','webp','ico','pdf','zip','tar','gz','bz2','xz','7z',
+    'mp3','mp4','mov','avi','mkv','wav','ogg','flac','exe','dll','so','dylib','bin',
+    'class','jar','war','psd','ai','ttf','otf','woff','woff2','wasm'
+]);
+
+const VENDOR_DIRS = new Set(['node_modules','vendor','third_party','external','.yarn','.pnpm']);
+const GENERATED_DIRS = new Set(['dist','build','out','coverage','.next','.nuxt','target']);
+
+function isBinaryExtension(ext) {
+    return BINARY_EXTENSIONS.has(String(ext || '').toLowerCase());
+}
+
+function isVendorPath(relPath) {
+    const parts = String(relPath || '').replace(/\\/g, '/').split('/');
+    return parts.some((p) => VENDOR_DIRS.has(p));
+}
+
+function isGeneratedPath(relPath) {
+    const parts = String(relPath || '').replace(/\\/g, '/').split('/');
+    if (parts.some((p) => GENERATED_DIRS.has(p))) return true;
+    const lower = relPath.toLowerCase();
+    if (lower.includes('/generated/') || lower.includes('/gen/')) return true;
+    if (lower.includes('.min.')) return true;
+    if (lower.endsWith('.map')) return true;
+    if (lower.endsWith('.pb.go') || lower.endsWith('.pb.cc') || lower.endsWith('.pb.h')) return true;
+    if (lower.endsWith('.g.dart')) return true;
+    return false;
+}
+
+function hashStream(stream) {
+    return new Promise((resolve, reject) => {
+        const hash = crypto.createHash('sha256');
+        stream.on('data', (chunk) => hash.update(chunk));
+        stream.on('error', reject);
+        stream.on('end', () => resolve(hash.digest('hex')));
+    });
+}
+
+async function hashFile(absPath) {
+    const stream = fs.createReadStream(absPath);
+    try {
+        return await hashStream(stream);
+    } finally {
+        try { stream.destroy(); } catch (_) {}
+    }
+}
+
+function languageForPath(p) {
+    const ext = (path.extname(p || '').replace('.', '') || '').toLowerCase();
+    const map = {
+        js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript',
+        py: 'python', rs: 'rust', go: 'go', java: 'java', c: 'c', cpp: 'cpp', h: 'c', hpp: 'cpp',
+        html: 'html', css: 'css', json: 'json', md: 'markdown', yml: 'yaml', yaml: 'yaml', toml: 'toml', xml: 'xml', sh: 'shell',
+    };
+    return map[ext] || (ext ? ext : 'plaintext');
+}
 
 // ===== Error Types for structured error handling =====
 class GitError extends Error {
@@ -1075,6 +1139,14 @@ class GitService {
                                 size: 0,
                                 lastModified: st.mtimeMs,
                                 extension: '',
+                                language: '',
+                                is_text: false,
+                                is_binary: false,
+                                is_vendor: isVendorPath(relDir),
+                                is_generated: isGeneratedPath(relDir),
+                                content_hash: '',
+                                last_author: null,
+                                last_commit: null,
                             });
                         }
                     } catch (_) {
@@ -1090,11 +1162,27 @@ class GitService {
                     }
                     const rel = path.relative(repoPath, full).replace(/\\/g, '/');
                     const ext = (path.extname(rel).replace('.', '') || '').toLowerCase();
+                    const isText = TEXT_EXTENSIONS.has(ext) || ext === '';
+                    const isBinary = !isText && isBinaryExtension(ext);
+                    let contentHash = '';
+                    try {
+                        contentHash = await hashFile(full);
+                    } catch (_) {
+                        contentHash = '';
+                    }
                     out.push({
                         path: rel,
                         size: st.size,
                         lastModified: st.mtimeMs,
                         extension: ext,
+                        language: languageForPath(rel),
+                        is_text: isText,
+                        is_binary: isBinary,
+                        is_vendor: isVendorPath(rel),
+                        is_generated: isGeneratedPath(rel),
+                        content_hash: contentHash,
+                        last_author: null,
+                        last_commit: null,
                     });
                 }
             }

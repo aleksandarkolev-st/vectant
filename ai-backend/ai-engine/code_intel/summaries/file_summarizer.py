@@ -55,27 +55,12 @@ class FileSummarizer:
         """
         # Extract chunks for analysis
         chunks = self.extractor.extract(file)
-        
-        # Determine responsibility
-        responsibility = self._infer_responsibility(file, chunks)
-        
-        # Extract public API
-        public_api = self._extract_public_api(chunks)
-        
-        # Extract dependencies
-        dependencies = self._extract_dependencies(chunks)
-        
-        # Detect side effects
-        side_effects = self._detect_side_effects(file.content, chunks)
-        
-        return FileSummary(
+        return self.summarize_from_chunks(
             file_path=file.relative_path,
             language=file.language or "",
-            responsibility=responsibility,
-            public_api=public_api[:self.max_api_items],
-            dependencies=dependencies[:self.max_deps],
-            side_effects=side_effects,
+            content=file.content,
             content_hash=file.content_hash,
+            chunks=chunks,
         )
     
     def summarize_from_chunks(
@@ -113,7 +98,18 @@ class FileSummarizer:
         public_api = self._extract_public_api(chunks)
         dependencies = self._extract_dependencies(chunks)
         side_effects = self._detect_side_effects(content, chunks)
-        
+
+        chunk_ids = [c.id for c in chunks]
+        chunking_version = chunks[0].metadata.chunking_version if chunks else ""
+
+        symbol_to_chunk = {c.symbol_name: c.id for c in chunks if c.symbol_name}
+        evidence = {
+            "responsibility": chunk_ids[:3],
+            "public_api": [symbol_to_chunk.get(s) for s in public_api if symbol_to_chunk.get(s)],
+            "dependencies": chunk_ids[:3],
+            "side_effects": chunk_ids[:3],
+        }
+
         return FileSummary(
             file_path=file_path,
             language=language,
@@ -122,6 +118,9 @@ class FileSummarizer:
             dependencies=dependencies[:self.max_deps],
             side_effects=side_effects,
             content_hash=content_hash,
+            chunking_version=chunking_version,
+            chunk_ids=chunk_ids,
+            evidence=evidence,
         )
     
     def _infer_responsibility(

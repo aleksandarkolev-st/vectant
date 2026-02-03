@@ -55,6 +55,18 @@ const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
+let fetchFunc = null;
+if (typeof fetch === 'function') {
+  fetchFunc = fetch;
+} else {
+  try {
+    fetchFunc = require('node-fetch');
+  } catch (e) {
+    fetchFunc = null;
+  }
+}
+
+const CODE_INTEL_URL = (process.env.CODE_INTEL_URL || 'http://localhost:8000').replace(/\/$/, '');
 
 // LevelDB persistence is optional — some environments (or registries) may not
 // provide a compatible `y-leveldb` binary. Try to load it and fall back to
@@ -229,6 +241,33 @@ class ValidatingPersistence {
           
           // Update hash cache
           fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
+
+          // Optional: Sync to GCS for cloud-backed workspaces
+          const syncToGcs = String(process.env.GCS_SYNC_ON_FLUSH || 'true').toLowerCase() !== 'false';
+          if (syncToGcs && gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
+            try {
+              await gcsSync.syncFileToGcs(slug, filePath, content);
+            } catch (e) {
+              console.warn(`[Collab AutoFlush] GCS sync failed for ${filePath}:`, e?.message || e);
+            }
+          }
+
+          // Optional: Trigger incremental code-intel indexing
+          const shouldIndex = String(process.env.CODE_INTEL_AUTO_INDEX || 'true').toLowerCase() !== 'false';
+          if (shouldIndex && fetchFunc && CODE_INTEL_URL) {
+            try {
+              fetchFunc(`${CODE_INTEL_URL}/code-intel/index/file`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  workspace_path: slug,
+                  file_path: filePath,
+                }),
+              }).catch(() => {});
+            } catch (e) {
+              // Non-fatal
+            }
+          }
           
           console.log(`[Collab AutoFlush] ${filePath} -> disk (${content.length} chars)`);
         } catch (e) {
@@ -469,6 +508,17 @@ const server = http.createServer(async (req, res) => {
     console.log(`[Collab] FILE-CONTENT request: slug=${slug}, path=${filePath}`);
     
     try {
+      // Ensure repo exists and (when configured) hydrate from GCS before reading.
+      if (!gitService.isRepoExists(slug)) {
+        try {
+          await gitService.initRepo(slug, null);
+        } catch (e) {
+          if (gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
+            console.warn('[Collab] FILE-CONTENT auto-init failed for slug:', slug, e?.message || e);
+          }
+        }
+      }
+
       const content = await getActualFileContent(slug, filePath);
       if (content === null) {
         console.log(`[Collab] FILE-CONTENT: File not found: ${slug}/${filePath}`);
@@ -759,6 +809,9 @@ const server = http.createServer(async (req, res) => {
                   break;
                 case 'open-lookup':
                   result = fileIndex.fileLookup(slug, data.q || data.query || '');
+                  break;
+                case 'imports':
+                  result = fileIndex.getImports(slug, data.filePath || data.path || '');
                   break;
                 case 'file':
                     const content = await gitService.readFile(slug, data.path);

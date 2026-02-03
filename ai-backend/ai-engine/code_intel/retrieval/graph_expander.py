@@ -81,7 +81,7 @@ class GraphExpander:
         
         # Find what we call (MEDIUM-HIGH - needed for understanding)
         ExpansionRule(
-            EdgeType.CALLS, "forward", max_hops=2, score_decay=0.6,
+            EdgeType.CALLS, "forward", max_hops=3, score_decay=0.6,
             priority=8, max_per_source=5
         ),
         
@@ -93,7 +93,7 @@ class GraphExpander:
         
         # Find parent classes (MEDIUM)
         ExpansionRule(
-            EdgeType.INHERITS, "forward", max_hops=2, score_decay=0.7,
+            EdgeType.INHERITS, "forward", max_hops=3, score_decay=0.7,
             priority=7, max_per_source=3
         ),
         

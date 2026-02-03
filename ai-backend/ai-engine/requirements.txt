@@ -4,7 +4,6 @@ google-generativeai
 #tree_sitter
 #tree_sitter_languages
 python-dotenv
-openai
 requests
 numpy
 tiktoken
