@@ -1107,8 +1107,12 @@ If image attachments are present, read/ocr the images and extract any text or co
             summaryProgress.logs.forEach((p) => appendProgressLog(p));
             summaryBuffer = summaryProgress.cleaned;
             onLog?.('Finalizing response');
-            appendProgressLog('Drafting code changes');
-            appendProgressLog('Summarizing changes');
+            if (needsCodeChanges) {
+                appendProgressLog('Drafting code changes');
+                appendProgressLog('Summarizing changes');
+            } else {
+                appendProgressLog('Preparing explanation');
+            }
             // Mark progress finished before streaming the summary to the bubble
             pushProgress((m) => ({ ...m, status: 'finished' }));
 
@@ -1142,11 +1146,15 @@ If image attachments are present, read/ocr the images and extract any text or co
                 return prefix ? prefix.split('\n').slice(0, 4).join('\n').trim() : '';
             })();
 
+            // IMPORTANT: Skip diff parsing entirely when in explain mode
+            // This prevents the explanation text from being treated as code changes
             let multiFileSuggestions = [];
-            try {
-                multiFileSuggestions = await buildMultiFileSuggestions(suggestion || '');
-            } catch (e) {
-                multiFileSuggestions = [];
+            if (needsCodeChanges) {
+                try {
+                    multiFileSuggestions = await buildMultiFileSuggestions(suggestion || '');
+                } catch (e) {
+                    multiFileSuggestions = [];
+                }
             }
             const hasMultiFileSuggestions = multiFileSuggestions.length > 0;
 
@@ -1183,36 +1191,49 @@ If image attachments are present, read/ocr the images and extract any text or co
                 const prefix = summaryText ? `${summaryText}\n\n` : '';
                 displayedContent = `${prefix}AI suggested changes for ${multiFileSuggestions.length} file${multiFileSuggestions.length > 1 ? 's' : ''}. Review them below.`;
             } else {
+                // Clear any existing suggestions
                 mutateSession(activeSession.id, (session) => ({
                     ...session,
                     fileSuggestions: [],
+                    suggestedCode: null, // Also clear single-file suggestions
+                    showDiff: false, // Hide diff view
                     suggestionTimestamp: null,
                 }));
                 lastSuggestionSnapshotRef.current = null;
 
-                codeOnly = extractCodeFromMarkdown(suggestion);
-                const isRawPatch = /(^---\s+a\/.+\n\+\+\+\s+b\/)|(^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@)/m.test(suggestion || '');
-                if (!codeOnly && isRawPatch) {
-                    const patched = applyPatch(code, suggestion);
-                    if (patched !== false) {
-                        codeOnly = patched;
+                // Only try to extract code if we're in code-change mode
+                // For explain mode, just display the response as-is
+                if (needsCodeChanges) {
+                    codeOnly = extractCodeFromMarkdown(suggestion);
+                    const isRawPatch = /(^---\s+a\/.+\n\+\+\+\s+b\/)|(^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@)/m.test(suggestion || '');
+                    if (!codeOnly && isRawPatch) {
+                        const patched = applyPatch(code, suggestion);
+                        if (patched !== false) {
+                            codeOnly = patched;
+                        }
                     }
-                }
 
-                if (codeOnly && !isPlaceholderText(codeOnly) && !isPlaceholderText(displayedContent)) {
-                    displayedContent = summaryText || (suggestion || '').replace(/```[\s\S]*?```/g, '');
-                    displayedContent = displayedContent.replace(/<pre[^>]*>[\s\S]*?<code[^>]*>[\s\S]*?<\/code>[\s\S]*?<\/pre>/gi, '');
-                    displayedContent = displayedContent.replace(/<code[^>]*>[\s\S]*?<\/code>/gi, '');
-                    displayedContent = displayedContent.trim();
-                    if (!displayedContent) {
-                        displayedContent = 'AI suggested code changes — preview shown below.';
-                    }} else {
-                    codeOnly = null;
-                    if (summaryText) {
-                        displayedContent = summaryText;
-                    } else if (isPlaceholderText(suggestion || '')) {
-                        displayedContent = 'AI could not produce changes for the active file. Please clarify the request or provide file content.';
+                    if (codeOnly && !isPlaceholderText(codeOnly) && !isPlaceholderText(displayedContent)) {
+                        displayedContent = summaryText || (suggestion || '').replace(/```[\s\S]*?```/g, '');
+                        displayedContent = displayedContent.replace(/<pre[^>]*>[\s\S]*?<code[^>]*>[\s\S]*?<\/code>[\s\S]*?<\/pre>/gi, '');
+                        displayedContent = displayedContent.replace(/<code[^>]*>[\s\S]*?<\/code>/gi, '');
+                        displayedContent = displayedContent.trim();
+                        if (!displayedContent) {
+                            displayedContent = 'AI suggested code changes — preview shown below.';
+                        }
+                    } else {
+                        codeOnly = null;
+                        if (summaryText) {
+                            displayedContent = summaryText;
+                        } else if (isPlaceholderText(suggestion || '')) {
+                            displayedContent = 'AI could not produce changes for the active file. Please clarify the request or provide file content.';
+                        }
                     }
+                } else {
+                    // Explain mode: just use the full response as display content
+                    // Don't try to extract code or create diffs
+                    codeOnly = null;
+                    displayedContent = suggestion || 'No response received';
                 }
             }
 
@@ -1233,13 +1254,16 @@ If image attachments are present, read/ocr the images and extract any text or co
                 }
             }
 
-            if (!hasMultiFileSuggestions) {
+            // For code change mode without multi-file suggestions, use summaryText as display
+            // For explain mode, keep the full displayedContent (already set above)
+            if (!hasMultiFileSuggestions && needsCodeChanges) {
                 if (codeOnly) {
                     displayedContent = summaryText || displayedContent;
                 } else if (summaryText) {
                     displayedContent = summaryText;
                 }
             }
+            // In explain mode, displayedContent is already the full response - don't truncate it
 
             const now = Date.now();
             const messagesToAppend = [{
