@@ -183,7 +183,11 @@ fn main() {
                 eprintln!("[Runner] Supervisor event loop completed, exiting");
                 std::process::exit(0);
             } else {
-                eprintln!("[Runner] Running as supervised worker process");
+                eprintln!("[Runner] Running as supervised worker process (PID: {})", std::process::id());
+                // v2.1: Verify we are receiving the correct environment
+                if let Ok(parent_pid) = std::env::var("SYNTHI_SUPERVISOR_PID") {
+                    eprintln!("[Runner] Managed by supervisor PID: {}", parent_pid);
+                }
             }
         }
         #[allow(deprecated)]
@@ -199,8 +203,11 @@ fn main() {
     }
 
     // Install crash handlers for runtime error recovery
+    eprintln!("[Runner] Installing crash handlers...");
     if let Err(e) = install_crash_handlers() {
         eprintln!("[Runner] Warning: Failed to install crash handlers: {}", e);
+    } else {
+        eprintln!("[Runner] Crash handlers installed successfully");
     }
 
     // Spawn Xvfb and setup X11

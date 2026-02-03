@@ -139,6 +139,7 @@ fn get_signaling_url() -> String {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    eprintln!("[Worker] Starting up (PID: {})", std::process::id());
     println!("Worker starting...");
     println!("Operating System: {}", std::env::consts::OS);
     
@@ -250,7 +251,17 @@ async fn main() -> Result<()> {
     println!("ANDROID_HOME = {:?}", std::env::var("ANDROID_HOME"));
     println!("===========================================");
 
-    gst::init()?;
+    eprintln!("[Worker] Initializing GStreamer...");
+    match gst::init() {
+        Ok(_) => eprintln!("[Worker] GStreamer initialized successfully"),
+        Err(e) => {
+            eprintln!("[Worker] FATAL: GStreamer initialization failed: {}", e);
+            // We want to return the error to fail specifically
+            return Err(anyhow::anyhow!("GStreamer init failed: {}", e));
+        }
+    }
+    
+    eprintln!("[Worker] Verifying tooling...");
     verify_tooling().await?;
     let signaling_url = get_signaling_url();
     println!("Connecting to signaling server at: {}", signaling_url);

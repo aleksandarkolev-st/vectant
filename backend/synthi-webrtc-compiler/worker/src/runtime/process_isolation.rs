@@ -609,20 +609,26 @@ impl ProcessSupervisor {
                 },
                 Ok(None) => {}, // Timeout, loop again
                 Err(e) => {
-                     // Check one last time for exit
+                    // Possible race: Pipe closed but process table not yet updated.
+                    // Retry wait() for a short period to catch the exit code/signal.
                     if let Some(worker) = self.worker.as_mut() {
-                        if let Ok(Some(status)) = worker.child.try_wait() {
-                            let code = status.code().unwrap_or(-1);
-                            eprintln!("[Supervisor] FATAL: Worker exited during msg recv: {} (Error: {})", status, e);
-                            #[cfg(unix)]
-                            {
-                                use std::os::unix::process::ExitStatusExt;
-                                if let Some(signal) = status.signal() {
-                                    eprintln!("[Supervisor] Worker killed by signal: {}", signal);
+                        for i in 0..10 { // Try for 100ms
+                            if let Ok(Some(status)) = worker.child.try_wait() {
+                                let code = status.code().unwrap_or(-1);
+                                eprintln!("[Supervisor] FATAL: Worker exited during msg recv (attempt {}): {} (Error: {})", i, status, e);
+                                #[cfg(unix)]
+                                {
+                                    use std::os::unix::process::ExitStatusExt;
+                                    if let Some(signal) = status.signal() {
+                                        eprintln!("[Supervisor] Worker killed by signal: {} (SIGSEGV=11, SIGABRT=6)", signal);
+                                    }
                                 }
+                                return Err(format!("Worker died: {}", status));
                             }
-                             return Err(format!("Worker died: {}", status));
+                            std::thread::sleep(Duration::from_millis(10));
                         }
+                        // If we fall through here, the process is zombie or still technically running but pipe is dead
+                        eprintln!("[Supervisor] ERROR: Connection closed by worker but process is still running/zombie.");
                     }
                     return Err(e);
                 }
