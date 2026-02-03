@@ -327,6 +327,21 @@ async def get_context(request: ContextRequest, http_request: Request) -> Context
                 trace = []
             trace.append({"debug": result.debug})
 
+        score_by_chunk_id: Dict[str, float] = {}
+        if trace:
+            for item in trace:
+                if item.get("reason") != "included":
+                    continue
+                chunk_id = item.get("chunk_id")
+                if not chunk_id:
+                    continue
+                score = item.get("score")
+                if score is None:
+                    continue
+                prev = score_by_chunk_id.get(chunk_id)
+                if prev is None or score > prev:
+                    score_by_chunk_id[chunk_id] = score
+
         return ContextResponse(
             context=result.assembled_context,
             chunks_used=len(result.chunks),
@@ -339,7 +354,7 @@ async def get_context(request: ContextRequest, http_request: Request) -> Context
                     "start_line": c.metadata.start_line,
                     "end_line": c.metadata.end_line,
                     "symbol": c.metadata.symbol_name,
-                    "score": c.metadata.relevance_score,
+                    "score": score_by_chunk_id.get(c.id, 0.0),
                 }
                 for c in result.chunks
             ],

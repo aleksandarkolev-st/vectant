@@ -167,7 +167,7 @@ class ContextRetriever:
         # Search with over-fetch
         results = self.vector_index.search(
             query_embedding,
-            top_k=top_k * 2,
+            k=top_k * 2,
         )
         
         candidates = []
