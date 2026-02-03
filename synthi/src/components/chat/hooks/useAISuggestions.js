@@ -1060,6 +1060,12 @@ If image attachments are present, read/ocr the images and extract any text or co
                         appendProgressLog('Refining response');
                         summaryBuffer += stableText;
 
+                        // Stream explanation text in real-time for explain mode
+                        if (!needsCodeChanges && typeof onChunk === 'function') {
+                            // In explain mode, stream the content as it arrives
+                            onChunk(summaryBuffer);
+                        }
+
                         let partialCode = extractCodeFromMarkdown(streamBuffer);
                         if (!partialCode) {
                             const openIdx = streamBuffer.indexOf('```');
@@ -1126,8 +1132,10 @@ If image attachments are present, read/ocr the images and extract any text or co
                     if (codeIdx === -1) return fileIdx;
                     return Math.min(fileIdx, codeIdx);
                 })();
-                        const summaryOnly = markerIdx === -1 ? summaryBuffer : summaryBuffer.slice(0, markerIdx);
-                if (summaryOnly && typeof onChunk === 'function') {
+                const summaryOnly = markerIdx === -1 ? summaryBuffer : summaryBuffer.slice(0, markerIdx);
+                // Only do post-stream chunking for code changes mode
+                // In explain mode, we already streamed in real-time
+                if (needsCodeChanges && summaryOnly && typeof onChunk === 'function') {
                     const pieces = summaryOnly.split(/(\n{2,})/).filter(Boolean);
                     for (const piece of pieces) {
                         onChunk(piece);

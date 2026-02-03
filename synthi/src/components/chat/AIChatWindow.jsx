@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { Send, X, Plus, ChevronDown, ChevronRight, Sparkles, FileCode, Paperclip } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
@@ -9,6 +9,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { selectFileThunk } from '@/redux/workspaceSlice';
 import { selectFileCacheEntries } from '@/redux/workspaceSlice';
+import { findFileInTree } from '@/utils/fileUtils';
 import { useChatSessions } from './hooks/useChatSessions';
 import { useChatInput } from './hooks/useChatInput';
 import { useAISuggestions } from './hooks/useAISuggestions';
@@ -253,6 +254,145 @@ const AIChatWindow = ({
             [path]: !prev[path],
         }));
     };
+
+    // Build a map from fileCacheEntries for fast lookup
+    const cachedFileMap = useMemo(() => new Map(fileCacheEntries), [fileCacheEntries]);
+
+    /**
+     * Search for a symbol in all cached files and return the file node and line number.
+     */
+    const findSymbolInWorkspace = useCallback((symbolName) => {
+        // First check the active file
+        if (activeFile?.path) {
+            const content = cachedFileMap.get(activeFile.path) || currentCode || '';
+            const lines = content.split('\n');
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                if (line.includes(symbolName)) {
+                    // Check if it's a definition (class, function, method, struct, etc.)
+                    const defPatterns = [
+                        new RegExp(`\\bclass\\s+${symbolName}\\b`),
+                        new RegExp(`\\bstruct\\s+${symbolName}\\b`),
+                        new RegExp(`\\bfunction\\s+${symbolName}\\b`),
+                        new RegExp(`\\b${symbolName}\\s*\\(`),  // method/function call
+                        new RegExp(`\\b${symbolName}\\s*::`),   // C++ scope
+                        new RegExp(`\\bdef\\s+${symbolName}\\b`), // Python
+                    ];
+                    if (defPatterns.some(p => p.test(line))) {
+                        return { fileNode: activeFile, lineNumber: i + 1 };
+                    }
+                }
+            }
+            // Fallback: just find first occurrence in active file
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i].includes(symbolName)) {
+                    return { fileNode: activeFile, lineNumber: i + 1 };
+                }
+            }
+        }
+        
+        // Search in all cached files
+        for (const [path, content] of cachedFileMap.entries()) {
+            if (!content || path === activeFile?.path) continue;
+            const lines = content.split('\n');
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                if (line.includes(symbolName)) {
+                    // Find the file node for this path
+                    const findNodeByPath = (nodes, targetPath) => {
+                        for (const node of nodes) {
+                            if (!node.isFolder && node.path === targetPath) {
+                                return node;
+                            }
+                            if (node.isFolder && node.children) {
+                                const found = findNodeByPath(node.children, targetPath);
+                                if (found) return found;
+                            }
+                        }
+                        return null;
+                    };
+                    const fileNode = findNodeByPath(rawFiles, path);
+                    if (fileNode) {
+                        return { fileNode, lineNumber: i + 1 };
+                    }
+                }
+            }
+        }
+        
+        return null;
+    }, [activeFile, currentCode, cachedFileMap, rawFiles]);
+
+    /**
+     * Handle clicks on file names and symbols in AI chat messages.
+     * Delegates click events to navigate to the referenced file or symbol.
+     */
+    const handleContentNavClick = useCallback((e) => {
+        const navLink = e.target.closest('.ai-nav-link');
+        if (!navLink) return;
+        
+        const navType = navLink.dataset.navType;
+        const navTarget = navLink.dataset.navTarget;
+        if (!navType || !navTarget) return;
+        
+        e.preventDefault();
+        e.stopPropagation();
+        
+        if (navType === 'file') {
+            // Find the file in the workspace tree by name
+            let fileNode = findFileInTree(rawFiles, navTarget);
+            
+            // Fallback: try searching for a file ending with this name
+            if (!fileNode) {
+                const findByPath = (nodes, filename) => {
+                    for (const node of nodes) {
+                        if (!node.isFolder) {
+                            if (node.name === filename || 
+                                node.path?.endsWith('/' + filename) || 
+                                node.path?.endsWith('\\' + filename) ||
+                                node.path === filename) {
+                                return node;
+                            }
+                        }
+                        if (node.isFolder && node.children) {
+                            const found = findByPath(node.children, filename);
+                            if (found) return found;
+                        }
+                    }
+                    return null;
+                };
+                fileNode = findByPath(rawFiles, navTarget);
+            }
+            
+            if (fileNode) {
+                dispatch(selectFileThunk(fileNode));
+            } else {
+                console.warn(`[AI Chat] Could not find file: ${navTarget}`);
+            }
+        } else if (navType === 'symbol') {
+            // Search for the symbol in workspace files
+            const result = findSymbolInWorkspace(navTarget);
+            if (result) {
+                const { fileNode, lineNumber } = result;
+                // Navigate to the file
+                dispatch(selectFileThunk(fileNode)).then(() => {
+                    // Wait a bit for the file to load and editor to update
+                    setTimeout(() => {
+                        if (editor) {
+                            try {
+                                editor.revealLineInCenter(lineNumber);
+                                editor.setPosition({ lineNumber, column: 1 });
+                                editor.focus();
+                            } catch (err) {
+                                console.warn('[AI Chat] Could not scroll to symbol:', err);
+                            }
+                        }
+                    }, 150);
+                });
+            } else {
+                console.warn(`[AI Chat] Could not find symbol: ${navTarget}`);
+            }
+        }
+    }, [dispatch, editor, findSymbolInWorkspace, rawFiles]);
 
     const handleCancel = () => {
         if (controller) {
@@ -704,6 +844,7 @@ const AIChatWindow = ({
                                     )}
                                     <div
                                         className="break-normal whitespace-normal text-xs leading-relaxed ai-chat-content min-w-0"
+                                        onClick={handleContentNavClick}
                                         dangerouslySetInnerHTML={{ __html: formatMessageContent(msg.content) }}
                                     />
                                     <span className="text-[10px] text-[#52525b] mt-1.5 block">
@@ -738,9 +879,11 @@ const AIChatWindow = ({
                         })
                     )}
                     {streamingMessage ? (
-                        <div className="text-xs text-[#e4e4e7] whitespace-pre-wrap leading-relaxed">
-                            {streamingMessage}
-                        </div>
+                        <div 
+                            className="text-xs text-[#e4e4e7] leading-relaxed ai-chat-content"
+                            onClick={handleContentNavClick}
+                            dangerouslySetInnerHTML={{ __html: formatMessageContent(streamingMessage) }}
+                        />
                     ) : null}
                     {showThinking && (
                         <div className="flex justify-start">
