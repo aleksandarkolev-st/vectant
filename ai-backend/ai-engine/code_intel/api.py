@@ -314,12 +314,17 @@ async def get_context(request: ContextRequest, http_request: Request) -> Context
         else:
             sufficiency = str(sufficiency) if sufficiency else 'UNKNOWN'
         
-        # Extract refusal reason if present
+        # Extract refusal reason if present - convert RefusalReason object to string
         refusal = getattr(result, 'refusal_reason', None)
-        if refusal and hasattr(refusal, 'value'):
-            refusal = refusal.value
-        elif refusal and hasattr(refusal, 'name'):
-            refusal = refusal.name
+        if refusal:
+            if hasattr(refusal, 'message'):
+                refusal = refusal.message
+            elif hasattr(refusal, 'value'):
+                refusal = refusal.value
+            elif hasattr(refusal, 'name'):
+                refusal = refusal.name
+            else:
+                refusal = str(refusal)
         
         trace = result.trace if result.trace else None
         if os.getenv("CODE_INTEL_DEBUG") and result.debug:

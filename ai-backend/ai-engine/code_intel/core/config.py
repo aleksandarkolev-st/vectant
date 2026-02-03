@@ -87,23 +87,23 @@ class RetrievalConfig:
     top_k_candidates: int = 12  # Initial vector search
     min_similarity: float = 0.5  # Minimum cosine similarity
 
-    # Explicit candidate budgets
-    vector_top_k: int = 80
-    rerank_top_k: int = 40
-    final_max_chunks: int = 30
+    # Explicit candidate budgets (optimized for faster response)
+    vector_top_k: int = 40  # Reduced from 80 for faster search
+    rerank_top_k: int = 25  # Reduced from 40
+    final_max_chunks: int = 20  # Reduced from 30 for faster assembly
 
     # Lexical/BM25 search
     enable_lexical: bool = True
-    bm25_top_k: int = 200  # Candidate pool size for lexical search
+    bm25_top_k: int = 100  # Reduced from 200 for faster search
     bm25_min_score: float = 0.0
 
     # Definition pull (symbol hops)
-    definition_pull_top_k: int = 30
-    definition_pull_symbols_per_chunk: int = 30
+    definition_pull_top_k: int = 20  # Reduced from 30
+    definition_pull_symbols_per_chunk: int = 20  # Reduced from 30
     
-    # Structural expansion
-    max_expansion_depth: int = 3
-    max_expanded_chunks: int = 30
+    # Structural expansion (optimized for faster response)
+    max_expansion_depth: int = 2  # Reduced from 3
+    max_expanded_chunks: int = 20  # Reduced from 30
     
     # Ranking weights
     weight_relevance: float = 0.4
@@ -134,11 +134,12 @@ class RetrievalConfig:
     })
 
     # Multi-pass retrieval (relax thresholds if too few candidates)
-    enable_multi_pass: bool = True
+    # Disabled by default for faster response - enable for better recall
+    enable_multi_pass: bool = False  # Changed from True for faster response
     multi_pass_min_candidates: int = 8
     multi_pass_min_similarity: float = 0.35
-    multi_pass_vector_top_k: int = 120
-    multi_pass_bm25_top_k: int = 300
+    multi_pass_vector_top_k: int = 80  # Reduced from 120
+    multi_pass_bm25_top_k: int = 200  # Reduced from 300
     multi_pass_include_tests: bool = True
 
     # LLM reranker (optional)

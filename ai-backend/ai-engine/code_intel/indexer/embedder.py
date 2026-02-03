@@ -153,7 +153,7 @@ class Embedder:
     Supports:
     - Google text-embedding-004 (default)
     - Batch processing for efficiency
-    - Caching (optional)
+    - Query embedding caching for faster repeated queries
     """
     
     def __init__(
@@ -161,6 +161,7 @@ class Embedder:
         model: str = "text-embedding-004",
         api_key: Optional[str] = None,
         batch_size: int = 100,
+        cache_size: int = 500,
     ):
         self.model = model
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
@@ -168,6 +169,10 @@ class Embedder:
         
         self._client = None
         self._dimension = 768  # text-embedding-004
+        
+        # Query embedding cache for faster repeated queries
+        self._query_cache: dict = {}
+        self._cache_size = cache_size
     
     def _get_client(self):
         """Lazy-load Google GenAI client."""
@@ -209,6 +214,7 @@ class Embedder:
         Embed a query for retrieval.
         
         Uses RETRIEVAL_QUERY task type for better query embeddings.
+        Caches results to avoid re-embedding the same queries.
         
         Args:
             query: Search query to embed
@@ -216,6 +222,10 @@ class Embedder:
         Returns:
             Embedding vector
         """
+        # Check cache first
+        if query in self._query_cache:
+            return self._query_cache[query]
+        
         client = self._get_client()
         
         result = client.embed_content(
@@ -224,7 +234,16 @@ class Embedder:
             task_type="RETRIEVAL_QUERY",
         )
         
-        return result['embedding']
+        embedding = result['embedding']
+        
+        # Cache the result (with size limit)
+        if len(self._query_cache) >= self._cache_size:
+            # Remove oldest entry (simple LRU approximation)
+            oldest_key = next(iter(self._query_cache))
+            del self._query_cache[oldest_key]
+        self._query_cache[query] = embedding
+        
+        return embedding
     
     def embed_texts(self, texts: List[str]) -> List[List[float]]:
         """

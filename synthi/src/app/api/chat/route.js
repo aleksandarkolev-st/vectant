@@ -1,10 +1,6 @@
 import { NextResponse } from 'next/server';
 
 const encoder = new TextEncoder();
-const OPENAI_BASE =
-    (process.env.OPENAI_API_BASE || process.env.AI_PROXY_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
-const ANTHROPIC_BASE =
-    (process.env.ANTHROPIC_API_BASE || process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
 const GEMINI_BASE =
     (process.env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
 
@@ -30,21 +26,24 @@ const DEFAULT_IGNORE = [
 const CODE_INTEL_BASE = process.env.CODE_INTEL_URL || process.env.AI_ENGINE_URL || 'http://localhost:8000';
 
 const DEFAULT_GEMINI_MODEL = process.env.SYNTHI_AI_MODEL || process.env.GEMINI_MODEL || 'gemini-2.0-flash';
-const DEFAULT_OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-const DEFAULT_ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest';
 const UPSTREAM_TIMEOUT_MS = 45_000;
 
-const resolveProviderKey = ({ provider, model, apiKey }) => {
-    const providerName = (provider || '').toLowerCase();
-    const modelName = String(model || '').toLowerCase();
-    if (providerName === 'anthropic' || modelName.includes('claude')) {
-        return apiKey || process.env.ANTHROPIC_API_KEY || '';
-    }
-    if (providerName === 'openai' || modelName.includes('gpt') || modelName.includes('o1')) {
-        return apiKey || process.env.OPENAI_API_KEY || '';
-    }
-    return apiKey || process.env.GEMINI_API_KEY || '';
-};
+// System prompt for code intelligence chat
+// Key principle: Only act on explicit requests, never suggest changes unprompted
+const CODE_INTEL_SYSTEM_PROMPT = `You are a code intelligence assistant integrated into an IDE.
+
+CRITICAL RULES:
+1. ANSWER what the user asks - nothing more, nothing less.
+2. DO NOT suggest code changes, refactors, or improvements unless explicitly asked.
+3. DO NOT offer to help with things the user didn't ask about.
+4. When explaining code, focus on understanding, not "fixing" or "improving" it.
+5. If asked to explain code, explain it. Do not suggest how to change it.
+6. If asked a question about code behavior, answer the question. Do not suggest modifications.
+7. Only provide code changes when the user explicitly asks for them (e.g., "fix this", "refactor this", "change this to...").
+
+You have access to code context retrieved from the user's workspace. Use this context to provide accurate, specific answers.
+
+If the context is insufficient to answer the question, say so clearly rather than guessing.`;
 
 /**
  * Fetch code intelligence context from the backend.
@@ -72,7 +71,7 @@ async function fetchCodeIntelContext({ workspacePath, query, maxTokens = 6000, c
                 max_tokens: maxTokens,
                 conversation_history: conversationHistory,
             }),
-            signal: AbortSignal.timeout(10000), // 10s timeout for context retrieval
+            signal: AbortSignal.timeout(5000), // 5s timeout for faster response (reduced from 10s)
         });
         
         if (!response.ok) {
@@ -262,139 +261,36 @@ const hydrateFromCollab = async ({ workspacePath, focusPath, code, files, signal
     return { code: hydratedCode, files: finalFiles };
 };
 
-const streamOpenAI = async ({ model, apiKey, userContent, signal }) => {
-    const key = apiKey || process.env.OPENAI_API_KEY || '';
-    if (!key) throw new Error('OpenAI API key is not configured');
-    const upstream = await fetch(`${OPENAI_BASE}/chat/completions`, {
-        method: 'POST',
-        headers: {
-            'content-type': 'application/json',
-            authorization: `Bearer ${key}`,
-        },
-        body: JSON.stringify({
-            model: model || DEFAULT_OPENAI_MODEL,
-            stream: true,
-            messages: [{ role: 'user', content: userContent }],
-        }),
-        signal,
-    });
-
-    if (!upstream.ok || !upstream.body) {
-        throw new Error(`Upstream error ${upstream.status}`);
-    }
-
-    const reader = upstream.body.getReader();
-    const decoder = new TextDecoder();
-    return new ReadableStream({
-        async pull(controller) {
-            const { value, done } = await reader.read();
-            if (done) {
-                controller.enqueue(encoder.encode(JSON.stringify({ done: true }) + '\n'));
-                controller.close();
-                return;
-            }
-            if (!value) return;
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split('\n').filter(Boolean);
-            for (const raw of lines) {
-                const line = raw.replace(/^data:\s*/, '').trim();
-                if (!line || line === '[DONE]') continue;
-                try {
-                    const parsed = JSON.parse(line);
-                    const delta = parsed?.choices?.[0]?.delta?.content || parsed?.choices?.[0]?.text || '';
-                    if (delta) {
-                        controller.enqueue(encoder.encode(JSON.stringify({ delta }) + '\n'));
-                    }
-                    const finish = parsed?.choices?.[0]?.finish_reason;
-                    if (finish) {
-                        controller.enqueue(encoder.encode(JSON.stringify({ done: true }) + '\n'));
-                    }
-                } catch (e) {
-                    // ignore malformed lines
-                }
-            }
-        },
-        cancel() {
-            try {
-                reader.cancel();
-            } catch (e) {}
-        },
-    });
-};
-
-const streamAnthropic = async ({ model, apiKey, userContent, signal }) => {
-    const key = apiKey || process.env.ANTHROPIC_API_KEY || '';
-    if (!key) throw new Error('Anthropic API key is not configured');
-    const upstream = await fetch(`${ANTHROPIC_BASE}/v1/messages`, {
-        method: 'POST',
-        headers: {
-            'content-type': 'application/json',
-            'x-api-key': key,
-            'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-            model: model || DEFAULT_ANTHROPIC_MODEL,
-            max_tokens: 4096,
-            stream: true,
-            messages: [{ role: 'user', content: userContent }],
-        }),
-        signal,
-    });
-
-    if (!upstream.ok || !upstream.body) {
-        throw new Error(`Upstream error ${upstream.status}`);
-    }
-
-    const reader = upstream.body.getReader();
-    const decoder = new TextDecoder();
-    return new ReadableStream({
-        async pull(controller) {
-            const { value, done } = await reader.read();
-            if (done) {
-                controller.enqueue(encoder.encode(JSON.stringify({ done: true }) + '\n'));
-                controller.close();
-                return;
-            }
-            if (!value) return;
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split('\n').filter(Boolean);
-            for (const raw of lines) {
-                const line = raw.replace(/^data:\s*/, '').trim();
-                if (!line || line === '[DONE]') continue;
-                try {
-                    const parsed = JSON.parse(line);
-                    const textDelta =
-                        parsed?.delta?.text ||
-                        parsed?.content_block?.text ||
-                        parsed?.content_block_delta?.text ||
-                        parsed?.content?.[0]?.text ||
-                        '';
-                    if (textDelta) {
-                        controller.enqueue(encoder.encode(JSON.stringify({ delta: textDelta }) + '\n'));
-                    }
-                    if (parsed?.stop_reason || parsed?.type === 'message_stop') {
-                        controller.enqueue(encoder.encode(JSON.stringify({ done: true }) + '\n'));
-                    }
-                } catch (e) {
-                    // ignore malformed lines
-                }
-            }
-        },
-        cancel() {
-            try {
-                reader.cancel();
-            } catch (e) {}
-        },
-    });
-};
-
-const streamGemini = async ({ model, apiKey, userContent, signal }) => {
+const streamGemini = async ({ model, apiKey, userContent, conversationHistory = [], signal }) => {
     const key = apiKey || process.env.GEMINI_API_KEY || '';
     if (!key) {
         throw new Error('Gemini API key is not configured');
     }
     const targetModel = model || DEFAULT_GEMINI_MODEL;
     const endpoint = `${GEMINI_BASE}/models/${encodeURIComponent(targetModel)}:streamGenerateContent?alt=sse&key=${key}`;
+
+    // Build contents array for Gemini with conversation history
+    const contents = [];
+    
+    // Add system instruction as first user message (Gemini doesn't have a dedicated system role in older API)
+    // For newer models, we use systemInstruction
+    const recentHistory = Array.isArray(conversationHistory) 
+        ? conversationHistory.slice(-20) 
+        : [];
+    
+    // Add conversation history
+    for (const msg of recentHistory) {
+        if (msg.role && msg.content) {
+            // Map 'assistant' role to 'model' for Gemini
+            const geminiRole = msg.role === 'assistant' ? 'model' : msg.role;
+            if (geminiRole === 'user' || geminiRole === 'model') {
+                contents.push({ role: geminiRole, parts: [{ text: msg.content }] });
+            }
+        }
+    }
+    
+    // Add current user message
+    contents.push({ role: 'user', parts: [{ text: userContent }] });
 
     const upstream = await fetch(endpoint, {
         method: 'POST',
@@ -403,7 +299,8 @@ const streamGemini = async ({ model, apiKey, userContent, signal }) => {
             accept: 'text/event-stream',
         },
         body: JSON.stringify({
-            contents: [{ role: 'user', parts: [{ text: userContent }] }],
+            systemInstruction: { parts: [{ text: CODE_INTEL_SYSTEM_PROMPT }] },
+            contents,
             generationConfig: { maxOutputTokens: 4096, temperature: 0.2 },
         }),
         signal,
@@ -497,7 +394,6 @@ export async function POST(request) {
         focusPath = '',
         model = '',
         apiKey = '',
-        provider = '',
         // Code intelligence integration
         workspacePath = '',
         useCodeIntel = true, // Enable by default when workspacePath is provided
@@ -547,32 +443,20 @@ export async function POST(request) {
         return NextResponse.json({ error: 'Empty prompt' }, { status: 400 });
     }
 
-    const useAnthropic =
-        provider.toLowerCase() === 'anthropic' || String(model || '').toLowerCase().includes('claude');
-    const useOpenAI =
-        provider.toLowerCase() === 'openai' ||
-        String(model || '').toLowerCase().includes('gpt') ||
-        String(model || '').toLowerCase().includes('o1');
-
     const { signal, dispose } = withTimeoutSignal(request.signal);
 
     try {
-        const resolvedKey = resolveProviderKey({ provider, model, apiKey });
-        if (!resolvedKey) {
+        const geminiKey = apiKey || process.env.GEMINI_API_KEY || '';
+        if (!geminiKey) {
             return NextResponse.json(
                 {
                     error: 'Missing API key',
-                    detail: 'No API key configured for the selected provider/model.',
-                    provider: provider || 'gemini',
+                    detail: 'Gemini API key is not configured. Set GEMINI_API_KEY environment variable.',
                 },
                 { status: 401 }
             );
         }
-        const stream = await (useAnthropic
-            ? streamAnthropic({ model, apiKey, userContent, signal })
-            : useOpenAI
-                ? streamOpenAI({ model, apiKey, userContent, signal })
-                : streamGemini({ model, apiKey, userContent, signal }));
+        const stream = await streamGemini({ model, apiKey: geminiKey, userContent, conversationHistory, signal });
 
         const traceSummary = buildTraceSummary(codeIntelContext?.trace || []);
         const sources = Array.isArray(codeIntelContext?.sources)
