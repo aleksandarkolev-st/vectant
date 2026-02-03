@@ -228,7 +228,7 @@ class SummaryStore:
         try:
             with open(self.repo_summary_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            self._repo_summary = RepoSummary(**data)
+            self._repo_summary = RepoSummary(**self._normalize_repo_summary_data(data))
         except Exception as e:
             logger.error(f"Failed to load repo summary: {e}")
             return None
@@ -238,10 +238,29 @@ class SummaryStore:
     def set_repo_summary(self, summary: RepoSummary) -> None:
         """Store repository summary."""
         self._repo_summary = summary
+
+        data = {
+            "architecture": summary.architecture,
+            "entry_points": summary.entry_points,
+            "subsystems": summary.subsystems,
+            "conventions": summary.conventions,
+            "languages": summary.languages,
+            "frameworks": summary.frameworks,
+            "total_files": summary.total_files,
+            "total_symbols": summary.total_symbols,
+            "state_hash": summary.state_hash,
+            "token_count": summary.token_count,
+            # Legacy/compat fields
+            "entryPoints": summary.entry_points,
+            "stats": {
+                "files": summary.total_files,
+                "symbols": summary.total_symbols,
+            },
+        }
         
         try:
             with open(self.repo_summary_path, "w", encoding="utf-8") as f:
-                json.dump(summary.to_dict(), f, indent=2)
+                json.dump(data, f, indent=2)
         except Exception as e:
             logger.error(f"Failed to save repo summary: {e}")
     
@@ -250,6 +269,24 @@ class SummaryStore:
         self._repo_summary = None
         if self.repo_summary_path.exists():
             self.repo_summary_path.unlink()
+
+    def _normalize_repo_summary_data(self, data: Dict) -> Dict:
+        """Normalize repo summary data across schema versions."""
+        normalized = dict(data)
+
+        if "entry_points" not in normalized and "entryPoints" in normalized:
+            normalized["entry_points"] = normalized.pop("entryPoints")
+
+        if "stats" in normalized:
+            stats = normalized.pop("stats") or {}
+            normalized.setdefault("total_files", stats.get("files", 0))
+            normalized.setdefault("total_symbols", stats.get("symbols", 0))
+
+        normalized.setdefault("total_files", 0)
+        normalized.setdefault("total_symbols", 0)
+        normalized.setdefault("state_hash", "unknown")
+
+        return normalized
     
     # -------------------------------------------------------------------------
     # Metadata & State

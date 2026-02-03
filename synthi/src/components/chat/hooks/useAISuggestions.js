@@ -6,6 +6,82 @@ import { api } from '@/services/api';
 import { computeDiffChunks, parseFileDiffBlocks, stripDiffMarkers } from '../utils/diffUtils';
 import { selectFileThunk, setExternalFileContent, fetchFilesThunk } from '@/redux/workspaceSlice';
 
+// AI Engine base URL for intent classification
+const AI_ENGINE_BASE = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000';
+
+/**
+ * Classify user query intent using the AI backend's LLM-based classifier.
+ * Falls back to local heuristics if the backend is unavailable.
+ * 
+ * @param {string} query - The user's query
+ * @param {string} context - Optional context (e.g., current file content snippet)
+ * @returns {Promise<{intent: string, needsCodeChanges: boolean, responseMode: string}>}
+ */
+const classifyQueryIntent = async (query, context = null) => {
+    try {
+        const response = await fetch(`${AI_ENGINE_BASE}/classify/intent`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ query, context }),
+            signal: AbortSignal.timeout(2000), // Fast timeout for responsiveness
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            return {
+                intent: data.intent || 'unknown',
+                needsCodeChanges: data.needs_code_changes !== false, // Default to true
+                responseMode: data.response_mode || 'patch',
+            };
+        }
+    } catch (e) {
+        console.debug('Intent classification fallback to heuristics:', e.message);
+    }
+    
+    // Fallback to local heuristics if backend is unavailable
+    return fallbackIntentDetection(query);
+};
+
+// Fallback heuristic-based intent detection (used when backend is unavailable)
+const fallbackIntentDetection = (prompt) => {
+    if (!prompt) return { intent: 'unknown', needsCodeChanges: true, responseMode: 'patch' };
+    
+    const lower = prompt.toLowerCase().trim();
+    
+    // Keywords that indicate the user WANTS code changes
+    const CHANGE_KEYWORDS = [
+        'fix', 'change', 'modify', 'update', 'edit', 'refactor', 'rename',
+        'add', 'remove', 'delete', 'insert', 'create', 'implement', 'write',
+        'generate', 'build', 'make', 'replace', 'bug', 'error', 'issue',
+        'improve', 'optimize', 'new file', 'new class', 'new function',
+    ];
+    
+    // Keywords that indicate explanation (NO code changes)
+    const EXPLAIN_KEYWORDS = [
+        'explain', 'describe', 'what does', 'what is', 'how does', 'how is',
+        'why does', 'why is', 'tell me about', 'understand', 'walk me through',
+        'help me understand', 'clarify', 'overview', 'summary',
+    ];
+    
+    // Check for explain keywords first
+    if (EXPLAIN_KEYWORDS.some(kw => lower.includes(kw))) {
+        return { intent: 'explain', needsCodeChanges: false, responseMode: 'explain' };
+    }
+    
+    // Check for change keywords
+    if (CHANGE_KEYWORDS.some(kw => lower.includes(kw))) {
+        return { intent: 'change', needsCodeChanges: true, responseMode: 'patch' };
+    }
+    
+    // Questions are typically explanation requests
+    if (lower.endsWith('?') || /^(what|how|why|where|when|which|who|is|are|does|do|can|could)\b/.test(lower)) {
+        return { intent: 'explain', needsCodeChanges: false, responseMode: 'explain' };
+    }
+    
+    // Default to assuming code changes for imperative statements
+    return { intent: 'unknown', needsCodeChanges: true, responseMode: 'patch' };
+};
+
 // Pulls the first code block or multiline text segment out of a markdown-ish AI response.
 const extractCodeFromMarkdown = (text) => {
     if (!text) return null;
@@ -750,7 +826,31 @@ export const useAISuggestions = ({
             const normalizedLang = (langSource || 'plaintext').toLowerCase();
             const code = currentCode || '';
             const userPrompt = inputValue;
-            let patchRequest = `${userPrompt}
+            
+            // Classify user intent using LLM-based backend (with local fallback)
+            // This determines whether the user wants code changes or just an explanation
+            appendProgressLog('Classifying intent...');
+            const contextSnippet = code ? code.slice(0, 500) : null; // Small snippet for context
+            const { needsCodeChanges, responseMode, intent } = await classifyQueryIntent(userPrompt, contextSnippet);
+            appendProgressLog(`Intent: ${intent} → ${needsCodeChanges ? 'code changes' : 'explanation'}`);
+            
+            // Build different prompts based on classified intent
+            let requestPrompt;
+            let requestMode = responseMode;
+            
+            if (!needsCodeChanges) {
+                // For explanation/question queries, use a simpler prompt that doesn't ask for FILE: blocks
+                requestPrompt = `${userPrompt}
+
+Provide a clear, informative explanation answering the user's question. 
+Do NOT use FILE: markers or suggest code changes unless the user explicitly asks for modifications.
+If you include code snippets for illustration, use standard markdown code blocks.
+Focus on understanding and clarity - explain concepts, describe how code works, or answer questions.
+
+Stream at least two short progress updates wrapped in <progress>...</progress> as you reason.`;
+            } else {
+                // For code change requests, use the full patch prompt
+                requestPrompt = `${userPrompt}
 
 If the user asks for a new file, you may create it in the requested folder/path within the workspace. If the user asks to delete a file, you may delete it when they provide a path; return an empty content block or the literal text DELETE to mark deletion. Otherwise, prefer modifying the active file or files explicitly mentioned. Always respect the workspace tree when creating or deleting files.
 
@@ -763,6 +863,8 @@ FILE: <path>
 Do not include any other commentary. Do not restate the user's request or any instructions; only describe what you changed/created/deleted. Preserve all code outside the requested change. Do not add speculative comments or boilerplate. If unclear, return FILE: <path> then NO_CHANGES and a brief clarifying question.
 
 If image attachments are present, read/ocr the images and extract any text or code they contain. Use the extracted content to fulfill the request, rewriting it as needed into the target file(s).`;
+            }
+            
             const filesPayloadRaw = buildFilesPayload({
                 activeFile,
                 fullDocument: code,
@@ -775,13 +877,15 @@ If image attachments are present, read/ocr the images and extract any text or co
             // Disable fallback to active file when prompt targets other files (creates/deletes) to avoid hijacking the active file.
             fallbackPathRef.current = mentionsOtherFile ? null : (activeFile?.path || activeFile?.name || null);
             if (filesPayload.length > 1 || mentionsOtherFile) {
-                patchRequest = `${patchRequest}\n\nAdditional workspace files are attached. Reference them by their path when relevant.`;
+                requestPrompt = `${requestPrompt}\n\nAdditional workspace files are attached. Reference them by their path when relevant.`;
             }
             const attachmentText = buildAttachmentText(attachments);
             if (attachmentText) {
-                patchRequest = `${patchRequest}\n\nUser attachments:\n${attachmentText}`;
+                requestPrompt = `${requestPrompt}\n\nUser attachments:\n${attachmentText}`;
             }
-            patchRequest = `${patchRequest}\n\nStream at least three progress updates inside <progress>...</progress> as you reason (no code inside progress).`;
+            if (needsCodeChanges) {
+                requestPrompt = `${requestPrompt}\n\nStream at least three progress updates inside <progress>...</progress> as you reason (no code inside progress).`;
+            }
             appendProgressLog(filesPayload.length ? `Context files: ${filesPayload.length}` : 'Context files: 0');
 
             try { if (typeof onBusy === 'function') onBusy(true); } catch (e) {}
@@ -803,8 +907,8 @@ If image attachments are present, read/ocr the images and extract any text or co
                 body: JSON.stringify({
                     lang: normalizedLang,
                     code,
-                    prompt: patchRequest,
-                    mode: 'patch',
+                    prompt: requestPrompt,
+                    mode: requestMode,
                     files: filesPayload,
                     focusPath: activeFile?.path || activeFile?.name || null,
                     model: aiModel,
@@ -822,12 +926,33 @@ If image attachments are present, read/ocr the images and extract any text or co
             }
             const traceSummary = resp.headers.get('x-code-intel-trace-summary');
             const traceCount = resp.headers.get('x-code-intel-trace-count');
+            const sourcesHeader = resp.headers.get('x-code-intel-sources');
+            let contextSources = [];
+            if (sourcesHeader) {
+                try {
+                    contextSources = JSON.parse(decodeURIComponent(sourcesHeader));
+                } catch (e) {
+                    contextSources = [];
+                }
+            }
             if (traceSummary) {
                 const message = traceCount && traceCount !== '0'
                     ? `Context trace (${traceCount}): ${traceSummary}`
                     : `Context trace: ${traceSummary}`;
                 onLog?.(message);
                 appendProgressLog(message);
+            }
+            if ((traceSummary || (contextSources && contextSources.length)) && activeSession) {
+                appendMessagesToSession(activeSession.id, [{
+                    id: `context-${Date.now()}`,
+                    role: 'context',
+                    timestamp: new Date(Date.now() + 2),
+                    contextMeta: {
+                        traceSummary: traceSummary || '',
+                        traceCount: traceCount || '0',
+                        sources: contextSources,
+                    },
+                }]);
             }
             onLog?.('Connected to model');
             appendProgressLog('Drafting answer');
@@ -935,6 +1060,12 @@ If image attachments are present, read/ocr the images and extract any text or co
                         appendProgressLog('Refining response');
                         summaryBuffer += stableText;
 
+                        // Stream explanation text in real-time for explain mode
+                        if (!needsCodeChanges && typeof onChunk === 'function') {
+                            // In explain mode, stream the content as it arrives
+                            onChunk(summaryBuffer);
+                        }
+
                         let partialCode = extractCodeFromMarkdown(streamBuffer);
                         if (!partialCode) {
                             const openIdx = streamBuffer.indexOf('```');
@@ -982,8 +1113,12 @@ If image attachments are present, read/ocr the images and extract any text or co
             summaryProgress.logs.forEach((p) => appendProgressLog(p));
             summaryBuffer = summaryProgress.cleaned;
             onLog?.('Finalizing response');
-            appendProgressLog('Drafting code changes');
-            appendProgressLog('Summarizing changes');
+            if (needsCodeChanges) {
+                appendProgressLog('Drafting code changes');
+                appendProgressLog('Summarizing changes');
+            } else {
+                appendProgressLog('Preparing explanation');
+            }
             // Mark progress finished before streaming the summary to the bubble
             pushProgress((m) => ({ ...m, status: 'finished' }));
 
@@ -997,8 +1132,10 @@ If image attachments are present, read/ocr the images and extract any text or co
                     if (codeIdx === -1) return fileIdx;
                     return Math.min(fileIdx, codeIdx);
                 })();
-                        const summaryOnly = markerIdx === -1 ? summaryBuffer : summaryBuffer.slice(0, markerIdx);
-                if (summaryOnly && typeof onChunk === 'function') {
+                const summaryOnly = markerIdx === -1 ? summaryBuffer : summaryBuffer.slice(0, markerIdx);
+                // Only do post-stream chunking for code changes mode
+                // In explain mode, we already streamed in real-time
+                if (needsCodeChanges && summaryOnly && typeof onChunk === 'function') {
                     const pieces = summaryOnly.split(/(\n{2,})/).filter(Boolean);
                     for (const piece of pieces) {
                         onChunk(piece);
@@ -1017,11 +1154,15 @@ If image attachments are present, read/ocr the images and extract any text or co
                 return prefix ? prefix.split('\n').slice(0, 4).join('\n').trim() : '';
             })();
 
+            // IMPORTANT: Skip diff parsing entirely when in explain mode
+            // This prevents the explanation text from being treated as code changes
             let multiFileSuggestions = [];
-            try {
-                multiFileSuggestions = await buildMultiFileSuggestions(suggestion || '');
-            } catch (e) {
-                multiFileSuggestions = [];
+            if (needsCodeChanges) {
+                try {
+                    multiFileSuggestions = await buildMultiFileSuggestions(suggestion || '');
+                } catch (e) {
+                    multiFileSuggestions = [];
+                }
             }
             const hasMultiFileSuggestions = multiFileSuggestions.length > 0;
 
@@ -1058,36 +1199,49 @@ If image attachments are present, read/ocr the images and extract any text or co
                 const prefix = summaryText ? `${summaryText}\n\n` : '';
                 displayedContent = `${prefix}AI suggested changes for ${multiFileSuggestions.length} file${multiFileSuggestions.length > 1 ? 's' : ''}. Review them below.`;
             } else {
+                // Clear any existing suggestions
                 mutateSession(activeSession.id, (session) => ({
                     ...session,
                     fileSuggestions: [],
+                    suggestedCode: null, // Also clear single-file suggestions
+                    showDiff: false, // Hide diff view
                     suggestionTimestamp: null,
                 }));
                 lastSuggestionSnapshotRef.current = null;
 
-                codeOnly = extractCodeFromMarkdown(suggestion);
-                const isRawPatch = /(^---\s+a\/.+\n\+\+\+\s+b\/)|(^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@)/m.test(suggestion || '');
-                if (!codeOnly && isRawPatch) {
-                    const patched = applyPatch(code, suggestion);
-                    if (patched !== false) {
-                        codeOnly = patched;
+                // Only try to extract code if we're in code-change mode
+                // For explain mode, just display the response as-is
+                if (needsCodeChanges) {
+                    codeOnly = extractCodeFromMarkdown(suggestion);
+                    const isRawPatch = /(^---\s+a\/.+\n\+\+\+\s+b\/)|(^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@)/m.test(suggestion || '');
+                    if (!codeOnly && isRawPatch) {
+                        const patched = applyPatch(code, suggestion);
+                        if (patched !== false) {
+                            codeOnly = patched;
+                        }
                     }
-                }
 
-                if (codeOnly && !isPlaceholderText(codeOnly) && !isPlaceholderText(displayedContent)) {
-                    displayedContent = summaryText || (suggestion || '').replace(/```[\s\S]*?```/g, '');
-                    displayedContent = displayedContent.replace(/<pre[^>]*>[\s\S]*?<code[^>]*>[\s\S]*?<\/code>[\s\S]*?<\/pre>/gi, '');
-                    displayedContent = displayedContent.replace(/<code[^>]*>[\s\S]*?<\/code>/gi, '');
-                    displayedContent = displayedContent.trim();
-                    if (!displayedContent) {
-                        displayedContent = 'AI suggested code changes — preview shown below.';
-                    }} else {
-                    codeOnly = null;
-                    if (summaryText) {
-                        displayedContent = summaryText;
-                    } else if (isPlaceholderText(suggestion || '')) {
-                        displayedContent = 'AI could not produce changes for the active file. Please clarify the request or provide file content.';
+                    if (codeOnly && !isPlaceholderText(codeOnly) && !isPlaceholderText(displayedContent)) {
+                        displayedContent = summaryText || (suggestion || '').replace(/```[\s\S]*?```/g, '');
+                        displayedContent = displayedContent.replace(/<pre[^>]*>[\s\S]*?<code[^>]*>[\s\S]*?<\/code>[\s\S]*?<\/pre>/gi, '');
+                        displayedContent = displayedContent.replace(/<code[^>]*>[\s\S]*?<\/code>/gi, '');
+                        displayedContent = displayedContent.trim();
+                        if (!displayedContent) {
+                            displayedContent = 'AI suggested code changes — preview shown below.';
+                        }
+                    } else {
+                        codeOnly = null;
+                        if (summaryText) {
+                            displayedContent = summaryText;
+                        } else if (isPlaceholderText(suggestion || '')) {
+                            displayedContent = 'AI could not produce changes for the active file. Please clarify the request or provide file content.';
+                        }
                     }
+                } else {
+                    // Explain mode: just use the full response as display content
+                    // Don't try to extract code or create diffs
+                    codeOnly = null;
+                    displayedContent = suggestion || 'No response received';
                 }
             }
 
@@ -1108,13 +1262,16 @@ If image attachments are present, read/ocr the images and extract any text or co
                 }
             }
 
-            if (!hasMultiFileSuggestions) {
+            // For code change mode without multi-file suggestions, use summaryText as display
+            // For explain mode, keep the full displayedContent (already set above)
+            if (!hasMultiFileSuggestions && needsCodeChanges) {
                 if (codeOnly) {
                     displayedContent = summaryText || displayedContent;
                 } else if (summaryText) {
                     displayedContent = summaryText;
                 }
             }
+            // In explain mode, displayedContent is already the full response - don't truncate it
 
             const now = Date.now();
             const messagesToAppend = [{

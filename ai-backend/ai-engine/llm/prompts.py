@@ -204,6 +204,12 @@ def _response_format_instructions(mode: str, focus_path: Optional[str]) -> str:
         return (
             "Respond ONLY with the C++ migration function inside a fenced code block."
         )
+    if mode == "explain":
+        return (
+            "Provide a clear, informative explanation. Do NOT use `FILE:` markers or suggest code changes. "
+            "If you include code snippets for illustration, use standard fenced code blocks without file markers. "
+            "Focus on answering the user's question - do not offer improvements or modifications unless explicitly asked."
+        )
     return (
         base
         + " When sharing code, still follow the `FILE: <path>` + fenced block pattern so the user knows which file "
@@ -2686,21 +2692,107 @@ If generating Host KV code, verify:
 - [ ] `host_free()` is called after `get_bytes()`
 """
 
+# Keywords that indicate the user WANTS code changes
+_CHANGE_KEYWORDS = [
+    # Direct modification verbs
+    "fix", "change", "modify", "update", "edit", "refactor", "rename",
+    "add", "remove", "delete", "insert", "append", "prepend",
+    "create", "implement", "write", "generate", "build", "make",
+    "replace", "swap", "convert", "transform", "migrate",
+    # Bug/error related
+    "bug", "error", "issue", "problem", "broken", "wrong", "incorrect",
+    # Improvement related
+    "improve", "optimize", "enhance", "upgrade", "simplify",
+    # File operations
+    "new file", "new class", "new function", "new method", "new component",
+]
+
+# Keywords that indicate the user wants explanation/understanding (NO code changes)
+_EXPLAIN_KEYWORDS = [
+    "explain", "describe", "what does", "what is", "how does", "how is",
+    "why does", "why is", "tell me about", "understand", "meaning of",
+    "purpose of", "walk me through", "help me understand", "clarify",
+    "what are", "how are", "can you explain", "what's the", "whats the",
+    "show me how", "teach me", "learn about", "overview of", "summary of",
+    "difference between", "compare", "list the", "what options",
+]
+
+
+def _detect_query_intent(prompt: str) -> str:
+    """
+    Detect the intent of a user's prompt.
+    
+    Returns:
+        'change' - User wants code modifications
+        'explain' - User wants explanation/understanding
+        'unknown' - Cannot determine (defaults to checking for question patterns)
+    """
+    if not prompt:
+        return "unknown"
+    lower = prompt.lower().strip()
+    
+    # Check for explicit change indicators first (higher priority for action verbs at start)
+    for kw in _CHANGE_KEYWORDS:
+        if lower.startswith(kw) or lower.startswith("please " + kw) or lower.startswith("can you " + kw):
+            return "change"
+    
+    # Check for explain indicators
+    if any(kw in lower for kw in _EXPLAIN_KEYWORDS):
+        return "explain"
+    
+    # Check for change keywords anywhere in the prompt
+    if any(kw in lower for kw in _CHANGE_KEYWORDS):
+        return "change"
+    
+    # Questions without action words are typically explanation requests
+    if (lower.endswith("?") or lower.startswith("what") or 
+        lower.startswith("how") or lower.startswith("why") or
+        lower.startswith("where") or lower.startswith("when") or
+        lower.startswith("which") or lower.startswith("who") or
+        lower.startswith("is ") or lower.startswith("are ") or
+        lower.startswith("does ") or lower.startswith("do ") or
+        lower.startswith("can ") or lower.startswith("could ")):
+        return "explain"
+    
+    # Default to change for imperative statements (commands)
+    return "change"
+
+
+def _needs_code_changes(prompt: str) -> bool:
+    """Determine if the user's prompt requires code changes."""
+    return _detect_query_intent(prompt) == "change"
+
+
 def build_prompt(
     code: str,
     lang: str,
     user_prompt: str = None,
     files: Optional[Sequence[Mapping[str, Any]]] = None,
     focus: Optional[str] = None,
+    mode: Optional[str] = None,
 ):
     """General analysis prompt. Returns a human-readable analysis or focused response.
 
     If `user_prompt` is provided, include it as the user's question. This prompt is intended
     for general code review and explanation tasks.
+    
+    The function automatically detects user intent:
+    - If mode='explain' or the query doesn't need code changes, uses explain format (no FILE: markers)
+    - If mode='change' or the query needs code changes, uses the standard format with FILE: markers
     """
     file_section, detected_focus = _format_files_context(files)
     focus_path = focus or detected_focus
     guidance = _file_guidance(focus_path) if (file_section or focus_path) else ""
+    
+    # Determine if this needs code changes based on explicit mode or detected intent
+    if mode == "explain":
+        needs_changes = False
+    elif mode == "change":
+        needs_changes = True
+    else:
+        needs_changes = _needs_code_changes(user_prompt or "")
+    
+    response_mode = "general" if needs_changes else "explain"
 
     header_parts = [base_instructions.strip()]
     if guidance:
@@ -2709,10 +2801,12 @@ def build_prompt(
     if file_section:
         header_parts.append("FILES:\n" + file_section)
     header_parts.append(f"Active file code:\n```{lang}\n{code}\n```")
-    header_parts.append(_response_format_instructions("general", focus_path))
+    header_parts.append(_response_format_instructions(response_mode, focus_path))
     header = "\n\n".join(filter(bool, header_parts)) + "\n\n"
 
     if user_prompt and user_prompt.strip():
+        if not needs_changes:
+            return header + f"User's Question: {user_prompt}\n\nProvide a clear explanation. Do NOT suggest code changes or improvements unless explicitly requested."
         return header + f"User's Question: {user_prompt}\n\nProvide a focused response explaining any issues, improvement suggestions, and a minimal example if helpful."
 
     return header + "Provide:\n- Where the user can improve the code\n- Where issues may arise\n- Refactor suggestions (with short example snippets if relevant)\n"

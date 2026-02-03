@@ -34,6 +34,8 @@ class WalkedFile:
     content_hash: str   # SHA-256 hash of content
     size_bytes: int     # File size
     language: str = ""  # Detected language (set later)
+    imports: list = None  # Parser import statements (set later)
+    exports: list = None  # Parser export statements (set later)
     
     @property
     def extension(self) -> str:

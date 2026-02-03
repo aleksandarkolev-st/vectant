@@ -167,7 +167,7 @@ class ContextRetriever:
         # Search with over-fetch
         results = self.vector_index.search(
             query_embedding,
-            top_k=top_k * 2,
+            k=top_k * 2,
         )
         
         candidates = []
@@ -385,8 +385,8 @@ class ContextRetriever:
 
 def retrieve_context(
     vector_index,
-    lexical_index=None,
     query_embedding: np.ndarray,
+    lexical_index=None,
     query_text: Optional[str] = None,
     query_symbols: Optional[List[str]] = None,
     top_k: int = 10,

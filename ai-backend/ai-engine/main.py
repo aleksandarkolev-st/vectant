@@ -236,6 +236,55 @@ async def fetch_file_from_container(slug: str, file_path: str) -> Optional[str]:
         return None
 
 
+# ============================================================
+# INTENT CLASSIFICATION
+# ============================================================
+
+class IntentRequest(BaseModel):
+    """Request for intent classification."""
+    query: str
+    context: Optional[str] = None
+
+
+# Import the intent classifier
+from code_intel.routing.intent_classifier import IntentClassifier
+from code_intel.routing.types import QueryIntent
+
+_intent_classifier: Optional[IntentClassifier] = None
+
+def get_intent_classifier() -> IntentClassifier:
+    global _intent_classifier
+    if _intent_classifier is None:
+        _intent_classifier = IntentClassifier()
+    return _intent_classifier
+
+
+@app.post("/classify/intent")
+async def classify_intent(req: IntentRequest):
+    """
+    Classify user query intent using LLM-based classification.
+    
+    Returns the intent type which determines response format:
+    - 'explain', 'navigate' -> No code changes (explain mode)
+    - 'debug', 'refactor', 'generate', 'test', 'performance' -> Code changes expected
+    - 'unknown' -> Defaults to code changes
+    
+    Also returns whether code changes are expected based on the intent.
+    """
+    classifier = get_intent_classifier()
+    intent = classifier.classify(req.query, req.context)
+    
+    # Determine if this intent typically requires code changes
+    # EXPLAIN and NAVIGATE are informational; others typically involve code modifications
+    needs_code_changes = intent not in (QueryIntent.EXPLAIN, QueryIntent.NAVIGATE)
+    
+    return {
+        "intent": intent.value,
+        "needs_code_changes": needs_code_changes,
+        "response_mode": "patch" if needs_code_changes else "explain",
+    }
+
+
 @app.post("/analyze/static")
 def analyze_code(req: AnalyzeRequest):
     try:

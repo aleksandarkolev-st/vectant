@@ -3,6 +3,7 @@ const WebSocket = require('ws');
 // y-websocket exports have changed across versions and some environments do
 // not allow accessing internal subpaths via package exports. Try a few
 // common locations and fall back with a clear error message.
+require('dotenv').config();
 let setupWSConnection = null;
 try {
   // Try the package export path without extension first (preferred)

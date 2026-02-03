@@ -346,6 +346,13 @@ class CodeIntelEngine:
                         chunk = self._vector_index.get_chunk(cid)
                         if chunk:
                             chunks.append(chunk)
+                    if not chunks:
+                        try:
+                            file_obj = self._file_walker.get_file(file_path)
+                            if file_obj:
+                                chunks = self._dual_indexer.extractor.extract(file_obj)
+                        except Exception:
+                            chunks = []
                     if chunks:
                         file_chunks[file_path] = chunks
                 self._summary_manager.sync(file_hashes=file_hashes, file_chunks=file_chunks)
@@ -368,6 +375,46 @@ class CodeIntelEngine:
         
         # Use DualIndexer's index_file method
         chunks = self._dual_indexer.index_file(file_path)
+
+        # Update summaries for this file so metadata exists even without full indexing
+        try:
+            if self._summary_store:
+                # Ensure metadata file exists
+                self._summary_store.get_metadata()
+
+            if self._file_walker and self._summary_store and self._file_summarizer:
+                file_obj = self._file_walker.get_file(file_path)
+                if file_obj:
+                    file_chunks = []
+                    if self._structural_index and self._vector_index:
+                        chunk_ids = self._structural_index.get_chunks_for_file(file_path)
+                        for cid in chunk_ids:
+                            chunk = self._vector_index.get_chunk(cid)
+                            if chunk:
+                                file_chunks.append(chunk)
+
+                    if file_chunks:
+                        summary = self._file_summarizer.summarize_from_chunks(
+                            file_path=file_path,
+                            language=file_obj.language or "",
+                            content=file_obj.content,
+                            content_hash=file_obj.content_hash,
+                            chunks=file_chunks,
+                        )
+                        if self._facts_store:
+                            self._facts_store.update_facts_for_file(file_path, file_chunks)
+                    else:
+                        summary = self._file_summarizer.summarize(file_obj)
+
+                    self._summary_store.set_file_summary(file_path, summary)
+                    self._summary_store.update_file_hash(file_path, file_obj.content_hash)
+
+                    # Lazily create repo summary if missing
+                    if self._repo_summarizer and not self._summary_store.get_repo_summary():
+                        repo_summary = self._repo_summarizer.summarize()
+                        self._summary_store.set_repo_summary(repo_summary)
+        except Exception as e:
+            logger.debug(f"Index-file summary update failed: {e}")
         
         return len(chunks)
     
