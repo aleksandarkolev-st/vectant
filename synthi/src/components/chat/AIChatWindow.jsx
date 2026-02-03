@@ -18,6 +18,7 @@ import { useChatAttachments } from './hooks/useChatAttachments';
 import { renderDiffChunkList, diffStats } from './utils/diffUtils';
 import { fileSuggestionStatusClasses, fileSuggestionStatusLabel } from './utils/fileSuggestionsUtils';
 import { formatMessageContent } from './utils/formatMessage';
+import MessageContent from './utils/MessageContent';
 import { ThinkingDots } from './ThinkingDots';
 
 const formatTimestamp = (timestamp) => {
@@ -157,7 +158,8 @@ const AIChatWindow = ({
         removeAttachment,
         clearAttachments,
         formatBytes,
-    } = useChatAttachments();
+        addWorkspaceFiles,
+    } = useChatAttachments({ fileCacheEntries, rawFiles });
 
     const { inputValue, setInputValue, handleKeyPress, handleSubmit } = useChatInput((value) => {
         const aborter = new AbortController();
@@ -451,13 +453,27 @@ const AIChatWindow = ({
 
     return (
         <div
-            className={`${containerClass} ${isDragging ? 'ring-2 ring-[#8b5cf6]/50' : ''}`}
+            className={`${containerClass} ${isDragging ? 'ring-2 ring-[#4aba9a]/60 ring-inset' : ''}`}
             onDragOver={handleDragOver}
             onDragEnter={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
             onPaste={handlePaste}
         >
+            {/* Drop overlay */}
+            {isDragging && (
+                <div className="absolute inset-0 z-50 flex items-center justify-center bg-[#08090d]/90 backdrop-blur-sm pointer-events-none">
+                    <div className="flex flex-col items-center gap-3 p-6 rounded-xl border-2 border-dashed border-[#4aba9a]/50 bg-[#0d1a15]/80">
+                        <div className="w-12 h-12 rounded-full bg-[#4aba9a]/20 flex items-center justify-center">
+                            <FileCode className="w-6 h-6 text-[#4aba9a]" />
+                        </div>
+                        <div className="text-center">
+                            <p className="text-sm font-medium text-[#f4f5f8]">Drop files here</p>
+                            <p className="text-xs text-[#71717a] mt-1">Add files or folders as context</p>
+                        </div>
+                    </div>
+                </div>
+            )}
             {/* Header - Clear hierarchy with stronger separation */}
             <div className="flex flex-col border-b-2 border-[#1a1b24] bg-[#08090d]">
                 <div className="flex items-center justify-end px-3 py-2.5 relative">
@@ -898,8 +914,9 @@ const AIChatWindow = ({
                                     <div
                                         className="break-normal whitespace-normal text-xs leading-relaxed ai-chat-content min-w-0"
                                         onClick={handleContentNavClick}
-                                        dangerouslySetInnerHTML={{ __html: formatMessageContent(msg.content) }}
-                                    />
+                                    >
+                                        <MessageContent content={msg.content} enableNavigation={true} />
+                                    </div>
                                     <span className="text-[10px] text-[#52525b] mt-1.5 block">
                                         {formatTimestamp(msg.timestamp)}
                                     </span>
@@ -935,8 +952,9 @@ const AIChatWindow = ({
                         <div 
                             className="text-xs text-[#e4e4e7] leading-relaxed ai-chat-content"
                             onClick={handleContentNavClick}
-                            dangerouslySetInnerHTML={{ __html: formatMessageContent(streamingMessage) }}
-                        />
+                        >
+                            <MessageContent content={streamingMessage} enableNavigation={true} />
+                        </div>
                     ) : null}
                     {showThinking && (
                         <div className="flex justify-start">
@@ -1008,14 +1026,20 @@ const AIChatWindow = ({
                         <div className="mb-2 grid grid-cols-2 gap-1.5">
                             {chips.map((chip) => {
                                 const meta = buildLanguageMeta(chip.name || '');
+                                const isWorkspaceFile = chip.isWorkspaceFile;
                                 return (
                                     <div
                                         key={chip.id}
-                                        className="flex items-center gap-1.5 bg-[#101118] border border-[#1a1b24] px-2 py-1 rounded text-[10px] min-w-0"
+                                        className={`flex items-center gap-1.5 border px-2 py-1 rounded text-[10px] min-w-0 ${
+                                            isWorkspaceFile 
+                                                ? 'bg-[#0d1a15] border-[#1a3d2e]' 
+                                                : 'bg-[#101118] border-[#1a1b24]'
+                                        }`}
+                                        title={chip.path || chip.name}
                                     >
                                         <span
                                             className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded"
-                                            style={{ color: meta.color, backgroundColor: `${meta.color}20` }}
+                                            style={{ color: isWorkspaceFile ? '#4aba9a' : meta.color, backgroundColor: isWorkspaceFile ? '#4aba9a20' : `${meta.color}20` }}
                                         >
                                             <FileCode className="w-3 h-3" strokeWidth={1.5} />
                                             <span className="font-semibold">{meta.label}</span>

@@ -1482,6 +1482,8 @@ const EditorPanel = ({
                                                     onDragStart={(e) => {
                                                         e.dataTransfer?.setData('text/tab-index', String(idx));
                                                         e.dataTransfer?.setData('text/tab-path', file.path);
+                                                        e.dataTransfer?.setData('text/workspace-path', file.path);
+                                                        e.dataTransfer?.setData('text/plain', file.name);
                                                     }}
                                                     onDragOver={(e) => { e.preventDefault(); }}
                                                     onDrop={(e) => {
