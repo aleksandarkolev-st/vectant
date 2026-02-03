@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@google-cloud/storage": "^7.14.0",
+    "dotenv": "^16.4.7",
     "simple-git": "^3.30.0",
     "ws": "^8.13.0",
     "y-websocket": "^1.5.4",

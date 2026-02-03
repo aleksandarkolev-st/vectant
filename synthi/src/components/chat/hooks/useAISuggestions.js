@@ -822,12 +822,33 @@ If image attachments are present, read/ocr the images and extract any text or co
             }
             const traceSummary = resp.headers.get('x-code-intel-trace-summary');
             const traceCount = resp.headers.get('x-code-intel-trace-count');
+            const sourcesHeader = resp.headers.get('x-code-intel-sources');
+            let contextSources = [];
+            if (sourcesHeader) {
+                try {
+                    contextSources = JSON.parse(decodeURIComponent(sourcesHeader));
+                } catch (e) {
+                    contextSources = [];
+                }
+            }
             if (traceSummary) {
                 const message = traceCount && traceCount !== '0'
                     ? `Context trace (${traceCount}): ${traceSummary}`
                     : `Context trace: ${traceSummary}`;
                 onLog?.(message);
                 appendProgressLog(message);
+            }
+            if ((traceSummary || (contextSources && contextSources.length)) && activeSession) {
+                appendMessagesToSession(activeSession.id, [{
+                    id: `context-${Date.now()}`,
+                    role: 'context',
+                    timestamp: new Date(Date.now() + 2),
+                    contextMeta: {
+                        traceSummary: traceSummary || '',
+                        traceCount: traceCount || '0',
+                        sources: contextSources,
+                    },
+                }]);
             }
             onLog?.('Connected to model');
             appendProgressLog('Drafting answer');

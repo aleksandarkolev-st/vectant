@@ -26,6 +26,7 @@ from .embedder import Embedder, get_embedder
 from ..core.types import SemanticChunk, ChunkId, FilePath
 from ..core.config import get_config
 from ..ingestion import FileWalker, ChunkExtractor, WalkedFile
+from ..ingestion.import_resolver import resolve_imports
 
 
 logger = logging.getLogger("code_intel.indexer.dual")
@@ -76,6 +77,11 @@ class DualIndexer:
             persist_path=os.path.join(self.persist_dir, "lexical.json")
         )
 
+        # Generation state (must exist before _ensure_chunking_version)
+        self.index_generation = None
+        self._rebuild_required = False
+        self._pending_generation = None
+
         # Enforce chunking version invariants
         self._ensure_chunking_version()
         
@@ -87,6 +93,9 @@ class DualIndexer:
         
         # Chunk extractor
         self.extractor = ChunkExtractor()
+
+        # Path set cache for import resolution
+        self._path_set_cache: Optional[Set[str]] = None
         
         # File hashes for change detection
         self._file_hashes: Dict[FilePath, str] = {}
@@ -104,9 +113,6 @@ class DualIndexer:
             "chunks_indexed": 0,
             "last_index_time": None,
         }
-        self.index_generation = None
-        self._rebuild_required = False
-        self._pending_generation = None
 
     def _resolve_persist_dir(self, base_dir: str, pointer_path: str) -> str:
         """Resolve the active generation directory using a pointer file."""
@@ -271,6 +277,7 @@ class DualIndexer:
             Statistics about the indexing
         """
         logger.info(f"Starting repository index: {self.workspace_root}")
+        self._path_set_cache = None
         
         # If we need a clean rebuild, build a new generation and swap atomically
         if self._rebuild_required:
@@ -383,6 +390,8 @@ class DualIndexer:
         if not file:
             logger.warning(f"File not found: {relative_path}")
             return []
+
+        self._path_set_cache = None
         
         chunks = self._index_single_file(file, skip_embeddings)
         
@@ -421,6 +430,7 @@ class DualIndexer:
         # 2. Delete all graph edges originating from this file
         # 3. Re-extract and insert new chunks
         self.remove_file(relative_path)
+        self._path_set_cache = None
         
         # Re-index
         if content:
@@ -464,6 +474,7 @@ class DualIndexer:
             List of new chunks
         """
         logger.info(f"Reindexing file: {file_path}")
+        self._path_set_cache = None
         
         # ATOMIC TRANSACTION: Lock this file for the entire operation
         with self._file_transaction(file_path):
@@ -544,8 +555,42 @@ class DualIndexer:
         # Add to structural index
         for chunk in chunks:
             self.structural_index.index_chunk(chunk)
+
+        # Resolve and index file-level imports
+        try:
+            path_set = self._get_path_set()
+            resolved = resolve_imports(
+                self.workspace_root,
+                file.relative_path,
+                file.imports or [],
+                file.language or "",
+                file_set=path_set,
+            )
+            self.structural_index.index_file_imports(
+                file.relative_path,
+                sorted(resolved.files),
+                file.content_hash,
+                file.language or "",
+                import_symbols=resolved.symbols_by_file,
+            )
+            self.structural_index.resolve_import_symbol_edges(file.relative_path)
+        except Exception:
+            # Import resolution should never block indexing
+            pass
         
         return chunks
+
+    def _get_path_set(self) -> Set[str]:
+        if self._path_set_cache is not None:
+            return self._path_set_cache
+        try:
+            self._path_set_cache = {
+                f.relative_path.replace("\\", "/")
+                for f in self.walker.walk()
+            }
+        except Exception:
+            self._path_set_cache = set()
+        return self._path_set_cache
     
     def get_chunk(self, chunk_id: ChunkId) -> Optional[SemanticChunk]:
         """Get a chunk by ID."""

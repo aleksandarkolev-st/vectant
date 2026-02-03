@@ -442,6 +442,40 @@ const AIChatWindow = ({
                                 );
                             }
 
+                            if (msg.role === 'context') {
+                                const meta = msg.contextMeta || {};
+                                const sources = Array.isArray(meta.sources) ? meta.sources : [];
+                                return (
+                                    <div key={msg.id} className="text-xs rounded-md border border-[#2a2b38] bg-[#0d0d11] px-3 py-2">
+                                        <div className="flex items-center justify-between gap-2">
+                                            <div className="flex items-center gap-2">
+                                                <FileCode className="w-3.5 h-3.5 text-[#4aba9a]" />
+                                                <span className="text-[11px] uppercase tracking-wide text-[#9ba2b8]">Context used</span>
+                                            </div>
+                                            {meta.traceSummary ? (
+                                                <span className="text-[10px] text-[#71717a] truncate max-w-[220px]">{meta.traceSummary}</span>
+                                            ) : null}
+                                        </div>
+                                        {sources.length > 0 && (
+                                            <div className="mt-2 space-y-1">
+                                                {sources.map((src, idx) => {
+                                                    const file = src?.file || 'unknown';
+                                                    const symbol = src?.symbol ? ` · ${src.symbol}` : '';
+                                                    const lineInfo = src?.start_line && src?.end_line
+                                                        ? ` (L${src.start_line}-${src.end_line})`
+                                                        : '';
+                                                    return (
+                                                        <div key={`${file}-${idx}`} className="text-[11px] text-[#c7c9d1] font-mono truncate">
+                                                            {file}{lineInfo}{symbol}
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            }
+
                             if (msg.role === 'suggestion-live' || msg.role === 'suggestion-history') {
                                 const snapshot = msg.snapshot || {};
                                 const hasFiles = (snapshot.fileSuggestions || []).length > 0;

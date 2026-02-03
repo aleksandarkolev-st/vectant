@@ -552,6 +552,16 @@ export async function POST(request) {
                 : streamGemini({ model, apiKey, userContent, signal }));
 
         const traceSummary = buildTraceSummary(codeIntelContext?.trace || []);
+        const sources = Array.isArray(codeIntelContext?.sources)
+            ? codeIntelContext.sources.slice(0, 8).map((s) => ({
+                file: s?.file || '',
+                symbol: s?.symbol || '',
+                start_line: s?.start_line || 0,
+                end_line: s?.end_line || 0,
+                score: typeof s?.score === 'number' ? s.score : null,
+            }))
+            : [];
+        const sourcesHeader = sources.length ? encodeURIComponent(JSON.stringify(sources)) : '';
 
         return new NextResponse(stream, {
             headers: {
@@ -562,6 +572,7 @@ export async function POST(request) {
                 'x-code-intel-tokens': String(codeIntelContext?.tokensUsed || 0),
                 'x-code-intel-trace-count': String(codeIntelContext?.trace?.length || 0),
                 ...(traceSummary ? { 'x-code-intel-trace-summary': traceSummary } : {}),
+                ...(sourcesHeader ? { 'x-code-intel-sources': sourcesHeader } : {}),
             },
         });
     } catch (e) {
