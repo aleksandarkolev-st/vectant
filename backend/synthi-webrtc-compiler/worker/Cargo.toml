@@ -3,13 +3,17 @@ name = "worker"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "worker"
+path = "src/lib.rs"
+
 [[bin]]
 name = "worker"
 path = "src/main.rs"
 
 [[bin]]
 name = "runner"
-path = "src/runner_bin.rs"
+path = "src/runtime/runner_bin.rs"
 
 [features]
 default = []

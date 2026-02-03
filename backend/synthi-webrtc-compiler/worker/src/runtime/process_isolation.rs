@@ -259,10 +259,16 @@ pub struct IsolationConfig {
 impl Default for IsolationConfig {
     fn default() -> Self {
         // Resolve runner binary path relative to current executable (robust for cargo run)
+        // Resolve runner binary path relative to current executable (robust for cargo run)
         let worker_binary = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()))
             .map(|mut p| {
+                // Handle 'deps' directory (common in cargo builds)
+                if p.ends_with("deps") {
+                    p.pop();
+                }
+
                 p.push(if cfg!(target_os = "windows") {
                     "runner.exe"
                 } else {
@@ -443,9 +449,10 @@ impl ProcessSupervisor {
         self.apply_unix_limits(&mut cmd);
 
         // Spawn
+        eprintln!("[Supervisor] Spawning worker binary at: {:?}", self.config.worker_binary);
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("Failed to spawn worker: {}", e))?;
+            .map_err(|e| format!("Failed to spawn worker at {:?}: {}", self.config.worker_binary, e))?;
 
         let pid = child.id();
         let stdin = child.stdin.take().ok_or("Failed to get stdin")?;
@@ -1167,6 +1174,25 @@ impl ProcessSupervisor {
                         Ok(None) => break, // No more messages
                         Err(e) => {
                             eprintln!("[Supervisor] Worker communication error: {}", e);
+
+                            // Check exit code before handling crash
+                            if let Some(worker) = self.worker.as_mut() {
+                                match worker.child.try_wait() {
+                                    Ok(Some(status)) => {
+                                        eprintln!("[Supervisor] Worker process exited with: {}", status);
+                                        if let Some(code) = status.code() {
+                                            eprintln!("[Supervisor] Worker exit code: {}", code);
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        // Process hasn't exited yet, or OS hasn't reported it
+                                    }
+                                    Err(err) => {
+                                        eprintln!("[Supervisor] Failed to check worker status: {}", err);
+                                    }
+                                }
+                            }
+
                             // Worker may have crashed
                             self.handle_crash()?;
                             break;

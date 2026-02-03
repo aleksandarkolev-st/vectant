@@ -476,6 +476,7 @@ pub async fn handle_runner_execution(
             while let Ok(line) = reader.next_line().await {
                 match line {
                     Some(l) => {
+                        eprintln!("[Runner Stderr] {}", l);
                         let _ = log_tx_clone2.send(l.clone());
                         // Send to frontend
                         let payload = serde_json::json!({
@@ -537,6 +538,14 @@ pub async fn handle_runner_execution(
 
         // Load Modules
         for (name, path) in &modules_to_load {
+            // Check if process is still alive
+            if let Some(child) = state.process.as_mut() {
+                if let Ok(Some(status)) = child.try_wait() {
+                    eprintln!("[Main] Runner process has already exited with status: {}", status);
+                    break;
+                }
+            }
+
             if let Some(stdin) = state.stdin.as_mut() {
                 let cmd = format!("load {} {}\n", name, path);
                 println!("[Main] Sending command to runner: {}", cmd.trim());

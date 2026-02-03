@@ -1,4 +1,3 @@
-#[cfg(target_os = "linux")]
 use std::ffi::{c_int, c_void};
 
 // SDL2 Definitions
