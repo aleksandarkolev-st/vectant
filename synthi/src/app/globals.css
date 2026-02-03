@@ -204,16 +204,20 @@
 .ai-nav-link {
   color: var(--accent-secondary);
   cursor: pointer;
-  text-decoration: underline;
-  text-decoration-color: transparent;
-  text-underline-offset: 2px;
-  transition: color 0.15s ease, text-decoration-color 0.15s ease;
+  text-decoration: none;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  border-radius: 3px;
+  padding: 0 2px;
+  margin: 0 -2px;
+  transition: all 0.15s ease;
   font-weight: 500;
 }
 
 .ai-nav-link:hover {
   color: var(--accent-tertiary);
-  text-decoration-color: var(--accent-tertiary);
+  text-decoration: underline;
+  background-color: rgba(50, 116, 100, 0.15);
 }
 
 .ai-nav-file {
@@ -223,6 +227,7 @@
 .ai-nav-file:hover {
   color: #9fcbfa;
   text-decoration-color: #9fcbfa;
+  background-color: rgba(124, 184, 248, 0.12);
 }
 
 .ai-nav-class,
@@ -234,6 +239,7 @@
 .ai-nav-symbol:hover {
   color: #cbbff5;
   text-decoration-color: #cbbff5;
+  background-color: rgba(184, 168, 240, 0.12);
 }
 
 .ai-nav-method {
@@ -243,6 +249,7 @@
 .ai-nav-method:hover {
   color: #c1eedc;
   text-decoration-color: #c1eedc;
+  background-color: rgba(168, 230, 207, 0.12);
 }
 
 /* ===== Global Scrollbar Styling (Synthi Branded) ===== */

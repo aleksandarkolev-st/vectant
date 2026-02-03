@@ -259,68 +259,100 @@ const AIChatWindow = ({
     const cachedFileMap = useMemo(() => new Map(fileCacheEntries), [fileCacheEntries]);
 
     /**
-     * Search for a symbol in all cached files and return the file node and line number.
+     * Search for a symbol definition across all cached files.
+     * Prioritizes actual definitions (class, struct, function) over usages.
+     * For C++, prioritizes header files (.h, .hpp) for class definitions.
      */
     const findSymbolInWorkspace = useCallback((symbolName) => {
-        // First check the active file
-        if (activeFile?.path) {
-            const content = cachedFileMap.get(activeFile.path) || currentCode || '';
-            const lines = content.split('\n');
-            for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                if (line.includes(symbolName)) {
-                    // Check if it's a definition (class, function, method, struct, etc.)
-                    const defPatterns = [
-                        new RegExp(`\\bclass\\s+${symbolName}\\b`),
-                        new RegExp(`\\bstruct\\s+${symbolName}\\b`),
-                        new RegExp(`\\bfunction\\s+${symbolName}\\b`),
-                        new RegExp(`\\b${symbolName}\\s*\\(`),  // method/function call
-                        new RegExp(`\\b${symbolName}\\s*::`),   // C++ scope
-                        new RegExp(`\\bdef\\s+${symbolName}\\b`), // Python
-                    ];
-                    if (defPatterns.some(p => p.test(line))) {
-                        return { fileNode: activeFile, lineNumber: i + 1 };
-                    }
+        // Helper to find file node by path
+        const findNodeByPath = (nodes, targetPath) => {
+            for (const node of nodes) {
+                if (!node.isFolder && node.path === targetPath) {
+                    return node;
+                }
+                if (node.isFolder && node.children) {
+                    const found = findNodeByPath(node.children, targetPath);
+                    if (found) return found;
                 }
             }
-            // Fallback: just find first occurrence in active file
+            return null;
+        };
+
+        // Definition patterns - these indicate where the symbol is DEFINED, not just used
+        const getDefinitionPatterns = (name) => [
+            new RegExp(`\\bclass\\s+${name}\\b`),           // class definition
+            new RegExp(`\\bstruct\\s+${name}\\b`),          // struct definition
+            new RegExp(`\\benum\\s+${name}\\b`),            // enum definition
+            new RegExp(`\\binterface\\s+${name}\\b`),       // interface definition
+            new RegExp(`\\btype\\s+${name}\\b`),            // type alias
+            new RegExp(`\\bdef\\s+${name}\\s*\\(`),         // Python function def
+            new RegExp(`\\bfunction\\s+${name}\\s*\\(`),    // JS function declaration
+            new RegExp(`\\bconst\\s+${name}\\s*=`),         // JS const declaration
+            new RegExp(`^\\s*${name}\\s*::`),               // C++ method implementation
+            new RegExp(`\\b${name}\\s*\\([^)]*\\)\\s*{`),   // Function with body
+            new RegExp(`\\b${name}\\s*\\([^)]*\\)\\s*:`),   // Constructor initializer list
+        ];
+
+        const defPatterns = getDefinitionPatterns(symbolName);
+        
+        // Collect all matches with priority scores
+        const matches = [];
+        
+        for (const [path, content] of cachedFileMap.entries()) {
+            if (!content) continue;
+            const lines = content.split('\n');
+            
+            // Check file type for prioritization
+            const isHeader = /\.(h|hpp|hxx)$/i.test(path);
+            const isSource = /\.(c|cpp|cxx|cc)$/i.test(path);
+            
             for (let i = 0; i < lines.length; i++) {
-                if (lines[i].includes(symbolName)) {
-                    return { fileNode: activeFile, lineNumber: i + 1 };
+                const line = lines[i];
+                if (!line.includes(symbolName)) continue;
+                
+                // Check if this is a definition
+                const isDefinition = defPatterns.some(p => p.test(line));
+                
+                // Calculate priority score
+                // Higher score = better match
+                let priority = 0;
+                if (isDefinition) {
+                    priority += 100;  // Definitions are strongly preferred
+                    if (isHeader) {
+                        priority += 50;  // Header file definitions are best for C++
+                    }
                 }
+                // For C++ class methods, the .cpp file implementation
+                if (isSource && new RegExp(`${symbolName}\\s*::`).test(line)) {
+                    priority += 80;  // Method implementation in source file
+                }
+                
+                const fileNode = findNodeByPath(rawFiles, path);
+                if (fileNode) {
+                    matches.push({
+                        fileNode,
+                        lineNumber: i + 1,
+                        priority,
+                        path
+                    });
+                }
+                
+                // Only keep the first match per file (the definition if found)
+                if (isDefinition) break;
             }
         }
         
-        // Search in all cached files
-        for (const [path, content] of cachedFileMap.entries()) {
-            if (!content || path === activeFile?.path) continue;
-            const lines = content.split('\n');
-            for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                if (line.includes(symbolName)) {
-                    // Find the file node for this path
-                    const findNodeByPath = (nodes, targetPath) => {
-                        for (const node of nodes) {
-                            if (!node.isFolder && node.path === targetPath) {
-                                return node;
-                            }
-                            if (node.isFolder && node.children) {
-                                const found = findNodeByPath(node.children, targetPath);
-                                if (found) return found;
-                            }
-                        }
-                        return null;
-                    };
-                    const fileNode = findNodeByPath(rawFiles, path);
-                    if (fileNode) {
-                        return { fileNode, lineNumber: i + 1 };
-                    }
-                }
-            }
+        // Sort by priority (highest first)
+        matches.sort((a, b) => b.priority - a.priority);
+        
+        // Return the best match
+        if (matches.length > 0) {
+            const best = matches[0];
+            return { fileNode: best.fileNode, lineNumber: best.lineNumber };
         }
         
         return null;
-    }, [activeFile, currentCode, cachedFileMap, rawFiles]);
+    }, [cachedFileMap, rawFiles]);
 
     /**
      * Handle clicks on file names and symbols in AI chat messages.
@@ -548,31 +580,52 @@ const AIChatWindow = ({
                                 const isFailed = msg.status === 'failed';
                                 const statusLabel = isFinished ? 'Completed' : isFailed ? 'Failed' : 'Working…';
                                 const statusColor = isFinished ? 'text-emerald-400' : isFailed ? 'text-rose-400' : 'text-amber-400';
-                                const statusBg = isFinished ? 'bg-emerald-500/10' : isFailed ? 'bg-rose-500/10' : 'bg-amber-500/10';
-                                const statusBorder = isFinished ? 'border-emerald-500/30' : isFailed ? 'border-rose-500/30' : 'border-amber-500/30';
+                                const iconColor = isFinished ? 'text-emerald-400' : isFailed ? 'text-rose-400' : 'text-amber-400';
                                 return (
-                                    <div key={msg.id} className={`text-xs font-mono rounded-md border ${statusBorder} ${statusBg} overflow-hidden`}>
+                                    <div key={msg.id} className={`text-xs rounded-xl overflow-hidden shadow-lg ${
+                                        isFinished ? 'bg-gradient-to-br from-[#0d1a15] to-[#0a0f0d] border border-emerald-900/40' :
+                                        isFailed ? 'bg-gradient-to-br from-[#1a0d0d] to-[#0f0a0a] border border-rose-900/40' :
+                                        'bg-gradient-to-br from-[#1a1708] to-[#0f0e0a] border border-amber-900/40'
+                                    }`}>
                                         <button
-                                            className={`w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/5 transition-colors`}
+                                            className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-white/[0.03] transition-all duration-200"
                                             onClick={() => toggleProgressMessage(msg.id)}
                                         >
-                                            {expanded ? <ChevronDown className="w-3.5 h-3.5 text-[#71717a]" strokeWidth={2} /> : <ChevronRight className="w-3.5 h-3.5 text-[#71717a]" strokeWidth={2} />}
-                                            <span className={`inline-flex items-center gap-1.5 text-xs font-medium ${statusColor}`}>
-                                                {isFinished && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>}
-                                                {isFailed && <span className="w-1.5 h-1.5 rounded-full bg-rose-400"></span>}
-                                                {!isFinished && !isFailed && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>}
-                                                {statusLabel}
-                                            </span>
-                                            <span className="text-[10px] text-[#71717a] truncate flex-1">{summarizeLog(msg.logs)}</span>
+                                            <div className={`flex items-center justify-center w-6 h-6 rounded-lg ${
+                                                isFinished ? 'bg-emerald-500/20' :
+                                                isFailed ? 'bg-rose-500/20' :
+                                                'bg-amber-500/20'
+                                            }`}>
+                                                {expanded ? 
+                                                    <ChevronDown className={`w-3.5 h-3.5 ${iconColor}`} strokeWidth={2.5} /> : 
+                                                    <ChevronRight className={`w-3.5 h-3.5 ${iconColor}`} strokeWidth={2.5} />
+                                                }
+                                            </div>
+                                            <div className="flex items-center gap-2 flex-1 min-w-0">
+                                                <span className={`inline-flex items-center gap-2 text-xs font-semibold ${statusColor}`}>
+                                                    {isFinished && <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]"></span>}
+                                                    {isFailed && <span className="w-2 h-2 rounded-full bg-rose-400 shadow-[0_0_8px_rgba(251,113,133,0.5)]"></span>}
+                                                    {!isFinished && !isFailed && <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shadow-[0_0_8px_rgba(251,191,36,0.5)]"></span>}
+                                                    {statusLabel}
+                                                </span>
+                                                <span className="text-[11px] text-[#71717a] truncate">{summarizeLog(msg.logs)}</span>
+                                            </div>
                                         </button>
                                         {expanded && (
-                                            <div className="px-3 pb-2 pt-1 space-y-1 border-t border-[#27272a]/50 bg-black/20">
+                                            <div className={`px-4 pb-3 pt-2 space-y-1.5 border-t ${
+                                                isFinished ? 'border-emerald-900/30 bg-black/20' :
+                                                isFailed ? 'border-rose-900/30 bg-black/20' :
+                                                'border-amber-900/30 bg-black/20'
+                                            }`}>
                                                 {(msg.logs || []).map((entry, idx) => {
                                                     return (
-                                                        <div key={`${msg.id}-log-${idx}`} className="text-[10px] text-[#71717a] font-mono">
-                                                            <span className="block whitespace-normal break-words leading-relaxed">
-                                                                <span className="text-[#52525b] select-none">›</span> {entry}
-                                                            </span>
+                                                        <div key={`${msg.id}-log-${idx}`} className="flex items-start gap-2 text-[11px] text-[#9ba2b8] font-mono">
+                                                            <span className={`select-none mt-0.5 ${
+                                                                isFinished ? 'text-emerald-600' :
+                                                                isFailed ? 'text-rose-600' :
+                                                                'text-amber-600'
+                                                            }`}>›</span>
+                                                            <span className="whitespace-normal break-words leading-relaxed">{entry}</span>
                                                         </div>
                                                     );
                                                 })}
