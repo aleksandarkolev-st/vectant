@@ -310,6 +310,48 @@ class RetrievalController:
         )
         
         return decision
+
+    def assess_coverage(
+        self,
+        included_chunks: List[SemanticChunk],
+        required_files: Optional[List[str]] = None,
+        required_symbols: Optional[List[str]] = None,
+        had_exclusions: bool = False,
+    ) -> Tuple[ContextSufficiency, Optional[RefusalReason]]:
+        """
+        Assess coverage quality based on required files/symbols.
+
+        This is a deterministic coverage check to reduce hallucinations.
+        """
+        required_files = [f for f in (required_files or []) if f]
+        required_symbols = [s for s in (required_symbols or []) if s]
+
+        if not included_chunks:
+            return ContextSufficiency.EMPTY, RefusalReason(
+                code="empty",
+                message="No relevant code chunks were included.",
+                missing_files=required_files,
+                missing_symbols=required_symbols,
+            )
+
+        included_files = {c.metadata.file_path for c in included_chunks}
+        included_symbols = {c.metadata.symbol_name for c in included_chunks if c.metadata.symbol_name}
+
+        missing_files = [f for f in required_files if f not in included_files]
+        missing_symbols = [s for s in required_symbols if s not in included_symbols]
+
+        if missing_files or missing_symbols:
+            return ContextSufficiency.INSUFFICIENT, RefusalReason(
+                code="missing_required",
+                message="Required files or symbols were not included in context.",
+                missing_files=missing_files,
+                missing_symbols=missing_symbols,
+            )
+
+        if had_exclusions:
+            return ContextSufficiency.PARTIAL, None
+
+        return ContextSufficiency.SUFFICIENT, None
     
     def _get_module(self, file_path: str) -> str:
         """Extract module/directory from file path."""

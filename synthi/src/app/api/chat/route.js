@@ -8,6 +8,24 @@ const ANTHROPIC_BASE =
 const GEMINI_BASE =
     (process.env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
 
+const COLLAB_BASE =
+    (process.env.COLLAB_SERVER_URL || process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234').replace(/\/$/, '');
+
+const MAX_REPO_FILES = Number(process.env.AI_FULL_REPO_MAX_FILES || 80);
+const MAX_REPO_CHARS = Number(process.env.AI_FULL_REPO_MAX_CHARS || 200_000);
+const MAX_FILE_CHARS = Number(process.env.AI_FULL_REPO_MAX_FILE_CHARS || 20_000);
+const DEFAULT_IGNORE = [
+    'node_modules/',
+    '.git/',
+    '.next/',
+    'dist/',
+    'build/',
+    'out/',
+    '.cache/',
+    '.code_intel/',
+    '.turbo/',
+];
+
 // Code Intelligence Backend
 const CODE_INTEL_BASE = process.env.CODE_INTEL_URL || process.env.AI_ENGINE_URL || 'http://localhost:8000';
 
@@ -57,12 +75,27 @@ async function fetchCodeIntelContext({ workspacePath, query, maxTokens = 6000, c
             sources: data.sources || [],
             tokensUsed: data.tokens_used || 0,
             refusal: data.refusal || null,
+            trace: Array.isArray(data.trace) ? data.trace : [],
         };
     } catch (e) {
         console.warn('Code intel fetch error:', e.message);
         return { context: '', sufficiency: 'UNKNOWN', sources: [], refusal: null };
     }
 }
+
+const buildTraceSummary = (trace = []) => {
+    if (!Array.isArray(trace) || trace.length === 0) return '';
+    const included = trace.filter((t) => t?.reason === 'included');
+    const top = (included.length ? included : trace).slice(0, 6);
+    const parts = top.map((t) => {
+        const file = t?.file || 'unknown';
+        const symbol = t?.symbol ? `:${t.symbol}` : '';
+        const score = typeof t?.score === 'number' ? `(${t.score.toFixed(2)})` : '';
+        return `${file}${symbol}${score}`;
+    });
+    const text = parts.join(' | ');
+    return text.length > 380 ? `${text.slice(0, 377)}...` : text;
+};
 
 
 const buildUserContent = ({ prompt, code, files, lang, focusPath, codeIntelContext }) => {
@@ -108,6 +141,113 @@ const buildUserContent = ({ prompt, code, files, lang, focusPath, codeIntelConte
         }
     }
     return parts.filter(Boolean).join('\n\n').trim();
+};
+
+const encodeFilePath = (filePath = '') =>
+    String(filePath || '')
+        .split('/')
+        .filter((segment) => segment.length > 0)
+        .map((segment) => encodeURIComponent(segment))
+        .join('/');
+
+const fetchCollabFileContent = async (slug, filePath, signal) => {
+    if (!slug || !filePath) return null;
+    try {
+        const safePath = encodeFilePath(filePath);
+        const url = `${COLLAB_BASE}/file-content/${encodeURIComponent(slug)}/${safePath}`;
+        const res = await fetch(url, { method: 'GET', signal });
+        if (!res.ok) return null;
+        return await res.text();
+    } catch (e) {
+        return null;
+    }
+};
+
+const shouldIgnorePath = (path = '') => {
+    const normalized = String(path || '').replace(/\\/g, '/');
+    return DEFAULT_IGNORE.some((prefix) => normalized.startsWith(prefix));
+};
+
+const fetchRepoFileList = async (slug, signal) => {
+    if (!slug) return [];
+    try {
+        const url = `${COLLAB_BASE}/git/${encodeURIComponent(slug)}/files-meta`;
+        const res = await fetch(url, { method: 'GET', signal });
+        if (!res.ok) return [];
+        const data = await res.json();
+        return Array.isArray(data?.files) ? data.files : [];
+    } catch (e) {
+        return [];
+    }
+};
+
+const hydrateFullRepoFiles = async ({ workspacePath, existingFiles, signal }) => {
+    const fileMeta = await fetchRepoFileList(workspacePath, signal);
+    if (!fileMeta.length) return [];
+
+    const seen = new Set((existingFiles || []).map((f) => f?.path || f?.name).filter(Boolean));
+    const hydrated = [];
+    let totalChars = 0;
+
+    for (const entry of fileMeta) {
+        const relPath = String(entry?.path || '').replace(/\\/g, '/');
+        if (!relPath || relPath.endsWith('/') || seen.has(relPath)) continue;
+        if (shouldIgnorePath(relPath)) continue;
+        if (hydrated.length >= MAX_REPO_FILES) break;
+        if (totalChars >= MAX_REPO_CHARS) break;
+
+        const content = await fetchCollabFileContent(workspacePath, relPath, signal);
+        if (typeof content !== 'string' || !content) continue;
+
+        const trimmed = content.length > MAX_FILE_CHARS ? content.slice(0, MAX_FILE_CHARS) : content;
+        totalChars += trimmed.length;
+        hydrated.push({ path: relPath, content: trimmed });
+    }
+
+    return hydrated;
+};
+
+const hydrateFromCollab = async ({ workspacePath, focusPath, code, files, signal, fullRepoContext = false }) => {
+    if (!workspacePath) return { code, files };
+
+    let hydratedCode = code;
+    if (focusPath) {
+        const serverCode = await fetchCollabFileContent(workspacePath, focusPath, signal);
+        if (typeof serverCode === 'string') {
+            hydratedCode = serverCode;
+        }
+    }
+
+    const hydratedFiles = [];
+    const seen = new Set();
+    for (const file of Array.isArray(files) ? files : []) {
+        const path = file?.path || file?.name || '';
+        if (!path || seen.has(path)) {
+            hydratedFiles.push(file);
+            continue;
+        }
+        seen.add(path);
+        const serverContent = await fetchCollabFileContent(workspacePath, path, signal);
+        if (typeof serverContent === 'string') {
+            hydratedFiles.push({ ...file, content: serverContent });
+        } else {
+            hydratedFiles.push(file);
+        }
+    }
+
+    let finalFiles = hydratedFiles;
+    if (fullRepoContext) {
+        const extraFiles = await hydrateFullRepoFiles({
+            workspacePath,
+            existingFiles: hydratedFiles,
+            signal,
+        });
+        if (extraFiles.length) {
+            finalFiles = [...hydratedFiles, ...extraFiles];
+        }
+    }
+
+    return { code: hydratedCode, files: finalFiles };
 };
 
 const streamOpenAI = async ({ model, apiKey, userContent, signal }) => {
@@ -351,6 +491,7 @@ export async function POST(request) {
         useCodeIntel = true, // Enable by default when workspacePath is provided
         maxContextTokens = 6000,
         conversationHistory = [],
+        fullRepoContext = false,
     } = body || {};
 
     // Fetch code intelligence context BEFORE building user content
@@ -373,7 +514,23 @@ export async function POST(request) {
         });
     }
 
-    const userContent = buildUserContent({ prompt, code, files, lang, focusPath, codeIntelContext });
+    const { code: hydratedCode, files: hydratedFiles } = await hydrateFromCollab({
+        workspacePath,
+        focusPath,
+        code,
+        files,
+        signal: request.signal,
+        fullRepoContext: Boolean(fullRepoContext),
+    });
+
+    const userContent = buildUserContent({
+        prompt,
+        code: hydratedCode,
+        files: hydratedFiles,
+        lang,
+        focusPath,
+        codeIntelContext,
+    });
     if (!userContent) {
         return NextResponse.json({ error: 'Empty prompt' }, { status: 400 });
     }
@@ -394,6 +551,8 @@ export async function POST(request) {
                 ? streamOpenAI({ model, apiKey, userContent, signal })
                 : streamGemini({ model, apiKey, userContent, signal }));
 
+        const traceSummary = buildTraceSummary(codeIntelContext?.trace || []);
+
         return new NextResponse(stream, {
             headers: {
                 'content-type': 'application/x-ndjson',
@@ -401,6 +560,8 @@ export async function POST(request) {
                 // Include context metadata in headers for debugging
                 'x-code-intel-sufficiency': codeIntelContext?.sufficiency || 'NONE',
                 'x-code-intel-tokens': String(codeIntelContext?.tokensUsed || 0),
+                'x-code-intel-trace-count': String(codeIntelContext?.trace?.length || 0),
+                ...(traceSummary ? { 'x-code-intel-trace-summary': traceSummary } : {}),
             },
         });
     } catch (e) {

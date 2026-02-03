@@ -13,6 +13,7 @@ These summaries are cheap context. Raw code is expensive.
 from .file_summarizer import FileSummarizer, summarize_file
 from .repo_summarizer import RepoSummarizer, summarize_repository
 from .summary_store import SummaryStore, IncrementalSummaryManager
+from .facts_store import FactsStore
 
 __all__ = [
     "FileSummarizer",
@@ -21,4 +22,5 @@ __all__ = [
     "summarize_repository",
     "SummaryStore",
     "IncrementalSummaryManager",
+    "FactsStore",
 ]

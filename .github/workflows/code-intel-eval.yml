@@ -1,0 +1,33 @@
+name: code-intel-eval
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ai-backend/ai-engine/requirements.txt
+      - name: Run retrieval benchmark
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          export PYTHONPATH=$PYTHONPATH:ai-backend/ai-engine
+          python -m code_intel.evaluation.run_bench \
+            --workspace . \
+            --dataset ai-backend/ai-engine/code_intel/evaluation/datasets/template.json \
+            --min-recall 0.2 \
+            --min-file-recall 0.1 \
+            --min-symbol-recall 0.1

@@ -488,7 +488,7 @@ def get_streaming_manager() -> StreamingManager:
         
         # Register default providers
         try:
-            _streaming_manager.register_provider("openai", OpenAIStreamer())
+                # _streaming_manager.register_provider("openai", OpenAIStreamer())
         except Exception:
             pass
         

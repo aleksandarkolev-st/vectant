@@ -43,38 +43,39 @@ use hmr::fast_refresh::{
 };
 
 use infra::observability::{
-    StructuredLogger,
+    LogEntry,
     LogFormat,
     LogLevel,
-    LogEntry,
     MetricsAggregator,
     // ReloadMetricsTracker, // unused
     // ReloadId, // unused
+    StructuredLogger,
 };
 
-
-use safety::slot_isolation::{IsolationModel, IsolationManager};
-use safety::restart_control::{RestartController, BackoffConfig, KnownGoodStore};
 use safety::hardened_ipc::IpcConfig;
 use safety::quiescence::QuiescenceConfig;
+use safety::restart_control::{BackoffConfig, KnownGoodStore, RestartController};
+use safety::slot_isolation::{IsolationManager, IsolationModel};
 
 use infra::watcher::{PreemptiveConfig, PreemptiveMessage, SpeculativeCache};
 
 // use runtime::shim::{auto_shim, ShimMode, detect_shim_mode};
 
-#[allow(unused_imports)]
-use hmr::incremental_cache::{IncrementalCache, compile_with_cache, link_objects};
 use gstreamer as gst;
-// use gstreamer::prelude::{Cast, ElementExt, GstBinExt, GstObjectExt};
-// use gstreamer_app as gst_app;
+use gstreamer::prelude::{Cast, ElementExt, GstBinExt, GstObjectExt};
+use gstreamer_app as gst_app;
+#[allow(unused_imports)]
+use hmr::incremental_cache::{compile_with_cache, link_objects, IncrementalCache};
 
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use webrtc::api::APIBuilder;
+use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
+use webrtc::api::APIBuilder;
+use webrtc::interceptor::registry::Registry;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::RTCDataChannel;
 // use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
@@ -85,7 +86,7 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 // use webrtc::rtp::packet::Packet;
 use webrtc::rtp_transceiver::rtp_codec::{
-    RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
+    RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType, RTCRtpHeaderExtensionCapability,
 };
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
@@ -93,32 +94,68 @@ use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 // use webrtc::track::track_local::TrackLocal;
 // use webrtc::track::track_local::TrackLocalWriter;
 // use webrtc::util::Unmarshal;
+use webrtc::rtp_transceiver::RTCPFeedback;
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+use webrtc::track::track_local::TrackLocal;
+use webrtc::track::track_local::TrackLocalWriter;
+use webrtc::util::Unmarshal;
+use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use serde::{Deserialize, Serialize};
 
 // use printer::compile_context::CompileContext; // Legacy path
 use compiler::context::CompileContext;
-use infra::constants::{/*GUI_TOOLS,*/ REQUIRED_TOOLS};
-use infra::lsp_util::{LspSessionState, rewrite_uris};
-use infra::messages::{CompileRequest, /*FileEntry,*/ IceServerEnv, SignalMessage};
-use runtime::runner_state::RunnerState;
 use hmr::orchestrator::{HmrOrchestrator, OrchestratorConfig};
-use infra::utils::{make_chunks, get_wsl_host_ip};
+use infra::constants::{/*GUI_TOOLS,*/ REQUIRED_TOOLS};
+use infra::lsp_util::{rewrite_uris, LspSessionState};
+use infra::messages::{CompileRequest, /*FileEntry,*/ IceServerEnv, SignalMessage};
+use infra::utils::{get_wsl_host_ip, make_chunks};
+use runtime::runner_state::RunnerState;
 
-use crate::safety::security;
-use crate::infra::watcher;
 use crate::compiler::builder;
 use crate::infra::server;
 use crate::infra::storage;
-
-
-
+use crate::infra::watcher;
+use crate::safety::security;
 
 
 fn get_ai_backend_url() -> String {
     if let Ok(url) = std::env::var("AI_BACKEND_URL") {
         return url;
     }
+    if let Some(host_ip) = get_wsl_host_ip() {
+        return format!("http://{}:8000", host_ip);
+    }
+    "http://localhost:8000".to_string()
+}
     
-    // Auto-detect WSL host IP
+const GUI_TOOLS: &[&str] = &["xdotool", "Xvfb", "matchbox-window-manager"]; // Keeping these for now as SDL2 might use Xvfb on Linux
+
+#[derive(Debug, Serialize, Deserialize)]
+struct FileEntry {
+    name: String,
+    content: String,
+}
+
+/// Request to cancel a running mobile emulator job
+#[derive(Debug, Deserialize)]
+struct CancelMobileJobRequest {
+    #[serde(rename = "type")]
+    msg_type: String,  // Should be "cancel-mobile-job"
+    session_id: String,
+}
+
+/// Request to cancel a running build (all targets)
+#[derive(Debug, Deserialize)]
+struct CancelBuildRequest {
+    #[serde(rename = "type")]
+    msg_type: String, // Should be "cancel-build"
+    #[serde(default)]
+    session_id: Option<String>,
+}
+
+
+// Auto-detect WSL host IP
+fn get_wsl_backend_url() -> String {
     if let Some(host_ip) = get_wsl_host_ip() {
         return format!("http://{}:8000", host_ip);
     }
@@ -137,13 +174,25 @@ fn get_signaling_url() -> String {
     "ws://localhost:9000".to_string()
 }
 
+fn extract_fingerprint(sdp: &str) -> Option<String> {
+    for line in sdp.lines() {
+        if let Some(rest) = line.strip_prefix("a=fingerprint:") {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     println!("Worker starting...");
     println!("Operating System: {}", std::env::consts::OS);
-    
+
     // v2.1: Print security audit at startup (requirement #9)
-    if std::env::var("SYNTHI_SECURITY_AUDIT").map(|v| v == "1").unwrap_or(false) {
+    if std::env::var("SYNTHI_SECURITY_AUDIT")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
         security::print_security_audit();
     } else {
         // Brief security notice
@@ -151,7 +200,7 @@ async fn main() -> Result<()> {
         eprintln!("[Security] Status: {} enforced, {} partial, {} stub (set SYNTHI_SECURITY_AUDIT=1 for details)",
             audit.enforced_count, audit.partial_count, audit.stub_count);
     }
-    
+
     // ============================================================
     // v2.1 HMR INFRASTRUCTURE INITIALIZATION (Requirements #1-10)
     // ============================================================
@@ -162,14 +211,20 @@ async fn main() -> Result<()> {
     // - IpcConfig for hardened communication (#4)
     // - HmrOrchestrator for central coordination
     // ============================================================
-    
+
     // Initialize structured logging (requirement #10)
-    let hmr_log_format = if std::env::var("SYNTHI_JSON_LOGS").map(|v| v == "1").unwrap_or(false) {
+    let hmr_log_format = if std::env::var("SYNTHI_JSON_LOGS")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
         LogFormat::Json
     } else {
         LogFormat::Human
     };
-    let hmr_log_level = match std::env::var("SYNTHI_LOG_LEVEL").unwrap_or_default().as_str() {
+    let hmr_log_level = match std::env::var("SYNTHI_LOG_LEVEL")
+        .unwrap_or_default()
+        .as_str()
+    {
         "trace" => LogLevel::Trace,
         "debug" => LogLevel::Debug,
         "warn" => LogLevel::Warn,
@@ -177,63 +232,90 @@ async fn main() -> Result<()> {
         _ => LogLevel::Info,
     };
     let structured_logger = Arc::new(StructuredLogger::new(hmr_log_format, hmr_log_level));
-    
+
     // Initialize metrics aggregator for reload performance tracking
     let metrics_aggregator = Arc::new(tokio::sync::Mutex::new(MetricsAggregator::new()));
-    
+
     // Log startup
-    structured_logger.log(&LogEntry::new(LogLevel::Info, "main", "Worker starting with HMR v2.1 hardening")
+    structured_logger.log(
+        &LogEntry::new(
+            LogLevel::Info,
+            "main",
+            "Worker starting with HMR v2.1 hardening",
+        )
         .with_field("os", std::env::consts::OS)
-        .with_field("log_format", format!("{:?}", hmr_log_format)));
-    
+        .with_field("log_format", format!("{:?}", hmr_log_format)),
+    );
+
     // Initialize isolation manager (requirement #7)
-    let isolation_model = match std::env::var("SYNTHI_ISOLATION_MODEL").unwrap_or_default().as_str() {
+    let isolation_model = match std::env::var("SYNTHI_ISOLATION_MODEL")
+        .unwrap_or_default()
+        .as_str()
+    {
         "worker_per_slot" => IsolationModel::WorkerPerSlot,
         "grouped" => IsolationModel::GroupedWorkers,
         _ => IsolationModel::SingleWorker, // Default: simpler, lower overhead
     };
-    let isolation_manager = Arc::new(tokio::sync::Mutex::new(IsolationManager::new(isolation_model)));
+    let isolation_manager = Arc::new(tokio::sync::Mutex::new(IsolationManager::new(
+        isolation_model,
+    )));
     eprintln!("[HMR v2.1] Isolation model: {:?}", isolation_model);
-    
+
     // Initialize restart controller with backoff (requirement #8)
     let known_good_dir = std::env::temp_dir().join("synthi_known_good");
     let _ = std::fs::create_dir_all(&known_good_dir);
     let known_good_store = KnownGoodStore::with_persistence(known_good_dir.join("known_good.json"));
     let backoff_config = BackoffConfig::default();
-    let restart_controller = Arc::new(tokio::sync::Mutex::new(
-        RestartController::new(backoff_config, known_good_store)
-    ));
+    let restart_controller = Arc::new(tokio::sync::Mutex::new(RestartController::new(
+        backoff_config,
+        known_good_store,
+    )));
     eprintln!("[HMR v2.1] Restart controller initialized with backoff/fallback");
-    
+
     // Initialize hardened IPC config (requirement #4)
     let ipc_config = Arc::new(IpcConfig::default());
-    eprintln!("[HMR v2.1] IPC config: max_frame_size={}MB, read_timeout={}s",
+    eprintln!(
+        "[HMR v2.1] IPC config: max_frame_size={}MB, read_timeout={}s",
         ipc_config.max_frame_size / (1024 * 1024),
-        ipc_config.read_timeout.as_secs());
-    
+        ipc_config.read_timeout.as_secs()
+    );
+
     // Initialize HMR orchestrator (central coordination)
     let orchestrator_config = OrchestratorConfig {
         prefer_binary_state: true,
         max_snapshots: 10,
         max_consecutive_crashes: 3,
         task_shutdown_timeout: std::time::Duration::from_secs(5),
-        strict_abi: std::env::var("SYNTHI_STRICT_ABI").map(|v| v == "1").unwrap_or(false),
+        strict_abi: std::env::var("SYNTHI_STRICT_ABI")
+            .map(|v| v == "1")
+            .unwrap_or(false),
         max_boundaries_per_module: 20,
     };
-    let hmr_orchestrator = Arc::new(tokio::sync::Mutex::new(HmrOrchestrator::with_config(orchestrator_config)));
-    eprintln!("[HMR v2.1] Orchestrator initialized (binary_state={}, strict_abi={})",
-        true, std::env::var("SYNTHI_STRICT_ABI").map(|v| v == "1").unwrap_or(false));
-    
+    let hmr_orchestrator = Arc::new(tokio::sync::Mutex::new(HmrOrchestrator::with_config(
+        orchestrator_config,
+    )));
+    eprintln!(
+        "[HMR v2.1] Orchestrator initialized (binary_state={}, strict_abi={})",
+        true,
+        std::env::var("SYNTHI_STRICT_ABI")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+    );
+
     // Initialize quiescence config (requirement #6)
     let _quiescence_config = QuiescenceConfig::default();
     eprintln!("[HMR v2.1] Quiescence protocol ready");
-    
-    structured_logger.log(&LogEntry::new(LogLevel::Info, "main", "HMR v2.1 infrastructure initialized"));
-    
+
+    structured_logger.log(&LogEntry::new(
+        LogLevel::Info,
+        "main",
+        "HMR v2.1 infrastructure initialized",
+    ));
+
     // ============================================================
     // END v2.1 INFRASTRUCTURE
     // ============================================================
-    
+
     // Cargo does not source shell rc files, so ensure Android SDK tools are visible
     // to this process deterministically before any SDK checks or emulator logic.
     android::ensure_android_sdk_env();
@@ -276,9 +358,8 @@ async fn main() -> Result<()> {
         }
     });
 
-    let pc = create_peer(signal_tx.clone()).await?;
+    let mut pc = create_peer(signal_tx.clone()).await?;
     let log_channel_store: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
-    let compile_store = log_channel_store.clone();
     // Store of sessionId -> stdin sender so datachannel 'terminal' messages can be
     // routed to the running process's stdin.
     let terminal_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> =
@@ -288,6 +369,9 @@ async fn main() -> Result<()> {
         Arc::new(Mutex::new(HashMap::new()));
     // Store for persistent runner process
     let runner_store: Arc<Mutex<Option<RunnerState>>> = Arc::new(Mutex::new(None));
+    // Store for currently running compile task (any target)
+    let compile_task_store: Arc<Mutex<Option<(String, tokio::task::JoinHandle<()>)>>> =
+        Arc::new(Mutex::new(None));
     // Simple in-memory cache for tracking compiled lib paths (legacy, used alongside IncrementalCache)
     let compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -499,6 +583,431 @@ async fn main() -> Result<()> {
     });
     // -----------------------------------
 
+    wire_peer_channels(
+        &pc,
+        log_channel_store.clone(),
+        terminal_input_store.clone(),
+        sdl_input_store.clone(),
+        runner_store.clone(),
+        compile_task_store.clone(),
+        workspace_path_arc.clone(),
+        compile_cache.clone(),
+        boundary_checker.clone(),
+        incremental_cache.clone(),
+        hmr_orchestrator.clone(),
+        structured_logger.clone(),
+        metrics_aggregator.clone(),
+        restart_controller.clone(),
+        ipc_config.clone(),
+    ).await?;
+
+    let mut current_remote_fingerprint: Option<String> = None;
+    while let Some(msg) = ws_read.next().await {
+        let msg = msg?;
+        if !msg.is_text() {
+            continue;
+        }
+        let parsed: SignalMessage = match serde_json::from_str(&msg.into_text()?) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        match parsed.msg_type.as_str() {
+            "offer" => {
+                if let Some(sdp) = parsed.sdp {
+                    let sdp_type = match parsed.sdp_type.as_deref().unwrap_or("offer") {
+                        "offer" => RTCSdpType::Offer,
+                        "answer" => RTCSdpType::Answer,
+                        "pranswer" => RTCSdpType::Pranswer,
+                        "rollback" => RTCSdpType::Rollback,
+                        _ => RTCSdpType::Offer,
+                    };
+                    let new_fingerprint = extract_fingerprint(&sdp);
+                    let fingerprint_changed = match (&current_remote_fingerprint, &new_fingerprint) {
+                        (Some(old_fp), Some(new_fp)) => old_fp != new_fp,
+                        (Some(_), None) => true,
+                        _ => false,
+                    };
+
+                    if fingerprint_changed {
+                        eprintln!(
+                            "[WebRTC-signal] Detected new peer fingerprint, recreating PeerConnection for fresh browser session"
+                        );
+                        if let Err(e) = pc.close().await {
+                            eprintln!("[WebRTC-signal] Warning: failed to close old PC: {:?}", e);
+                        }
+                        {
+                            let mut guard = log_channel_store.lock().await;
+                            *guard = None;
+                        }
+                        match create_peer(signal_tx.clone()).await {
+                            Ok(new_pc) => {
+                                wire_peer_channels(
+                                    &new_pc,
+                                    log_channel_store.clone(),
+                                    terminal_input_store.clone(),
+                                    sdl_input_store.clone(),
+                                    runner_store.clone(),
+                                    compile_task_store.clone(),
+                                    workspace_path_arc.clone(),
+                                    compile_cache.clone(),
+                                    boundary_checker.clone(),
+                                    incremental_cache.clone(),
+                                    hmr_orchestrator.clone(),
+                                    structured_logger.clone(),
+                                    metrics_aggregator.clone(),
+                                    restart_controller.clone(),
+                                    ipc_config.clone(),
+                                )
+                                .await?;
+                                pc = new_pc;
+                                current_remote_fingerprint = None;
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "[WebRTC-signal] CRITICAL ERROR: Failed to re-create peer connection: {:?}",
+                                    e
+                                );
+                                return Err(e);
+                            }
+                        }
+                    }
+
+                    eprintln!("[WebRTC-signal] Received offer (type={:?}), current state={:?}", sdp_type, pc.signaling_state());
+                    let mut desc = RTCSessionDescription::default();
+                    desc.sdp_type = sdp_type;
+                    desc.sdp = sdp;
+                    pc.set_remote_description(desc).await?;
+                    let answer = pc.create_answer(None).await?;
+                    pc.set_local_description(answer.clone()).await?;
+                    eprintln!("[WebRTC-signal] Sending answer, new state={:?}", pc.signaling_state());
+                    if let Some(pos) = answer.sdp.find("transport-wide-cc") {
+                        eprintln!("[WebRTC-signal] TWCC found in Answer SDP at index {}", pos);
+                    } else {
+                        eprintln!("[WebRTC-signal] WARNING: TWCC missing from Answer SDP!");
+                    }
+                    signal_tx.send(SignalMessage {
+                        msg_type: "answer".into(),
+                        role: None,
+                        sdp: Some(answer.sdp),
+                        sdp_type: Some(answer.sdp_type.to_string()),
+                        candidate: None,
+                    })?;
+                    if let Some(fp) = new_fingerprint {
+                        current_remote_fingerprint = Some(fp);
+                    }
+                }
+            }
+            "candidate" => {
+                if let Some(c) = parsed.candidate {
+                    let _ = pc.add_ice_candidate(c).await;
+                }
+            }
+            "reset" => {
+                eprintln!("[WebRTC-signal] Received reset command, clearing WebRTC state (SOFT RESET)...");
+                
+                // 1. Close the existing PeerConnection
+                if let Err(e) = pc.close().await {
+                    eprintln!("[WebRTC-signal] Warning: failed to close old PC: {:?}", e);
+                }
+                current_remote_fingerprint = None;
+
+                // 2. Clear runner state (Terminates Emulator/GStreamer pipeline)
+                {
+                    let mut guard = runner_store.lock().await;
+                    if guard.is_some() {
+                        eprintln!("[WebRTC-signal] Dropping old RunnerState...");
+                        *guard = None;
+                    }
+                }
+
+                // 3. Clear other session stores
+                {
+                     let mut guard = log_channel_store.lock().await;
+                     *guard = None;
+                }
+                {
+                     let mut guard = terminal_input_store.lock().await;
+                     guard.clear();
+                }
+                {
+                     let mut guard = sdl_input_store.lock().await;
+                     guard.clear();
+                }
+
+                // 4. Create a fresh PeerConnection
+                match create_peer(signal_tx.clone()).await {
+                    Ok(new_pc) => {
+                        wire_peer_channels(
+                            &new_pc,
+                            log_channel_store.clone(),
+                            terminal_input_store.clone(),
+                            sdl_input_store.clone(),
+                            runner_store.clone(),
+                            compile_task_store.clone(),
+                            workspace_path_arc.clone(),
+                            compile_cache.clone(),
+                            boundary_checker.clone(),
+                            incremental_cache.clone(),
+                             hmr_orchestrator.clone(),
+                             structured_logger.clone(),
+                             metrics_aggregator.clone(),
+                             restart_controller.clone(),
+                             ipc_config.clone(),
+                         ).await?;
+                         pc = new_pc;
+                         eprintln!("[WebRTC-signal] Soft reset complete. New PeerConnection ready.");
+                    },
+                    Err(e) => {
+                         eprintln!("[WebRTC-signal] CRITICAL ERROR: Failed to re-create peer connection: {:?}", e);
+                         // Panic? Return? Try to continue?
+                         // If we can't create a peer, we're likely dead anyway.
+                         return Err(e);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+async fn create_peer(
+    signal_tx: mpsc::UnboundedSender<SignalMessage>,
+) -> Result<Arc<RTCPeerConnection>> {
+    let mut m = MediaEngine::default();
+    m.register_default_codecs()?;
+
+    // Manually register H265 as it might not be in default codecs
+    let _ = m.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: "video/H265".to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "".to_owned(),
+                rtcp_feedback: vec![RTCPFeedback {
+                    typ: "transport-cc".to_owned(),
+                    parameter: "".to_owned(),
+                }],
+            },
+            payload_type: 96,
+            ..Default::default()
+        },
+        RTPCodecType::Video,
+    );
+
+    // Explicitly register H264 (Baseline) with transport-cc
+    // This matches standard Android emulator / RN output (profile-level-id=42001f)
+    let _ = m.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: "video/H264".to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f".to_owned(),
+                rtcp_feedback: vec![RTCPFeedback {
+                    typ: "transport-cc".to_owned(),
+                    parameter: "".to_owned(),
+                }],
+            },
+            payload_type: 103, // Match common dynamic PT
+            ..Default::default()
+        },
+        RTPCodecType::Video,
+    );
+
+    // Explicitly register H264 with transport-cc (Constrained Baseline - 42e01f)
+    let _ = m.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: "video/H264".to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
+                rtcp_feedback: vec![RTCPFeedback {
+                    typ: "transport-cc".to_owned(),
+                    parameter: "".to_owned(),
+                }],
+            },
+            payload_type: 102, 
+            ..Default::default()
+        },
+        RTPCodecType::Video,
+    );
+
+    let mut registry = Registry::new();
+    registry = register_default_interceptors(registry, &mut m)?;
+
+    let api = APIBuilder::new()
+        .with_media_engine(m)
+        .with_interceptor_registry(registry)
+        .build();
+    // Allow configuring ICE servers via COMPILER_ICE_SERVERS environment variable as JSON
+    // Example: COMPILER_ICE_SERVERS='[{"urls":["stun:stun.l.google.com:19302"]},{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]'
+    let ice_servers_env = env::var("COMPILER_ICE_SERVERS").ok();
+    let mut ice_servers: Vec<webrtc::ice_transport::ice_server::RTCIceServer> = Vec::new();
+    if let Some(raw) = ice_servers_env {
+        match serde_json::from_str::<Vec<IceServerEnv>>(&raw) {
+            Ok(parsed) => {
+                for srv in parsed {
+                    ice_servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
+                        urls: srv.urls,
+                        username: srv.username.unwrap_or_default(),
+                        credential: srv.credential.unwrap_or_default(),
+                        ..Default::default()
+                    });
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "Failed to parse COMPILER_ICE_SERVERS - falling back to default STUN: {}",
+                    e
+                );
+                ice_servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
+                    urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                    ..Default::default()
+                });
+            }
+        }
+    } else {
+        ice_servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
+            urls: vec!["stun:stun.l.google.com:19302".to_string()],
+            ..Default::default()
+        });
+    }
+
+    let config = RTCConfiguration {
+        ice_servers,
+        ..Default::default()
+    };
+
+    let pc = Arc::new(api.new_peer_connection(config).await?);
+
+    // Add transceivers for video and audio so they are negotiated initially
+    pc.add_transceiver_from_kind(
+        RTPCodecType::Video,
+        Some(RTCRtpTransceiverInit {
+            direction: RTCRtpTransceiverDirection::Sendonly,
+            send_encodings: vec![],
+        }),
+    )
+    .await?;
+
+    pc.add_transceiver_from_kind(
+        RTPCodecType::Audio,
+        Some(RTCRtpTransceiverInit {
+            direction: RTCRtpTransceiverDirection::Sendonly,
+            send_encodings: vec![],
+        }),
+    )
+    .await?;
+
+    // Important: some browsers won't emit `ontrack` unless the SDP includes track/MSID info.
+    // Attaching placeholder tracks up-front ensures the answer advertises real tracks, while
+    // later runtime pipelines can `replace_track()` without requiring renegotiation.
+    // This is especially important for Android emulator streaming, where the real track is
+    // created after the initial offer/answer exchange.
+    {
+        let placeholder_video = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "video/H264".to_owned(),
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
+                rtcp_feedback: vec![RTCPFeedback {
+                    typ: "transport-cc".to_owned(),
+                    parameter: "".to_owned(),
+                }],
+                ..Default::default()
+            },
+            "video".to_owned(),
+            "synthi-placeholder".to_owned(),
+        ));
+        let placeholder_audio = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "audio/opus".to_owned(),
+                ..Default::default()
+            },
+            "audio".to_owned(),
+            "synthi-placeholder".to_owned(),
+        ));
+
+        let transceivers = pc.get_transceivers().await;
+        for t in transceivers {
+            let kind = t.kind();
+            if kind == RTPCodecType::Video {
+                let sender = t.sender().await;
+                match sender
+                    .replace_track(Some(
+                        Arc::clone(&placeholder_video) as Arc<dyn TrackLocal + Send + Sync>
+                    ))
+                    .await
+                {
+                    Ok(_) => eprintln!("[WebRTC] Attached placeholder video track"),
+                    Err(e) => eprintln!("[WebRTC] Failed to attach placeholder video track: {:?}", e),
+                }
+            } else if kind == RTPCodecType::Audio {
+                let sender = t.sender().await;
+                match sender
+                    .replace_track(Some(
+                        Arc::clone(&placeholder_audio) as Arc<dyn TrackLocal + Send + Sync>
+                    ))
+                    .await
+                {
+                    Ok(_) => eprintln!("[WebRTC] Attached placeholder audio track"),
+                    Err(e) => eprintln!("[WebRTC] Failed to attach placeholder audio track: {:?}", e),
+                }
+            }
+        }
+    }
+
+    {
+        let tx = signal_tx.clone();
+        pc.on_ice_candidate(Box::new(move |candidate| {
+            let tx = tx.clone();
+            async move {
+                if let Some(c) = candidate {
+                    if let Ok(init) = c.to_json() {
+                        let _ = tx.send(SignalMessage {
+                            msg_type: "candidate".into(),
+                            role: None,
+                            sdp: None,
+                            sdp_type: None,
+                            candidate: Some(init),
+                        });
+                    }
+                }
+            }
+            .boxed()
+        }));
+    }
+
+    pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
+        println!("Peer Connection State: {s:?}");
+        async {}.boxed()
+    }));
+
+    Ok(pc)
+}
+
+async fn wire_peer_channels(
+    pc: &Arc<RTCPeerConnection>,
+    log_channel_store: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
+    terminal_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
+    sdl_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
+    runner_store: Arc<Mutex<Option<RunnerState>>>,
+    compile_task_store: Arc<Mutex<Option<(String, tokio::task::JoinHandle<()>)>>>,
+    workspace_path_arc: Arc<std::path::PathBuf>,
+    compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>>,
+    boundary_checker: Arc<Mutex<BoundaryChecker>>,
+    incremental_cache: Arc<IncrementalCache>,
+    hmr_orchestrator: Arc<tokio::sync::Mutex<HmrOrchestrator>>,
+    structured_logger: Arc<StructuredLogger>,
+    metrics_aggregator: Arc<tokio::sync::Mutex<MetricsAggregator>>,
+    restart_controller: Arc<tokio::sync::Mutex<RestartController>>,
+    ipc_config: Arc<IpcConfig>,
+) -> Result<()> {
+    let pc = pc.clone();
     let build_log_dc = pc
         .create_data_channel("build-log", Some(RTCDataChannelInit::default()))
         .await?;
@@ -514,10 +1023,12 @@ async fn main() -> Result<()> {
         .boxed()
     }));
 
+    let compile_store = log_channel_store.clone();
     let term_store = terminal_input_store.clone();
     let pc_clone = pc.clone();
     let workspace_path_for_callback = workspace_path_arc.clone();
     let runner_store_for_callback = runner_store.clone();
+    let compile_task_store_for_callback = compile_task_store.clone();
     let compile_cache_for_callback = compile_cache.clone();
     let boundary_checker_for_callback = boundary_checker.clone();
     let incremental_cache_for_callback = incremental_cache.clone();
@@ -527,13 +1038,15 @@ async fn main() -> Result<()> {
     let metrics_aggregator_for_callback = metrics_aggregator.clone();
     let restart_controller_for_callback = restart_controller.clone();
     let ipc_config_for_callback = ipc_config.clone();
+    let sdl_input_store_for_callback = sdl_input_store.clone();
     pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
         let store = compile_store.clone();
         let term_store = term_store.clone();
         let pc_for_callback = pc_clone.clone();
         let workspace_path_for_dc = workspace_path_for_callback.clone();
-        let sdl_store_outer = sdl_input_store.clone();
+        let sdl_store_outer = sdl_input_store_for_callback.clone();
         let runner_store_outer = runner_store_for_callback.clone();
+        let compile_task_store_outer = compile_task_store_for_callback.clone();
         let compile_cache_outer = compile_cache_for_callback.clone();
         let boundary_checker_outer = boundary_checker_for_callback.clone();
         let incremental_cache_outer = incremental_cache_for_callback.clone();
@@ -556,9 +1069,11 @@ async fn main() -> Result<()> {
                         let workspace_path_for_compile = workspace_path_for_dc.clone();
                         let sdl_store = sdl_store_outer.clone();
                         let runner_store = runner_store_outer.clone();
+                        let runner_store_for_msg = runner_store_outer.clone();
                         let compile_cache = compile_cache_outer.clone();
                         let boundary_checker = boundary_checker_outer.clone();
                         let incremental_cache = incremental_cache_outer.clone();
+                        let compile_task_store_for_msg = compile_task_store_outer.clone();
                         // v2.1 inner clones
                         let hmr_orchestrator = hmr_orchestrator_outer.clone();
                         let structured_logger = structured_logger_outer.clone();
@@ -567,12 +1082,89 @@ async fn main() -> Result<()> {
                         let ipc_config = ipc_config_outer.clone();
                         async move {
                             if msg.is_string {
+                                eprintln!("[Main] Received message on 'compile' channel. Length: {}", msg.data.len());
+                                // Try to parse as a CancelBuildRequest first
+                                if let Ok(cancel_req) = serde_json::from_slice::<CancelBuildRequest>(&msg.data) {
+                                    if cancel_req.msg_type == "cancel-build" {
+                                        let target_session = cancel_req.session_id.clone();
+                                        eprintln!(
+                                            "[Main] Received cancel-build for session: {:?}",
+                                            target_session
+                                        );
+
+                                        // For mobile sessions, also mark cancellation
+                                        if let Some(ref sid) = target_session {
+                                            crate::android::webrtc::input::cancel_session(sid);
+                                            crate::android::webrtc::input::unregister_session_sync(sid);
+                                        }
+
+                                        // Abort active compile task if it matches
+                                        let mut task_guard = compile_task_store_for_msg.lock().await;
+                                        let mut cancelled_session = target_session.clone();
+                                        if let Some((current_id, handle)) = task_guard.take() {
+                                            if target_session.as_ref().map_or(true, |sid| sid == &current_id) {
+                                                handle.abort();
+                                                if cancelled_session.is_none() {
+                                                    cancelled_session = Some(current_id.clone());
+                                                }
+                                            } else {
+                                                *task_guard = Some((current_id, handle));
+                                            }
+                                        }
+
+                                        // Stop any running runner process/pipeline
+                                        {
+                                            let mut guard = runner_store_for_msg.lock().await;
+                                            if let Some(state) = guard.take() {
+                                                if let Some(mut child) = state.process {
+                                                    let _ = child.kill().await;
+                                                }
+                                                if let Some(mut child) = state.xvfb_process {
+                                                    let _ = child.kill().await;
+                                                }
+                                                if let Some(pipeline) = state.gst_pipeline {
+                                                    let _ = pipeline.set_state(gst::State::Null);
+                                                }
+                                            }
+                                        }
+
+                                        // Notify frontend
+                                        if let Some(sid) = cancelled_session {
+                                            if let Some(log) = { store.lock().await.clone() } {
+                                                let payload = serde_json::json!({
+                                                    "type": "build-status",
+                                                    "status": "cancelled",
+                                                    "sessionId": sid,
+                                                    "message": "Build cancelled by user"
+                                                });
+                                                let _ = log.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                            } else {
+                                                eprintln!("[Main] Build cancelled by user (session {})", sid);
+                                            }
+                                        }
+                                        return;
+                                    }
+                                }
+
+                                // Try to parse as a CancelMobileJobRequest next
+                                if let Ok(cancel_req) = serde_json::from_slice::<CancelMobileJobRequest>(&msg.data) {
+                                    if cancel_req.msg_type == "cancel-mobile-job" {
+                                        eprintln!("[Main] Received cancel-mobile-job for session: {}", cancel_req.session_id);
+                                        // Mark the session as cancelled
+                                        crate::android::webrtc::input::cancel_session(&cancel_req.session_id);
+                                        // Also unregister the input session
+                                        crate::android::webrtc::input::unregister_session_sync(&cancel_req.session_id);
+                                        return;
+                                    }
+                                }
+                                
                                 // Try to parse as a CompileRequest
                                 if let Ok(req) = serde_json::from_slice::<CompileRequest>(&msg.data) {
                                     eprintln!("[Main] Received CompileRequest: is_gui={}, use_ai_split={}, lang={}, target={:?}", 
                                         req.is_gui, req.use_ai_split, req.language, req.target);
                                     let log_dc = { store.lock().await.clone() };
                                     if let Some(log) = log_dc {
+                                        eprintln!("[Main] Found active build-log channel, proceeding with build...");
                                         // Check if this is a mobile emulator target
                                         if let Some(ref target) = req.target {
                                             if target == "react-native-emulator" {
@@ -672,7 +1264,35 @@ async fn main() -> Result<()> {
                                         let ma = metrics_aggregator.clone();
                                         let rc = restart_controller.clone();
                                         let ipc = ipc_config.clone();
-                                        tokio::spawn(handle_compile(req, log, ts, sdls, rs, pc_clone, wp.to_path_buf(), cc, bc, ic, ho, sl, ma, rc, ipc));
+                                        let session_id = req
+                                            .session_id
+                                            .clone()
+                                            .unwrap_or_else(|| format!("sess-{}-{}", chrono::Utc::now().timestamp_millis(), uuid::Uuid::new_v4().as_u128() % 100000));
+                                        let mut req = req;
+                                        if req.session_id.is_none() {
+                                            req.session_id = Some(session_id.clone());
+                                        }
+                                        let task_store = compile_task_store_for_msg.clone();
+                                        let log_clone = log.clone();
+                                        let task_session = session_id.clone();
+                                        let handle = tokio::spawn(async move {
+                                            if let Err(e) = handle_compile(req, log_clone, ts, sdls, rs, pc_clone, wp.to_path_buf(), cc, bc, ic, ho, sl, ma, rc, ipc).await {
+                                                eprintln!("[Main] Compile task failed: {:?}", e);
+                                            }
+                                            let mut guard = task_store.lock().await;
+                                            if let Some((current_id, _)) = guard.as_ref() {
+                                                if current_id == &task_session {
+                                                    *guard = None;
+                                                }
+                                            }
+                                        });
+                                        {
+                                            let mut guard = compile_task_store_for_msg.lock().await;
+                                            if let Some((_, existing)) = guard.take() {
+                                                existing.abort();
+                                            }
+                                            *guard = Some((session_id, handle));
+                                        }
                                     }
                                     return;
                                 }
@@ -765,7 +1385,11 @@ async fn main() -> Result<()> {
                                                 }
                                             }
                                         }
+                                    } else {
+                                        eprintln!("[Main] ERROR: No build-log channel found in store! Dropping compile request.");
                                     }
+                                } else {
+                                     eprintln!("[Main] Failed to parse CompileRequest. Data preview: {}", String::from_utf8_lossy(&msg.data).chars().take(100).collect::<String>());
                                 }
                             }
                         }
@@ -1196,10 +1820,16 @@ async fn main() -> Result<()> {
                         if !msg.is_string {
                             return;
                         }
+                        
+                        // Log raw message arrival
+                        // eprintln!("[emulator-input] Received raw message: {}", String::from_utf8_lossy(&msg.data));
+
                         if let Ok(v) = serde_json::from_slice::<crate::android::webrtc::input::EmulatorInputMessage>(&msg.data) {
                             if let Err(e) = crate::android::webrtc::input::handle_input_message(v).await {
                                 eprintln!("[emulator-input] error: {:#}", e);
                             }
+                        } else {
+                            eprintln!("[emulator-input] failed to deserialize message: {}", String::from_utf8_lossy(&msg.data));
                         }
                     }
                     .boxed()
@@ -1209,163 +1839,7 @@ async fn main() -> Result<()> {
         .boxed()
     }));
 
-    while let Some(msg) = ws_read.next().await {
-        let msg = msg?;
-        if !msg.is_text() {
-            continue;
-        }
-        let parsed: SignalMessage = match serde_json::from_str(&msg.into_text()?) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        match parsed.msg_type.as_str() {
-            "offer" => {
-                if let Some(sdp) = parsed.sdp {
-                    let sdp_type = match parsed.sdp_type.as_deref().unwrap_or("offer") {
-                        "offer" => RTCSdpType::Offer,
-                        "answer" => RTCSdpType::Answer,
-                        "pranswer" => RTCSdpType::Pranswer,
-                        "rollback" => RTCSdpType::Rollback,
-                        _ => RTCSdpType::Offer,
-                    };
-                    let mut desc = RTCSessionDescription::default();
-                    desc.sdp_type = sdp_type;
-                    desc.sdp = sdp;
-                    pc.set_remote_description(desc).await?;
-                    let answer = pc.create_answer(None).await?;
-                    pc.set_local_description(answer.clone()).await?;
-                    signal_tx.send(SignalMessage {
-                        msg_type: "answer".into(),
-                        role: None,
-                        sdp: Some(answer.sdp),
-                        sdp_type: Some(answer.sdp_type.to_string()),
-                        candidate: None,
-                    })?;
-                }
-            }
-            "candidate" => {
-                if let Some(c) = parsed.candidate {
-                    let _ = pc.add_ice_candidate(c).await;
-                }
-            }
-            _ => {}
-        }
-    }
-
     Ok(())
-}
-
-async fn create_peer(
-    signal_tx: mpsc::UnboundedSender<SignalMessage>,
-) -> Result<Arc<RTCPeerConnection>> {
-    let mut m = MediaEngine::default();
-    m.register_default_codecs()?;
-
-    // Manually register H265 as it might not be in default codecs
-    let _ = m.register_codec(
-        RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
-                mime_type: "video/H265".to_owned(),
-                clock_rate: 90000,
-                channels: 0,
-                sdp_fmtp_line: "".to_owned(),
-                rtcp_feedback: vec![],
-            },
-            payload_type: 96,
-            ..Default::default()
-        },
-        RTPCodecType::Video,
-    );
-
-    let api = APIBuilder::new().with_media_engine(m).build();
-    // Allow configuring ICE servers via COMPILER_ICE_SERVERS environment variable as JSON
-    // Example: COMPILER_ICE_SERVERS='[{"urls":["stun:stun.l.google.com:19302"]},{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]'
-    let ice_servers_env = env::var("COMPILER_ICE_SERVERS").ok();
-    let mut ice_servers: Vec<webrtc::ice_transport::ice_server::RTCIceServer> = Vec::new();
-    if let Some(raw) = ice_servers_env {
-        match serde_json::from_str::<Vec<IceServerEnv>>(&raw) {
-            Ok(parsed) => {
-                for srv in parsed {
-                    ice_servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
-                        urls: srv.urls,
-                        username: srv.username.unwrap_or_default(),
-                        credential: srv.credential.unwrap_or_default(),
-                        ..Default::default()
-                    });
-                }
-            }
-            Err(e) => {
-                eprintln!(
-                    "Failed to parse COMPILER_ICE_SERVERS - falling back to default STUN: {}",
-                    e
-                );
-                ice_servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
-                    urls: vec!["stun:stun.l.google.com:19302".to_string()],
-                    ..Default::default()
-                });
-            }
-        }
-    } else {
-        ice_servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
-            urls: vec!["stun:stun.l.google.com:19302".to_string()],
-            ..Default::default()
-        });
-    }
-
-    let config = RTCConfiguration {
-        ice_servers,
-        ..Default::default()
-    };
-
-    let pc = Arc::new(api.new_peer_connection(config).await?);
-
-    // Add transceivers for video and audio so they are negotiated initially
-    pc.add_transceiver_from_kind(
-        RTPCodecType::Video,
-        Some(RTCRtpTransceiverInit {
-            direction: RTCRtpTransceiverDirection::Sendonly,
-            send_encodings: vec![],
-        }),
-    )
-    .await?;
-
-    pc.add_transceiver_from_kind(
-        RTPCodecType::Audio,
-        Some(RTCRtpTransceiverInit {
-            direction: RTCRtpTransceiverDirection::Sendonly,
-            send_encodings: vec![],
-        }),
-    )
-    .await?;
-
-    {
-        let tx = signal_tx.clone();
-        pc.on_ice_candidate(Box::new(move |candidate| {
-            let tx = tx.clone();
-            async move {
-                if let Some(c) = candidate {
-                    if let Ok(init) = c.to_json() {
-                        let _ = tx.send(SignalMessage {
-                            msg_type: "candidate".into(),
-                            role: None,
-                            sdp: None,
-                            sdp_type: None,
-                            candidate: Some(init),
-                        });
-                    }
-                }
-            }
-            .boxed()
-        }));
-    }
-
-    pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-        println!("Peer Connection State: {s:?}");
-        async {}.boxed()
-    }));
-
-    Ok(pc)
 }
 
 // Cache for AI split results to avoid redundant API calls
@@ -1498,9 +1972,15 @@ fn extract_string_literals(source: &str) -> Vec<String> {
 /// Apply guardrails to shared.h content
 fn apply_shared_guardrails(content: &str) -> String {
     let mut result = content.to_string();
-    
+
     // Guardrails: AI sometimes typedefs X11 types to void, which conflicts with Xlib headers.
-    for bad in ["typedef void Display", "typedef void GC", "typedef void Atom", "typedef void XIM", "typedef void XIC"] {
+    for bad in [
+        "typedef void Display",
+        "typedef void GC",
+        "typedef void Atom",
+        "typedef void XIM",
+        "typedef void XIC",
+    ] {
         if result.contains(bad) {
             result = result.replace(bad, "// stripped invalid typedef\n");
         }
@@ -1508,7 +1988,14 @@ fn apply_shared_guardrails(content: &str) -> String {
 
     // Strip conflicting forward declarations of X11 types and normalize struct field types.
     for bad in [
-        "struct Display;", "struct Window;", "struct Atom;", "struct XIM;", "struct XIC;", "struct Pixmap;", "struct GC;", "struct XWindowAttributes;"
+        "struct Display;",
+        "struct Window;",
+        "struct Atom;",
+        "struct XIM;",
+        "struct XIC;",
+        "struct Pixmap;",
+        "struct GC;",
+        "struct XWindowAttributes;",
     ] {
         if result.contains(bad) {
             result = result.replace(bad, "// stripped conflicting X11 forward decl\n");
@@ -1536,26 +2023,27 @@ fn apply_shared_guardrails(content: &str) -> String {
     }
 
     // FIX: gui_on_load declaration MUST have 3 parameters to match implementation
-    if result.contains("gui_on_load(void* prev_state, void* window_ptr)") && 
-       !result.contains("gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)") {
+    if result.contains("gui_on_load(void* prev_state, void* window_ptr)")
+        && !result.contains("gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)")
+    {
         result = result.replace(
             "gui_on_load(void* prev_state, void* window_ptr)",
-            "gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)"
+            "gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)",
         );
         eprintln!("[Guardrail] Fixed gui_on_load declaration in shared.h: added missing core_api_ptr parameter");
     }
-    
+
     result
 }
 
 /// Apply guardrails to core.cpp content (requires processed shared.h for context)
 fn apply_core_guardrails(content: &str, shared_content: &str) -> String {
     let mut result = content.to_string();
-    
+
     // Detect if shared.h has full struct definitions or just forward declarations
-    let shared_has_full_hostkv = shared_content.contains("struct HostKvApiV1 {") ||
-                                  shared_content.contains("struct SynthiHostContextV1 {") ||
-                                  shared_content.contains("struct SynthiNamespaceSchemaV1 {");
+    let shared_has_full_hostkv = shared_content.contains("struct HostKvApiV1 {")
+        || shared_content.contains("struct SynthiHostContextV1 {")
+        || shared_content.contains("struct SynthiNamespaceSchemaV1 {");
 
     // Fix common AI mistakes in core.cpp before compilation.
     if result.contains("is_running") {
@@ -1564,17 +2052,34 @@ fn apply_core_guardrails(content: &str, shared_content: &str) -> String {
 
     // CRITICAL: Strip X11-related functions that the AI incorrectly preserved from the input.
     let x11_type_patterns = [
-        "Display*", "Display *", "Window*", "XIM", "XIC", "Atom", "Colormap", "Pixmap", "GC ",
-        "XEvent", "XOpenDisplay", "XCloseDisplay", "XCreateWindow", "XDestroyWindow",
-        "XOpenIM", "XCreateIC", "XCreateGC", "XFreeGC", "XCreatePixmap", "XFreePixmap",
+        "Display*",
+        "Display *",
+        "Window*",
+        "XIM",
+        "XIC",
+        "Atom",
+        "Colormap",
+        "Pixmap",
+        "GC ",
+        "XEvent",
+        "XOpenDisplay",
+        "XCloseDisplay",
+        "XCreateWindow",
+        "XDestroyWindow",
+        "XOpenIM",
+        "XCreateIC",
+        "XCreateGC",
+        "XFreeGC",
+        "XCreatePixmap",
+        "XFreePixmap",
     ];
-    
+
     let mut cleaned_lines = Vec::new();
     for line in result.lines() {
         let has_x11 = x11_type_patterns.iter().any(|pat| line.contains(pat));
         let is_comment = line.trim_start().starts_with("//") || line.trim_start().starts_with("/*");
         let is_include = line.trim_start().starts_with("#include");
-        
+
         if has_x11 && !is_comment && !is_include {
             cleaned_lines.push(format!("// [X11-stripped] {}", line));
         } else {
@@ -1597,39 +2102,70 @@ fn apply_core_guardrails(content: &str, shared_content: &str) -> String {
 
     // CRITICAL FIX: Transform malloc-based on_load to static storage
     if result.contains("malloc(sizeof(AppState))") && result.contains("on_load") {
-        if !result.contains("static AppState app_state") && !result.contains("static CoreState core_state") {
+        if !result.contains("static AppState app_state")
+            && !result.contains("static CoreState core_state")
+        {
             if let Some(on_load_pos) = result.find("extern \"C\" void* on_load") {
                 result.insert_str(on_load_pos, "// [Guardrail] Injected static storage for HMR\nstatic AppState app_state = {0};\n\n");
             } else if let Some(on_load_pos) = result.find("extern \"C\" void* core_on_load") {
                 result.insert_str(on_load_pos, "// [Guardrail] Injected static storage for HMR\nstatic AppState app_state = {0};\n\n");
             }
         }
-        
+
         let re_malloc = regex::Regex::new(r"AppState\*\s+state\s*=\s*\(AppState\*\)\s*malloc\s*\(\s*sizeof\s*\(\s*AppState\s*\)\s*\)\s*;").unwrap();
         result = re_malloc.replace_all(&result, "AppState* state = (prev_state) ? (AppState*)prev_state : &app_state; // [Guardrail] Fixed malloc->static").to_string();
-        
+
         let re_malloc2 = regex::Regex::new(r"CoreState\*\s+state\s*=\s*\(CoreState\*\)\s*malloc\s*\(\s*sizeof\s*\(\s*CoreState\s*\)\s*\)\s*;").unwrap();
         result = re_malloc2.replace_all(&result, "CoreState* state = (prev_state) ? (CoreState*)prev_state : &core_state; // [Guardrail] Fixed malloc->static").to_string();
-        
-        let re_if_malloc = regex::Regex::new(r"if\s*\(\s*!prev_state\s*\)\s*\{\s*state\s*=\s*\(AppState\*\)\s*malloc[^}]+\}").unwrap();
-        result = re_if_malloc.replace_all(&result, "if (!prev_state) { state = &app_state; /* [Guardrail] Fixed malloc->static */ }").to_string();
+
+        let re_if_malloc = regex::Regex::new(
+            r"if\s*\(\s*!prev_state\s*\)\s*\{\s*state\s*=\s*\(AppState\*\)\s*malloc[^}]+\}",
+        )
+        .unwrap();
+        result = re_if_malloc
+            .replace_all(
+                &result,
+                "if (!prev_state) { state = &app_state; /* [Guardrail] Fixed malloc->static */ }",
+            )
+            .to_string();
     }
 
     // FIX: Detect and warn about free(state) which causes crashes on reload
     if result.contains("free(state)") {
-        result = result.replace("free(state);", "// free(state); // Commented - runner manages state");
+        result = result.replace(
+            "free(state);",
+            "// free(state); // Commented - runner manages state",
+        );
     }
 
     // FIX: Detect and warn about memset on state which wipes preserved HMR state
-    if result.contains("memset(state") || result.contains("memset(&app_state") || 
-        result.contains("memset(&state") || result.contains("memset(&core_state") ||
-        result.contains("memset( state") {
-        let re_memset = regex::Regex::new(r"memset\s*\(\s*(state|&app_state|&core_state|&state|&gui_app_state)[^;]*\)\s*;").unwrap();
-        result = re_memset.replace_all(&result, "// [Guardrail] memset REMOVED to preserve HMR state").to_string();
+    if result.contains("memset(state")
+        || result.contains("memset(&app_state")
+        || result.contains("memset(&state")
+        || result.contains("memset(&core_state")
+        || result.contains("memset( state")
+    {
+        let re_memset = regex::Regex::new(
+            r"memset\s*\(\s*(state|&app_state|&core_state|&state|&gui_app_state)[^;]*\)\s*;",
+        )
+        .unwrap();
+        result = re_memset
+            .replace_all(
+                &result,
+                "// [Guardrail] memset REMOVED to preserve HMR state",
+            )
+            .to_string();
     }
 
     // Drop writes/reads to non-existent XWindowAttributes fields
-    for bad_field in ["event_mask", "damage", "border_pixel", "background_pixel", "saved_attributes", "attributes_mask"] {
+    for bad_field in [
+        "event_mask",
+        "damage",
+        "border_pixel",
+        "background_pixel",
+        "saved_attributes",
+        "attributes_mask",
+    ] {
         if result.contains(bad_field) {
             let mut cleaned = String::new();
             for line in result.lines() {
@@ -1653,10 +2189,17 @@ fn apply_core_guardrails(content: &str, shared_content: &str) -> String {
     if result.contains("SDL_") && !result.contains("#include <SDL2/SDL.h>") {
         result = format!("#include <SDL2/SDL.h>\n{}", result);
     }
-    if (result.contains("XLookupString") || result.contains("XK_Escape")) && !result.contains("#include <X11/Xutil.h>") {
-        result = format!("#include <X11/Xutil.h>\n#include <X11/keysym.h>\n{}", result);
+    if (result.contains("XLookupString") || result.contains("XK_Escape"))
+        && !result.contains("#include <X11/Xutil.h>")
+    {
+        result = format!(
+            "#include <X11/Xutil.h>\n#include <X11/keysym.h>\n{}",
+            result
+        );
     }
-    if (result.contains("dlopen") || result.contains("dlsym")) && !result.contains("#include <dlfcn.h>") {
+    if (result.contains("dlopen") || result.contains("dlsym"))
+        && !result.contains("#include <dlfcn.h>")
+    {
         result = format!("#include <dlfcn.h>\n{}", result);
     }
 
@@ -1672,8 +2215,11 @@ fn apply_core_guardrails(content: &str, shared_content: &str) -> String {
     // FIX: Remove duplicate defines that are already in shared.h
     if result.contains("#include \"shared.h\"") {
         result = result.replace("#define CORE_STATE_MAGIC", "// #define CORE_STATE_MAGIC");
-        result = result.replace("#define SYNTHI_ABI_VERSION", "// #define SYNTHI_ABI_VERSION");
-        
+        result = result.replace(
+            "#define SYNTHI_ABI_VERSION",
+            "// #define SYNTHI_ABI_VERSION",
+        );
+
         // Strip duplicate AppState struct/typedef
         if let Some(start) = result.find("typedef struct AppState") {
             if let Some(end) = result[start..].find("} AppState;") {
@@ -1685,18 +2231,17 @@ fn apply_core_guardrails(content: &str, shared_content: &str) -> String {
 
         if let Some(start) = result.find("typedef struct {") {
             if let Some(end) = result[start..].find("} AppState;") {
-                 let block_end = start + end + "} AppState;".len();
-                 let block = result[start..block_end].to_string();
-                 if block.contains("magic") && block.contains("struct_size") {
-                     result = result.replace(&block, "// AppState defined in shared.h");
-                 }
+                let block_end = start + end + "} AppState;".len();
+                let block = result[start..block_end].to_string();
+                if block.contains("magic") && block.contains("struct_size") {
+                    result = result.replace(&block, "// AppState defined in shared.h");
+                }
             }
         }
     }
 
     result
 }
-
 
 /// Patch string literals in cached JSON result with new strings from source
 /// Returns (patched_result, did_patch_anything)
@@ -1757,22 +2302,36 @@ fn is_semantic_string(s: &str) -> bool {
     color_names.iter().any(|c| lower == *c)
 }
 
-
-
 /// Apply guardrails to gui.cpp content (requires processed shared.h for context)
 fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
     let mut result = content.to_string();
-    
+
     // Detect if shared.h has full struct definitions
-    let shared_has_full_hostkv = shared_content.contains("struct HostKvApiV1 {") ||
-                                  shared_content.contains("struct SynthiHostContextV1 {") ||
-                                  shared_content.contains("struct SynthiNamespaceSchemaV1 {");
+    let shared_has_full_hostkv = shared_content.contains("struct HostKvApiV1 {")
+        || shared_content.contains("struct SynthiHostContextV1 {")
+        || shared_content.contains("struct SynthiNamespaceSchemaV1 {");
 
     // Strip X11-related functions
     let x11_type_patterns = [
-        "Display*", "Display *", "XIM", "XIC", "Atom", "Colormap", "Pixmap", "GC ",
-        "XEvent", "XOpenDisplay", "XCloseDisplay", "XCreateWindow", "XDestroyWindow",
-        "XOpenIM", "XCreateIC", "XCreateGC", "XFreeGC", "XCreatePixmap", "XFreePixmap",
+        "Display*",
+        "Display *",
+        "XIM",
+        "XIC",
+        "Atom",
+        "Colormap",
+        "Pixmap",
+        "GC ",
+        "XEvent",
+        "XOpenDisplay",
+        "XCloseDisplay",
+        "XCreateWindow",
+        "XDestroyWindow",
+        "XOpenIM",
+        "XCreateIC",
+        "XCreateGC",
+        "XFreeGC",
+        "XCreatePixmap",
+        "XFreePixmap",
     ];
     let mut cleaned_lines = Vec::new();
     for line in result.lines() {
@@ -1800,7 +2359,7 @@ fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
             result = format!("#include \"shared.h\"\n{}", result);
         }
     }
-    
+
     // Strip duplicate AppState definitions
     if result.contains("#include \"shared.h\"") {
         if let Some(start) = result.find("typedef struct AppState") {
@@ -1813,14 +2372,14 @@ fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
 
         if let Some(start) = result.find("typedef struct {") {
             if let Some(end) = result[start..].find("} AppState;") {
-                 let block_end = start + end + "} AppState;".len();
-                 let block = result[start..block_end].to_string();
-                 if block.contains("magic") && block.contains("struct_size") {
-                     result = result.replace(&block, "// AppState defined in shared.h");
-                 }
+                let block_end = start + end + "} AppState;".len();
+                let block = result[start..block_end].to_string();
+                if block.contains("magic") && block.contains("struct_size") {
+                    result = result.replace(&block, "// AppState defined in shared.h");
+                }
             }
         }
-        
+
         if let Some(start) = result.find("struct AppState {") {
             if let Some(end) = result[start..].find("};") {
                 let block_end = start + end + "};".len();
@@ -1832,31 +2391,41 @@ fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
         }
 
         // Handle Host KV structs
-        for struct_name in &["HostKvApiV1", "SynthiHostContextV1", "SynthiNamespaceSchemaV1"] {
-             let typedef_pattern = format!("typedef struct {} {};", struct_name, struct_name);
-             if result.contains(&typedef_pattern) {
-                 result = result.replace(&typedef_pattern, &format!("// {} forward-declared in shared.h", struct_name));
-             }
-             
-             if shared_has_full_hostkv {
-                 let struct_decl = format!("struct {} {{", struct_name);
-                 if let Some(start) = result.find(&struct_decl) {
-                     if let Some(end) = result[start..].find("};") {
-                         let block_end = start + end + "};".len();
-                         let block = result[start..block_end].to_string();
-                         result = result.replace(&block, &format!("// {} fully defined in shared.h", struct_name));
-                     }
-                 }
-             }
+        for struct_name in &[
+            "HostKvApiV1",
+            "SynthiHostContextV1",
+            "SynthiNamespaceSchemaV1",
+        ] {
+            let typedef_pattern = format!("typedef struct {} {};", struct_name, struct_name);
+            if result.contains(&typedef_pattern) {
+                result = result.replace(
+                    &typedef_pattern,
+                    &format!("// {} forward-declared in shared.h", struct_name),
+                );
+            }
+
+            if shared_has_full_hostkv {
+                let struct_decl = format!("struct {} {{", struct_name);
+                if let Some(start) = result.find(&struct_decl) {
+                    if let Some(end) = result[start..].find("};") {
+                        let block_end = start + end + "};".len();
+                        let block = result[start..block_end].to_string();
+                        result = result.replace(
+                            &block,
+                            &format!("// {} fully defined in shared.h", struct_name),
+                        );
+                    }
+                }
+            }
         }
-        
+
         // Inject Host KV definitions if needed
-        let uses_hostkv_types = result.contains("SynthiHostContextV1") || 
-                                result.contains("SynthiNamespaceSchemaV1") ||
-                                result.contains("HostKvApiV1") ||
-                                result.contains("g_gui_schemas") ||
-                                result.contains("host_kv_schemas");
-        
+        let uses_hostkv_types = result.contains("SynthiHostContextV1")
+            || result.contains("SynthiNamespaceSchemaV1")
+            || result.contains("HostKvApiV1")
+            || result.contains("g_gui_schemas")
+            || result.contains("host_kv_schemas");
+
         if uses_hostkv_types && !shared_has_full_hostkv {
             let hostkv_header = get_hostkv_header();
             if let Some(include_end) = result.rfind("#include") {
@@ -1871,17 +2440,23 @@ fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
     }
 
     // FIX: gui_on_load MUST have 3 parameters
-    if result.contains("gui_on_load(void* prev_state, void* window_ptr)") && 
-       !result.contains("gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)") {
+    if result.contains("gui_on_load(void* prev_state, void* window_ptr)")
+        && !result.contains("gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)")
+    {
         result = result.replace(
             "gui_on_load(void* prev_state, void* window_ptr)",
-            "gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)"
+            "gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)",
         );
     }
 
     // FIX: Comment out SDL_RenderPresent
     let re_present = regex::Regex::new(r"SDL_RenderPresent\s*\([^)]*\)\s*;").unwrap();
-    result = re_present.replace_all(&result, "/* SDL_RenderPresent removed - runner handles this */").to_string();
+    result = re_present
+        .replace_all(
+            &result,
+            "/* SDL_RenderPresent removed - runner handles this */",
+        )
+        .to_string();
 
     // FIX: Replace SDL_GetKeyboardWindow
     if result.contains("SDL_GetKeyboardWindow") {
@@ -1890,30 +2465,47 @@ fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
 
     // Convert malloc-based gui_on_load to static storage
     if result.contains("malloc(sizeof(AppState))") && result.contains("gui_on_load") {
-        if !result.contains("static AppState gui_app_state") && !result.contains("static GuiState gui_state") {
+        if !result.contains("static AppState gui_app_state")
+            && !result.contains("static GuiState gui_state")
+        {
             if let Some(on_load_pos) = result.find("extern \"C\" void* gui_on_load") {
                 result.insert_str(on_load_pos, "// [Guardrail] Injected static storage for HMR\nstatic AppState gui_app_state = {0};\n\n");
             }
         }
-        
+
         let re_malloc = regex::Regex::new(r"AppState\*\s+state\s*=\s*\(AppState\*\)\s*malloc\s*\(\s*sizeof\s*\(\s*AppState\s*\)\s*\)\s*;").unwrap();
         result = re_malloc.replace_all(&result, "AppState* state = (prev_state) ? (AppState*)prev_state : &gui_app_state; // [Guardrail] Fixed malloc->static").to_string();
-        
+
         let re_malloc2 = regex::Regex::new(r"GuiState\*\s+state\s*=\s*\(GuiState\*\)\s*malloc\s*\(\s*sizeof\s*\(\s*GuiState\s*\)\s*\)\s*;").unwrap();
         result = re_malloc2.replace_all(&result, "GuiState* state = (prev_state) ? (GuiState*)prev_state : &gui_state; // [Guardrail] Fixed malloc->static").to_string();
     }
 
     // FIX: free(state) crashes
     if result.contains("free(state)") {
-        result = result.replace("free(state);", "// free(state); // Commented - runner manages state");
+        result = result.replace(
+            "free(state);",
+            "// free(state); // Commented - runner manages state",
+        );
     }
 
     // FIX: memset wipes HMR state
-    if result.contains("memset(state") || result.contains("memset(&app_state") || 
-        result.contains("memset(&gui_state") || result.contains("memset(&state") ||
-        result.contains("memset(&gui_app_state") || result.contains("memset( state") {
-        let re_memset = regex::Regex::new(r"memset\s*\(\s*(state|&app_state|&gui_state|&state|&gui_app_state)[^;]*\)\s*;").unwrap();
-        result = re_memset.replace_all(&result, "// [Guardrail] memset REMOVED to preserve HMR state").to_string();
+    if result.contains("memset(state")
+        || result.contains("memset(&app_state")
+        || result.contains("memset(&gui_state")
+        || result.contains("memset(&state")
+        || result.contains("memset(&gui_app_state")
+        || result.contains("memset( state")
+    {
+        let re_memset = regex::Regex::new(
+            r"memset\s*\(\s*(state|&app_state|&gui_state|&state|&gui_app_state)[^;]*\)\s*;",
+        )
+        .unwrap();
+        result = re_memset
+            .replace_all(
+                &result,
+                "// [Guardrail] memset REMOVED to preserve HMR state",
+            )
+            .to_string();
     }
 
     // FIX: app_state -> gui_app_state in gui.cpp
@@ -1921,7 +2513,7 @@ fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
         if result.contains("&app_state") && !result.contains("&gui_app_state") {
             result = result.replace("&app_state", "&gui_app_state");
         }
-        
+
         if result.contains("gui_app_state") {
             let placeholder = "__GUI_APP_STATE_PLACEHOLDER__";
             let temp_content = result.replace("gui_app_state", placeholder);
@@ -1934,16 +2526,33 @@ fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
 
     // Add entrypoint if needed
     if result.contains("main(") && !result.contains("extern \"C\" void* entrypoint") {
-         result.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
+        result.push_str(
+            "\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n",
+        );
     }
 
     // FIX: renderer -> state->renderer
-    if result.contains("SDL_Render") || result.contains("SDL_SetRenderDrawColor") || result.contains("draw_text") {
+    if result.contains("SDL_Render")
+        || result.contains("SDL_SetRenderDrawColor")
+        || result.contains("draw_text")
+    {
         let fixes = [
-            ("SDL_RenderFillRect(renderer,", "SDL_RenderFillRect(state->renderer,"),
-            ("SDL_RenderDrawRect(renderer,", "SDL_RenderDrawRect(state->renderer,"),
-            ("SDL_SetRenderDrawColor(renderer,", "SDL_SetRenderDrawColor(state->renderer,"),
-            ("SDL_RenderClear(renderer)", "SDL_RenderClear(state->renderer)"),
+            (
+                "SDL_RenderFillRect(renderer,",
+                "SDL_RenderFillRect(state->renderer,",
+            ),
+            (
+                "SDL_RenderDrawRect(renderer,",
+                "SDL_RenderDrawRect(state->renderer,",
+            ),
+            (
+                "SDL_SetRenderDrawColor(renderer,",
+                "SDL_SetRenderDrawColor(state->renderer,",
+            ),
+            (
+                "SDL_RenderClear(renderer)",
+                "SDL_RenderClear(state->renderer)",
+            ),
             ("draw_text(renderer,", "draw_text(state->renderer,"),
         ];
         for (wrong, correct) in &fixes {
@@ -1969,11 +2578,12 @@ fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
             }
         }
     }
-    
+
     // Inject GUI state serialization stubs
-    if result.contains("gui_on_load") && 
-       !result.contains("gui_on_save_state") &&
-       !result.contains("gui_get_state_schema_hash") {
+    if result.contains("gui_on_load")
+        && !result.contains("gui_on_save_state")
+        && !result.contains("gui_get_state_schema_hash")
+    {
         let gui_serial_stubs = r#"
 
 // [Guardrail] State serialization stubs for Full HMR capability (GUI)
@@ -1995,10 +2605,9 @@ extern "C" void synthi_free_json(char* json) {
 "#;
         result.push_str(gui_serial_stubs);
     }
-    
+
     result
 }
-
 /// Get the Host KV header definitions
 fn get_hostkv_header() -> &'static str {
     r#"
@@ -2047,12 +2656,6 @@ typedef struct HostKvApiV1 {
 "#
 }
 
-
-
-
-
-
-
 /// Check if any changed strings are semantic (would need AI re-processing)
 fn has_semantic_string_changes(old_strings: &[String], new_strings: &[String]) -> bool {
     for (old, new) in old_strings.iter().zip(new_strings.iter()) {
@@ -2080,18 +2683,19 @@ fn collect_string_changes(old_strings: &[String], new_strings: &[String]) -> Vec
 /// Parse AppState struct fields from shared.h content
 /// Returns a list of (field_name, field_type, default_value) tuples for int fields
 /// Default value is extracted from declarations like "int btn_x = 200;"
-fn parse_appstate_int_fields_with_defaults(shared_content: &str) -> Vec<(String, String, Option<i64>)> {
+fn parse_appstate_int_fields_with_defaults(
+    shared_content: &str,
+) -> Vec<(String, String, Option<i64>)> {
     let mut fields = Vec::new();
-    
+
     // Find AppState struct definition
     let struct_re = regex::Regex::new(r"struct\s+AppState\s*\{([^}]*)\}").ok();
-    
+
     if let Some(re) = struct_re {
         if let Some(captures) = re.captures(shared_content) {
             if let Some(body) = captures.get(1) {
                 let body_str = body.as_str();
 
-                
                 // Parse individual field declarations WITH default values
                 // Match patterns like: int x; or int x = 10; or int btn_x = 330, btn_y = 10;
                 // Also handle inline declarations like: int x = 0, y = 0, dx = 5, dy = 5;
@@ -2308,31 +2912,47 @@ fn try_local_deletion_patch(
 fn detect_gui_modifications(old_source: &str, new_source: &str) -> Option<String> {
     let old_lines: Vec<&str> = old_source.lines().collect();
     let new_lines: Vec<&str> = new_source.lines().collect();
-    
+
     // GUI-related keywords that indicate drawable/interactive elements
     let gui_keywords = [
-        "XFillRectangle", "XDrawRectangle", "XDrawString", "XDrawLine",
-        "XSetForeground", "XSetBackground", "XDrawArc", "XFillArc",
-        "SDL_Rect", "SDL_RenderFillRect", "SDL_RenderDrawRect",
-        "btn_x", "btn_y", "btn_w", "btn_h", "button",
-        "color", "Color", "width", "height", "position",
+        "XFillRectangle",
+        "XDrawRectangle",
+        "XDrawString",
+        "XDrawLine",
+        "XSetForeground",
+        "XSetBackground",
+        "XDrawArc",
+        "XFillArc",
+        "SDL_Rect",
+        "SDL_RenderFillRect",
+        "SDL_RenderDrawRect",
+        "btn_x",
+        "btn_y",
+        "btn_w",
+        "btn_h",
+        "button",
+        "color",
+        "Color",
+        "width",
+        "height",
+        "position",
     ];
-    
+
     let mut modifications = Vec::new();
-    
+
     // Find modified lines (lines that have similar structure but different values)
     for new_line in &new_lines {
         let trimmed_new = new_line.trim();
         if trimmed_new.is_empty() || trimmed_new.starts_with("//") {
             continue;
         }
-        
+
         // Check if this line contains GUI keywords
         let is_gui_line = gui_keywords.iter().any(|kw| trimmed_new.contains(kw));
         if !is_gui_line {
             continue;
         }
-        
+
         // Check if a SIMILAR line exists in old (same function call, different args)
         let has_similar_in_old = old_lines.iter().any(|old_line| {
             let trimmed_old = old_line.trim();
@@ -2349,20 +2969,25 @@ fn detect_gui_modifications(old_source: &str, new_source: &str) -> Option<String
             }
             false
         });
-        
+
         // If this GUI line doesn't have an exact match in old, it's new or modified
-        let exists_exactly_in_old = old_lines.iter().any(|old_line| old_line.trim() == trimmed_new);
-        
+        let exists_exactly_in_old = old_lines
+            .iter()
+            .any(|old_line| old_line.trim() == trimmed_new);
+
         if is_gui_line && has_similar_in_old && !exists_exactly_in_old {
             modifications.push(trimmed_new.to_string());
         }
     }
-    
+
     if modifications.is_empty() {
         return None;
     }
-    
-    eprintln!("[AI Split] Detected {} GUI modifications", modifications.len());
+
+    eprintln!(
+        "[AI Split] Detected {} GUI modifications",
+        modifications.len()
+    );
     Some(modifications.join("\n"))
 }
 
@@ -3135,14 +3760,27 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
         }
         // Level 2.8: Check for GUI modifications (position, color, size changes)
         // These are lines that exist in both but with different values
-        else if let Some(gui_changes) = detect_gui_modifications(&cached.original_source, &req.source) {
+        else if let Some(gui_changes) =
+            detect_gui_modifications(&cached.original_source, &req.source)
+        {
             eprintln!("[AI Split] ╔═══════════════════════════════════════════════════════════╗");
             eprintln!("[AI Split] ║  GUI MODIFICATION DETECTED - Using fast delta path       ║");
             eprintln!("[AI Split] ╚═══════════════════════════════════════════════════════════╝");
             eprintln!("[AI Split] Delta type: GUI MODIFICATION (position/color/size change)");
-            eprintln!("[AI Split] Modified GUI code:\n{}", gui_changes.lines().take(5).collect::<Vec<_>>().join("\n"));
-            
-            match perform_structural_ai_update(&cached.result, &cached.original_source, &req.source, &gui_changes, &req.language).await {
+            eprintln!(
+                "[AI Split] Modified GUI code:\n{}",
+                gui_changes.lines().take(5).collect::<Vec<_>>().join("\n")
+            );
+
+            match perform_structural_ai_update(
+                &cached.result,
+                &cached.original_source,
+                &req.source,
+                &gui_changes,
+                &req.language,
+            )
+            .await
+            {
                 Ok(updated_result) => {
                     let cached_entry = CachedSplit {
                         result: updated_result.clone(),
@@ -3366,15 +4004,15 @@ async fn handle_compile(
         restart_controller,
         ipc_config,
     };
-    
+
     // Call the unified handler
     // We ignore the return value (JSON graph) for now as the void return type expects
-    let _ = crate::compiler::handler::handle_compile_request(
-        &ctx,
-        req,
-        "default_session".to_string(), // we might need a real session id?
-    ).await?;
-    
+    let session_id = req
+        .session_id
+        .clone()
+        .unwrap_or_else(|| "default_session".to_string());
+    let _ = crate::compiler::handler::handle_compile_request(&ctx, req, session_id).await?;
+
     Ok(())
 }
 

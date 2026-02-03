@@ -83,18 +83,96 @@ class SymbolGraph:
         
         # Chunk to symbol mapping (for deletion)
         self._chunk_to_symbol: Dict[ChunkId, QualifiedName] = {}
+
+        # Stable symbol ID to chunk mapping
+        self._stable_to_chunk: Dict[str, ChunkId] = {}
+        self._chunk_to_stable: Dict[ChunkId, str] = {}
         
         # File to symbols mapping (for deletion)
         self._file_to_symbols: Dict[FilePath, Set[QualifiedName]] = defaultdict(set)
         
         # File to edges mapping (for deletion)
         self._file_to_edges: Dict[FilePath, List[SymbolEdge]] = defaultdict(list)
+
+    def to_dict(self) -> Dict:
+        return {
+            "nodes": [
+                {
+                    "qualified_name": n.qualified_name,
+                    "simple_name": n.simple_name,
+                    "symbol_type": n.symbol_type.value,
+                    "file_path": n.file_path,
+                    "line": n.line,
+                    "chunk_id": n.chunk_id,
+                    "is_public": n.is_public,
+                    "stable_symbol_id": n.stable_symbol_id,
+                }
+                for n in self._nodes.values()
+            ],
+            "edges": [
+                {
+                    "source": e.source,
+                    "target": e.target,
+                    "edge_type": e.edge_type.value,
+                    "file_path": e.file_path,
+                    "line": e.line,
+                    "confidence": e.confidence,
+                    "source_method": e.source_method,
+                }
+                for edges in self._edges.values()
+                for e in edges
+            ],
+        }
+
+    def load_dict(self, data: Dict) -> None:
+        self._nodes.clear()
+        self._edges.clear()
+        self._reverse_edges.clear()
+        self._symbol_to_chunk.clear()
+        self._chunk_to_symbol.clear()
+        self._stable_to_chunk.clear()
+        self._chunk_to_stable.clear()
+        self._file_to_symbols.clear()
+        self._file_to_edges.clear()
+
+        for n in data.get("nodes", []):
+            node = SymbolNode(
+                qualified_name=n.get("qualified_name", ""),
+                simple_name=n.get("simple_name", ""),
+                symbol_type=SymbolType(n.get("symbol_type", SymbolType.UNKNOWN.value)),
+                file_path=n.get("file_path", ""),
+                line=int(n.get("line", 0) or 0),
+                chunk_id=n.get("chunk_id", ""),
+                is_public=bool(n.get("is_public", True)),
+                stable_symbol_id=n.get("stable_symbol_id", ""),
+            )
+            if node.qualified_name:
+                self.add_node(node, node.chunk_id)
+
+        for e in data.get("edges", []):
+            try:
+                edge = SymbolEdge(
+                    source=e.get("source", ""),
+                    target=e.get("target", ""),
+                    edge_type=EdgeType(e.get("edge_type", EdgeType.DEPENDS_ON.value)),
+                    file_path=e.get("file_path", ""),
+                    line=int(e.get("line", 0) or 0),
+                    confidence=float(e.get("confidence", 1.0)),
+                    source_method=e.get("source_method", "ast"),
+                )
+                if edge.source and edge.target:
+                    self.add_edge(edge)
+            except Exception:
+                continue
     
     def add_node(self, node: SymbolNode, chunk_id: ChunkId) -> None:
         """Add a symbol node."""
         self._nodes[node.qualified_name] = node
         self._symbol_to_chunk[node.qualified_name] = chunk_id
         self._chunk_to_symbol[chunk_id] = node.qualified_name
+        if node.stable_symbol_id:
+            self._stable_to_chunk[node.stable_symbol_id] = chunk_id
+            self._chunk_to_stable[chunk_id] = node.stable_symbol_id
         self._file_to_symbols[node.file_path].add(node.qualified_name)
     
     def add_edge(self, edge: SymbolEdge) -> None:
@@ -113,6 +191,10 @@ class SymbolGraph:
     def get_chunk_id(self, name: QualifiedName) -> Optional[ChunkId]:
         """Get chunk ID for a symbol."""
         return self._symbol_to_chunk.get(name)
+
+    def get_chunk_id_by_stable_id(self, stable_symbol_id: str) -> Optional[ChunkId]:
+        """Get chunk ID for a stable symbol ID."""
+        return self._stable_to_chunk.get(stable_symbol_id)
     
     def get_symbol_for_chunk(self, chunk_id: ChunkId) -> Optional[QualifiedName]:
         """Get symbol name for a chunk ID."""
@@ -256,6 +338,11 @@ class SymbolGraph:
             del self._symbol_to_chunk[name]
             if chunk_id in self._chunk_to_symbol:
                 del self._chunk_to_symbol[chunk_id]
+            if chunk_id in self._chunk_to_stable:
+                stable_id = self._chunk_to_stable[chunk_id]
+                del self._chunk_to_stable[chunk_id]
+                if stable_id in self._stable_to_chunk:
+                    del self._stable_to_chunk[stable_id]
         
         # Remove outgoing edges
         if name in self._edges:
@@ -383,7 +470,9 @@ class StructuralIndex:
         file_entry = self._files[file_path]
         
         # Build qualified name
-        if chunk.metadata.parent_symbol:
+        if chunk.metadata.qualified_name:
+            qualified_name = chunk.metadata.qualified_name
+        elif chunk.metadata.parent_symbol:
             qualified_name = f"{chunk.metadata.parent_symbol}.{chunk.symbol_name}"
         else:
             qualified_name = chunk.symbol_name
@@ -400,6 +489,7 @@ class StructuralIndex:
             line=chunk.metadata.start_line,
             chunk_id=chunk.id,
             is_public=chunk.metadata.is_public,
+            stable_symbol_id=chunk.metadata.stable_symbol_id,
         )
         self._graph.add_node(node, chunk.id)
         
@@ -534,6 +624,45 @@ class StructuralIndex:
         if file_path not in self._files:
             return set()
         return self._files[file_path].imported_by.copy()
+
+    def list_files(self) -> List[FilePath]:
+        """List all indexed files."""
+        return list(self._files.keys())
+
+    def find_chunks_for_symbol(self, symbol_name: str) -> Set[ChunkId]:
+        """Find chunk IDs for a symbol name (qualified or simple)."""
+        if not symbol_name:
+            return set()
+        name = symbol_name.strip()
+        matches: Set[ChunkId] = set()
+
+        # Qualified name match
+        node = self._graph.get_node(name)
+        if node:
+            matches.add(node.chunk_id)
+
+        # Simple name match
+        for qn, n in self._graph._nodes.items():
+            if n.simple_name == name or qn.endswith(f".{name}"):
+                matches.add(n.chunk_id)
+
+        return matches
+
+    def find_chunks_for_stable_symbol(self, stable_symbol_id: str) -> Set[ChunkId]:
+        """Find chunk IDs for a stable symbol ID."""
+        if not stable_symbol_id:
+            return set()
+        cid = self._graph.get_chunk_id_by_stable_id(stable_symbol_id)
+        return {cid} if cid else set()
+
+    def compute_call_centrality(self) -> Dict[QualifiedName, int]:
+        """Compute simple call-graph in-degree centrality for symbols."""
+        centrality: Dict[QualifiedName, int] = {}
+        for target, edges in self._graph._reverse_edges.items():
+            count = sum(1 for e in edges if e.edge_type == EdgeType.CALLS)
+            if count:
+                centrality[target] = count
+        return centrality
     
     def get_affected_files(self, file_path: FilePath, max_depth: int = 2) -> Set[FilePath]:
         """
@@ -675,6 +804,7 @@ class StructuralIndex:
                 for path, entry in self._files.items()
             },
             "chunk_to_file": self._chunk_to_file,
+            "graph": self._graph.to_dict(),
         }
         
         with open(self.persist_path, "w") as f:
@@ -703,6 +833,10 @@ class StructuralIndex:
                 )
             
             self._chunk_to_file = data.get("chunk_to_file", {})
+
+            graph_data = data.get("graph")
+            if graph_data:
+                self._graph.load_dict(graph_data)
             
             logger.info(f"Loaded structural index: {len(self._files)} files")
             

@@ -72,11 +72,9 @@ pub(crate) fn parse_metro_diagnostic(line: &str) -> Option<Diagnostic> {
     }
 
     // Babel syntax errors
-    if let Some(caps) = regex::Regex::new(
-        r"SyntaxError:\s*(.+\.[jt]sx?):\s*(.+)\s*\((\d+):(\d+)\)",
-    )
-    .ok()
-    .and_then(|re| re.captures(trimmed))
+    if let Some(caps) = regex::Regex::new(r"SyntaxError:\s*(.+\.[jt]sx?):\s*(.+)\s*\((\d+):(\d+)\)")
+        .ok()
+        .and_then(|re| re.captures(trimmed))
     {
         return Some(Diagnostic {
             file: caps.get(1)?.as_str().to_string(),

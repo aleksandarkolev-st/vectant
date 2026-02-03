@@ -1,14 +1,24 @@
-
+use crate::compiler::plugin_contract::ModuleSlot as CompilerModuleSlot;
+use crate::hmr::orchestrator::{HmrOrchestrator, SavedState};
+use crate::runtime::capability::{detect_capabilities, HmrCapability, HmrStatus};
+use crate::runtime::legacy_module_state::{AppState, ModuleState};
+use crate::runtime::loader::{LoadResult, ModuleLoader};
+use crate::runtime::plugin_contract::{
+    ModuleSlot, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION,
+};
+use libloading::{Library, Symbol};
 use std::collections::HashMap;
 use std::ffi::{c_void, CString};
 use std::str::FromStr;
-use libloading::{Library, Symbol};
-use crate::runtime::legacy_module_state::{ModuleState, AppState};
-use crate::runtime::loader::{ModuleLoader, LoadResult};
-use crate::hmr::orchestrator::{HmrOrchestrator, SavedState};
-use crate::runtime::capability::{detect_capabilities, HmrCapability, HmrStatus};
-use crate::runtime::plugin_contract::{ModuleSlot, CORE_STATE_MAGIC, GUI_STATE_MAGIC, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
-use crate::compiler::plugin_contract::ModuleSlot as CompilerModuleSlot;
+
+use crate::runtime::hot_reload::v2::{get_module_abi_version, validate_state_magic};
+use crate::runtime::runner::validator;
+
+// Host KV
+use crate::infra::host_kv::{
+    self, create_kv_api, module_slot_to_u32, read_schema_table, HostKvApiV1, HostKvSchemaEvent,
+    SynthiHostContextV1, KV_STORE,
+};
 
 fn to_compiler_slot(slot: ModuleSlot) -> CompilerModuleSlot {
     match slot {
@@ -17,12 +27,6 @@ fn to_compiler_slot(slot: ModuleSlot) -> CompilerModuleSlot {
         ModuleSlot::Main => CompilerModuleSlot::Main,
     }
 }
-use crate::runtime::hot_reload::v2::{validate_state_magic, get_module_abi_version};
-use crate::runtime::runner::validator;
-
-// Host KV
-use crate::infra::host_kv::{self, create_kv_api, read_schema_table, module_slot_to_u32, HostKvSchemaEvent, SynthiHostContextV1, KV_STORE, HostKvApiV1};
-
 pub unsafe fn process_load_command(
     name: &str,
     path: &str,
@@ -74,12 +78,11 @@ pub unsafe fn process_load_command(
         let slot = ModuleSlot::from_str(name);
         if let Some(slot) = slot {
             // Generate a simple hash for tracking (real hash from file)
-            let content_hash =
-                std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            let content_hash = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
             match module_loader.load(
                 std::path::Path::new(path),
-                to_compiler_slot(module_slot),
+                module_slot,
                 content_hash,
             ) {
                 LoadResult::Success {
@@ -96,26 +99,18 @@ pub unsafe fn process_load_command(
                     found,
                     details,
                 } => {
-                    eprintln!("[Runner] [Loader] ABI MISMATCH: expected v{}, found v{}. {}", 
-                        expected, found, details);
                     eprintln!(
-                        "[Runner] [Loader] Continuing with legacy loading..."
+                        "[Runner] [Loader] ABI MISMATCH: expected v{}, found v{}. {}",
+                        expected, found, details
                     );
+                    eprintln!("[Runner] [Loader] Continuing with legacy loading...");
                 }
                 LoadResult::MissingSymbols { symbols } => {
-                    eprintln!(
-                        "[Runner] [Loader] WARNING: Missing symbols: {:?}",
-                        symbols
-                    );
-                    eprintln!(
-                        "[Runner] [Loader] Continuing with legacy loading..."
-                    );
+                    eprintln!("[Runner] [Loader] WARNING: Missing symbols: {:?}", symbols);
+                    eprintln!("[Runner] [Loader] Continuing with legacy loading...");
                 }
                 LoadResult::LoadError { reason } => {
-                    eprintln!(
-                        "[Runner] [Loader] Load validation error: {}",
-                        reason
-                    );
+                    eprintln!("[Runner] [Loader] Load validation error: {}", reason);
                     // Don't fail - let legacy loader try
                 }
             }
@@ -133,17 +128,14 @@ pub unsafe fn process_load_command(
     #[cfg(unix)]
     let lib_result = {
         use libloading::os::unix::{Library, RTLD_LOCAL, RTLD_NOW};
-        Library::open(Some(path), RTLD_NOW | RTLD_LOCAL)
-            .map(|l| libloading::Library::from(l))
+        Library::open(Some(path), RTLD_NOW | RTLD_LOCAL).map(|l| libloading::Library::from(l))
     };
     #[cfg(not(unix))]
     let lib_result = Library::new(path);
 
     match lib_result {
         Ok(new_lib) => {
-            eprintln!(
-                "[Runner] [HMR] New library opened. Validating symbols..."
-            );
+            eprintln!("[Runner] [HMR] New library opened. Validating symbols...");
 
             // ============================================================
             // SYMBOL VALIDATION: Check for new prefixed or legacy symbols
@@ -157,7 +149,10 @@ pub unsafe fn process_load_command(
             let has_required_symbols = info.has_required_symbols;
             let module_abi_version = info.module_abi_version;
             if module_abi_version > 0 && (name == "core" || name == "gui") {
-                    eprintln!("[Runner] [HMR] {} reports ABI version: {}", name, module_abi_version);
+                eprintln!(
+                    "[Runner] [HMR] {} reports ABI version: {}",
+                    name, module_abi_version
+                );
             }
 
             if !has_required_symbols {
@@ -165,8 +160,7 @@ pub unsafe fn process_load_command(
                 eprintln!("[Runner] [HMR] Expected: {} = core_on_load+core_on_update | gui = gui_on_load+gui_on_render | main = on_load+on_update", name);
 
                 // Send structured HMR rejection event
-                let status =
-                    HmrStatus::rejected(name, "Missing required symbols");
+                let status = HmrStatus::rejected(name, "Missing required symbols");
                 eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
                 return;
             }
@@ -176,8 +170,7 @@ pub unsafe fn process_load_command(
             // ============================================================
             // Use the capability module to get detailed HMR capability info
             // ============================================================
-            let capability_report =
-                detect_capabilities(std::path::Path::new(path));
+            let capability_report = detect_capabilities(std::path::Path::new(path));
             let hmr_capability = capability_report
                 .as_ref()
                 .map(|r| r.hmr_capability)
@@ -202,7 +195,12 @@ pub unsafe fn process_load_command(
             }
 
             let is_reload = modules.contains_key(name) || !modules.is_empty();
-            eprintln!("[Runner] [HMR] is_reload={} for module '{}', modules.keys={:?}", is_reload, name, modules.keys().collect::<Vec<_>>());
+            eprintln!(
+                "[Runner] [HMR] is_reload={} for module '{}', modules.keys={:?}",
+                is_reload,
+                name,
+                modules.keys().collect::<Vec<_>>()
+            );
 
             // Collect modules to remove for mode switching (but don't remove yet!)
             let mut deferred_unloads: Vec<(String, Library)> = Vec::new();
@@ -213,7 +211,10 @@ pub unsafe fn process_load_command(
                     modules.keys().filter(|k| *k != "main").cloned().collect();
                 for old_name in modules_to_remove {
                     if let Some(old_lib) = modules.remove(&old_name) {
-                        eprintln!("[Runner] [HMR] Deferring unload of '{}' (mode switch to main)", old_name);
+                        eprintln!(
+                            "[Runner] [HMR] Deferring unload of '{}' (mode switch to main)",
+                            old_name
+                        );
                         loaded_paths.remove(&old_name);
                         deferred_unloads.push((old_name, old_lib));
                     }
@@ -245,7 +246,10 @@ pub unsafe fn process_load_command(
                 .unwrap_or(std::ptr::null_mut());
 
             if let Some(old_lib) = modules.remove(name) {
-                eprintln!("[Runner] [HMR] Phase 2: Saving state via orchestrator for '{}'...", name);
+                eprintln!(
+                    "[Runner] [HMR] Phase 2: Saving state via orchestrator for '{}'...",
+                    name
+                );
 
                 // Save state BEFORE any cleanup - use module-specific state
                 let state_to_save = if !module_prev_state.is_null() {
@@ -256,15 +260,17 @@ pub unsafe fn process_load_command(
 
                 // Use orchestrator for unified save (binary-first with JSON fallback)
                 saved_state = Some(orchestrator.save_module_state(
-                    to_compiler_slot(module_slot),
+                    module_slot,
                     &old_lib,
                     state_to_save,
                 ));
 
                 if let Some(ref ss) = saved_state {
                     if ss.was_binary {
-                        eprintln!("[Runner] [HMR] State saved via BINARY path ({} bytes)", 
-                            ss.binary.as_ref().map(|b| b.len()).unwrap_or(0));
+                        eprintln!(
+                            "[Runner] [HMR] State saved via BINARY path ({} bytes)",
+                            ss.binary.as_ref().map(|b| b.len()).unwrap_or(0)
+                        );
                     } else if ss.json.is_some() {
                         eprintln!("[Runner] [HMR] State saved via JSON path");
                     }
@@ -302,20 +308,17 @@ pub unsafe fn process_load_command(
             // struct layout hasn't changed. We use a hash provided by the
             // compiler/plugin for this.
             // ============================================================
-            let old_schema_hash =
-                module_states.get(name).map(|s| s.schema_hash).unwrap_or(0);
+            let old_schema_hash = module_states.get(name).map(|s| s.schema_hash).unwrap_or(0);
             let mut new_schema_hash: u64 = 0;
 
-            let get_schema_hash: Result<
-                Symbol<unsafe extern "C" fn() -> u64>,
-                _,
-            > = if name == "core" {
-                new_lib.get(b"core_get_state_schema_hash")
-            } else if name == "gui" {
-                new_lib.get(b"gui_get_state_schema_hash")
-            } else {
-                Err(libloading::Error::DlSymUnknown)
-            }; // Legacy doesn't support this
+            let get_schema_hash: Result<Symbol<unsafe extern "C" fn() -> u64>, _> =
+                if name == "core" {
+                    new_lib.get(b"core_get_state_schema_hash")
+                } else if name == "gui" {
+                    new_lib.get(b"gui_get_state_schema_hash")
+                } else {
+                    Err(libloading::Error::DlSymUnknown)
+                }; // Legacy doesn't support this
 
             if let Ok(f) = get_schema_hash {
                 new_schema_hash = f();
@@ -332,10 +335,15 @@ pub unsafe fn process_load_command(
             // If incompatible, we force cold reload (NULL state to on_load).
             // JSON migration can still rescue data by parsing into new layout.
             // ============================================================
-            
+
             if old_schema_hash != 0 && new_schema_hash != 0 && old_schema_hash != new_schema_hash {
-                eprintln!("[Runner] [HMR] CRITICAL: Schema hash mismatch (Old: {:016X}, New: {:016X})", old_schema_hash, new_schema_hash);
-                eprintln!("[Runner] [HMR] Forcing COLD RELOAD - JSON migration will attempt data rescue.");
+                eprintln!(
+                    "[Runner] [HMR] CRITICAL: Schema hash mismatch (Old: {:016X}, New: {:016X})",
+                    old_schema_hash, new_schema_hash
+                );
+                eprintln!(
+                    "[Runner] [HMR] Forcing COLD RELOAD - JSON migration will attempt data rescue."
+                );
 
                 let status = HmrStatus::rejected(
                     name,
@@ -347,12 +355,11 @@ pub unsafe fn process_load_command(
                 eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
                 new_state = std::ptr::null_mut();
             } else if new_schema_hash == 0 && old_schema_hash != 0 {
-                eprintln!("[Runner] [HMR] WARNING: New module missing schema hash. Assuming unsafe.");
-
-                let status = HmrStatus::rejected(
-                    name,
-                    "Missing schema hash (Cold Reload)",
+                eprintln!(
+                    "[Runner] [HMR] WARNING: New module missing schema hash. Assuming unsafe."
                 );
+
+                let status = HmrStatus::rejected(name, "Missing schema hash (Cold Reload)");
                 eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
                 new_state = std::ptr::null_mut();
             }
@@ -368,14 +375,12 @@ pub unsafe fn process_load_command(
 
             if let Some(ref ss) = saved_state {
                 // Get template JSON for field-level diffing (if JSON path needed)
-                let template_json = orchestrator.get_template_json(
-                    to_compiler_slot(module_slot),
-                    &new_lib,
-                );
+                let template_json =
+                    orchestrator.get_template_json(module_slot, &new_lib);
 
                 // Use orchestrator to load state
                 let loaded = orchestrator.load_module_state(
-                    to_compiler_slot(module_slot),
+                    module_slot,
                     &new_lib,
                     ss,
                     template_json.as_deref(),
@@ -404,9 +409,7 @@ pub unsafe fn process_load_command(
                     } else if loaded.was_binary {
                         let status = HmrStatus::state_migrated(name, 0, 0, 0);
                         eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
-                        eprintln!(
-                            "[Runner] [HMR] Binary state restored successfully"
-                        );
+                        eprintln!("[Runner] [HMR] Binary state restored successfully");
                     }
                 } else {
                     eprintln!("[Runner] [HMR] Orchestrator load returned NULL - fresh init");
@@ -416,14 +419,10 @@ pub unsafe fn process_load_command(
             // Get CoreAPI pointer from core module (for GUI initialization)
             if name == "gui" {
                 if let Some(core_lib) = modules.get("core") {
-                    let get_api_new: Result<
-                        Symbol<unsafe extern "C" fn() -> *mut c_void>,
-                        _,
-                    > = core_lib.get(b"core_get_api");
-                    let get_api_legacy: Result<
-                        Symbol<unsafe extern "C" fn() -> *mut c_void>,
-                        _,
-                    > = core_lib.get(b"get_core_api");
+                    let get_api_new: Result<Symbol<unsafe extern "C" fn() -> *mut c_void>, _> =
+                        core_lib.get(b"core_get_api");
+                    let get_api_legacy: Result<Symbol<unsafe extern "C" fn() -> *mut c_void>, _> =
+                        core_lib.get(b"get_core_api");
                     if let Ok(f) = get_api_new.or(get_api_legacy) {
                         core_api_ptr = f();
                         eprintln!(
@@ -441,15 +440,19 @@ pub unsafe fn process_load_command(
             // ============================================================
             let module_slot_compiler = to_compiler_slot(module_slot);
             let mut has_host_kv_support = false;
-            
+
             if let Some(ref sid) = session_id {
                 // Read schema table from module
                 let schemas = read_schema_table(&new_lib, to_compiler_slot(module_slot));
                 has_host_kv_support = !schemas.is_empty();
 
                 if !schemas.is_empty() {
-                    eprintln!("[Runner] [HOST-KV] Module '{}' declares {} namespaces: {:?}", 
-                                name, schemas.len(), schemas.iter().map(|(ns, _)| ns).collect::<Vec<_>>());
+                    eprintln!(
+                        "[Runner] [HOST-KV] Module '{}' declares {} namespaces: {:?}",
+                        name,
+                        schemas.len(),
+                        schemas.iter().map(|(ns, _)| ns).collect::<Vec<_>>()
+                    );
 
                     // Register schemas and handle any resets
                     let host_kv_events = KV_STORE.register_schemas(
@@ -472,32 +475,33 @@ pub unsafe fn process_load_command(
                                     *old_schema,
                                     *new_schema,
                                 );
-                                eprintln!(
-                                    "[Runner] [HMR-STATUS] {}",
-                                    status.to_json()
-                                );
+                                eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
                             }
-                            HostKvSchemaEvent::NamespacePreserved {
-                                namespace,
-                            } => {
+                            HostKvSchemaEvent::NamespacePreserved { namespace } => {
                                 eprintln!("[Runner] [HOST-KV] Namespace '{}' preserved (schema unchanged)", namespace);
                             }
                             HostKvSchemaEvent::NamespaceRegistered {
                                 namespace,
                                 schema_id,
                             } => {
-                                eprintln!("[Runner] [HOST-KV] Namespace '{}' registered (schema={})", namespace, schema_id);
+                                eprintln!(
+                                    "[Runner] [HOST-KV] Namespace '{}' registered (schema={})",
+                                    namespace, schema_id
+                                );
                             }
-                            HostKvSchemaEvent::InvalidNamespace {
-                                namespace,
-                                reason,
-                            } => {
-                                eprintln!("[Runner] [HOST-KV] WARNING: Invalid namespace '{}': {}", namespace, reason);
+                            HostKvSchemaEvent::InvalidNamespace { namespace, reason } => {
+                                eprintln!(
+                                    "[Runner] [HOST-KV] WARNING: Invalid namespace '{}': {}",
+                                    namespace, reason
+                                );
                             }
                         }
                     }
                 } else {
-                    eprintln!("[Runner] [HOST-KV] Module '{}' does not export schema table", name);
+                    eprintln!(
+                        "[Runner] [HOST-KV] Module '{}' does not export schema table",
+                        name
+                    );
                 }
             } else {
                 has_host_kv_support = false;
@@ -516,33 +520,15 @@ pub unsafe fn process_load_command(
                 Some(ModuleSlot::Core) => {
                     // Try core_on_load_host first
                     let core_load_host: Result<
-                        Symbol<
-                            unsafe extern "C" fn(
-                                *mut c_void,
-                                *const c_void,
-                            )
-                                -> *mut c_void,
-                        >,
+                        Symbol<unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void>,
                         _,
                     > = new_lib.get(b"core_on_load_host");
                     let core_load: Result<
-                        Symbol<
-                            unsafe extern "C" fn(
-                                *mut c_void,
-                                *mut c_void,
-                            )
-                                -> *mut c_void,
-                        >,
+                        Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>,
                         _,
                     > = new_lib.get(b"core_on_load");
                     let legacy_load: Result<
-                        Symbol<
-                            unsafe extern "C" fn(
-                                *mut c_void,
-                                *mut c_void,
-                            )
-                                -> *mut c_void,
-                        >,
+                        Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>,
                         _,
                     > = new_lib.get(b"on_load");
 
@@ -559,18 +545,15 @@ pub unsafe fn process_load_command(
                             win_ptr,
                             win_ptr,
                         );
-                        eprintln!("[Runner] [HMR] Calling core_on_load_host with Host KV context...");
-                        new_state = f(
-                            new_state,
-                            &host_ctx as *const _ as *const c_void,
+                        eprintln!(
+                            "[Runner] [HMR] Calling core_on_load_host with Host KV context..."
                         );
+                        new_state = f(new_state, &host_ctx as *const _ as *const c_void);
                     } else if let Ok(f) = core_load {
                         eprintln!("[Runner] [HMR] Calling core_on_load...");
                         new_state = f(new_state, win_ptr);
                     } else if let Ok(f) = legacy_load {
-                        eprintln!(
-                            "[Runner] [HMR] Calling legacy on_load for core..."
-                        );
+                        eprintln!("[Runner] [HMR] Calling legacy on_load for core...");
                         new_state = f(new_state, win_ptr);
                     }
                     eprintln!(
@@ -581,13 +564,7 @@ pub unsafe fn process_load_command(
                 Some(ModuleSlot::Gui) => {
                     // Try gui_on_load_host first
                     let gui_load_host: Result<
-                        Symbol<
-                            unsafe extern "C" fn(
-                                *mut c_void,
-                                *const c_void,
-                            )
-                                -> *mut c_void,
-                        >,
+                        Symbol<unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void>,
                         _,
                     > = new_lib.get(b"gui_on_load_host");
                     let gui_load: Result<
@@ -596,25 +573,16 @@ pub unsafe fn process_load_command(
                                 *mut c_void,
                                 *mut c_void,
                                 *mut c_void,
-                            )
-                                -> *mut c_void,
+                            ) -> *mut c_void,
                         >,
                         _,
                     > = new_lib.get(b"gui_on_load");
                     let legacy_load: Result<
-                        Symbol<
-                            unsafe extern "C" fn(
-                                *mut c_void,
-                                *mut c_void,
-                            )
-                                -> *mut c_void,
-                        >,
+                        Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>,
                         _,
                     > = new_lib.get(b"on_load");
 
-                    if gui_load_host.is_ok()
-                        && session_id.is_some()
-                        && session_id_cstring.is_some()
+                    if gui_load_host.is_ok() && session_id.is_some() && session_id_cstring.is_some()
                     {
                         let f = gui_load_host.unwrap();
                         let sid_cstr = session_id_cstring.as_ref().unwrap();
@@ -625,18 +593,15 @@ pub unsafe fn process_load_command(
                             win_ptr,
                             win_ptr,
                         );
-                        eprintln!("[Runner] [HMR] Calling gui_on_load_host with Host KV context...");
-                        new_state = f(
-                            new_state,
-                            &host_ctx as *const _ as *const c_void,
+                        eprintln!(
+                            "[Runner] [HMR] Calling gui_on_load_host with Host KV context..."
                         );
+                        new_state = f(new_state, &host_ctx as *const _ as *const c_void);
                     } else if let Ok(f) = gui_load {
                         eprintln!("[Runner] [HMR] Calling gui_on_load with CoreAPI...");
                         new_state = f(new_state, win_ptr, core_api_ptr);
                     } else if let Ok(f) = legacy_load {
-                        eprintln!(
-                            "[Runner] [HMR] Calling legacy on_load for gui..."
-                        );
+                        eprintln!("[Runner] [HMR] Calling legacy on_load for gui...");
                         new_state = f(new_state, win_ptr);
                     }
                     eprintln!(
@@ -647,36 +612,19 @@ pub unsafe fn process_load_command(
                 Some(ModuleSlot::Main) | None => {
                     // Try on_load_host first for legacy main module
                     let load_host: Result<
-                        Symbol<
-                            unsafe extern "C" fn(
-                                *mut c_void,
-                                *const c_void,
-                            )
-                                -> *mut c_void,
-                        >,
+                        Symbol<unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void>,
                         _,
                     > = new_lib.get(b"on_load_host");
                     let legacy_load: Result<
-                        Symbol<
-                            unsafe extern "C" fn(
-                                *mut c_void,
-                                *mut c_void,
-                            )
-                                -> *mut c_void,
-                        >,
+                        Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>,
                         _,
                     > = new_lib.get(b"on_load");
                     let legacy_entry: Result<
-                        Symbol<
-                            unsafe extern "C" fn(*mut c_void) -> *mut c_void,
-                        >,
+                        Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void>,
                         _,
                     > = new_lib.get(b"entrypoint");
 
-                    if load_host.is_ok()
-                        && session_id.is_some()
-                        && session_id_cstring.is_some()
-                    {
+                    if load_host.is_ok() && session_id.is_some() && session_id_cstring.is_some() {
                         let f = load_host.unwrap();
                         let sid_cstr = session_id_cstring.as_ref().unwrap();
                         let host_ctx = SynthiHostContextV1::new(
@@ -687,21 +635,18 @@ pub unsafe fn process_load_command(
                             win_ptr,
                         );
                         eprintln!("[Runner] [HMR] Calling on_load_host with Host KV context...");
-                        new_state = f(
-                            new_state,
-                            &host_ctx as *const _ as *const c_void,
-                        );
+                        new_state = f(new_state, &host_ctx as *const _ as *const c_void);
                     } else if let Ok(f) = legacy_load {
-                        eprintln!(
-                            "[Runner] [HMR] Calling on_load on main module..."
-                        );
+                        eprintln!("[Runner] [HMR] Calling on_load on main module...");
                         new_state = f(new_state, win_ptr);
                     } else if let Ok(f) = legacy_entry {
                         if !is_reload {
                             eprintln!("[Runner] [HMR] Calling entrypoint (first load only)...");
                             new_state = f(new_state);
                         } else {
-                            eprintln!("[Runner] [HMR] Skipping entrypoint on reload (would block).");
+                            eprintln!(
+                                "[Runner] [HMR] Skipping entrypoint on reload (would block)."
+                            );
                         }
                     }
                     eprintln!(
@@ -721,10 +666,7 @@ pub unsafe fn process_load_command(
                     module_slot_to_u32(to_compiler_slot(module_slot)),
                 );
                 if !preserved_namespaces.is_empty() {
-                    let status = HmrStatus::host_kv_preserved(
-                        name,
-                        preserved_namespaces,
-                    );
+                    let status = HmrStatus::host_kv_preserved(name, preserved_namespaces);
                     eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
                 }
             }
@@ -737,13 +679,14 @@ pub unsafe fn process_load_command(
                 && new_state != module_prev_state
             {
                 eprintln!("[Runner] [HMR] WARNING: on_load returned different pointer!");
-                eprintln!(
-                    "[Runner] [HMR]   prev_state: {:p}",
-                    module_prev_state
-                );
+                eprintln!("[Runner] [HMR]   prev_state: {:p}", module_prev_state);
                 eprintln!("[Runner] [HMR]   new_state:  {:p}", new_state);
-                eprintln!("[Runner] [HMR]   This suggests module used malloc instead of static variable.");
-                eprintln!("[Runner] [HMR]   State preservation may not work correctly on next reload.");
+                eprintln!(
+                    "[Runner] [HMR]   This suggests module used malloc instead of static variable."
+                );
+                eprintln!(
+                    "[Runner] [HMR]   State preservation may not work correctly on next reload."
+                );
             }
 
             // Validate state header after initialization
@@ -757,13 +700,13 @@ pub unsafe fn process_load_command(
                 let state_abi = get_module_abi_version(new_state);
 
                 if magic_ok {
-                    eprintln!("[Runner] [HMR] State validated: magic OK, ABI version = {}", state_abi);
+                    eprintln!(
+                        "[Runner] [HMR] State validated: magic OK, ABI version = {}",
+                        state_abi
+                    );
 
                     // Cross-check state ABI vs module-reported ABI
-                    if module_abi_version > 0
-                        && state_abi > 0
-                        && module_abi_version != state_abi
-                    {
+                    if module_abi_version > 0 && state_abi > 0 && module_abi_version != state_abi {
                         eprintln!("[Runner] [HMR] WARNING: Module ABI ({}) != state ABI ({}). Possible state corruption.", 
                                     module_abi_version, state_abi);
                     }
@@ -816,15 +759,18 @@ pub unsafe fn process_load_command(
             // GUI should NOT update app_state.raw - it has its own state
             if name == "core" || name == "main" {
                 app_state.raw = new_state;
+                eprintln!("[Runner] [HMR] Updated shared app_state.raw for '{}'", name);
+            } else {
                 eprintln!(
-                    "[Runner] [HMR] Updated shared app_state.raw for '{}'",
+                    "[Runner] [HMR] Module '{}' has independent state (not updating app_state.raw)",
                     name
                 );
-            } else {
-                eprintln!("[Runner] [HMR] Module '{}' has independent state (not updating app_state.raw)", name);
             }
 
-            eprintln!("[Runner] [HMR] ATOMIC SWAP complete. Module '{}' is now active. ABI={}", name, module_abi_version);
+            eprintln!(
+                "[Runner] [HMR] ATOMIC SWAP complete. Module '{}' is now active. ABI={}",
+                name, module_abi_version
+            );
 
             // ============================================================
             // Phase 5: Deferred cleanup of OLD module(s)
@@ -836,10 +782,7 @@ pub unsafe fn process_load_command(
                 );
 
                 if name == "gui" {
-                    let func: Result<
-                        Symbol<unsafe extern "C" fn(*mut c_void)>,
-                        _,
-                    > = old_lib
+                    let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> = old_lib
                         .get(b"gui_on_unload")
                         .or_else(|_| old_lib.get(b"on_unload"));
                     if let Ok(f) = func {
@@ -847,12 +790,10 @@ pub unsafe fn process_load_command(
                         eprintln!("[Runner] [HMR] GUI on_unload called with its own state");
                     }
                 } else if name != "core" {
-                    let func: Result<
-                        Symbol<unsafe extern "C" fn(*mut c_void)>,
-                        _,
-                    > = old_lib.get(b"on_unload");
+                    let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> =
+                        old_lib.get(b"on_unload");
                     if let Ok(f) = func {
-                        f(std::ptr::null_mut()); 
+                        f(std::ptr::null_mut());
                     }
                 } else {
                     eprintln!("[Runner] [HMR] Skipping on_unload for 'core' (would dlclose gui.so needed by new core)");
@@ -861,10 +802,7 @@ pub unsafe fn process_load_command(
 
             // Cleanup any modules from mode switching
             for (old_name, old_lib) in deferred_unloads {
-                eprintln!(
-                    "[Runner] [HMR] Deferred cleanup of '{}'...",
-                    old_name
-                );
+                eprintln!("[Runner] [HMR] Deferred cleanup of '{}'...", old_name);
                 let func: Result<Symbol<unsafe extern "C" fn(*mut c_void)>, _> =
                     if old_name == "gui" {
                         old_lib
@@ -882,7 +820,10 @@ pub unsafe fn process_load_command(
                 }
             }
 
-            eprintln!("[Runner] [HMR] Hot reload complete for '{}'. Zero-flicker swap successful.", name);
+            eprintln!(
+                "[Runner] [HMR] Hot reload complete for '{}'. Zero-flicker swap successful.",
+                name
+            );
 
             // ============================================================
             // STRUCTURED HMR STATUS FEEDBACK
@@ -892,20 +833,19 @@ pub unsafe fn process_load_command(
                     module: name.to_string(),
                     capability: hmr_capability.description().to_string(),
                     state_preserved: state_will_preserve
-                        && saved_state
-                            .as_ref()
-                            .and_then(|s| s.json.as_ref())
-                            .is_some(),
+                        && saved_state.as_ref().and_then(|s| s.json.as_ref()).is_some(),
                 };
                 eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
             }
         }
         Err(e) => {
-            eprintln!("[Runner] [HMR] Error loading new library (old module continues): {}", e);
+            eprintln!(
+                "[Runner] [HMR] Error loading new library (old module continues): {}",
+                e
+            );
 
             // Send rejection status
-            let status =
-                HmrStatus::rejected(name, &format!("Load error: {}", e));
+            let status = HmrStatus::rejected(name, &format!("Load error: {}", e));
             eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
         }
     }

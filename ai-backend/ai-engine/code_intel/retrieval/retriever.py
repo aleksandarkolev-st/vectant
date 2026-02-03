@@ -65,20 +65,23 @@ class ContextRetriever:
     def __init__(
         self,
         vector_index,  # VectorIndex
+        lexical_index=None,  # LexicalIndex
         config: Optional[RetrievalConfig] = None,
     ):
         self.vector_index = vector_index
+        self.lexical_index = lexical_index
         self.config = config or RetrievalConfig()
     
     def retrieve(
         self,
         query_embedding: np.ndarray,
+        query_text: Optional[str] = None,
         query_symbols: Optional[List[str]] = None,
         query_files: Optional[List[str]] = None,
         top_k: Optional[int] = None,
         filter_language: Optional[str] = None,
         exclude_test_files: bool = True,
-    ) -> List[RetrievalCandidate]:
+    ) -> Tuple[List[RetrievalCandidate], Dict[str, int]]:
         """
         Retrieve relevant chunks.
         
@@ -91,9 +94,9 @@ class ContextRetriever:
             exclude_test_files: Exclude test files
             
         Returns:
-            List of retrieval candidates
+            (List of retrieval candidates, stats)
         """
-        top_k = top_k or self.config.top_k
+        top_k = top_k or getattr(self.config, "top_k", None) or self.config.top_k_candidates
         
         # Step 1: Vector search
         vector_results = self._vector_search(
@@ -103,7 +106,18 @@ class ContextRetriever:
             exclude_test_files,
         )
         
-        # Step 2: Symbol search (if symbols provided)
+        # Step 2: Lexical search (BM25) if available
+        lexical_results = []
+        if self.lexical_index and getattr(self.config, "enable_lexical", True) and query_text:
+            lexical_results = self._lexical_search(
+                query_text,
+                top_k=max(self.config.bm25_top_k, top_k * 3),
+                min_score=self.config.bm25_min_score,
+                filter_language=filter_language,
+                exclude_test_files=exclude_test_files,
+            )
+
+        # Step 3: Symbol search (if symbols provided)
         symbol_results = []
         if query_symbols:
             symbol_results = self._symbol_search(
@@ -113,7 +127,7 @@ class ContextRetriever:
                 exclude_test_files,
             )
         
-        # Step 3: File path search (if files provided)
+        # Step 4: File path search (if files provided)
         file_results = []
         if query_files:
             file_results = self._file_search(
@@ -121,9 +135,10 @@ class ContextRetriever:
                 top_k,
             )
         
-        # Step 4: Merge results
+    # Step 5: Merge results
         merged = self._merge_results(
             vector_results,
+            lexical_results,
             symbol_results,
             file_results,
         )
@@ -131,7 +146,15 @@ class ContextRetriever:
         # Step 5: Sort by combined score
         merged.sort(key=lambda c: c.combined_score, reverse=True)
         
-        return merged[:top_k]
+        stats = {
+            "pre_dedup_vector": len(vector_results),
+            "pre_dedup_lexical": len(lexical_results),
+            "pre_dedup_symbol": len(symbol_results),
+            "pre_dedup_file": len(file_results),
+            "post_dedup": len(merged),
+        }
+
+        return merged[:top_k], stats
     
     def _vector_search(
         self,
@@ -165,6 +188,39 @@ class ContextRetriever:
         
         return candidates[:top_k]
     
+    def _lexical_search(
+        self,
+        query_text: str,
+        top_k: int,
+        min_score: float,
+        filter_language: Optional[str],
+        exclude_test_files: bool,
+    ) -> List[RetrievalCandidate]:
+        """Search for chunks using BM25 lexical index."""
+        results = self.lexical_index.search(query_text, k=top_k, min_score=min_score)
+        if not results:
+            return []
+
+        max_score = max(r.score for r in results) or 1.0
+        candidates = []
+        for r in results:
+            chunk = r.chunk or self.vector_index.get_chunk(r.chunk_id)
+            if not chunk:
+                continue
+            if filter_language and chunk.language != filter_language:
+                continue
+            if exclude_test_files and chunk.metadata.is_test:
+                continue
+            score = r.score / max_score
+            candidates.append(RetrievalCandidate(
+                chunk=chunk,
+                keyword_score=score,
+                combined_score=score * 0.9,
+                source="lexical",
+            ))
+
+        return candidates
+
     def _symbol_search(
         self,
         symbols: List[str],
@@ -176,10 +232,9 @@ class ContextRetriever:
         candidates = []
         
         # Get all chunks from vector index
-        # Note: In production, use a separate symbol index
-        all_chunks = getattr(self.vector_index, 'chunks', {})
-        
-        for chunk_id, chunk in all_chunks.items():
+        all_chunks = self.vector_index.get_all_chunks()
+
+        for chunk in all_chunks:
             # Check if chunk matches any symbol
             chunk_symbol = chunk.symbol_name.lower()
             
@@ -226,9 +281,9 @@ class ContextRetriever:
         candidates = []
         
         # Get all chunks
-        all_chunks = getattr(self.vector_index, 'chunks', {})
-        
-        for chunk_id, chunk in all_chunks.items():
+        all_chunks = self.vector_index.get_all_chunks()
+
+        for chunk in all_chunks:
             chunk_path = chunk.file_path.lower()
             
             for pattern in file_patterns:
@@ -258,6 +313,7 @@ class ContextRetriever:
     def _merge_results(
         self,
         vector_results: List[RetrievalCandidate],
+        lexical_results: List[RetrievalCandidate],
         symbol_results: List[RetrievalCandidate],
         file_results: List[RetrievalCandidate],
     ) -> List[RetrievalCandidate]:
@@ -279,6 +335,17 @@ class ContextRetriever:
                 chunk_map[chunk_id].vector_score = max(
                     chunk_map[chunk_id].vector_score,
                     cand.vector_score,
+                )
+
+        # Process lexical results
+        for i, cand in enumerate(lexical_results):
+            chunk_id = cand.chunk.id
+            if chunk_id not in chunk_map:
+                chunk_map[chunk_id] = cand
+            else:
+                chunk_map[chunk_id].keyword_score = max(
+                    chunk_map[chunk_id].keyword_score,
+                    cand.keyword_score,
                 )
         
         # Process symbol results
@@ -318,14 +385,18 @@ class ContextRetriever:
 
 def retrieve_context(
     vector_index,
+    lexical_index=None,
     query_embedding: np.ndarray,
+    query_text: Optional[str] = None,
     query_symbols: Optional[List[str]] = None,
     top_k: int = 10,
 ) -> List[RetrievalCandidate]:
     """Convenience function for retrieval."""
-    retriever = ContextRetriever(vector_index)
-    return retriever.retrieve(
+    retriever = ContextRetriever(vector_index, lexical_index=lexical_index)
+    candidates, _ = retriever.retrieve(
         query_embedding=query_embedding,
+        query_text=query_text,
         query_symbols=query_symbols,
         top_k=top_k,
     )
+    return candidates

@@ -1,0 +1,11 @@
+{
+  "queries": [
+    {
+      "id": "example-1",
+      "query": "Where is the authentication middleware implemented?",
+      "expected_chunks": [],
+      "expected_files": [],
+      "expected_symbols": []
+    }
+  ]
+}

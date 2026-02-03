@@ -385,19 +385,16 @@ def get_embedder(
     Get or create the embedder.
     
     Args:
-        use_local: Use local model instead of Gemini
+        use_local: Ignored (Gemini-only policy)
         model: Override model name
     """
     global _embedder
     
     if _embedder is None:
-        if use_local:
-            _embedder = LocalEmbedder(model=model or "all-MiniLM-L6-v2")
-        else:
-            config = get_config()
-            _embedder = Embedder(
-                model=model or config.indexer.embedding_model,
-                api_key=config.gemini_api_key,
-            )
+        config = get_config()
+        _embedder = Embedder(
+            model=model or config.indexer.embedding_model,
+            api_key=config.gemini_api_key,
+        )
     
     return _embedder

@@ -26,30 +26,30 @@ use std::time::{Duration, Instant};
 
 use libloading::{Library, Symbol};
 
+use crate::compiler::source_map::SOURCE_MAP_CACHE;
+use crate::hmr::binary_state::{MsgPackState, SchemaMigrationResult};
 use crate::hmr::fast_refresh::{
     BoundaryCheckResult, BoundaryChecker, BoundaryViolationEvent, RefreshAction,
 };
-use crate::hmr::binary_state::{MsgPackState, SchemaMigrationResult};
-use crate::safety::boundary::{Boundary, BoundaryId, BoundaryManifest, ReloadPlan};
-use crate::runtime::loader::{LoadResult, ModuleLoader};
-use crate::compiler::plugin_contract::ModuleSlot;
+use crate::runtime::plugin_contract::ModuleSlot;
 use crate::hmr::reload_manager::{
     AsyncTaskRegistry, ReloadChanges, ReloadClass, ReloadClassifier, ReloadSnapshot,
     SnapshotManager,
 };
-use crate::compiler::source_map::SOURCE_MAP_CACHE;
+use crate::hmr::reload_protocol::{ReloadConfig, ReloadOperation};
 use crate::hmr::state_diff::{migrate_state_with_config, DiffConfig};
-use crate::hmr::state_manager::{
-    MigrationResult, MigrationSchema, SchemaVersion, StateManager,
-};
-use crate::runtime::supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
-use crate::infra::observability::{
-    ReloadId, LogLevel, LogEntry, StructuredLogger, LogFormat,
-    ReloadMetricsTracker, MetricsAggregator,
-};
-use crate::safety::quiescence::{QuiescenceManager, QuiescenceConfig};
-use crate::hmr::reload_protocol::{ReloadOperation, ReloadConfig};
+use crate::hmr::state_manager::{MigrationResult, MigrationSchema, SchemaVersion, StateManager};
 use crate::infra::crash_recovery::CrashInfo;
+use crate::infra::observability::{
+    LogEntry, LogFormat, LogLevel, MetricsAggregator, ReloadId, ReloadMetricsTracker,
+    StructuredLogger,
+};
+use crate::runtime::loader::{LoadResult, ModuleLoader};
+use crate::runtime::supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
+use crate::safety::boundary::{Boundary, BoundaryId, BoundaryManifest, ReloadPlan};
+use crate::safety::quiescence::{QuiescenceConfig, QuiescenceManager};
+// use crate::quiescence::{QuiescenceManager, QuiescenceConfig}; // DUP
+// use crate::reload_protocol::{ReloadOperation, ReloadConfig}; // DUP
 
 // ============================================================
 // HMR RESULT TYPES
@@ -255,14 +255,14 @@ pub struct HmrOrchestrator {
     strict_abi_validation: bool,
     snapshot_enabled: bool,
     fast_refresh_enabled: bool,
-    
+
     // Observability (v2.1)
     logger: StructuredLogger,
     metrics_aggregator: MetricsAggregator,
-    
+
     // Quiescence management (v2.1)
     quiescence_manager: Option<QuiescenceManager>,
-    
+
     // Current reload operation (v2.1 state machine)
     current_reload: Option<ReloadOperation>,
 }
@@ -415,12 +415,12 @@ impl HmrOrchestrator {
         new_field_names: &[String],
     ) -> HmrResult {
         let start = Instant::now();
-        
+
         // Generate unique reload ID for correlation (v2.1 observability)
         let reload_id = ReloadId::new();
         self.stats.current_reload_id = Some(reload_id.as_u64());
         self.stats.total_reloads += 1;
-        
+
         // v2.1: Create ReloadOperation for state machine tracking
         let reload_op = ReloadOperation::new(
             slot.as_str().to_string(),
@@ -428,15 +428,21 @@ impl HmrOrchestrator {
             ReloadConfig::default(),
         );
         self.current_reload = Some(reload_op);
-        
+
         // Start metrics tracking
         let mut metrics_tracker = ReloadMetricsTracker::start(reload_id, slot.as_str());
 
         // Log reload start
-        self.logger.log(&LogEntry::new(LogLevel::Info, "hmr", format!("Starting reload for {:?}", slot))
+        self.logger.log(
+            &LogEntry::new(
+                LogLevel::Info,
+                "hmr",
+                format!("Starting reload for {:?}", slot),
+            )
             .with_reload_id(reload_id)
             .with_slot_id(slot.as_str())
-            .with_field("path", new_path.display().to_string()));
+            .with_field("path", new_path.display().to_string()),
+        );
 
         // 1. Classify the reload
         let reload_class = self.reload_classifier.classify_with_context(
@@ -449,8 +455,14 @@ impl HmrOrchestrator {
             "[Orchestrator] Hot reload {:?}: class={:?}",
             slot, reload_class
         );
-        self.logger.log(&LogEntry::new(LogLevel::Debug, "hmr", format!("Reload class: {:?}", reload_class))
-            .with_reload_id(reload_id));
+        self.logger.log(
+            &LogEntry::new(
+                LogLevel::Debug,
+                "hmr",
+                format!("Reload class: {:?}", reload_class),
+            )
+            .with_reload_id(reload_id),
+        );
 
         // 2. Create pre-reload snapshot (if needed)
         let snapshot_id = if reload_class.requires_snapshot() && self.snapshot_enabled {
@@ -479,7 +491,9 @@ impl HmrOrchestrator {
         if reload_class.requires_task_shutdown() {
             self.task_registry
                 .shutdown_boundary(&slot.as_str().to_string());
-            let _ = self.task_registry.prepare_for_reload(&slot.as_str().to_string(), ReloadClass::Cold);
+            let _ = self
+                .task_registry
+                .prepare_for_reload(&slot.as_str().to_string(), ReloadClass::Cold);
         }
 
         // 5. Validate ABI (if strict mode)
@@ -572,12 +586,14 @@ impl HmrOrchestrator {
                 let mut result = HmrResult::failure(slot, e.clone());
                 result.snapshot_id = snapshot_id;
                 result.duration_ms = start.elapsed().as_millis() as u64;
-                
+
                 // Log failure with observability
-                self.logger.log(&LogEntry::new(LogLevel::Error, "hmr", format!("Reload failed: {}", e))
-                    .with_reload_id(reload_id)
-                    .with_slot_id(slot.as_str()));
-                
+                self.logger.log(
+                    &LogEntry::new(LogLevel::Error, "hmr", format!("Reload failed: {}", e))
+                        .with_reload_id(reload_id)
+                        .with_slot_id(slot.as_str()),
+                );
+
                 result
             }
         };
@@ -591,8 +607,9 @@ impl HmrOrchestrator {
             result.duration_ms
         );
         // 8. Record metrics and log completion (v2.1 observability)
-        self.metrics_aggregator.record(&metrics_tracker, result.success);
-        
+        self.metrics_aggregator
+            .record(&metrics_tracker, result.success);
+
         // Update timing stats
         let duration_us = start.elapsed().as_micros() as u64;
         self.stats.max_reload_time_us = self.stats.max_reload_time_us.max(duration_us);
@@ -601,17 +618,27 @@ impl HmrOrchestrator {
         } else {
             self.stats.avg_reload_time_us = (self.stats.avg_reload_time_us + duration_us) / 2;
         }
-        
-        self.logger.log(&LogEntry::new(
-            if result.success { LogLevel::Info } else { LogLevel::Warn }, 
-            "hmr", 
-            format!("Reload complete: success={}, binary={}, preserved={}", 
-                result.success, result.used_binary_serialization, result.preserved_fields.len())
-        )
+
+        self.logger.log(
+            &LogEntry::new(
+                if result.success {
+                    LogLevel::Info
+                } else {
+                    LogLevel::Warn
+                },
+                "hmr",
+                format!(
+                    "Reload complete: success={}, binary={}, preserved={}",
+                    result.success,
+                    result.used_binary_serialization,
+                    result.preserved_fields.len()
+                ),
+            )
             .with_reload_id(reload_id)
             .with_slot_id(slot.as_str())
             .with_field("duration_ms", result.duration_ms)
-            .with_field("reload_class", format!("{:?}", reload_class)));
+            .with_field("reload_class", format!("{:?}", reload_class)),
+        );
 
         // Clear the current reload operation (v2.1)
         self.current_reload = None;
@@ -777,12 +804,12 @@ impl HmrOrchestrator {
 
     /// Load module state with automatic migration
     ///
-    /// 
+    ///
     /// MIGRATION PRIORITY (highest to lowest):
     /// 1. Module-provided binary migration (hot_migrate in HotApi)
     /// 2. Module-provided JSON migration (on_load_from_json with version param)
     /// 3. Worker diff-and-merge (fallback, least reliable)
-    /// 
+    ///
     /// # Arguments
     /// * `slot` - Module slot (Core, Gui, Main)
     /// * `new_lib` - Reference to the NEW library to load into
@@ -815,12 +842,17 @@ impl HmrOrchestrator {
 
             unsafe {
                 // Try module-provided migrate first
-                let migrate_fn: Result<Symbol<unsafe extern "C" fn(*const u8, usize, u32, u32) -> *mut c_void>, _> = 
-                    new_lib.get(&migrate_symbol[..migrate_symbol.len()-1]);
-                
+                let migrate_fn: Result<
+                    Symbol<unsafe extern "C" fn(*const u8, usize, u32, u32) -> *mut c_void>,
+                    _,
+                > = new_lib.get(&migrate_symbol[..migrate_symbol.len() - 1]);
+
                 if let Ok(f) = migrate_fn {
                     // Module-provided migration is PREFERRED
-                    eprintln!("[Orchestrator] Using module-provided binary migration for {:?}", slot);
+                    eprintln!(
+                        "[Orchestrator] Using module-provided binary migration for {:?}",
+                        slot
+                    );
                     result.state_ptr = f(binary_data.as_ptr(), binary_data.len(), 0, 0);
                     if !result.state_ptr.is_null() {
                         result.was_binary = true;
@@ -829,13 +861,18 @@ impl HmrOrchestrator {
                             reset_fields: vec![],
                             new_fields: vec![],
                         });
-                        eprintln!("[Orchestrator] Module-provided migration succeeded for {:?}", slot);
+                        eprintln!(
+                            "[Orchestrator] Module-provided migration succeeded for {:?}",
+                            slot
+                        );
                         return result;
                     }
-                    eprintln!("[Orchestrator] Module-provided migration returned null, falling back");
+                    eprintln!(
+                        "[Orchestrator] Module-provided migration returned null, falling back"
+                    );
                 }
             }
-            
+
             // Fallback: standard binary load (no migration)
             let load_symbol = match slot {
                 ModuleSlot::Core => b"core_on_load_from_binary\0".as_slice(),
@@ -870,11 +907,16 @@ impl HmrOrchestrator {
             };
 
             unsafe {
-                let migrate_json: Result<Symbol<unsafe extern "C" fn(*const i8, u32, u32) -> *mut c_void>, _> = 
-                    new_lib.get(&migrate_json_symbol[..migrate_json_symbol.len()-1]);
-                
+                let migrate_json: Result<
+                    Symbol<unsafe extern "C" fn(*const i8, u32, u32) -> *mut c_void>,
+                    _,
+                > = new_lib.get(&migrate_json_symbol[..migrate_json_symbol.len() - 1]);
+
                 if let Ok(f) = migrate_json {
-                    eprintln!("[Orchestrator] Using module-provided JSON migration for {:?}", slot);
+                    eprintln!(
+                        "[Orchestrator] Using module-provided JSON migration for {:?}",
+                        slot
+                    );
                     if let Ok(cstring) = CString::new(json_str.as_str()) {
                         result.state_ptr = f(cstring.as_ptr(), 0, 0);
                         if !result.state_ptr.is_null() {
@@ -883,7 +925,10 @@ impl HmrOrchestrator {
                                 reset_fields: vec![],
                                 new_fields: vec![],
                             });
-                            eprintln!("[Orchestrator] Module-provided JSON migration succeeded for {:?}", slot);
+                            eprintln!(
+                                "[Orchestrator] Module-provided JSON migration succeeded for {:?}",
+                                slot
+                            );
                             return result;
                         }
                     }
@@ -893,7 +938,7 @@ impl HmrOrchestrator {
             // PRIORITY 3 (FALLBACK): Worker diff-and-merge
             // This is LESS RELIABLE because the worker guesses at field semantics
             eprintln!("[Orchestrator] WARNING: Using worker diff-merge for {:?} (module migration unavailable)", slot);
-            
+
             let final_json = if let Some(template) = template_json {
                 match self.diff_and_migrate_json(slot, json_str, template) {
                     Ok((migrated, summary)) => {
@@ -905,7 +950,10 @@ impl HmrOrchestrator {
                             "[Orchestrator] JSON migration failed: {}, using original",
                             e
                         );
-                        eprintln!("[Orchestrator] Worker diff failed: {}, using original JSON", e);
+                        eprintln!(
+                            "[Orchestrator] Worker diff failed: {}, using original JSON",
+                            e
+                        );
                         json_str.clone()
                     }
                 }
@@ -1336,29 +1384,33 @@ impl HmrOrchestrator {
         self.reload_classifier
             .set_boundary_override(boundary_id, class);
     }
-    
+
     // ============================================================
     // OBSERVABILITY ACCESSORS (v2.1)
     // ============================================================
-    
+
     /// Get reload metrics
     pub fn get_reload_metrics(&self) -> &crate::infra::observability::ReloadMetrics {
         self.metrics_aggregator.get_metrics()
     }
-    
+
     /// Get current reload ID (if a reload is in progress)
     pub fn current_reload_id(&self) -> Option<u64> {
         self.stats.current_reload_id
     }
-    
+
     /// Initialize quiescence manager if needed (v2.1)
     pub fn init_quiescence(&mut self) {
         if self.quiescence_manager.is_none() {
             self.quiescence_manager = Some(QuiescenceManager::new(QuiescenceConfig::default()));
-            self.logger.log(&LogEntry::new(LogLevel::Info, "orchestrator", "Quiescence manager initialized"));
+            self.logger.log(&LogEntry::new(
+                LogLevel::Info,
+                "orchestrator",
+                "Quiescence manager initialized",
+            ));
         }
     }
-    
+
     /// Get quiescence manager reference (v2.1)
     pub fn quiescence_manager(&mut self) -> Option<&mut QuiescenceManager> {
         self.quiescence_manager.as_mut()

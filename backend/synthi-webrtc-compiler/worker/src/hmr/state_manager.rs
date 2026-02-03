@@ -19,9 +19,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::c_void;
 
-use crate::safety::boundary::BoundaryId;
-use crate::compiler::plugin_contract::ModuleSlot;
+use crate::runtime::plugin_contract::ModuleSlot;
 use crate::hmr::state_diff::{diff_and_merge, DiffConfig, DiffResult};
+use crate::safety::boundary::BoundaryId;
 
 /// State pointer wrapper with metadata
 #[derive(Debug, Clone)]

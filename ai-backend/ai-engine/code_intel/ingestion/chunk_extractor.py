@@ -23,7 +23,10 @@ from ..core.types import (
     get_module_group,
     compute_chunk_id,
     compute_body_fingerprint,
+    canonicalize_signature,
+    compute_stable_symbol_id,
 )
+from ..core.config import get_config
 
 
 logger = logging.getLogger("code_intel.ingestion.chunk_extractor")
@@ -41,7 +44,7 @@ class ChunkExtractor:
     Each chunk is a self-describing semantic unit with full metadata.
     """
     
-    def __init__(self, include_nested: bool = True, max_chunk_tokens: int = 2000):
+    def __init__(self, include_nested: bool = True, max_chunk_tokens: Optional[int] = None):
         """
         Initialize chunk extractor.
         
@@ -50,6 +53,8 @@ class ChunkExtractor:
             max_chunk_tokens: Maximum tokens per chunk (larger symbols are still kept)
         """
         self.include_nested = include_nested
+        if max_chunk_tokens is None:
+            max_chunk_tokens = get_config().indexer.max_chunk_tokens
         self.max_chunk_tokens = max_chunk_tokens
     
     def extract(self, file: WalkedFile) -> List[SemanticChunk]:
@@ -65,6 +70,7 @@ class ChunkExtractor:
         # Detect language
         language = detect_language(file.path, file.content)
         file.language = language
+        max_chunk_tokens = self._max_tokens_for_language(language)
         
         # Get parser
         parser = get_parser(language)
@@ -85,7 +91,7 @@ class ChunkExtractor:
         
         # Convert to chunks
         chunks = self._symbols_to_chunks(
-            parse_result, file.content_hash, file.relative_path
+            parse_result, file.content_hash, file.relative_path, max_chunk_tokens
         )
         
         logger.debug(f"Extracted {len(chunks)} chunks from {file.relative_path}")
@@ -96,6 +102,7 @@ class ChunkExtractor:
         parse_result: ParseResult,
         content_hash: str,
         file_path: str,
+        max_chunk_tokens: int,
     ) -> List[SemanticChunk]:
         """Convert parsed symbols to semantic chunks."""
         chunks = []
@@ -112,10 +119,13 @@ class ChunkExtractor:
         
         # Compute module group for this file
         module_group = get_module_group(file_path, parse_result.language)
+        chunking_version = get_config().indexer.chunking_version
         
         for symbol in parse_result.symbols:
             # Build qualified name
-            if symbol.parent:
+            if symbol.qualified_name:
+                qualified_name = symbol.qualified_name
+            elif symbol.parent:
                 qualified_name = f"{symbol.parent}.{symbol.name}"
             else:
                 qualified_name = symbol.name
@@ -125,45 +135,68 @@ class ChunkExtractor:
             symbol_exports = frozenset([symbol.name]) if symbol.name in exported_names else frozenset()
             
             # Compute stable chunk ID
-            body_fingerprint = compute_body_fingerprint(symbol.code)
-            chunk_id = compute_chunk_id(
-                file_path,
-                qualified_name,
-                symbol.signature,
-                body_fingerprint
+            full_body_fingerprint = compute_body_fingerprint(symbol.code)
+            signature_canon = canonicalize_signature(symbol.signature)
+            stable_symbol_id = compute_stable_symbol_id(
+                parse_result.language,
+                symbol.symbol_type,
+                signature_canon,
+                full_body_fingerprint,
             )
-            
-            # Create metadata
-            metadata = ChunkMetadata(
-                file_path=file_path,
-                start_line=symbol.start_line,
-                end_line=symbol.end_line,
-                start_col=symbol.start_col,
-                end_col=symbol.end_col,
-                symbol_name=symbol.name,
-                qualified_name=qualified_name,
-                symbol_type=symbol.symbol_type,
-                signature=symbol.signature,
-                docstring=symbol.docstring,
-                imports_used=frozenset(symbol_imports),
-                exports_provided=symbol_exports,
-                parent_symbol=symbol.parent,
-                language=parse_result.language,
-                is_public=symbol.is_public,
-                is_test=self._is_test_code(file_path, symbol.name),
-                module_group=module_group,
+            symbol_identity = f"{parse_result.language}|{symbol.symbol_type.value}|{stable_symbol_id}"
+            subchunks = self._split_symbol_code(
+                symbol.code,
+                symbol.start_line,
+                max_chunk_tokens,
+                parse_result.language,
+                symbol.symbol_type,
             )
-            
-            # Create chunk with stable ID
-            chunk = SemanticChunk(
-                id=chunk_id,
-                metadata=metadata,
-            )
-            # Set code body separately (for lazy loading support)
-            chunk._code_body = symbol.code
-            chunk._code_loaded = True
-            
-            chunks.append(chunk)
+            for index, subchunk in enumerate(subchunks):
+                sub_code, sub_start_line, sub_end_line = subchunk
+                sub_body_fingerprint = compute_body_fingerprint(sub_code)
+                anchor = f"part:{index + 1}/{len(subchunks)}"
+                chunk_id = compute_chunk_id(
+                    symbol_identity=symbol_identity,
+                    signature_fingerprint=signature_canon,
+                    body_fingerprint=sub_body_fingerprint,
+                    chunking_version=chunking_version,
+                    anchor=anchor,
+                )
+
+                # Create metadata
+                metadata = ChunkMetadata(
+                    file_path=file_path,
+                    start_line=sub_start_line,
+                    end_line=sub_end_line,
+                    start_col=symbol.start_col,
+                    end_col=symbol.end_col,
+                    symbol_name=symbol.name,
+                    qualified_name=qualified_name,
+                    symbol_type=symbol.symbol_type,
+                    signature=symbol.signature,
+                    docstring=symbol.docstring,
+                    imports_used=frozenset(symbol_imports),
+                    exports_provided=symbol_exports,
+                    parent_symbol=symbol.parent,
+                    language=parse_result.language,
+                    is_public=symbol.is_public,
+                    is_test=self._is_test_code(file_path, symbol.name),
+                    module_group=module_group,
+                    chunking_version=chunking_version,
+                    stable_symbol_id=stable_symbol_id,
+                )
+
+                # Create chunk with stable ID
+                chunk = SemanticChunk(
+                    id=chunk_id,
+                    metadata=metadata,
+                )
+                # Set code body separately (for lazy loading support)
+                chunk._code_body = sub_code
+                chunk._code_loaded = True
+                chunk.content_hash = content_hash
+
+                chunks.append(chunk)
         
         return chunks
     
@@ -183,6 +216,139 @@ class ChunkExtractor:
             return True
         
         return False
+
+    def _max_tokens_for_language(self, language: str) -> int:
+        config = get_config().indexer
+        override = config.language_chunk_tokens.get(language)
+        if override:
+            return override
+        return self.max_chunk_tokens
+
+    def _split_symbol_code(
+        self,
+        code: str,
+        start_line: int,
+        max_chunk_tokens: int,
+        language: str,
+        symbol_type: SymbolType,
+    ) -> List[tuple[str, int, int]]:
+        line_count = max(1, len(code.splitlines())) if code else 0
+        if max_chunk_tokens <= 0:
+            return [(code, start_line, start_line + max(0, line_count - 1))]
+        estimated_tokens = len(code) // 4 + 1
+        if estimated_tokens <= max_chunk_tokens:
+            return [(code, start_line, start_line + max(0, line_count - 1))]
+
+        if language == "python" and symbol_type == SymbolType.CLASS:
+            structured = self._split_python_class(code, start_line, max_chunk_tokens)
+            if structured:
+                return structured
+
+        lines = code.splitlines(keepends=True)
+        chunks: List[tuple[str, int, int]] = []
+        current_lines: List[str] = []
+        current_tokens = 0
+        current_start_line = start_line
+
+        for idx, line in enumerate(lines):
+            line_tokens = len(line) // 4 + 1
+            if current_lines and (current_tokens + line_tokens) > max_chunk_tokens:
+                chunk_code = "".join(current_lines)
+                end_line = current_start_line + len(current_lines) - 1
+                chunks.append((chunk_code, current_start_line, end_line))
+                current_lines = [line]
+                current_tokens = line_tokens
+                current_start_line = start_line + idx
+            else:
+                current_lines.append(line)
+                current_tokens += line_tokens
+
+        if current_lines:
+            chunk_code = "".join(current_lines)
+            end_line = current_start_line + len(current_lines) - 1
+            chunks.append((chunk_code, current_start_line, end_line))
+
+        return chunks
+
+    def _split_python_class(
+        self,
+        code: str,
+        start_line: int,
+        max_chunk_tokens: int,
+    ) -> List[tuple[str, int, int]]:
+        """Split large Python classes on method boundaries using AST."""
+        try:
+            import ast
+        except Exception:
+            return []
+
+        try:
+            tree = ast.parse(code)
+        except Exception:
+            return []
+
+        class_node = None
+        for node in getattr(tree, "body", []):
+            if isinstance(node, ast.ClassDef):
+                class_node = node
+                break
+        if not class_node:
+            return []
+
+        lines = code.splitlines(keepends=True)
+        line_count = len(lines)
+        method_ranges = []
+        for node in getattr(class_node, "body", []):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if getattr(node, "lineno", None) and getattr(node, "end_lineno", None):
+                    method_ranges.append((node.lineno - 1, node.end_lineno - 1))
+        if not method_ranges:
+            return []
+
+        method_ranges.sort(key=lambda r: r[0])
+        blocks: List[tuple[int, int]] = []
+        cursor = 0
+        for start, end in method_ranges:
+            if start > cursor:
+                blocks.append((cursor, start - 1))
+            blocks.append((start, end))
+            cursor = end + 1
+        if cursor < line_count:
+            blocks.append((cursor, line_count - 1))
+
+        chunks: List[tuple[str, int, int]] = []
+        current_start = None
+        current_end = None
+        current_tokens = 0
+
+        for block_start, block_end in blocks:
+            block_code = "".join(lines[block_start:block_end + 1])
+            block_tokens = len(block_code) // 4 + 1
+            if current_start is not None and (current_tokens + block_tokens) > max_chunk_tokens:
+                chunk_code = "".join(lines[current_start:current_end + 1])
+                chunks.append((
+                    chunk_code,
+                    start_line + current_start,
+                    start_line + current_end,
+                ))
+                current_start = block_start
+                current_end = block_end
+                current_tokens = block_tokens
+            else:
+                if current_start is None:
+                    current_start = block_start
+                current_end = block_end if current_end is None else max(current_end, block_end)
+                current_tokens += block_tokens
+
+        if current_start is not None and current_end is not None:
+            chunk_code = "".join(lines[current_start:current_end + 1])
+            chunks.append((
+                chunk_code,
+                start_line + current_start,
+                start_line + current_end,
+            ))
+
+        return chunks
 
 
 def extract_chunks(file: WalkedFile, **kwargs) -> List[SemanticChunk]:
