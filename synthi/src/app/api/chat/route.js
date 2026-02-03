@@ -34,6 +34,18 @@ const DEFAULT_OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const DEFAULT_ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest';
 const UPSTREAM_TIMEOUT_MS = 45_000;
 
+const resolveProviderKey = ({ provider, model, apiKey }) => {
+    const providerName = (provider || '').toLowerCase();
+    const modelName = String(model || '').toLowerCase();
+    if (providerName === 'anthropic' || modelName.includes('claude')) {
+        return apiKey || process.env.ANTHROPIC_API_KEY || '';
+    }
+    if (providerName === 'openai' || modelName.includes('gpt') || modelName.includes('o1')) {
+        return apiKey || process.env.OPENAI_API_KEY || '';
+    }
+    return apiKey || process.env.GEMINI_API_KEY || '';
+};
+
 /**
  * Fetch code intelligence context from the backend.
  * This uses the deterministic retrieval controller to decide what context to include.
@@ -545,6 +557,17 @@ export async function POST(request) {
     const { signal, dispose } = withTimeoutSignal(request.signal);
 
     try {
+        const resolvedKey = resolveProviderKey({ provider, model, apiKey });
+        if (!resolvedKey) {
+            return NextResponse.json(
+                {
+                    error: 'Missing API key',
+                    detail: 'No API key configured for the selected provider/model.',
+                    provider: provider || 'gemini',
+                },
+                { status: 401 }
+            );
+        }
         const stream = await (useAnthropic
             ? streamAnthropic({ model, apiKey, userContent, signal })
             : useOpenAI

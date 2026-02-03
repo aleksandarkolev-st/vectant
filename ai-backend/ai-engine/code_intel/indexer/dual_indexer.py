@@ -326,7 +326,7 @@ class DualIndexer:
         
         # Add to vector index
         for chunk in all_chunks:
-            if chunk.embedding:
+            if chunk.embedding is not None:
                 self.vector_index.add(chunk)
 
         # Add to lexical index
@@ -399,7 +399,7 @@ class DualIndexer:
         if not skip_embeddings and chunks:
             self.embedder.embed_chunks(chunks)
             for chunk in chunks:
-                if chunk.embedding:
+                if chunk.embedding is not None:
                     self.vector_index.add(chunk)
 
         # Add to lexical index

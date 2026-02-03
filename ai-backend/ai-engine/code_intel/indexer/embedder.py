@@ -262,6 +262,8 @@ class Embedder:
                 logger.error(f"Embedding batch failed: {e}")
                 # Fill with None for failed batch
                 all_embeddings.extend([None] * len(batch))
+
+        return all_embeddings
     
     def embed_chunk(self, chunk: SemanticChunk) -> SemanticChunk:
         """
