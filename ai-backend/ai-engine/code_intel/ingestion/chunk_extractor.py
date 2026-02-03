@@ -88,6 +88,14 @@ class ChunkExtractor:
         if not parse_result.success and not parse_result.symbols:
             logger.debug(f"Parse unsuccessful for {file.relative_path}")
             return []
+
+        # Attach parse metadata to file for downstream indexing
+        try:
+            file.imports = parse_result.imports
+            file.exports = parse_result.exports
+        except Exception:
+            file.imports = []
+            file.exports = []
         
         # Convert to chunks
         chunks = self._symbols_to_chunks(
@@ -133,6 +141,7 @@ class ChunkExtractor:
             # Determine what this symbol imports/exports
             symbol_imports = symbol.imports if symbol.imports else frozenset()
             symbol_exports = frozenset([symbol.name]) if symbol.name in exported_names else frozenset()
+            symbol_type_refs = symbol.type_refs if symbol.type_refs else frozenset()
             
             # Compute stable chunk ID
             full_body_fingerprint = compute_body_fingerprint(symbol.code)
@@ -177,6 +186,7 @@ class ChunkExtractor:
                     docstring=symbol.docstring,
                     imports_used=frozenset(symbol_imports),
                     exports_provided=symbol_exports,
+                    type_refs=frozenset(symbol_type_refs),
                     parent_symbol=symbol.parent,
                     language=parse_result.language,
                     is_public=symbol.is_public,

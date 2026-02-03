@@ -269,6 +269,7 @@ class RetrievalPipeline:
                     )
             candidates = list(merged.values())
             candidates_found = len(candidates)
+            retrieval_stats["post_dedup"] = candidates_found
         assert retrieval_stats.get("post_dedup", candidates_found) == candidates_found, (
             "Dedup must occur before ranking/budgeting"
         )

@@ -53,6 +53,8 @@ class FileEntry:
     imports: Set[FilePath] = field(default_factory=set)
     # Files that import this file
     imported_by: Set[FilePath] = field(default_factory=set)
+    # Imported symbol names keyed by resolved file
+    import_symbols: Dict[FilePath, Set[str]] = field(default_factory=dict)
 
 
 class SymbolGraph:
@@ -183,6 +185,10 @@ class SymbolGraph:
         # Track edge by file for deletion
         if edge.file_path:
             self._file_to_edges[edge.file_path].append(edge)
+
+    def get_edges_for_file(self, file_path: FilePath) -> List[SymbolEdge]:
+        """Get all edges originating from a file."""
+        return list(self._file_to_edges.get(file_path, []))
     
     def get_node(self, name: QualifiedName) -> Optional[SymbolNode]:
         """Get a symbol node by name."""
@@ -506,6 +512,17 @@ class StructuralIndex:
                 line=chunk.metadata.start_line,
             )
             self._graph.add_edge(edge)
+
+        # Add type reference edges
+        for type_ref in chunk.metadata.type_refs:
+            edge = SymbolEdge(
+                source=qualified_name,
+                target=type_ref,
+                edge_type=EdgeType.USES_TYPE,
+                file_path=file_path,
+                line=chunk.metadata.start_line,
+            )
+            self._graph.add_edge(edge)
         
         # Add parent-child edge if nested
         if chunk.metadata.parent_symbol:
@@ -525,6 +542,7 @@ class StructuralIndex:
         imports: List[str],
         content_hash: str,
         language: str,
+        import_symbols: Optional[Dict[FilePath, Set[str]]] = None,
     ) -> None:
         """
         Index import relationships for a file.
@@ -540,6 +558,9 @@ class StructuralIndex:
         
         file_entry = self._files[file_path]
         file_entry.content_hash = content_hash
+
+        # Store imported symbol names (for linking)
+        file_entry.import_symbols = import_symbols or {}
         
         # Resolve and add imports
         old_imports = file_entry.imports.copy()
@@ -563,6 +584,59 @@ class StructuralIndex:
                 )
         
         self._dirty = True
+
+    def resolve_import_symbol_edges(self, file_path: FilePath) -> int:
+        """Resolve import edges to qualified symbols for a file."""
+        if file_path not in self._files:
+            return 0
+        file_entry = self._files[file_path]
+        import_symbols = file_entry.import_symbols or {}
+        if not import_symbols:
+            return 0
+
+        # Build quick lookup for imported files
+        imported_symbol_maps: Dict[FilePath, Dict[str, Set[str]]] = {}
+        for imported_file, names in import_symbols.items():
+            if imported_file not in self._files:
+                continue
+            symbols = self._files[imported_file].symbols
+            simple_map: Dict[str, Set[str]] = {}
+            for qn in symbols:
+                simple = qn.split(".")[-1]
+                simple_map.setdefault(simple, set()).add(qn)
+            imported_symbol_maps[imported_file] = simple_map
+
+        existing = set(
+            (e.source, e.target, e.edge_type.value)
+            for e in self._graph.get_edges_for_file(file_path)
+        )
+
+        added = 0
+        for edge in self._graph.get_edges_for_file(file_path):
+            if edge.edge_type != EdgeType.IMPORTS:
+                continue
+            target_name = edge.target
+            # Try resolve against imported files' symbol maps
+            for imported_file, name_map in imported_symbol_maps.items():
+                for qn in name_map.get(target_name, set()):
+                    key = (edge.source, qn, EdgeType.IMPORTS.value)
+                    if key in existing:
+                        continue
+                    self._graph.add_edge(SymbolEdge(
+                        source=edge.source,
+                        target=qn,
+                        edge_type=EdgeType.IMPORTS,
+                        file_path=file_path,
+                        line=edge.line,
+                        confidence=min(1.0, edge.confidence + 0.1),
+                        source_method="resolver",
+                    ))
+                    existing.add(key)
+                    added += 1
+
+        if added:
+            self._dirty = True
+        return added
     
     def remove_file(self, file_path: FilePath) -> None:
         """Remove a file from the index."""
@@ -800,6 +874,9 @@ class StructuralIndex:
                     "symbols": list(entry.symbols),
                     "imports": list(entry.imports),
                     "imported_by": list(entry.imported_by),
+                    "import_symbols": {
+                        k: list(v) for k, v in (entry.import_symbols or {}).items()
+                    },
                 }
                 for path, entry in self._files.items()
             },
@@ -830,6 +907,9 @@ class StructuralIndex:
                     symbols=set(entry_data.get("symbols", [])),
                     imports=set(entry_data.get("imports", [])),
                     imported_by=set(entry_data.get("imported_by", [])),
+                    import_symbols={
+                        k: set(v or []) for k, v in (entry_data.get("import_symbols") or {}).items()
+                    },
                 )
             
             self._chunk_to_file = data.get("chunk_to_file", {})

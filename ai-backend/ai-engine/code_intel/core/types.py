@@ -113,6 +113,7 @@ class ChunkMetadata:
     # Dependencies (critical for structural expansion)
     imports_used: FrozenSet[str] = field(default_factory=frozenset)
     exports_provided: FrozenSet[str] = field(default_factory=frozenset)
+    type_refs: FrozenSet[str] = field(default_factory=frozenset)
     
     # Context
     parent_symbol: Optional[str] = None  # Containing class/module
@@ -498,6 +499,7 @@ class SemanticChunk:
             "lines": f"{self.metadata.start_line}-{self.metadata.end_line}",
             "imports": list(self.metadata.imports_used),
             "exports": list(self.metadata.exports_provided),
+            "type_refs": list(self.metadata.type_refs),
             "tokens": self.token_count,
             "module_group": self.metadata.module_group,
             "stable_symbol_id": self.metadata.stable_symbol_id,

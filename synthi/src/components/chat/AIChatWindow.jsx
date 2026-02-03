@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { Send, X, Plus, ChevronDown, ChevronRight, Sparkles, FileCode, Paperclip } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
@@ -9,6 +9,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { selectFileThunk } from '@/redux/workspaceSlice';
 import { selectFileCacheEntries } from '@/redux/workspaceSlice';
+import { findFileInTree } from '@/utils/fileUtils';
 import { useChatSessions } from './hooks/useChatSessions';
 import { useChatInput } from './hooks/useChatInput';
 import { useAISuggestions } from './hooks/useAISuggestions';
@@ -254,6 +255,177 @@ const AIChatWindow = ({
         }));
     };
 
+    // Build a map from fileCacheEntries for fast lookup
+    const cachedFileMap = useMemo(() => new Map(fileCacheEntries), [fileCacheEntries]);
+
+    /**
+     * Search for a symbol definition across all cached files.
+     * Prioritizes actual definitions (class, struct, function) over usages.
+     * For C++, prioritizes header files (.h, .hpp) for class definitions.
+     */
+    const findSymbolInWorkspace = useCallback((symbolName) => {
+        // Helper to find file node by path
+        const findNodeByPath = (nodes, targetPath) => {
+            for (const node of nodes) {
+                if (!node.isFolder && node.path === targetPath) {
+                    return node;
+                }
+                if (node.isFolder && node.children) {
+                    const found = findNodeByPath(node.children, targetPath);
+                    if (found) return found;
+                }
+            }
+            return null;
+        };
+
+        // Definition patterns - these indicate where the symbol is DEFINED, not just used
+        const getDefinitionPatterns = (name) => [
+            new RegExp(`\\bclass\\s+${name}\\b`),           // class definition
+            new RegExp(`\\bstruct\\s+${name}\\b`),          // struct definition
+            new RegExp(`\\benum\\s+${name}\\b`),            // enum definition
+            new RegExp(`\\binterface\\s+${name}\\b`),       // interface definition
+            new RegExp(`\\btype\\s+${name}\\b`),            // type alias
+            new RegExp(`\\bdef\\s+${name}\\s*\\(`),         // Python function def
+            new RegExp(`\\bfunction\\s+${name}\\s*\\(`),    // JS function declaration
+            new RegExp(`\\bconst\\s+${name}\\s*=`),         // JS const declaration
+            new RegExp(`^\\s*${name}\\s*::`),               // C++ method implementation
+            new RegExp(`\\b${name}\\s*\\([^)]*\\)\\s*{`),   // Function with body
+            new RegExp(`\\b${name}\\s*\\([^)]*\\)\\s*:`),   // Constructor initializer list
+        ];
+
+        const defPatterns = getDefinitionPatterns(symbolName);
+        
+        // Collect all matches with priority scores
+        const matches = [];
+        
+        for (const [path, content] of cachedFileMap.entries()) {
+            if (!content) continue;
+            const lines = content.split('\n');
+            
+            // Check file type for prioritization
+            const isHeader = /\.(h|hpp|hxx)$/i.test(path);
+            const isSource = /\.(c|cpp|cxx|cc)$/i.test(path);
+            
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                if (!line.includes(symbolName)) continue;
+                
+                // Check if this is a definition
+                const isDefinition = defPatterns.some(p => p.test(line));
+                
+                // Calculate priority score
+                // Higher score = better match
+                let priority = 0;
+                if (isDefinition) {
+                    priority += 100;  // Definitions are strongly preferred
+                    if (isHeader) {
+                        priority += 50;  // Header file definitions are best for C++
+                    }
+                }
+                // For C++ class methods, the .cpp file implementation
+                if (isSource && new RegExp(`${symbolName}\\s*::`).test(line)) {
+                    priority += 80;  // Method implementation in source file
+                }
+                
+                const fileNode = findNodeByPath(rawFiles, path);
+                if (fileNode) {
+                    matches.push({
+                        fileNode,
+                        lineNumber: i + 1,
+                        priority,
+                        path
+                    });
+                }
+                
+                // Only keep the first match per file (the definition if found)
+                if (isDefinition) break;
+            }
+        }
+        
+        // Sort by priority (highest first)
+        matches.sort((a, b) => b.priority - a.priority);
+        
+        // Return the best match
+        if (matches.length > 0) {
+            const best = matches[0];
+            return { fileNode: best.fileNode, lineNumber: best.lineNumber };
+        }
+        
+        return null;
+    }, [cachedFileMap, rawFiles]);
+
+    /**
+     * Handle clicks on file names and symbols in AI chat messages.
+     * Delegates click events to navigate to the referenced file or symbol.
+     */
+    const handleContentNavClick = useCallback((e) => {
+        const navLink = e.target.closest('.ai-nav-link');
+        if (!navLink) return;
+        
+        const navType = navLink.dataset.navType;
+        const navTarget = navLink.dataset.navTarget;
+        if (!navType || !navTarget) return;
+        
+        e.preventDefault();
+        e.stopPropagation();
+        
+        if (navType === 'file') {
+            // Find the file in the workspace tree by name
+            let fileNode = findFileInTree(rawFiles, navTarget);
+            
+            // Fallback: try searching for a file ending with this name
+            if (!fileNode) {
+                const findByPath = (nodes, filename) => {
+                    for (const node of nodes) {
+                        if (!node.isFolder) {
+                            if (node.name === filename || 
+                                node.path?.endsWith('/' + filename) || 
+                                node.path?.endsWith('\\' + filename) ||
+                                node.path === filename) {
+                                return node;
+                            }
+                        }
+                        if (node.isFolder && node.children) {
+                            const found = findByPath(node.children, filename);
+                            if (found) return found;
+                        }
+                    }
+                    return null;
+                };
+                fileNode = findByPath(rawFiles, navTarget);
+            }
+            
+            if (fileNode) {
+                dispatch(selectFileThunk(fileNode));
+            } else {
+                console.warn(`[AI Chat] Could not find file: ${navTarget}`);
+            }
+        } else if (navType === 'symbol') {
+            // Search for the symbol in workspace files
+            const result = findSymbolInWorkspace(navTarget);
+            if (result) {
+                const { fileNode, lineNumber } = result;
+                // Navigate to the file
+                dispatch(selectFileThunk(fileNode)).then(() => {
+                    // Wait a bit for the file to load and editor to update
+                    setTimeout(() => {
+                        if (editor) {
+                            try {
+                                editor.revealLineInCenter(lineNumber);
+                                editor.setPosition({ lineNumber, column: 1 });
+                                editor.focus();
+                            } catch (err) {
+                                console.warn('[AI Chat] Could not scroll to symbol:', err);
+                            }
+                        }
+                    }, 150);
+                });
+            } else {
+                console.warn(`[AI Chat] Could not find symbol: ${navTarget}`);
+            }
+        }
+    }, [dispatch, editor, findSymbolInWorkspace, rawFiles]);
+
     const handleCancel = () => {
         if (controller) {
             try { controller.abort(); } catch (e) { }
@@ -408,31 +580,86 @@ const AIChatWindow = ({
                                 const isFailed = msg.status === 'failed';
                                 const statusLabel = isFinished ? 'Completed' : isFailed ? 'Failed' : 'Working…';
                                 const statusColor = isFinished ? 'text-emerald-400' : isFailed ? 'text-rose-400' : 'text-amber-400';
-                                const statusBg = isFinished ? 'bg-emerald-500/10' : isFailed ? 'bg-rose-500/10' : 'bg-amber-500/10';
-                                const statusBorder = isFinished ? 'border-emerald-500/30' : isFailed ? 'border-rose-500/30' : 'border-amber-500/30';
+                                const iconColor = isFinished ? 'text-emerald-400' : isFailed ? 'text-rose-400' : 'text-amber-400';
                                 return (
-                                    <div key={msg.id} className={`text-xs font-mono rounded-md border ${statusBorder} ${statusBg} overflow-hidden`}>
+                                    <div key={msg.id} className={`text-xs rounded-xl overflow-hidden shadow-lg ${
+                                        isFinished ? 'bg-gradient-to-br from-[#0d1a15] to-[#0a0f0d] border border-emerald-900/40' :
+                                        isFailed ? 'bg-gradient-to-br from-[#1a0d0d] to-[#0f0a0a] border border-rose-900/40' :
+                                        'bg-gradient-to-br from-[#1a1708] to-[#0f0e0a] border border-amber-900/40'
+                                    }`}>
                                         <button
-                                            className={`w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/5 transition-colors`}
+                                            className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-white/[0.03] transition-all duration-200"
                                             onClick={() => toggleProgressMessage(msg.id)}
                                         >
-                                            {expanded ? <ChevronDown className="w-3.5 h-3.5 text-[#71717a]" strokeWidth={2} /> : <ChevronRight className="w-3.5 h-3.5 text-[#71717a]" strokeWidth={2} />}
-                                            <span className={`inline-flex items-center gap-1.5 text-xs font-medium ${statusColor}`}>
-                                                {isFinished && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>}
-                                                {isFailed && <span className="w-1.5 h-1.5 rounded-full bg-rose-400"></span>}
-                                                {!isFinished && !isFailed && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>}
-                                                {statusLabel}
-                                            </span>
-                                            <span className="text-[10px] text-[#71717a] truncate flex-1">{summarizeLog(msg.logs)}</span>
+                                            <div className={`flex items-center justify-center w-6 h-6 rounded-lg ${
+                                                isFinished ? 'bg-emerald-500/20' :
+                                                isFailed ? 'bg-rose-500/20' :
+                                                'bg-amber-500/20'
+                                            }`}>
+                                                {expanded ? 
+                                                    <ChevronDown className={`w-3.5 h-3.5 ${iconColor}`} strokeWidth={2.5} /> : 
+                                                    <ChevronRight className={`w-3.5 h-3.5 ${iconColor}`} strokeWidth={2.5} />
+                                                }
+                                            </div>
+                                            <div className="flex items-center gap-2 flex-1 min-w-0">
+                                                <span className={`inline-flex items-center gap-2 text-xs font-semibold ${statusColor}`}>
+                                                    {isFinished && <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]"></span>}
+                                                    {isFailed && <span className="w-2 h-2 rounded-full bg-rose-400 shadow-[0_0_8px_rgba(251,113,133,0.5)]"></span>}
+                                                    {!isFinished && !isFailed && <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shadow-[0_0_8px_rgba(251,191,36,0.5)]"></span>}
+                                                    {statusLabel}
+                                                </span>
+                                                <span className="text-[11px] text-[#71717a] truncate">{summarizeLog(msg.logs)}</span>
+                                            </div>
                                         </button>
                                         {expanded && (
-                                            <div className="px-3 pb-2 pt-1 space-y-1 border-t border-[#27272a]/50 bg-black/20">
+                                            <div className={`px-4 pb-3 pt-2 space-y-1.5 border-t ${
+                                                isFinished ? 'border-emerald-900/30 bg-black/20' :
+                                                isFailed ? 'border-rose-900/30 bg-black/20' :
+                                                'border-amber-900/30 bg-black/20'
+                                            }`}>
                                                 {(msg.logs || []).map((entry, idx) => {
                                                     return (
-                                                        <div key={`${msg.id}-log-${idx}`} className="text-[10px] text-[#71717a] font-mono">
-                                                            <span className="block whitespace-normal break-words leading-relaxed">
-                                                                <span className="text-[#52525b] select-none">›</span> {entry}
-                                                            </span>
+                                                        <div key={`${msg.id}-log-${idx}`} className="flex items-start gap-2 text-[11px] text-[#9ba2b8] font-mono">
+                                                            <span className={`select-none mt-0.5 ${
+                                                                isFinished ? 'text-emerald-600' :
+                                                                isFailed ? 'text-rose-600' :
+                                                                'text-amber-600'
+                                                            }`}>›</span>
+                                                            <span className="whitespace-normal break-words leading-relaxed">{entry}</span>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            }
+
+                            if (msg.role === 'context') {
+                                const meta = msg.contextMeta || {};
+                                const sources = Array.isArray(meta.sources) ? meta.sources : [];
+                                return (
+                                    <div key={msg.id} className="text-xs rounded-md border border-[#2a2b38] bg-[#0d0d11] px-3 py-2">
+                                        <div className="flex items-center justify-between gap-2">
+                                            <div className="flex items-center gap-2">
+                                                <FileCode className="w-3.5 h-3.5 text-[#4aba9a]" />
+                                                <span className="text-[11px] uppercase tracking-wide text-[#9ba2b8]">Context used</span>
+                                            </div>
+                                            {meta.traceSummary ? (
+                                                <span className="text-[10px] text-[#71717a] truncate max-w-[220px]">{meta.traceSummary}</span>
+                                            ) : null}
+                                        </div>
+                                        {sources.length > 0 && (
+                                            <div className="mt-2 space-y-1">
+                                                {sources.map((src, idx) => {
+                                                    const file = src?.file || 'unknown';
+                                                    const symbol = src?.symbol ? ` · ${src.symbol}` : '';
+                                                    const lineInfo = src?.start_line && src?.end_line
+                                                        ? ` (L${src.start_line}-${src.end_line})`
+                                                        : '';
+                                                    return (
+                                                        <div key={`${file}-${idx}`} className="text-[11px] text-[#c7c9d1] font-mono truncate">
+                                                            {file}{lineInfo}{symbol}
                                                         </div>
                                                     );
                                                 })}
@@ -670,6 +897,7 @@ const AIChatWindow = ({
                                     )}
                                     <div
                                         className="break-normal whitespace-normal text-xs leading-relaxed ai-chat-content min-w-0"
+                                        onClick={handleContentNavClick}
                                         dangerouslySetInnerHTML={{ __html: formatMessageContent(msg.content) }}
                                     />
                                     <span className="text-[10px] text-[#52525b] mt-1.5 block">
@@ -704,9 +932,11 @@ const AIChatWindow = ({
                         })
                     )}
                     {streamingMessage ? (
-                        <div className="text-xs text-[#e4e4e7] whitespace-pre-wrap leading-relaxed">
-                            {streamingMessage}
-                        </div>
+                        <div 
+                            className="text-xs text-[#e4e4e7] leading-relaxed ai-chat-content"
+                            onClick={handleContentNavClick}
+                            dangerouslySetInnerHTML={{ __html: formatMessageContent(streamingMessage) }}
+                        />
                     ) : null}
                     {showThinking && (
                         <div className="flex justify-start">

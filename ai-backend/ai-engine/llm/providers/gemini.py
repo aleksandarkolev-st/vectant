@@ -56,22 +56,26 @@ class GeminiProvider(AiProvider):
             raise ValueError("LLM disabled: set GEMINI_API_KEY or provide api_key to enable suggestions.")
 
         # Build prompt with user's question and code context
-        # Prefer explicit mode flag. Support 'fullfile' (return full file in fenced block)
-        # and 'patch' (return a unified diff). For other cases, prefer the standard prompt
-        # but include the user's instruction.
-        if mode and isinstance(mode, str) and mode.lower() == 'fullfile':
+        # Prefer explicit mode flag. Support 'fullfile' (return full file in fenced block),
+        # 'patch' (return a unified diff), and 'explain' (no code changes, just explanation).
+        # For other cases, prefer the standard prompt but include the user's instruction.
+        mode_lower = mode.lower() if mode and isinstance(mode, str) else ''
+        
+        if mode_lower == 'fullfile':
             full_prompt = build_fullfile_prompt(code, lang, prompt or '', files=files, focus=focus)
-        elif mode and isinstance(mode, str) and mode.lower() == 'patch':
+        elif mode_lower == 'patch':
             full_prompt = build_patch_prompt(code, lang, prompt or '', files=files, focus=focus)
+        elif mode_lower == 'explain':
+            # Explicit explain mode - no code changes, just explanation
+            full_prompt = build_prompt(code, lang, user_prompt=prompt or '', files=files, focus=focus, mode='explain')
         else:
             # Backwards-compat: some clients include the instructive string in `prompt`.
             if prompt and 'Respond only with the updated full file contents' in prompt:
                 full_prompt = build_fullfile_prompt(code, lang, prompt, files=files, focus=focus)
             else:
-                # If user's prompt explicitly asks for minimal edits or renames,
-                # augment the prompt with an instruction to prefer minimal changes.
-                augmented = (prompt or '') + "\n\nWhen possible prefer minimal edits and only change what the user requests." 
-                full_prompt = build_prompt(code, lang, user_prompt=augmented, files=files, focus=focus)
+                # build_prompt will auto-detect explain queries based on keywords
+                # Only add "prefer minimal edits" for non-explain queries
+                full_prompt = build_prompt(code, lang, user_prompt=prompt or '', files=files, focus=focus)
 
         try:
             model_name = model or self.model_name

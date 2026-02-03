@@ -130,6 +130,7 @@ class ParseResult:
                 docstring=symbol.docstring,
                 imports_used=frozenset(symbol.imports),
                 exports_provided=frozenset(symbol.exports),
+                type_refs=frozenset(symbol.type_refs),
                 parent_symbol=symbol.parent,
                 language=self.language,
                 is_public=symbol.is_public,
@@ -170,6 +171,7 @@ class ImportStatement:
     
     # Type
     is_relative: bool = False
+    level: int = 0  # Python relative import level (0 = absolute)
     is_type_only: bool = False  # TypeScript 'import type'
 
 
