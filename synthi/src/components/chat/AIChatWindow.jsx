@@ -912,7 +912,7 @@ const AIChatWindow = ({
                                         </div>
                                     )}
                                     <div
-                                        className="break-normal whitespace-normal text-xs leading-relaxed ai-chat-content min-w-0"
+                                        className="break-normal whitespace-normal text-xs leading-relaxed ai-chat-content min-w-0 w-full overflow-hidden"
                                         onClick={handleContentNavClick}
                                     >
                                         <MessageContent content={msg.content} enableNavigation={true} />
@@ -937,7 +937,7 @@ const AIChatWindow = ({
                                     className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                                 >
                                     <div
-                                        className={`max-w-[80%] px-3 py-2 rounded-lg text-sm ai-chat-message min-w-0 ${msg.role === 'user'
+                                        className={`max-w-[80%] px-3 py-2 rounded-lg text-sm ai-chat-message min-w-0 overflow-hidden ${msg.role === 'user'
                                                 ? 'bg-[#3b82f6] text-white'
                                                 : 'bg-[#18181b] text-[#e4e4e7] border border-[#27272a]'
                                             }`}
@@ -950,7 +950,7 @@ const AIChatWindow = ({
                     )}
                     {streamingMessage ? (
                         <div 
-                            className="text-xs text-[#e4e4e7] leading-relaxed ai-chat-content"
+                            className="text-xs text-[#e4e4e7] leading-relaxed ai-chat-content min-w-0 w-full overflow-hidden"
                             onClick={handleContentNavClick}
                         >
                             <MessageContent content={streamingMessage} enableNavigation={true} />

@@ -288,6 +288,14 @@
   scrollbar-width: none;
 }
 
+/* AI chat content container - ensures code blocks don't overflow */
+.ai-chat-content {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
 .ai-chat-message pre.ai-code-block,
 .ai-code-block {
   width: 100%;
@@ -332,6 +340,8 @@
   overflow: hidden;
   border: 1px solid #1e2028;
   background: #0d0e12;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .code-lang-label {
@@ -347,6 +357,7 @@
   background: rgba(30, 32, 40, 0.8);
   border-bottom-left-radius: 6px;
   user-select: none;
+  z-index: 1;
 }
 
 /* Syntax highlighting colors - Synthi theme */
@@ -384,23 +395,31 @@
   color: #b8a8f0;
 }
 
-/* Shiki syntax highlighting container */
-.shiki-container {
-  width: 100%;
-  overflow: hidden;
-}
-
-.shiki-container pre {
+/* Message content wrapper - ensures proper containment */
+.message-content {
   width: 100%;
   max-width: 100%;
   min-width: 0;
+  overflow: hidden;
+}
+
+/* Shiki syntax highlighting container */
+.shiki-container {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.shiki-container pre {
+  width: max-content;
+  min-width: 100%;
   box-sizing: border-box;
   white-space: pre;
   word-break: normal;
   overflow-wrap: normal;
   text-wrap: nowrap;
-  overflow-x: auto;
-  overflow-y: auto;
   border-radius: 8px;
   padding: 12px 14px;
   margin: 0;
@@ -411,9 +430,6 @@
 
 .shiki-container code {
   display: block;
-  width: 100%;
-  max-width: 100%;
-  min-width: 0;
   white-space: pre;
   word-break: normal;
   overflow-wrap: normal;
