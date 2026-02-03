@@ -28,6 +28,36 @@ const CODE_INTEL_BASE = process.env.CODE_INTEL_URL || process.env.AI_ENGINE_URL 
 const DEFAULT_GEMINI_MODEL = process.env.SYNTHI_AI_MODEL || process.env.GEMINI_MODEL || 'gemini-2.0-flash';
 const UPSTREAM_TIMEOUT_MS = 45_000;
 
+/**
+ * Classify user query intent using the AI backend's LLM-based classifier.
+ * This determines whether the user wants code changes or just an explanation.
+ * 
+ * @param {string} query - The user's query
+ * @param {string} context - Optional context (e.g., current file content)
+ * @returns {Promise<Object>} - { intent, needs_code_changes, response_mode }
+ */
+async function classifyIntent(query, context = null) {
+    try {
+        const response = await fetch(`${CODE_INTEL_BASE}/classify/intent`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ query, context }),
+            signal: AbortSignal.timeout(3000), // Fast timeout - intent classification should be quick
+        });
+        
+        if (!response.ok) {
+            console.warn(`Intent classification failed: ${response.status}`);
+            return { intent: 'unknown', needs_code_changes: true, response_mode: 'patch' };
+        }
+        
+        return await response.json();
+    } catch (e) {
+        console.warn('Intent classification error:', e.message);
+        // Default to assuming code changes are needed (safer for the editor use case)
+        return { intent: 'unknown', needs_code_changes: true, response_mode: 'patch' };
+    }
+}
+
 // System prompt for code intelligence chat
 // Key principle: Only act on explicit requests, never suggest changes unprompted
 const CODE_INTEL_SYSTEM_PROMPT = `You are a code intelligence assistant integrated into an IDE.

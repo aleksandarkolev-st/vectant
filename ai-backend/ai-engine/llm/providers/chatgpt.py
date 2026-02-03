@@ -38,16 +38,22 @@ class ChatGPTProvider(AiProvider):
         if not api_key and not os.getenv("OPENAI_API_KEY"):
             return "LLM disabled: set OPENAI_API_KEY or provide api_key to enable suggestions."
 
-        if mode and isinstance(mode, str) and mode.lower() == 'fullfile':
+        # Prefer explicit mode flag. Support 'fullfile', 'patch', and 'explain' modes.
+        mode_lower = mode.lower() if mode and isinstance(mode, str) else ''
+        
+        if mode_lower == 'fullfile':
             full_prompt = build_fullfile_prompt(code, lang, prompt or '', files=files, focus=focus)
-        elif mode and isinstance(mode, str) and mode.lower() == 'patch':
+        elif mode_lower == 'patch':
             full_prompt = build_patch_prompt(code, lang, prompt or '', files=files, focus=focus)
+        elif mode_lower == 'explain':
+            # Explicit explain mode - no code changes, just explanation
+            full_prompt = build_prompt(code, lang, user_prompt=prompt or '', files=files, focus=focus, mode='explain')
         else:
             if prompt and 'Respond only with the updated full file contents' in prompt:
                 full_prompt = build_fullfile_prompt(code, lang, prompt, files=files, focus=focus)
             else:
-                augmented = (prompt or '') + "\n\nWhen possible prefer minimal edits and only change what the user requests."
-                full_prompt = build_prompt(code, lang, user_prompt=augmented, files=files, focus=focus)
+                # build_prompt will auto-detect explain queries based on keywords
+                full_prompt = build_prompt(code, lang, user_prompt=prompt or '', files=files, focus=focus)
 
         try:
             client = self._get_client(api_key)
