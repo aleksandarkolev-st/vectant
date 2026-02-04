@@ -33,6 +33,8 @@ from .reranker import (
     RerankedResult,
     rerank_results,
 )
+from .spec_index import SpecIndex
+from .grounding_verifier import GroundingVerifier, GroundingResult
 
 
 __all__ = [
@@ -85,4 +87,11 @@ __all__ = [
     "RerankerConfig",
     "RerankedResult",
     "rerank_results",
+
+    # Spec layer
+    "SpecIndex",
+
+    # Grounding verifier
+    "GroundingVerifier",
+    "GroundingResult",
 ]

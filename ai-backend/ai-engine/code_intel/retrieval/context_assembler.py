@@ -121,6 +121,12 @@ class ContextAssembler:
             )
             if summaries_section:
                 sections.append(summaries_section)
+
+        # Section 3b: Spec Context (docs/tests)
+        if allocation.included_spec_chunks:
+            spec_section = self._format_spec_section(allocation.included_spec_chunks)
+            if spec_section:
+                sections.append(spec_section)
         
         # Section 4: Code Chunks (grouped by file)
         code_section = self._format_code_section(
@@ -147,14 +153,14 @@ class ContextAssembler:
         
         # Collect metadata
         included_files = list(set(
-            c.chunk.file_path for c in allocation.included_chunks
+            c.chunk.file_path for c in allocation.included_chunks + allocation.included_spec_chunks
         ))
         included_symbols = [
-            c.chunk.symbol_name for c in allocation.included_chunks
+            c.chunk.symbol_name for c in allocation.included_chunks + allocation.included_spec_chunks
             if c.chunk.symbol_name
         ]
         included_chunk_ids = [
-            c.chunk.id for c in allocation.included_chunks
+            c.chunk.id for c in allocation.included_chunks + allocation.included_spec_chunks
             if c.chunk.id
         ]
         
@@ -239,6 +245,19 @@ class ContextAssembler:
             
             lines.append("")
         
+        return "\n".join(lines)
+
+    def _format_spec_section(
+        self,
+        spec_chunks: List[RetrievalCandidate],
+    ) -> str:
+        lines = ["# Spec Context", ""]
+        for cand in spec_chunks:
+            chunk = cand.chunk
+            lines.append(f"## {chunk.file_path}")
+            if chunk.code_body:
+                lines.append(chunk.code_body)
+            lines.append("")
         return "\n".join(lines)
 
     def _format_module_summaries_section(

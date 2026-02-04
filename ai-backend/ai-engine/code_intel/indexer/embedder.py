@@ -198,6 +198,33 @@ class Embedder:
             except ImportError:
                 raise ImportError("google-generativeai package required for embeddings")
         return self._client
+
+    def has_cached_query_embedding(self, query: str) -> bool:
+        """Check if a query embedding is cached."""
+        if query in self._query_cache:
+            return True
+        normalized = query.lower().strip()
+        return normalized in self._query_cache
+
+    def get_cached_query_embedding(self, query: str) -> Optional[List[float]]:
+        """Get a cached query embedding if present."""
+        if query in self._query_cache:
+            return self._query_cache.get(query)
+        normalized = query.lower().strip()
+        return self._query_cache.get(normalized)
+
+    def cache_query_embedding(self, query: str, embedding: List[float]) -> None:
+        """Manually cache a query embedding (with LRU eviction)."""
+        if not query:
+            return
+        normalized = query.lower().strip()
+        # Evict oldest entry if over limit
+        if len(self._query_cache) >= self._cache_size:
+            oldest_key = next(iter(self._query_cache))
+            del self._query_cache[oldest_key]
+        self._query_cache[query] = embedding
+        if normalized != query:
+            self._query_cache[normalized] = embedding
     
     def embed_text(self, text: str, max_retries: int = 3) -> List[float]:
         """

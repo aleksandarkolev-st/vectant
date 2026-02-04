@@ -510,6 +510,8 @@ class CodeIntelEngine:
                 },
                 "counters": self._last_metrics(),
             },
+            grounding_spans=pipeline_result.grounding_spans,
+            clarifying_question=pipeline_result.clarifying_question,
         )
 
         required_symbols = list(pipeline_result.parsed_query.symbol_names or [])
