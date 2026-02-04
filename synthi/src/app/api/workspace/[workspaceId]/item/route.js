@@ -285,6 +285,8 @@ export async function DELETE(request, { params }) {
     const body = await request.json(); 
     const itemPath = body.itemPath;
 
+    console.log('[DELETE] workspaceId:', workspaceId, 'itemPath:', itemPath, 'isFolder:', itemPath?.endsWith('/'));
+
     try {
 
         if (!itemPath) {
@@ -292,37 +294,48 @@ export async function DELETE(request, { params }) {
         }
 
         const gcsFilePath = `workspaces/${workspaceId}/${itemPath}`;
-        const item = storage.bucket(BUCKET_NAME).file(gcsFilePath);
-
-        const [exists] = await item.exists();
-        if (!exists) {
-                return NextResponse.json({ error: `File not found: ${itemPath}` }, { status: 404 });
-        }
+        console.log('[DELETE] gcsFilePath:', gcsFilePath);
 
         if (itemPath.endsWith('/')) {
-
+            // For folders, we don't check if a folder "object" exists because
+            // GCS folders are virtual - they exist only as prefixes of files.
+            // Just delete all files with this prefix.
+            const prefix = gcsFilePath.endsWith('/') ? gcsFilePath.substring(0, gcsFilePath.length - 1) : gcsFilePath;
+            console.log('[DELETE] Listing files with prefix:', prefix);
+            
             const [filesToDelete] = await storage.bucket(BUCKET_NAME).getFiles({
-                prefix: gcsFilePath.substring(0, gcsFilePath.length - 1),
+                prefix: prefix,
             });
             
-            await Promise.allSettled(filesToDelete.map(file => file.delete({ ignoreNotFound: true })))
+            console.log('[DELETE] Found files to delete:', filesToDelete.length, filesToDelete.map(f => f.name));
+            
+            if (filesToDelete.length === 0) {
+                // No files found with this prefix - folder doesn't exist
+                return NextResponse.json({ error: `Folder not found: ${itemPath}` }, { status: 404 });
+            }
+            
+            await Promise.allSettled(filesToDelete.map(file => file.delete({ ignoreNotFound: true })));
 
+            // Also try to delete the folder marker object if it exists
+            const folderMarker = storage.bucket(BUCKET_NAME).file(gcsFilePath);
             try {
-                await item.delete();
+                await folderMarker.delete({ ignoreNotFound: true });
             } catch (markerError) {
-                if (markerError.code !== 404) {
-                    throw markerError; 
-                }
+                // Ignore - marker might not exist
             }
 
-            const count = filesToDelete ? filesToDelete.length : 0;
-            
             return NextResponse.json({ 
-                message: `${count} items deleted successfully(${itemPath}).`, 
+                message: `${filesToDelete.length} items deleted successfully(${itemPath}).`, 
                 path: itemPath 
             }, { status: 200 });
 
         } else {
+            // For files, check existence first
+            const item = storage.bucket(BUCKET_NAME).file(gcsFilePath);
+            const [exists] = await item.exists();
+            if (!exists) {
+                return NextResponse.json({ error: `File not found: ${itemPath}` }, { status: 404 });
+            }
             
             await item.delete();
 

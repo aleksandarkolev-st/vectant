@@ -1247,6 +1247,78 @@ async fn wire_peer_channels(
                                                 });
                                                 return;
                                             }
+                                            
+                                            // Flutter Android emulator target
+                                            if target == "flutter-android-emulator" {
+                                                let session_id = req.session_id.clone().unwrap_or_else(|| {
+                                                    format!("sess-{}-{}", chrono::Utc::now().timestamp_millis(), uuid::Uuid::new_v4().as_u128() % 100000)
+                                                });
+                                                let project_root = req.project_root.clone();
+                                                let slug = req.slug.clone();
+                                                let log_clone = log.clone();
+                                                tokio::spawn(async move {
+                                                    let workspace_path = if let Some(s) = &slug {
+                                                        let local_dir = std::path::PathBuf::from("/synthi").join(s);
+                                                        let force_redownload = std::env::var("SYNTHI_MOBILE_FORCE_REDOWNLOAD")
+                                                            .ok()
+                                                            .map(|v| {
+                                                                let v = v.trim().to_ascii_lowercase();
+                                                                matches!(v.as_str(), "1" | "true" | "yes" | "y" | "on")
+                                                            })
+                                                            .unwrap_or(false);
+
+                                                        if force_redownload && local_dir.exists() {
+                                                            if let Err(e) = std::fs::remove_dir_all(&local_dir) {
+                                                                eprintln!(
+                                                                    "[Flutter] Failed to clear existing workspace {}: {}",
+                                                                    local_dir.display(),
+                                                                    e
+                                                                );
+                                                            }
+                                                        }
+
+                                                        match storage::download(&s, None).await {
+                                                            Ok(path) => {
+                                                                eprintln!("[Flutter] Workspace ready at: {}", path.display());
+                                                                path
+                                                            },
+                                                            Err(e) => {
+                                                                eprintln!("[Flutter] Failed to download workspace: {}", e);
+                                                                let payload = serde_json::json!({
+                                                                    "sessionId": session_id,
+                                                                    "type": "mobile-status",
+                                                                    "status": "error",
+                                                                    "message": format!("Failed to download workspace: {}", e),
+                                                                });
+                                                                let _ = log_clone.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                                                return;
+                                                            }
+                                                        }
+                                                    } else {
+                                                        eprintln!("[Flutter] No slug provided, cannot download workspace");
+                                                        let payload = serde_json::json!({
+                                                            "sessionId": session_id,
+                                                            "type": "mobile-status",
+                                                            "status": "error",
+                                                            "message": "No workspace slug provided for Flutter build",
+                                                        });
+                                                        let _ = log_clone.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                                        return;
+                                                    };
+
+                                                    if let Err(e) = crate::android::job::handle_flutter_emulator_job(
+                                                        log_clone,
+                                                        session_id.clone(),
+                                                        workspace_path,
+                                                        project_root,
+                                                        false, // debug build by default
+                                                        pc_for_compile.clone(),
+                                                    ).await {
+                                                        eprintln!("[Main] Flutter emulator job failed: {:?}", e);
+                                                    }
+                                                });
+                                                return;
+                                            }
                                         }
 
                                         // Default: native compile flow

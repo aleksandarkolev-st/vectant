@@ -1031,6 +1031,43 @@ class GitService {
             // ignore
         }
     }
+    
+    /**
+     * Delete a file or directory (recursively)
+     * @param {string} slug - Workspace slug
+     * @param {string} itemPath - Path to file or directory
+     * @returns {Promise<{deleted: number}>} Number of items deleted
+     */
+    async deleteItem(slug, itemPath) {
+        const repoPath = this.getRepoPath(slug);
+        // Remove trailing slash for path operations
+        const cleanPath = itemPath.endsWith('/') ? itemPath.slice(0, -1) : itemPath;
+        const fullPath = path.join(repoPath, cleanPath);
+        
+        let deleted = 0;
+        
+        try {
+            const stat = await fs.promises.stat(fullPath);
+            
+            if (stat.isDirectory()) {
+                // Recursively delete directory
+                await fs.promises.rm(fullPath, { recursive: true, force: true });
+                // Count approximate items (we'll say 1 for the dir itself)
+                deleted = 1;
+            } else {
+                await fs.promises.unlink(fullPath);
+                deleted = 1;
+            }
+        } catch (e) {
+            if (e.code === 'ENOENT') {
+                // File/folder doesn't exist - not an error
+                return { deleted: 0, error: 'not_found' };
+            }
+            throw e;
+        }
+        
+        return { deleted };
+    }
 
     async listFiles(slug) {
         const repoPath = this.getRepoPath(slug);

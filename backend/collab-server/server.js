@@ -789,6 +789,12 @@ const server = http.createServer(async (req, res) => {
                     await gitService.createDirectory(slug, data.path);
                     result = { success: true };
                     break;
+                case 'delete-item':
+                    // Delete a file or folder from the workspace
+                    console.log('[Collab] delete-item called for:', slug, data.path);
+                    result = await gitService.deleteItem(slug, data.path);
+                    console.log('[Collab] delete-item result:', result);
+                    break;
                 case 'clear-collab':
                     // Clear Yjs persistence for specified files (used after merge conflict resolution)
                     const filesToClear = Array.isArray(data.files) ? data.files : (data.path ? [data.path] : []);
