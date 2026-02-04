@@ -247,7 +247,7 @@ export default function EmulatorPanel({
           return;
         }
 
-        if (s === 'running' || s === 'streaming' || s === 'ready' || s === 'done') {
+        if (['running', 'streaming', 'ready', 'done', 'emulator-ready', 'installing', 'launching'].includes(s)) {
           setErrorMessage('');
           setState(EMULATOR_STATES.STREAMING);
           return;

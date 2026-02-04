@@ -253,8 +253,10 @@ async fn apply_full_scaffold(
     fs::create_dir_all(android_dir.join("app/src/main/res/drawable-v21")).await?;
     fs::create_dir_all(android_dir.join("app/src/main/res/values")).await?;
     fs::create_dir_all(android_dir.join("app/src/main/res/values-night")).await?;
-    fs::create_dir_all(android_dir.join("app/src/debug")).await?;
-    fs::create_dir_all(android_dir.join("app/src/profile")).await?;
+    fs::create_dir_all(android_dir.join("app/src/debug/java")).await?;
+    fs::create_dir_all(android_dir.join("app/src/debug/kotlin")).await?;
+    fs::create_dir_all(android_dir.join("app/src/profile/java")).await?;
+    fs::create_dir_all(android_dir.join("app/src/profile/kotlin")).await?;
     fs::create_dir_all(android_dir.join("gradle/wrapper")).await?;
     
     let java_package_path = app_id.replace('.', "/");
@@ -526,6 +528,9 @@ async fn generate_gradle_properties(android_dir: &Path) -> Result<()> {
 android.useAndroidX=true
 android.enableJetifier=true
 org.gradle.caching=true
+org.gradle.daemon=true
+org.gradle.parallel=true
+org.gradle.configureondemand=true
 "#;
     
     fs::write(android_dir.join("gradle.properties"), normalize_line_endings(content))

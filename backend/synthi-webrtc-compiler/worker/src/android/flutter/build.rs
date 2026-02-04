@@ -145,6 +145,14 @@ pub async fn build_flutter_apk(
     // Build extra args
     let mut extra_args: Vec<&str> = config.extra_args.iter().map(|s| s.as_str()).collect();
     
+    // Add offline mode for faster builds if deps are ready, but this can be risky if
+    // project has conditional dependencies or we missed something in detection.
+    // Safe option: rely on Gradle build cache.
+    // However, if we skipped pub_get, we imply we trust the environment state.
+    if config.skip_pub_get {
+         extra_args.push("--no-pub");
+    }
+
     if matches!(config.variant, BuildVariant::Profile) {
         extra_args.push("--profile");
     }
