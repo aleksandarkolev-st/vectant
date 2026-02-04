@@ -60,8 +60,8 @@ class IndexerConfig:
         "rust": 1600,
     })
     # Vector index settings
-    embedding_model: str = "text-embedding-004"  # Gemini embedding model
-    embedding_dimension: int = 768
+    embedding_model: str = "gemini-embedding-001"  # Newer Gemini embedding model
+    embedding_dimension: int = 3072
     embedding_api_key: Optional[str] = field(default_factory=lambda: os.getenv("GEMINI_API_KEY"))
     # Embedding throughput
     embedding_batch_size: int = 128

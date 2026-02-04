@@ -101,7 +101,9 @@ async function fetchCodeIntelContext({ workspacePath, query, maxTokens = 6000, c
                 max_tokens: maxTokens,
                 conversation_history: conversationHistory,
             }),
-            signal: AbortSignal.timeout(5000), // 5s timeout for faster response (reduced from 10s)
+            // TTFT optimization: Reduced timeout to 3s - if code intel is slow, skip it
+            // This ensures we don't block streaming for too long
+            signal: AbortSignal.timeout(3000),
         });
         
         if (!response.ok) {
@@ -291,7 +293,15 @@ const hydrateFromCollab = async ({ workspacePath, focusPath, code, files, signal
     return { code: hydratedCode, files: finalFiles };
 };
 
-const streamGemini = async ({ model, apiKey, userContent, conversationHistory = [], signal }) => {
+/**
+ * Sleep helper for retry delays
+ */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Stream from Gemini with automatic retry on 429 rate limiting
+ */
+const streamGemini = async ({ model, apiKey, userContent, conversationHistory = [], signal, maxRetries = 3 }) => {
     const key = apiKey || process.env.GEMINI_API_KEY || '';
     if (!key) {
         throw new Error('Gemini API key is not configured');
@@ -322,27 +332,72 @@ const streamGemini = async ({ model, apiKey, userContent, conversationHistory = 
     // Add current user message
     contents.push({ role: 'user', parts: [{ text: userContent }] });
 
-    const upstream = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-            'content-type': 'application/json',
-            accept: 'text/event-stream',
-        },
-        body: JSON.stringify({
-            systemInstruction: { parts: [{ text: CODE_INTEL_SYSTEM_PROMPT }] },
-            contents,
-            generationConfig: { maxOutputTokens: 4096, temperature: 0.2 },
-        }),
-        signal,
+    const requestBody = JSON.stringify({
+        systemInstruction: { parts: [{ text: CODE_INTEL_SYSTEM_PROMPT }] },
+        contents,
+        generationConfig: { maxOutputTokens: 4096, temperature: 0.2 },
     });
 
-    if (!upstream.ok || !upstream.body) {
-        throw new Error(`Upstream error ${upstream.status}`);
-    }
+    // Retry loop for 429 rate limiting
+    let lastError = null;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            const upstream = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    accept: 'text/event-stream',
+                },
+                body: requestBody,
+                signal,
+            });
 
+            // Handle rate limiting (429) with retry
+            if (upstream.status === 429) {
+                if (attempt < maxRetries) {
+                    // Exponential backoff: 500ms, 1s, 2s + jitter
+                    const delay = (500 * Math.pow(2, attempt)) + (Math.random() * 300);
+                    console.warn(`[Gemini] Rate limited (429), retry ${attempt + 1}/${maxRetries} after ${delay.toFixed(0)}ms`);
+                    await sleep(delay);
+                    continue;
+                }
+                throw new Error(`Upstream error 429 (rate limited after ${maxRetries} retries)`);
+            }
+
+            if (!upstream.ok || !upstream.body) {
+                throw new Error(`Upstream error ${upstream.status}`);
+            }
+
+            // Success - return the stream
+            return createGeminiReadableStream(upstream);
+            
+        } catch (e) {
+            lastError = e;
+            const errMsg = String(e?.message || '').toLowerCase();
+            
+            // Only retry on rate limiting or transient errors
+            if ((errMsg.includes('429') || errMsg.includes('resource') || errMsg.includes('quota')) && attempt < maxRetries) {
+                const delay = (500 * Math.pow(2, attempt)) + (Math.random() * 300);
+                console.warn(`[Gemini] Retryable error, retry ${attempt + 1}/${maxRetries} after ${delay.toFixed(0)}ms:`, e.message);
+                await sleep(delay);
+                continue;
+            }
+            
+            throw e;
+        }
+    }
+    
+    throw lastError || new Error('Max retries exceeded');
+};
+
+/**
+ * Create a ReadableStream from Gemini SSE response
+ */
+const createGeminiReadableStream = (upstream) => {
     const reader = upstream.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    
     return new ReadableStream({
         async pull(controller) {
             const { value, done } = await reader.read();
@@ -432,27 +487,21 @@ export async function POST(request) {
         fullRepoContext = false,
     } = body || {};
 
-    // Fetch code intelligence context BEFORE building user content
-    // This uses the deterministic retrieval controller - NOT the LLM
-    let codeIntelContext = null;
-    if (useCodeIntel && workspacePath && prompt) {
-        console.log('[CodeIntel] Fetching context for workspace:', workspacePath);
-        codeIntelContext = await fetchCodeIntelContext({
+    // TTFT optimization: Fetch code intel and hydrate from collab IN PARALLEL
+    // This reduces latency by running both operations concurrently
+    const codeIntelPromise = (useCodeIntel && workspacePath && prompt)
+        ? fetchCodeIntelContext({
             workspacePath,
             query: prompt,
             maxTokens: maxContextTokens,
             conversationHistory,
-        });
-        console.log('[CodeIntel] Context result:', {
-            hasContext: !!codeIntelContext?.context,
-            contextLength: codeIntelContext?.context?.length || 0,
-            sufficiency: codeIntelContext?.sufficiency,
-            sourcesCount: codeIntelContext?.sources?.length || 0,
-            tokensUsed: codeIntelContext?.tokensUsed,
-        });
-    }
-
-    const { code: hydratedCode, files: hydratedFiles } = await hydrateFromCollab({
+        }).catch(e => {
+            console.warn('[CodeIntel] Fetch failed, continuing without context:', e.message);
+            return { context: '', sufficiency: 'UNKNOWN', sources: [], refusal: null };
+        })
+        : Promise.resolve(null);
+    
+    const hydratePromise = hydrateFromCollab({
         workspacePath,
         focusPath,
         code,
@@ -460,6 +509,20 @@ export async function POST(request) {
         signal: request.signal,
         fullRepoContext: Boolean(fullRepoContext),
     });
+
+    // Wait for both in parallel
+    const [codeIntelContext, { code: hydratedCode, files: hydratedFiles }] = await Promise.all([
+        codeIntelPromise,
+        hydratePromise,
+    ]);
+    
+    if (codeIntelContext?.context) {
+        console.log('[CodeIntel] Context fetched:', {
+            contextLength: codeIntelContext.context.length,
+            sufficiency: codeIntelContext.sufficiency,
+            sourcesCount: codeIntelContext.sources?.length || 0,
+        });
+    }
 
     const userContent = buildUserContent({
         prompt,
@@ -513,12 +576,30 @@ export async function POST(request) {
             },
         });
     } catch (e) {
-        const isTimeout = String(e?.message || '').includes('timeout');
-        const status = String(e?.message || '').includes('401') ? 401 : 502;
-        return NextResponse.json(
-            { error: isTimeout ? 'Upstream timeout' : 'Upstream failure', detail: e?.message || 'stream failed' },
-            { status }
-        );
+        const errMsg = String(e?.message || '');
+        const isTimeout = errMsg.includes('timeout');
+        const isRateLimit = errMsg.includes('429') || errMsg.includes('rate') || errMsg.includes('quota');
+        
+        // Better status codes and messages
+        let status = 502;
+        let error = 'Upstream failure';
+        let detail = errMsg || 'stream failed';
+        
+        if (errMsg.includes('401')) {
+            status = 401;
+            error = 'Authentication failed';
+        } else if (isRateLimit) {
+            status = 429;
+            error = 'Rate limited';
+            detail = 'The AI service is temporarily overloaded. Please wait a moment and try again.';
+        } else if (isTimeout) {
+            status = 504;
+            error = 'Request timeout';
+            detail = 'The request took too long to complete. Please try again.';
+        }
+        
+        console.error(`[Chat API] Error: ${error} - ${detail}`);
+        return NextResponse.json({ error, detail }, { status });
     } finally {
         dispose();
     }

@@ -68,6 +68,7 @@ class DualIndexer:
         
         # Initialize indexes
         self.vector_index = VectorIndex(
+            dimension=self.config.indexer.embedding_dimension,
             persist_path=os.path.join(self.persist_dir, "vectors.json")
         )
         self.structural_index = StructuralIndex(
@@ -226,6 +227,7 @@ class DualIndexer:
                 pass
 
         self.vector_index = VectorIndex(
+            dimension=self.config.indexer.embedding_dimension,
             persist_path=os.path.join(self.persist_dir, "vectors.json")
         )
         self.structural_index = StructuralIndex(
