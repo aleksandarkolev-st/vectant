@@ -71,6 +71,13 @@ CRITICAL RULES:
 6. If asked a question about code behavior, answer the question. Do not suggest modifications.
 7. Only provide code changes when the user explicitly asks for them (e.g., "fix this", "refactor this", "change this to...").
 
+GROUNDING RULES (CRITICAL - prevents hallucination):
+8. ONLY reference files, functions, classes, and symbols that appear in the provided CODE CONTEXT section.
+9. If you need to mention code that is NOT in the context, explicitly state "This is not in the provided context but..."
+10. NEVER invent or assume the existence of files, functions, or symbols not shown in context.
+11. If the context doesn't contain enough information to answer, say so clearly rather than guessing.
+12. When explaining code, quote or reference specific lines from the context to ground your answer.
+
 You have access to code context retrieved from the user's workspace. Use this context to provide accurate, specific answers.
 
 If the context is insufficient to answer the question, say so clearly rather than guessing.`;
@@ -149,6 +156,17 @@ const buildUserContent = ({ prompt, code, files, lang, focusPath, codeIntelConte
         parts.push('=== RELEVANT CODE CONTEXT (retrieved by deterministic controller) ===');
         parts.push(codeIntelContext.context);
         parts.push('=== END CODE CONTEXT ===');
+        
+        // Add grounded symbols list for LLM to reference
+        if (Array.isArray(codeIntelContext.sources) && codeIntelContext.sources.length > 0) {
+            const groundedFiles = [...new Set(codeIntelContext.sources.map(s => s?.file).filter(Boolean))];
+            const groundedSymbols = [...new Set(codeIntelContext.sources.map(s => s?.symbol).filter(Boolean))];
+            parts.push(`[GROUNDED FILES: ${groundedFiles.join(', ')}]`);
+            if (groundedSymbols.length > 0) {
+                parts.push(`[GROUNDED SYMBOLS: ${groundedSymbols.join(', ')}]`);
+            }
+            parts.push('[IMPORTANT: Only reference the above files and symbols in your response. Do not invent or assume other code exists.]');
+        }
         
         // Add sufficiency indicator so LLM knows if context is complete
         if (codeIntelContext.sufficiency === 'INSUFFICIENT') {
@@ -570,7 +588,10 @@ export async function POST(request) {
                 // Include context metadata in headers for debugging
                 'x-code-intel-sufficiency': codeIntelContext?.sufficiency || 'NONE',
                 'x-code-intel-tokens': String(codeIntelContext?.tokensUsed || 0),
-                'x-code-intel-trace-count': String(codeIntelContext?.trace?.length || 0),
+                // Count only included entries for accurate telemetry
+                'x-code-intel-trace-count': String(
+                    codeIntelContext?.trace?.filter(t => t?.reason === 'included')?.length || 0
+                ),
                 ...(traceSummary ? { 'x-code-intel-trace-summary': traceSummary } : {}),
                 ...(sourcesHeader ? { 'x-code-intel-sources': sourcesHeader } : {}),
             },
