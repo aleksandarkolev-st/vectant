@@ -60,8 +60,8 @@ class IndexerConfig:
         "rust": 1600,
     })
     # Vector index settings
-    embedding_model: str = "text-embedding-004"  # Gemini embedding model
-    embedding_dimension: int = 768
+    embedding_model: str = "gemini-embedding-001"  # Newer Gemini embedding model
+    embedding_dimension: int = 3072
     embedding_api_key: Optional[str] = field(default_factory=lambda: os.getenv("GEMINI_API_KEY"))
     # Embedding throughput
     embedding_batch_size: int = 128
@@ -153,6 +153,60 @@ class RetrievalConfig:
     max_files_per_subsystem: int = 5
     never_mix_test_prod: bool = True
     prefer_public_over_internal: bool = True
+
+    # Two-tier retrieval (fast path + slow path)
+    enable_two_tier: bool = True
+    fast_bm25_top_k: int = 30
+    fast_vector_top_k: int = 8
+    fast_min_candidates: int = 6
+    fast_confidence_threshold: float = 0.55
+
+    # Aggressive scoping
+    aggressive_scoping: bool = True
+    enforce_module_scope: bool = True
+    enforce_folder_scope: bool = True
+
+    # Multi-index specialization (tests/interfaces/infra/core)
+    enable_multi_index: bool = True
+    index_kind_default: str = "core"
+
+    # Spec-first retrieval (docs/tests as specs)
+    enable_spec_layer: bool = True
+    spec_min_alignment: float = 0.2
+    spec_required_chunks: int = 2
+    spec_max_chunks: int = 4
+    spec_chunk_chars: int = 1400
+    spec_doc_globs: List[str] = field(default_factory=lambda: [
+        "docs/**", "README*", "**/*.md",
+    ])
+    spec_test_globs: List[str] = field(default_factory=lambda: [
+        "tests/**", "**/__tests__/**", "**/*test*.*", "**/*spec*.*",
+    ])
+
+    # Edits-aware retrieval
+    recency_decay_hours: float = 72.0
+    recency_max_boost: float = 0.25
+
+    # Change impact neighborhoods (git history)
+    enable_change_impact: bool = True
+    change_impact_commits: int = 200
+    change_impact_max_neighbors: int = 20
+    change_impact_boost: float = 0.15
+
+    # Caching
+    enable_retrieval_cache: bool = True
+    cache_ttl_seconds: int = 300
+    cache_max_entries: int = 200
+    cache_min_candidates: int = 6
+
+    # Reranking budget
+    rerank_max_k: int = 20
+    rerank_skip_confidence: float = 0.78
+
+    # Active retrieval depth (answerability-driven)
+    enable_active_retrieval: bool = True
+    answerability_min_score: float = 0.48
+    answerability_min_candidates: int = 8
 
 
 @dataclass

@@ -7,6 +7,8 @@ from typing import List, Optional, Set
 from .intent_classifier import IntentClassifier
 from .types import QueryIntent, RoutingResult
 from ..core.config import get_config
+from .change_impact import ChangeImpactModel
+from .project_dna import ProjectDNA
 
 
 logger = logging.getLogger("code_intel.routing.router")
@@ -20,6 +22,9 @@ class QueryRouter:
         self.file_reader = file_reader
         self.config = get_config()
         self.intent_classifier = IntentClassifier()
+        workspace_root = getattr(file_reader, "root", None) or "."
+        self.change_impact = ChangeImpactModel(workspace_root)
+        self.project_dna = ProjectDNA(structural_index)
 
     def route(self, parsed_query, query_text: str, editor_context: Optional[str] = None) -> RoutingResult:
         if not self.config.routing.enable_router:
@@ -30,6 +35,11 @@ class QueryRouter:
 
         seed_symbols = list(dict.fromkeys(parsed_query.symbol_names or []))
         seed_files = list(dict.fromkeys(parsed_query.file_patterns or []))
+
+        # Editor context hints (open file, cursor)
+        if editor_context:
+            file_hints = self._extract_file_hints(editor_context)
+            seed_files.extend(file_hints)
 
         # Expand symbols from lexical search
         if self.lexical_index and query_text:
@@ -66,6 +76,12 @@ class QueryRouter:
 
         # Recent edit boosts
         self._apply_recent_edit_boosts(result, seed_files)
+
+        # Change impact boosts (git co-change neighborhoods)
+        self._apply_change_impact_boosts(result, seed_files)
+
+        # Project DNA routing boosts (module alignment)
+        self._apply_project_dna_boosts(result, query_text)
 
         result.seed_symbols = seed_symbols[: self.config.routing.max_seed_symbols]
         result.seed_files = seed_files[: self.config.routing.max_seed_files]
@@ -106,8 +122,29 @@ class QueryRouter:
             if age_ns <= window_ns:
                 result.boosts_by_file[fp] = result.boosts_by_file.get(fp, 0.0) + self.config.routing.recent_edit_boost
 
+    def _apply_change_impact_boosts(self, result: RoutingResult, seed_files: List[str]) -> None:
+        if not seed_files or not self.config.retrieval.enable_change_impact:
+            return
+        neighbors = self.change_impact.get_neighbors(seed_files)
+        for fp in neighbors:
+            result.boosts_by_file[fp] = result.boosts_by_file.get(fp, 0.0) + self.config.retrieval.change_impact_boost
+
+    def _apply_project_dna_boosts(self, result: RoutingResult, query_text: str) -> None:
+        modules = self.project_dna.score_modules(query_text or "")
+        if not modules:
+            return
+        for module in modules:
+            for fp in self.structural_index.list_files():
+                if module and fp.startswith(module):
+                    result.boosts_by_file[fp] = result.boosts_by_file.get(fp, 0.0) + (self.config.routing.hot_path_boost * 0.5)
+
     def _extract_terms(self, query_text: str) -> List[str]:
         if not query_text:
             return []
         terms = [t for t in query_text.replace("/", " ").split() if len(t) > 2]
         return list(dict.fromkeys(terms))
+
+    def _extract_file_hints(self, text: str) -> List[str]:
+        import re
+        matches = re.findall(r"([A-Za-z0-9_./\\-]+\.[A-Za-z0-9_]+)", text)
+        return list(dict.fromkeys(matches))
