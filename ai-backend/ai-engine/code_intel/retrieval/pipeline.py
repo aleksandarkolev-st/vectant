@@ -210,6 +210,9 @@ class RetrievalPipeline:
         
         query_time = (time.time() - query_start) * 1000
         
+        # Extract folder scope for scoped retrieval
+        folder_scope = parsed_query.folder_scope
+        
         # Stage 2: Retrieve Candidates
         retrieval_start = time.time()
         vector_top_k = self.config.retrieval.vector_top_k or self.config.retrieval.top_k_candidates
@@ -221,6 +224,7 @@ class RetrievalPipeline:
             top_k=vector_top_k,
             filter_language=filter_language,
             exclude_test_files=not include_tests,
+            folder_scope=folder_scope,
         )
         retrieval_time = (time.time() - retrieval_start) * 1000
         candidates_found = len(candidates)
@@ -236,6 +240,7 @@ class RetrievalPipeline:
                 top_k=max(vector_top_k, self.config.retrieval.multi_pass_vector_top_k),
                 filter_language=filter_language,
                 include_tests=self.config.retrieval.multi_pass_include_tests,
+                folder_scope=folder_scope,
             )
             if len(relaxed_candidates) > candidates_found:
                 candidates = relaxed_candidates
@@ -399,8 +404,17 @@ class RetrievalPipeline:
         
         total_time = (time.time() - total_start) * 1000
 
-        # Build observability trace
+        # Build observability trace (only for included chunks - fixes telemetry accuracy)
         trace: List[Dict[str, Any]] = []
+        
+        # Add scope metadata at the start of trace
+        if folder_scope:
+            trace.append({
+                "type": "scope",
+                "folder_scope": folder_scope,
+                "reason": "metadata",
+            })
+        
         for cand in allocation.included_chunks:
             trace.append({
                 "chunk_id": cand.chunk.id,
@@ -411,8 +425,9 @@ class RetrievalPipeline:
                 "reason": "included",
                 "expansion_depth": cand.expansion_depth,
             })
+        # Note: We intentionally exclude truncated and budget_excluded chunks from trace
+        # to ensure telemetry only shows actually used context (fixes "Context used" accuracy)
         for cand in allocation.truncated_chunks:
-            trace.append({
                 "chunk_id": cand.chunk.id,
                 "file": cand.chunk.file_path,
                 "symbol": cand.chunk.symbol_name,
@@ -492,6 +507,7 @@ class RetrievalPipeline:
         top_k: int,
         filter_language: Optional[str],
         include_tests: bool,
+        folder_scope: Optional[str] = None,
     ):
         """Run a relaxed retrieval pass with lower thresholds."""
         prev = {
@@ -512,6 +528,7 @@ class RetrievalPipeline:
                 top_k=top_k,
                 filter_language=filter_language,
                 exclude_test_files=not include_tests,
+                folder_scope=folder_scope,
             )
         finally:
             self.config.retrieval.min_similarity = prev["min_similarity"]

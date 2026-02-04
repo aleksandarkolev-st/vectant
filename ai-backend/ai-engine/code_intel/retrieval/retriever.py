@@ -81,6 +81,7 @@ class ContextRetriever:
         top_k: Optional[int] = None,
         filter_language: Optional[str] = None,
         exclude_test_files: bool = True,
+        folder_scope: Optional[str] = None,
     ) -> Tuple[List[RetrievalCandidate], Dict[str, int]]:
         """
         Retrieve relevant chunks.
@@ -92,6 +93,7 @@ class ContextRetriever:
             top_k: Number of results (default from config)
             filter_language: Only return chunks in this language
             exclude_test_files: Exclude test files
+            folder_scope: If set, restrict results to this folder (e.g., "test-1")
             
         Returns:
             (List of retrieval candidates, stats)
@@ -104,6 +106,7 @@ class ContextRetriever:
             top_k * 2,  # Over-fetch for filtering
             filter_language,
             exclude_test_files,
+            folder_scope=folder_scope,
         )
         
         # Step 2: Lexical search (BM25) if available
@@ -115,6 +118,7 @@ class ContextRetriever:
                 min_score=self.config.bm25_min_score,
                 filter_language=filter_language,
                 exclude_test_files=exclude_test_files,
+                folder_scope=folder_scope,
             )
 
         # Step 3: Symbol search (if symbols provided)
@@ -125,6 +129,7 @@ class ContextRetriever:
                 top_k,
                 filter_language,
                 exclude_test_files,
+                folder_scope=folder_scope,
             )
         
         # Step 4: File path search (if files provided)
@@ -133,6 +138,7 @@ class ContextRetriever:
             file_results = self._file_search(
                 query_files,
                 top_k,
+                folder_scope=folder_scope,
             )
         
     # Step 5: Merge results
@@ -162,6 +168,7 @@ class ContextRetriever:
         top_k: int,
         filter_language: Optional[str],
         exclude_test_files: bool,
+        folder_scope: Optional[str] = None,
     ) -> List[RetrievalCandidate]:
         """Perform vector similarity search."""
         # Search with over-fetch
@@ -179,6 +186,14 @@ class ContextRetriever:
             if exclude_test_files and chunk.metadata.is_test:
                 continue
             
+            # Apply folder scope filter
+            if folder_scope:
+                chunk_path = chunk.metadata.file_path.replace("\\", "/").lower()
+                scope_lower = folder_scope.lower()
+                # File must be inside the scoped folder
+                if not (chunk_path.startswith(f"{scope_lower}/") or chunk_path.startswith(scope_lower + "/")):
+                    continue
+            
             candidates.append(RetrievalCandidate(
                 chunk=chunk,
                 vector_score=score,
@@ -195,6 +210,7 @@ class ContextRetriever:
         min_score: float,
         filter_language: Optional[str],
         exclude_test_files: bool,
+        folder_scope: Optional[str] = None,
     ) -> List[RetrievalCandidate]:
         """Search for chunks using BM25 lexical index."""
         results = self.lexical_index.search(query_text, k=top_k, min_score=min_score)
@@ -211,6 +227,12 @@ class ContextRetriever:
                 continue
             if exclude_test_files and chunk.metadata.is_test:
                 continue
+            # Apply folder scope filter
+            if folder_scope:
+                chunk_path = chunk.metadata.file_path.replace("\\", "/").lower()
+                scope_lower = folder_scope.lower()
+                if not chunk_path.startswith(f"{scope_lower}/"):
+                    continue
             score = r.score / max_score
             candidates.append(RetrievalCandidate(
                 chunk=chunk,
@@ -227,6 +249,7 @@ class ContextRetriever:
         top_k: int,
         filter_language: Optional[str],
         exclude_test_files: bool,
+        folder_scope: Optional[str] = None,
     ) -> List[RetrievalCandidate]:
         """Search for chunks by symbol name."""
         candidates = []
@@ -235,6 +258,13 @@ class ContextRetriever:
         all_chunks = self.vector_index.get_all_chunks()
 
         for chunk in all_chunks:
+            # Apply folder scope filter first
+            if folder_scope:
+                chunk_path = chunk.metadata.file_path.replace("\\", "/").lower()
+                scope_lower = folder_scope.lower()
+                if not chunk_path.startswith(f"{scope_lower}/"):
+                    continue
+            
             # Check if chunk matches any symbol
             chunk_symbol = chunk.symbol_name.lower()
             
@@ -276,6 +306,7 @@ class ContextRetriever:
         self,
         file_patterns: List[str],
         top_k: int,
+        folder_scope: Optional[str] = None,
     ) -> List[RetrievalCandidate]:
         """Search for chunks by file path."""
         candidates = []
@@ -285,6 +316,13 @@ class ContextRetriever:
 
         for chunk in all_chunks:
             chunk_path = chunk.file_path.lower()
+            
+            # Apply folder scope filter
+            if folder_scope:
+                chunk_path_norm = chunk_path.replace("\\", "/")
+                scope_lower = folder_scope.lower()
+                if not chunk_path_norm.startswith(f"{scope_lower}/"):
+                    continue
             
             for pattern in file_patterns:
                 pattern_lower = pattern.lower()
