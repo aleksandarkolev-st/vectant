@@ -17,9 +17,10 @@ import hashlib
 import json
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Callable, Dict, List, Optional, TypeVar, Deque
 
 from pydantic import BaseModel
 
@@ -153,6 +154,17 @@ class JobQueueStats(BaseModel):
     starvation_alerts: int = 0
     max_wait_time_ms: float = 0.0
     jobs_promoted: int = 0
+    # ENHANCED METRICS
+    queue_delay_p50_ms: float = 0.0
+    queue_delay_p95_ms: float = 0.0
+    processing_time_p50_ms: float = 0.0
+    processing_time_p95_ms: float = 0.0
+    requests_per_second: float = 0.0
+    peak_rps: float = 0.0
+    current_concurrency: int = 0
+    peak_concurrency: int = 0
+    timeout_count: int = 0
+    error_rate: float = 0.0
 
 
 class PriorityJobQueue:
@@ -167,7 +179,11 @@ class PriorityJobQueue:
     - Statistics tracking
     - Horizontal scaling ready (stateless)
     - QUEUE AGING to prevent starvation
+    - Enhanced metrics: queue delay, processing time, RPS, concurrency
     """
+    
+    # Max samples to keep for percentile calculation
+    MAX_SAMPLES = 500
     
     def __init__(
         self,
@@ -214,6 +230,54 @@ class PriorityJobQueue:
         
         # Shutdown flag
         self._shutdown = False
+        
+        # ENHANCED METRICS - Percentile tracking
+        self._queue_delay_samples: Deque[float] = deque(maxlen=self.MAX_SAMPLES)
+        self._processing_time_samples: Deque[float] = deque(maxlen=self.MAX_SAMPLES)
+        self._request_timestamps: Deque[float] = deque(maxlen=10000)
+        self._peak_concurrency: int = 0
+        self._timeout_count: int = 0
+        
+        # Metrics collector integration
+        self._metrics_collector = None
+    
+    def _get_metrics_collector(self):
+        """Get metrics collector (lazy import)."""
+        if self._metrics_collector is None:
+            try:
+                from metrics import get_metrics_collector
+                self._metrics_collector = get_metrics_collector()
+            except ImportError:
+                pass
+        return self._metrics_collector
+    
+    def _get_percentile(self, samples: Deque[float], percentile: float) -> float:
+        """Calculate percentile from samples."""
+        if not samples:
+            return 0.0
+        sorted_samples = sorted(samples)
+        idx = int(percentile * (len(sorted_samples) - 1))
+        return sorted_samples[idx]
+    
+    def _get_requests_per_second(self, window_seconds: float = 60.0) -> float:
+        """Get requests per second over the given window."""
+        now = time.time()
+        cutoff = now - window_seconds
+        count = sum(1 for t in self._request_timestamps if t >= cutoff)
+        return count / window_seconds if window_seconds > 0 else 0.0
+    
+    def _get_peak_rps(self, bucket_seconds: float = 1.0) -> float:
+        """Get peak requests per second."""
+        if not self._request_timestamps:
+            return 0.0
+        now = time.time()
+        cutoff = now - 60.0
+        buckets: Dict[int, int] = {}
+        for t in self._request_timestamps:
+            if t >= cutoff:
+                bucket = int(t / bucket_seconds)
+                buckets[bucket] = buckets.get(bucket, 0) + 1
+        return max(buckets.values()) / bucket_seconds if buckets else 0.0
     
     async def start_aging(self) -> None:
         """Start the aging task to prevent starvation."""
@@ -344,6 +408,13 @@ class PriorityJobQueue:
                 self._running[job.job_id] = job
                 self._stats.pending_jobs -= 1
                 self._stats.running_jobs += 1
+                
+                # Track peak concurrency
+                current_concurrency = len(self._running)
+                if current_concurrency > self._peak_concurrency:
+                    self._peak_concurrency = current_concurrency
+                self._stats.current_concurrency = current_concurrency
+                self._stats.peak_concurrency = self._peak_concurrency
             
             return job
         except asyncio.QueueEmpty:
@@ -356,6 +427,7 @@ class PriorityJobQueue:
         error: Optional[str] = None,
         tokens_used: int = 0,
         model_used: Optional[str] = None,
+        is_timeout: bool = False,
     ) -> None:
         """Mark a job as complete."""
         async with self._lock:
@@ -370,12 +442,20 @@ class PriorityJobQueue:
                 self._stats.running_jobs -= 1
                 if error:
                     self._stats.failed_jobs += 1
+                    if is_timeout:
+                        self._timeout_count += 1
+                        self._stats.timeout_count = self._timeout_count
                 else:
                     self._stats.completed_jobs += 1
                 
                 # Update average times
                 wait_time = (job.started_at - job.created_at) * 1000
                 proc_time = (job.completed_at - job.started_at) * 1000
+                
+                # Record samples for percentile calculation
+                self._queue_delay_samples.append(wait_time)
+                self._processing_time_samples.append(proc_time)
+                self._request_timestamps.append(time.time())
                 
                 # Rolling average
                 n = self._stats.completed_jobs + self._stats.failed_jobs
@@ -385,6 +465,33 @@ class PriorityJobQueue:
                 self._stats.avg_processing_time_ms = (
                     (self._stats.avg_processing_time_ms * (n - 1) + proc_time) / n
                 )
+                
+                # Update percentile stats
+                self._stats.queue_delay_p50_ms = self._get_percentile(self._queue_delay_samples, 0.50)
+                self._stats.queue_delay_p95_ms = self._get_percentile(self._queue_delay_samples, 0.95)
+                self._stats.processing_time_p50_ms = self._get_percentile(self._processing_time_samples, 0.50)
+                self._stats.processing_time_p95_ms = self._get_percentile(self._processing_time_samples, 0.95)
+                self._stats.requests_per_second = self._get_requests_per_second()
+                self._stats.peak_rps = self._get_peak_rps()
+                self._stats.current_concurrency = len(self._running)
+                self._stats.peak_concurrency = self._peak_concurrency
+                
+                # Calculate error rate
+                total = self._stats.completed_jobs + self._stats.failed_jobs
+                self._stats.error_rate = self._stats.failed_jobs / total if total > 0 else 0.0
+                
+                # Record to metrics collector
+                collector = self._get_metrics_collector()
+                if collector:
+                    collector.queue.record_job_start(job.job_type.name, wait_time)
+                    concurrency = collector.concurrency.enter_request()
+                    collector.record_job_complete(
+                        latency_ms=proc_time,
+                        concurrency_at_start=concurrency,
+                        success=not bool(error),
+                        is_timeout=is_timeout,
+                        error_type=type(error).__name__ if error else None,
+                    )
                 
                 # Keep last N completed jobs for debugging
                 self._completed.append(job)

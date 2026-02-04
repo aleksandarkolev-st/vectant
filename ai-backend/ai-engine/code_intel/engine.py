@@ -578,16 +578,35 @@ class CodeIntelEngine:
         """Get summary for a specific file."""
         self._initialize_components()
         return self._summary_store.get_file_summary(file_path)
+    
+    def _get_metrics_collector(self):
+        """Get the central metrics collector (lazy import)."""
+        if not hasattr(self, '_metrics_collector'):
+            self._metrics_collector = None
+            try:
+                from metrics import get_metrics_collector
+                self._metrics_collector = get_metrics_collector()
+            except ImportError:
+                pass
+        return self._metrics_collector
 
-    def get_retrieval_metrics(self) -> Dict[str, Any]:
-        """Get retrieval latency and budget metrics."""
+    def get_retrieval_metrics(self, include_all: bool = False) -> Dict[str, Any]:
+        """Get retrieval latency and budget metrics.
+        
+        Args:
+            include_all: If True, include comprehensive metrics from the central collector
+        
+        Returns:
+            Dictionary with latency, counters, budgets, and optionally all comprehensive metrics
+        """
         self._initialize_components()
         metrics = {}
         counters = {}
         if self._retrieval_pipeline:
             metrics = self._retrieval_pipeline.get_metrics()
             counters = self._retrieval_pipeline.get_counters()
-        return {
+        
+        result = {
             "latency": metrics,
             "counters": counters,
             "budgets": {
@@ -598,6 +617,14 @@ class CodeIntelEngine:
             },
             "index_generation": getattr(self._dual_indexer, "index_generation", None),
         }
+        
+        # Include comprehensive metrics if requested
+        if include_all:
+            collector = self._get_metrics_collector()
+            if collector:
+                result["all"] = collector.get_all_metrics()
+        
+        return result
     
     # =========================================================================
     # Tools API

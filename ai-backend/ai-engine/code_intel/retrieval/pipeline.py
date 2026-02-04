@@ -518,6 +518,17 @@ class RetrievalPipeline:
             self.config.retrieval.vector_top_k = prev["vector_top_k"]
             self.config.retrieval.bm25_top_k = prev["bm25_top_k"]
             self.retriever.config = self.config.retrieval
+    
+    def _get_metrics_collector(self):
+        """Get metrics collector (lazy import to avoid circular dependency)."""
+        if not hasattr(self, '_metrics_collector'):
+            self._metrics_collector = None
+            try:
+                from metrics import get_metrics_collector
+                self._metrics_collector = get_metrics_collector()
+            except ImportError:
+                pass
+        return self._metrics_collector
 
     def _record_metrics(self, sample: Dict[str, float]) -> Dict[str, float]:
         p95 = {}
@@ -531,24 +542,46 @@ class RetrievalPipeline:
                 sorted_arr = sorted(arr)
                 idx = int(0.95 * (len(sorted_arr) - 1))
                 p95[key] = sorted_arr[idx]
+        
+        # Record to central metrics collector
+        collector = self._get_metrics_collector()
+        if collector:
+            collector.record_retrieval(
+                query_ms=sample.get("query", 0),
+                retrieval_ms=sample.get("retrieval", 0),
+                expansion_ms=sample.get("expansion", 0),
+                ranking_ms=sample.get("ranking", 0),
+                assembly_ms=sample.get("assembly", 0),
+                total_ms=sum(sample.values()),
+                counters=self._last_counters,
+            )
+        
         return p95
 
     def get_metrics(self) -> Dict[str, Dict[str, float]]:
-        """Get current latency metrics (p50/p95) per stage."""
+        """Get current latency metrics (p50/p95/p99) per stage."""
         metrics: Dict[str, Dict[str, float]] = {}
         for key, arr in self._latency_samples.items():
             if not arr:
-                metrics[key] = {"p50": 0.0, "p95": 0.0}
+                metrics[key] = {"p50": 0.0, "p95": 0.0, "p99": 0.0}
                 continue
             sorted_arr = sorted(arr)
-            p50 = sorted_arr[int(0.50 * (len(sorted_arr) - 1))]
-            p95 = sorted_arr[int(0.95 * (len(sorted_arr) - 1))]
-            metrics[key] = {"p50": p50, "p95": p95}
+            n = len(sorted_arr)
+            p50 = sorted_arr[int(0.50 * (n - 1))]
+            p95 = sorted_arr[int(0.95 * (n - 1))]
+            p99 = sorted_arr[int(0.99 * (n - 1))]
+            metrics[key] = {"p50": p50, "p95": p95, "p99": p99}
         return metrics
 
     def get_counters(self) -> Dict[str, int]:
         """Get last retrieval counters."""
         return dict(self._last_counters)
+    
+    def record_quality_metrics(self, recall_at_k: Dict[int, float], mrr: float) -> None:
+        """Record quality metrics (Recall@k, MRR) for evaluation."""
+        collector = self._get_metrics_collector()
+        if collector:
+            collector.record_retrieval_quality(recall_at_k, mrr)
 
     def _snapshot_file_state(self, candidates: List[RetrievalCandidate]) -> Dict[str, Dict[str, int | str]]:
         if not self.file_reader:

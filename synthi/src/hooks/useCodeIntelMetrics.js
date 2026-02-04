@@ -16,7 +16,7 @@ export function useCodeIntelMetrics({ workspacePath, enabled = true, pollMs = 10
       const res = await fetch(`${CODE_INTEL_URL}/code-intel/metrics`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ workspace_path: workspacePath }),
+        body: JSON.stringify({ workspace_path: workspacePath, include_all: true }),
       });
       if (!res.ok) throw new Error(`Metrics fetch failed (${res.status})`);
       const data = await res.json();

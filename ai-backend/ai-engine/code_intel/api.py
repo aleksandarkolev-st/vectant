@@ -181,14 +181,93 @@ class SummaryResponse(BaseModel):
 class MetricsRequest(BaseModel):
     """Request for metrics."""
     workspace_path: str = Field(..., description="Path to workspace")
+    include_all: bool = Field(False, description="Include all comprehensive metrics")
+
+
+class LatencyMetrics(BaseModel):
+    """Latency percentiles."""
+    p50: float = 0.0
+    p95: float = 0.0
+    p99: float = 0.0
+
+
+class ThroughputMetrics(BaseModel):
+    """Throughput metrics."""
+    tokens_per_second: LatencyMetrics = Field(default_factory=LatencyMetrics)
+    requests_per_second: float = 0.0
+    peak_rps: float = 0.0
+
+
+class ModelMetrics(BaseModel):
+    """Model/inference metrics."""
+    inference_time: LatencyMetrics = Field(default_factory=LatencyMetrics)
+    by_model: Dict[str, LatencyMetrics] = Field(default_factory=dict)
+
+
+class RetrievalQualityMetrics(BaseModel):
+    """Retrieval quality metrics."""
+    recall_at_1: Optional[Dict[str, float]] = None
+    recall_at_5: Optional[Dict[str, float]] = None
+    recall_at_10: Optional[Dict[str, float]] = None
+    mrr: Optional[Dict[str, float]] = None
+
+
+class ReliabilityMetrics(BaseModel):
+    """Reliability metrics."""
+    total_requests: int = 0
+    errors: int = 0
+    error_rate: float = 0.0
+    timeout_rate: float = 0.0
+    timeouts: int = 0
+    cold_starts: int = 0
+    cold_start_latency: LatencyMetrics = Field(default_factory=LatencyMetrics)
+    error_types: Dict[str, int] = Field(default_factory=dict)
+
+
+class LoadMetrics(BaseModel):
+    """Load behavior metrics."""
+    latency_vs_concurrency: Dict[str, LatencyMetrics] = Field(default_factory=dict)
+    current_concurrency: int = 0
+    peak_concurrency: int = 0
+    p95_at_peak: float = 0.0
+
+
+class PromptOutputDistribution(BaseModel):
+    """Prompt and output size distribution."""
+    prompt_size: Dict[str, float] = Field(default_factory=dict)
+    output_size: Dict[str, float] = Field(default_factory=dict)
 
 
 class MetricsResponse(BaseModel):
-    """Response for metrics."""
+    """Comprehensive metrics response."""
+    # Original fields (backward compatible)
     latency: Dict[str, Dict[str, float]]
     counters: Dict[str, int]
     budgets: Dict[str, int]
     index_generation: Optional[str] = None
+    
+    # NEW: Enhanced latency metrics
+    ttft: Optional[LatencyMetrics] = None  # Time to first token
+    completion_latency: Optional[LatencyMetrics] = None  # Full completion time
+    queue_delay: Optional[LatencyMetrics] = None  # Queue/scheduling delay
+    
+    # NEW: Throughput metrics
+    throughput: Optional[ThroughputMetrics] = None
+    
+    # NEW: Model/inference metrics
+    model: Optional[ModelMetrics] = None
+    
+    # NEW: Retrieval quality metrics
+    retrieval_quality: Optional[RetrievalQualityMetrics] = None
+    
+    # NEW: Reliability metrics
+    reliability: Optional[ReliabilityMetrics] = None
+    
+    # NEW: Load behavior metrics
+    load: Optional[LoadMetrics] = None
+    
+    # NEW: Prompt/output distribution
+    prompt_output_distribution: Optional[PromptOutputDistribution] = None
 
 
 class EditPlanRequest(BaseModel):
@@ -470,17 +549,113 @@ async def get_file_summary(request: SummaryRequest, http_request: Request) -> Su
 
 @router.post("/metrics", response_model=MetricsResponse)
 async def get_metrics(request: MetricsRequest, http_request: Request) -> MetricsResponse:
-    """Get retrieval latency and budget metrics."""
+    """Get retrieval latency and budget metrics.
+    
+    Set include_all=True to get comprehensive metrics including:
+    - TTFT (Time to First Token) P50/P95/P99
+    - Full completion latency P50/P95
+    - Queue/scheduling delay P50/P95
+    - Tokens per second P50/P95
+    - Requests per second at saturation
+    - Inference time P50/P95
+    - Prompt/output size distribution
+    - Retrieval latency P50/P95/P99
+    - Recall@k / MRR (quality metrics)
+    - Error rate, timeout rate
+    - Cold start latency
+    - Latency vs concurrency curve
+    - P95 under peak load
+    """
     try:
         _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
-        metrics = engine.get_retrieval_metrics()
-        return MetricsResponse(
+        metrics = engine.get_retrieval_metrics(include_all=request.include_all)
+        
+        # Build basic response
+        response = MetricsResponse(
             latency=metrics.get("latency", {}),
             counters=metrics.get("counters", {}),
             budgets=metrics.get("budgets", {}),
             index_generation=metrics.get("index_generation"),
         )
+        
+        # Add comprehensive metrics if requested
+        if request.include_all:
+            all_metrics = metrics.get("all", {})
+            
+            # Helper to safely get percentile dict with defaults
+            def get_latency(data: dict, *keys) -> dict:
+                result = data
+                for key in keys:
+                    result = result.get(key, {}) if isinstance(result, dict) else {}
+                return {"p50": result.get("p50", 0.0), "p95": result.get("p95", 0.0), "p99": result.get("p99", 0.0)}
+            
+            # Latency metrics - always populate
+            latency_data = all_metrics.get("latency", {})
+            response.ttft = LatencyMetrics(**get_latency(latency_data, "ttft"))
+            response.completion_latency = LatencyMetrics(**get_latency(latency_data, "completion"))
+            response.queue_delay = LatencyMetrics(**get_latency(latency_data, "queue_delay"))
+            
+            # Throughput - always populate
+            t = all_metrics.get("throughput", {})
+            response.throughput = ThroughputMetrics(
+                tokens_per_second=LatencyMetrics(**get_latency(t, "tokens_per_second")),
+                requests_per_second=t.get("requests_per_second", 0.0),
+                peak_rps=t.get("peak_rps", 0.0),
+            )
+            
+            # Model metrics - always populate
+            m = all_metrics.get("model", {})
+            by_model = {}
+            for model_name, vals in m.get("by_model", {}).items():
+                by_model[model_name] = LatencyMetrics(**get_latency({"v": vals}, "v"))
+            response.model = ModelMetrics(
+                inference_time=LatencyMetrics(**get_latency(m, "inference_time")),
+                by_model=by_model,
+            )
+            
+            # Retrieval quality - always populate
+            q = all_metrics.get("retrieval", {}).get("quality", {})
+            response.retrieval_quality = RetrievalQualityMetrics(
+                recall_at_1=q.get("recall_at_1"),
+                recall_at_5=q.get("recall_at_5"),
+                recall_at_10=q.get("recall_at_10"),
+                mrr=q.get("mrr"),
+            )
+            
+            # Reliability - always populate
+            r = all_metrics.get("reliability", {})
+            response.reliability = ReliabilityMetrics(
+                total_requests=r.get("total_requests", 0),
+                errors=r.get("errors", 0),
+                error_rate=r.get("error_rate", 0.0),
+                timeout_rate=r.get("timeout_rate", 0.0),
+                timeouts=r.get("timeouts", 0),
+                cold_starts=r.get("cold_starts", 0),
+                cold_start_latency=LatencyMetrics(**get_latency(r, "cold_start_latency")),
+                error_types=r.get("error_types", {}),
+            )
+            
+            # Load behavior - always populate
+            l = all_metrics.get("load", {})
+            latency_by_concurrency = {}
+            for conc, vals in l.get("latency_vs_concurrency", {}).items():
+                latency_by_concurrency[conc] = LatencyMetrics(**get_latency({"v": vals}, "v"))
+            response.load = LoadMetrics(
+                latency_vs_concurrency=latency_by_concurrency,
+                current_concurrency=l.get("current_concurrency", 0),
+                peak_concurrency=l.get("peak_concurrency", 0),
+                p95_at_peak=l.get("p95_at_peak", 0.0),
+            )
+            
+            # Prompt/output distribution - always populate
+            pod = all_metrics.get("prompt_output_distribution", {})
+            response.prompt_output_distribution = PromptOutputDistribution(
+                prompt_size=pod.get("prompt_size", {}),
+                output_size=pod.get("output_size", {}),
+            )
+        
+        return response
     except Exception as e:
         logger.exception("Metrics retrieval failed")
         raise HTTPException(status_code=500, detail=str(e))
