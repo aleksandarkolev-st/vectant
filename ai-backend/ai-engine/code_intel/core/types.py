@@ -853,6 +853,12 @@ class RetrievalResult:
     # Observability trace (optional)
     trace: List[Dict[str, Any]] = field(default_factory=list)
     debug: Dict[str, Any] = field(default_factory=dict)
+
+    # Grounding spans for verifier
+    grounding_spans: List[Dict[str, Any]] = field(default_factory=list)
+
+    # Clarifying question (optional)
+    clarifying_question: Optional[str] = None
     
     def format_for_prompt(self) -> str:
         """

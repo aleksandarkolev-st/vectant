@@ -1,4 +1,5 @@
 import os
+import time
 from typing import Any, Mapping, Optional, Sequence, Dict
 from .base import AiProvider
 
@@ -8,6 +9,15 @@ from dotenv import load_dotenv
 from llm.prompts import build_prompt, build_fullfile_prompt, build_patch_prompt
 
 load_dotenv()  # Load once at import
+
+
+def _get_metrics_collector():
+    """Lazy import to avoid circular dependencies."""
+    try:
+        from metrics import get_metrics_collector
+        return get_metrics_collector()
+    except ImportError:
+        return None
 
 
 class GeminiProvider(AiProvider):
@@ -80,6 +90,12 @@ class GeminiProvider(AiProvider):
         try:
             model_name = model or self.model_name
             client = self._get_client(api_key, model_name)
+            
+            # Metrics tracking
+            start_time = time.time()
+            first_token_time = None
+            total_tokens = 0
+            
             # Stream tokens from the Gemini API, accumulating text so the AI chat window
             # can display the final suggestion as a plain string.
             response = await client.generate_content_async(full_prompt, stream=True)
@@ -87,6 +103,10 @@ class GeminiProvider(AiProvider):
             chunks = []
             prompt_feedback = None
             async for chunk in response:
+                # Track TTFT
+                if first_token_time is None:
+                    first_token_time = time.time()
+                
                 if getattr(chunk, "prompt_feedback", None):
                     prompt_feedback = chunk.prompt_feedback
                 
@@ -105,18 +125,43 @@ class GeminiProvider(AiProvider):
                                     part_text = getattr(part, "text", None)
                                     if part_text:
                                         chunks.append(part_text)
+                                        total_tokens += len(part_text.split())  # Rough token estimate
                                 continue
                     
                     # Fallback: try the .text accessor
                     text = chunk.text
                     if text:
                         chunks.append(text)
+                        total_tokens += len(text.split())
                 except (ValueError, AttributeError):
                     # .text accessor throws ValueError if no valid parts
                     # This is expected when finish_reason is STOP without content
                     pass
 
             combined = "".join(chunks).strip()
+            
+            # Record metrics
+            end_time = time.time()
+            total_latency_ms = (end_time - start_time) * 1000
+            ttft_ms = (first_token_time - start_time) * 1000 if first_token_time else total_latency_ms
+            prompt_tokens = len(full_prompt.split())  # Rough estimate
+            
+            collector = _get_metrics_collector()
+            if collector:
+                collector.record_streaming_completion(
+                    ttft_ms=ttft_ms,
+                    total_latency_ms=total_latency_ms,
+                    tokens=total_tokens,
+                    prompt_tokens=prompt_tokens,
+                    output_tokens=total_tokens,
+                )
+                collector.record_inference(
+                    model=model_name,
+                    inference_time_ms=total_latency_ms,
+                    success=bool(combined),
+                    is_timeout=False,
+                    error_type=None,
+                )
 
             if not combined:
                 feedback = prompt_feedback or getattr(response, "prompt_feedback", None)
@@ -134,6 +179,17 @@ class GeminiProvider(AiProvider):
             return combined
 
         except Exception as e:
+            # Record error metrics
+            is_timeout = "timeout" in str(e).lower()
+            collector = _get_metrics_collector()
+            if collector:
+                collector.record_inference(
+                    model=model or self.model_name,
+                    inference_time_ms=(time.time() - start_time) * 1000 if 'start_time' in dir() else 0,
+                    success=False,
+                    is_timeout=is_timeout,
+                    error_type=type(e).__name__,
+                )
             return f"LLM error: {type(e).__name__}: {e}"
 
     def __repr__(self) -> str:

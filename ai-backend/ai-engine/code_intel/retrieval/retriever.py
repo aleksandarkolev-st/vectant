@@ -42,6 +42,18 @@ class RetrievalCandidate:
     # Expansion info
     expansion_depth: int = 0  # How far from initial results
     expansion_path: List[str] = field(default_factory=list)
+
+    # Causal path scoring
+    causal_distance: float = 0.0
+
+    # Spec alignment
+    spec_alignment: float = 0.0
+
+    # Edits-aware scoring
+    recency_score: float = 0.0
+
+    # Index kind (tests/interfaces/infra/core/spec)
+    index_kind: str = "core"
     
     def __hash__(self):
         return hash(self.chunk.id)
@@ -81,6 +93,9 @@ class ContextRetriever:
         top_k: Optional[int] = None,
         filter_language: Optional[str] = None,
         exclude_test_files: bool = True,
+        folder_scope: Optional[str] = None,
+        module_scope: Optional[str] = None,
+        index_kind: Optional[str] = None,
     ) -> Tuple[List[RetrievalCandidate], Dict[str, int]]:
         """
         Retrieve relevant chunks.
@@ -92,6 +107,7 @@ class ContextRetriever:
             top_k: Number of results (default from config)
             filter_language: Only return chunks in this language
             exclude_test_files: Exclude test files
+            folder_scope: If set, restrict results to this folder (e.g., "test-1")
             
         Returns:
             (List of retrieval candidates, stats)
@@ -104,6 +120,9 @@ class ContextRetriever:
             top_k * 2,  # Over-fetch for filtering
             filter_language,
             exclude_test_files,
+            folder_scope=folder_scope,
+            module_scope=module_scope,
+            index_kind=index_kind,
         )
         
         # Step 2: Lexical search (BM25) if available
@@ -115,6 +134,9 @@ class ContextRetriever:
                 min_score=self.config.bm25_min_score,
                 filter_language=filter_language,
                 exclude_test_files=exclude_test_files,
+                folder_scope=folder_scope,
+                module_scope=module_scope,
+                index_kind=index_kind,
             )
 
         # Step 3: Symbol search (if symbols provided)
@@ -125,6 +147,9 @@ class ContextRetriever:
                 top_k,
                 filter_language,
                 exclude_test_files,
+                folder_scope=folder_scope,
+                module_scope=module_scope,
+                index_kind=index_kind,
             )
         
         # Step 4: File path search (if files provided)
@@ -133,6 +158,9 @@ class ContextRetriever:
             file_results = self._file_search(
                 query_files,
                 top_k,
+                folder_scope=folder_scope,
+                module_scope=module_scope,
+                index_kind=index_kind,
             )
         
     # Step 5: Merge results
@@ -162,8 +190,13 @@ class ContextRetriever:
         top_k: int,
         filter_language: Optional[str],
         exclude_test_files: bool,
+        folder_scope: Optional[str] = None,
+        module_scope: Optional[str] = None,
+        index_kind: Optional[str] = None,
     ) -> List[RetrievalCandidate]:
         """Perform vector similarity search."""
+        if index_kind == "tests":
+            exclude_test_files = False
         # Search with over-fetch
         results = self.vector_index.search(
             query_embedding,
@@ -178,12 +211,27 @@ class ContextRetriever:
             
             if exclude_test_files and chunk.metadata.is_test:
                 continue
+
+            if not self._match_index_kind(chunk, index_kind):
+                continue
+
+            if not self._match_module_scope(chunk, module_scope):
+                continue
+            
+            # Apply folder scope filter
+            if folder_scope:
+                chunk_path = chunk.metadata.file_path.replace("\\", "/").lower()
+                scope_lower = folder_scope.lower()
+                # File must be inside the scoped folder
+                if not (chunk_path.startswith(f"{scope_lower}/") or chunk_path.startswith(scope_lower + "/")):
+                    continue
             
             candidates.append(RetrievalCandidate(
                 chunk=chunk,
                 vector_score=score,
                 combined_score=score,
                 source="vector",
+                index_kind=index_kind or "core",
             ))
         
         return candidates[:top_k]
@@ -195,8 +243,13 @@ class ContextRetriever:
         min_score: float,
         filter_language: Optional[str],
         exclude_test_files: bool,
+        folder_scope: Optional[str] = None,
+        module_scope: Optional[str] = None,
+        index_kind: Optional[str] = None,
     ) -> List[RetrievalCandidate]:
         """Search for chunks using BM25 lexical index."""
+        if index_kind == "tests":
+            exclude_test_files = False
         results = self.lexical_index.search(query_text, k=top_k, min_score=min_score)
         if not results:
             return []
@@ -211,12 +264,23 @@ class ContextRetriever:
                 continue
             if exclude_test_files and chunk.metadata.is_test:
                 continue
+            if not self._match_index_kind(chunk, index_kind):
+                continue
+            if not self._match_module_scope(chunk, module_scope):
+                continue
+            # Apply folder scope filter
+            if folder_scope:
+                chunk_path = chunk.metadata.file_path.replace("\\", "/").lower()
+                scope_lower = folder_scope.lower()
+                if not chunk_path.startswith(f"{scope_lower}/"):
+                    continue
             score = r.score / max_score
             candidates.append(RetrievalCandidate(
                 chunk=chunk,
                 keyword_score=score,
                 combined_score=score * 0.9,
                 source="lexical",
+                index_kind=index_kind or "core",
             ))
 
         return candidates
@@ -227,14 +291,26 @@ class ContextRetriever:
         top_k: int,
         filter_language: Optional[str],
         exclude_test_files: bool,
+        folder_scope: Optional[str] = None,
+        module_scope: Optional[str] = None,
+        index_kind: Optional[str] = None,
     ) -> List[RetrievalCandidate]:
         """Search for chunks by symbol name."""
+        if index_kind == "tests":
+            exclude_test_files = False
         candidates = []
         
         # Get all chunks from vector index
         all_chunks = self.vector_index.get_all_chunks()
 
         for chunk in all_chunks:
+            # Apply folder scope filter first
+            if folder_scope:
+                chunk_path = chunk.metadata.file_path.replace("\\", "/").lower()
+                scope_lower = folder_scope.lower()
+                if not chunk_path.startswith(f"{scope_lower}/"):
+                    continue
+            
             # Check if chunk matches any symbol
             chunk_symbol = chunk.symbol_name.lower()
             
@@ -259,12 +335,17 @@ class ContextRetriever:
                 
                 if exclude_test_files and chunk.metadata.is_test:
                     continue
+                if not self._match_index_kind(chunk, index_kind):
+                    continue
+                if not self._match_module_scope(chunk, module_scope):
+                    continue
                 
                 candidates.append(RetrievalCandidate(
                     chunk=chunk,
                     keyword_score=score,
                     combined_score=score * 0.8,  # Slightly lower than vector
                     source="symbol",
+                    index_kind=index_kind or "core",
                 ))
                 break
         
@@ -276,6 +357,9 @@ class ContextRetriever:
         self,
         file_patterns: List[str],
         top_k: int,
+        folder_scope: Optional[str] = None,
+        module_scope: Optional[str] = None,
+        index_kind: Optional[str] = None,
     ) -> List[RetrievalCandidate]:
         """Search for chunks by file path."""
         candidates = []
@@ -285,6 +369,18 @@ class ContextRetriever:
 
         for chunk in all_chunks:
             chunk_path = chunk.file_path.lower()
+
+            if not self._match_index_kind(chunk, index_kind):
+                continue
+            if not self._match_module_scope(chunk, module_scope):
+                continue
+            
+            # Apply folder scope filter
+            if folder_scope:
+                chunk_path_norm = chunk_path.replace("\\", "/")
+                scope_lower = folder_scope.lower()
+                if not chunk_path_norm.startswith(f"{scope_lower}/"):
+                    continue
             
             for pattern in file_patterns:
                 pattern_lower = pattern.lower()
@@ -303,12 +399,43 @@ class ContextRetriever:
                     keyword_score=score,
                     combined_score=score * 0.7,  # Lower than vector
                     source="file",
+                    index_kind=index_kind or "core",
                 ))
                 break
         
         # Sort and limit
         candidates.sort(key=lambda c: c.keyword_score, reverse=True)
         return candidates[:top_k]
+
+    def _match_index_kind(self, chunk: SemanticChunk, index_kind: Optional[str]) -> bool:
+        if not index_kind or index_kind == "any":
+            return True
+
+        file_path = chunk.metadata.file_path.replace("\\", "/").lower()
+        is_test = chunk.metadata.is_test or any(p in file_path for p in ["/test", "/tests", "__tests__", "spec", ".test."])
+        is_interface = any(p in file_path for p in ["/interface", "/interfaces", "/types", "/schema", "/contract", "/api", ".d.ts"])
+        is_infra = any(p in file_path for p in ["/infra", "/infrastructure", "/deploy", "/docker", "/k8s", "/terraform", "/ci", "/.github", "/scripts"])
+
+        if index_kind == "tests":
+            return is_test
+        if index_kind == "interfaces":
+            return is_interface
+        if index_kind == "infra":
+            return is_infra
+        if index_kind == "core":
+            return not (is_test or is_interface or is_infra)
+        return True
+
+    def _match_module_scope(self, chunk: SemanticChunk, module_scope: Optional[str]) -> bool:
+        if not module_scope:
+            return True
+        mod = chunk.metadata.module_group or ""
+        if not mod:
+            return True
+        if mod == module_scope:
+            return True
+        # Allow prefix match for nested modules
+        return mod.startswith(module_scope + ".") or mod.startswith(module_scope + "/")
     
     def _merge_results(
         self,

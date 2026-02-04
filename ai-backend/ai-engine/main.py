@@ -1180,6 +1180,7 @@ class VerifiedAiRequest(AnalyzeAiRequest):
     verify: bool = True
     auto_repair: bool = True
     session_id: Optional[str] = None
+    grounding_spans: Optional[List[dict]] = None
 
 
 @app.post("/analyze/ai/verified")
@@ -1253,6 +1254,7 @@ async def analyze_code_ai_verified(req: VerifiedAiRequest):
             ai_suggestion,
             original_code=req.code,
             lang=req.lang,
+            context={"grounding_spans": req.grounding_spans} if req.grounding_spans else None,
         )
         
         # Update provenance with verification

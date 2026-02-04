@@ -20,13 +20,14 @@ Usage:
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 import re
 
 import numpy as np
 
-from ..core.types import RepoSummary, FileSummary, ModuleSummary, ContextBudget, RetrievalResult
+from ..core.types import RepoSummary, FileSummary, ModuleSummary, ContextBudget, RetrievalResult, get_module_group
 from ..core.config import CodeIntelConfig
 from ..indexer import Embedder
 
@@ -37,6 +38,7 @@ from .ranker import ContextRanker
 from .budget_enforcer import BudgetEnforcer, BudgetAllocation
 from .context_assembler import ContextAssembler, AssembledContext
 from .reranker import LightweightReranker, GeminiReranker
+from .spec_index import SpecIndex
 
 
 logger = logging.getLogger("code_intel.retrieval.pipeline")
@@ -48,9 +50,31 @@ class RetrievalPipelineResult:
     
     # The assembled context (ready for LLM)
     context: AssembledContext
+
+    # Fast-path context (for streaming)
+    fast_context: Optional[AssembledContext] = None
     
     # Query analysis
     parsed_query: ParsedQuery
+
+    # Spec alignment
+    spec_alignment_score: float = 0.0
+
+    # Fast/slow path
+    fast_path_used: bool = False
+    slow_path_used: bool = True
+    cache_hit: bool = False
+
+    # Routing metadata
+    index_kind: str = "core"
+    folder_scope: Optional[str] = None
+    module_scope: Optional[str] = None
+
+    # Clarifying question (optional)
+    clarifying_question: Optional[str] = None
+
+    # Grounding spans
+    grounding_spans: List[Dict[str, Any]] = field(default_factory=list)
     
     # Pipeline metrics
     candidates_found: int = 0
@@ -71,6 +95,7 @@ class RetrievalPipelineResult:
 
     # Observability trace
     trace: List[Dict[str, Any]] = field(default_factory=list)
+    fast_trace: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class RetrievalPipeline:
@@ -132,6 +157,14 @@ class RetrievalPipeline:
         self.budget_enforcer = BudgetEnforcer(config=self.config.context)
         self.assembler = ContextAssembler(config=self.config.context)
 
+        # Spec index (docs/tests)
+        workspace_root = getattr(file_reader, "root", None) or os.getcwd()
+        self.spec_index = SpecIndex(
+            workspace_root=workspace_root,
+            config=self.config.retrieval,
+            file_reader=file_reader,
+        )
+
         # Latency tracking
         self._latency_samples: Dict[str, List[float]] = {
             "query": [],
@@ -142,6 +175,9 @@ class RetrievalPipeline:
         }
         self._latency_cap = 200
         self._last_counters: Dict[str, int] = {}
+
+        # Retrieval cache
+        self._retrieval_cache: Dict[str, Dict[str, Any]] = {}
 
         # Invariants
         assert self.config.retrieval.rerank_top_k >= self.config.retrieval.final_max_chunks, (
@@ -203,39 +239,123 @@ class RetrievalPipeline:
                 query_files.extend(route_result.seed_files)
             if route_result.query_terms:
                 query_text_aug = f"{query_text_aug} {' '.join(route_result.query_terms)}"
+
+        # Determine index kind (tests/interfaces/infra/core)
+        index_kind = self._derive_index_kind(parsed_query, query)
+
+        # Aggressive scoping
+        folder_scope, module_scope = self._derive_scopes(parsed_query, route_result)
+
+        # Spec-first candidates (docs/tests)
+        spec_records = self.spec_index.get_spec_chunks(query)
+        spec_candidates, spec_alignment = self._build_spec_candidates(spec_records)
         
-        # Get embedding for query
-        query_embedding = self.embedder.embed_query(parsed_query.search_text)
+        # Get embedding for query (fast path uses cache if available)
+        cached_embedding = self.embedder.get_cached_query_embedding(parsed_query.search_text)
+        query_embedding = cached_embedding
         parsed_query.embedding = query_embedding
         
         query_time = (time.time() - query_start) * 1000
         
-        # Stage 2: Retrieve Candidates
+        # Use derived scope for retrieval
+        folder_scope = folder_scope or parsed_query.folder_scope
+        
+        # Stage 2: Retrieve Candidates (two-tier + cache)
         retrieval_start = time.time()
-        vector_top_k = self.config.retrieval.vector_top_k or self.config.retrieval.top_k_candidates
-        candidates, retrieval_stats = self.retriever.retrieve(
-            query_embedding=query_embedding,
-            query_text=query_text_aug,
-            query_symbols=query_symbols,
-            query_files=query_files,
-            top_k=vector_top_k,
+        candidates: List[RetrievalCandidate] = []
+        retrieval_stats: Dict[str, int] = {}
+        fast_context: Optional[AssembledContext] = None
+        fast_trace: List[Dict[str, Any]] = []
+        fast_path_used = False
+        slow_path_used = True
+        cache_hit = False
+
+        cache_key = self._cache_key(
+            query=query_text_aug,
+            folder_scope=folder_scope,
+            module_scope=module_scope,
+            index_kind=index_kind,
+            include_tests=include_tests,
             filter_language=filter_language,
-            exclude_test_files=not include_tests,
         )
+        if self.config.retrieval.enable_retrieval_cache:
+            cached = self._cache_get(cache_key)
+            if cached:
+                candidates = cached.get("candidates", [])
+                retrieval_stats = cached.get("stats", {})
+                cache_hit = True
+
+        if not cache_hit:
+            if self.config.retrieval.enable_two_tier:
+                fast_path_used = True
+                fast_candidates, fast_stats = self._fast_retrieve(
+                    cached_embedding=cached_embedding,
+                    query_text=query_text_aug,
+                    query_symbols=query_symbols,
+                    query_files=query_files,
+                    filter_language=filter_language,
+                    include_tests=include_tests,
+                    folder_scope=folder_scope,
+                    module_scope=module_scope,
+                    index_kind=index_kind,
+                )
+
+                self._apply_recency_scores(fast_candidates)
+                self._apply_spec_alignment(fast_candidates, spec_records)
+
+                fast_context, fast_trace = self._build_fast_context(
+                    fast_candidates,
+                    budget,
+                    spec_candidates,
+                )
+
+                fast_confident = self._is_fast_confident(fast_candidates)
+                if fast_confident:
+                    candidates = fast_candidates
+                    retrieval_stats = fast_stats
+                    slow_path_used = False
+                else:
+                    candidates = []
+                    retrieval_stats = {}
+
+            if not candidates:
+                if query_embedding is None:
+                    query_embedding = self.embedder.embed_query(parsed_query.search_text)
+                    parsed_query.embedding = query_embedding
+                vector_top_k = self.config.retrieval.vector_top_k or self.config.retrieval.top_k_candidates
+                candidates, retrieval_stats = self.retriever.retrieve(
+                    query_embedding=query_embedding,
+                    query_text=query_text_aug,
+                    query_symbols=query_symbols,
+                    query_files=query_files,
+                    top_k=vector_top_k,
+                    filter_language=filter_language,
+                    exclude_test_files=not include_tests,
+                    folder_scope=folder_scope,
+                    module_scope=module_scope,
+                    index_kind=index_kind,
+                )
+
         retrieval_time = (time.time() - retrieval_start) * 1000
         candidates_found = len(candidates)
 
-        # Multi-pass retrieval (relaxed thresholds)
+        # Multi-pass retrieval (relaxed thresholds) - slow path only
         multi_pass_used = False
-        if self.config.retrieval.enable_multi_pass and candidates_found < self.config.retrieval.multi_pass_min_candidates:
+        active_min = self.config.retrieval.answerability_min_candidates
+        multi_min = self.config.retrieval.multi_pass_min_candidates
+        min_candidates = min(active_min, multi_min)
+        if slow_path_used and (self.config.retrieval.enable_multi_pass or self.config.retrieval.enable_active_retrieval) and candidates_found < min_candidates:
             relaxed_candidates, relaxed_stats = self._relaxed_retrieve(
                 query_embedding=query_embedding,
                 query_text=query_text_aug,
                 query_symbols=query_symbols,
                 query_files=query_files,
-                top_k=max(vector_top_k, self.config.retrieval.multi_pass_vector_top_k),
+                top_k=max(self.config.retrieval.vector_top_k, self.config.retrieval.multi_pass_vector_top_k),
                 filter_language=filter_language,
-                include_tests=self.config.retrieval.multi_pass_include_tests,
+                include_tests=self.config.retrieval.multi_pass_include_tests or self.config.retrieval.enable_active_retrieval,
+                folder_scope=folder_scope,
+                module_scope=module_scope,
+                index_kind=index_kind,
             )
             if len(relaxed_candidates) > candidates_found:
                 candidates = relaxed_candidates
@@ -256,6 +376,7 @@ class RetrievalPipeline:
                     keyword_score=1.0,
                     combined_score=1.1 + boost,
                     source="router",
+                    index_kind=index_kind,
                 ))
             # Merge with existing candidates
             merged = {c.chunk.id: c for c in candidates}
@@ -278,18 +399,31 @@ class RetrievalPipeline:
         snapshot_state = self._snapshot_file_state(candidates)
 
         # Optional definition pull (symbol index hop)
-        if self.lexical_index and candidates:
-            candidates = self._definition_pull(candidates, parsed_query, snapshot_state)
+        if slow_path_used and self.lexical_index and candidates:
+            prev_def = self.config.retrieval.definition_pull_top_k
+            prev_syms = self.config.retrieval.definition_pull_symbols_per_chunk
+            if parsed_query.intent and parsed_query.intent.value in ("modify", "debug"):
+                self.config.retrieval.definition_pull_top_k = int(prev_def * 1.5)
+                self.config.retrieval.definition_pull_symbols_per_chunk = int(prev_syms * 1.5)
+            try:
+                candidates = self._definition_pull(candidates, parsed_query, snapshot_state)
+            finally:
+                self.config.retrieval.definition_pull_top_k = prev_def
+                self.config.retrieval.definition_pull_symbols_per_chunk = prev_syms
         
-        # Stage 3: Graph Expansion
+        # Stage 3: Graph Expansion (slow path only)
         expansion_start = time.time()
-        if self.graph_expander and candidates:
+        if slow_path_used and self.graph_expander and candidates:
             candidates = self.graph_expander.expand(
                 candidates,
                 max_expanded=self.config.retrieval.max_expanded_chunks,
             )
         expansion_time = (time.time() - expansion_start) * 1000
         candidates_expanded = len(candidates)
+
+        # Apply recency + spec alignment
+        self._apply_recency_scores(candidates)
+        self._apply_spec_alignment(candidates, spec_records)
 
         # Apply file-level boosts from routing
         if route_result and route_result.boosts_by_file:
@@ -304,6 +438,10 @@ class RetrievalPipeline:
         candidates = self._filter_stale_candidates(candidates, snapshot_hashes)
         post_staleness_count = len(candidates)
         dropped_stale = before_stale - post_staleness_count
+
+        if (not cache_hit) and self.config.retrieval.enable_retrieval_cache:
+            if post_staleness_count >= self.config.retrieval.cache_min_candidates:
+                self._cache_set(cache_key, candidates, snapshot_hashes, retrieval_stats)
         
         # Stage 4: Ranking
         ranking_start = time.time()
@@ -317,25 +455,29 @@ class RetrievalPipeline:
         rerank_time = 0.0
         post_rerank_count = len(candidates)
         if self.reranker and candidates:
-            rerank_top_k = max(self.config.retrieval.rerank_top_k, self.config.retrieval.final_max_chunks)
-            candidates = candidates[:rerank_top_k]
-            rerank_start = time.time()
-            reranked = self.reranker.rerank(
-                [(c.chunk, c.combined_score) for c in candidates],
-                query,
-                query_symbols=parsed_query.symbol_names,
-            )
-            rerank_time = (time.time() - rerank_start) * 1000
-            if reranked:
-                by_id = {c.chunk.id: c for c in candidates}
-                new_candidates: List[RetrievalCandidate] = []
-                for r in reranked:
-                    cand = by_id.get(r.chunk.id)
-                    if not cand:
-                        continue
-                    cand.combined_score = r.rerank_score
-                    new_candidates.append(cand)
-                candidates = new_candidates
+            if not self._should_skip_rerank(candidates):
+                rerank_top_k = min(
+                    max(self.config.retrieval.rerank_top_k, self.config.retrieval.final_max_chunks),
+                    self.config.retrieval.rerank_max_k,
+                )
+                candidates = candidates[:rerank_top_k]
+                rerank_start = time.time()
+                reranked = self.reranker.rerank(
+                    [(c.chunk, c.combined_score) for c in candidates],
+                    query,
+                    query_symbols=parsed_query.symbol_names,
+                )
+                rerank_time = (time.time() - rerank_start) * 1000
+                if reranked:
+                    by_id = {c.chunk.id: c for c in candidates}
+                    new_candidates: List[RetrievalCandidate] = []
+                    for r in reranked:
+                        cand = by_id.get(r.chunk.id)
+                        if not cand:
+                            continue
+                        cand.combined_score = r.rerank_score
+                        new_candidates.append(cand)
+                    candidates = new_candidates
             post_rerank_count = len(candidates)
 
         # Stage 4c: Optional LLM rerank
@@ -371,14 +513,21 @@ class RetrievalPipeline:
         filtered_summaries = self._filter_file_summaries(self.file_summaries, snapshot_hashes)
         # Apply final chunk cap from retrieval config
         if hasattr(self.budget_enforcer.config, "max_chunks"):
-            self.budget_enforcer.config.max_chunks = (
+            base_max = (
                 int(dynamic_max_chunks)
                 if dynamic_max_chunks is not None
                 else self.config.retrieval.final_max_chunks
             )
+            # Intent bias: explain/review -> fewer chunks (more summaries), fix/modify -> more chunks
+            if parsed_query.intent and parsed_query.intent.value in ("understand", "review"):
+                base_max = max(5, int(base_max * 0.7))
+            elif parsed_query.intent and parsed_query.intent.value in ("modify", "debug"):
+                base_max = max(base_max, int(self.config.retrieval.final_max_chunks * 1.1))
+            self.budget_enforcer.config.max_chunks = base_max
 
         allocation = self.budget_enforcer.enforce(
             candidates,
+            spec_candidates=spec_candidates,
             repo_summary=self.repo_summary,
             file_summaries=filtered_summaries,
             module_summaries=self.module_summaries,
@@ -399,8 +548,17 @@ class RetrievalPipeline:
         
         total_time = (time.time() - total_start) * 1000
 
-        # Build observability trace
+        # Build observability trace (only for included chunks - fixes telemetry accuracy)
         trace: List[Dict[str, Any]] = []
+        
+        # Add scope metadata at the start of trace
+        if folder_scope:
+            trace.append({
+                "type": "scope",
+                "folder_scope": folder_scope,
+                "reason": "metadata",
+            })
+        
         for cand in allocation.included_chunks:
             trace.append({
                 "chunk_id": cand.chunk.id,
@@ -411,6 +569,18 @@ class RetrievalPipeline:
                 "reason": "included",
                 "expansion_depth": cand.expansion_depth,
             })
+        for cand in allocation.included_spec_chunks:
+            trace.append({
+                "chunk_id": cand.chunk.id,
+                "file": cand.chunk.file_path,
+                "symbol": cand.chunk.symbol_name,
+                "source": cand.source,
+                "score": cand.combined_score,
+                "reason": "included_spec",
+                "expansion_depth": cand.expansion_depth,
+            })
+        # Note: We intentionally exclude truncated and budget_excluded chunks from trace
+        # to ensure telemetry only shows actually used context (fixes "Context used" accuracy)
         for cand in allocation.truncated_chunks:
             trace.append({
                 "chunk_id": cand.chunk.id,
@@ -464,14 +634,40 @@ class RetrievalPipeline:
             "rerank_latency_ms": int(rerank_time),
             "llm_rerank_latency_ms": int(llm_rerank_time),
             "multi_pass_used": int(1 if multi_pass_used else 0),
+            "fast_path_used": int(1 if fast_path_used else 0),
+            "slow_path_used": int(1 if slow_path_used else 0),
+            "cache_hit": int(1 if cache_hit else 0),
         }
+
+        grounding_spans = [
+            {
+                "file": cand.chunk.file_path,
+                "start_line": cand.chunk.metadata.start_line,
+                "end_line": cand.chunk.metadata.end_line,
+                "symbol": cand.chunk.symbol_name,
+                "chunk_id": cand.chunk.id,
+            }
+            for cand in (allocation.included_chunks + allocation.included_spec_chunks)
+        ]
+
+        clarifying_question = self._maybe_clarify(parsed_query, candidates, candidates_found)
 
         return RetrievalPipelineResult(
             context=context,
+            fast_context=fast_context,
             parsed_query=parsed_query,
+            spec_alignment_score=spec_alignment,
+            fast_path_used=fast_path_used,
+            slow_path_used=slow_path_used,
+            cache_hit=cache_hit,
+            index_kind=index_kind,
+            folder_scope=folder_scope,
+            module_scope=module_scope,
+            clarifying_question=clarifying_question,
+            grounding_spans=grounding_spans,
             candidates_found=candidates_found,
             candidates_expanded=candidates_expanded,
-            candidates_included=len(allocation.included_chunks),
+            candidates_included=len(allocation.included_chunks) + len(allocation.included_spec_chunks),
             candidates_excluded=len(allocation.excluded_chunks),
             query_time_ms=query_time,
             retrieval_time_ms=retrieval_time,
@@ -481,6 +677,7 @@ class RetrievalPipeline:
             total_time_ms=total_time,
             stage_p95_ms=stage_p95,
             trace=trace,
+            fast_trace=fast_trace,
         )
 
     def _relaxed_retrieve(
@@ -492,6 +689,9 @@ class RetrievalPipeline:
         top_k: int,
         filter_language: Optional[str],
         include_tests: bool,
+        folder_scope: Optional[str] = None,
+        module_scope: Optional[str] = None,
+        index_kind: Optional[str] = None,
     ):
         """Run a relaxed retrieval pass with lower thresholds."""
         prev = {
@@ -512,12 +712,341 @@ class RetrievalPipeline:
                 top_k=top_k,
                 filter_language=filter_language,
                 exclude_test_files=not include_tests,
+                folder_scope=folder_scope,
+                module_scope=module_scope,
+                index_kind=index_kind,
             )
         finally:
             self.config.retrieval.min_similarity = prev["min_similarity"]
             self.config.retrieval.vector_top_k = prev["vector_top_k"]
             self.config.retrieval.bm25_top_k = prev["bm25_top_k"]
             self.retriever.config = self.config.retrieval
+
+    def _cache_key(
+        self,
+        query: str,
+        folder_scope: Optional[str],
+        module_scope: Optional[str],
+        index_kind: Optional[str],
+        include_tests: bool,
+        filter_language: Optional[str],
+    ) -> str:
+        key = f"{query}|{folder_scope or ''}|{module_scope or ''}|{index_kind or ''}|{include_tests}|{filter_language or ''}"
+        return key[:500]
+
+    def _cache_get(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        entry = self._retrieval_cache.get(cache_key)
+        if not entry:
+            return None
+        ttl = self.config.retrieval.cache_ttl_seconds
+        if ttl and entry.get("ts") and (entry["ts"] + ttl < __import__("time").time()):
+            self._retrieval_cache.pop(cache_key, None)
+            return None
+        # Validate hashes
+        snapshot = entry.get("snapshot", {})
+        if self.file_reader and snapshot:
+            for fp, prev_hash in snapshot.items():
+                current_hash = self.file_reader.get_file_hash(fp)
+                if current_hash and prev_hash and current_hash != prev_hash:
+                    self._retrieval_cache.pop(cache_key, None)
+                    return None
+        return entry
+
+    def _cache_set(self, cache_key: str, candidates: List[RetrievalCandidate], snapshot: Dict[str, str], stats: Dict[str, int]) -> None:
+        if not self.config.retrieval.enable_retrieval_cache:
+            return
+        if len(self._retrieval_cache) >= self.config.retrieval.cache_max_entries:
+            # Remove oldest
+            oldest_key = next(iter(self._retrieval_cache))
+            self._retrieval_cache.pop(oldest_key, None)
+        self._retrieval_cache[cache_key] = {
+            "ts": __import__("time").time(),
+            "candidates": candidates,
+            "snapshot": snapshot,
+            "stats": stats,
+        }
+
+    def _fast_retrieve(
+        self,
+        cached_embedding,
+        query_text: str,
+        query_symbols: List[str],
+        query_files: List[str],
+        filter_language: Optional[str],
+        include_tests: bool,
+        folder_scope: Optional[str],
+        module_scope: Optional[str],
+        index_kind: Optional[str],
+    ) -> tuple[List[RetrievalCandidate], Dict[str, int]]:
+        # Use cached embedding for a quick vector pass when available
+        if cached_embedding is not None:
+            prev_bm25 = self.config.retrieval.bm25_top_k
+            prev_vec = self.config.retrieval.vector_top_k
+            try:
+                self.config.retrieval.bm25_top_k = self.config.retrieval.fast_bm25_top_k
+                self.config.retrieval.vector_top_k = self.config.retrieval.fast_vector_top_k
+                self.retriever.config = self.config.retrieval
+                return self.retriever.retrieve(
+                    query_embedding=cached_embedding,
+                    query_text=query_text,
+                    query_symbols=query_symbols,
+                    query_files=query_files,
+                    top_k=self.config.retrieval.fast_vector_top_k,
+                    filter_language=filter_language,
+                    exclude_test_files=not include_tests,
+                    folder_scope=folder_scope,
+                    module_scope=module_scope,
+                    index_kind=index_kind,
+                )
+            finally:
+                self.config.retrieval.bm25_top_k = prev_bm25
+                self.config.retrieval.vector_top_k = prev_vec
+                self.retriever.config = self.config.retrieval
+
+        # Lexical-only fast path (no embedding)
+        candidates: List[RetrievalCandidate] = []
+        stats = {
+            "pre_dedup_vector": 0,
+            "pre_dedup_lexical": 0,
+            "pre_dedup_symbol": 0,
+            "pre_dedup_file": 0,
+            "post_dedup": 0,
+        }
+
+        if self.lexical_index and query_text:
+            lex = self.retriever._lexical_search(
+                query_text=query_text,
+                top_k=self.config.retrieval.fast_bm25_top_k,
+                min_score=self.config.retrieval.bm25_min_score,
+                filter_language=filter_language,
+                exclude_test_files=not include_tests,
+                folder_scope=folder_scope,
+                module_scope=module_scope,
+                index_kind=index_kind,
+            )
+            candidates.extend(lex)
+            stats["pre_dedup_lexical"] = len(lex)
+
+        if query_symbols:
+            sym = self.retriever._symbol_search(
+                symbols=query_symbols,
+                top_k=self.config.retrieval.fast_bm25_top_k,
+                filter_language=filter_language,
+                exclude_test_files=not include_tests,
+                folder_scope=folder_scope,
+                module_scope=module_scope,
+                index_kind=index_kind,
+            )
+            candidates.extend(sym)
+            stats["pre_dedup_symbol"] = len(sym)
+
+        if query_files:
+            fs = self.retriever._file_search(
+                file_patterns=query_files,
+                top_k=self.config.retrieval.fast_bm25_top_k,
+                folder_scope=folder_scope,
+                module_scope=module_scope,
+                index_kind=index_kind,
+            )
+            candidates.extend(fs)
+            stats["pre_dedup_file"] = len(fs)
+
+        # Dedup
+        merged = {c.chunk.id: c for c in candidates}
+        candidates = list(merged.values())
+        candidates.sort(key=lambda c: c.combined_score, reverse=True)
+        stats["post_dedup"] = len(candidates)
+        return candidates[: self.config.retrieval.fast_bm25_top_k], stats
+
+    def _build_fast_context(
+        self,
+        candidates: List[RetrievalCandidate],
+        budget: ContextBudget,
+        spec_candidates: List[RetrievalCandidate],
+    ) -> tuple[Optional[AssembledContext], List[Dict[str, Any]]]:
+        if not candidates:
+            return None, []
+        ranked = self.ranker.rank(candidates, query_symbols=[])
+        allocation = self.budget_enforcer.enforce(
+            ranked,
+            spec_candidates=spec_candidates,
+            repo_summary=self.repo_summary,
+            file_summaries=self.file_summaries,
+            module_summaries=self.module_summaries,
+            budget=budget,
+        )
+        context = self.assembler.assemble(
+            allocation,
+            repo_summary=self.repo_summary,
+            file_summaries=self.file_summaries,
+            module_summaries=self.module_summaries,
+            query_summary="",
+        )
+        trace = [
+            {
+                "chunk_id": c.chunk.id,
+                "file": c.chunk.file_path,
+                "symbol": c.chunk.symbol_name,
+                "source": c.source,
+                "score": c.combined_score,
+                "reason": "fast_included",
+            }
+            for c in allocation.included_chunks
+        ]
+        return context, trace
+
+    def _apply_recency_scores(self, candidates: List[RetrievalCandidate]) -> None:
+        if not self.file_reader or not candidates:
+            return
+        now_ns = None
+        try:
+            import time
+            now_ns = int(time.time() * 1e9)
+        except Exception:
+            now_ns = None
+        for cand in candidates:
+            if not hasattr(self.file_reader, "get_file_stat"):
+                continue
+            stat = self.file_reader.get_file_stat(cand.chunk.file_path)
+            if not stat or not now_ns:
+                continue
+            age_ns = max(0, now_ns - int(stat.get("mtime_ns", 0)))
+            age_hours = age_ns / 1e9 / 3600.0
+            decay = max(0.0, 1.0 - (age_hours / max(1.0, self.config.retrieval.recency_decay_hours)))
+            cand.recency_score = min(self.config.retrieval.recency_max_boost, decay)
+
+    def _apply_spec_alignment(self, candidates: List[RetrievalCandidate], spec_records: List[Any]) -> None:
+        if not candidates:
+            return
+        spec_terms = self._spec_terms(spec_records)
+        if not spec_terms:
+            return
+        for cand in candidates:
+            text = " ".join([
+                cand.chunk.symbol_name or "",
+                cand.chunk.metadata.signature or "",
+                cand.chunk.metadata.docstring or "",
+                cand.chunk.code_body or "",
+            ]).lower()
+            hits = sum(1 for t in spec_terms if t in text)
+            cand.spec_alignment = hits / max(1, len(spec_terms))
+
+    def _spec_terms(self, spec_records: List[Any]) -> List[str]:
+        terms: List[str] = []
+        for rec in spec_records or []:
+            text = rec.chunk.code_body if hasattr(rec, "chunk") else ""
+            terms.extend(re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", text.lower()))
+        return list(dict.fromkeys(terms))[:200]
+
+    def _build_spec_candidates(self, spec_records: List[Any]) -> tuple[List[RetrievalCandidate], float]:
+        candidates: List[RetrievalCandidate] = []
+        if not spec_records:
+            return candidates, 0.0
+        best_scores = []
+        for rec in spec_records:
+            score = getattr(rec, "score", 0.0)
+            best_scores.append(score)
+            candidates.append(RetrievalCandidate(
+                chunk=rec.chunk,
+                vector_score=0.0,
+                keyword_score=score,
+                combined_score=max(0.6, score),
+                source="spec",
+                spec_alignment=score,
+                index_kind="spec",
+            ))
+        alignment = sum(best_scores) / max(1, len(best_scores))
+        # Enforce minimum spec coverage
+        if alignment < self.config.retrieval.spec_min_alignment:
+            candidates = candidates[: max(self.config.retrieval.spec_required_chunks, 1)]
+        return candidates, alignment
+
+    def _is_fast_confident(self, candidates: List[RetrievalCandidate]) -> bool:
+        if not candidates:
+            return False
+        if len(candidates) < self.config.retrieval.fast_min_candidates:
+            return False
+        top_score = max(c.combined_score for c in candidates)
+        return top_score >= self.config.retrieval.fast_confidence_threshold
+
+    def _should_skip_rerank(self, candidates: List[RetrievalCandidate]) -> bool:
+        if not candidates:
+            return True
+        top_score = max(c.combined_score for c in candidates)
+        return top_score >= self.config.retrieval.rerank_skip_confidence
+
+    def _derive_index_kind(self, parsed_query: ParsedQuery, query: str) -> str:
+        if not self.config.retrieval.enable_multi_index:
+            return self.config.retrieval.index_kind_default
+        q = (query or "").lower()
+        if any(k in q for k in ["test", "spec", "pytest", "jest"]):
+            return "tests"
+        if any(k in q for k in ["interface", "contract", "schema", "api", "types", ".d.ts"]):
+            return "interfaces"
+        if any(k in q for k in ["infra", "deploy", "docker", "k8s", "terraform", "ci", "pipeline"]):
+            return "infra"
+        return self.config.retrieval.index_kind_default
+
+    def _derive_scopes(self, parsed_query: ParsedQuery, route_result) -> tuple[Optional[str], Optional[str]]:
+        folder_scope = parsed_query.folder_scope
+        module_scope: Optional[str] = None
+        if self.config.retrieval.aggressive_scoping:
+            # Use file patterns and seed files as hard scope hints
+            file_hints = list(parsed_query.file_patterns or [])
+            if route_result and getattr(route_result, "seed_files", None):
+                file_hints.extend(route_result.seed_files)
+            file_hints = list(dict.fromkeys(file_hints))
+            if file_hints and not folder_scope:
+                folder_scope = os.path.dirname(file_hints[0]).replace("\\", "/")
+
+            if self.config.retrieval.enforce_module_scope and file_hints:
+                fp = file_hints[0]
+                lang = self._infer_language_from_path(fp)
+                module_scope = get_module_group(fp, lang)
+
+        return folder_scope, module_scope
+
+    def _infer_language_from_path(self, file_path: str) -> str:
+        lower = file_path.lower()
+        if lower.endswith(".py"):
+            return "python"
+        if lower.endswith((".ts", ".tsx")):
+            return "typescript"
+        if lower.endswith((".js", ".jsx")):
+            return "javascript"
+        if lower.endswith(".java"):
+            return "java"
+        if lower.endswith(".go"):
+            return "go"
+        if lower.endswith((".rs",)):
+            return "rust"
+        if lower.endswith((".c", ".cpp", ".hpp", ".h")):
+            return "cpp"
+        return ""
+
+    def _maybe_clarify(
+        self,
+        parsed_query: ParsedQuery,
+        candidates: List[RetrievalCandidate],
+        candidates_found: int,
+    ) -> Optional[str]:
+        # Ask a single clarifying question when uncertainty is high
+        if parsed_query.intent_confidence > 0.6:
+            return None
+        if candidates_found >= self.config.retrieval.answerability_min_candidates:
+            return None
+        return "Which file/module should I focus on, or do you have a specific symbol in mind?"
+    
+    def _get_metrics_collector(self):
+        """Get metrics collector (lazy import to avoid circular dependency)."""
+        if not hasattr(self, '_metrics_collector'):
+            self._metrics_collector = None
+            try:
+                from metrics import get_metrics_collector
+                self._metrics_collector = get_metrics_collector()
+            except ImportError:
+                pass
+        return self._metrics_collector
 
     def _record_metrics(self, sample: Dict[str, float]) -> Dict[str, float]:
         p95 = {}
@@ -531,24 +1060,46 @@ class RetrievalPipeline:
                 sorted_arr = sorted(arr)
                 idx = int(0.95 * (len(sorted_arr) - 1))
                 p95[key] = sorted_arr[idx]
+        
+        # Record to central metrics collector
+        collector = self._get_metrics_collector()
+        if collector:
+            collector.record_retrieval(
+                query_ms=sample.get("query", 0),
+                retrieval_ms=sample.get("retrieval", 0),
+                expansion_ms=sample.get("expansion", 0),
+                ranking_ms=sample.get("ranking", 0),
+                assembly_ms=sample.get("assembly", 0),
+                total_ms=sum(sample.values()),
+                counters=self._last_counters,
+            )
+        
         return p95
 
     def get_metrics(self) -> Dict[str, Dict[str, float]]:
-        """Get current latency metrics (p50/p95) per stage."""
+        """Get current latency metrics (p50/p95/p99) per stage."""
         metrics: Dict[str, Dict[str, float]] = {}
         for key, arr in self._latency_samples.items():
             if not arr:
-                metrics[key] = {"p50": 0.0, "p95": 0.0}
+                metrics[key] = {"p50": 0.0, "p95": 0.0, "p99": 0.0}
                 continue
             sorted_arr = sorted(arr)
-            p50 = sorted_arr[int(0.50 * (len(sorted_arr) - 1))]
-            p95 = sorted_arr[int(0.95 * (len(sorted_arr) - 1))]
-            metrics[key] = {"p50": p50, "p95": p95}
+            n = len(sorted_arr)
+            p50 = sorted_arr[int(0.50 * (n - 1))]
+            p95 = sorted_arr[int(0.95 * (n - 1))]
+            p99 = sorted_arr[int(0.99 * (n - 1))]
+            metrics[key] = {"p50": p50, "p95": p95, "p99": p99}
         return metrics
 
     def get_counters(self) -> Dict[str, int]:
         """Get last retrieval counters."""
         return dict(self._last_counters)
+    
+    def record_quality_metrics(self, recall_at_k: Dict[int, float], mrr: float) -> None:
+        """Record quality metrics (Recall@k, MRR) for evaluation."""
+        collector = self._get_metrics_collector()
+        if collector:
+            collector.record_retrieval_quality(recall_at_k, mrr)
 
     def _snapshot_file_state(self, candidates: List[RetrievalCandidate]) -> Dict[str, Dict[str, int | str]]:
         if not self.file_reader:
