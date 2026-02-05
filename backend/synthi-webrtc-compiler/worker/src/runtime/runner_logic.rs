@@ -9,7 +9,6 @@ use crate::runtime::plugin_contract::{
 use libloading::{Library, Symbol};
 use std::collections::HashMap;
 use std::ffi::{c_void, CString};
-use std::str::FromStr;
 
 fn to_compiler_slot(slot: ModuleSlot) -> CompilerModuleSlot {
     match slot {
@@ -23,7 +22,7 @@ use crate::runtime::runner::validator;
 
 // Host KV
 use crate::infra::host_kv::{
-    self, create_kv_api, module_slot_to_u32, read_schema_table, HostKvApiV1, HostKvSchemaEvent,
+    module_slot_to_u32, read_schema_table, HostKvApiV1, HostKvSchemaEvent,
     SynthiHostContextV1, KV_STORE,
 };
 
@@ -76,7 +75,7 @@ pub unsafe fn process_load_command(
     // This catches symbol mismatches and ABI version errors early.
     if loader_enabled {
         let slot = ModuleSlot::from_str(name);
-        if let Some(slot) = slot {
+        if let Some(_slot) = slot {
             // Generate a simple hash for tracking (real hash from file)
             let content_hash = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
@@ -438,13 +437,13 @@ pub unsafe fn process_load_command(
             // ============================================================
             // This allows the module to write to KV during on_load
             // ============================================================
-            let module_slot_compiler = to_compiler_slot(module_slot);
-            let mut has_host_kv_support = false;
+            let _module_slot_compiler = to_compiler_slot(module_slot);
+            // let mut has_host_kv_support = false;
 
             if let Some(ref sid) = session_id {
                 // Read schema table from module
                 let schemas = read_schema_table(&new_lib, to_compiler_slot(module_slot));
-                has_host_kv_support = !schemas.is_empty();
+                // has_host_kv_support = !schemas.is_empty();
 
                 if !schemas.is_empty() {
                     eprintln!(

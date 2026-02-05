@@ -352,7 +352,7 @@ pub struct ProcessSupervisor {
     restart_controller: RestartController,
     logger: StructuredLogger,
     ipc_config: IpcConfig,
-    current_reload_id: Option<ReloadId>,
+    _current_reload_id: Option<ReloadId>,
     // Slot isolation (v2.1)
     isolation_model: IsolationModel,
     isolation_manager: Option<IsolationManager>,
@@ -375,7 +375,7 @@ impl ProcessSupervisor {
             restart_controller: RestartController::new(backoff_config, known_good_store),
             logger: StructuredLogger::new(LogFormat::Human, LogLevel::Info),
             ipc_config: IpcConfig::default(),
-            current_reload_id: None,
+            _current_reload_id: None,
             // Slot isolation - default to SingleWorker model
             isolation_model: IsolationModel::default(),
             isolation_manager: None,
@@ -398,7 +398,7 @@ impl ProcessSupervisor {
             restart_controller,
             logger: StructuredLogger::new(LogFormat::Human, LogLevel::Info),
             ipc_config: IpcConfig::default(),
-            current_reload_id: None,
+            _current_reload_id: None,
             isolation_model: IsolationModel::default(),
             isolation_manager: None,
         }
@@ -614,7 +614,7 @@ impl ProcessSupervisor {
                     if let Some(worker) = self.worker.as_mut() {
                         for i in 0..10 { // Try for 100ms
                             if let Ok(Some(status)) = worker.child.try_wait() {
-                                let code = status.code().unwrap_or(-1);
+                                let _code = status.code().unwrap_or(-1);
                                 eprintln!("[Supervisor] FATAL: Worker exited during msg recv (attempt {}): {} (Error: {})", i, status, e);
                                 #[cfg(unix)]
                                 {

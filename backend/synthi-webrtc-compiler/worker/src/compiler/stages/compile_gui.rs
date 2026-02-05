@@ -1,18 +1,11 @@
 use crate::compiler::builder::{
-    hash_content, hash_shared_header_semantic, ModuleHashes, RebuildScope, WidgetCompiler,
-    WidgetDetector,
+    RebuildScope,
 };
 use crate::compiler::context::CompileContext;
-use crate::compiler::error_parser::{parse_compiler_output, CompilerType, DiagnosticEvent};
 use crate::compiler::serialization_utils::calculate_hash;
 use crate::hmr::incremental_cache::IncrementalCache;
 use crate::infra::utils::system_command;
-use crate::runtime::capability::{detect_capabilities, HmrStatus as CapabilityHmrStatus};
 use anyhow::{Context, Result};
-use regex::Regex;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 
 pub async fn compile_gui(
@@ -38,12 +31,12 @@ pub async fn compile_gui(
                 .unwrap_or("gui.cpp");
 
             // Use the already-processed content from Phase 1 (guardrails already applied)
-            let mut content = processed_gui.to_string();
+            let content = processed_gui.to_string();
 
             // ... (Additional GUI Guardrails should be applied here) ...
 
             // Hash content + core_lib_path dependency
-            let combined_hash = calculate_hash(&(content.clone(), &core_lib_path));
+            let _combined_hash = calculate_hash(&(content.clone(), &core_lib_path));
 
             let gui_cache_key =
                 IncrementalCache::cache_key(&content, &["-shared", "-fPIC", "-lSDL2"], &[]);
@@ -84,7 +77,7 @@ pub async fn compile_gui(
                 );
 
                 cmd.kill_on_drop(true);
-                let mut child = cmd.spawn().context("Failed to spawn g++")?;
+                let child = cmd.spawn().context("Failed to spawn g++")?;
 
                 let output_res = timeout(Duration::from_secs(30), child.wait_with_output()).await;
 

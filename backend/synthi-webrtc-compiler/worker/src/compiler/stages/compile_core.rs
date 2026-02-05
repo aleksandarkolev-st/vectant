@@ -69,7 +69,7 @@ pub async fn compile_core(
                 );
 
                 cmd.kill_on_drop(true);
-                let mut child = cmd.spawn().context("Failed to spawn g++")?;
+                let child = cmd.spawn().context("Failed to spawn g++")?;
 
                 let output_res = timeout(Duration::from_secs(30), child.wait_with_output()).await;
 

@@ -75,7 +75,7 @@ pub fn apply_shared_guardrails(content: &str) -> String {
 }
 
 /// Apply guardrails to core.cpp content (requires processed shared.h for context)
-pub fn apply_core_guardrails(content: &str, shared_content: &str, allow_gui: bool) -> String {
+pub fn apply_core_guardrails(content: &str, _shared_content: &str, allow_gui: bool) -> String {
     let mut result = content.to_string();
 
     // Fix common AI mistakes in core.cpp before compilation.

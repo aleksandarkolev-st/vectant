@@ -2,25 +2,19 @@ use anyhow::{Context, Result};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
-use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
-use webrtc::rtp::packet::Packet;
-use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType};
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
-use webrtc::util::Unmarshal;
 
 use crate::compiler::builder::ModuleHashes;
 use crate::compiler::context::CompileContext;
 use crate::infra::constants::GUI_TOOLS;
 use crate::infra::messages::CompileRequest;
-use crate::infra::observability::{LogEntry, LogLevel, ReloadId, ReloadMetricsTracker};
-use crate::infra::utils::system_command;
-use crate::runtime::capability::{detect_capabilities, HmrStatus as CapabilityHmrStatus};
+use crate::infra::observability::{ReloadId};
 use crate::runtime::runner_state::RunnerState; // Aliasing if needed, or check definition
 
 pub async fn handle_runner_execution(
@@ -32,10 +26,10 @@ pub async fn handle_runner_execution(
     new_hashes: ModuleHashes,
     core_lib_path: String,
     gui_lib_path: String,
-    timestamp: i64,
-    compile_start: std::time::Instant,
-    reload_id: ReloadId,
-    module_id: String,
+    _timestamp: i64,
+    _compile_start: std::time::Instant,
+    _reload_id: ReloadId,
+    _module_id: String,
     session_id: Option<String>,
 ) -> Result<()> {
     // Unified Runner Logic
@@ -138,8 +132,8 @@ pub async fn handle_runner_execution(
         let mut gst_display_str = reused_gst_display;
         let mut xvfb_process: Option<tokio::process::Child> = reused_xvfb;
         let mut gst_pipeline: Option<gst::Pipeline> = reused_pipeline;
-        let mut sdl_tx_opt: Option<mpsc::UnboundedSender<String>> = reused_sdl_tx;
-        let mut video_src_opt: Option<gst_app::AppSrc> = None;
+        let sdl_tx_opt: Option<mpsc::UnboundedSender<String>> = reused_sdl_tx;
+        let _video_src_opt: Option<gst_app::AppSrc> = None;
 
         if req.is_gui {
             let width = req_width;
@@ -225,8 +219,8 @@ pub async fn handle_runner_execution(
             let mut selected_mime_type = "video/H264".to_owned();
             let mut encoder_idx = 0;
             let mut pipeline = None;
-            let width = req_width;
-            let height = req_height;
+            let _width = req_width;
+            let _height = req_height;
 
             while encoder_idx < encoders.len() {
                 let (encoder, payloader, mime_type) = encoders[encoder_idx];
