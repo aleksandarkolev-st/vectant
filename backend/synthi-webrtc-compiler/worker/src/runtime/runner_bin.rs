@@ -45,8 +45,8 @@ use worker::safety::enhanced_fingerprint;
 // public protocol + infra
 // use worker::hmr::reload_protocol;
 // use worker::hmr::state_type_id;
-use worker::infra::observability;
-use worker::safety::hardened_ipc;
+// use worker::infra::observability;
+// use worker::safety::hardened_ipc;
 // use worker::safety::quiescence;
 // use worker::safety::restart_control;
 // use worker::safety::security;
@@ -73,13 +73,13 @@ use capability::{HmrStatus}; // Removed detect_capabilities
 
 use crash_recovery::{
     generate_crash_report, install_crash_handlers, set_current_lib_path,
-    HmrCrashStatus,
+    HmrCrashStatus, execute_with_protection,
 };
 
 use hmr_orchestrator::{HmrOrchestrator}; // Removed SavedState
 
 use host_kv::{
-    create_kv_api, HostKvSchemaEvent, SynthiHostContextV1, // Removed module_slot_to_u32, read_schema_table, KV_STORE
+    create_kv_api, // Removed module_slot_to_u32, read_schema_table, KV_STORE, HostKvSchemaEvent, SynthiHostContextV1
 };
 
 use loader::{ModuleLoader}; // Removed LoadResult
@@ -87,7 +87,7 @@ use loader::{ModuleLoader}; // Removed LoadResult
 use state_manager::StateManager;
 use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 
-use enhanced_fingerprint::{extract_fingerprint_from_module}; // Removed AbiFingerprint
+// use enhanced_fingerprint::{extract_fingerprint_from_module}; // Removed AbiFingerprint
 
 // use crate::runtime::hot_reload::v2::{
 //     get_module_abi_version, hot_reload_v2, save_state_msgpack_v2, validate_state_magic,
@@ -106,7 +106,7 @@ use worker::runtime::legacy_module_state::{AppState, ModuleState};
 // ============================================================
 
 // Import new HotApi types for v2 ABI
-use capability::{validate_hot_api, HotApiInfo};
+// use capability::{validate_hot_api, HotApiInfo};
 
 // ModuleState moved to legacy_module_state.rs
 
