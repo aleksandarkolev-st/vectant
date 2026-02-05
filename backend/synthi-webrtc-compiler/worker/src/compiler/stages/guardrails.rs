@@ -277,6 +277,42 @@ pub fn apply_core_guardrails(content: &str, shared_content: &str, allow_gui: boo
         }
     }
 
+    // FIX: Support standard main() C++ apps by transforming them to plugin format
+    // This allows users to paste standard X11/SDL code with int main() and have it run inside the runner
+    if !result.contains("core_on_load") && !result.contains("on_load") {
+        let re_main = Regex::new(r"\bint\s+main\s*\(").unwrap();
+        if re_main.is_match(&result) {
+            // Rename main -> user_main
+            result = re_main.replace(&result, "int user_main(").to_string();
+
+            // Inject adapter logic
+            // We spawn main() in a separate thread so it can run its own loop (e.g. while(1))
+            // while the Runner loop continues to heartbeat and manage the process.
+            result.push_str("\n\n// [Guardrail] Injected main() adapter for Synthi Runner\n");
+            result.push_str("#include <pthread.h>\n");
+            result.push_str("extern \"C\" {\n");
+            result.push_str("    int user_main(int argc, char** argv);\n");
+            result.push_str("    static void* main_thread_func(void* arg) {\n");
+            // Pass dummy args
+            result.push_str("        char* app_name = (char*)\"app\";\n");
+            result.push_str("        char* argv[] = {app_name, NULL};\n");
+            result.push_str("        user_main(1, argv);\n");
+            result.push_str("        return NULL;\n");
+            result.push_str("    }\n");
+            // Implement required plugin ABI
+            result.push_str("    void* core_on_load(void* prev_state, void* api) {\n");
+            result.push_str("        pthread_t thread;\n");
+            result.push_str("        pthread_create(&thread, NULL, main_thread_func, NULL);\n");
+            result.push_str("        pthread_detach(thread);\n");
+            result.push_str("        return NULL;\n");
+            result.push_str("    }\n");
+            result.push_str("    void core_on_update(void* state, float dt) {\n");
+            result.push_str("        // Main loop is running in separate thread\n");
+            result.push_str("    }\n");
+            result.push_str("}\n");
+        }
+    }
+
     result
 }
 
