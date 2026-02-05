@@ -1029,16 +1029,20 @@ fn main() {
 
         #[cfg(target_os = "linux")]
         {
-            worker::runtime::runner::capture::capture_frame(
-                &x11_conn,
-                x11_root,
-                shm_seg,
-                shm_ptr,
-                &frame_tx,
-                &mut frame_count,
-                &mut frames_sent,
-                &mut last_frame_log,
-            );
+            // Only capture frames internally if NOT in ProcessIsolated mode.
+            // In ProcessIsolated mode, the Supervisor handles capture via GStreamer ximagesrc.
+            if !matches!(execution_mode, process_isolation::ExecutionMode::ProcessIsolated) {
+                worker::runtime::runner::capture::capture_frame(
+                    &x11_conn,
+                    x11_root,
+                    shm_seg,
+                    shm_ptr,
+                    &frame_tx,
+                    &mut frame_count,
+                    &mut frames_sent,
+                    &mut last_frame_log,
+                );
+            }
         }
 
         // Cap at ~60 FPS
