@@ -22,44 +22,44 @@ use x11rb::protocol::shm::ConnectionExt as ShmConnectionExt;
 use worker::runtime::platform::sdl_defs::*;
 
 use worker::runtime::runner_logic;
-use worker::compiler::abi_version;
-use worker::hmr::binary_state;
-use worker::hmr::fast_refresh;
+// use worker::compiler::abi_version;
+// use worker::hmr::binary_state;
+// use worker::hmr::fast_refresh;
 use worker::hmr::orchestrator as hmr_orchestrator;
 use worker::infra::crash_recovery;
 use worker::infra::host_kv;
 use worker::runtime::capability;
 use worker::runtime::loader;
-use worker::safety::boundary;
-// mod plugin_contract; // Use crate::runtime::plugin_contract
-use worker::compiler::source_map;
-use worker::hmr::reload_manager;
-use worker::hmr::state_diff;
+// use worker::safety::boundary;
+// use worker::compiler::source_map;
+// use worker::hmr::reload_manager;
+// use worker::hmr::state_diff;
 use worker::hmr::state_manager;
 use worker::runtime::supervisor;
 
 // safety / hardening
 use worker::runtime::process_isolation;
 use worker::safety::enhanced_fingerprint;
-use worker::safety::strict_contract;
+// use worker::safety::strict_contract;
 
 // public protocol + infra
-use worker::hmr::reload_protocol;
-use worker::hmr::state_type_id;
+// use worker::hmr::reload_protocol;
+// use worker::hmr::state_type_id;
 use worker::infra::observability;
 use worker::safety::hardened_ipc;
-use worker::safety::quiescence;
-use worker::safety::restart_control;
-use worker::safety::security;
-use worker::safety::slot_isolation;
+// use worker::safety::quiescence;
+// use worker::safety::restart_control;
+// use worker::safety::security;
+// use worker::safety::slot_isolation;
 
 use worker::safety::hardened_ipc::{read_frame_validated, write_frame_with_checksum, IpcConfig};
 
 use worker::compiler::plugin_contract::ModuleSlot as CompilerModuleSlot;
 use worker::runtime::plugin_contract::{
-    HotApi, HotGetApiFn, ModuleSlot, RunnerApi, CORE_STATE_MAGIC, GUI_STATE_MAGIC, LOG_ERROR,
-    LOG_INFO, LOG_WARN, MAX_STATE_ALIGNMENT, RUNNER_API_VERSION, SYNTHI_CORE_ABI_VERSION,
-    SYNTHI_GUI_ABI_VERSION,
+    ModuleSlot, 
+    // HotApi, HotGetApiFn, RunnerApi, CORE_STATE_MAGIC, GUI_STATE_MAGIC, LOG_ERROR,
+    // LOG_INFO, LOG_WARN, MAX_STATE_ALIGNMENT, RUNNER_API_VERSION, SYNTHI_CORE_ABI_VERSION,
+    // SYNTHI_GUI_ABI_VERSION,
 };
 
 fn to_compiler_slot(slot: ModuleSlot) -> CompilerModuleSlot {
@@ -69,26 +69,25 @@ fn to_compiler_slot(slot: ModuleSlot) -> CompilerModuleSlot {
         ModuleSlot::Main => CompilerModuleSlot::Main,
     }
 }
-use capability::{detect_capabilities, HmrCapability, HmrStatus}; // Assuming capability is local mod
+use capability::{HmrStatus}; // Removed detect_capabilities
 
 use crash_recovery::{
-    execute_with_protection, generate_crash_report, install_crash_handlers, set_current_lib_path,
+    generate_crash_report, install_crash_handlers, set_current_lib_path,
     HmrCrashStatus,
 };
 
-use hmr_orchestrator::{HmrOrchestrator, SavedState};
+use hmr_orchestrator::{HmrOrchestrator}; // Removed SavedState
 
 use host_kv::{
-    create_kv_api, module_slot_to_u32, read_schema_table, HostKvSchemaEvent, SynthiHostContextV1,
-    KV_STORE,
+    create_kv_api, HostKvSchemaEvent, SynthiHostContextV1, // Removed module_slot_to_u32, read_schema_table, KV_STORE
 };
 
-use loader::{LoadResult, ModuleLoader};
+use loader::{ModuleLoader}; // Removed LoadResult
 
 use state_manager::StateManager;
 use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 
-use enhanced_fingerprint::{extract_fingerprint_from_module, AbiFingerprint};
+use enhanced_fingerprint::{extract_fingerprint_from_module}; // Removed AbiFingerprint
 
 // use crate::runtime::hot_reload::v2::{
 //     get_module_abi_version, hot_reload_v2, save_state_msgpack_v2, validate_state_magic,
