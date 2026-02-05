@@ -122,9 +122,11 @@ pub unsafe fn init_sdl() -> (*mut SDL_Window, *mut c_void) {
     }
 
     eprintln!("SDL_CreateWindow successful. Window ptr: {:p}", win);
-    let mut ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
+    // Xvfb often crashes with HW acceleration, so we try software first
+    let mut ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
     if ren.is_null() {
-        ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
+        eprintln!("Software renderer failed, trying accelerated fallback...");
+        ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
     }
 
     if ren.is_null() {
