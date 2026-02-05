@@ -290,8 +290,9 @@ pub fn apply_core_guardrails(content: &str, shared_content: &str, allow_gui: boo
             // while the Runner loop continues to heartbeat and manage the process.
             result.push_str("\n\n// [Guardrail] Injected main() adapter for Synthi Runner\n");
             result.push_str("#include <pthread.h>\n");
+            // Forward declare user_main with C++ linkage (standard)
+            result.push_str("int user_main(int argc, char** argv);\n");
             result.push_str("extern \"C\" {\n");
-            result.push_str("    int user_main(int argc, char** argv);\n");
             result.push_str("    static void* main_thread_func(void* arg) {\n");
             // Pass dummy args
             result.push_str("        char* app_name = (char*)\"app\";\n");
