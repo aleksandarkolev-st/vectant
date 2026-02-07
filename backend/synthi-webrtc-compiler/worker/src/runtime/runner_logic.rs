@@ -10,13 +10,6 @@ use libloading::{Library, Symbol};
 use std::collections::HashMap;
 use std::ffi::{c_void, CString};
 
-fn to_compiler_slot(slot: ModuleSlot) -> CompilerModuleSlot {
-    match slot {
-        ModuleSlot::Core => CompilerModuleSlot::Core,
-        ModuleSlot::Gui => CompilerModuleSlot::Gui,
-        ModuleSlot::Main => CompilerModuleSlot::Main,
-    }
-}
 use crate::runtime::hot_reload::v2::{get_module_abi_version, validate_state_magic};
 use crate::runtime::runner::validator;
 
@@ -26,6 +19,13 @@ use crate::infra::host_kv::{
     SynthiHostContextV1, KV_STORE,
 };
 
+fn to_compiler_slot(slot: ModuleSlot) -> CompilerModuleSlot {
+    match slot {
+        ModuleSlot::Core => CompilerModuleSlot::Core,
+        ModuleSlot::Gui => CompilerModuleSlot::Gui,
+        ModuleSlot::Main => CompilerModuleSlot::Main,
+    }
+}
 pub unsafe fn process_load_command(
     name: &str,
     path: &str,
@@ -81,7 +81,7 @@ pub unsafe fn process_load_command(
 
             match module_loader.load(
                 std::path::Path::new(path),
-                to_compiler_slot(module_slot),
+                module_slot,
                 content_hash,
             ) {
                 LoadResult::Success {
@@ -259,7 +259,7 @@ pub unsafe fn process_load_command(
 
                 // Use orchestrator for unified save (binary-first with JSON fallback)
                 saved_state = Some(orchestrator.save_module_state(
-                    to_compiler_slot(module_slot),
+                    module_slot,
                     &old_lib,
                     state_to_save,
                 ));
@@ -375,11 +375,11 @@ pub unsafe fn process_load_command(
             if let Some(ref ss) = saved_state {
                 // Get template JSON for field-level diffing (if JSON path needed)
                 let template_json =
-                    orchestrator.get_template_json(to_compiler_slot(module_slot), &new_lib);
+                    orchestrator.get_template_json(module_slot, &new_lib);
 
                 // Use orchestrator to load state
                 let loaded = orchestrator.load_module_state(
-                    to_compiler_slot(module_slot),
+                    module_slot,
                     &new_lib,
                     ss,
                     template_json.as_deref(),

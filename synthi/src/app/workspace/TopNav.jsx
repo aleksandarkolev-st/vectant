@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo } from 'react';
-import { Search, TerminalSquare, Play, Settings, MessageSquare } from 'lucide-react';
+import { Search, TerminalSquare, Play, Settings, MessageSquare, Square, RotateCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
@@ -17,8 +17,11 @@ export default function TopNav({
   setRunInGuiMode,
   useAiSplit,
   setUseAiSplit,
+  onStop,
+  onReload,
+  isRunning,
   onToggleTerminal, 
-  onUndo, 
+  onUndo,  
   onRedo, 
   onCommandPalette,
   onToggleChat, 
@@ -167,14 +170,35 @@ export default function TopNav({
           {useAiSplit ? "AI HMR" : "Std HMR"}
         </Button>
 
-        <Button
-          size="sm" 
-          className="h-8 w-8 p-0 transition-colors rounded-lg bg-[#0a0b10] hover:bg-[#1c1d26] cursor-pointer duration-300 hover:-translate-y-0.5 transition-all" 
-          onClick={onRun}
-          title="Run Code"
-        >
-          <Play className="w-4 h-4 text-[#327464]" strokeWidth={2} />
-        </Button>
+        {isRunning ? (
+            <>
+                <Button
+                    size="sm" 
+                    className="h-8 w-8 p-0 transition-colors rounded-lg bg-[#0a0b10] hover:bg-[#1c1d26] cursor-pointer duration-300 hover:-translate-y-0.5 transition-all text-red-500 hover:text-red-400" 
+                    onClick={onStop}
+                    title="Stop Code"
+                >
+                    <Square className="w-4 h-4 fill-current" strokeWidth={2} />
+                </Button>
+                <Button
+                    size="sm" 
+                    className="h-8 w-8 p-0 transition-colors rounded-lg bg-[#0a0b10] hover:bg-[#1c1d26] cursor-pointer duration-300 hover:-translate-y-0.5 transition-all text-[#327464]" 
+                    onClick={onReload}
+                    title="Reload Code"
+                >
+                    <RotateCw className="w-4 h-4" strokeWidth={2} />
+                </Button>
+            </>
+        ) : (
+            <Button
+                size="sm" 
+                className="h-8 w-8 p-0 transition-colors rounded-lg bg-[#0a0b10] hover:bg-[#1c1d26] cursor-pointer duration-300 hover:-translate-y-0.5 transition-all" 
+                onClick={onRun}
+                title="Run Code"
+            >
+                <Play className="w-4 h-4 text-[#327464]" strokeWidth={2} />
+            </Button>
+        )}
         <Popover>
           <PopoverTrigger asChild>
             <Button 

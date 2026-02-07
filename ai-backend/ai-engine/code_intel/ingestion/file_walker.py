@@ -13,6 +13,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import os
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Set
@@ -33,6 +34,8 @@ class WalkedFile:
     content_hash: str   # SHA-256 hash of content
     size_bytes: int     # File size
     language: str = ""  # Detected language (set later)
+    imports: list = None  # Parser import statements (set later)
+    exports: list = None  # Parser export statements (set later)
     
     @property
     def extension(self) -> str:
@@ -115,8 +118,90 @@ class FileWalker:
         return False
     
     def _compute_hash(self, content: str) -> str:
-        """Compute SHA-256 hash of content."""
-        return hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:16]
+        """Compute SHA-256 hash of canonicalized text content."""
+        canon = self._canonicalize_text(content)
+        return hashlib.sha256(canon.encode("utf-8", errors="surrogateescape")).hexdigest()
+
+    def _canonicalize_text(self, content: str) -> str:
+        """
+        Canonicalize text for stable hashing.
+
+        Decisions (explicit):
+        - BOM: stripped if present
+        - Unicode normalization: NFC
+        - Line endings: normalized to \n
+        - Trailing whitespace: stripped per line
+        """
+        if content is None:
+            return ""
+        # Strip BOM
+        if content.startswith("\ufeff"):
+            content = content.lstrip("\ufeff")
+        # Normalize unicode
+        canon = unicodedata.normalize("NFC", content)
+        # Normalize line endings to \n
+        canon = canon.replace("\r\n", "\n").replace("\r", "\n")
+        # Strip trailing whitespace per line
+        canon = "\n".join([line.rstrip(" \t") for line in canon.split("\n")])
+        return canon
+
+    def _read_file_bytes(self, filepath: str) -> Optional[bytes]:
+        try:
+            with open(filepath, "rb") as f:
+                return f.read()
+        except Exception:
+            return None
+
+    def _decode_text(self, data: bytes) -> str:
+        """
+        Decode UTF-8 without replacement.
+        Falls back to surrogateescape to preserve raw bytes deterministically.
+        """
+        try:
+            return data.decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            return data.decode("utf-8", errors="surrogateescape")
+
+    def get_file_hash(self, relative_path: str) -> str:
+        """Get current content hash for a file path (relative to root)."""
+        filepath = os.path.join(self.root, relative_path)
+        if not os.path.exists(filepath):
+            return ""
+        try:
+            data = self._read_file_bytes(filepath)
+            if data is None:
+                return ""
+            content = self._decode_text(data)
+            return self._compute_hash(content)
+        except Exception:
+            return ""
+
+    def get_file_stat(self, relative_path: str) -> Optional[Dict[str, int]]:
+        """Get file mtime/size for snapshot validation."""
+        filepath = os.path.join(self.root, relative_path)
+        try:
+            st = os.stat(filepath)
+            return {"mtime_ns": int(st.st_mtime_ns), "size": int(st.st_size)}
+        except Exception:
+            return None
+
+    def read_lines(self, file_path: str, start_line: int, end_line: int) -> str:
+        """Read lines from a file path (relative or absolute)."""
+        try:
+            # Allow absolute paths
+            filepath = file_path if os.path.isabs(file_path) else os.path.join(self.root, file_path)
+            data = self._read_file_bytes(filepath)
+            if data is None:
+                return ""
+            content = self._decode_text(data)
+            # Normalize line endings for consistency
+            content = content.replace("\r\n", "\n").replace("\r", "\n")
+            lines = content.split("\n")
+            start_idx = max(1, start_line) - 1
+            end_idx = min(len(lines), end_line)
+            return "\n".join(lines[start_idx:end_idx])
+        except Exception:
+            return ""
     
     def walk(self) -> Iterator[WalkedFile]:
         """
@@ -170,8 +255,10 @@ class FileWalker:
                 
                 # Read file content
                 try:
-                    with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-                        content = f.read()
+                    data = self._read_file_bytes(filepath)
+                    if data is None:
+                        raise IOError("read failed")
+                    content = self._decode_text(data)
                 except Exception as e:
                     logger.warning(f"Failed to read {relative_path}: {e}")
                     continue
@@ -221,8 +308,10 @@ class FileWalker:
         
         try:
             size = os.path.getsize(filepath)
-            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
+            data = self._read_file_bytes(filepath)
+            if data is None:
+                return None
+            content = self._decode_text(data)
             
             return WalkedFile(
                 path=filepath,

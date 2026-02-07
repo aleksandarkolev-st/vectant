@@ -46,7 +46,7 @@ import ErrorOverlay from '@/components/ErrorOverlay';
 import { GitStatus } from '@/components/git/GitStatus';
 import ActivityBar from '../ActivityBar.jsx';
 import SearchView from './SearchView.jsx';
-import EmulatorPanel from '@/components/emulator/EmulatorPanel';
+import FloatingEmulatorWindow from '@/components/emulator/FloatingEmulatorWindow';
 import { EMULATOR_STATES } from '@/components/emulator/emulatorStates';
 import StatusBar from '../StatusBar.jsx';
 import WorkspaceHydrator from '@/components/WorkspaceHydrator';
@@ -72,7 +72,7 @@ export default function EditorPage({ params }) {
     // Track editor content version to force re-analysis on every change (including remote/undo)
     const [editorVersion, setEditorVersion] = useState(0);
     const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = useAnalyzerGateway();
-    const { compile, mediaStream } = useCompiler();
+    const { client, compile, mediaStream, cancelMobileJob, isCompiling, status: compilerStatus } = useCompiler();
     useHMR();
     
     // Code Intelligence - auto-index workspace for AI context retrieval
@@ -1378,7 +1378,7 @@ export default function EditorPage({ params }) {
         }
     }, [rawFiles, slug]);
 
-    const handleRun = useCallback(async () => {
+    const handleRun = useCallback(async ({ skipCancel = false } = {}) => {
         if (!activeFile) {
             console.warn('No active file selected for compilation.');
             return;
@@ -1437,6 +1437,12 @@ export default function EditorPage({ params }) {
         // Auto-open the emulator panel when we run a mobile build.
         let mobileSid = null;
         if (isReactNative) {
+            // Cancel previous session if restart
+            if (emulatorSessionId && !skipCancel) {
+                console.log('[handleRun] Restarting - cancelling previous session:', emulatorSessionId);
+                await cancelMobileJob(emulatorSessionId);
+            }
+
             mobileSid = `sess-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
             setEmulatorSessionId(mobileSid);
             setEmulatorForcedError('');
@@ -1473,13 +1479,66 @@ export default function EditorPage({ params }) {
             });
             appendBuildLog('Build succeeded.');
         } catch (err) {
+            const msg = err?.message || String(err);
+            if (msg.includes('cancelled by user') || msg.includes('Cancelled')) {
+                 console.log('Build cancelled (probably due to restart/stop)');
+                 return;
+            }
             console.error('Compile failed', err);
-            appendBuildLog(`error: ${err?.message || err}`);
+            appendBuildLog(`error: ${msg}`);
             if (isReactNative) {
-                setEmulatorForcedError(err?.message || String(err));
+                setEmulatorForcedError(msg);
             }
         }
-    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, useAiSplit, runInGuiMode]);
+    }, [activeFile, currentContent, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, useAiSplit, emulatorSessionId, cancelMobileJob]);
+
+    const handleStop = useCallback(async () => {
+        const activeSessionId = client?.getActiveSessionId?.();
+        if (activeSessionId) {
+            const result = await client.cancelBuild(activeSessionId);
+            if (!result || !result.cancelled) {
+                if (typeof window !== 'undefined' && window.alert) {
+                    window.alert(
+                        `Build did not fully stop yet (session ${activeSessionId}).\n` +
+                        `Please wait a moment and try again.`
+                    );
+                }
+                return;
+            }
+        }
+        if (emulatorSessionId) {
+            setEmulatorForcedError('Compilation stopped by user.');
+            dispatch(setEmulatorPreviewVisible(false));
+            // Ensure status shows as stopped/failed immediately to clear UI
+            appendBuildLog('Stopped by user.');
+        }
+        if (!emulatorSessionId) {
+            appendBuildLog('Stopped by user.');
+        }
+        if (client?.reconnect) {
+            await client.reconnect();
+        }
+    }, [emulatorSessionId, dispatch, appendBuildLog, client]);
+
+    const handleRestart = useCallback(async () => {
+        const activeSessionId = client?.getActiveSessionId?.();
+        if (activeSessionId) {
+            const result = await client.cancelBuild(activeSessionId);
+            if (!result || !result.cancelled) {
+                if (typeof window !== 'undefined' && window.alert) {
+                    window.alert(
+                        `Build did not fully stop yet (session ${activeSessionId}).\n` +
+                        `Please wait a moment and try again.`
+                    );
+                }
+                return;
+            }
+        }
+        if (client?.reconnect) {
+            await client.reconnect();
+        }
+        await handleRun({ skipCancel: true });
+    }, [client, handleRun]);
 
     const handleSave = useCallback(async () => {
         if (!activeFile) return;
@@ -1626,24 +1685,29 @@ export default function EditorPage({ params }) {
         </ResizablePanel>
     );
 
-    // UI-only dockable panel (hidden by default). Opening will be hooked up later
-    // via command palette / toolbar (stub only per requirements).
-    const EmulatorPreviewPanel = (
-        <ResizablePanel defaultSize={24} minSize={18} maxSize={55} className="border-l border-[#545454] bg-[#0c0c0e] min-w-0">
-            <EmulatorPanel
-                key={emulatorRunNonce}
-                defaultState={EMULATOR_STATES.BOOTING}
-                sessionId={emulatorSessionId}
-                mediaStream={mediaStream}
-                forcedErrorMessage={emulatorForcedError}
-                onClose={() => {
-                    dispatch(setEmulatorPreviewVisible(false));
-                    setEmulatorSessionId(null);
-                    setEmulatorForcedError('');
-                }}
-            />
-        </ResizablePanel>
-    );
+    // Floating emulator window (renders outside the panel layout)
+    // This is now independent of the ResizablePanelGroup structure
+    const FloatingEmulator = showEmulatorPreview ? (
+        <FloatingEmulatorWindow
+            key={emulatorRunNonce}
+            defaultState={EMULATOR_STATES.BOOTING}
+            sessionId={emulatorSessionId}
+            mediaStream={mediaStream}
+            forcedErrorMessage={emulatorForcedError}
+            onClose={() => {
+                // Cancel the running mobile job on the worker
+                if (emulatorSessionId) {
+                    cancelMobileJob(emulatorSessionId);
+                }
+                if (client?.reconnect) {
+                    client.reconnect();
+                }
+                dispatch(setEmulatorPreviewVisible(false));
+                setEmulatorSessionId(null);
+                setEmulatorForcedError('');
+            }}
+        />
+    ) : null;
 
     if (workspaceMissing) {
         return <WorkspaceNotFoundModal slug={slug} message={workspaceMissingMessage} open={true} />;
@@ -1663,6 +1727,9 @@ export default function EditorPage({ params }) {
                 setRunInGuiMode={setRunInGuiMode}
                 useAiSplit={useAiSplit}
                 setUseAiSplit={setUseAiSplit}
+                onStop={handleStop}
+                onReload={handleRestart}
+                isRunning={isCompiling}
                 onToggleTerminal={() => dispatch(toggleTerminal())}
                 onUndo={handleUndo}
                 onRedo={handleRedo}
@@ -1715,13 +1782,6 @@ export default function EditorPage({ params }) {
                                         {ChatPanel}
                                     </>
                                 )}
-
-                                {showEmulatorPreview && (
-                                    <>
-                                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                                        {EmulatorPreviewPanel}
-                                    </>
-                                )}
                             </>
                         ) : (
                             <>
@@ -1735,13 +1795,6 @@ export default function EditorPage({ params }) {
                                     <>
                                         <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
                                         {ChatPanel}
-                                    </>
-                                )}
-
-                                {showEmulatorPreview && (
-                                    <>
-                                        <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
-                                        {EmulatorPreviewPanel}
                                     </>
                                 )}
                             </>
@@ -1863,6 +1916,9 @@ export default function EditorPage({ params }) {
 
         {/* Error Overlay */}
         <ErrorOverlay />
+
+        {/* Floating Emulator Window - rendered outside panel layout */}
+        {FloatingEmulator}
     </div>
     </DockablePanelProvider>
 );

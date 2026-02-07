@@ -18,6 +18,9 @@ from ..core.types import (
     SymbolEdge,
     SymbolType,
     EdgeType,
+    compute_body_fingerprint,
+    canonicalize_signature,
+    compute_stable_symbol_id,
 )
 
 
@@ -121,15 +124,27 @@ class ParseResult:
                 start_col=symbol.start_col,
                 end_col=symbol.end_col,
                 symbol_name=symbol.name,
+                qualified_name=symbol.qualified_name,
                 symbol_type=symbol.symbol_type,
                 signature=symbol.signature,
                 docstring=symbol.docstring,
                 imports_used=frozenset(symbol.imports),
                 exports_provided=frozenset(symbol.exports),
+                type_refs=frozenset(symbol.type_refs),
                 parent_symbol=symbol.parent,
                 language=self.language,
                 is_public=symbol.is_public,
                 is_test="_test" in self.file_path.lower() or "test_" in symbol.name.lower(),
+            )
+
+            # Stable symbol identity (rename/move resilient)
+            body_fp = compute_body_fingerprint(symbol.code)
+            sig_fp = canonicalize_signature(symbol.signature)
+            metadata.stable_symbol_id = compute_stable_symbol_id(
+                self.language,
+                symbol.symbol_type,
+                sig_fp,
+                body_fp,
             )
             
             chunk = SemanticChunk(
@@ -156,6 +171,7 @@ class ImportStatement:
     
     # Type
     is_relative: bool = False
+    level: int = 0  # Python relative import level (0 = absolute)
     is_type_only: bool = False  # TypeScript 'import type'
 
 

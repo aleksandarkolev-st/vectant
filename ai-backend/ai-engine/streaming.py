@@ -49,6 +49,12 @@ class StreamingResult:
     error: Optional[str] = None
     cancelled_at: Optional[int] = None  # Chunk index where cancelled
     model_used: Optional[str] = None
+    # Time to first token in ms
+    ttft_ms: float = 0.0
+    # Prompt token count (if available)
+    prompt_tokens: int = 0
+    # Output token count
+    output_tokens: int = 0
 
 
 class StreamingProgress:
@@ -60,6 +66,7 @@ class StreamingProgress:
         self.content_buffer: str = ""
         self.start_time: float = time.time()
         self.last_chunk_time: float = time.time()
+        self.first_token_time: Optional[float] = None  # TTFT tracking
         self.status: StreamingStatus = StreamingStatus.PENDING
     
     def update(self, chunk: StreamChunk) -> None:
@@ -68,6 +75,11 @@ class StreamingProgress:
         self.content_buffer += chunk.content
         self.tokens_received = chunk.tokens_so_far
         self.last_chunk_time = time.time()
+        
+        # Track first token time for TTFT
+        if self.first_token_time is None and chunk.content:
+            self.first_token_time = time.time()
+        
         self.status = StreamingStatus.STREAMING
         
         if chunk.is_final:
@@ -76,6 +88,13 @@ class StreamingProgress:
     @property
     def elapsed_ms(self) -> float:
         return (time.time() - self.start_time) * 1000
+    
+    @property
+    def ttft_ms(self) -> float:
+        """Time to first token in milliseconds."""
+        if self.first_token_time is None:
+            return 0.0
+        return (self.first_token_time - self.start_time) * 1000
     
     @property
     def tokens_per_second(self) -> float:
@@ -385,6 +404,43 @@ class StreamingManager:
     def __init__(self):
         self._providers: Dict[str, StreamingProvider] = {}
         self._active_streams: Dict[str, CancellationToken] = {}
+        self._metrics_collector = None  # Lazy import to avoid circular dependency
+    
+    def _get_metrics_collector(self):
+        """Get the metrics collector (lazy import)."""
+        if self._metrics_collector is None:
+            try:
+                from metrics import get_metrics_collector
+                self._metrics_collector = get_metrics_collector()
+            except ImportError:
+                pass
+        return self._metrics_collector
+    
+    def _record_streaming_metrics(
+        self,
+        ttft_ms: float,
+        duration_ms: float,
+        tokens: int,
+        success: bool,
+        is_timeout: bool = False,
+        error_type: Optional[str] = None,
+    ) -> None:
+        """Record streaming metrics."""
+        collector = self._get_metrics_collector()
+        if collector:
+            collector.record_streaming_completion(
+                ttft_ms=ttft_ms,
+                total_latency_ms=duration_ms,
+                tokens=tokens,
+                prompt_tokens=0,  # Not always available
+                output_tokens=tokens,
+            )
+            if not success:
+                collector.reliability.record_request(
+                    success=False,
+                    is_timeout=is_timeout,
+                    error_type=error_type,
+                )
     
     def register_provider(self, name: str, provider: StreamingProvider) -> None:
         """Register a streaming provider."""
@@ -443,23 +499,50 @@ class StreamingManager:
             else:
                 status = StreamingStatus.COMPLETED
             
+            duration_ms = (time.time() - start_time) * 1000
+            
+            # Record metrics if collector available
+            self._record_streaming_metrics(
+                ttft_ms=progress.ttft_ms,
+                duration_ms=duration_ms,
+                tokens=progress.tokens_received,
+                success=status == StreamingStatus.COMPLETED,
+                is_timeout=False,
+            )
+            
             return StreamingResult(
                 status=status,
                 content="".join(content_parts),
                 chunks=chunks,
                 total_tokens=progress.tokens_received,
-                duration_ms=(time.time() - start_time) * 1000,
+                duration_ms=duration_ms,
                 cancelled_at=len(chunks) - 1 if status == StreamingStatus.CANCELLED else None,
+                ttft_ms=progress.ttft_ms,
+                output_tokens=progress.tokens_received,
             )
             
         except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
+            is_timeout = "timeout" in str(e).lower()
+            
+            # Record failure metrics
+            self._record_streaming_metrics(
+                ttft_ms=progress.ttft_ms,
+                duration_ms=duration_ms,
+                tokens=progress.tokens_received,
+                success=False,
+                is_timeout=is_timeout,
+                error_type=type(e).__name__,
+            )
+            
             return StreamingResult(
                 status=StreamingStatus.FAILED,
                 content="".join(content_parts),
                 chunks=chunks,
                 total_tokens=progress.tokens_received,
-                duration_ms=(time.time() - start_time) * 1000,
+                duration_ms=duration_ms,
                 error=f"{type(e).__name__}: {e}",
+                ttft_ms=progress.ttft_ms,
             )
         finally:
             self._active_streams.pop(stream_id, None)
@@ -488,7 +571,8 @@ def get_streaming_manager() -> StreamingManager:
         
         # Register default providers
         try:
-            _streaming_manager.register_provider("openai", OpenAIStreamer())
+            # _streaming_manager.register_provider("openai", OpenAIStreamer())
+            pass
         except Exception:
             pass
         

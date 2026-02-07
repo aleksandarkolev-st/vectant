@@ -74,8 +74,10 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use webrtc::api::APIBuilder;
+use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
+use webrtc::api::APIBuilder;
+use webrtc::interceptor::registry::Registry;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::RTCDataChannel;
 // use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
@@ -86,7 +88,7 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 // use webrtc::rtp::packet::Packet;
 use webrtc::rtp_transceiver::rtp_codec::{
-    RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
+    RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType, RTCRtpHeaderExtensionCapability,
 };
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
@@ -94,6 +96,13 @@ use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 // use webrtc::track::track_local::TrackLocal;
 // use webrtc::track::track_local::TrackLocalWriter;
 // use webrtc::util::Unmarshal;
+use webrtc::rtp_transceiver::RTCPFeedback;
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+use webrtc::track::track_local::TrackLocal;
+use webrtc::track::track_local::TrackLocalWriter;
+use webrtc::util::Unmarshal;
+use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use serde::{Deserialize, Serialize};
 
 // use printer::compile_context::CompileContext; // Legacy path
 use compiler::context::CompileContext;
@@ -114,12 +123,47 @@ use worker::infra::storage;
 
 
 
+
 fn get_ai_backend_url() -> String {
     if let Ok(url) = std::env::var("AI_BACKEND_URL") {
         return url;
     }
     
     // Auto-detect WSL host IP
+    if let Some(host_ip) = get_wsl_host_ip() {
+        return format!("http://{}:8000", host_ip);
+    }
+    "http://localhost:8000".to_string()
+}
+    
+const GUI_TOOLS: &[&str] = &["xdotool", "Xvfb", "matchbox-window-manager"]; // Keeping these for now as SDL2 might use Xvfb on Linux
+
+#[derive(Debug, Serialize, Deserialize)]
+struct FileEntry {
+    name: String,
+    content: String,
+}
+
+/// Request to cancel a running mobile emulator job
+#[derive(Debug, Deserialize)]
+struct CancelMobileJobRequest {
+    #[serde(rename = "type")]
+    msg_type: String,  // Should be "cancel-mobile-job"
+    session_id: String,
+}
+
+/// Request to cancel a running build (all targets)
+#[derive(Debug, Deserialize)]
+struct CancelBuildRequest {
+    #[serde(rename = "type")]
+    msg_type: String, // Should be "cancel-build"
+    #[serde(default)]
+    session_id: Option<String>,
+}
+
+
+// Auto-detect WSL host IP
+fn get_wsl_backend_url() -> String {
     if let Some(host_ip) = get_wsl_host_ip() {
         return format!("http://{}:8000", host_ip);
     }
@@ -136,6 +180,15 @@ fn get_signaling_url() -> String {
     // or is accessible via localhost forwarding.
     // We ONLY default to Host IP for the AI Backend which we know runs on Windows.
     "ws://localhost:9000".to_string()
+}
+
+fn extract_fingerprint(sdp: &str) -> Option<String> {
+    for line in sdp.lines() {
+        if let Some(rest) = line.strip_prefix("a=fingerprint:") {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
 }
 
 #[tokio::main]
@@ -288,9 +341,8 @@ async fn main() -> Result<()> {
         }
     });
 
-    let pc = create_peer(signal_tx.clone()).await?;
+    let mut pc = create_peer(signal_tx.clone()).await?;
     let log_channel_store: Arc<Mutex<Option<Arc<RTCDataChannel>>>> = Arc::new(Mutex::new(None));
-    let compile_store = log_channel_store.clone();
     // Store of sessionId -> stdin sender so datachannel 'terminal' messages can be
     // routed to the running process's stdin.
     let terminal_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> =
@@ -300,6 +352,9 @@ async fn main() -> Result<()> {
         Arc::new(Mutex::new(HashMap::new()));
     // Store for persistent runner process
     let runner_store: Arc<Mutex<Option<RunnerState>>> = Arc::new(Mutex::new(None));
+    // Store for currently running compile task (any target)
+    let compile_task_store: Arc<Mutex<Option<(String, tokio::task::JoinHandle<()>)>>> =
+        Arc::new(Mutex::new(None));
     // Simple in-memory cache for tracking compiled lib paths (legacy, used alongside IncrementalCache)
     let compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -511,6 +566,431 @@ async fn main() -> Result<()> {
     });
     // -----------------------------------
 
+    wire_peer_channels(
+        &pc,
+        log_channel_store.clone(),
+        terminal_input_store.clone(),
+        sdl_input_store.clone(),
+        runner_store.clone(),
+        compile_task_store.clone(),
+        workspace_path_arc.clone(),
+        compile_cache.clone(),
+        boundary_checker.clone(),
+        incremental_cache.clone(),
+        hmr_orchestrator.clone(),
+        structured_logger.clone(),
+        metrics_aggregator.clone(),
+        restart_controller.clone(),
+        ipc_config.clone(),
+    ).await?;
+
+    let mut current_remote_fingerprint: Option<String> = None;
+    while let Some(msg) = ws_read.next().await {
+        let msg = msg?;
+        if !msg.is_text() {
+            continue;
+        }
+        let parsed: SignalMessage = match serde_json::from_str(&msg.into_text()?) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        match parsed.msg_type.as_str() {
+            "offer" => {
+                if let Some(sdp) = parsed.sdp {
+                    let sdp_type = match parsed.sdp_type.as_deref().unwrap_or("offer") {
+                        "offer" => RTCSdpType::Offer,
+                        "answer" => RTCSdpType::Answer,
+                        "pranswer" => RTCSdpType::Pranswer,
+                        "rollback" => RTCSdpType::Rollback,
+                        _ => RTCSdpType::Offer,
+                    };
+                    let new_fingerprint = extract_fingerprint(&sdp);
+                    let fingerprint_changed = match (&current_remote_fingerprint, &new_fingerprint) {
+                        (Some(old_fp), Some(new_fp)) => old_fp != new_fp,
+                        (Some(_), None) => true,
+                        _ => false,
+                    };
+
+                    if fingerprint_changed {
+                        eprintln!(
+                            "[WebRTC-signal] Detected new peer fingerprint, recreating PeerConnection for fresh browser session"
+                        );
+                        if let Err(e) = pc.close().await {
+                            eprintln!("[WebRTC-signal] Warning: failed to close old PC: {:?}", e);
+                        }
+                        {
+                            let mut guard = log_channel_store.lock().await;
+                            *guard = None;
+                        }
+                        match create_peer(signal_tx.clone()).await {
+                            Ok(new_pc) => {
+                                wire_peer_channels(
+                                    &new_pc,
+                                    log_channel_store.clone(),
+                                    terminal_input_store.clone(),
+                                    sdl_input_store.clone(),
+                                    runner_store.clone(),
+                                    compile_task_store.clone(),
+                                    workspace_path_arc.clone(),
+                                    compile_cache.clone(),
+                                    boundary_checker.clone(),
+                                    incremental_cache.clone(),
+                                    hmr_orchestrator.clone(),
+                                    structured_logger.clone(),
+                                    metrics_aggregator.clone(),
+                                    restart_controller.clone(),
+                                    ipc_config.clone(),
+                                )
+                                .await?;
+                                pc = new_pc;
+                                current_remote_fingerprint = None;
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "[WebRTC-signal] CRITICAL ERROR: Failed to re-create peer connection: {:?}",
+                                    e
+                                );
+                                return Err(e);
+                            }
+                        }
+                    }
+
+                    eprintln!("[WebRTC-signal] Received offer (type={:?}), current state={:?}", sdp_type, pc.signaling_state());
+                    let mut desc = RTCSessionDescription::default();
+                    desc.sdp_type = sdp_type;
+                    desc.sdp = sdp;
+                    pc.set_remote_description(desc).await?;
+                    let answer = pc.create_answer(None).await?;
+                    pc.set_local_description(answer.clone()).await?;
+                    eprintln!("[WebRTC-signal] Sending answer, new state={:?}", pc.signaling_state());
+                    if let Some(pos) = answer.sdp.find("transport-wide-cc") {
+                        eprintln!("[WebRTC-signal] TWCC found in Answer SDP at index {}", pos);
+                    } else {
+                        eprintln!("[WebRTC-signal] WARNING: TWCC missing from Answer SDP!");
+                    }
+                    signal_tx.send(SignalMessage {
+                        msg_type: "answer".into(),
+                        role: None,
+                        sdp: Some(answer.sdp),
+                        sdp_type: Some(answer.sdp_type.to_string()),
+                        candidate: None,
+                    })?;
+                    if let Some(fp) = new_fingerprint {
+                        current_remote_fingerprint = Some(fp);
+                    }
+                }
+            }
+            "candidate" => {
+                if let Some(c) = parsed.candidate {
+                    let _ = pc.add_ice_candidate(c).await;
+                }
+            }
+            "reset" => {
+                eprintln!("[WebRTC-signal] Received reset command, clearing WebRTC state (SOFT RESET)...");
+                
+                // 1. Close the existing PeerConnection
+                if let Err(e) = pc.close().await {
+                    eprintln!("[WebRTC-signal] Warning: failed to close old PC: {:?}", e);
+                }
+                current_remote_fingerprint = None;
+
+                // 2. Clear runner state (Terminates Emulator/GStreamer pipeline)
+                {
+                    let mut guard = runner_store.lock().await;
+                    if guard.is_some() {
+                        eprintln!("[WebRTC-signal] Dropping old RunnerState...");
+                        *guard = None;
+                    }
+                }
+
+                // 3. Clear other session stores
+                {
+                     let mut guard = log_channel_store.lock().await;
+                     *guard = None;
+                }
+                {
+                     let mut guard = terminal_input_store.lock().await;
+                     guard.clear();
+                }
+                {
+                     let mut guard = sdl_input_store.lock().await;
+                     guard.clear();
+                }
+
+                // 4. Create a fresh PeerConnection
+                match create_peer(signal_tx.clone()).await {
+                    Ok(new_pc) => {
+                        wire_peer_channels(
+                            &new_pc,
+                            log_channel_store.clone(),
+                            terminal_input_store.clone(),
+                            sdl_input_store.clone(),
+                            runner_store.clone(),
+                            compile_task_store.clone(),
+                            workspace_path_arc.clone(),
+                            compile_cache.clone(),
+                            boundary_checker.clone(),
+                            incremental_cache.clone(),
+                             hmr_orchestrator.clone(),
+                             structured_logger.clone(),
+                             metrics_aggregator.clone(),
+                             restart_controller.clone(),
+                             ipc_config.clone(),
+                         ).await?;
+                         pc = new_pc;
+                         eprintln!("[WebRTC-signal] Soft reset complete. New PeerConnection ready.");
+                    },
+                    Err(e) => {
+                         eprintln!("[WebRTC-signal] CRITICAL ERROR: Failed to re-create peer connection: {:?}", e);
+                         // Panic? Return? Try to continue?
+                         // If we can't create a peer, we're likely dead anyway.
+                         return Err(e);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+async fn create_peer(
+    signal_tx: mpsc::UnboundedSender<SignalMessage>,
+) -> Result<Arc<RTCPeerConnection>> {
+    let mut m = MediaEngine::default();
+    m.register_default_codecs()?;
+
+    // Manually register H265 as it might not be in default codecs
+    let _ = m.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: "video/H265".to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "".to_owned(),
+                rtcp_feedback: vec![RTCPFeedback {
+                    typ: "transport-cc".to_owned(),
+                    parameter: "".to_owned(),
+                }],
+            },
+            payload_type: 96,
+            ..Default::default()
+        },
+        RTPCodecType::Video,
+    );
+
+    // Explicitly register H264 (Baseline) with transport-cc
+    // This matches standard Android emulator / RN output (profile-level-id=42001f)
+    let _ = m.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: "video/H264".to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f".to_owned(),
+                rtcp_feedback: vec![RTCPFeedback {
+                    typ: "transport-cc".to_owned(),
+                    parameter: "".to_owned(),
+                }],
+            },
+            payload_type: 103, // Match common dynamic PT
+            ..Default::default()
+        },
+        RTPCodecType::Video,
+    );
+
+    // Explicitly register H264 with transport-cc (Constrained Baseline - 42e01f)
+    let _ = m.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: "video/H264".to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
+                rtcp_feedback: vec![RTCPFeedback {
+                    typ: "transport-cc".to_owned(),
+                    parameter: "".to_owned(),
+                }],
+            },
+            payload_type: 102, 
+            ..Default::default()
+        },
+        RTPCodecType::Video,
+    );
+
+    let mut registry = Registry::new();
+    registry = register_default_interceptors(registry, &mut m)?;
+
+    let api = APIBuilder::new()
+        .with_media_engine(m)
+        .with_interceptor_registry(registry)
+        .build();
+    // Allow configuring ICE servers via COMPILER_ICE_SERVERS environment variable as JSON
+    // Example: COMPILER_ICE_SERVERS='[{"urls":["stun:stun.l.google.com:19302"]},{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]'
+    let ice_servers_env = env::var("COMPILER_ICE_SERVERS").ok();
+    let mut ice_servers: Vec<webrtc::ice_transport::ice_server::RTCIceServer> = Vec::new();
+    if let Some(raw) = ice_servers_env {
+        match serde_json::from_str::<Vec<IceServerEnv>>(&raw) {
+            Ok(parsed) => {
+                for srv in parsed {
+                    ice_servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
+                        urls: srv.urls,
+                        username: srv.username.unwrap_or_default(),
+                        credential: srv.credential.unwrap_or_default(),
+                        ..Default::default()
+                    });
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "Failed to parse COMPILER_ICE_SERVERS - falling back to default STUN: {}",
+                    e
+                );
+                ice_servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
+                    urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                    ..Default::default()
+                });
+            }
+        }
+    } else {
+        ice_servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
+            urls: vec!["stun:stun.l.google.com:19302".to_string()],
+            ..Default::default()
+        });
+    }
+
+    let config = RTCConfiguration {
+        ice_servers,
+        ..Default::default()
+    };
+
+    let pc = Arc::new(api.new_peer_connection(config).await?);
+
+    // Add transceivers for video and audio so they are negotiated initially
+    pc.add_transceiver_from_kind(
+        RTPCodecType::Video,
+        Some(RTCRtpTransceiverInit {
+            direction: RTCRtpTransceiverDirection::Sendonly,
+            send_encodings: vec![],
+        }),
+    )
+    .await?;
+
+    pc.add_transceiver_from_kind(
+        RTPCodecType::Audio,
+        Some(RTCRtpTransceiverInit {
+            direction: RTCRtpTransceiverDirection::Sendonly,
+            send_encodings: vec![],
+        }),
+    )
+    .await?;
+
+    // Important: some browsers won't emit `ontrack` unless the SDP includes track/MSID info.
+    // Attaching placeholder tracks up-front ensures the answer advertises real tracks, while
+    // later runtime pipelines can `replace_track()` without requiring renegotiation.
+    // This is especially important for Android emulator streaming, where the real track is
+    // created after the initial offer/answer exchange.
+    {
+        let placeholder_video = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "video/H264".to_owned(),
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
+                rtcp_feedback: vec![RTCPFeedback {
+                    typ: "transport-cc".to_owned(),
+                    parameter: "".to_owned(),
+                }],
+                ..Default::default()
+            },
+            "video".to_owned(),
+            "synthi-placeholder".to_owned(),
+        ));
+        let placeholder_audio = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "audio/opus".to_owned(),
+                ..Default::default()
+            },
+            "audio".to_owned(),
+            "synthi-placeholder".to_owned(),
+        ));
+
+        let transceivers = pc.get_transceivers().await;
+        for t in transceivers {
+            let kind = t.kind();
+            if kind == RTPCodecType::Video {
+                let sender = t.sender().await;
+                match sender
+                    .replace_track(Some(
+                        Arc::clone(&placeholder_video) as Arc<dyn TrackLocal + Send + Sync>
+                    ))
+                    .await
+                {
+                    Ok(_) => eprintln!("[WebRTC] Attached placeholder video track"),
+                    Err(e) => eprintln!("[WebRTC] Failed to attach placeholder video track: {:?}", e),
+                }
+            } else if kind == RTPCodecType::Audio {
+                let sender = t.sender().await;
+                match sender
+                    .replace_track(Some(
+                        Arc::clone(&placeholder_audio) as Arc<dyn TrackLocal + Send + Sync>
+                    ))
+                    .await
+                {
+                    Ok(_) => eprintln!("[WebRTC] Attached placeholder audio track"),
+                    Err(e) => eprintln!("[WebRTC] Failed to attach placeholder audio track: {:?}", e),
+                }
+            }
+        }
+    }
+
+    {
+        let tx = signal_tx.clone();
+        pc.on_ice_candidate(Box::new(move |candidate| {
+            let tx = tx.clone();
+            async move {
+                if let Some(c) = candidate {
+                    if let Ok(init) = c.to_json() {
+                        let _ = tx.send(SignalMessage {
+                            msg_type: "candidate".into(),
+                            role: None,
+                            sdp: None,
+                            sdp_type: None,
+                            candidate: Some(init),
+                        });
+                    }
+                }
+            }
+            .boxed()
+        }));
+    }
+
+    pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
+        println!("Peer Connection State: {s:?}");
+        async {}.boxed()
+    }));
+
+    Ok(pc)
+}
+
+async fn wire_peer_channels(
+    pc: &Arc<RTCPeerConnection>,
+    log_channel_store: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
+    terminal_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
+    sdl_input_store: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
+    runner_store: Arc<Mutex<Option<RunnerState>>>,
+    compile_task_store: Arc<Mutex<Option<(String, tokio::task::JoinHandle<()>)>>>,
+    workspace_path_arc: Arc<std::path::PathBuf>,
+    compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>>,
+    boundary_checker: Arc<Mutex<BoundaryChecker>>,
+    incremental_cache: Arc<IncrementalCache>,
+    hmr_orchestrator: Arc<tokio::sync::Mutex<HmrOrchestrator>>,
+    structured_logger: Arc<StructuredLogger>,
+    metrics_aggregator: Arc<tokio::sync::Mutex<MetricsAggregator>>,
+    restart_controller: Arc<tokio::sync::Mutex<RestartController>>,
+    ipc_config: Arc<IpcConfig>,
+) -> Result<()> {
+    let pc = pc.clone();
     let build_log_dc = pc
         .create_data_channel("build-log", Some(RTCDataChannelInit::default()))
         .await?;
@@ -526,10 +1006,12 @@ async fn main() -> Result<()> {
         .boxed()
     }));
 
+    let compile_store = log_channel_store.clone();
     let term_store = terminal_input_store.clone();
     let pc_clone = pc.clone();
     let workspace_path_for_callback = workspace_path_arc.clone();
     let runner_store_for_callback = runner_store.clone();
+    let compile_task_store_for_callback = compile_task_store.clone();
     let compile_cache_for_callback = compile_cache.clone();
     let boundary_checker_for_callback = boundary_checker.clone();
     let incremental_cache_for_callback = incremental_cache.clone();
@@ -539,13 +1021,15 @@ async fn main() -> Result<()> {
     let metrics_aggregator_for_callback = metrics_aggregator.clone();
     let restart_controller_for_callback = restart_controller.clone();
     let ipc_config_for_callback = ipc_config.clone();
+    let sdl_input_store_for_callback = sdl_input_store.clone();
     pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
         let store = compile_store.clone();
         let term_store = term_store.clone();
         let pc_for_callback = pc_clone.clone();
         let workspace_path_for_dc = workspace_path_for_callback.clone();
-        let sdl_store_outer = sdl_input_store.clone();
+        let sdl_store_outer = sdl_input_store_for_callback.clone();
         let runner_store_outer = runner_store_for_callback.clone();
+        let compile_task_store_outer = compile_task_store_for_callback.clone();
         let compile_cache_outer = compile_cache_for_callback.clone();
         let boundary_checker_outer = boundary_checker_for_callback.clone();
         let incremental_cache_outer = incremental_cache_for_callback.clone();
@@ -568,9 +1052,11 @@ async fn main() -> Result<()> {
                         let workspace_path_for_compile = workspace_path_for_dc.clone();
                         let sdl_store = sdl_store_outer.clone();
                         let runner_store = runner_store_outer.clone();
+                        let runner_store_for_msg = runner_store_outer.clone();
                         let compile_cache = compile_cache_outer.clone();
                         let boundary_checker = boundary_checker_outer.clone();
                         let incremental_cache = incremental_cache_outer.clone();
+                        let compile_task_store_for_msg = compile_task_store_outer.clone();
                         // v2.1 inner clones
                         let hmr_orchestrator = hmr_orchestrator_outer.clone();
                         let structured_logger = structured_logger_outer.clone();
@@ -579,12 +1065,89 @@ async fn main() -> Result<()> {
                         let ipc_config = ipc_config_outer.clone();
                         async move {
                             if msg.is_string {
+                                eprintln!("[Main] Received message on 'compile' channel. Length: {}", msg.data.len());
+                                // Try to parse as a CancelBuildRequest first
+                                if let Ok(cancel_req) = serde_json::from_slice::<CancelBuildRequest>(&msg.data) {
+                                    if cancel_req.msg_type == "cancel-build" {
+                                        let target_session = cancel_req.session_id.clone();
+                                        eprintln!(
+                                            "[Main] Received cancel-build for session: {:?}",
+                                            target_session
+                                        );
+
+                                        // For mobile sessions, also mark cancellation
+                                        if let Some(ref sid) = target_session {
+                                            crate::android::webrtc::input::cancel_session(sid);
+                                            crate::android::webrtc::input::unregister_session_sync(sid);
+                                        }
+
+                                        // Abort active compile task if it matches
+                                        let mut task_guard = compile_task_store_for_msg.lock().await;
+                                        let mut cancelled_session = target_session.clone();
+                                        if let Some((current_id, handle)) = task_guard.take() {
+                                            if target_session.as_ref().map_or(true, |sid| sid == &current_id) {
+                                                handle.abort();
+                                                if cancelled_session.is_none() {
+                                                    cancelled_session = Some(current_id.clone());
+                                                }
+                                            } else {
+                                                *task_guard = Some((current_id, handle));
+                                            }
+                                        }
+
+                                        // Stop any running runner process/pipeline
+                                        {
+                                            let mut guard = runner_store_for_msg.lock().await;
+                                            if let Some(state) = guard.take() {
+                                                if let Some(mut child) = state.process {
+                                                    let _ = child.kill().await;
+                                                }
+                                                if let Some(mut child) = state.xvfb_process {
+                                                    let _ = child.kill().await;
+                                                }
+                                                if let Some(pipeline) = state.gst_pipeline {
+                                                    let _ = pipeline.set_state(gst::State::Null);
+                                                }
+                                            }
+                                        }
+
+                                        // Notify frontend
+                                        if let Some(sid) = cancelled_session {
+                                            if let Some(log) = { store.lock().await.clone() } {
+                                                let payload = serde_json::json!({
+                                                    "type": "build-status",
+                                                    "status": "cancelled",
+                                                    "sessionId": sid,
+                                                    "message": "Build cancelled by user"
+                                                });
+                                                let _ = log.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                            } else {
+                                                eprintln!("[Main] Build cancelled by user (session {})", sid);
+                                            }
+                                        }
+                                        return;
+                                    }
+                                }
+
+                                // Try to parse as a CancelMobileJobRequest next
+                                if let Ok(cancel_req) = serde_json::from_slice::<CancelMobileJobRequest>(&msg.data) {
+                                    if cancel_req.msg_type == "cancel-mobile-job" {
+                                        eprintln!("[Main] Received cancel-mobile-job for session: {}", cancel_req.session_id);
+                                        // Mark the session as cancelled
+                                        crate::android::webrtc::input::cancel_session(&cancel_req.session_id);
+                                        // Also unregister the input session
+                                        crate::android::webrtc::input::unregister_session_sync(&cancel_req.session_id);
+                                        return;
+                                    }
+                                }
+                                
                                 // Try to parse as a CompileRequest
                                 if let Ok(req) = serde_json::from_slice::<CompileRequest>(&msg.data) {
                                     eprintln!("[Main] Received CompileRequest: is_gui={}, use_ai_split={}, lang={}, target={:?}", 
                                         req.is_gui, req.use_ai_split, req.language, req.target);
                                     let log_dc = { store.lock().await.clone() };
                                     if let Some(log) = log_dc {
+                                        eprintln!("[Main] Found active build-log channel, proceeding with build...");
                                         // Check if this is a mobile emulator target
                                         if let Some(ref target) = req.target {
                                             if target == "react-native-emulator" {
@@ -684,7 +1247,35 @@ async fn main() -> Result<()> {
                                         let ma = metrics_aggregator.clone();
                                         let rc = restart_controller.clone();
                                         let ipc = ipc_config.clone();
-                                        tokio::spawn(handle_compile(req, log, ts, sdls, rs, pc_clone, wp.to_path_buf(), cc, bc, ic, ho, sl, ma, rc, ipc));
+                                        let session_id = req
+                                            .session_id
+                                            .clone()
+                                            .unwrap_or_else(|| format!("sess-{}-{}", chrono::Utc::now().timestamp_millis(), uuid::Uuid::new_v4().as_u128() % 100000));
+                                        let mut req = req;
+                                        if req.session_id.is_none() {
+                                            req.session_id = Some(session_id.clone());
+                                        }
+                                        let task_store = compile_task_store_for_msg.clone();
+                                        let log_clone = log.clone();
+                                        let task_session = session_id.clone();
+                                        let handle = tokio::spawn(async move {
+                                            if let Err(e) = handle_compile(req, log_clone, ts, sdls, rs, pc_clone, wp.to_path_buf(), cc, bc, ic, ho, sl, ma, rc, ipc).await {
+                                                eprintln!("[Main] Compile task failed: {:?}", e);
+                                            }
+                                            let mut guard = task_store.lock().await;
+                                            if let Some((current_id, _)) = guard.as_ref() {
+                                                if current_id == &task_session {
+                                                    *guard = None;
+                                                }
+                                            }
+                                        });
+                                        {
+                                            let mut guard = compile_task_store_for_msg.lock().await;
+                                            if let Some((_, existing)) = guard.take() {
+                                                existing.abort();
+                                            }
+                                            *guard = Some((session_id, handle));
+                                        }
                                     }
                                     return;
                                 }
@@ -828,7 +1419,11 @@ async fn main() -> Result<()> {
                                                 }
                                             }
                                         }
+                                    } else {
+                                        eprintln!("[Main] ERROR: No build-log channel found in store! Dropping compile request.");
                                     }
+                                } else {
+                                     eprintln!("[Main] Failed to parse CompileRequest. Data preview: {}", String::from_utf8_lossy(&msg.data).chars().take(100).collect::<String>());
                                 }
                             }
                         }
@@ -1263,6 +1858,8 @@ async fn main() -> Result<()> {
                             if let Err(e) = worker::android::webrtc::input::handle_input_message(v).await {
                                 eprintln!("[emulator-input] error: {:#}", e);
                             }
+                        } else {
+                            eprintln!("[emulator-input] failed to deserialize message: {}", String::from_utf8_lossy(&msg.data));
                         }
                     }
                     .boxed()
@@ -1272,163 +1869,7 @@ async fn main() -> Result<()> {
         .boxed()
     }));
 
-    while let Some(msg) = ws_read.next().await {
-        let msg = msg?;
-        if !msg.is_text() {
-            continue;
-        }
-        let parsed: SignalMessage = match serde_json::from_str(&msg.into_text()?) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        match parsed.msg_type.as_str() {
-            "offer" => {
-                if let Some(sdp) = parsed.sdp {
-                    let sdp_type = match parsed.sdp_type.as_deref().unwrap_or("offer") {
-                        "offer" => RTCSdpType::Offer,
-                        "answer" => RTCSdpType::Answer,
-                        "pranswer" => RTCSdpType::Pranswer,
-                        "rollback" => RTCSdpType::Rollback,
-                        _ => RTCSdpType::Offer,
-                    };
-                    let mut desc = RTCSessionDescription::default();
-                    desc.sdp_type = sdp_type;
-                    desc.sdp = sdp;
-                    pc.set_remote_description(desc).await?;
-                    let answer = pc.create_answer(None).await?;
-                    pc.set_local_description(answer.clone()).await?;
-                    signal_tx.send(SignalMessage {
-                        msg_type: "answer".into(),
-                        role: None,
-                        sdp: Some(answer.sdp),
-                        sdp_type: Some(answer.sdp_type.to_string()),
-                        candidate: None,
-                    })?;
-                }
-            }
-            "candidate" => {
-                if let Some(c) = parsed.candidate {
-                    let _ = pc.add_ice_candidate(c).await;
-                }
-            }
-            _ => {}
-        }
-    }
-
     Ok(())
-}
-
-async fn create_peer(
-    signal_tx: mpsc::UnboundedSender<SignalMessage>,
-) -> Result<Arc<RTCPeerConnection>> {
-    let mut m = MediaEngine::default();
-    m.register_default_codecs()?;
-
-    // Manually register H265 as it might not be in default codecs
-    let _ = m.register_codec(
-        RTCRtpCodecParameters {
-            capability: RTCRtpCodecCapability {
-                mime_type: "video/H265".to_owned(),
-                clock_rate: 90000,
-                channels: 0,
-                sdp_fmtp_line: "".to_owned(),
-                rtcp_feedback: vec![],
-            },
-            payload_type: 96,
-            ..Default::default()
-        },
-        RTPCodecType::Video,
-    );
-
-    let api = APIBuilder::new().with_media_engine(m).build();
-    // Allow configuring ICE servers via COMPILER_ICE_SERVERS environment variable as JSON
-    // Example: COMPILER_ICE_SERVERS='[{"urls":["stun:stun.l.google.com:19302"]},{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]'
-    let ice_servers_env = env::var("COMPILER_ICE_SERVERS").ok();
-    let mut ice_servers: Vec<webrtc::ice_transport::ice_server::RTCIceServer> = Vec::new();
-    if let Some(raw) = ice_servers_env {
-        match serde_json::from_str::<Vec<IceServerEnv>>(&raw) {
-            Ok(parsed) => {
-                for srv in parsed {
-                    ice_servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
-                        urls: srv.urls,
-                        username: srv.username.unwrap_or_default(),
-                        credential: srv.credential.unwrap_or_default(),
-                        ..Default::default()
-                    });
-                }
-            }
-            Err(e) => {
-                eprintln!(
-                    "Failed to parse COMPILER_ICE_SERVERS - falling back to default STUN: {}",
-                    e
-                );
-                ice_servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
-                    urls: vec!["stun:stun.l.google.com:19302".to_string()],
-                    ..Default::default()
-                });
-            }
-        }
-    } else {
-        ice_servers.push(webrtc::ice_transport::ice_server::RTCIceServer {
-            urls: vec!["stun:stun.l.google.com:19302".to_string()],
-            ..Default::default()
-        });
-    }
-
-    let config = RTCConfiguration {
-        ice_servers,
-        ..Default::default()
-    };
-
-    let pc = Arc::new(api.new_peer_connection(config).await?);
-
-    // Add transceivers for video and audio so they are negotiated initially
-    pc.add_transceiver_from_kind(
-        RTPCodecType::Video,
-        Some(RTCRtpTransceiverInit {
-            direction: RTCRtpTransceiverDirection::Sendonly,
-            send_encodings: vec![],
-        }),
-    )
-    .await?;
-
-    pc.add_transceiver_from_kind(
-        RTPCodecType::Audio,
-        Some(RTCRtpTransceiverInit {
-            direction: RTCRtpTransceiverDirection::Sendonly,
-            send_encodings: vec![],
-        }),
-    )
-    .await?;
-
-    {
-        let tx = signal_tx.clone();
-        pc.on_ice_candidate(Box::new(move |candidate| {
-            let tx = tx.clone();
-            async move {
-                if let Some(c) = candidate {
-                    if let Ok(init) = c.to_json() {
-                        let _ = tx.send(SignalMessage {
-                            msg_type: "candidate".into(),
-                            role: None,
-                            sdp: None,
-                            sdp_type: None,
-                            candidate: Some(init),
-                        });
-                    }
-                }
-            }
-            .boxed()
-        }));
-    }
-
-    pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-        println!("Peer Connection State: {s:?}");
-        async {}.boxed()
-    }));
-
-    Ok(pc)
 }
 
 // Cache for AI split results to avoid redundant API calls
@@ -2061,7 +2502,6 @@ extern "C" void synthi_free_json(char* json) {
     
     result
 }
-
 /// Get the Host KV header definitions
 fn get_hostkv_header() -> &'static str {
     r#"
@@ -3432,12 +3872,12 @@ async fn handle_compile(
     
     // Call the unified handler
     // We ignore the return value (JSON graph) for now as the void return type expects
-    let _ = worker::compiler::handler::handle_compile_request(
-        &ctx,
-        req,
-        "default_session".to_string(), // we might need a real session id?
-    ).await?;
-    
+    let session_id = req
+        .session_id
+        .clone()
+        .unwrap_or_else(|| "default_session".to_string());
+    let _ = crate::compiler::handler::handle_compile_request(&ctx, req, session_id).await?;
+
     Ok(())
 }
 

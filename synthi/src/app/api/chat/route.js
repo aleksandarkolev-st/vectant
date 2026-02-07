@@ -1,20 +1,86 @@
 import { NextResponse } from 'next/server';
 
 const encoder = new TextEncoder();
-const OPENAI_BASE =
-    (process.env.OPENAI_API_BASE || process.env.AI_PROXY_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
-const ANTHROPIC_BASE =
-    (process.env.ANTHROPIC_API_BASE || process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
 const GEMINI_BASE =
     (process.env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
+
+const COLLAB_BASE =
+    (process.env.COLLAB_SERVER_URL || process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234').replace(/\/$/, '');
+
+const MAX_REPO_FILES = Number(process.env.AI_FULL_REPO_MAX_FILES || 80);
+const MAX_REPO_CHARS = Number(process.env.AI_FULL_REPO_MAX_CHARS || 200_000);
+const MAX_FILE_CHARS = Number(process.env.AI_FULL_REPO_MAX_FILE_CHARS || 20_000);
+const DEFAULT_IGNORE = [
+    'node_modules/',
+    '.git/',
+    '.next/',
+    'dist/',
+    'build/',
+    'out/',
+    '.cache/',
+    '.code_intel/',
+    '.turbo/',
+];
 
 // Code Intelligence Backend
 const CODE_INTEL_BASE = process.env.CODE_INTEL_URL || process.env.AI_ENGINE_URL || 'http://localhost:8000';
 
 const DEFAULT_GEMINI_MODEL = process.env.SYNTHI_AI_MODEL || process.env.GEMINI_MODEL || 'gemini-2.0-flash';
-const DEFAULT_OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-const DEFAULT_ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest';
 const UPSTREAM_TIMEOUT_MS = 45_000;
+
+/**
+ * Classify user query intent using the AI backend's LLM-based classifier.
+ * This determines whether the user wants code changes or just an explanation.
+ * 
+ * @param {string} query - The user's query
+ * @param {string} context - Optional context (e.g., current file content)
+ * @returns {Promise<Object>} - { intent, needs_code_changes, response_mode }
+ */
+async function classifyIntent(query, context = null) {
+    try {
+        const response = await fetch(`${CODE_INTEL_BASE}/classify/intent`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ query, context }),
+            signal: AbortSignal.timeout(3000), // Fast timeout - intent classification should be quick
+        });
+        
+        if (!response.ok) {
+            console.warn(`Intent classification failed: ${response.status}`);
+            return { intent: 'unknown', needs_code_changes: true, response_mode: 'patch' };
+        }
+        
+        return await response.json();
+    } catch (e) {
+        console.warn('Intent classification error:', e.message);
+        // Default to assuming code changes are needed (safer for the editor use case)
+        return { intent: 'unknown', needs_code_changes: true, response_mode: 'patch' };
+    }
+}
+
+// System prompt for code intelligence chat
+// Key principle: Only act on explicit requests, never suggest changes unprompted
+const CODE_INTEL_SYSTEM_PROMPT = `You are a code intelligence assistant integrated into an IDE.
+
+CRITICAL RULES:
+1. ANSWER what the user asks - nothing more, nothing less.
+2. DO NOT suggest code changes, refactors, or improvements unless explicitly asked.
+3. DO NOT offer to help with things the user didn't ask about.
+4. When explaining code, focus on understanding, not "fixing" or "improving" it.
+5. If asked to explain code, explain it. Do not suggest how to change it.
+6. If asked a question about code behavior, answer the question. Do not suggest modifications.
+7. Only provide code changes when the user explicitly asks for them (e.g., "fix this", "refactor this", "change this to...").
+
+GROUNDING RULES (CRITICAL - prevents hallucination):
+8. ONLY reference files, functions, classes, and symbols that appear in the provided CODE CONTEXT section.
+9. If you need to mention code that is NOT in the context, explicitly state "This is not in the provided context but..."
+10. NEVER invent or assume the existence of files, functions, or symbols not shown in context.
+11. If the context doesn't contain enough information to answer, say so clearly rather than guessing.
+12. When explaining code, quote or reference specific lines from the context to ground your answer.
+
+You have access to code context retrieved from the user's workspace. Use this context to provide accurate, specific answers.
+
+If the context is insufficient to answer the question, say so clearly rather than guessing.`;
 
 /**
  * Fetch code intelligence context from the backend.
@@ -42,7 +108,9 @@ async function fetchCodeIntelContext({ workspacePath, query, maxTokens = 6000, c
                 max_tokens: maxTokens,
                 conversation_history: conversationHistory,
             }),
-            signal: AbortSignal.timeout(10000), // 10s timeout for context retrieval
+            // TTFT optimization: Reduced timeout to 3s - if code intel is slow, skip it
+            // This ensures we don't block streaming for too long
+            signal: AbortSignal.timeout(3000),
         });
         
         if (!response.ok) {
@@ -57,12 +125,27 @@ async function fetchCodeIntelContext({ workspacePath, query, maxTokens = 6000, c
             sources: data.sources || [],
             tokensUsed: data.tokens_used || 0,
             refusal: data.refusal || null,
+            trace: Array.isArray(data.trace) ? data.trace : [],
         };
     } catch (e) {
         console.warn('Code intel fetch error:', e.message);
         return { context: '', sufficiency: 'UNKNOWN', sources: [], refusal: null };
     }
 }
+
+const buildTraceSummary = (trace = []) => {
+    if (!Array.isArray(trace) || trace.length === 0) return '';
+    const included = trace.filter((t) => t?.reason === 'included');
+    const top = (included.length ? included : trace).slice(0, 6);
+    const parts = top.map((t) => {
+        const file = t?.file || 'unknown';
+        const symbol = t?.symbol ? `:${t.symbol}` : '';
+        const score = typeof t?.score === 'number' ? `(${t.score.toFixed(2)})` : '';
+        return `${file}${symbol}${score}`;
+    });
+    const text = parts.join(' | ');
+    return text.length > 380 ? `${text.slice(0, 377)}...` : text;
+};
 
 
 const buildUserContent = ({ prompt, code, files, lang, focusPath, codeIntelContext }) => {
@@ -73,6 +156,17 @@ const buildUserContent = ({ prompt, code, files, lang, focusPath, codeIntelConte
         parts.push('=== RELEVANT CODE CONTEXT (retrieved by deterministic controller) ===');
         parts.push(codeIntelContext.context);
         parts.push('=== END CODE CONTEXT ===');
+        
+        // Add grounded symbols list for LLM to reference
+        if (Array.isArray(codeIntelContext.sources) && codeIntelContext.sources.length > 0) {
+            const groundedFiles = [...new Set(codeIntelContext.sources.map(s => s?.file).filter(Boolean))];
+            const groundedSymbols = [...new Set(codeIntelContext.sources.map(s => s?.symbol).filter(Boolean))];
+            parts.push(`[GROUNDED FILES: ${groundedFiles.join(', ')}]`);
+            if (groundedSymbols.length > 0) {
+                parts.push(`[GROUNDED SYMBOLS: ${groundedSymbols.join(', ')}]`);
+            }
+            parts.push('[IMPORTANT: Only reference the above files and symbols in your response. Do not invent or assume other code exists.]');
+        }
         
         // Add sufficiency indicator so LLM knows if context is complete
         if (codeIntelContext.sufficiency === 'INSUFFICIENT') {
@@ -110,133 +204,122 @@ const buildUserContent = ({ prompt, code, files, lang, focusPath, codeIntelConte
     return parts.filter(Boolean).join('\n\n').trim();
 };
 
-const streamOpenAI = async ({ model, apiKey, userContent, signal }) => {
-    const key = apiKey || process.env.OPENAI_API_KEY || '';
-    if (!key) throw new Error('OpenAI API key is not configured');
-    const upstream = await fetch(`${OPENAI_BASE}/chat/completions`, {
-        method: 'POST',
-        headers: {
-            'content-type': 'application/json',
-            authorization: `Bearer ${key}`,
-        },
-        body: JSON.stringify({
-            model: model || DEFAULT_OPENAI_MODEL,
-            stream: true,
-            messages: [{ role: 'user', content: userContent }],
-        }),
-        signal,
-    });
+const encodeFilePath = (filePath = '') =>
+    String(filePath || '')
+        .split('/')
+        .filter((segment) => segment.length > 0)
+        .map((segment) => encodeURIComponent(segment))
+        .join('/');
 
-    if (!upstream.ok || !upstream.body) {
-        throw new Error(`Upstream error ${upstream.status}`);
+const fetchCollabFileContent = async (slug, filePath, signal) => {
+    if (!slug || !filePath) return null;
+    try {
+        const safePath = encodeFilePath(filePath);
+        const url = `${COLLAB_BASE}/file-content/${encodeURIComponent(slug)}/${safePath}`;
+        const res = await fetch(url, { method: 'GET', signal });
+        if (!res.ok) return null;
+        return await res.text();
+    } catch (e) {
+        return null;
     }
-
-    const reader = upstream.body.getReader();
-    const decoder = new TextDecoder();
-    return new ReadableStream({
-        async pull(controller) {
-            const { value, done } = await reader.read();
-            if (done) {
-                controller.enqueue(encoder.encode(JSON.stringify({ done: true }) + '\n'));
-                controller.close();
-                return;
-            }
-            if (!value) return;
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split('\n').filter(Boolean);
-            for (const raw of lines) {
-                const line = raw.replace(/^data:\s*/, '').trim();
-                if (!line || line === '[DONE]') continue;
-                try {
-                    const parsed = JSON.parse(line);
-                    const delta = parsed?.choices?.[0]?.delta?.content || parsed?.choices?.[0]?.text || '';
-                    if (delta) {
-                        controller.enqueue(encoder.encode(JSON.stringify({ delta }) + '\n'));
-                    }
-                    const finish = parsed?.choices?.[0]?.finish_reason;
-                    if (finish) {
-                        controller.enqueue(encoder.encode(JSON.stringify({ done: true }) + '\n'));
-                    }
-                } catch (e) {
-                    // ignore malformed lines
-                }
-            }
-        },
-        cancel() {
-            try {
-                reader.cancel();
-            } catch (e) {}
-        },
-    });
 };
 
-const streamAnthropic = async ({ model, apiKey, userContent, signal }) => {
-    const key = apiKey || process.env.ANTHROPIC_API_KEY || '';
-    if (!key) throw new Error('Anthropic API key is not configured');
-    const upstream = await fetch(`${ANTHROPIC_BASE}/v1/messages`, {
-        method: 'POST',
-        headers: {
-            'content-type': 'application/json',
-            'x-api-key': key,
-            'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-            model: model || DEFAULT_ANTHROPIC_MODEL,
-            max_tokens: 4096,
-            stream: true,
-            messages: [{ role: 'user', content: userContent }],
-        }),
-        signal,
-    });
-
-    if (!upstream.ok || !upstream.body) {
-        throw new Error(`Upstream error ${upstream.status}`);
-    }
-
-    const reader = upstream.body.getReader();
-    const decoder = new TextDecoder();
-    return new ReadableStream({
-        async pull(controller) {
-            const { value, done } = await reader.read();
-            if (done) {
-                controller.enqueue(encoder.encode(JSON.stringify({ done: true }) + '\n'));
-                controller.close();
-                return;
-            }
-            if (!value) return;
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split('\n').filter(Boolean);
-            for (const raw of lines) {
-                const line = raw.replace(/^data:\s*/, '').trim();
-                if (!line || line === '[DONE]') continue;
-                try {
-                    const parsed = JSON.parse(line);
-                    const textDelta =
-                        parsed?.delta?.text ||
-                        parsed?.content_block?.text ||
-                        parsed?.content_block_delta?.text ||
-                        parsed?.content?.[0]?.text ||
-                        '';
-                    if (textDelta) {
-                        controller.enqueue(encoder.encode(JSON.stringify({ delta: textDelta }) + '\n'));
-                    }
-                    if (parsed?.stop_reason || parsed?.type === 'message_stop') {
-                        controller.enqueue(encoder.encode(JSON.stringify({ done: true }) + '\n'));
-                    }
-                } catch (e) {
-                    // ignore malformed lines
-                }
-            }
-        },
-        cancel() {
-            try {
-                reader.cancel();
-            } catch (e) {}
-        },
-    });
+const shouldIgnorePath = (path = '') => {
+    const normalized = String(path || '').replace(/\\/g, '/');
+    return DEFAULT_IGNORE.some((prefix) => normalized.startsWith(prefix));
 };
 
-const streamGemini = async ({ model, apiKey, userContent, signal }) => {
+const fetchRepoFileList = async (slug, signal) => {
+    if (!slug) return [];
+    try {
+        const url = `${COLLAB_BASE}/git/${encodeURIComponent(slug)}/files-meta`;
+        const res = await fetch(url, { method: 'GET', signal });
+        if (!res.ok) return [];
+        const data = await res.json();
+        return Array.isArray(data?.files) ? data.files : [];
+    } catch (e) {
+        return [];
+    }
+};
+
+const hydrateFullRepoFiles = async ({ workspacePath, existingFiles, signal }) => {
+    const fileMeta = await fetchRepoFileList(workspacePath, signal);
+    if (!fileMeta.length) return [];
+
+    const seen = new Set((existingFiles || []).map((f) => f?.path || f?.name).filter(Boolean));
+    const hydrated = [];
+    let totalChars = 0;
+
+    for (const entry of fileMeta) {
+        const relPath = String(entry?.path || '').replace(/\\/g, '/');
+        if (!relPath || relPath.endsWith('/') || seen.has(relPath)) continue;
+        if (shouldIgnorePath(relPath)) continue;
+        if (hydrated.length >= MAX_REPO_FILES) break;
+        if (totalChars >= MAX_REPO_CHARS) break;
+
+        const content = await fetchCollabFileContent(workspacePath, relPath, signal);
+        if (typeof content !== 'string' || !content) continue;
+
+        const trimmed = content.length > MAX_FILE_CHARS ? content.slice(0, MAX_FILE_CHARS) : content;
+        totalChars += trimmed.length;
+        hydrated.push({ path: relPath, content: trimmed });
+    }
+
+    return hydrated;
+};
+
+const hydrateFromCollab = async ({ workspacePath, focusPath, code, files, signal, fullRepoContext = false }) => {
+    if (!workspacePath) return { code, files };
+
+    let hydratedCode = code;
+    if (focusPath) {
+        const serverCode = await fetchCollabFileContent(workspacePath, focusPath, signal);
+        if (typeof serverCode === 'string') {
+            hydratedCode = serverCode;
+        }
+    }
+
+    const hydratedFiles = [];
+    const seen = new Set();
+    for (const file of Array.isArray(files) ? files : []) {
+        const path = file?.path || file?.name || '';
+        if (!path || seen.has(path)) {
+            hydratedFiles.push(file);
+            continue;
+        }
+        seen.add(path);
+        const serverContent = await fetchCollabFileContent(workspacePath, path, signal);
+        if (typeof serverContent === 'string') {
+            hydratedFiles.push({ ...file, content: serverContent });
+        } else {
+            hydratedFiles.push(file);
+        }
+    }
+
+    let finalFiles = hydratedFiles;
+    if (fullRepoContext) {
+        const extraFiles = await hydrateFullRepoFiles({
+            workspacePath,
+            existingFiles: hydratedFiles,
+            signal,
+        });
+        if (extraFiles.length) {
+            finalFiles = [...hydratedFiles, ...extraFiles];
+        }
+    }
+
+    return { code: hydratedCode, files: finalFiles };
+};
+
+/**
+ * Sleep helper for retry delays
+ */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Stream from Gemini with automatic retry on 429 rate limiting
+ */
+const streamGemini = async ({ model, apiKey, userContent, conversationHistory = [], signal, maxRetries = 3 }) => {
     const key = apiKey || process.env.GEMINI_API_KEY || '';
     if (!key) {
         throw new Error('Gemini API key is not configured');
@@ -244,26 +327,95 @@ const streamGemini = async ({ model, apiKey, userContent, signal }) => {
     const targetModel = model || DEFAULT_GEMINI_MODEL;
     const endpoint = `${GEMINI_BASE}/models/${encodeURIComponent(targetModel)}:streamGenerateContent?alt=sse&key=${key}`;
 
-    const upstream = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-            'content-type': 'application/json',
-            accept: 'text/event-stream',
-        },
-        body: JSON.stringify({
-            contents: [{ role: 'user', parts: [{ text: userContent }] }],
-            generationConfig: { maxOutputTokens: 4096, temperature: 0.2 },
-        }),
-        signal,
+    // Build contents array for Gemini with conversation history
+    const contents = [];
+    
+    // Add system instruction as first user message (Gemini doesn't have a dedicated system role in older API)
+    // For newer models, we use systemInstruction
+    const recentHistory = Array.isArray(conversationHistory) 
+        ? conversationHistory.slice(-20) 
+        : [];
+    
+    // Add conversation history
+    for (const msg of recentHistory) {
+        if (msg.role && msg.content) {
+            // Map 'assistant' role to 'model' for Gemini
+            const geminiRole = msg.role === 'assistant' ? 'model' : msg.role;
+            if (geminiRole === 'user' || geminiRole === 'model') {
+                contents.push({ role: geminiRole, parts: [{ text: msg.content }] });
+            }
+        }
+    }
+    
+    // Add current user message
+    contents.push({ role: 'user', parts: [{ text: userContent }] });
+
+    const requestBody = JSON.stringify({
+        systemInstruction: { parts: [{ text: CODE_INTEL_SYSTEM_PROMPT }] },
+        contents,
+        generationConfig: { maxOutputTokens: 4096, temperature: 0.2 },
     });
 
-    if (!upstream.ok || !upstream.body) {
-        throw new Error(`Upstream error ${upstream.status}`);
-    }
+    // Retry loop for 429 rate limiting
+    let lastError = null;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            const upstream = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    accept: 'text/event-stream',
+                },
+                body: requestBody,
+                signal,
+            });
 
+            // Handle rate limiting (429) with retry
+            if (upstream.status === 429) {
+                if (attempt < maxRetries) {
+                    // Exponential backoff: 500ms, 1s, 2s + jitter
+                    const delay = (500 * Math.pow(2, attempt)) + (Math.random() * 300);
+                    console.warn(`[Gemini] Rate limited (429), retry ${attempt + 1}/${maxRetries} after ${delay.toFixed(0)}ms`);
+                    await sleep(delay);
+                    continue;
+                }
+                throw new Error(`Upstream error 429 (rate limited after ${maxRetries} retries)`);
+            }
+
+            if (!upstream.ok || !upstream.body) {
+                throw new Error(`Upstream error ${upstream.status}`);
+            }
+
+            // Success - return the stream
+            return createGeminiReadableStream(upstream);
+            
+        } catch (e) {
+            lastError = e;
+            const errMsg = String(e?.message || '').toLowerCase();
+            
+            // Only retry on rate limiting or transient errors
+            if ((errMsg.includes('429') || errMsg.includes('resource') || errMsg.includes('quota')) && attempt < maxRetries) {
+                const delay = (500 * Math.pow(2, attempt)) + (Math.random() * 300);
+                console.warn(`[Gemini] Retryable error, retry ${attempt + 1}/${maxRetries} after ${delay.toFixed(0)}ms:`, e.message);
+                await sleep(delay);
+                continue;
+            }
+            
+            throw e;
+        }
+    }
+    
+    throw lastError || new Error('Max retries exceeded');
+};
+
+/**
+ * Create a ReadableStream from Gemini SSE response
+ */
+const createGeminiReadableStream = (upstream) => {
     const reader = upstream.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    
     return new ReadableStream({
         async pull(controller) {
             const { value, done } = await reader.read();
@@ -345,54 +497,89 @@ export async function POST(request) {
         focusPath = '',
         model = '',
         apiKey = '',
-        provider = '',
         // Code intelligence integration
         workspacePath = '',
         useCodeIntel = true, // Enable by default when workspacePath is provided
         maxContextTokens = 6000,
         conversationHistory = [],
+        fullRepoContext = false,
     } = body || {};
 
-    // Fetch code intelligence context BEFORE building user content
-    // This uses the deterministic retrieval controller - NOT the LLM
-    let codeIntelContext = null;
-    if (useCodeIntel && workspacePath && prompt) {
-        console.log('[CodeIntel] Fetching context for workspace:', workspacePath);
-        codeIntelContext = await fetchCodeIntelContext({
+    // TTFT optimization: Fetch code intel and hydrate from collab IN PARALLEL
+    // This reduces latency by running both operations concurrently
+    const codeIntelPromise = (useCodeIntel && workspacePath && prompt)
+        ? fetchCodeIntelContext({
             workspacePath,
             query: prompt,
             maxTokens: maxContextTokens,
             conversationHistory,
-        });
-        console.log('[CodeIntel] Context result:', {
-            hasContext: !!codeIntelContext?.context,
-            contextLength: codeIntelContext?.context?.length || 0,
-            sufficiency: codeIntelContext?.sufficiency,
-            sourcesCount: codeIntelContext?.sources?.length || 0,
-            tokensUsed: codeIntelContext?.tokensUsed,
+        }).catch(e => {
+            console.warn('[CodeIntel] Fetch failed, continuing without context:', e.message);
+            return { context: '', sufficiency: 'UNKNOWN', sources: [], refusal: null };
+        })
+        : Promise.resolve(null);
+    
+    const hydratePromise = hydrateFromCollab({
+        workspacePath,
+        focusPath,
+        code,
+        files,
+        signal: request.signal,
+        fullRepoContext: Boolean(fullRepoContext),
+    });
+
+    // Wait for both in parallel
+    const [codeIntelContext, { code: hydratedCode, files: hydratedFiles }] = await Promise.all([
+        codeIntelPromise,
+        hydratePromise,
+    ]);
+    
+    if (codeIntelContext?.context) {
+        console.log('[CodeIntel] Context fetched:', {
+            contextLength: codeIntelContext.context.length,
+            sufficiency: codeIntelContext.sufficiency,
+            sourcesCount: codeIntelContext.sources?.length || 0,
         });
     }
 
-    const userContent = buildUserContent({ prompt, code, files, lang, focusPath, codeIntelContext });
+    const userContent = buildUserContent({
+        prompt,
+        code: hydratedCode,
+        files: hydratedFiles,
+        lang,
+        focusPath,
+        codeIntelContext,
+    });
     if (!userContent) {
         return NextResponse.json({ error: 'Empty prompt' }, { status: 400 });
     }
 
-    const useAnthropic =
-        provider.toLowerCase() === 'anthropic' || String(model || '').toLowerCase().includes('claude');
-    const useOpenAI =
-        provider.toLowerCase() === 'openai' ||
-        String(model || '').toLowerCase().includes('gpt') ||
-        String(model || '').toLowerCase().includes('o1');
-
     const { signal, dispose } = withTimeoutSignal(request.signal);
 
     try {
-        const stream = await (useAnthropic
-            ? streamAnthropic({ model, apiKey, userContent, signal })
-            : useOpenAI
-                ? streamOpenAI({ model, apiKey, userContent, signal })
-                : streamGemini({ model, apiKey, userContent, signal }));
+        const geminiKey = apiKey || process.env.GEMINI_API_KEY || '';
+        if (!geminiKey) {
+            return NextResponse.json(
+                {
+                    error: 'Missing API key',
+                    detail: 'Gemini API key is not configured. Set GEMINI_API_KEY environment variable.',
+                },
+                { status: 401 }
+            );
+        }
+        const stream = await streamGemini({ model, apiKey: geminiKey, userContent, conversationHistory, signal });
+
+        const traceSummary = buildTraceSummary(codeIntelContext?.trace || []);
+        const sources = Array.isArray(codeIntelContext?.sources)
+            ? codeIntelContext.sources.slice(0, 8).map((s) => ({
+                file: s?.file || '',
+                symbol: s?.symbol || '',
+                start_line: s?.start_line || 0,
+                end_line: s?.end_line || 0,
+                score: typeof s?.score === 'number' ? s.score : null,
+            }))
+            : [];
+        const sourcesHeader = sources.length ? encodeURIComponent(JSON.stringify(sources)) : '';
 
         return new NextResponse(stream, {
             headers: {
@@ -401,15 +588,39 @@ export async function POST(request) {
                 // Include context metadata in headers for debugging
                 'x-code-intel-sufficiency': codeIntelContext?.sufficiency || 'NONE',
                 'x-code-intel-tokens': String(codeIntelContext?.tokensUsed || 0),
+                // Count only included entries for accurate telemetry
+                'x-code-intel-trace-count': String(
+                    codeIntelContext?.trace?.filter(t => t?.reason === 'included')?.length || 0
+                ),
+                ...(traceSummary ? { 'x-code-intel-trace-summary': traceSummary } : {}),
+                ...(sourcesHeader ? { 'x-code-intel-sources': sourcesHeader } : {}),
             },
         });
     } catch (e) {
-        const isTimeout = String(e?.message || '').includes('timeout');
-        const status = String(e?.message || '').includes('401') ? 401 : 502;
-        return NextResponse.json(
-            { error: isTimeout ? 'Upstream timeout' : 'Upstream failure', detail: e?.message || 'stream failed' },
-            { status }
-        );
+        const errMsg = String(e?.message || '');
+        const isTimeout = errMsg.includes('timeout');
+        const isRateLimit = errMsg.includes('429') || errMsg.includes('rate') || errMsg.includes('quota');
+        
+        // Better status codes and messages
+        let status = 502;
+        let error = 'Upstream failure';
+        let detail = errMsg || 'stream failed';
+        
+        if (errMsg.includes('401')) {
+            status = 401;
+            error = 'Authentication failed';
+        } else if (isRateLimit) {
+            status = 429;
+            error = 'Rate limited';
+            detail = 'The AI service is temporarily overloaded. Please wait a moment and try again.';
+        } else if (isTimeout) {
+            status = 504;
+            error = 'Request timeout';
+            detail = 'The request took too long to complete. Please try again.';
+        }
+        
+        console.error(`[Chat API] Error: ${error} - ${detail}`);
+        return NextResponse.json({ error, detail }, { status });
     } finally {
         dispose();
     }

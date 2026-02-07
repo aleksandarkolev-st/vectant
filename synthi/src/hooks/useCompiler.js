@@ -6,6 +6,7 @@ import { CompilerClient, CompilerStatus, getCompilerClient } from '@/services/co
 export function useCompiler() {
     const clientRef = useRef(null);
     const [status, setStatus] = useState(CompilerStatus.IDLE);
+    const [isCompiling, setIsCompiling] = useState(false);
     const [mediaStream, setMediaStream] = useState(null);
 
     useEffect(() => {
@@ -24,10 +25,39 @@ export function useCompiler() {
         const unsubscribeStatus = client.onStatusChange(setStatus);
 
         const handleTrack = (e) => {
-             const { streams } = e.detail;
-             if (streams && streams.length > 0) {
-                 setMediaStream(streams[0]);
-             }
+            const { streams, track } = e.detail || {};
+            try {
+                console.debug('[useCompiler] media-track event', {
+                    streams: streams?.length ?? 0,
+                    trackKind: track?.kind,
+                    trackId: track?.id,
+                    readyState: track?.readyState,
+                    muted: track?.muted,
+                });
+            } catch (_) {
+                // ignore
+            }
+            if (streams && streams.length > 0) {
+                try {
+                    const vt = typeof streams[0]?.getVideoTracks === 'function' ? streams[0].getVideoTracks().length : 0;
+                    console.debug('[useCompiler] setting mediaStream from streams[0]', { videoTracks: vt });
+                } catch (_) {}
+                setMediaStream(streams[0]);
+                return;
+            }
+            // Fallback: some browsers report `streams=[]` on ontrack.
+            if (track && track.kind === 'video') {
+                try {
+                    const ms = new MediaStream([track]);
+                    try {
+                        const vt = typeof ms.getVideoTracks === 'function' ? ms.getVideoTracks().length : 0;
+                        console.debug('[useCompiler] setting mediaStream from synthesized track', { videoTracks: vt });
+                    } catch (_) {}
+                    setMediaStream(ms);
+                } catch (_) {
+                    // ignore
+                }
+            }
         };
         window.addEventListener('synthi:media-track', handleTrack);
         
@@ -46,6 +76,7 @@ export function useCompiler() {
 
     const compile = useCallback(async (params) => {
         console.log('[useCompiler] Compile requested:', params);
+        setIsCompiling(true);
         const client = clientRef.current || getCompilerClient();
         try {
             const result = await client.compile(params);
@@ -54,7 +85,14 @@ export function useCompiler() {
         } catch (e) {
             console.error('[useCompiler] Compile error:', e);
             throw e;
+        } finally {
+            setIsCompiling(false);
         }
+    }, []);
+
+    const cancelMobileJob = useCallback((sessionId) => {
+        const client = clientRef.current || getCompilerClient();
+        return client.cancelMobileJob(sessionId);
     }, []);
 
     const client = typeof window !== 'undefined' ? getCompilerClient() : null;
@@ -62,7 +100,9 @@ export function useCompiler() {
     return {
         client,
         compile,
+        cancelMobileJob,
         status,
+        isCompiling,
         mediaStream
     };
 }

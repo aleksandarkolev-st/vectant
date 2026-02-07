@@ -48,6 +48,10 @@ class ParsedQuery:
     language_hints: List[str] = field(default_factory=list)
     error_patterns: List[str] = field(default_factory=list)
     
+    # Folder scope - when user mentions a folder, restrict retrieval to it
+    # e.g., "explain test-1" -> folder_scope = "test-1"
+    folder_scope: Optional[str] = None
+    
     # Search-optimized text
     search_text: str = ""
     
@@ -130,6 +134,19 @@ class QueryProcessor:
     def __init__(self):
         pass
     
+    # Folder scope patterns - detect when user mentions a specific folder
+    # These patterns extract folder names like "test-1", "src/components", etc.
+    FOLDER_SCOPE_PATTERNS = [
+        # "explain test-1", "describe src/utils", "analyze my-folder"
+        r"(?:explain|describe|show|analyze|understand)\s+([a-zA-Z_][a-zA-Z0-9_-]*(?:/[a-zA-Z_][a-zA-Z0-9_-]*)*)(?:\s|$|\?|\.)",
+        # "in test-1", "about src/lib", "from components"
+        r"(?:in|about|from)\s+([a-zA-Z_][a-zA-Z0-9_-]*(?:/[a-zA-Z_][a-zA-Z0-9_-]*)*)(?:\s|$|\?|\.)",
+        # "the test-1 folder", "src directory", "utils module"
+        r"(?:the\s+)?([a-zA-Z_][a-zA-Z0-9_-]*(?:/[a-zA-Z_][a-zA-Z0-9_-]*)*)(?:\s+folder|\s+directory|\s+module|\s+package)",
+        # Just a folder name at the start: "test-1"
+        r"^([a-zA-Z_][a-zA-Z0-9_-]*)$",
+    ]
+    
     def process(self, query: str) -> ParsedQuery:
         """
         Process a user query.
@@ -149,6 +166,9 @@ class QueryProcessor:
         # Extract file patterns
         files = self._extract_file_patterns(query)
         
+        # Extract folder scope (for scoped retrieval)
+        folder_scope = self._extract_folder_scope(query)
+        
         # Detect language hints
         languages = self._detect_languages(query)
         
@@ -164,6 +184,7 @@ class QueryProcessor:
             intent_confidence=confidence,
             symbol_names=symbols,
             file_patterns=files,
+            folder_scope=folder_scope,
             language_hints=languages,
             error_patterns=errors,
             search_text=search_text,
@@ -242,6 +263,31 @@ class QueryProcessor:
             errors.extend(str(m) for m in matches)
         
         return errors
+    
+    def _extract_folder_scope(self, query: str) -> Optional[str]:
+        """
+        Extract folder scope from query.
+        
+        If user mentions a specific folder (e.g., "explain test-1"),
+        we should scope retrieval to only that folder.
+        """
+        query_lower = query.lower().strip()
+        
+        # Try each pattern
+        for pattern in self.FOLDER_SCOPE_PATTERNS:
+            matches = re.findall(pattern, query_lower, re.IGNORECASE)
+            for match in matches:
+                if isinstance(match, tuple):
+                    match = match[0]
+                # Validate it looks like a folder (not a common word)
+                if match and not self._is_common_word(match) and len(match) > 1:
+                    # Skip if it matches a file extension pattern
+                    if re.search(r"\.(py|js|ts|tsx|jsx|java|go|rs|cpp|c|h|hpp)$", match):
+                        continue
+                    logger.info(f"Detected folder scope: '{match}' from query: '{query}'")
+                    return match
+        
+        return None
     
     def _optimize_for_search(
         self,

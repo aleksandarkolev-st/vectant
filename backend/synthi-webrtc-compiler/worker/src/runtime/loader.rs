@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::compiler::abi_version::AbiVersionManager;
-use crate::compiler::plugin_contract::ModuleSlot;
+use crate::runtime::plugin_contract::ModuleSlot;
 use crate::safety::enhanced_fingerprint::{extract_fingerprint_from_module, AbiFingerprint};
 
 /// Result of a module load operation

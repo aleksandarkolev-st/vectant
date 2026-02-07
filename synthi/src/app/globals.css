@@ -200,6 +200,58 @@
   color: #e8eaed;
 }
 
+/* AI Chat Navigation Links - Clickable file names and symbols */
+.ai-nav-link {
+  color: var(--accent-secondary);
+  cursor: pointer;
+  text-decoration: none;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  border-radius: 3px;
+  padding: 0 2px;
+  margin: 0 -2px;
+  transition: all 0.15s ease;
+  font-weight: 500;
+}
+
+.ai-nav-link:hover {
+  color: var(--accent-tertiary);
+  text-decoration: underline;
+  background-color: rgba(50, 116, 100, 0.15);
+}
+
+.ai-nav-file {
+  color: #7cb8f8;
+}
+
+.ai-nav-file:hover {
+  color: #9fcbfa;
+  text-decoration-color: #9fcbfa;
+  background-color: rgba(124, 184, 248, 0.12);
+}
+
+.ai-nav-class,
+.ai-nav-symbol {
+  color: #b8a8f0;
+}
+
+.ai-nav-class:hover,
+.ai-nav-symbol:hover {
+  color: #cbbff5;
+  text-decoration-color: #cbbff5;
+  background-color: rgba(184, 168, 240, 0.12);
+}
+
+.ai-nav-method {
+  color: #a8e6cf;
+}
+
+.ai-nav-method:hover {
+  color: #c1eedc;
+  text-decoration-color: #c1eedc;
+  background-color: rgba(168, 230, 207, 0.12);
+}
+
 /* ===== Global Scrollbar Styling (Synthi Branded) ===== */
 ::-webkit-scrollbar {
   height: 8px;
@@ -236,6 +288,14 @@
   scrollbar-width: none;
 }
 
+/* AI chat content container - ensures code blocks don't overflow */
+.ai-chat-content {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
 .ai-chat-message pre.ai-code-block,
 .ai-code-block {
   width: 100%;
@@ -248,6 +308,13 @@
   text-wrap: nowrap;
   overflow-x: auto;
   overflow-y: auto;
+  background: #0d0e12;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 0;
+  font-family: 'JetBrains Mono', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .ai-chat-message pre.ai-code-block code.ai-code-block,
@@ -262,7 +329,141 @@
   text-wrap: nowrap;
   overflow-x: auto;
   overflow-y: auto;
+  color: #e8eaed;
 }
+
+/* Code block wrapper with language label */
+.ai-code-wrapper {
+  position: relative;
+  margin: 8px 0;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid #1e2028;
+  background: #0d0e12;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.code-lang-label {
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 4px 10px;
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #71717a;
+  background: rgba(30, 32, 40, 0.8);
+  border-bottom-left-radius: 6px;
+  user-select: none;
+  z-index: 1;
+}
+
+/* Syntax highlighting colors - Synthi theme */
+.syntax-keyword {
+  color: #3a8574;
+  font-weight: 500;
+}
+
+.syntax-type {
+  color: #8ad4ff;
+}
+
+.syntax-string {
+  color: #a8e6cf;
+}
+
+.syntax-number {
+  color: #f5d142;
+}
+
+.syntax-comment {
+  color: #5a6178;
+  font-style: italic;
+}
+
+.syntax-function {
+  color: #7cb8f8;
+}
+
+.syntax-operator {
+  color: #9ba2b8;
+}
+
+.syntax-preprocessor {
+  color: #b8a8f0;
+}
+
+/* Message content wrapper - ensures proper containment */
+.message-content {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Shiki syntax highlighting container */
+.shiki-container {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.shiki-container pre {
+  width: max-content;
+  min-width: 100%;
+  box-sizing: border-box;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+  text-wrap: nowrap;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 0;
+  font-family: 'JetBrains Mono', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.shiki-container code {
+  display: block;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+  text-wrap: nowrap;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+/* Fallback for when Shiki is loading */
+.shiki-fallback {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  white-space: pre;
+  overflow-x: auto;
+  background: #0d1117;
+  color: #c9d1d9;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 0;
+  font-family: 'JetBrains Mono', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.shiki-fallback code {
+  display: block;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
 .synthi-cursor-widget {
   position: absolute;
   width: 1px !important;

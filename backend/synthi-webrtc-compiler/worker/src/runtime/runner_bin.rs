@@ -881,7 +881,7 @@ fn main() {
                             // Enter crash supervisor context for this module
                             if supervisor_enabled {
                                 let slot = ModuleSlot::from_str(name).unwrap_or(ModuleSlot::Main);
-                                crash_supervisor.enter_context(to_compiler_slot(slot));
+                                crash_supervisor.enter_context(slot);
                             }
 
                             let state_ptr_wrapper = SendVoidPtr(state_ptr as usize);

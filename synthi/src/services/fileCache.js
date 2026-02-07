@@ -1,4 +1,5 @@
 const DEFAULT_LIMIT_MB = 32;
+const DEFAULT_MAX_FILE_MB = 4;
 
 function estimateBytes(str) {
   if (typeof str !== 'string') return 0;
@@ -10,6 +11,9 @@ export class FileCache {
   constructor(options = {}) {
     const mb = Number(options.maxMB || process.env.NEXT_PUBLIC_FILE_CACHE_MB || DEFAULT_LIMIT_MB);
     this.maxBytes = Number.isFinite(mb) ? Math.max(4, mb) * 1024 * 1024 : DEFAULT_LIMIT_MB * 1024 * 1024;
+
+    const perFileMb = Number(options.maxFileMB || process.env.NEXT_PUBLIC_FILE_CACHE_MAX_FILE_MB || DEFAULT_MAX_FILE_MB);
+    this.maxFileBytes = Number.isFinite(perFileMb) ? Math.max(1, perFileMb) * 1024 * 1024 : DEFAULT_MAX_FILE_MB * 1024 * 1024;
 
     this._map = new Map(); // path -> entry
     this._bytes = 0;
@@ -61,6 +65,15 @@ export class FileCache {
     if (existing) {
       this._bytes -= existing.sizeBytes || 0;
       this._map.delete(path);
+    }
+
+    if (newBytes > this.maxFileBytes) {
+      // Do not cache oversized files
+      if (existing) {
+        this._bytes -= existing.sizeBytes || 0;
+        this._map.delete(path);
+      }
+      return;
     }
 
     const entry = {
