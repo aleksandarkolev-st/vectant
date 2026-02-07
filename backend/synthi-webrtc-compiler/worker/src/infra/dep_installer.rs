@@ -56,7 +56,16 @@ const MAX_DEPTH: usize = 4;
 pub async fn install_all_deps(workspace: &Path, lang: &str, force: bool) -> usize {
     let marker = workspace.join(".synthi_deps_installed");
     if !force && marker.exists() {
-        println!("[LSP-DEPS] Dependencies already installed (marker exists), skipping.");
+        println!("[LSP-DEPS] Dependencies already installed (marker exists), skipping manifest install.");
+
+        // Even though manifests were already installed, the import scanner
+        // tracks per-language markers.  A new language that wasn't covered
+        // by the manifests still needs its third-party imports resolved.
+        let manifests = scan_manifests(workspace);
+        if manifests.is_empty() || !manifests_cover_lang(&manifests, lang) {
+            println!("[LSP-DEPS] Running import scanner for uncovered lang='{}'.", lang);
+            super::import_scanner::scan_and_install(workspace, lang, false).await;
+        }
         return 0;
     }
 

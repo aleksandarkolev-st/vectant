@@ -349,21 +349,27 @@ const EditorPanel = ({
         }
 
         if (languageClientsRef.current.has(backendLang)) {
-            setLspStatus(`Ready (${backendLang})`);
-            // Ensure we send didOpen for the new file even if client exists
             const client = languageClientsRef.current.get(backendLang);
-            const model = editorInstance.getModel();
-            if (client && client.isRunning() && model) {
-                const textDocument = {
-                    uri: model.uri.toString(),
-                    languageId: model.getLanguageId(),
-                    version: model.getVersionId(),
-                    text: model.getValue()
-                };
-                console.log('[LSP] Manually sending didOpen (reuse) for', textDocument.uri);
-                client.sendNotification('textDocument/didOpen', { textDocument });
+            if (client && client.isRunning()) {
+                setLspStatus(`Ready (${backendLang})`);
+                // Ensure we send didOpen for the new file even if client exists
+                const model = editorInstance.getModel();
+                if (model) {
+                    const textDocument = {
+                        uri: model.uri.toString(),
+                        languageId: model.getLanguageId(),
+                        version: model.getVersionId(),
+                        text: model.getValue()
+                    };
+                    console.log('[LSP] Manually sending didOpen (reuse) for', textDocument.uri);
+                    client.sendNotification('textDocument/didOpen', { textDocument });
+                }
+                return;
             }
-            return;
+            // Client exists but is no longer running (channel closed, crashed, etc.)
+            // Remove the stale entry so we re-initialize below.
+            console.warn(`[LSP] Stale client for ${backendLang} — removing and re-initializing`);
+            languageClientsRef.current.delete(backendLang);
         }
 
         // Prevent concurrent initialization for the same language
@@ -888,7 +894,9 @@ const EditorPanel = ({
             lspInitPendingRef.current.delete(backendLang);
             setLspStatus(`Ready (${backendLang})`);
 
-            lspChannel.onclose = () => {
+            // Use addEventListener instead of setting onclose directly so
+            // we don't overwrite MonacoSocketAdapter's own close handler.
+            lspChannel.addEventListener('close', () => {
                 console.log(`[LSP] Channel closed for ${backendLang}`);
                 bridgeDisposables.forEach(d => d.dispose());
                 changeDisposable.dispose();
@@ -896,7 +904,7 @@ const EditorPanel = ({
                 languageClientsRef.current.delete(backendLang);
                 lspInitPendingRef.current.delete(backendLang);
                 setLspStatus('Disconnected');
-            };
+            });
         }).catch(e => {
             console.error(`[LSP] Init failed for ${backendLang}:`, e);
             lspInitPendingRef.current.delete(backendLang);

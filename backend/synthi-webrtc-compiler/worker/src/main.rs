@@ -1449,23 +1449,18 @@ async fn wire_peer_channels(
                         }
                     };
 
-                    // ── Install dependencies so LSPs can resolve imports ──────
-                    // Scans the ENTIRE workspace for all manifest files (package.json,
-                    // pom.xml, go.mod, requirements.txt, Cargo.toml, etc.) and runs
-                    // every applicable package manager.  This handles polyglot projects
-                    // (e.g. Java backend + React frontend) and monorepos with nested
-                    // manifests.  Results are cached via a marker file so subsequent
-                    // LSP connections for other languages skip the install.
-                    //
-                    // When NO manifests are found, the import scanner kicks in as a
-                    // fallback: it scans source files for import/require/include
-                    // patterns and installs detected third-party packages.
-                    infra::dep_installer::install_all_deps(&workspace_path, &lang, false).await;
-
-                    // ── Auto-install the language server if missing ───────
-                    // Best-effort: if the install fails we still try to spawn
-                    // (maybe the user installed it out-of-band).
-                    match infra::lsp_installer::ensure_lsp_installed(&lang, &workspace_path).await {
+                    // ── Install dependencies + language server in parallel ─────
+                    // These two steps are independent: dep_installer scans
+                    // manifest files and runs package managers, while
+                    // lsp_installer downloads/installs the LSP binary.
+                    // Running them concurrently shaves seconds off first-load.
+                    // Both are idempotent (marker-file cached) so subsequent
+                    // connections for other languages are near-instant.
+                    let (_, lsp_result) = tokio::join!(
+                        infra::dep_installer::install_all_deps(&workspace_path, &lang, false),
+                        infra::lsp_installer::ensure_lsp_installed(&lang, &workspace_path),
+                    );
+                    match lsp_result {
                         Ok(bin) => println!("[LSP] Server binary ready: {}", bin),
                         Err(e) => eprintln!("[LSP] Server install warning: {}", e),
                     }
