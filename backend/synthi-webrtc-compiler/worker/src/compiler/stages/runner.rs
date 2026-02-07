@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::process::Stdio;
 use anyhow::{Context, Result};
 use tokio::process::Command;
-use tokio::io::{AsyncWriteExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, AsyncReadExt, BufReader};
 use tokio::sync::mpsc;
 use gstreamer as gst;
 use gstreamer::prelude::*;
@@ -120,11 +120,12 @@ pub async fn handle_runner_execution(
             audio_track_opt = state.audio_track;
         } else {
             println!("Full restart (resolution/GUI mode changed)...");
-            if let Some(mut child) = state.xvfb_process {
-                let _ = child.kill().await;
-            }
+            // Stop GStreamer BEFORE killing Xvfb to avoid capture-from-dead-display crashes
             if let Some(pipeline) = state.gst_pipeline {
                 let _ = pipeline.set_state(gst::State::Null);
+            }
+            if let Some(mut child) = state.xvfb_process {
+                let _ = child.kill().await;
             }
         }
     }
@@ -472,12 +473,12 @@ pub async fn handle_runner_execution(
             hmr_capability: None,
             xvfb_process,
             gst_pipeline,
-            sdl_tx: sdl_tx_opt,
+            sdl_tx: sdl_tx_opt.clone(),
             video_track: video_track_opt,
             audio_track: audio_track_opt,
             width: req_width,
             height: req_height,
-            wsl_display_str,
+            wsl_display_str: wsl_display_str.clone(),
             gst_display_str,
             module_hashes: ModuleHashes::new(),
             loaded_core_path: None,
@@ -485,6 +486,57 @@ pub async fn handle_runner_execution(
             loaded_widget_paths: HashMap::new(),
             widget_hashes: HashMap::new(),
         });
+
+        // Set up xdotool input channel for GUI apps (only on fresh start, not reuse)
+        if req.is_gui && sdl_tx_opt.is_none() {
+            if let Some(ref sid) = session_id {
+                let (input_tx, mut input_rx) = mpsc::unbounded_channel::<String>();
+
+                // Store sender in RunnerState
+                if let Some(state) = guard.as_mut() {
+                    state.sdl_tx = Some(input_tx.clone());
+                }
+
+                // Register in sdl_input_store so terminal handler can route events
+                {
+                    let mut sdl_guard = ctx.sdl_input_store.lock().await;
+                    sdl_guard.insert(sid.clone(), input_tx);
+                }
+
+                // Spawn xdotool command executor
+                let display_for_xdotool = wsl_display_str.clone();
+                tokio::spawn(async move {
+                    while let Some(cmd) = input_rx.recv().await {
+                        // Split command into program args for xdotool
+                        let parts: Vec<&str> = cmd.split_whitespace().collect();
+                        if parts.is_empty() {
+                            continue;
+                        }
+                        let result = tokio::process::Command::new("xdotool")
+                            .args(&parts)
+                            .env("DISPLAY", &display_for_xdotool)
+                            .output()
+                            .await;
+                        if let Err(e) = result {
+                            eprintln!("[xdotool] Failed to run '{}': {}", cmd, e);
+                        }
+                    }
+                    eprintln!("[xdotool] Input channel closed");
+                });
+
+                println!("[Main] xdotool input channel registered for session {}", sid);
+            }
+        } else if req.is_gui {
+            // Reusing existing sdl_tx - re-register it in the store
+            if let Some(ref sid) = session_id {
+                if let Some(state) = guard.as_ref() {
+                    if let Some(tx) = &state.sdl_tx {
+                        let mut sdl_guard = ctx.sdl_input_store.lock().await;
+                        sdl_guard.insert(sid.clone(), tx.clone());
+                    }
+                }
+            }
+        }
     }
 
     if let Some(state) = guard.as_mut() {
