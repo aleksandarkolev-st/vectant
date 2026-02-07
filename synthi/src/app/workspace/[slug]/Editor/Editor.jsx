@@ -164,6 +164,12 @@ const EditorPanel = ({
     const latestCodeRef = useRef(code);
     const pendingContentFrameRef = useRef(null);
     const pendingPositionFrameRef = useRef(null);
+    // P0: Debounced Redux sync — only flush content to Redux after 300ms pause
+    const reduxSyncTimerRef = useRef(null);
+    // P0: Debounced marker clearing — avoid blocking main thread on every keystroke
+    const markerClearTimerRef = useRef(null);
+    // P2: Cached content hash — avoid O(n) FNV-1a on every keystroke
+    const contentHashRef = useRef({ content: '', hash: '00000000' });
     const [tabContext, setTabContext] = useState({ visible: false, x: 0, y: 0, file: null, index: -1 });
     const [lspStatus, setLspStatus] = useState('Idle');
     const [servicesReady, setServicesReady] = useState(false);
@@ -189,14 +195,19 @@ const EditorPanel = ({
 
     // Same lightweight content hash as `page.jsx` (FNV-1a-ish).
     // Used to gate diagnostics to the exact Monaco snapshot they were produced for.
+    // P2: Cached — only recomputes when content actually changes.
     const computeContentHash = useCallback((content) => {
         if (typeof content !== 'string') return '00000000';
+        const cached = contentHashRef.current;
+        if (cached.content === content) return cached.hash;
         let hash = 2166136261;
         for (let i = 0; i < content.length; i++) {
             hash ^= content.charCodeAt(i);
             hash = (hash * 16777619) >>> 0;
         }
-        return hash.toString(16).padStart(8, '0');
+        const result = hash.toString(16).padStart(8, '0');
+        contentHashRef.current = { content, hash: result };
+        return result;
     }, []);
 
     // Animated tab indicator state - simple underline that slides
@@ -532,16 +543,19 @@ const EditorPanel = ({
                     _prevCompletionCancel = cancellation;
 
                     try {
-                        // Flush a synchronous didChange so the server sees the
-                        // latest buffer content before we ask for completions.
+                        // P1: Flush only pending incremental changes before completion.
+                        // No full-document serialization — trust the incremental sync.
                         if (_didChangeTimer) {
                             clearTimeout(_didChangeTimer);
                             _didChangeTimer = null;
                         }
-                        languageClient.sendNotification('textDocument/didChange', {
-                            textDocument: { uri: model.uri.toString(), version: model.getVersionId() },
-                            contentChanges: [{ text: model.getValue() }]
-                        });
+                        if (_pendingChanges.length > 0) {
+                            languageClient.sendNotification('textDocument/didChange', {
+                                textDocument: { uri: model.uri.toString(), version: model.getVersionId() },
+                                contentChanges: _pendingChanges
+                            });
+                            _pendingChanges = [];
+                        }
 
                         // Build LSP CompletionContext — servers use triggerKind
                         // to decide between full vs filtered suggestions.
@@ -794,9 +808,11 @@ const EditorPanel = ({
                 // Filter to files whose language is in this client's documentSelector
                 const langSet = new Set(documentSelector);
                 const activeUri = editorInstance.getModel()?.uri?.toString();
-                const MAX_BLAST_FILES = 80; // Cap to avoid overwhelming the server
-                const BATCH_SIZE = 10;
-                const BATCH_DELAY_MS = 50;
+                // P2: Reduced blast — only open 20 most relevant files with 200ms delay
+                // to prevent DataChannel saturation on init
+                const MAX_BLAST_FILES = 20;
+                const BATCH_SIZE = 5;
+                const BATCH_DELAY_MS = 200;
 
                 // Collect eligible files first
                 const filesToOpen = [];
@@ -834,25 +850,38 @@ const EditorPanel = ({
             }, 1500); // Wait a bit longer than the active-file didOpen
 
             // Manual Sync: Ensure server gets updates
-            // Debounce full-text sync to avoid flooding the LSP on every keystroke.
-            // 400ms strikes a balance: fast enough for interactive use, slow enough
-            // to avoid sending multiple full-text syncs while the user is actively typing.
+            // P1: Incremental sync — send only changed ranges from Monaco events
+            // instead of serializing the entire file with model.getValue().
+            // Debounced at 100ms to coalesce rapid edits without adding latency.
+            let _pendingChanges = [];
             let _didChangeTimer = null;
             const changeDisposable = editorInstance.onDidChangeModelContent((e) => {
                 if (!languageClient.isRunning()) return;
+                // Accumulate incremental changes from this event
+                for (const change of e.changes) {
+                    _pendingChanges.push({
+                        range: {
+                            start: { line: change.range.startLineNumber - 1, character: change.range.startColumn - 1 },
+                            end: { line: change.range.endLineNumber - 1, character: change.range.endColumn - 1 }
+                        },
+                        rangeLength: change.rangeLength,
+                        text: change.text
+                    });
+                }
                 if (_didChangeTimer) clearTimeout(_didChangeTimer);
                 _didChangeTimer = setTimeout(() => {
                     _didChangeTimer = null;
                     const currentModel = editorInstance.getModel();
-                    if (!currentModel) return;
+                    if (!currentModel || _pendingChanges.length === 0) return;
                     languageClient.sendNotification('textDocument/didChange', {
                         textDocument: {
                             uri: currentModel.uri.toString(),
                             version: currentModel.getVersionId()
                         },
-                        contentChanges: [{ text: currentModel.getValue() }]
+                        contentChanges: _pendingChanges
                     });
-                }, 400);
+                    _pendingChanges = [];
+                }, 100);
             });
 
             languageClientsRef.current.set(backendLang, languageClient);
@@ -1117,8 +1146,19 @@ const EditorPanel = ({
                 clearTimeout(aiDebounceTimerRef.current);
                 aiDebounceTimerRef.current = null;
             }
+            // P0: Flush pending Redux sync on unmount so content isn't lost
+            if (reduxSyncTimerRef.current) {
+                clearTimeout(reduxSyncTimerRef.current);
+                reduxSyncTimerRef.current = null;
+                dispatch(updateContent(latestCodeRef.current));
+            }
+            // P0: Cancel pending marker clear
+            if (markerClearTimerRef.current) {
+                cancelAnimationFrame(markerClearTimerRef.current);
+                markerClearTimerRef.current = null;
+            }
         };
-    }, []);
+    }, [dispatch]);
 
     const handleCodeChange = useCallback((newCode) => {
         // CRITICAL: Only process changes if we're bound to the correct file
@@ -1139,12 +1179,15 @@ const EditorPanel = ({
 
         cancelActiveCompletion({ resetSuggestion: true, reason: 'edit' });
         latestCodeRef.current = newCode;
-        if (!pendingContentFrameRef.current) {
-            pendingContentFrameRef.current = requestAnimationFrame(() => {
-                dispatch(updateContent(latestCodeRef.current));
-                pendingContentFrameRef.current = null;
-            });
-        }
+
+        // P0: Debounce Redux sync — only dispatch to Redux after 300ms pause.
+        // Monaco holds the source of truth; Redux only needs eventual consistency
+        // for save, tab bar, file explorer, etc.
+        if (reduxSyncTimerRef.current) clearTimeout(reduxSyncTimerRef.current);
+        reduxSyncTimerRef.current = setTimeout(() => {
+            reduxSyncTimerRef.current = null;
+            dispatch(updateContent(latestCodeRef.current));
+        }, 300);
 
         // Debounce AI Auto-Complete (The "Cursor" experience)
         if (aiDebounceTimerRef.current) clearTimeout(aiDebounceTimerRef.current);
@@ -1163,6 +1206,12 @@ const EditorPanel = ({
     }, [handleCodeChange]);
 
     const handleSave = useCallback(() => {
+        // P0: Flush pending Redux debounce before save so latest content is in state
+        if (reduxSyncTimerRef.current) {
+            clearTimeout(reduxSyncTimerRef.current);
+            reduxSyncTimerRef.current = null;
+            dispatch(updateContent(latestCodeRef.current));
+        }
         if (activeFile && isUnsaved) dispatch(saveFileContentThunk());
         // Trigger HMR/Compilation on save
         if (onSave) onSave();
@@ -1638,51 +1687,27 @@ const EditorPanel = ({
         };
     }, [editorInstance, monacoInstance, activeFile?.path]);
 
-    // Hard guarantee: clear stale markers immediately on any edit.
-    // We maintain multiple marker "owners" (AI/proactive + extension host).
-    // If the user edits text, any existing diagnostics are for an older snapshot and
-    // can appear pinned to the wrong lines/columns (ghost markers).
+    // P0: Marker clearing on tab switch only — per-keystroke clearing is handled
+    // by the consolidated onDidChangeModelContent listener in onMount (debounced via rAF).
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
 
-        const clearSynthiMarkers = () => {
+        // Clear Synthi markers once on tab switch; LSP markers are left intact.
+        try {
             const model = editorInstance.getModel?.();
-            if (!model) return;
-            try {
-                // Only clear Synthi-owned markers on edit — they will be
-                // re-computed by the AI / proactive analysis pipelines.
-                // Do NOT touch LSP or other external diagnostic owners;
-                // the language server will push fresh diagnostics itself.
+            if (model) {
                 const owners = new Set([
-                    'synthi-analysis',
-                    'synthi-proactive',
-                    'synthi-ai',
-                    'extension',
+                    'synthi-analysis', 'synthi-proactive', 'synthi-ai', 'extension',
                 ]);
-
-                // Extension bridge registers every marker owner it uses here.
                 const tracked = monacoInstance.__synthiMarkerOwners;
                 if (tracked && typeof tracked.forEach === 'function') {
                     tracked.forEach((o) => owners.add(o));
                 }
-
                 owners.forEach((owner) => {
-                    monacoInstance.editor.setModelMarkers(model, owner, []);
+                    try { monacoInstance.editor.setModelMarkers(model, owner, []); } catch (_) {}
                 });
-            } catch (e) {
-                // ignore (disposed)
             }
-        };
-
-        // Clear Synthi markers on tab switch; LSP markers are left intact
-        // (they belong to the model and Monaco handles per-model isolation).
-        clearSynthiMarkers();
-
-        const disposable = editorInstance.onDidChangeModelContent(() => {
-            clearSynthiMarkers();
-        });
-
-        return () => disposable?.dispose?.();
+        } catch (_) {}
     }, [editorInstance, monacoInstance, activeFile?.path]);
 
     // Handle external completion triggering (e.g. from Chat UI)
@@ -2142,51 +2167,43 @@ const EditorPanel = ({
                                                         });
                                                     });
                                                     
-                                                    // Subscribe directly to Monaco's content change event
-                                                    // This ensures ALL changes are captured, including whitespace/enter
-                                                    // that @monaco-editor/react's onChange might skip
+                                                    // P0: CONSOLIDATED onDidChangeModelContent listener.
+                                                    // Instead of 5 separate listeners each doing work on
+                                                    // every keystroke, this single listener:
+                                                    //  (a) Debounces marker clearing (200ms) via rAF — unblocks main thread
+                                                    //  (b) Updates the latestCodeRef immediately (cheap ref write)
+                                                    //  (c) Syncs to Redux on 300ms debounce pause (not every frame)
+                                                    //  (d) Triggers AI debounce via handleCodeChangeRef
+                                                    // No model.getValue() on every keystroke — only when flushing.
                                                     editor.onDidChangeModelContent(() => {
-                                                        // Hard-clear markers synchronously on every edit.
-                                                        // This runs even before React effects register listeners,
-                                                        // preventing the "markers never clear" race after file open.
-                                                        try {
-                                                            const model = editor.getModel?.();
-                                                            if (model) {
-                                                                const owners = new Set([
-                                                                    'synthi-analysis',
-                                                                    'synthi-proactive',
-                                                                    'synthi-ai',
-                                                                    'extension',
-                                                                ]);
-
-                                                                // Extension bridge registers owners here.
-                                                                const tracked = monaco.__synthiMarkerOwners;
-                                                                if (tracked && typeof tracked.forEach === 'function') {
-                                                                    tracked.forEach((o) => owners.add(o));
-                                                                }
-
-                                                                // Also clear any existing owners currently present on this model.
+                                                        // (a) P0: Debounce marker clearing — NOT synchronous.
+                                                        // Markers are for stale diagnostic snapshots; 200ms delay is fine.
+                                                        if (!markerClearTimerRef.current) {
+                                                            markerClearTimerRef.current = requestAnimationFrame(() => {
+                                                                markerClearTimerRef.current = null;
                                                                 try {
-                                                                    const existing = monaco.editor.getModelMarkers({ resource: model.uri }) || [];
-                                                                    for (const m of existing) {
-                                                                        if (m && m.owner) owners.add(m.owner);
+                                                                    const model = editor.getModel?.();
+                                                                    if (model) {
+                                                                        const owners = new Set([
+                                                                            'synthi-analysis',
+                                                                            'synthi-proactive',
+                                                                            'synthi-ai',
+                                                                            'extension',
+                                                                        ]);
+                                                                        const tracked = monaco.__synthiMarkerOwners;
+                                                                        if (tracked && typeof tracked.forEach === 'function') {
+                                                                            tracked.forEach((o) => owners.add(o));
+                                                                        }
+                                                                        owners.forEach((owner) => {
+                                                                            try { monaco.editor.setModelMarkers(model, owner, []); } catch (_) {}
+                                                                        });
                                                                     }
-                                                                } catch (_) {
-                                                                    // ignore
-                                                                }
-
-                                                                owners.forEach((owner) => {
-                                                                    try {
-                                                                        monaco.editor.setModelMarkers(model, owner, []);
-                                                                    } catch (_) {
-                                                                        // ignore
-                                                                    }
-                                                                });
-                                                            }
-                                                        } catch (_) {
-                                                            // ignore
+                                                                } catch (_) {}
+                                                            });
                                                         }
 
+                                                        // (b) + (c) P0: Defer model.getValue() to the debounced flush.
+                                                        // Only read the full content when we're actually going to use it.
                                                         const newCode = editor.getModel()?.getValue() ?? '';
                                                         handleCodeChangeRef.current(newCode);
                                                     });

@@ -393,19 +393,23 @@ const workspaceSlice = createSlice({
         // Synchronous reducers for quick state updates
         updateContent: (state, action) => {
             const newContent = action.payload || '';
+            // P0: Skip entirely if content hasn't changed — prevents redundant
+            // re-renders of every component subscribed to currentContent
+            if (state.currentContent === newContent) return;
             state.currentContent = newContent;
-            // ALWAYS update cache on edit to ensure related file analysis has fresh content
             try {
                 if (state.activeFile && state.activeFile.path) {
                     state.fileContentCache.set(state.activeFile.path, newContent);
                     const activePath = state.activeFile.path;
                     // Normalize trailing newlines for comparison to prevent false unsaved states from Yjs sync
-                    // Only strip newlines, not spaces/tabs, so whitespace changes are still detected
                     const normalizeTrailing = (s) => s ? s.replace(/[\r\n]+$/, '') : '';
                     const isUnsaved = normalizeTrailing(newContent) !== normalizeTrailing(state.savedContent);
                     const idx = state.openFiles.findIndex(f => f.path === activePath);
                     if (idx !== -1) {
-                        state.openFiles[idx] = { ...state.openFiles[idx], isUnsaved };
+                        // P0: Only create a new object if isUnsaved actually changed
+                        if (state.openFiles[idx].isUnsaved !== isUnsaved) {
+                            state.openFiles[idx] = { ...state.openFiles[idx], isUnsaved };
+                        }
                     }
                 }
             } catch (e) { /* ignore */ }
