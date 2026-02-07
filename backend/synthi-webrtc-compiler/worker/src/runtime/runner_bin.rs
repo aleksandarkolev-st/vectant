@@ -211,42 +211,47 @@ fn main() {
         eprintln!("[Runner] Warning: Failed to install crash handlers: {}", e);
     }
 
-    // Setup X11 — reuse existing Xvfb if DISPLAY is already set (worker manages it),
-    // otherwise spawn our own.
+    // When DISPLAY is pre-set, the worker manages Xvfb, GStreamer, and video
+    // streaming.  The runner only needs to load .so modules — skip creating our
+    // own SDL window / X11 connection / SHM so the user's app window is visible.
     #[cfg(target_os = "linux")]
-    let (_xvfb_proc, x11_conn, _x11_screen_num, x11_root) = {
-        let display = std::env::var("DISPLAY").unwrap_or_default();
-        let child = if display.is_empty() {
-            eprintln!("[Runner] No DISPLAY set, spawning Xvfb on :99");
-            let mut cmd = Command::new("Xvfb");
-            cmd.args(&[":99", "-screen", "0", "800x600x24"]);
-            let c = cmd.spawn().ok();
-            thread::sleep(Duration::from_millis(100));
-            std::env::set_var("DISPLAY", ":99");
-            c
-        } else {
-            eprintln!("[Runner] Reusing existing DISPLAY={}", display);
-            None
-        };
-        let disp_str = std::env::var("DISPLAY").unwrap_or_else(|_| ":99".to_string());
-        let (conn, screen_num) = x11rb::connect(Some(&disp_str)).expect("Failed to connect to X11");
+    let worker_managed_display = !std::env::var("DISPLAY").unwrap_or_default().is_empty();
+    #[cfg(not(target_os = "linux"))]
+    let worker_managed_display = false;
+
+    #[cfg(target_os = "linux")]
+    let (_xvfb_proc, x11_conn, _x11_screen_num, x11_root) = if !worker_managed_display {
+        let mut cmd = Command::new("Xvfb");
+        cmd.args(&[":99", "-screen", "0", "800x600x24"]);
+        let c = cmd.spawn().ok();
+        thread::sleep(Duration::from_millis(100));
+        std::env::set_var("DISPLAY", ":99");
+        let (conn, screen_num) = x11rb::connect(Some(":99")).expect("Failed to connect to X11");
         let root = conn.setup().roots[screen_num].root;
-        (child, conn, screen_num, root)
+        (c, Some(conn), screen_num, root)
+    } else {
+        eprintln!("[Runner] Worker manages display — skipping X11/SDL init");
+        (None, None, 0, 0u32)
     };
 
     #[cfg(target_os = "linux")]
-    let (shm_seg, shm_ptr) = {
+    let (shm_seg, shm_ptr) = if let Some(ref conn) = x11_conn {
         let size = 800 * 600 * 4;
         let (id, ptr) = crate::runtime::runner::capture::create_shm_segment(size).expect("Failed to create SHM");
-        let seg = x11_conn.generate_id().unwrap();
-        x11_conn.shm_attach(seg, id as u32, false).unwrap();
+        let seg = conn.generate_id().unwrap();
+        conn.shm_attach(seg, id as u32, false).unwrap();
         (seg, ptr)
+    } else {
+        (0u32, ptr::null_mut())
     };
 
-    // Initialize SDL2
+    // Initialize SDL2 only when runner owns the display
     #[cfg(target_os = "linux")]
-    let (window, renderer) = unsafe { init_sdl() };
-
+    let (window, renderer) = if !worker_managed_display {
+        unsafe { init_sdl() }
+    } else {
+        (ptr::null_mut(), ptr::null_mut())
+    };
 
     #[cfg(target_os = "linux")]
     let _sdl_texture = unsafe {
@@ -1018,9 +1023,9 @@ fn main() {
         }
 
         #[cfg(target_os = "linux")]
-        {
+        if let Some(ref conn) = x11_conn {
              crate::runtime::runner::capture::capture_frame(
-                 &x11_conn,
+                 conn,
                  x11_root,
                  shm_seg,
                  shm_ptr,
