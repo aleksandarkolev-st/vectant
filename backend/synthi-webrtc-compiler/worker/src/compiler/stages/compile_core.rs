@@ -1,17 +1,11 @@
 use crate::compiler::builder::{
-    hash_content, hash_shared_header_semantic, ModuleHashes, RebuildScope,
+    RebuildScope,
 };
 use crate::compiler::context::CompileContext;
-use crate::compiler::error_parser::{parse_compiler_output, CompilerType, DiagnosticEvent};
 use crate::compiler::stages::ai_utils::calculate_hash;
 use crate::hmr::incremental_cache::IncrementalCache;
 use crate::infra::utils::system_command;
-use crate::runtime::capability::{detect_capabilities, HmrStatus as CapabilityHmrStatus};
 use anyhow::{Context, Result};
-use regex::Regex;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 
 pub async fn compile_core(
@@ -64,6 +58,7 @@ pub async fn compile_core(
                     .arg("-o")
                     .arg(&core_out)
                     .arg("-ldl")
+                    .arg("-pthread") // Required for threaded adapters
                     .arg("-rdynamic");
                 cmd.current_dir(dir_path);
 
@@ -74,7 +69,7 @@ pub async fn compile_core(
                 );
 
                 cmd.kill_on_drop(true);
-                let mut child = cmd.spawn().context("Failed to spawn g++")?;
+                let child = cmd.spawn().context("Failed to spawn g++")?;
 
                 let output_res = timeout(Duration::from_secs(30), child.wait_with_output()).await;
 

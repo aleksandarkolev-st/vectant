@@ -50,12 +50,12 @@ class RetrievalPipelineResult:
     
     # The assembled context (ready for LLM)
     context: AssembledContext
-
-    # Fast-path context (for streaming)
-    fast_context: Optional[AssembledContext] = None
     
     # Query analysis
     parsed_query: ParsedQuery
+
+    # Fast-path context (for streaming)
+    fast_context: Optional[AssembledContext] = None
 
     # Spec alignment
     spec_alignment_score: float = 0.0

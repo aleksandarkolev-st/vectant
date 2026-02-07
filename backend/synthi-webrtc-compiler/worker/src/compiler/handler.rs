@@ -1,17 +1,12 @@
-use anyhow::{Context, Result};
+use anyhow::{Result};
 use chrono::Utc;
-use serde_json::Value;
-use std::env;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use crate::compiler::builder::{
     hash_content, hash_shared_header_semantic, ModuleHashes, RebuildScope,
 };
 use crate::compiler::context::CompileContext;
 use crate::infra::messages::CompileRequest;
-use crate::infra::observability::{LogEntry, LogLevel, ReloadId, ReloadMetricsTracker};
-use crate::runtime::capability::detect_capabilities;
+use crate::infra::observability::{ReloadId, ReloadMetricsTracker};
 
 // Import our new modular stages
 use crate::compiler::stages::ai_utils::perform_ai_split;
@@ -29,7 +24,7 @@ pub async fn handle_compile_request(
 ) -> Result<serde_json::Value> {
     let compile_start = std::time::Instant::now();
     let timestamp = Utc::now().timestamp_millis();
-    let app_id = format!("app_{}", timestamp);
+    let _app_id = format!("app_{}", timestamp);
 
     // Directory setup
     let output_dir = ctx.workspace_path.join("build");
@@ -38,7 +33,7 @@ pub async fn handle_compile_request(
     }
 
     // Platform detection (WSL/Linux compat)
-    let is_wsl = {
+    let _is_wsl = {
         if let Ok(content) = std::fs::read_to_string("/proc/version") {
             content.to_lowercase().contains("microsoft")
         } else {
@@ -50,7 +45,7 @@ pub async fn handle_compile_request(
     // Initialize metrics
     let reload_id = ReloadId::new();
     // Use start explicitly
-    let tracker = ReloadMetricsTracker::start(reload_id, "compile_request".to_string());
+    let _tracker = ReloadMetricsTracker::start(reload_id, "compile_request".to_string());
 
     // Manual logging instead of record_step for now
     eprintln!("[Compile] Step: Handler started");
