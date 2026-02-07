@@ -213,7 +213,7 @@ pub struct IsolationManager {
     /// Slot to worker mapping
     slot_to_worker: HashMap<String, WorkerId>,
     /// Group to worker mapping (for GroupedWorkers)
-    group_to_worker: HashMap<String, WorkerId>,
+    _group_to_worker: HashMap<String, WorkerId>,
 }
 
 impl IsolationManager {
@@ -223,7 +223,7 @@ impl IsolationManager {
             slots: HashMap::new(),
             workers: HashMap::new(),
             slot_to_worker: HashMap::new(),
-            group_to_worker: HashMap::new(),
+            _group_to_worker: HashMap::new(),
         }
     }
 

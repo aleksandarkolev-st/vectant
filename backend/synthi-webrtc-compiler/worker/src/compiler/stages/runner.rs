@@ -2,25 +2,21 @@ use anyhow::{Context, Result};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
-use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
-use webrtc::rtp::packet::Packet;
+use std::collections::HashMap;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType};
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
-use webrtc::util::Unmarshal;
 
 use crate::compiler::builder::ModuleHashes;
 use crate::compiler::context::CompileContext;
 use crate::infra::constants::GUI_TOOLS;
 use crate::infra::messages::CompileRequest;
-use crate::infra::observability::{LogEntry, LogLevel, ReloadId, ReloadMetricsTracker};
-use crate::infra::utils::system_command;
-use crate::runtime::capability::{detect_capabilities, HmrStatus as CapabilityHmrStatus};
+use crate::infra::observability::{ReloadId};
 use crate::runtime::runner_state::RunnerState; // Aliasing if needed, or check definition
 
 pub async fn handle_runner_execution(
@@ -32,10 +28,10 @@ pub async fn handle_runner_execution(
     new_hashes: ModuleHashes,
     core_lib_path: String,
     gui_lib_path: String,
-    timestamp: i64,
-    compile_start: std::time::Instant,
-    reload_id: ReloadId,
-    module_id: String,
+    _timestamp: i64,
+    _compile_start: std::time::Instant,
+    _reload_id: ReloadId,
+    _module_id: String,
     session_id: Option<String>,
 ) -> Result<()> {
     // Unified Runner Logic
@@ -138,8 +134,8 @@ pub async fn handle_runner_execution(
         let mut gst_display_str = reused_gst_display;
         let mut xvfb_process: Option<tokio::process::Child> = reused_xvfb;
         let mut gst_pipeline: Option<gst::Pipeline> = reused_pipeline;
-        let mut sdl_tx_opt: Option<mpsc::UnboundedSender<String>> = reused_sdl_tx;
-        let mut video_src_opt: Option<gst_app::AppSrc> = None;
+        let sdl_tx_opt: Option<mpsc::UnboundedSender<String>> = reused_sdl_tx;
+        let _video_src_opt: Option<gst_app::AppSrc> = None;
 
         if req.is_gui {
             let width = req_width;
@@ -225,8 +221,8 @@ pub async fn handle_runner_execution(
             let mut selected_mime_type = "video/H264".to_owned();
             let mut encoder_idx = 0;
             let mut pipeline = None;
-            let width = req_width;
-            let height = req_height;
+            let _width = req_width;
+            let _height = req_height;
 
             while encoder_idx < encoders.len() {
                 let (encoder, payloader, mime_type) = encoders[encoder_idx];
@@ -476,6 +472,7 @@ pub async fn handle_runner_execution(
             while let Ok(line) = reader.next_line().await {
                 match line {
                     Some(l) => {
+                        eprintln!("[Runner Stderr] {}", l);
                         let _ = log_tx_clone2.send(l.clone());
                         // Send to frontend
                         let payload = serde_json::json!({
@@ -519,24 +516,59 @@ pub async fn handle_runner_execution(
 
     if let Some(state) = guard.as_mut() {
         if !existing_runner_can_hmr {
-            if let Some(track) = &state.video_track {
-                println!("[Main] Adding video track to PeerConnection");
-                let _ = ctx
-                    .pc
-                    .add_track(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>)
-                    .await?;
+            // Bind tracks to existing transceivers (created during PeerConnection setup)
+            // This avoids the need for SDP renegotiation after the initial offer/answer
+            let transceivers = ctx.pc.get_transceivers().await;
+            for t in &transceivers {
+                if t.kind() == RTPCodecType::Video {
+                    if let Some(track) = &state.video_track {
+                        println!("[Main] Binding video track to existing transceiver");
+                        let sender = t.sender().await;
+                        let _ = sender
+                            .replace_track(Some(
+                                Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>
+                            ))
+                            .await;
+                    }
+                } else if t.kind() == RTPCodecType::Audio {
+                    if let Some(track) = &state.audio_track {
+                        println!("[Main] Binding audio track to existing transceiver");
+                        let sender = t.sender().await;
+                        let _ = sender
+                            .replace_track(Some(
+                                Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>
+                            ))
+                            .await;
+                    }
+                }
             }
-            if let Some(track) = &state.audio_track {
-                println!("[Main] Adding audio track to PeerConnection");
+
+            // Notify frontend that GUI streaming has started so DraggableVideoWidget renders
+            if req.is_gui {
+                let gui_start_payload = serde_json::json!({
+                    "type": "run-gui-start",
+                    "width": state.width,
+                    "height": state.height,
+                    "sessionId": session_id.clone()
+                });
+                println!("[Main] Sending run-gui-start to frontend ({}x{})", state.width, state.height);
                 let _ = ctx
-                    .pc
-                    .add_track(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>)
-                    .await?;
+                    .log_dc
+                    .send_text(serde_json::to_string(&gui_start_payload).unwrap_or_default())
+                    .await;
             }
         }
 
         // Load Modules
         for (name, path) in &modules_to_load {
+            // Check if process is still alive
+            if let Some(child) = state.process.as_mut() {
+                if let Ok(Some(status)) = child.try_wait() {
+                    eprintln!("[Main] Runner process has already exited with status: {}", status);
+                    break;
+                }
+            }
+
             if let Some(stdin) = state.stdin.as_mut() {
                 let cmd = format!("load {} {}\n", name, path);
                 println!("[Main] Sending command to runner: {}", cmd.trim());
@@ -546,8 +578,10 @@ pub async fn handle_runner_execution(
                 if let Err(e) = stdin.flush().await {
                     eprintln!("Failed to flush runner stdin: {}", e);
                 }
-                // Give it a moment to load
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                // Wait for the supervisor to process the command before sending the next one.
+                // The supervisor reads text from stdin, converts to binary IPC, and forwards
+                // to the worker child. 500ms gives adequate time for this round-trip.
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             }
         }
 

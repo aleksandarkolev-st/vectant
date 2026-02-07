@@ -259,10 +259,16 @@ pub struct IsolationConfig {
 impl Default for IsolationConfig {
     fn default() -> Self {
         // Resolve runner binary path relative to current executable (robust for cargo run)
+        // Resolve runner binary path relative to current executable (robust for cargo run)
         let worker_binary = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()))
             .map(|mut p| {
+                // Handle 'deps' directory (common in cargo builds)
+                if p.ends_with("deps") {
+                    p.pop();
+                }
+
                 p.push(if cfg!(target_os = "windows") {
                     "runner.exe"
                 } else {
@@ -346,7 +352,7 @@ pub struct ProcessSupervisor {
     restart_controller: RestartController,
     logger: StructuredLogger,
     ipc_config: IpcConfig,
-    current_reload_id: Option<ReloadId>,
+    _current_reload_id: Option<ReloadId>,
     // Slot isolation (v2.1)
     isolation_model: IsolationModel,
     isolation_manager: Option<IsolationManager>,
@@ -369,7 +375,7 @@ impl ProcessSupervisor {
             restart_controller: RestartController::new(backoff_config, known_good_store),
             logger: StructuredLogger::new(LogFormat::Human, LogLevel::Info),
             ipc_config: IpcConfig::default(),
-            current_reload_id: None,
+            _current_reload_id: None,
             // Slot isolation - default to SingleWorker model
             isolation_model: IsolationModel::default(),
             isolation_manager: None,
@@ -392,7 +398,7 @@ impl ProcessSupervisor {
             restart_controller,
             logger: StructuredLogger::new(LogFormat::Human, LogLevel::Info),
             ipc_config: IpcConfig::default(),
-            current_reload_id: None,
+            _current_reload_id: None,
             isolation_model: IsolationModel::default(),
             isolation_manager: None,
         }
@@ -443,9 +449,10 @@ impl ProcessSupervisor {
         self.apply_unix_limits(&mut cmd);
 
         // Spawn
+        eprintln!("[Supervisor] Spawning worker binary at: {:?}", self.config.worker_binary);
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("Failed to spawn worker: {}", e))?;
+            .map_err(|e| format!("Failed to spawn worker at {:?}: {}", self.config.worker_binary, e))?;
 
         let pid = child.id();
         let stdin = child.stdin.take().ok_or("Failed to get stdin")?;
@@ -576,10 +583,54 @@ impl ProcessSupervisor {
     fn wait_for_ready(&mut self, timeout: Duration) -> Result<(), String> {
         let start = Instant::now();
         while start.elapsed() < timeout {
-            if let Some(msg) = self.recv_message(Duration::from_millis(100))? {
-                if matches!(msg, IpcMessage::Ready) {
-                    eprintln!("[Supervisor] Worker ready");
-                    return Ok(());
+            // Check for exit FIRST
+            if let Some(worker) = self.worker.as_mut() {
+                if let Ok(Some(status)) = worker.child.try_wait() {
+                    let code = status.code().unwrap_or(-1);
+                    eprintln!("[Supervisor] FATAL: Worker exited during startup. Code: {}", code);
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::ExitStatusExt;
+                        if let Some(signal) = status.signal() {
+                            eprintln!("[Supervisor] Worker killed by signal: {} (SIGSEGV=11, SIGABRT=6)", signal);
+                        }
+                    }
+                    return Err(format!("Worker exited prematurely: {}", status));
+                }
+            }
+
+            // Then check for messages
+            match self.recv_message(Duration::from_millis(100)) {
+                Ok(Some(msg)) => {
+                    if matches!(msg, IpcMessage::Ready) {
+                        eprintln!("[Supervisor] Worker ready");
+                        return Ok(());
+                    }
+                },
+                Ok(None) => {}, // Timeout, loop again
+                Err(e) => {
+                    // Possible race: Pipe closed but process table not yet updated.
+                    // Retry wait() for a short period to catch the exit code/signal.
+                    if let Some(worker) = self.worker.as_mut() {
+                        for i in 0..10 { // Try for 100ms
+                            if let Ok(Some(status)) = worker.child.try_wait() {
+                                let _code = status.code().unwrap_or(-1);
+                                eprintln!("[Supervisor] FATAL: Worker exited during msg recv (attempt {}): {} (Error: {})", i, status, e);
+                                #[cfg(unix)]
+                                {
+                                    use std::os::unix::process::ExitStatusExt;
+                                    if let Some(signal) = status.signal() {
+                                        eprintln!("[Supervisor] Worker killed by signal: {} (SIGSEGV=11, SIGABRT=6)", signal);
+                                    }
+                                }
+                                return Err(format!("Worker died: {}", status));
+                            }
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        // If we fall through here, the process is zombie or still technically running but pipe is dead
+                        eprintln!("[Supervisor] ERROR: Connection closed by worker but process is still running/zombie.");
+                    }
+                    return Err(e);
                 }
             }
         }
@@ -1167,6 +1218,25 @@ impl ProcessSupervisor {
                         Ok(None) => break, // No more messages
                         Err(e) => {
                             eprintln!("[Supervisor] Worker communication error: {}", e);
+
+                            // Check exit code before handling crash
+                            if let Some(worker) = self.worker.as_mut() {
+                                match worker.child.try_wait() {
+                                    Ok(Some(status)) => {
+                                        eprintln!("[Supervisor] Worker process exited with: {}", status);
+                                        if let Some(code) = status.code() {
+                                            eprintln!("[Supervisor] Worker exit code: {}", code);
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        // Process hasn't exited yet, or OS hasn't reported it
+                                    }
+                                    Err(err) => {
+                                        eprintln!("[Supervisor] Failed to check worker status: {}", err);
+                                    }
+                                }
+                            }
+
                             // Worker may have crashed
                             self.handle_crash()?;
                             break;

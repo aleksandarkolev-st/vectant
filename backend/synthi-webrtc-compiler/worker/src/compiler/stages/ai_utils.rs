@@ -1,6 +1,6 @@
 use crate::infra::messages::CompileRequest;
 use crate::infra::utils::get_wsl_host_ip;
-use anyhow::{Context, Result};
+use anyhow::{Result};
 use regex::Regex;
 use reqwest;
 use serde_json;
@@ -351,8 +351,8 @@ fn try_local_deletion_patch(
         .and_then(|c| c.as_str())
         .unwrap_or("");
 
-    let mut new_core = core_content.to_string();
-    let mut new_gui = gui_content.to_string();
+    let new_core = core_content.to_string();
+    let new_gui = gui_content.to_string();
     let mut new_shared = shared_content.to_string();
     let mut any_changes = false;
 

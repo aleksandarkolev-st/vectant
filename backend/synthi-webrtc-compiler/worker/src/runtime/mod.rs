@@ -5,7 +5,7 @@ pub mod platform;
 pub mod capability;
 pub mod loader;
 pub mod process_isolation;
-pub mod runner_bin;
+// pub mod runner_bin; // Removed to avoid circular dependency / duplicate verification
 pub mod runner_logic;
 pub mod runner_state;
 pub mod shim;
