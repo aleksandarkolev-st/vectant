@@ -185,6 +185,7 @@ fn extract_fingerprint(sdp: &str) -> Option<String> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    eprintln!("=== WORKER BUILD 2026-02-06-LSP-DEBUG ===");
     println!("Worker starting...");
     println!("Operating System: {}", std::env::consts::OS);
 
@@ -1058,6 +1059,7 @@ async fn wire_peer_channels(
         let ipc_config_outer = ipc_config_for_callback.clone();
         async move {
             let label = dc.label();
+            eprintln!("[on_data_channel] Received data channel: label='{}', id={}", label, dc.id());
                 if label == "compile" {
                     // Clone terminal store out of the FnMut closure into a local
                     // that can be moved into the async block below without
@@ -1420,6 +1422,7 @@ async fn wire_peer_channels(
                     .boxed()
                 }));
 
+                println!("[on_data_channel] LSP branch matched: lang='{}', spawning handler task...", lang);
                 tokio::spawn(async move {
                     // Try to download the workspace files
                     let slug_to_use = slug_opt.as_deref().unwrap_or("test-workspace");
@@ -1445,6 +1448,23 @@ async fn wire_peer_channels(
                             workspace_path_for_lsp.as_ref().clone()
                         }
                     };
+
+                    // ── Install dependencies so LSPs can resolve imports ──────
+                    // Scans the ENTIRE workspace for all manifest files (package.json,
+                    // pom.xml, go.mod, requirements.txt, Cargo.toml, etc.) and runs
+                    // every applicable package manager.  This handles polyglot projects
+                    // (e.g. Java backend + React frontend) and monorepos with nested
+                    // manifests.  Results are cached via a marker file so subsequent
+                    // LSP connections for other languages skip the install.
+                    infra::dep_installer::install_all_deps(&workspace_path, false).await;
+
+                    // ── Auto-install the language server if missing ───────
+                    // Best-effort: if the install fails we still try to spawn
+                    // (maybe the user installed it out-of-band).
+                    match infra::lsp_installer::ensure_lsp_installed(&lang, &workspace_path).await {
+                        Ok(bin) => println!("[LSP] Server binary ready: {}", bin),
+                        Err(e) => eprintln!("[LSP] Server install warning: {}", e),
+                    }
 
                     println!("Starting LSP for language: {}", lang);
                     let mut cmd = match lang.as_str() {
@@ -1474,6 +1494,84 @@ async fn wire_peer_channels(
                              let mut c = system_command("typescript-language-server");
                              c.arg("--stdio");
                              c
+                        },
+                        "java" => {
+                            // Eclipse JDT Language Server
+                            // Expects `jdtls` wrapper script on PATH (installed via jdtls or eclipse.jdt.ls)
+                            let data_dir = workspace_path.join(".jdtls-data");
+                            let _ = std::fs::create_dir_all(&data_dir);
+                            let mut c = system_command("jdtls");
+                            c.arg("-data").arg(data_dir.to_string_lossy().to_string());
+                            c
+                        },
+                        "go" => {
+                            // gopls — the official Go language server
+                            let mut c = system_command("gopls");
+                            c.arg("serve");
+                            c
+                        },
+                        "csharp" | "cs" => {
+                            // OmniSharp language server for C# / .NET
+                            let mut c = system_command("OmniSharp");
+                            c.arg("-lsp");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "ruby" | "rb" => {
+                            // ruby-lsp (Shopify) — modern Ruby language server
+                            let mut c = system_command("ruby-lsp");
+                            c
+                        },
+                        "php" => {
+                            // phpactor — PHP language server
+                            let mut c = system_command("phpactor");
+                            c.arg("language-server");
+                            c
+                        },
+                        "kotlin" | "kt" => {
+                            // Kotlin Language Server
+                            let mut c = system_command("kotlin-language-server");
+                            c
+                        },
+                        "zig" => {
+                            // ZLS — Zig Language Server
+                            let mut c = system_command("zls");
+                            c
+                        },
+                        "dart" => {
+                            // Dart SDK language server
+                            let mut c = system_command("dart");
+                            c.arg("language-server");
+                            c.arg("--protocol=lsp");
+                            c
+                        },
+                        "lua" => {
+                            // lua-language-server (LuaLS)
+                            let mut c = system_command("lua-language-server");
+                            c
+                        },
+                        "elixir" | "ex" => {
+                            // ElixirLS language server
+                            let mut c = system_command("elixir-ls");
+                            c
+                        },
+                        "svelte" => {
+                            // Svelte Language Server
+                            let mut c = system_command("svelteserver");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "css" | "scss" | "less" => {
+                            // VSCode CSS/SCSS/LESS language server
+                            let mut c = system_command("css-languageserver");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "html" => {
+                            // VSCode HTML language server
+                            let mut c = system_command("html-languageserver");
+                            c.arg("--stdio");
+                            c
                         },
                         _ => {
                             println!("Unsupported language for LSP: {}", lang);
@@ -1549,19 +1647,8 @@ async fn wire_peer_channels(
                                     // Try to parse and process
                                     let mut processed = false;
 
-                                    // Debug: Print raw data length
-                                    println!("Received LSP data from WebRTC: {} bytes", data.len());
-                                    if let Ok(s) = String::from_utf8(data.clone()) {
-                                        println!("Received LSP data content: {}", s.chars().take(200).collect::<String>());
-                                    }
-
                                     if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(json_bytes) {
                                         let mut guard = state.lock().await;
-
-                                        // Debug: Print method
-                                        if let Some(method) = json_val.get("method").and_then(|m| m.as_str()) {
-                                            println!("Received LSP method: {}", method);
-                                        }
 
                                         // 1. Capture client root URI from initialize
                                         if json_val.get("method").and_then(|m| m.as_str()) == Some("initialize") {
@@ -1596,21 +1683,21 @@ async fn wire_peer_channels(
                                         // 2. Rewrite URIs (Client -> Server)
                                         rewrite_uris(&mut json_val, &guard, true);
 
-                                        // 3. Handle didOpen file writing
+                                        // 3. Handle didOpen file writing (skip empty content — the server reads from disk)
                                         if json_val.get("method").and_then(|m| m.as_str()) == Some("textDocument/didOpen") {
                                             if let Some(params) = json_val.get("params") {
                                                 if let Some(doc) = params.get("textDocument") {
                                                     if let (Some(uri), Some(text)) = (doc.get("uri").and_then(|s| s.as_str()), doc.get("text").and_then(|s| s.as_str())) {
-                                                        if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
-                                                            let rel = rel.trim_start_matches('/');
-                                                            let file_path = workspace_path.join(rel);
-                                                            if let Some(parent) = file_path.parent() {
-                                                                let _ = tokio::fs::create_dir_all(parent).await;
-                                                            }
-                                                            if let Err(e) = tokio::fs::write(&file_path, text).await {
-                                                                eprintln!("Failed to write file {}: {}", file_path.display(), e);
-                                                            } else {
-                                                                println!("Wrote file to disk: {}", file_path.display());
+                                                        if !text.is_empty() {
+                                                            if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
+                                                                let rel = rel.trim_start_matches('/');
+                                                                let file_path = workspace_path.join(rel);
+                                                                if let Some(parent) = file_path.parent() {
+                                                                    let _ = tokio::fs::create_dir_all(parent).await;
+                                                                }
+                                                                if let Err(e) = tokio::fs::write(&file_path, text).await {
+                                                                    eprintln!("Failed to write file {}: {}", file_path.display(), e);
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -1633,8 +1720,6 @@ async fn wire_peer_channels(
                                                                                 let file_path = workspace_path.join(rel);
                                                                                 if let Err(e) = tokio::fs::write(&file_path, text).await {
                                                                                     eprintln!("Failed to update file {}: {}", file_path.display(), e);
-                                                                                } else {
-                                                                                    println!("Updated file on disk: {}", file_path.display());
                                                                                 }
                                                                             }
                                                                         }
@@ -1713,13 +1798,10 @@ async fn wire_peer_channels(
                                         let mut buf = vec![0u8; content_length];
                                         match reader.read_exact(&mut buf).await {
                                             Ok(_) => {
-                                                println!("Received {} bytes from LSP stdout", content_length);
                                                 if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(&buf) {
                                                     // Log initialize response and force Full text sync
                                                     if let Some(result) = json_val.get_mut("result") {
                                                         if let Some(caps) = result.get_mut("capabilities") {
-                                                            println!("LSP Initialize Response Capabilities: {:?}", caps);
-
                                                             // Force textDocumentSync to Full (1) to ensure we always get full content
                                                             // so we can keep the file on disk in sync for clangd.
                                                             if let Some(caps_obj) = caps.as_object_mut() {
@@ -1746,7 +1828,6 @@ async fn wire_peer_channels(
                                                         if data_len > 60000 {
                                                             let msg_id = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() % 0xFFFFFFFF) as u32;
                                                             let chunks = make_chunks(&new_content, msg_id);
-                                                            println!("Sending {} bytes in {} chunks (ID: {})", data_len, chunks.len(), msg_id);
                                                             for chunk in chunks {
                                                                 let data = Bytes::from(chunk);
                                                                 if let Err(e) = dc_out.send(&data).await {
@@ -1756,7 +1837,6 @@ async fn wire_peer_channels(
                                                             }
                                                         } else {
                                                             let data = Bytes::copy_from_slice(&new_content);
-                                                            println!("Sending {} bytes to WebRTC (LSP stdout)", data.len());
                                                             if let Err(e) = dc_out.send(&data).await {
                                                                 eprintln!("Failed to send to WebRTC: {}", e);
                                                                 break;
@@ -1764,9 +1844,8 @@ async fn wire_peer_channels(
                                                         }
                                                     }
                                                 } else {
-                                                    // Failed to parse JSON, but we read `content_length` bytes.
-                                                    // Send just the body?
-                                                    println!("Failed to parse JSON from LSP stdout, sending raw bytes");
+                                                    // Failed to parse JSON — send raw body
+                                                    eprintln!("[LSP] Failed to parse JSON from stdout, forwarding raw bytes");
                                                     let data = Bytes::copy_from_slice(&buf);
                                                     if let Err(e) = dc_out.send(&data).await {
                                                         eprintln!("Failed to send raw bytes to WebRTC: {}", e);
@@ -1809,7 +1888,24 @@ async fn wire_peer_channels(
                             let _ = child.wait().await;
                         }
                         Err(e) => {
-                            eprintln!("Failed to spawn LSP: {}", e);
+                            eprintln!("Failed to spawn LSP for {}: {}", lang, e);
+                            // Send an LSP-shaped error response back so the frontend
+                            // doesn't hang forever waiting for `initialize` to respond.
+                            let error_response = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": 1, // initialize is always id=1
+                                "error": {
+                                    "code": -32002, // ServerNotInitialized
+                                    "message": format!(
+                                        "Failed to start {} language server: {}. \
+                                         The server binary may not be installed on the worker.",
+                                        lang, e
+                                    )
+                                }
+                            });
+                            if let Ok(payload) = serde_json::to_vec(&error_response) {
+                                let _ = dc_clone.send(&bytes::Bytes::from(payload)).await;
+                            }
                         }
                     }
                 });

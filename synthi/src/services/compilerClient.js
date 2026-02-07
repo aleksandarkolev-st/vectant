@@ -499,11 +499,21 @@ export class CompilerClient {
                     // This prevents "Called in wrong state: stable" errors from stale/duplicate answers
                     const signalingState = this.pc?.signalingState;
                     if (signalingState === 'have-local-offer') {
-                        await this.pc.setRemoteDescription(new RTCSessionDescription({ type: msg.sdp_type || 'answer', sdp: msg.sdp }));
-                        this._emitWebrtcDiag(`[webrtc] answer applied, new state=${this.pc?.signalingState}`);
+                        try {
+                            await this.pc.setRemoteDescription(new RTCSessionDescription({ type: msg.sdp_type || 'answer', sdp: msg.sdp }));
+                            this._emitWebrtcDiag(`[webrtc] answer applied, new state=${this.pc?.signalingState}`);
+                        } catch (e) {
+                            console.warn('[CompilerClient] setRemoteDescription failed (race condition), ignoring:', e.message);
+                            this._emitWebrtcDiag(`[webrtc] setRemoteDescription failed: ${e.message}`);
+                        }
+                        // Stop retrying offers now that we have an answer
+                        if (this._offerRetryInterval) {
+                            clearInterval(this._offerRetryInterval);
+                            this._offerRetryInterval = null;
+                        }
                         // Mark negotiation as complete
                         this._negotiationInProgress = false;
-                        // Process any pending negotiation
+                        // Process any pending negotiation (e.g. LSP channel creation queued during connect)
                         if (this._pendingNegotiation) {
                             const pending = this._pendingNegotiation;
                             this._pendingNegotiation = null;
@@ -736,14 +746,12 @@ export class CompilerClient {
         const channel = this.pc.createDataChannel(label, { ordered: true });
         channel.binaryType = 'arraybuffer';
 
-        // Trigger renegotiation to establish the new data channel
-        this.pc.createOffer().then(offer => {
-            return this.pc.setLocalDescription(offer).then(() => offer);
-        }).then(offer => {
-            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                this.ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp, sdp_type: offer.type }));
-            }
-        }).catch(e => console.error('Renegotiation failed', e));
+        // No SDP renegotiation needed — SCTP is already established from the
+        // initial offer/answer (which created compile/terminal/emulator-input
+        // data channels).  New data channels open automatically via in-band
+        // SCTP negotiation (DATA_CHANNEL_OPEN message).  Calling _renegotiate
+        // here would send a redundant offer that can actually disrupt the
+        // SCTP transport and prevent the channel from opening.
 
         return channel;
     }

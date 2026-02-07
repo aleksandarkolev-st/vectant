@@ -21,40 +21,15 @@ use x11rb::protocol::shm::ConnectionExt as ShmConnectionExt;
 #[cfg(target_os = "linux")]
 use x11rb::protocol::xproto::*;
 
-mod abi_version;
-mod binary_state;
-mod boundary;
-mod capability;
-mod crash_recovery;
-mod fast_refresh;
-mod hmr_orchestrator;
-mod host_kv;
-mod loader;
-mod plugin_contract;
-mod security;
-mod reload_manager;
-mod source_map;
-mod state_diff;
-mod state_manager;
-mod supervisor;
+mod compiler;
+mod hmr;
+mod infra;
+mod runtime;
+mod safety;
 
-// safety / hardening
-mod process_isolation;
-mod enhanced_fingerprint;
-mod strict_contract;
+use runtime::capability::{detect_capabilities, HmrCapability, HmrStatus};
 
-// public protocol + infra
-pub mod reload_protocol;
-pub mod state_type_id;
-pub mod hardened_ipc;
-pub mod quiescence;
-pub mod slot_isolation;
-pub mod restart_control;
-pub mod observability;
-
-use capability::{detect_capabilities, HmrCapability, HmrStatus};
-
-use crash_recovery::{
+use infra::crash_recovery::{
     execute_with_protection,
     generate_crash_report,
     install_crash_handlers,
@@ -63,9 +38,9 @@ use crash_recovery::{
     HmrCrashStatus,
 };
 
-use hmr_orchestrator::{HmrOrchestrator, SavedState};
+use hmr::orchestrator::{HmrOrchestrator, SavedState};
 
-use host_kv::{
+use infra::host_kv::{
     create_kv_api,
     module_slot_to_u32,
     read_schema_table,
@@ -74,9 +49,9 @@ use host_kv::{
     KV_STORE,
 };
 
-use loader::{LoadResult, ModuleLoader};
+use runtime::loader::{LoadResult, ModuleLoader};
 
-use plugin_contract::{
+use runtime::plugin_contract::{
     ModuleSlot,
     CORE_STATE_MAGIC,
     GUI_STATE_MAGIC,
@@ -84,11 +59,11 @@ use plugin_contract::{
     SYNTHI_GUI_ABI_VERSION,
 };
 
-use state_diff::{generate_migration_report, migrate_state};
-use state_manager::{StateHandle, StateManager};
-use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
+use hmr::state_diff::{generate_migration_report, migrate_state};
+use hmr::state_manager::{StateHandle, StateManager};
+use runtime::supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 
-use enhanced_fingerprint::{AbiFingerprint, extract_fingerprint_from_module};
+use safety::enhanced_fingerprint::{AbiFingerprint, extract_fingerprint_from_module};
 
 
 // SDL2 Definitions
@@ -182,12 +157,12 @@ const SDL_TEXTUREACCESS_STREAMING: c_int = 1;
 // ============================================================
 
 // Import new HotApi types for v2 ABI
-use plugin_contract::{
+use runtime::plugin_contract::{
     HotApi, HotGetApiFn, RunnerApi,
     MAX_STATE_ALIGNMENT, RUNNER_API_VERSION,
     LOG_INFO, LOG_WARN, LOG_ERROR,
 };
-use capability::{validate_hot_api, HotApiInfo};
+use runtime::capability::{validate_hot_api, HotApiInfo};
 
 // Legacy state container - used for backward compatibility with "main" module
 // Now actively used in the main loop for app_state tracking
@@ -349,7 +324,7 @@ fn hot_reload_v2(
     // 2. Additional validation checks
     // Reject if struct_size < offset of last required field
     let min_struct_size = std::mem::offset_of!(HotApi, migrate) 
-        + std::mem::size_of::<Option<plugin_contract::MigrateFn>>();
+        + std::mem::size_of::<Option<runtime::plugin_contract::MigrateFn>>();
     if (api.struct_size as usize) < min_struct_size {
         return Err(format!(
             "struct_size {} too small - required fields end at offset {}",
@@ -409,7 +384,7 @@ fn hot_reload_v2(
                     // Robust check using full fingerprint
                     let result = old_fp.is_compatible_for_memcpy(new_fp);
                     if !result.is_compatible() {
-                        if let enhanced_fingerprint::CompatibilityResult::Incompatible { reasons } = &result {
+                        if let safety::enhanced_fingerprint::CompatibilityResult::Incompatible { reasons } = &result {
                             eprintln!("[HMR] Fingerprint mismatch - memcpy BLOCKED:");
                             for reason in reasons {
                                 eprintln!("[HMR]   - {}", reason);
@@ -625,10 +600,10 @@ fn main() {
     //    - Only enabled with SYNTHI_UNSAFE_INPROCESS=1
     //    - Exists only for debugging/profiling where isolation overhead is unacceptable
     // ============================================================
-    let execution_mode = process_isolation::ExecutionMode::from_env();
+    let execution_mode = runtime::process_isolation::ExecutionMode::from_env();
     
     match execution_mode {
-        process_isolation::ExecutionMode::ProcessIsolated => {
+        runtime::process_isolation::ExecutionMode::ProcessIsolated => {
             // This is the SAFE path - we should be running under a supervisor.
             // If we're the top-level process, we need to spawn a supervisor.
             if std::env::var("SYNTHI_SUPERVISED").is_err() {
@@ -639,8 +614,8 @@ fn main() {
                 // Mark that we're now supervising
                 std::env::set_var("SYNTHI_SUPERVISED", "1");
                 
-                let config = process_isolation::IsolationConfig::default();
-                let mut supervisor = process_isolation::ProcessSupervisor::new(config);
+                let config = runtime::process_isolation::IsolationConfig::default();
+                let mut supervisor = runtime::process_isolation::ProcessSupervisor::new(config);
                 
                 if let Err(e) = supervisor.start() {
                     eprintln!("[Runner] FATAL: Failed to start supervisor: {}", e);
@@ -661,7 +636,7 @@ fn main() {
             }
         }
         #[allow(deprecated)]
-        process_isolation::ExecutionMode::UnsafeInProcess => {
+        runtime::process_isolation::ExecutionMode::UnsafeInProcess => {
             // UNSAFE PATH - User explicitly opted in
             eprintln!("[Runner] ============================================================");
             eprintln!("[Runner] WARNING: Running in UNSAFE IN-PROCESS mode");

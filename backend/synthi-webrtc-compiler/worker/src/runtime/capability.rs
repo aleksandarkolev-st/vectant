@@ -464,7 +464,7 @@ pub fn is_blocking(lib_path: &Path) -> bool {
 // This replaces the multi-symbol legacy ABI.
 // ============================================================
 
-use crate::compiler::plugin_contract::{
+use crate::runtime::plugin_contract::{
     HotApi, HotGetApiFn, HOT_API_MIN_VERSION, HOT_API_VERSION, MAX_STATE_ALIGNMENT,
 };
 
@@ -541,7 +541,7 @@ pub fn validate_hot_api(lib: &Library) -> HotApiValidation {
 
     // 1. Validate struct_size (must be at least minimum required)
     let min_size = std::mem::offset_of!(HotApi, migrate)
-        + std::mem::size_of::<Option<crate::compiler::plugin_contract::MigrateFn>>();
+        + std::mem::size_of::<Option<crate::runtime::plugin_contract::MigrateFn>>();
     if (api.struct_size as usize) < min_size {
         result.errors.push(format!(
             "struct_size {} too small - minimum required is {} (missing required fields)",

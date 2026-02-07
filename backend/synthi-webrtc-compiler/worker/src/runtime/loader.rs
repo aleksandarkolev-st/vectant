@@ -324,7 +324,7 @@ impl ModuleLoader {
 unsafe fn get_module_state_size(lib: &libloading::Library, module_name: &str) -> usize {
     // Try v2.1 HotApi first
     if let Ok(func) = lib
-        .get::<unsafe extern "C" fn() -> *const crate::compiler::plugin_contract::HotApi>(
+        .get::<unsafe extern "C" fn() -> *const crate::runtime::plugin_contract::HotApi>(
             b"hot_get_api\0",
         )
     {
