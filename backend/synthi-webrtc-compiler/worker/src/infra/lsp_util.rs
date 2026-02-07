@@ -1,4 +1,4 @@
-use serde::Deserialize;
+// use serde::Deserialize;
 
 pub struct LspSessionState {
     pub client_root_uri: Option<String>,

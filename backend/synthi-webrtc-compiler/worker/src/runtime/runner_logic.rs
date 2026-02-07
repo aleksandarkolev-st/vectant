@@ -9,14 +9,13 @@ use crate::runtime::plugin_contract::{
 use libloading::{Library, Symbol};
 use std::collections::HashMap;
 use std::ffi::{c_void, CString};
-use std::str::FromStr;
 
 use crate::runtime::hot_reload::v2::{get_module_abi_version, validate_state_magic};
 use crate::runtime::runner::validator;
 
 // Host KV
 use crate::infra::host_kv::{
-    self, create_kv_api, module_slot_to_u32, read_schema_table, HostKvApiV1, HostKvSchemaEvent,
+    module_slot_to_u32, read_schema_table, HostKvApiV1, HostKvSchemaEvent,
     SynthiHostContextV1, KV_STORE,
 };
 
@@ -76,7 +75,7 @@ pub unsafe fn process_load_command(
     // This catches symbol mismatches and ABI version errors early.
     if loader_enabled {
         let slot = ModuleSlot::from_str(name);
-        if let Some(slot) = slot {
+        if let Some(_slot) = slot {
             // Generate a simple hash for tracking (real hash from file)
             let content_hash = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
@@ -438,7 +437,7 @@ pub unsafe fn process_load_command(
             // ============================================================
             // This allows the module to write to KV during on_load
             // ============================================================
-            let module_slot_compiler = to_compiler_slot(module_slot);
+            let _module_slot_compiler = to_compiler_slot(module_slot);
             let mut has_host_kv_support = false;
 
             if let Some(ref sid) = session_id {

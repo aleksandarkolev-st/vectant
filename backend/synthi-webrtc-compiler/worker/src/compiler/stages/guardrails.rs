@@ -75,7 +75,7 @@ pub fn apply_shared_guardrails(content: &str) -> String {
 }
 
 /// Apply guardrails to core.cpp content (requires processed shared.h for context)
-pub fn apply_core_guardrails(content: &str, shared_content: &str, allow_gui: bool) -> String {
+pub fn apply_core_guardrails(content: &str, _shared_content: &str, allow_gui: bool) -> String {
     let mut result = content.to_string();
 
     // Fix common AI mistakes in core.cpp before compilation.
@@ -274,6 +274,59 @@ pub fn apply_core_guardrails(content: &str, shared_content: &str, allow_gui: boo
                     result = result.replace(&block, "// AppState defined in shared.h");
                 }
             }
+        }
+    }
+
+    // FIX: Support standard main() C++ apps by transforming them to plugin format
+    // This allows users to paste standard X11/SDL code with int main() and have it run inside the runner
+    if !result.contains("core_on_load") && !result.contains("on_load") {
+        let re_main_no_args = Regex::new(r"\bint\s+main\s*\(\s*(void)?\s*\)").unwrap();
+        let re_main_args = Regex::new(r"\bint\s+main\s*\(").unwrap();
+        
+        let mut handled = false;
+
+        if re_main_no_args.is_match(&result) {
+             // Case 1: int main()
+             result = re_main_no_args.replace(&result, "int user_main()").to_string();
+             
+             result.push_str("\n\n// [Guardrail] Injected main() adapter (no-args)\n");
+             result.push_str("#include <pthread.h>\n");
+             result.push_str("int user_main();\n"); 
+             result.push_str("extern \"C\" {\n");
+             result.push_str("    static void* main_thread_func(void* arg) {\n");
+             result.push_str("        user_main();\n");
+             result.push_str("        return NULL;\n");
+             result.push_str("    }\n");
+             handled = true;
+        } else if re_main_args.is_match(&result) {
+             // Case 2: int main(argc, argv) or similar
+             result = re_main_args.replace(&result, "int user_main(").to_string();
+             
+             result.push_str("\n\n// [Guardrail] Injected main() adapter (with-args)\n");
+             result.push_str("#include <pthread.h>\n");
+             result.push_str("int user_main(int argc, char** argv);\n");
+             result.push_str("extern \"C\" {\n");
+             result.push_str("    static void* main_thread_func(void* arg) {\n");
+             result.push_str("        char* app_name = (char*)\"app\";\n");
+             result.push_str("        char* argv[] = {app_name, NULL};\n");
+             result.push_str("        user_main(1, argv);\n");
+             result.push_str("        return NULL;\n");
+             result.push_str("    }\n");
+             handled = true;
+        }
+
+        if handled {
+            // Implement required plugin ABI (common)
+            result.push_str("    void* core_on_load(void* prev_state, void* api) {\n");
+            result.push_str("        pthread_t thread;\n");
+            result.push_str("        pthread_create(&thread, NULL, main_thread_func, NULL);\n");
+            result.push_str("        pthread_detach(thread);\n");
+            result.push_str("        return NULL;\n");
+            result.push_str("    }\n");
+            result.push_str("    void core_on_update(void* state, float dt) {\n");
+            result.push_str("        // Main loop is running in separate thread\n");
+            result.push_str("    }\n");
+            result.push_str("}\n");
         }
     }
 

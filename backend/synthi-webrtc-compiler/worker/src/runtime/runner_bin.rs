@@ -1,6 +1,6 @@
 use libloading::{Library, Symbol};
 use std::collections::HashMap;
-use std::ffi::{c_int, c_uint, c_void, CString};
+use std::ffi::{c_void, CString};
 use std::io::{self, BufRead, Write};
 use std::ptr;
 use std::sync::mpsc;
@@ -19,75 +19,81 @@ use x11rb::connection::Connection;
 #[cfg(target_os = "linux")]
 use x11rb::protocol::shm::ConnectionExt as ShmConnectionExt;
 #[cfg(target_os = "linux")]
-use x11rb::protocol::xproto::*;
+use worker::runtime::platform::sdl_defs::*;
 
-use super::runner_logic;
-use crate::compiler::abi_version;
-use crate::hmr::binary_state;
-use crate::hmr::fast_refresh;
-use crate::hmr::orchestrator as hmr_orchestrator;
-use crate::infra::crash_recovery;
-use crate::infra::host_kv;
-use crate::runtime::capability;
-use crate::runtime::loader;
-use crate::safety::boundary;
-// mod plugin_contract; // Use crate::runtime::plugin_contract
-use crate::compiler::source_map;
-use crate::hmr::reload_manager;
-use crate::hmr::state_diff;
-use crate::hmr::state_manager;
-use crate::runtime::supervisor;
+use worker::runtime::runner_logic;
+// use worker::compiler::abi_version;
+// use worker::hmr::binary_state;
+// use worker::hmr::fast_refresh;
+use worker::hmr::orchestrator as hmr_orchestrator;
+use worker::infra::crash_recovery;
+use worker::infra::host_kv;
+use worker::runtime::capability;
+use worker::runtime::loader;
+// use worker::safety::boundary;
+// use worker::compiler::source_map;
+// use worker::hmr::reload_manager;
+// use worker::hmr::state_diff;
+use worker::hmr::state_manager;
+use worker::runtime::supervisor;
 
 // safety / hardening
-use crate::runtime::process_isolation;
-use crate::safety::enhanced_fingerprint;
-use crate::safety::strict_contract;
+use worker::runtime::process_isolation;
+use worker::safety::enhanced_fingerprint;
+// use worker::safety::strict_contract;
 
 // public protocol + infra
-use crate::hmr::reload_protocol;
-use crate::hmr::state_type_id;
-use crate::infra::observability;
-use crate::safety::hardened_ipc;
-use crate::safety::quiescence;
-use crate::safety::restart_control;
-use crate::safety::security;
-use crate::safety::slot_isolation;
+// use worker::hmr::reload_protocol;
+// use worker::hmr::state_type_id;
+// use worker::infra::observability;
+// use worker::safety::hardened_ipc;
+// use worker::safety::quiescence;
+// use worker::safety::restart_control;
+// use worker::safety::security;
+// use worker::safety::slot_isolation;
 
-use crate::safety::hardened_ipc::{read_frame_validated, write_frame_with_checksum, IpcConfig};
+use worker::safety::hardened_ipc::{read_frame_validated, write_frame_with_checksum, IpcConfig};
 
-use crate::runtime::plugin_contract::{
-    HotApi, HotGetApiFn, ModuleSlot, RunnerApi, CORE_STATE_MAGIC, GUI_STATE_MAGIC, LOG_ERROR,
-    LOG_INFO, LOG_WARN, MAX_STATE_ALIGNMENT, RUNNER_API_VERSION, SYNTHI_CORE_ABI_VERSION,
-    SYNTHI_GUI_ABI_VERSION,
+use worker::compiler::plugin_contract::ModuleSlot as CompilerModuleSlot;
+use worker::runtime::plugin_contract::{
+    ModuleSlot, 
+    // HotApi, HotGetApiFn, RunnerApi, CORE_STATE_MAGIC, GUI_STATE_MAGIC, LOG_ERROR,
+    // LOG_INFO, LOG_WARN, MAX_STATE_ALIGNMENT, RUNNER_API_VERSION, SYNTHI_CORE_ABI_VERSION,
+    // SYNTHI_GUI_ABI_VERSION,
 };
 
-use capability::{detect_capabilities, HmrCapability, HmrStatus}; // Assuming capability is local mod
+fn to_compiler_slot(slot: ModuleSlot) -> CompilerModuleSlot {
+    match slot {
+        ModuleSlot::Core => CompilerModuleSlot::Core,
+        ModuleSlot::Gui => CompilerModuleSlot::Gui,
+        ModuleSlot::Main => CompilerModuleSlot::Main,
+    }
+}
+use capability::{HmrStatus}; // Removed detect_capabilities
 
 use crash_recovery::{
-    execute_with_protection, generate_crash_report, install_crash_handlers, set_current_lib_path,
-    HmrCrashStatus,
+    generate_crash_report, install_crash_handlers, set_current_lib_path,
+    HmrCrashStatus, execute_with_protection,
 };
 
-use hmr_orchestrator::{HmrOrchestrator, SavedState};
+use hmr_orchestrator::{HmrOrchestrator}; // Removed SavedState
 
 use host_kv::{
-    create_kv_api, module_slot_to_u32, read_schema_table, HostKvSchemaEvent, SynthiHostContextV1,
-    KV_STORE,
+    create_kv_api, // Removed module_slot_to_u32, read_schema_table, KV_STORE, HostKvSchemaEvent, SynthiHostContextV1
 };
 
-use loader::{LoadResult, ModuleLoader};
+use loader::{ModuleLoader}; // Removed LoadResult
 
 use state_manager::StateManager;
 use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 
-use enhanced_fingerprint::{extract_fingerprint_from_module, AbiFingerprint};
+// use enhanced_fingerprint::{extract_fingerprint_from_module}; // Removed AbiFingerprint
 
-use crate::runtime::hot_reload::v2::{
-    get_module_abi_version, hot_reload_v2, save_state_msgpack_v2, validate_state_magic,
-    HotModuleState, HotReloadResult, RUNNER_API,
-};
-use crate::runtime::legacy_module_state::{AppState, ModuleState};
-use crate::runtime::platform::sdl_defs::*;
+// use crate::runtime::hot_reload::v2::{
+//     get_module_abi_version, hot_reload_v2, save_state_msgpack_v2, validate_state_magic,
+//     HotModuleState, HotReloadResult, RUNNER_API,
+// };
+use worker::runtime::legacy_module_state::{AppState, ModuleState};
 
 // ============================================================
 // INDEPENDENT SWAP DOMAINS: Separate state for each module
@@ -100,7 +106,7 @@ use crate::runtime::platform::sdl_defs::*;
 // ============================================================
 
 // Import new HotApi types for v2 ABI
-use capability::{validate_hot_api, HotApiInfo};
+// use capability::{validate_hot_api, HotApiInfo};
 
 // ModuleState moved to legacy_module_state.rs
 
@@ -176,7 +182,11 @@ fn main() {
                 eprintln!("[Runner] Supervisor event loop completed, exiting");
                 std::process::exit(0);
             } else {
-                eprintln!("[Runner] Running as supervised worker process");
+                eprintln!("[Runner] Running as supervised worker process (PID: {})", std::process::id());
+                // v2.1: Verify we are receiving the correct environment
+                if let Ok(parent_pid) = std::env::var("SYNTHI_SUPERVISOR_PID") {
+                    eprintln!("[Runner] Managed by supervisor PID: {}", parent_pid);
+                }
             }
         }
         #[allow(deprecated)]
@@ -192,19 +202,32 @@ fn main() {
     }
 
     // Install crash handlers for runtime error recovery
+    eprintln!("[Runner] Installing crash handlers...");
     if let Err(e) = install_crash_handlers() {
         eprintln!("[Runner] Warning: Failed to install crash handlers: {}", e);
+    } else {
+        eprintln!("[Runner] Crash handlers installed successfully");
     }
 
     // Spawn Xvfb and setup X11
     #[cfg(target_os = "linux")]
     let (_xvfb_proc, x11_conn, _x11_screen_num, x11_root) = {
-        let mut cmd = Command::new("Xvfb");
-        cmd.args(&[":99", "-screen", "0", "800x600x24"]);
-        let child = cmd.spawn().ok();
-        thread::sleep(Duration::from_millis(100));
-        std::env::set_var("DISPLAY", ":99");
-        let (conn, screen_num) = x11rb::connect(Some(":99")).expect("Failed to connect to X11");
+        let existing_display = std::env::var("DISPLAY").ok();
+        let display_val = existing_display.as_deref().unwrap_or(":99");
+
+        let child = if existing_display.is_none() {
+            let mut cmd = Command::new("Xvfb");
+            cmd.args(&[":99", "-screen", "0", "800x600x24"]);
+            let child = cmd.spawn().ok();
+            thread::sleep(Duration::from_millis(100));
+            std::env::set_var("DISPLAY", ":99");
+            child
+        } else {
+            eprintln!("[Runner] Using existing DISPLAY={}", display_val);
+            None
+        };
+
+        let (conn, screen_num) = x11rb::connect(Some(display_val)).expect("Failed to connect to X11");
         let root = conn.setup().roots[screen_num].root;
         (child, conn, screen_num, root)
     };
@@ -212,7 +235,7 @@ fn main() {
     #[cfg(target_os = "linux")]
     let (shm_seg, shm_ptr) = {
         let size = 800 * 600 * 4;
-        let (id, ptr) = crate::runtime::runner::capture::create_shm_segment(size)
+        let (id, ptr) = worker::runtime::runner::capture::create_shm_segment(size)
             .expect("Failed to create SHM");
         let seg = x11_conn.generate_id().unwrap();
         x11_conn.shm_attach(seg, id as u32, false).unwrap();
@@ -310,7 +333,7 @@ fn main() {
                         }
                         Err(e) => {
                             // Check if it's EOF
-                            if matches!(e, crate::safety::hardened_ipc::IpcError::ConnectionClosed)
+                            if matches!(e, worker::safety::hardened_ipc::IpcError::ConnectionClosed)
                             {
                                 eprintln!("IPC connection closed (EOF)");
                             } else {
@@ -1005,16 +1028,20 @@ fn main() {
 
         #[cfg(target_os = "linux")]
         {
-            crate::runtime::runner::capture::capture_frame(
-                &x11_conn,
-                x11_root,
-                shm_seg,
-                shm_ptr,
-                &frame_tx,
-                &mut frame_count,
-                &mut frames_sent,
-                &mut last_frame_log,
-            );
+            // Only capture frames internally if NOT in ProcessIsolated mode.
+            // In ProcessIsolated mode, the Supervisor handles capture via GStreamer ximagesrc.
+            if !matches!(execution_mode, process_isolation::ExecutionMode::ProcessIsolated) {
+                worker::runtime::runner::capture::capture_frame(
+                    &x11_conn,
+                    x11_root,
+                    shm_seg,
+                    shm_ptr,
+                    &frame_tx,
+                    &mut frame_count,
+                    &mut frames_sent,
+                    &mut last_frame_log,
+                );
+            }
         }
 
         // Cap at ~60 FPS
