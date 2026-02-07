@@ -280,7 +280,7 @@ pub fn apply_core_guardrails(content: &str, _shared_content: &str, allow_gui: bo
     // FIX: Support standard main() C++ apps by transforming them to plugin format
     // This allows users to paste standard X11/SDL code with int main() and have it run inside the runner
     if !result.contains("core_on_load") && !result.contains("on_load") {
-        let re_main_no_args = Regex::new(r"\bint\s+main\s*\(\s*\)").unwrap();
+        let re_main_no_args = Regex::new(r"\bint\s+main\s*\(\s*(void)?\s*\)").unwrap();
         let re_main_args = Regex::new(r"\bint\s+main\s*\(").unwrap();
         
         let mut handled = false;
