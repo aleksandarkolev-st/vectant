@@ -65,7 +65,8 @@ use infra::watcher::{PreemptiveConfig, PreemptiveMessage, SpeculativeCache};
 #[allow(unused_imports)]
 use hmr::incremental_cache::{IncrementalCache, compile_with_cache, link_objects};
 use gstreamer as gst;
-// use gstreamer::prelude::{Cast, ElementExt, GstBinExt, GstObjectExt};
+use gstreamer::prelude::ElementExt;
+// use gstreamer::prelude::{Cast, GstBinExt, GstObjectExt};
 // use gstreamer_app as gst_app;
 
 use tempfile::tempdir;
@@ -700,9 +701,13 @@ async fn main() -> Result<()> {
                     // Terminal datachannel - used to receive stdin messages for running
                     // processes. Messages are expected as JSON: { type: 'stdin', sessionId, data }
                     let sdl_store_for_msg = sdl_store_outer.clone();
+                    let runner_store_for_term = runner_store_outer.clone();
+                    let build_log_store_for_term = store.clone();
                     dc.on_message(Box::new(move |msg| {
                         let term_store_for_msg = term_store.clone();
                         let sdl_store = sdl_store_for_msg.clone();
+                        let runner_store_term = runner_store_for_term.clone();
+                        let build_log_term = build_log_store_for_term.clone();
                         async move {
                             if msg.is_string {
                                 // diagnostic log
@@ -726,6 +731,53 @@ async fn main() -> Result<()> {
                                             // Handle GUI event by sending to persistent SDL process
                                             if let Some(sid) = v.get("sessionId").and_then(|x| x.as_str()) {
                                                 if let Some(evt) = v.get("event") {
+                                                    // Handle stop-runner before SDL sender lookup
+                                                    // (runner may not have an SDL sender registered)
+                                                    if let Some(typ) = evt.get("type").and_then(|x| x.as_str()) {
+                                                        if typ == "stop-runner" {
+                                                            println!("[worker] stop-runner requested for session {}", sid);
+                                                            // Take and destroy runner state
+                                                            let mut rg = runner_store_term.lock().await;
+                                                            if let Some(mut state) = rg.take() {
+                                                                // Kill the runner process
+                                                                if let Some(ref mut child) = state.process {
+                                                                    let _ = child.kill().await;
+                                                                    println!("[worker] runner process killed");
+                                                                }
+                                                                // Kill Xvfb
+                                                                if let Some(ref mut xvfb) = state.xvfb_process {
+                                                                    let _ = xvfb.kill().await;
+                                                                    println!("[worker] Xvfb killed");
+                                                                }
+                                                                // Stop GStreamer pipeline
+                                                                if let Some(ref pipeline) = state.gst_pipeline {
+                                                                    let _ = pipeline.set_state(gst::State::Null);
+                                                                    println!("[worker] GStreamer pipeline stopped");
+                                                                }
+                                                                drop(state);
+                                                            }
+                                                            // Clean up SDL and terminal input senders for this session
+                                                            {
+                                                                let mut sdl_guard = sdl_store.lock().await;
+                                                                sdl_guard.remove(sid);
+                                                            }
+                                                            {
+                                                                let mut term_guard = term_store_for_msg.lock().await;
+                                                                term_guard.remove(sid);
+                                                            }
+                                                            // Notify frontend that the runner has ended
+                                                            let log_guard = build_log_term.lock().await;
+                                                            if let Some(dc) = log_guard.as_ref() {
+                                                                let end_msg = serde_json::json!({
+                                                                    "type": "run-gui-end"
+                                                                });
+                                                                let _ = dc.send_text(end_msg.to_string()).await;
+                                                            }
+                                                            // Early return - don't try SDL sender lookup
+                                                            return;
+                                                        }
+                                                    }
+
                                                     let guard = sdl_store.lock().await;
                                                     if let Some(sender) = guard.get(sid) {
                                                         let mut cmd = String::new();
