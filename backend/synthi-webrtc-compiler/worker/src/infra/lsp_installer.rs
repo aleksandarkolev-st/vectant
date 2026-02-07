@@ -72,7 +72,10 @@ pub async fn ensure_lsp_installed(lang: &str, workspace: &Path) -> Result<&'stat
              gunzip > /usr/local/bin/rust-analyzer && chmod +x /usr/local/bin/rust-analyzer",
         ]),
         "python" | "py" => ("pylsp", vec![
-            "pip install --quiet python-lsp-server 2>/dev/null || pip3 install --quiet python-lsp-server",
+            // Prefer OS package to avoid PEP 668 restrictions
+            "apt-get update -qq && apt-get install -y -qq python3-pylsp >/dev/null 2>&1 || true",
+            // Fallback to pip with explicit override
+            "pip install --quiet --break-system-packages python-lsp-server 2>/dev/null || pip3 install --quiet --break-system-packages python-lsp-server",
         ]),
         "typescript" | "ts" | "javascript" | "js" => ("typescript-language-server", vec![
             "npm install -g typescript-language-server typescript 2>/dev/null || true",
@@ -150,14 +153,25 @@ pub async fn ensure_lsp_installed(lang: &str, workspace: &Path) -> Result<&'stat
         return Err(format!("{} not found and no auto-installer configured", binary));
     }
 
-    // Check marker so we don't re-attempt a failed install on every reconnect.
+    // Check marker to rate-limit install attempts (max once per 5 minutes).
+    // We no longer permanently block retries — a previous failure (e.g. PEP 668
+    // before --break-system-packages was added) shouldn't prevent future attempts.
     let marker = workspace.join(format!(".synthi_lsp_installed_{}", lang));
     if marker.exists() {
-        // Already attempted — check again in case it succeeded
+        // Already attempted — check if it actually worked
         if is_on_path(binary).await {
             return Ok(binary);
         }
-        return Err(format!("{} install was already attempted but binary still not found", binary));
+        // Rate-limit: only retry if the marker is older than 5 minutes
+        if let Ok(meta) = std::fs::metadata(&marker) {
+            if let Ok(modified) = meta.modified() {
+                if modified.elapsed().unwrap_or_default() < std::time::Duration::from_secs(300) {
+                    return Err(format!("{} install was recently attempted but binary still not found (will retry after cooldown)", binary));
+                }
+            }
+        }
+        // Cooldown expired — remove stale marker and retry
+        let _ = std::fs::remove_file(&marker);
     }
 
     println!("[LSP-INSTALL] {} not found, installing for {}...", binary, lang);
@@ -169,14 +183,15 @@ pub async fn ensure_lsp_installed(lang: &str, workspace: &Path) -> Result<&'stat
         }
     }
 
-    // Write marker regardless of outcome
-    let _ = std::fs::write(&marker, "attempted");
-
     // Verify
     if is_on_path(binary).await {
+        // Only write marker on SUCCESS — failed installs should be retried
+        let _ = std::fs::write(&marker, "installed");
         println!("[LSP-INSTALL] ✓ {} installed successfully", binary);
         Ok(binary)
     } else {
+        // Write marker with timestamp so we can rate-limit retries
+        let _ = std::fs::write(&marker, "failed");
         Err(format!("{} still not found after install attempt", binary))
     }
 }

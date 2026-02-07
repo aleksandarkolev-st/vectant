@@ -1456,7 +1456,11 @@ async fn wire_peer_channels(
                     // (e.g. Java backend + React frontend) and monorepos with nested
                     // manifests.  Results are cached via a marker file so subsequent
                     // LSP connections for other languages skip the install.
-                    infra::dep_installer::install_all_deps(&workspace_path, false).await;
+                    //
+                    // When NO manifests are found, the import scanner kicks in as a
+                    // fallback: it scans source files for import/require/include
+                    // patterns and installs detected third-party packages.
+                    infra::dep_installer::install_all_deps(&workspace_path, &lang, false).await;
 
                     // ── Auto-install the language server if missing ───────
                     // Best-effort: if the install fails we still try to spawn
@@ -1465,6 +1469,13 @@ async fn wire_peer_channels(
                         Ok(bin) => println!("[LSP] Server binary ready: {}", bin),
                         Err(e) => eprintln!("[LSP] Server install warning: {}", e),
                     }
+
+                    // ── Generate minimal LSP config for standalone files ─────
+                    // If the workspace has no project config for this language,
+                    // create a minimal one so the language server provides
+                    // useful intellisense (completions, go-to-def, etc.)
+                    // even for a single file without a project manifest.
+                    ensure_lsp_config(&workspace_path, &lang);
 
                     println!("Starting LSP for language: {}", lang);
                     let mut cmd = match lang.as_str() {
@@ -1705,24 +1716,92 @@ async fn wire_peer_channels(
                                             }
                                         }
 
-                                        // 4. Handle didChange file writing (only if full sync)
+                                        // 4. Handle didChange file writing (full sync AND incremental)
                                         if json_val.get("method").and_then(|m| m.as_str()) == Some("textDocument/didChange") {
                                             if let Some(params) = json_val.get("params") {
                                                 if let Some(changes) = params.get("contentChanges").and_then(|c| c.as_array()) {
-                                                    if changes.len() == 1 {
-                                                        if let Some(change) = changes.first() {
-                                                            if change.get("range").is_none() {
-                                                                if let Some(text) = change.get("text").and_then(|s| s.as_str()) {
-                                                                    if let Some(doc) = params.get("textDocument") {
-                                                                        if let Some(uri) = doc.get("uri").and_then(|s| s.as_str()) {
-                                                                            if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
-                                                                                let rel = rel.trim_start_matches('/');
-                                                                                let file_path = workspace_path.join(rel);
-                                                                                if let Err(e) = tokio::fs::write(&file_path, text).await {
-                                                                                    eprintln!("Failed to update file {}: {}", file_path.display(), e);
-                                                                                }
-                                                                            }
+                                                    if let Some(doc) = params.get("textDocument") {
+                                                        if let Some(uri) = doc.get("uri").and_then(|s| s.as_str()) {
+                                                            if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
+                                                                let rel = rel.trim_start_matches('/');
+                                                                let file_path = workspace_path.join(rel);
+
+                                                                if changes.len() == 1 && changes[0].get("range").is_none() {
+                                                                    // Full sync: single change without range = entire file content
+                                                                    if let Some(text) = changes[0].get("text").and_then(|s| s.as_str()) {
+                                                                        if let Err(e) = tokio::fs::write(&file_path, text).await {
+                                                                            eprintln!("Failed to update file {}: {}", file_path.display(), e);
                                                                         }
+                                                                    }
+                                                                } else {
+                                                                    // Incremental sync: changes have range fields.
+                                                                    // Read current file, apply each change, write back.
+                                                                    let current = tokio::fs::read_to_string(&file_path).await.unwrap_or_default();
+                                                                    let mut lines: Vec<String> = current.split('\n').map(|s| s.to_string()).collect();
+
+                                                                    // Apply changes in reverse order so earlier positions stay valid
+                                                                    let mut sorted_changes = changes.clone();
+                                                                    sorted_changes.sort_by(|a, b| {
+                                                                        let a_start = a.get("range").and_then(|r| r.get("start"));
+                                                                        let b_start = b.get("range").and_then(|r| r.get("start"));
+                                                                        let a_line = a_start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
+                                                                        let b_line = b_start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
+                                                                        let a_char = a_start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0);
+                                                                        let b_char = b_start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0);
+                                                                        b_line.cmp(&a_line).then(b_char.cmp(&a_char))
+                                                                    });
+
+                                                                    for change in &sorted_changes {
+                                                                        if let (Some(range), Some(text)) = (change.get("range"), change.get("text").and_then(|t| t.as_str())) {
+                                                                            let start_line = range.get("start").and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize;
+                                                                            let start_char = range.get("start").and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize;
+                                                                            let end_line = range.get("end").and_then(|e| e.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize;
+                                                                            let end_char = range.get("end").and_then(|e| e.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize;
+
+                                                                            // Clamp to valid line range
+                                                                            let sl = start_line.min(lines.len().saturating_sub(1));
+                                                                            let el = end_line.min(lines.len().saturating_sub(1));
+
+                                                                            // Build the prefix (before the edit) and suffix (after the edit)
+                                                                            let prefix = if sl < lines.len() {
+                                                                                let line_content = &lines[sl];
+                                                                                let sc = start_char.min(line_content.len());
+                                                                                line_content[..sc].to_string()
+                                                                            } else {
+                                                                                String::new()
+                                                                            };
+                                                                            let suffix = if el < lines.len() {
+                                                                                let line_content = &lines[el];
+                                                                                let ec = end_char.min(line_content.len());
+                                                                                line_content[ec..].to_string()
+                                                                            } else {
+                                                                                String::new()
+                                                                            };
+
+                                                                            // Split the replacement text into lines
+                                                                            let new_text_lines: Vec<&str> = text.split('\n').collect();
+
+                                                                            // Build replacement lines
+                                                                            let mut replacement = Vec::new();
+                                                                            if new_text_lines.len() == 1 {
+                                                                                replacement.push(format!("{}{}{}", prefix, new_text_lines[0], suffix));
+                                                                            } else {
+                                                                                replacement.push(format!("{}{}", prefix, new_text_lines[0]));
+                                                                                for mid in &new_text_lines[1..new_text_lines.len()-1] {
+                                                                                    replacement.push(mid.to_string());
+                                                                                }
+                                                                                replacement.push(format!("{}{}", new_text_lines[new_text_lines.len()-1], suffix));
+                                                                            }
+
+                                                                            // Splice the lines array
+                                                                            let remove_end = (el + 1).min(lines.len());
+                                                                            lines.splice(sl..remove_end, replacement);
+                                                                        }
+                                                                    }
+
+                                                                    let new_content = lines.join("\n");
+                                                                    if let Err(e) = tokio::fs::write(&file_path, &new_content).await {
+                                                                        eprintln!("Failed to update file {}: {}", file_path.display(), e);
                                                                     }
                                                                 }
                                                             }
@@ -1799,22 +1878,15 @@ async fn wire_peer_channels(
                                         match reader.read_exact(&mut buf).await {
                                             Ok(_) => {
                                                 if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(&buf) {
-                                                    // Log initialize response and force Full text sync
-                                                    if let Some(result) = json_val.get_mut("result") {
-                                                        if let Some(caps) = result.get_mut("capabilities") {
-                                                            // Force textDocumentSync to Full (1) to ensure we always get full content
-                                                            // so we can keep the file on disk in sync for clangd.
-                                                            if let Some(caps_obj) = caps.as_object_mut() {
-                                                                if let Some(sync) = caps_obj.get_mut("textDocumentSync") {
-                                                                    if sync.is_number() {
-                                                                        *sync = serde_json::json!(1);
-                                                                    } else if let Some(sync_obj) = sync.as_object_mut() {
-                                                                        sync_obj.insert("change".to_string(), serde_json::json!(1));
-                                                                    }
-                                                                } else {
-                                                                    // If not present, default to Full (1)
-                                                                    caps_obj.insert("textDocumentSync".to_string(), serde_json::json!(1));
-                                                                }
+                                                    // Log initialize response capabilities (for debugging)
+                                                    // NOTE: We no longer force textDocumentSync to Full(1).
+                                                    // The worker's didChange handler now supports both full
+                                                    // and incremental sync modes, applying range-based edits
+                                                    // to the file on disk when ranges are present.
+                                                    if let Some(result) = json_val.get("result") {
+                                                        if let Some(caps) = result.get("capabilities") {
+                                                            if let Some(sync) = caps.get("textDocumentSync") {
+                                                                println!("[LSP] Server textDocumentSync capability: {}", sync);
                                                             }
                                                         }
                                                     }
@@ -1909,6 +1981,131 @@ async fn wire_peer_channels(
                         }
                     }
                 });
+            }
+            else if label == "file-sync" {
+                // ── Real-time file sync channel ──────────────────────────
+                // The browser sends JSON messages when files are created,
+                // edited, renamed, or deleted.  We write the changes to disk
+                // so the LSP server (which indexes from the filesystem) sees
+                // them immediately.  This closes the "staleness gap" where
+                // files created in the browser editor don't exist on the
+                // worker's disk.
+                //
+                // Message format:
+                //   { "op": "write",  "path": "src/utils.py", "content": "..." }
+                //   { "op": "delete", "path": "old_file.py" }
+                //   { "op": "rename", "from": "a.py", "to": "b.py" }
+                //   { "op": "mkdir",  "path": "src/new_dir" }
+                //
+                // Paths are workspace-relative (same convention as LSP URIs
+                // without the `file:///synthi/` prefix).
+                let workspace_path_for_sync = workspace_path_for_dc.clone();
+                dc.on_message(Box::new(move |msg| {
+                    let ws_path = workspace_path_for_sync.clone();
+                    async move {
+                        let data = if msg.is_string {
+                            msg.data.clone()
+                        } else {
+                            msg.data.clone()
+                        };
+
+                        let json: serde_json::Value = match serde_json::from_slice(&data) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("[file-sync] Invalid JSON: {}", e);
+                                return;
+                            }
+                        };
+
+                        let op = json.get("op").and_then(|o| o.as_str()).unwrap_or("");
+
+                        // Resolve workspace root.  The files were downloaded to
+                        // /tmp/workspaces/{slug}/ by storage::download, but we may
+                        // also have a slug in the message for safety.
+                        let base = if let Some(slug) = json.get("slug").and_then(|s| s.as_str()) {
+                            let p = std::path::PathBuf::from(format!("/tmp/workspaces/{}", slug));
+                            if p.exists() { p } else { ws_path.as_ref().clone() }
+                        } else {
+                            ws_path.as_ref().clone()
+                        };
+
+                        match op {
+                            "write" => {
+                                if let (Some(rel_path), Some(content)) = (
+                                    json.get("path").and_then(|p| p.as_str()),
+                                    json.get("content").and_then(|c| c.as_str()),
+                                ) {
+                                    // Sanitize: prevent path traversal
+                                    let rel = rel_path.trim_start_matches('/');
+                                    if rel.contains("..") {
+                                        eprintln!("[file-sync] Rejected path traversal: {}", rel);
+                                        return;
+                                    }
+                                    let file_path = base.join(rel);
+                                    if let Some(parent) = file_path.parent() {
+                                        let _ = tokio::fs::create_dir_all(parent).await;
+                                    }
+                                    match tokio::fs::write(&file_path, content).await {
+                                        Ok(()) => println!("[file-sync] ✓ write {}", rel),
+                                        Err(e) => eprintln!("[file-sync] ✗ write {}: {}", rel, e),
+                                    }
+                                }
+                            }
+                            "delete" => {
+                                if let Some(rel_path) = json.get("path").and_then(|p| p.as_str()) {
+                                    let rel = rel_path.trim_start_matches('/');
+                                    if rel.contains("..") { return; }
+                                    let file_path = base.join(rel);
+                                    if file_path.is_dir() {
+                                        match tokio::fs::remove_dir_all(&file_path).await {
+                                            Ok(()) => println!("[file-sync] ✓ rmdir {}", rel),
+                                            Err(e) => eprintln!("[file-sync] ✗ rmdir {}: {}", rel, e),
+                                        }
+                                    } else {
+                                        match tokio::fs::remove_file(&file_path).await {
+                                            Ok(()) => println!("[file-sync] ✓ delete {}", rel),
+                                            Err(e) => eprintln!("[file-sync] ✗ delete {}: {}", rel, e),
+                                        }
+                                    }
+                                }
+                            }
+                            "rename" => {
+                                if let (Some(from), Some(to)) = (
+                                    json.get("from").and_then(|f| f.as_str()),
+                                    json.get("to").and_then(|t| t.as_str()),
+                                ) {
+                                    let from = from.trim_start_matches('/');
+                                    let to = to.trim_start_matches('/');
+                                    if from.contains("..") || to.contains("..") { return; }
+                                    let from_path = base.join(from);
+                                    let to_path = base.join(to);
+                                    if let Some(parent) = to_path.parent() {
+                                        let _ = tokio::fs::create_dir_all(parent).await;
+                                    }
+                                    match tokio::fs::rename(&from_path, &to_path).await {
+                                        Ok(()) => println!("[file-sync] ✓ rename {} → {}", from, to),
+                                        Err(e) => eprintln!("[file-sync] ✗ rename {} → {}: {}", from, to, e),
+                                    }
+                                }
+                            }
+                            "mkdir" => {
+                                if let Some(rel_path) = json.get("path").and_then(|p| p.as_str()) {
+                                    let rel = rel_path.trim_start_matches('/');
+                                    if rel.contains("..") { return; }
+                                    let dir_path = base.join(rel);
+                                    match tokio::fs::create_dir_all(&dir_path).await {
+                                        Ok(()) => println!("[file-sync] ✓ mkdir {}", rel),
+                                        Err(e) => eprintln!("[file-sync] ✗ mkdir {}: {}", rel, e),
+                                    }
+                                }
+                            }
+                            _ => {
+                                eprintln!("[file-sync] Unknown op: {}", op);
+                            }
+                        }
+                    }
+                    .boxed()
+                }));
             }
             else if label == "emulator-input" {
                 dc.on_message(Box::new(move |msg| {
@@ -4134,6 +4331,134 @@ fn system_command(program: &str) -> Command {
         cmd
     } else {
         Command::new(program)
+    }
+}
+
+/// Generate minimal LSP configuration files for standalone workspaces.
+///
+/// When a user has a single `main.py` or `index.js` without a project
+/// structure, the language server still needs certain config files to provide
+/// useful intellisense (completions, go-to-def, diagnostics).  This function
+/// creates them **only if they don't already exist** — existing configs are
+/// never overwritten.
+fn ensure_lsp_config(workspace: &std::path::Path, lang: &str) {
+    use std::io::Write;
+
+    match lang {
+        "javascript" | "js" => {
+            // typescript-language-server needs a jsconfig.json to treat the
+            // workspace as a JS project and resolve node_modules imports.
+            let config_path = workspace.join("jsconfig.json");
+            if !config_path.exists() && !workspace.join("tsconfig.json").exists() {
+                if let Ok(mut f) = std::fs::File::create(&config_path) {
+                    let _ = f.write_all(br#"{
+  "compilerOptions": {
+    "checkJs": true,
+    "module": "commonjs",
+    "target": "es2020",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "baseUrl": "."
+  },
+  "include": ["**/*.js", "**/*.jsx"],
+  "exclude": ["node_modules"]
+}
+"#);
+                    println!("[LSP-CONFIG] Created jsconfig.json for standalone JS workspace");
+                }
+            }
+        }
+        "typescript" | "ts" => {
+            let config_path = workspace.join("tsconfig.json");
+            if !config_path.exists() && !workspace.join("jsconfig.json").exists() {
+                if let Ok(mut f) = std::fs::File::create(&config_path) {
+                    let _ = f.write_all(br#"{
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "strict": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "baseUrl": "."
+  },
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules"]
+}
+"#);
+                    println!("[LSP-CONFIG] Created tsconfig.json for standalone TS workspace");
+                }
+            }
+        }
+        "go" => {
+            // gopls requires a go.mod to provide module-aware completions.
+            let go_mod = workspace.join("go.mod");
+            if !go_mod.exists() {
+                if let Ok(mut f) = std::fs::File::create(&go_mod) {
+                    let _ = f.write_all(b"module synthi-workspace\n\ngo 1.21\n");
+                    println!("[LSP-CONFIG] Created go.mod for standalone Go workspace");
+                }
+            }
+        }
+        "rust" => {
+            // rust-analyzer needs a Cargo.toml to index the project.
+            let cargo_toml = workspace.join("Cargo.toml");
+            if !cargo_toml.exists() {
+                // Find the main .rs file name for the binary target
+                let bin_name = std::fs::read_dir(workspace)
+                    .ok()
+                    .and_then(|entries| {
+                        entries.flatten()
+                            .find(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
+                            .map(|e| e.file_name().to_string_lossy().trim_end_matches(".rs").to_string())
+                    })
+                    .unwrap_or_else(|| "main".to_string());
+
+                if let Ok(mut f) = std::fs::File::create(&cargo_toml) {
+                    let _ = write!(f, r#"[package]
+name = "synthi-workspace"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "{}"
+path = "{}.rs"
+"#, bin_name, bin_name);
+                    println!("[LSP-CONFIG] Created Cargo.toml for standalone Rust workspace");
+                }
+            }
+        }
+        "dart" => {
+            let pubspec = workspace.join("pubspec.yaml");
+            if !pubspec.exists() {
+                if let Ok(mut f) = std::fs::File::create(&pubspec) {
+                    let _ = f.write_all(b"name: synthi_workspace\nenvironment:\n  sdk: '>=3.0.0 <4.0.0'\n");
+                    println!("[LSP-CONFIG] Created pubspec.yaml for standalone Dart workspace");
+                }
+            }
+        }
+        "lua" => {
+            // lua-language-server reads .luarc.json for project settings
+            let luarc = workspace.join(".luarc.json");
+            if !luarc.exists() {
+                if let Ok(mut f) = std::fs::File::create(&luarc) {
+                    let _ = f.write_all(br#"{
+  "runtime.version": "Lua 5.4",
+  "diagnostics.globals": ["vim"],
+  "workspace.library": [],
+  "workspace.checkThirdParty": false
+}
+"#);
+                    println!("[LSP-CONFIG] Created .luarc.json for standalone Lua workspace");
+                }
+            }
+        }
+        // Python: pylsp/pyright works well for standalone files without extra config.
+        // C/C++: compile_flags.txt is created in the cmd match arm below.
+        // Java: jdtls creates .jdtls-data itself.
+        _ => {}
     }
 }
 

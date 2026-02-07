@@ -34,6 +34,7 @@ export class CompilerClient {
         this.terminalChannel = null;
         this.emulatorInputChannel = null;
         this.lspChannel = null;
+        this.fileSyncChannel = null;
         this.readyPromise = null;
         this.currentStreams = [];
         this.logHandlers = new Set();
@@ -535,6 +536,8 @@ export class CompilerClient {
                 this.terminalChannel = this.pc.createDataChannel('terminal', { ordered: true });
                 // Emulator input backchannel (Android)
                 this.emulatorInputChannel = this.pc.createDataChannel('emulator-input', { ordered: true });
+                // File-sync channel: pushes file create/edit/delete/rename to worker disk
+                this.fileSyncChannel = this.pc.createDataChannel('file-sync', { ordered: true });
                 
                 this.compileChannel.onclose = () => {};
 
@@ -756,6 +759,82 @@ export class CompilerClient {
         return channel;
     }
 
+    // ── File-sync helpers ──────────────────────────────────────────
+    // These methods push file mutations from the browser to the worker's disk
+    // so the LSP server sees newly created/edited/renamed/deleted files.
+
+    /**
+     * Write (create or update) a file on the worker's disk.
+     * @param {string} relPath  Workspace-relative path, e.g. "src/utils.py"
+     * @param {string} content  Full file content
+     */
+    syncFile(relPath, content) {
+        if (!this.fileSyncChannel || this.fileSyncChannel.readyState !== 'open') return;
+        try {
+            this.fileSyncChannel.send(JSON.stringify({
+                op: 'write',
+                path: relPath,
+                content,
+                slug: this.slug || '',
+            }));
+        } catch (e) {
+            console.warn('[CompilerClient] file-sync write failed:', e.message);
+        }
+    }
+
+    /**
+     * Delete a file or directory on the worker's disk.
+     * @param {string} relPath  Workspace-relative path
+     */
+    deleteFile(relPath) {
+        if (!this.fileSyncChannel || this.fileSyncChannel.readyState !== 'open') return;
+        try {
+            this.fileSyncChannel.send(JSON.stringify({
+                op: 'delete',
+                path: relPath,
+                slug: this.slug || '',
+            }));
+        } catch (e) {
+            console.warn('[CompilerClient] file-sync delete failed:', e.message);
+        }
+    }
+
+    /**
+     * Rename/move a file on the worker's disk.
+     * @param {string} fromPath  Original workspace-relative path
+     * @param {string} toPath    New workspace-relative path
+     */
+    renameFile(fromPath, toPath) {
+        if (!this.fileSyncChannel || this.fileSyncChannel.readyState !== 'open') return;
+        try {
+            this.fileSyncChannel.send(JSON.stringify({
+                op: 'rename',
+                from: fromPath,
+                to: toPath,
+                slug: this.slug || '',
+            }));
+        } catch (e) {
+            console.warn('[CompilerClient] file-sync rename failed:', e.message);
+        }
+    }
+
+    /**
+     * Create a directory on the worker's disk.
+     * @param {string} relPath  Workspace-relative directory path
+     */
+    mkdirSync(relPath) {
+        if (!this.fileSyncChannel || this.fileSyncChannel.readyState !== 'open') return;
+        try {
+            this.fileSyncChannel.send(JSON.stringify({
+                op: 'mkdir',
+                path: relPath,
+                slug: this.slug || '',
+            }));
+        } catch (e) {
+            console.warn('[CompilerClient] file-sync mkdir failed:', e.message);
+        }
+    }
+
     async reconnect() {
         console.log('[CompilerClient] Forcing reconnection to clear WebRTC state...');
         
@@ -794,6 +873,7 @@ export class CompilerClient {
         this.terminalChannel = null;
         this.emulatorInputChannel = null;
         this.lspChannel = null;
+        this.fileSyncChannel = null;
         this.readyPromise = null;
         this._setStatus(CompilerStatus.IDLE);
         

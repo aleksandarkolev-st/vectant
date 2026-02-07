@@ -2,6 +2,7 @@ pub mod constants;
 pub mod crash_recovery;
 pub mod dep_installer;
 pub mod host_kv;
+pub mod import_scanner;
 pub mod lsp_installer;
 pub mod lsp_util;
 pub mod messages;

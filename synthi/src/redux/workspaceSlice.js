@@ -285,6 +285,16 @@ export const handleCreateItemThunk = createAsyncThunk(
             // Don't throw - item was still created in GCS, just may not appear until refresh
         }
         
+        // ── Sync new file/folder to worker disk for LSP cross-file resolution ──
+        try {
+            const client = getCompilerClient();
+            if (isFolder) {
+                client.mkdirSync(fullPath);
+            } else {
+                client.syncFile(fullPath, '');
+            }
+        } catch (_) { /* best-effort */ }
+        
         // Dispatch cleanup and revalidation
         dispatch(cancelUiAction());
         await dispatch(fetchFilesThunk(slug));
@@ -327,6 +337,11 @@ export const handleRenameItemThunk = createAsyncThunk(
         // Perform complex state update in reducer/sync action
         dispatch(renameItemStateUpdate({ item, newName, newPath }));
         
+        // ── Sync rename to worker disk so LSP sees the new path ──
+        try {
+            getCompilerClient().renameFile(item.path, newPath);
+        } catch (_) { /* best-effort */ }
+        
         dispatch(cancelUiAction());
         await dispatch(fetchFilesThunk(slug));
     }
@@ -349,6 +364,11 @@ export const deleteItemThunk = createAsyncThunk(
         const itemPath = getItemPathInBucket(item);
 
         await api.deleteItem(state.slug, itemPath);
+        
+        // ── Sync deletion to worker disk so LSP stops indexing the file ──
+        try {
+            getCompilerClient().deleteFile(item.path);
+        } catch (_) { /* best-effort */ }
         
         await dispatch(fetchFilesThunk(state.slug));
         

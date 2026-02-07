@@ -7,6 +7,15 @@
 //! executed, and a monorepo with `frontend/package.json` and
 //! `backend/requirements.txt` gets both installed too.
 //!
+//! **Build-system manifests** (CMakeLists.txt, Makefile, meson.build, Pipfile,
+//! poetry.lock) are now also detected and handled.
+//!
+//! **Import-based fallback**: when NO manifests are found at all, the
+//! `import_scanner` module is invoked to scan source files for
+//! import/require/include patterns and install detected third-party packages.
+//! This solves the "standalone file" problem (e.g. a single `main.py` with
+//! `import flask` but no `requirements.txt`).
+//!
 //! The installer is best-effort: individual failures are logged but never
 //! prevent the language server from starting.  A marker file
 //! (`.synthi_deps_installed`) is written after the first successful run so
@@ -37,10 +46,14 @@ const MAX_DEPTH: usize = 4;
 /// Scan `workspace` for every known manifest file and install dependencies
 /// for each one found.  Returns the number of successful installs.
 ///
+/// `lang` is the LSP language being started (e.g. "python", "cpp").  When no
+/// manifests are found, the import scanner uses this to detect third-party
+/// imports from source files and install them.
+///
 /// This function is **idempotent**: it writes a `.synthi_deps_installed`
 /// marker after the first run and becomes a no-op on subsequent calls
 /// unless `force` is `true`.
-pub async fn install_all_deps(workspace: &Path, force: bool) -> usize {
+pub async fn install_all_deps(workspace: &Path, lang: &str, force: bool) -> usize {
     let marker = workspace.join(".synthi_deps_installed");
     if !force && marker.exists() {
         println!("[LSP-DEPS] Dependencies already installed (marker exists), skipping.");
@@ -50,9 +63,10 @@ pub async fn install_all_deps(workspace: &Path, force: bool) -> usize {
     println!("[LSP-DEPS] Scanning workspace for manifest files...");
     let manifests = scan_manifests(workspace);
     if manifests.is_empty() {
-        println!("[LSP-DEPS] No manifest files found.");
-        let _ = std::fs::write(&marker, "done");
-        return 0;
+        println!("[LSP-DEPS] No manifest files found — falling back to import scanner.");
+        let _ = std::fs::write(&marker, "done-import-scan");
+        // Delegate to the import scanner for standalone-file workspaces
+        return super::import_scanner::scan_and_install(workspace, lang, force).await;
     }
 
     println!("[LSP-DEPS] Found {} manifest location(s):", manifests.len());
@@ -81,8 +95,43 @@ pub async fn install_all_deps(workspace: &Path, force: bool) -> usize {
     }
 
     println!("[LSP-DEPS] Dependency install complete: {}/{} succeeded.", ok_count, manifests.len());
+
+    // ── Standalone-file fallback for the CURRENT language ──────────
+    // If the manifests we found don't cover the language being started,
+    // a standalone file (e.g. a lone `main.py` with `import flask` in a
+    // workspace that only has a `package.json` for JS) would get zero
+    // dependency installation.  Run the import scanner for just that
+    // language as a safety net.
+    if !manifests_cover_lang(&manifests, lang) {
+        println!("[LSP-DEPS] No manifest covers lang='{}' — running import scanner as supplement.", lang);
+        let extra = super::import_scanner::scan_and_install(workspace, lang, false).await;
+        ok_count += extra;
+    }
+
     let _ = std::fs::write(&marker, format!("installed {} of {}", ok_count, manifests.len()));
     ok_count
+}
+
+/// Returns `true` if at least one manifest is relevant to `lang`.
+fn manifests_cover_lang(manifests: &[Manifest], lang: &str) -> bool {
+    manifests.iter().any(|m| match lang {
+        "python" | "py" => matches!(m.kind,
+            ManifestKind::Pip | ManifestKind::PipEditable |
+            ManifestKind::Pipfile | ManifestKind::Poetry | ManifestKind::Conda),
+        "javascript" | "js" | "typescript" | "ts" | "svelte" => matches!(m.kind,
+            ManifestKind::Npm | ManifestKind::Yarn | ManifestKind::Pnpm),
+        "go" => matches!(m.kind, ManifestKind::GoMod),
+        "rust" => matches!(m.kind, ManifestKind::Cargo),
+        "java" | "kotlin" | "kt" => matches!(m.kind, ManifestKind::Maven | ManifestKind::Gradle),
+        "csharp" | "cs" => matches!(m.kind, ManifestKind::Dotnet),
+        "ruby" | "rb" => matches!(m.kind, ManifestKind::Gemfile),
+        "php" => matches!(m.kind, ManifestKind::Composer),
+        "dart" => matches!(m.kind, ManifestKind::DartPub),
+        "elixir" | "ex" => matches!(m.kind, ManifestKind::MixExs),
+        "cpp" | "c" => matches!(m.kind,
+            ManifestKind::CMake | ManifestKind::Makefile | ManifestKind::Meson),
+        _ => false,
+    })
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -96,6 +145,9 @@ pub enum ManifestKind {
     Pnpm,
     Pip,
     PipEditable,
+    Pipfile,
+    Poetry,
+    Conda,
     GoMod,
     Cargo,
     Maven,
@@ -105,6 +157,9 @@ pub enum ManifestKind {
     Composer,
     DartPub,
     MixExs,
+    CMake,
+    Makefile,
+    Meson,
 }
 
 pub struct Manifest {
@@ -159,6 +214,10 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<Manifest>) {
             "requirements.txt"   => out.push(Manifest { kind: ManifestKind::Pip, dir: dir.to_path_buf() }),
             "pyproject.toml"     => out.push(Manifest { kind: ManifestKind::PipEditable, dir: dir.to_path_buf() }),
             "setup.py"           => out.push(Manifest { kind: ManifestKind::PipEditable, dir: dir.to_path_buf() }),
+            "Pipfile"            => out.push(Manifest { kind: ManifestKind::Pipfile, dir: dir.to_path_buf() }),
+            "poetry.lock"        => out.push(Manifest { kind: ManifestKind::Poetry, dir: dir.to_path_buf() }),
+            "environment.yml" | "environment.yaml"
+                                 => out.push(Manifest { kind: ManifestKind::Conda, dir: dir.to_path_buf() }),
             "go.mod"             => out.push(Manifest { kind: ManifestKind::GoMod, dir: dir.to_path_buf() }),
             "Cargo.toml"         => out.push(Manifest { kind: ManifestKind::Cargo, dir: dir.to_path_buf() }),
             "pom.xml"            => out.push(Manifest { kind: ManifestKind::Maven, dir: dir.to_path_buf() }),
@@ -168,6 +227,10 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<Manifest>) {
             "composer.json"      => out.push(Manifest { kind: ManifestKind::Composer, dir: dir.to_path_buf() }),
             "pubspec.yaml"       => out.push(Manifest { kind: ManifestKind::DartPub, dir: dir.to_path_buf() }),
             "mix.exs"            => out.push(Manifest { kind: ManifestKind::MixExs, dir: dir.to_path_buf() }),
+            "CMakeLists.txt"     => out.push(Manifest { kind: ManifestKind::CMake, dir: dir.to_path_buf() }),
+            "meson.build"        => out.push(Manifest { kind: ManifestKind::Meson, dir: dir.to_path_buf() }),
+            "Makefile" | "makefile" | "GNUmakefile"
+                                 => out.push(Manifest { kind: ManifestKind::Makefile, dir: dir.to_path_buf() }),
             _ => {
                 // .csproj / .sln
                 if let Some(ext) = path.extension() {
@@ -215,12 +278,24 @@ async fn run_install(m: &Manifest) -> Result<(), String> {
         ManifestKind::Pnpm => ("pnpm", vec!["install", "--frozen-lockfile"]),
         ManifestKind::Pip => (
             "pip",
-            vec!["install", "-r", "requirements.txt", "--quiet"],
+            vec!["install", "-r", "requirements.txt", "--quiet", "--break-system-packages"],
         ),
         ManifestKind::PipEditable => (
             "pip",
-            vec!["install", "-e", ".", "--quiet"],
+            vec!["install", "-e", ".", "--quiet", "--break-system-packages"],
         ),
+        ManifestKind::Pipfile => (
+            "pipenv",
+            vec!["install", "--deploy"],
+        ),
+        ManifestKind::Poetry => (
+            "poetry",
+            vec!["install", "--no-interaction"],
+        ),
+        ManifestKind::Conda => {
+            // `conda env update` installs into the base env from environment.yml
+            ("conda", vec!["env", "update", "--file", "environment.yml", "--prune", "-q"])
+        }
         ManifestKind::GoMod => ("go", vec!["mod", "download"]),
         ManifestKind::Cargo => ("cargo", vec!["fetch"]),
         ManifestKind::Maven => ("mvn", vec!["dependency:resolve", "-q"]),
@@ -243,6 +318,19 @@ async fn run_install(m: &Manifest) -> Result<(), String> {
         ),
         ManifestKind::DartPub => ("dart", vec!["pub", "get"]),
         ManifestKind::MixExs => ("mix", vec!["deps.get"]),
+        ManifestKind::CMake => {
+            // Generate compile_commands.json for clangd, then build deps
+            ("cmake", vec!["-B", "build", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON", "."])
+        }
+        ManifestKind::Makefile => {
+            // Use `bear` to generate compile_commands.json from Makefile
+            // (if bear isn't installed, fall back to just running make)
+            ("make", vec!["-j4"])
+        }
+        ManifestKind::Meson => {
+            // Meson generates compile_commands.json by default in build dir
+            ("meson", vec!["setup", "build"])
+        }
     };
 
     println!("[LSP-DEPS] Running: {} {} (in {})", program, args.join(" "), m.dir.display());

@@ -1213,9 +1213,17 @@ const EditorPanel = ({
             dispatch(updateContent(latestCodeRef.current));
         }
         if (activeFile && isUnsaved) dispatch(saveFileContentThunk());
+        // ── Push saved content to worker disk via file-sync channel ──
+        // This ensures the worker's filesystem (used by the LSP server for
+        // cross-file indexing) always has the latest content.
+        if (activeFile?.path && compilerClient) {
+            try {
+                compilerClient.syncFile(activeFile.path, latestCodeRef.current ?? code);
+            } catch (_) { /* best-effort */ }
+        }
         // Trigger HMR/Compilation on save
         if (onSave) onSave();
-    }, [activeFile, isUnsaved, dispatch, onSave]);
+    }, [activeFile, isUnsaved, dispatch, onSave, compilerClient, code]);
 
     // Auto-save
     useEffect(() => {
