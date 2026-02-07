@@ -356,6 +356,13 @@ export class CompilerClient {
                 try { msg = JSON.parse(event.data); } catch (_) { return; }
                 if (msg.type === 'answer' && msg.sdp) {
                     await this.pc.setRemoteDescription(new RTCSessionDescription({ type: msg.sdp_type || 'answer', sdp: msg.sdp }));
+                } else if (msg.type === 'offer' && msg.sdp) {
+                    // Worker-initiated renegotiation (e.g. new tracks added after initial connection)
+                    console.log('[CompilerClient] Received renegotiation offer from worker');
+                    await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: msg.sdp }));
+                    const answer = await this.pc.createAnswer();
+                    await this.pc.setLocalDescription(answer);
+                    this.ws.send(JSON.stringify({ type: 'offer', sdp: answer.sdp, sdp_type: answer.type }));
                 } else if (msg.type === 'candidate' && msg.candidate) {
                     try { await this.pc.addIceCandidate(msg.candidate); } catch (_) {}
                 }
