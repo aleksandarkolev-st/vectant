@@ -438,12 +438,12 @@ pub unsafe fn process_load_command(
             // This allows the module to write to KV during on_load
             // ============================================================
             let _module_slot_compiler = to_compiler_slot(module_slot);
-            // let mut has_host_kv_support = false;
+            let mut has_host_kv_support = false;
 
             if let Some(ref sid) = session_id {
                 // Read schema table from module
                 let schemas = read_schema_table(&new_lib, to_compiler_slot(module_slot));
-                // has_host_kv_support = !schemas.is_empty();
+                has_host_kv_support = !schemas.is_empty();
 
                 if !schemas.is_empty() {
                     eprintln!(
