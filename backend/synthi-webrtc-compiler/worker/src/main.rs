@@ -1230,6 +1230,88 @@ async fn wire_peer_channels(
                                                 });
                                                 return;
                                             }
+                                            
+                                            // Native Android (Java/Kotlin) emulator target
+                                            if target == "native-android-emulator" {
+                                                let session_id = req.session_id.clone().unwrap_or_else(|| {
+                                                    format!("sess-{}-{}", chrono::Utc::now().timestamp_millis(), uuid::Uuid::new_v4().as_u128() % 100000)
+                                                });
+                                                let project_root = req.project_root.clone();
+                                                let slug = req.slug.clone();
+                                                let log_clone = log.clone();
+                                                let pc_clone = pc_for_compile.clone();
+                                                tokio::spawn(async move {
+                                                    // Download/sync the workspace if slug is provided.
+                                                    let workspace_path = if let Some(s) = &slug {
+                                                        let local_dir = std::path::PathBuf::from("/synthi").join(s);
+                                                        let force_redownload = std::env::var("SYNTHI_MOBILE_FORCE_REDOWNLOAD")
+                                                            .ok()
+                                                            .map(|v| {
+                                                                let v = v.trim().to_ascii_lowercase();
+                                                                matches!(v.as_str(), "1" | "true" | "yes" | "y" | "on")
+                                                            })
+                                                            .unwrap_or(false);
+
+                                                        if force_redownload && local_dir.exists() {
+                                                            if let Err(e) = std::fs::remove_dir_all(&local_dir) {
+                                                                eprintln!(
+                                                                    "[NativeAndroid] Failed to clear existing workspace {}: {}",
+                                                                    local_dir.display(),
+                                                                    e
+                                                                );
+                                                            } else {
+                                                                eprintln!(
+                                                                    "[NativeAndroid] Cleared existing workspace {} (force redownload)",
+                                                                    local_dir.display()
+                                                                );
+                                                            }
+                                                        }
+
+                                                        match storage::download(&s, None).await {
+                                                            Ok(path) => {
+                                                                eprintln!("[NativeAndroid] Workspace ready at: {}", path.display());
+                                                                path
+                                                            },
+                                                            Err(e) => {
+                                                                eprintln!("[NativeAndroid] Failed to download workspace: {}", e);
+                                                                let payload = serde_json::json!({
+                                                                    "sessionId": session_id,
+                                                                    "type": "mobile-status",
+                                                                    "status": "error",
+                                                                    "message": format!("Failed to download workspace: {}", e),
+                                                                });
+                                                                let _ = log_clone.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                                                return;
+                                                            }
+                                                        }
+                                                    } else {
+                                                        eprintln!("[NativeAndroid] No slug provided, cannot download workspace");
+                                                        let payload = serde_json::json!({
+                                                            "sessionId": session_id,
+                                                            "type": "mobile-status",
+                                                            "status": "error",
+                                                            "message": "No workspace slug provided for native Android build",
+                                                        });
+                                                        let _ = log_clone.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                                                        return;
+                                                    };
+
+                                                    eprintln!("[NativeAndroid] Starting native Android build for session: {}", session_id);
+                                                    
+                                                    // Use the native Android job handler
+                                                    if let Err(e) = crate::android::job::handle_native_android_job_simple(
+                                                        log_clone,
+                                                        session_id.clone(),
+                                                        workspace_path,
+                                                        project_root,
+                                                        false, // debug build by default
+                                                        pc_clone,
+                                                    ).await {
+                                                        eprintln!("[Main] Native Android emulator job failed: {:?}", e);
+                                                    }
+                                                });
+                                                return;
+                                            }
                                         }
 
                                         // Default: native compile flow
