@@ -195,15 +195,33 @@ pub async fn handle_compile_request(
 
     // Determine modules to load
     let mut modules_to_load = Vec::new();
+    
+    // When NOT using AI split and the source is a standard main() app
+    // (no core_on_load/core_on_update exports), load as a single "main" module.
+    // The runner's "main" slot accepts entrypoint() which guardrails add for main() apps.
+    let is_blocking_main_app = !req.use_ai_split 
+        && !processed_core.contains("core_on_load")
+        && !processed_core.contains("core_on_update")
+        && (processed_core.contains("int main(") || processed_core.contains("entrypoint"));
+
     match rebuild_scope {
         RebuildScope::Both | RebuildScope::FullReload => {
-             modules_to_load.push(("core".to_string(), core_lib_path.clone()));
-             if !gui_lib_path.is_empty() {
-                 modules_to_load.push(("gui".to_string(), gui_lib_path.clone()));
+             if is_blocking_main_app {
+                 // Load user's code as "main" module (accepts entrypoint symbol)
+                 modules_to_load.push(("main".to_string(), core_lib_path.clone()));
+             } else {
+                 modules_to_load.push(("core".to_string(), core_lib_path.clone()));
+                 if !gui_lib_path.is_empty() {
+                     modules_to_load.push(("gui".to_string(), gui_lib_path.clone()));
+                 }
              }
         },
         RebuildScope::CoreOnly => {
-            modules_to_load.push(("core".to_string(), core_lib_path.clone()));
+            if is_blocking_main_app {
+                modules_to_load.push(("main".to_string(), core_lib_path.clone()));
+            } else {
+                modules_to_load.push(("core".to_string(), core_lib_path.clone()));
+            }
             // Core reload often requires GUI storage reload, but logic depends on runner capabilities
             // Often we reload both to be safe unless we are strictly preserving state.
             // For now, let's just reload core.
