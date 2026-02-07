@@ -397,6 +397,12 @@ pub async fn handle_runner_execution(
         let mut cmd = Command::new(runner_path);
         cmd.env("DISPLAY", &wsl_display_str)
            .env("LD_LIBRARY_PATH", std::env::var("LD_LIBRARY_PATH").unwrap_or_default())
+           // The worker already manages Xvfb, GStreamer, and video streaming.
+           // The runner only needs to load .so modules and execute them in-process.
+           // ProcessIsolated mode spawns a supervisor + child that conflicts with
+           // the worker's own Xvfb on :99 and uses binary IPC instead of the text
+           // protocol the worker sends.
+           .env("SYNTHI_UNSAFE_INPROCESS", "1")
            .stdin(Stdio::piped())
            .stdout(Stdio::piped())
            .stderr(Stdio::piped())
@@ -541,14 +547,35 @@ pub async fn handle_runner_execution(
 
     if let Some(state) = guard.as_mut() {
         if !existing_runner_can_hmr {
+            // Replace tracks on pre-allocated transceivers instead of adding new ones
+            let transceivers = ctx.pc.get_transceivers().await;
             if let Some(track) = &state.video_track {
-                println!("[Main] Adding video track to PeerConnection");
-                let _ = ctx.pc.add_track(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>).await?;
+                println!("[Main] Replacing video track on transceiver");
+                for t in &transceivers {
+                    if t.kind() == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video {
+                        let _ = t.sender().await.replace_track(Some(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>)).await;
+                        break;
+                    }
+                }
             }
             if let Some(track) = &state.audio_track {
-                println!("[Main] Adding audio track to PeerConnection");
-                let _ = ctx.pc.add_track(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>).await?;
+                println!("[Main] Replacing audio track on transceiver");
+                for t in &transceivers {
+                    if t.kind() == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Audio {
+                        let _ = t.sender().await.replace_track(Some(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>)).await;
+                        break;
+                    }
+                }
             }
+
+            // Signal the frontend to show the GUI widget
+            let gui_start = serde_json::json!({
+                "type": "run-gui-start",
+                "sessionId": session_id,
+                "width": state.width,
+                "height": state.height,
+            });
+            let _ = ctx.log_dc.send_text(gui_start.to_string()).await;
         }
 
         // Load Modules

@@ -211,15 +211,25 @@ fn main() {
         eprintln!("[Runner] Warning: Failed to install crash handlers: {}", e);
     }
 
-    // Spawn Xvfb and setup X11
+    // Setup X11 — reuse existing Xvfb if DISPLAY is already set (worker manages it),
+    // otherwise spawn our own.
     #[cfg(target_os = "linux")]
     let (_xvfb_proc, x11_conn, _x11_screen_num, x11_root) = {
-        let mut cmd = Command::new("Xvfb");
-        cmd.args(&[":99", "-screen", "0", "800x600x24"]);
-        let child = cmd.spawn().ok();
-        thread::sleep(Duration::from_millis(100));
-        std::env::set_var("DISPLAY", ":99");
-        let (conn, screen_num) = x11rb::connect(Some(":99")).expect("Failed to connect to X11");
+        let display = std::env::var("DISPLAY").unwrap_or_default();
+        let child = if display.is_empty() {
+            eprintln!("[Runner] No DISPLAY set, spawning Xvfb on :99");
+            let mut cmd = Command::new("Xvfb");
+            cmd.args(&[":99", "-screen", "0", "800x600x24"]);
+            let c = cmd.spawn().ok();
+            thread::sleep(Duration::from_millis(100));
+            std::env::set_var("DISPLAY", ":99");
+            c
+        } else {
+            eprintln!("[Runner] Reusing existing DISPLAY={}", display);
+            None
+        };
+        let disp_str = std::env::var("DISPLAY").unwrap_or_else(|_| ":99".to_string());
+        let (conn, screen_num) = x11rb::connect(Some(&disp_str)).expect("Failed to connect to X11");
         let root = conn.setup().roots[screen_num].root;
         (child, conn, screen_num, root)
     };
