@@ -7,6 +7,8 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
+use std::collections::HashMap;
+use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType};
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
 
@@ -514,19 +516,46 @@ pub async fn handle_runner_execution(
 
     if let Some(state) = guard.as_mut() {
         if !existing_runner_can_hmr {
-            if let Some(track) = &state.video_track {
-                println!("[Main] Adding video track to PeerConnection");
-                let _ = ctx
-                    .pc
-                    .add_track(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>)
-                    .await?;
+            // Bind tracks to existing transceivers (created during PeerConnection setup)
+            // This avoids the need for SDP renegotiation after the initial offer/answer
+            let transceivers = ctx.pc.get_transceivers().await;
+            for t in &transceivers {
+                if t.kind() == RTPCodecType::Video {
+                    if let Some(track) = &state.video_track {
+                        println!("[Main] Binding video track to existing transceiver");
+                        let sender = t.sender().await;
+                        let _ = sender
+                            .replace_track(Some(
+                                Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>
+                            ))
+                            .await;
+                    }
+                } else if t.kind() == RTPCodecType::Audio {
+                    if let Some(track) = &state.audio_track {
+                        println!("[Main] Binding audio track to existing transceiver");
+                        let sender = t.sender().await;
+                        let _ = sender
+                            .replace_track(Some(
+                                Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>
+                            ))
+                            .await;
+                    }
+                }
             }
-            if let Some(track) = &state.audio_track {
-                println!("[Main] Adding audio track to PeerConnection");
+
+            // Notify frontend that GUI streaming has started so DraggableVideoWidget renders
+            if req.is_gui {
+                let gui_start_payload = serde_json::json!({
+                    "type": "run-gui-start",
+                    "width": state.width,
+                    "height": state.height,
+                    "sessionId": session_id.clone()
+                });
+                println!("[Main] Sending run-gui-start to frontend ({}x{})", state.width, state.height);
                 let _ = ctx
-                    .pc
-                    .add_track(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>)
-                    .await?;
+                    .log_dc
+                    .send_text(serde_json::to_string(&gui_start_payload).unwrap_or_default())
+                    .await;
             }
         }
 
@@ -549,8 +578,10 @@ pub async fn handle_runner_execution(
                 if let Err(e) = stdin.flush().await {
                     eprintln!("Failed to flush runner stdin: {}", e);
                 }
-                // Give it a moment to load
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                // Wait for the supervisor to process the command before sending the next one.
+                // The supervisor reads text from stdin, converts to binary IPC, and forwards
+                // to the worker child. 500ms gives adequate time for this round-trip.
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             }
         }
 
