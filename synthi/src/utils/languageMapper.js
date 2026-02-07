@@ -57,6 +57,36 @@ export const getMonacoLanguage = (fileName) => {
     // Rust
     'rs': 'rust',
     
+    // Kotlin
+    'kt': 'kotlin',
+    'kts': 'kotlin',
+    
+    // Dart
+    'dart': 'dart',
+    
+    // Zig
+    'zig': 'zig',
+    
+    // Lua
+    'lua': 'lua',
+    
+    // Elixir
+    'ex': 'elixir',
+    'exs': 'elixir',
+    
+    // Svelte
+    'svelte': 'svelte',
+    
+    // Swift
+    'swift': 'swift',
+    
+    // Scala
+    'scala': 'scala',
+    'sc': 'scala',
+    
+    // Haskell
+    'hs': 'haskell',
+    
     // Shell
     'sh': 'shell',
     'bash': 'shell',
