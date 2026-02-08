@@ -720,12 +720,14 @@ const EditorPanel = ({
                 cargo: {
                     // Don't run `cargo check` on save — it fails without cargo
                     buildScripts: { enable: false },
-                    // Sysroot discovery: let RA figure it out from rustc
-                    sysroot: 'discover',
                 },
+                // Disable check-on-save (requires cargo)
                 checkOnSave: false,
                 // Disable proc-macro expansion (requires cargo)
                 procMacro: { enable: false },
+                // Tell RA not to search for a Cargo.toml above the workspace
+                // — prevents it from picking up unrelated projects in parent dirs.
+                linkedProjects: [],
             } : undefined;
 
             const languageClient = new SynthiLanguageClient({

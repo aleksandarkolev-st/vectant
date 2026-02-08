@@ -4412,25 +4412,61 @@ path = "{}.rs"
                 // This lets RA provide completions, hover, go-to-def without cargo.
                 let rp_json = workspace.join("rust-project.json");
                 if !rp_json.exists() {
-                    // Try to find sysroot_src from rustc
-                    let sysroot_src = std::process::Command::new("rustc")
-                        .args(["--print", "sysroot"])
-                        .output()
-                        .ok()
-                        .and_then(|o| {
-                            if o.status.success() {
-                                let sr = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                                let src_path = std::path::PathBuf::from(&sr)
-                                    .join("lib/rustlib/src/rust/library");
-                                if src_path.exists() {
-                                    Some(src_path.to_string_lossy().to_string())
+                    // Try to find sysroot_src from rustc.
+                    // Check multiple known locations — system rustc (apt) installs
+                    // rust-src to different paths than rustup.
+                    let sysroot_src = {
+                        // 1. Ask rustc for its sysroot
+                        let sysroot = std::process::Command::new("rustc")
+                            .args(["--print", "sysroot"])
+                            .output()
+                            .ok()
+                            .and_then(|o| {
+                                if o.status.success() {
+                                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
                                 } else {
                                     None
                                 }
+                            })
+                            .unwrap_or_else(|| "/usr".to_string());
+
+                        // 2. Check common library source locations
+                        let candidates = [
+                            format!("{}/lib/rustlib/src/rust/library", sysroot),
+                            // Debian/Ubuntu system rust-src package
+                            "/usr/src/rustc-*/library".to_string(),
+                            format!("{}/lib/rustlib/src/rust", sysroot),
+                        ];
+
+                        let mut found: Option<String> = None;
+                        for candidate in &candidates {
+                            if candidate.contains('*') {
+                                // Glob expansion for system packages
+                                if let Ok(mut entries) = std::fs::read_dir("/usr/src") {
+                                    if let Some(entry) = entries.flatten().find(|e| {
+                                        let name = e.file_name();
+                                        let n = name.to_string_lossy();
+                                        n.starts_with("rustc-") && e.path().join("library").exists()
+                                    }) {
+                                        found = Some(entry.path().join("library").to_string_lossy().to_string());
+                                        break;
+                                    }
+                                }
                             } else {
-                                None
+                                let p = std::path::PathBuf::from(candidate);
+                                if p.exists() {
+                                    found = Some(p.to_string_lossy().to_string());
+                                    break;
+                                }
                             }
-                        });
+                        }
+
+                        if found.is_none() {
+                            println!("[LSP-CONFIG] rust-src not found at any known location, RA will have no stdlib completions");
+                            println!("[LSP-CONFIG] Searched: {:?}", candidates);
+                        }
+                        found
+                    };
 
                     // Collect all .rs files as crate root modules
                     let rs_files: Vec<String> = std::fs::read_dir(workspace)

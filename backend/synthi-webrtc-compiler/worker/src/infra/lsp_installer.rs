@@ -71,11 +71,16 @@ pub async fn ensure_lsp_installed(lang: &str, workspace: &Path) -> Result<&'stat
             "command -v cargo >/dev/null 2>&1 || \
              (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable 2>/dev/null && \
               . \"$HOME/.cargo/env\" 2>/dev/null || true)",
-            // Step 2: Install rust-analyzer component (preferred) or download binary
+            // Step 2: Install rust-src — required for stdlib completions (Vec, String, etc.).
+            // Also install rust-analyzer as a rustup component (preferred).
             ". \"$HOME/.cargo/env\" 2>/dev/null; \
-             rustup component add rust-analyzer 2>/dev/null || \
-             curl -L https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-unknown-linux-gnu.gz | \
-             gunzip > /usr/local/bin/rust-analyzer && chmod +x /usr/local/bin/rust-analyzer",
+             rustup component add rust-src rust-analyzer 2>/dev/null || true",
+            // Step 3: Fallback — if rustup isn't available, try system package or binary download.
+            // Also try installing rust-src via apt for system rustc installs.
+            "command -v rust-analyzer >/dev/null 2>&1 || \
+             (apt-get update -qq && apt-get install -y -qq rust-src 2>/dev/null || true; \
+              curl -L https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-unknown-linux-gnu.gz | \
+              gunzip > /usr/local/bin/rust-analyzer && chmod +x /usr/local/bin/rust-analyzer)",
         ]),
         "python" | "py" => ("pylsp", vec![
             // Prefer OS package to avoid PEP 668 restrictions
