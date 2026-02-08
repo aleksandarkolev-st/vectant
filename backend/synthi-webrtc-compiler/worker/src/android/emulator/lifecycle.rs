@@ -149,7 +149,7 @@ impl EmulatorSession {
             "-cores",
             &self.core.config.cores.to_string(),
             "-read-only",        // Don't modify system image
-            "-no-snapshot-save", // Don't save snapshots
+            // "-no-snapshot-save", // Allow snapshot saving for faster future boots
             // Enable quick boot (re-enable snapshot load)
             // "-no-snapshot-load", 
             "-no-skin",          // Disable device skin/frame (removes side toolbar)

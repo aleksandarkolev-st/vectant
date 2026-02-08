@@ -124,6 +124,7 @@ export class CompilerClient {
         if (['cpp', 'cc', 'cxx', 'hpp', 'h'].includes(ext)) return 'cpp';
         if (ext === 'rs') return 'rust';
         if (ext === 'ts' || ext === 'tsx') return 'ts';
+        if (ext === 'dart') return 'dart';
         // Note: js/jsx are intentionally not mapped here - they need special handling
         // for React Native vs browser environments
         return null;
@@ -895,8 +896,17 @@ export class CompilerClient {
         // Auto-detect React Native from source if no target specified and file is JS/JSX/TSX
         const ext = (filename || '').split('.').pop().toLowerCase();
         const isJsxFile = ['js', 'jsx', 'tsx', 'ts'].includes(ext);
+        const isDartFile = ext === 'dart';
         
         let effectiveTarget = target;
+        
+        // Auto-detect Flutter projects from .dart files
+        if (!effectiveTarget && isDartFile) {
+            effectiveTarget = 'flutter-android-emulator';
+            console.log('[CompilerClient] Auto-detected Flutter project from .dart file');
+        }
+        
+        // Auto-detect React Native from source
         if (!effectiveTarget && isJsxFile && this._detectReactNativeInSource(source)) {
             effectiveTarget = 'react-native-emulator';
             console.log('[CompilerClient] Auto-detected React Native project from source imports');
@@ -907,7 +917,8 @@ export class CompilerClient {
         // The reset should only happen on explicit Stop/Restart actions if needed.
 
         // For mobile targets, language detection is optional
-        const lang = effectiveTarget === 'react-native-emulator' ? (language || 'javascript') : (language || this._mapLanguage(filename));
+        const isMobileTarget = effectiveTarget === 'react-native-emulator' || effectiveTarget === 'flutter-android-emulator';
+        const lang = isMobileTarget ? (language || (isDartFile ? 'dart' : 'javascript')) : (language || this._mapLanguage(filename));
         if (!effectiveTarget && !lang) throw new SynthiException('Unsupported language for compilation', 'The file extension is not supported by the compiler.');
         // Generate a session id early so we can scope client-side WebRTC logs
         // (answer/ontrack) that occur during the initial connect/negotiation.
@@ -920,7 +931,7 @@ export class CompilerClient {
 
         // If a mobile session is already running, cancel it first and wait briefly
         // to allow the worker to teardown pipelines before starting a new run.
-        if (effectiveTarget === 'react-native-emulator') {
+        if (isMobileTarget) {
             const previousSessionId = this.activeSessionId;
             if (previousSessionId && previousSessionId !== sessionId) {
                 console.log('[CompilerClient] Waiting for previous session to cancel before starting new compile:', previousSessionId);

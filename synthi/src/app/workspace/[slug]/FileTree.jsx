@@ -64,12 +64,12 @@ const FileTreeView = ({
       ? (activeFile?.isFolder ? activeFile.path : (findParentFolderPath(files, activeFile.path) ?? null))
       : undefined;
     
-    // Helper for context menu (Inefficient but retained)
-    const findNodeByName = (nodes, name) => {
+    // Helper for context menu - uses unique path for correct identification
+    const findNodeByPath = (nodes, path) => {
         const stack = [...nodes];
         while (stack.length) {
             const n = stack.shift();
-            if (n.name === name) return n;
+            if (n.path === path) return n;
             if (n.isFolder && n.children) stack.push(...n.children);
         }
         return null;
@@ -126,10 +126,10 @@ const FileTreeView = ({
     };
     
     const onOpenMenu = (e) => {
-        const el = e?.target?.closest('[data-node-name]');
+        const el = e?.target?.closest('[data-node-path-id]');
         if (el) {
-            const nodeName = el.getAttribute('data-node-name');
-            setContextTarget(findNodeByName(files, nodeName));
+            const nodePath = el.getAttribute('data-node-path-id');
+            setContextTarget(findNodeByPath(files, nodePath));
         } else {
             setContextTarget(null);
         }

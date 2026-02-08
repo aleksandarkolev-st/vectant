@@ -24,18 +24,18 @@ pub enum BuildTarget {
     Typescript,
     Python,
 
-    // Mobile emulator target - builds APK and runs in Android emulator
+    // Mobile emulator targets - builds APK and runs in Android emulator
     ReactNativeAndroidEmulator,
-    // Future: Native Android (Java/Kotlin)
-    // NativeAndroidEmulator,
+    FlutterAndroidEmulator,
 }
 
 impl BuildTarget {
     /// Returns the required OS for this build target
     pub fn required_os(&self) -> RequiredOS {
         match self {
-            // Android emulator requires Linux (headless, software rendering)
-            BuildTarget::ReactNativeAndroidEmulator => RequiredOS::Linux,
+            // Android emulators require Linux (headless, software rendering)
+            BuildTarget::ReactNativeAndroidEmulator
+            | BuildTarget::FlutterAndroidEmulator => RequiredOS::Linux,
             // Everything else can run on any supported OS
             _ => RequiredOS::Any,
         }
@@ -46,8 +46,9 @@ impl BuildTarget {
         match self {
             BuildTarget::CppNative | BuildTarget::Typescript | BuildTarget::Python => 2,
             BuildTarget::RustNative => 4,
-            // Emulator requires 6GB (emulator process + app + Gradle + node)
-            BuildTarget::ReactNativeAndroidEmulator => 6,
+            // Emulator requires 6GB (emulator process + app + build tools)
+            BuildTarget::ReactNativeAndroidEmulator
+            | BuildTarget::FlutterAndroidEmulator => 6,
         }
     }
 
@@ -58,6 +59,8 @@ impl BuildTarget {
             BuildTarget::RustNative => 3,
             // Emulator needs: system image (2GB) + AVD (2GB) + node_modules (1GB) + Gradle (3GB)
             BuildTarget::ReactNativeAndroidEmulator => 10,
+            // Flutter: system image (2GB) + AVD (2GB) + pub cache (1GB) + Gradle (3GB)
+            BuildTarget::FlutterAndroidEmulator => 10,
         }
     }
 
@@ -70,6 +73,8 @@ impl BuildTarget {
             BuildTarget::Python => 5,
             // Emulator: boot (~120s) + npm install (~60s) + gradle (~120s) + app launch (~30s)
             BuildTarget::ReactNativeAndroidEmulator => 330,
+            // Flutter: boot (~120s) + pub get (~30s) + build (~180s) + app launch (~30s)
+            BuildTarget::FlutterAndroidEmulator => 360,
         }
     }
 
@@ -85,13 +90,17 @@ impl BuildTarget {
             ],
 
             // Emulator execution requires the emulator capability class
-            BuildTarget::ReactNativeAndroidEmulator => &[CapabilityClass::LinuxReactNativeEmulator],
+            BuildTarget::ReactNativeAndroidEmulator
+            | BuildTarget::FlutterAndroidEmulator => &[CapabilityClass::LinuxReactNativeEmulator],
         }
     }
 
     /// Whether this is a mobile/emulator target
     pub fn is_mobile_target(&self) -> bool {
-        matches!(self, BuildTarget::ReactNativeAndroidEmulator)
+        matches!(
+            self,
+            BuildTarget::ReactNativeAndroidEmulator | BuildTarget::FlutterAndroidEmulator
+        )
     }
 }
 

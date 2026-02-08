@@ -348,6 +348,7 @@ useEffect(() => {
       <div
         ref={fileContentRef}
         data-node-path={item.path}
+        data-node-path-id={item.path}
         data-node-name={item.name}
         draggable
         onDragStart={handleDragStart}
