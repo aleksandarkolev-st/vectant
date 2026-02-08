@@ -661,29 +661,48 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
 
     // Parse the response: extract "result" string and parse the LLM JSON within it.
     // The AI engine wraps the LLM output as { "result": "<json string>", "lang": "cpp" }.
+    // The LLM may return explanation text BEFORE a ```json code fence, so we must
+    // search for the fence anywhere in the text, not just at the start.
     let res = if let Some(result_str) = raw_response.get("result").and_then(|r| r.as_str()) {
-        // Strip markdown code fences if the LLM wrapped the JSON in ```json ... ```
         let cleaned = result_str.trim();
-        let cleaned = if cleaned.starts_with("```") {
+
+        // Strategy: find the LAST ```json (or ```) fenced block in the text.
+        // LLMs often emit explanation prose before the JSON code fence.
+        let json_str = if let Some(fence_start) = cleaned.rfind("```json")
+            .or_else(|| cleaned.rfind("```\n{"))
+        {
+            // Skip past the opening fence line (```json\n)
+            let after_fence = &cleaned[fence_start..];
+            let content_start = after_fence.find('\n').map(|p| p + 1).unwrap_or(7);
+            let inner = &after_fence[content_start..];
+            // Find the closing ``` fence
+            if let Some(close) = inner.find("```") {
+                inner[..close].trim()
+            } else {
+                // No closing fence — take everything after the opening
+                inner.trim()
+            }
+        } else if cleaned.starts_with("```") {
+            // Entire response is a single fenced block (no lang tag)
             let without_opening = if let Some(pos) = cleaned.find('\n') {
                 &cleaned[pos + 1..]
             } else {
-                cleaned.trim_start_matches("```json").trim_start_matches("```")
+                cleaned.trim_start_matches("```")
             };
             without_opening.trim_end_matches("```").trim()
         } else {
             cleaned
         };
 
-        // Find the JSON object boundaries (in case there's surrounding text)
-        let json_str = if let Some(start) = cleaned.find('{') {
-            if let Some(end) = cleaned.rfind('}') {
-                &cleaned[start..=end]
+        // Within the extracted block, find the outermost JSON object { ... }
+        let json_str = if let Some(start) = json_str.find('{') {
+            if let Some(end) = json_str.rfind('}') {
+                &json_str[start..=end]
             } else {
-                cleaned
+                json_str
             }
         } else {
-            cleaned
+            json_str
         };
 
         match serde_json::from_str::<serde_json::Value>(json_str) {
@@ -692,7 +711,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
                 parsed
             }
             Err(e) => {
-                eprintln!("[AI Split] Failed to parse LLM JSON from result: {}. Raw: {}", e, &result_str[..result_str.len().min(200)]);
+                eprintln!("[AI Split] Failed to parse LLM JSON from result: {}. Raw prefix: {}", e, &result_str[..result_str.len().min(300)]);
                 anyhow::bail!("AI split returned unparseable result: {}", e);
             }
         }
