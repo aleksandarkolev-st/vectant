@@ -74,19 +74,21 @@ export const findFirstFile = (nodes) => {
     return null;
 };
 
+// TO DO: MERGE findFileInTree and findFolderInTree into a single function with a type parameter.
+
 /**
- * Recursively finds a file by full path for existence check (Creation validation).
+ * Recursively finds a file by name for existence check (Creation validation).
  * @param {Array<Node>} nodes - File tree nodes.
- * @param {string} filePath - Full path of the file to find.
+ * @param {string} fileName - Name of the file to find.
  * @returns {Object | null} The file node found.
  */
-export const findFileInTree = (nodes, filePath) => {
+export const findFileInTree = (nodes, fileName) => {
     for (const node of nodes) {
-        if (!node.isFolder && node.path === filePath) {
+        if (!node.isFolder && node.name === fileName) {
             return node;
         }
         if (node.isFolder && node.children) {
-            const found = findFileInTree(node.children, filePath);
+            const found = findFileInTree(node.children, fileName);
             if (found) return found;
         }
     }
@@ -95,18 +97,18 @@ export const findFileInTree = (nodes, filePath) => {
 
 
 /**
- * Recursively finds a folder by full path for existence check (Creation validation).
+ * Recursively finds a folder by name for existence check (Creation validation).
  * @param {Array<Node>} nodes - File tree nodes.
- * @param {string} folderPath - Full path of the folder to find.
+ * @param {string} folderName - Name of the folder to find.
  * @returns {Object | null} The folder node found.
  */
-export const findFolderInTree = (nodes, folderPath) => {
+export const findFolderInTree = (nodes, folderName) => {
     for (const node of nodes) {
-        if (node.isFolder && node.path === folderPath) {
+        if (node.isFolder && node.name === folderName) {
             return node;
         }
         if (node.isFolder && node.children) {
-            const found = findFolderInTree(node.children, folderPath);
+            const found = findFolderInTree(node.children, folderName);
             if (found) return found;
         }
     }
