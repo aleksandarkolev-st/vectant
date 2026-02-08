@@ -114,6 +114,7 @@ pub async fn compile_gui(
 
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);
+                    eprintln!("[CompileGUI] g++ FAILED:\n{}", stderr);
                     let payload = serde_json::json!({
                         "sessionId": session_id.clone(),
                         "status": "done",
