@@ -740,21 +740,27 @@ const EditorPanel = ({
                         // natively — didOpen, didChange, didClose, didSave are all passed
                         // through to the server via next().  This enables hover, definition,
                         // references, rename, code actions, and signature help.
-                        didOpen: (data, next) => {
-                            console.log('[LSP] middleware didOpen', data.textDocument?.uri);
-                            autoDidOpenUris.add(data.textDocument?.uri);
-                            return next(data);
+                        //
+                        // NOTE: The middleware receives a TextDocument object (with .uri),
+                        // NOT DidOpenTextDocumentParams (with .textDocument.uri).
+                        didOpen: (document, next) => {
+                            const uri = document.uri?.toString?.() ?? document.uri;
+                            console.log('[LSP] middleware didOpen', uri);
+                            autoDidOpenUris.add(uri);
+                            return next(document);
                         },
                         didChange: (data, next) => {
                             return next(data);
                         },
-                        didClose: (data, next) => {
-                            console.log('[LSP] middleware didClose', data.textDocument?.uri);
-                            return next(data);
+                        didClose: (document, next) => {
+                            const uri = document.uri?.toString?.() ?? document.uri;
+                            console.log('[LSP] middleware didClose', uri);
+                            return next(document);
                         },
-                        didSave: (data, next) => {
-                            console.log('[LSP] middleware didSave', data.textDocument?.uri);
-                            return next(data);
+                        didSave: (document, next) => {
+                            const uri = document.uri?.toString?.() ?? document.uri;
+                            console.log('[LSP] middleware didSave', uri);
+                            return next(document);
                         },
                         // P0: Let monaco-languageclient's built-in bridge handle completions
                         // for better isIncomplete handling and fewer edge cases.
