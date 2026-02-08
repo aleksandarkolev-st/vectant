@@ -555,9 +555,18 @@ const EditorPanel = ({
         // notification" and — in some servers like Eclipse JDT.LS —
         // can corrupt internal request tracking, breaking all
         // subsequent LSP features (completion, hover, diagnostics).
+        //
+        // KEY INSIGHT: Even with tracking, there's a network race —
+        // the response can be in-flight over WebRTC while the client
+        // sends the cancel.  We solve this by **debouncing** cancels:
+        // hold each $/cancelRequest for a short window (150ms).  If
+        // the response arrives in that window the cancel is dropped.
+        // If not, we send it normally so the server can stop work.
         const _completedRequestIds = new Set();
         const _pendingRequestIds = new Set();
+        const _pendingCancelTimers = new Map(); // cancelId → timerId
         let _cancelFilterStats = { filtered: 0, passed: 0 };
+        const CANCEL_DEBOUNCE_MS = 150;
         const socket = {
             send: (content) => {
                 try {
@@ -566,16 +575,33 @@ const EditorPanel = ({
                     if (msg.id !== undefined && msg.method && msg.method !== '$/cancelRequest') {
                         _pendingRequestIds.add(msg.id);
                     }
-                    // Filter $/cancelRequest for already-completed requests
+                    // Debounce $/cancelRequest — hold for CANCEL_DEBOUNCE_MS
+                    // to give in-flight responses time to arrive.
                     if (msg.method === '$/cancelRequest' && msg.params?.id !== undefined) {
                         const cancelId = msg.params.id;
+                        // Already completed — drop immediately
                         if (_completedRequestIds.has(cancelId)) {
                             _completedRequestIds.delete(cancelId);
                             _pendingRequestIds.delete(cancelId);
                             _cancelFilterStats.filtered++;
-                            console.debug(`[LSP] Suppressed stale $/cancelRequest for completed request ${cancelId} (${_cancelFilterStats.filtered} filtered total)`);
                             return;
                         }
+                        // Not yet completed — debounce: wait for response
+                        const timerId = setTimeout(() => {
+                            _pendingCancelTimers.delete(cancelId);
+                            // Re-check after the debounce window
+                            if (_completedRequestIds.has(cancelId)) {
+                                _completedRequestIds.delete(cancelId);
+                                _pendingRequestIds.delete(cancelId);
+                                _cancelFilterStats.filtered++;
+                            } else {
+                                // Response still hasn't arrived — send the cancel
+                                _cancelFilterStats.passed++;
+                                rawSocket.send(content);
+                            }
+                        }, CANCEL_DEBOUNCE_MS);
+                        _pendingCancelTimers.set(cancelId, timerId);
+                        return; // don't send yet
                     }
                 } catch (_e) { /* not JSON, pass through */ }
                 rawSocket.send(content);
@@ -588,6 +614,14 @@ const EditorPanel = ({
                         if (msg.id !== undefined && !msg.method) {
                             _pendingRequestIds.delete(msg.id);
                             _completedRequestIds.add(msg.id);
+                            // If a cancel for this ID is pending in debounce,
+                            // clear it — no need to send it anymore.
+                            const pendingTimer = _pendingCancelTimers.get(msg.id);
+                            if (pendingTimer !== undefined) {
+                                clearTimeout(pendingTimer);
+                                _pendingCancelTimers.delete(msg.id);
+                                _cancelFilterStats.filtered++;
+                            }
                             // Bound memory — keep only the last 500 IDs
                             if (_completedRequestIds.size > 500) {
                                 const iter = _completedRequestIds.values();
@@ -602,7 +636,14 @@ const EditorPanel = ({
             },
             onError: rawSocket.onError.bind(rawSocket),
             onClose: rawSocket.onClose.bind(rawSocket),
-            dispose: rawSocket.dispose.bind(rawSocket),
+            dispose: () => {
+                // Clean up any pending cancel timers
+                for (const timerId of _pendingCancelTimers.values()) {
+                    clearTimeout(timerId);
+                }
+                _pendingCancelTimers.clear();
+                rawSocket.dispose();
+            },
         };
         const reader = new WebSocketMessageReader(socket);
         const writer = new WebSocketMessageWriter(socket);
