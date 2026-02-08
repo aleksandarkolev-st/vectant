@@ -559,14 +559,14 @@ const EditorPanel = ({
         // KEY INSIGHT: Even with tracking, there's a network race —
         // the response can be in-flight over WebRTC while the client
         // sends the cancel.  We solve this by **debouncing** cancels:
-        // hold each $/cancelRequest for a short window (150ms).  If
+        // hold each $/cancelRequest for a short window (400ms).  If
         // the response arrives in that window the cancel is dropped.
         // If not, we send it normally so the server can stop work.
         const _completedRequestIds = new Set();
         const _pendingRequestIds = new Set();
         const _pendingCancelTimers = new Map(); // cancelId → timerId
         let _cancelFilterStats = { filtered: 0, passed: 0 };
-        const CANCEL_DEBOUNCE_MS = 150;
+        const CANCEL_DEBOUNCE_MS = 400;
         const socket = {
             send: (content) => {
                 try {
@@ -590,12 +590,15 @@ const EditorPanel = ({
                         const timerId = setTimeout(() => {
                             _pendingCancelTimers.delete(cancelId);
                             // Re-check after the debounce window
-                            if (_completedRequestIds.has(cancelId)) {
+                            if (_completedRequestIds.has(cancelId) || !_pendingRequestIds.has(cancelId)) {
+                                // Response arrived during debounce, or request
+                                // was already cleaned up — drop the cancel.
                                 _completedRequestIds.delete(cancelId);
                                 _pendingRequestIds.delete(cancelId);
                                 _cancelFilterStats.filtered++;
                             } else {
                                 // Response still hasn't arrived — send the cancel
+                                _pendingRequestIds.delete(cancelId);
                                 _cancelFilterStats.passed++;
                                 rawSocket.send(content);
                             }
@@ -708,10 +711,28 @@ const EditorPanel = ({
                 ),
             ];
 
+            // rust-analyzer initializationOptions: disable heavy cargo
+            // features that require a full toolchain (cargo check, build scripts)
+            // to avoid "No such file or directory" errors in containers where
+            // cargo may not be fully configured.  RA still provides completions,
+            // hover, go-to-def, and diagnostics from source analysis alone.
+            const initializationOptions = backendLang === 'rust' ? {
+                cargo: {
+                    // Don't run `cargo check` on save — it fails without cargo
+                    buildScripts: { enable: false },
+                    // Sysroot discovery: let RA figure it out from rustc
+                    sysroot: 'discover',
+                },
+                checkOnSave: false,
+                // Disable proc-macro expansion (requires cargo)
+                procMacro: { enable: false },
+            } : undefined;
+
             const languageClient = new SynthiLanguageClient({
                 name: `Synthi Language Client (${backendLang})`,
                 clientOptions: {
                     documentSelector: fullDocumentSelector,
+                    ...(initializationOptions && { initializationOptions }),
                     middleware: {
                         // P0: Let monaco-languageclient handle the full document lifecycle
                         // natively — didOpen, didChange, didClose, didSave are all passed
@@ -909,6 +930,10 @@ const EditorPanel = ({
             // old 'plaintext' languageId at model-creation time, causing the
             // documentSelector to miss the file even after setModelLanguage.
             // Detect this and send a manual didOpen as a safety net.
+            //
+            // Wait a tick for auto-didOpen to propagate through middleware
+            // before checking — start() can resolve before didOpen fires.
+            await new Promise(r => setTimeout(r, 200));
             {
                 const activeUri = currentModel.uri.toString();
                 if (!autoDidOpenUris.has(activeUri)) {

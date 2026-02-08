@@ -1610,7 +1610,32 @@ async fn wire_peer_channels(
                             c.arg("--query-driver=*");
                             c
                         },
-                        "rust" => system_command("rust-analyzer"),
+                        "rust" => {
+                            let mut c = system_command("rust-analyzer");
+                            // Ensure rust-analyzer can find cargo/rustc.
+                            // In containers, rustup installs to /root/.cargo and /root/.rustup.
+                            // If CARGO_HOME / RUSTUP_HOME aren't set, try common locations.
+                            let cargo_home = std::env::var("CARGO_HOME")
+                                .unwrap_or_else(|_| "/root/.cargo".to_string());
+                            let rustup_home = std::env::var("RUSTUP_HOME")
+                                .unwrap_or_else(|_| "/root/.rustup".to_string());
+                            c.env("CARGO_HOME", &cargo_home);
+                            c.env("RUSTUP_HOME", &rustup_home);
+                            // Clear RUSTUP_TOOLCHAIN — if the container has a bare
+                            // system rustc at /usr, RA auto-detects sysroot as /usr
+                            // and sets RUSTUP_TOOLCHAIN="/usr" which breaks cargo.
+                            c.env_remove("RUSTUP_TOOLCHAIN");
+                            // Prepend cargo/rustup bin dirs to PATH so rust-analyzer
+                            // can invoke `cargo metadata`, `rustc`, etc.
+                            // Cargo binaries (cargo, rustc, rustup) live in $CARGO_HOME/bin.
+                            let current_path = std::env::var("PATH").unwrap_or_default();
+                            let new_path = format!(
+                                "{}/bin:{}",
+                                cargo_home, current_path
+                            );
+                            c.env("PATH", new_path);
+                            c
+                        },
                         "python" | "py" => system_command("pylsp"),
                         "typescript" | "ts" | "javascript" | "js" => {
                              let mut c = system_command("typescript-language-server");
@@ -4345,21 +4370,32 @@ fn ensure_lsp_config(workspace: &std::path::Path, lang: &str) {
             }
         }
         "rust" => {
-            // rust-analyzer needs a Cargo.toml to index the project.
-            let cargo_toml = workspace.join("Cargo.toml");
-            if !cargo_toml.exists() {
-                // Find the main .rs file name for the binary target
-                let bin_name = std::fs::read_dir(workspace)
-                    .ok()
-                    .and_then(|entries| {
-                        entries.flatten()
-                            .find(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
-                            .map(|e| e.file_name().to_string_lossy().trim_end_matches(".rs").to_string())
-                    })
-                    .unwrap_or_else(|| "main".to_string());
+            // rust-analyzer needs a project manifest to index the workspace.
+            // If cargo is available, use Cargo.toml.  Otherwise, create a
+            // rust-project.json so RA can work in "detached files" mode
+            // without needing cargo (which may not be installed in the container).
+            let has_cargo = std::process::Command::new("cargo")
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
 
-                if let Ok(mut f) = std::fs::File::create(&cargo_toml) {
-                    let _ = write!(f, r#"[package]
+            if has_cargo {
+                let cargo_toml = workspace.join("Cargo.toml");
+                if !cargo_toml.exists() {
+                    let bin_name = std::fs::read_dir(workspace)
+                        .ok()
+                        .and_then(|entries| {
+                            entries.flatten()
+                                .find(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
+                                .map(|e| e.file_name().to_string_lossy().trim_end_matches(".rs").to_string())
+                        })
+                        .unwrap_or_else(|| "main".to_string());
+
+                    if let Ok(mut f) = std::fs::File::create(&cargo_toml) {
+                        let _ = write!(f, r#"[package]
 name = "synthi-workspace"
 version = "0.1.0"
 edition = "2021"
@@ -4368,7 +4404,66 @@ edition = "2021"
 name = "{}"
 path = "{}.rs"
 "#, bin_name, bin_name);
-                    println!("[LSP-CONFIG] Created Cargo.toml for standalone Rust workspace");
+                        println!("[LSP-CONFIG] Created Cargo.toml for standalone Rust workspace");
+                    }
+                }
+            } else {
+                // No cargo — create rust-project.json for RA's non-cargo mode.
+                // This lets RA provide completions, hover, go-to-def without cargo.
+                let rp_json = workspace.join("rust-project.json");
+                if !rp_json.exists() {
+                    // Try to find sysroot_src from rustc
+                    let sysroot_src = std::process::Command::new("rustc")
+                        .args(["--print", "sysroot"])
+                        .output()
+                        .ok()
+                        .and_then(|o| {
+                            if o.status.success() {
+                                let sr = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                                let src_path = std::path::PathBuf::from(&sr)
+                                    .join("lib/rustlib/src/rust/library");
+                                if src_path.exists() {
+                                    Some(src_path.to_string_lossy().to_string())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        });
+
+                    // Collect all .rs files as crate root modules
+                    let rs_files: Vec<String> = std::fs::read_dir(workspace)
+                        .ok()
+                        .map(|entries| {
+                            entries.flatten()
+                                .filter(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
+                                .map(|e| e.file_name().to_string_lossy().to_string())
+                                .collect()
+                        })
+                        .unwrap_or_else(|| vec!["main.rs".to_string()]);
+
+                    let sysroot_line = match &sysroot_src {
+                        Some(path) => format!(r#"  "sysroot_src": "{}""#, path),
+                        None => r#"  "sysroot_src": null"#.to_string(),
+                    };
+
+                    let crates: Vec<String> = rs_files.iter().map(|f| {
+                        format!(
+                            r#"    {{
+      "root_module": "{}",
+      "edition": "2021",
+      "deps": []
+    }}"#,
+                            f
+                        )
+                    }).collect();
+
+                    if let Ok(mut f) = std::fs::File::create(&rp_json) {
+                        let _ = write!(f, "{{\n{},\n  \"crates\": [\n{}\n  ]\n}}\n",
+                            sysroot_line, crates.join(",\n"));
+                        println!("[LSP-CONFIG] Created rust-project.json for standalone Rust workspace (no cargo)");
+                    }
                 }
             }
         }

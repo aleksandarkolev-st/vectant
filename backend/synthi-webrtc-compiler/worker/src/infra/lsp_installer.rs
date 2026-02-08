@@ -66,8 +66,14 @@ pub async fn ensure_lsp_installed(lang: &str, workspace: &Path) -> Result<&'stat
             "apt-get update -qq && apt-get install -y -qq clangd >/dev/null 2>&1 || true",
         ]),
         "rust" => ("rust-analyzer", vec![
-            // rustup is usually available if Rust is installed
-            "rustup component add rust-analyzer 2>/dev/null || \
+            // Step 1: Ensure rustup + cargo + rustc are available.
+            // Without cargo, rust-analyzer can't load workspace metadata.
+            "command -v cargo >/dev/null 2>&1 || \
+             (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable 2>/dev/null && \
+              . \"$HOME/.cargo/env\" 2>/dev/null || true)",
+            // Step 2: Install rust-analyzer component (preferred) or download binary
+            ". \"$HOME/.cargo/env\" 2>/dev/null; \
+             rustup component add rust-analyzer 2>/dev/null || \
              curl -L https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-unknown-linux-gnu.gz | \
              gunzip > /usr/local/bin/rust-analyzer && chmod +x /usr/local/bin/rust-analyzer",
         ]),
