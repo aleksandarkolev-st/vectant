@@ -132,13 +132,11 @@ pub async fn ensure_lsp_installed(lang: &str, workspace: &Path) -> Result<&'stat
         "svelte" => ("svelteserver", vec![
             "npm install -g svelte-language-server 2>/dev/null || true",
         ]),
-        "css" | "scss" | "less" => ("css-languageserver", vec![
-            "npm install -g vscode-css-languageserver-bin 2>/dev/null || \
-             npm install -g @vscode/css-languageserver 2>/dev/null || true",
+        "css" | "scss" | "less" => ("vscode-css-language-server", vec![
+            "npm install -g vscode-langservers-extracted 2>/dev/null || true",
         ]),
-        "html" => ("html-languageserver", vec![
-            "npm install -g vscode-html-languageserver-bin 2>/dev/null || \
-             npm install -g @vscode/html-languageserver 2>/dev/null || true",
+        "html" => ("vscode-html-language-server", vec![
+            "npm install -g vscode-langservers-extracted 2>/dev/null || true",
         ]),
         _ => return Err(format!("No installer for language: {}", lang)),
     };

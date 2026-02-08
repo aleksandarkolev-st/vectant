@@ -17,7 +17,7 @@ pub const LSP_TOOLS: &[&str] = &[
     "elixir-ls",                  // Elixir (ElixirLS)
     "lua-language-server",        // Lua   (LuaLS / lua-language-server)
     "svelte-language-server",     // Svelte
-    "vscode-css-languageserver",  // CSS / SCSS / LESS
-    "vscode-html-languageserver", // HTML
+    "vscode-css-language-server",  // CSS / SCSS / LESS (vscode-langservers-extracted)
+    "vscode-html-language-server", // HTML (vscode-langservers-extracted)
 ];
 pub const GUI_TOOLS: &[&str] = &["xdotool", "Xvfb", "matchbox-window-manager"]; // Keeping these for now as SDL2 might use Xvfb on Linux

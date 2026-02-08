@@ -1684,14 +1684,14 @@ async fn wire_peer_channels(
                             c
                         },
                         "css" | "scss" | "less" => {
-                            // VSCode CSS/SCSS/LESS language server
-                            let mut c = system_command("css-languageserver");
+                            // VSCode CSS/SCSS/LESS language server (vscode-langservers-extracted)
+                            let mut c = system_command("vscode-css-language-server");
                             c.arg("--stdio");
                             c
                         },
                         "html" => {
-                            // VSCode HTML language server
-                            let mut c = system_command("html-languageserver");
+                            // VSCode HTML language server (vscode-langservers-extracted)
+                            let mut c = system_command("vscode-html-language-server");
                             c.arg("--stdio");
                             c
                         },
