@@ -24,7 +24,8 @@ export const useAiCompletion = ({
 }) => {
     const [aiCompletionState, setAiCompletionState] = useState('idle');
 
-    const MIN_AUTO_INTERVAL_MS = 1200;
+    // P1: Reduced from 1200ms to 700ms for faster AI suggestions
+    const MIN_AUTO_INTERVAL_MS = 700;
     const aiCompletionCacheRef = useRef({ context: '', language: '', suggestion: '' });
     const aiCompletionCursorRef = useRef(null);
     const aiCompletionAbortControllerRef = useRef(null);
@@ -171,9 +172,9 @@ export const useAiCompletion = ({
             aiLastAutoRef.current = now;
         }
 
-        if (aiLastRequestRef.current.context === context && (now - aiLastRequestRef.current.time) < 1600) {
-            return;
-        }
+        // P1: Removed 1600ms duplicate-context gate.
+        // The MIN_AUTO_INTERVAL_MS cooldown + cache check above are sufficient
+        // to prevent duplicate requests without adding extra latency.
         aiLastRequestRef.current = { context, time: now };
 
         cancelActiveCompletion({ resetSuggestion: true, reason: 'superseded' });

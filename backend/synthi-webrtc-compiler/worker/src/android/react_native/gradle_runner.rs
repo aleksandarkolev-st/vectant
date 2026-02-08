@@ -20,6 +20,7 @@ pub(crate) async fn run_gradle_and_collect_diagnostics(
     mut cmd: Command,
     log_callback: Option<&LogCallback>,
 ) -> Result<(std::process::ExitStatus, Vec<Diagnostic>, bool)> {
+    cmd.kill_on_drop(true);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().context("Failed to spawn gradle")?;
 
@@ -158,9 +159,9 @@ pub(crate) async fn create_isolated_gradle_user_home(project_root: &Path) -> Res
         let p = p.trim();
         if !p.is_empty() {
             let home = PathBuf::from(p);
-            tokio::fs::create_dir_all(&home)
-                .await
-                .with_context(|| format!("Failed to create GRADLE_USER_HOME at {}", home.display()))?;
+            tokio::fs::create_dir_all(&home).await.with_context(|| {
+                format!("Failed to create GRADLE_USER_HOME at {}", home.display())
+            })?;
             return Ok(home);
         }
     }

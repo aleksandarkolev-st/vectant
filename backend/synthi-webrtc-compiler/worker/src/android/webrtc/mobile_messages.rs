@@ -53,11 +53,15 @@ pub async fn send_logcat(log_dc: &Arc<RTCDataChannel>, session_id: &str, entry: 
 /// This is intended to let the frontend pick the best available transport
 /// (future: real WebRTC video + input; current: screenshot frames over data channel).
 pub async fn send_mobile_capabilities(log_dc: &Arc<RTCDataChannel>, session_id: &str) {
+    // Version marker to identify deployed binary - increment when deploying!
+    const CAPABILITIES_VERSION: &str = "v2-webrtc-only-2025-01-18";
+    
     let payload = json!({
         "sessionId": session_id,
         "type": "mobile-capabilities",
         "data": {
             "protocol": 1,
+            "version": CAPABILITIES_VERSION,
             "pixels": {
                 "screenshot_frames": false,
                 "chunked_frames": false,

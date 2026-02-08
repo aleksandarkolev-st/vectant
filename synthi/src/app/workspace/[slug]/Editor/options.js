@@ -17,7 +17,7 @@ export const EDITOR_OPTIONS = {
     automaticLayout: true,
     // Smooth cursor animation with stronger visual anchor
     cursorBlinking: "smooth", // Smooth fading cursor
-    cursorSmoothCaretAnimation: "on", // Cursor glides smoothly
+    cursorSmoothCaretAnimation: "off", // Cursor glides smoothly
     cursorStyle: "line", // Thin line cursor
     cursorWidth: 2, // 2px width for the line cursor
     smoothScrolling: true,

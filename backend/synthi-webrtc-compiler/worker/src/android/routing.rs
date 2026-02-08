@@ -4,7 +4,7 @@
 // Job routing schema for mobile emulator execution.
 // Integrates with existing worker capability system.
 // Emulator-only: no standalone builds, always run in emulator.
-// Currently supports: React Native (Native Android planned)
+// Supports: React Native, Native Android (Java/Kotlin), Flutter
 // ============================================================
 
 use serde::{Deserialize, Serialize};
@@ -24,10 +24,14 @@ pub enum BuildTarget {
     Typescript,
     Python,
 
-    // Mobile emulator target - builds APK and runs in Android emulator
+    // Mobile emulator targets - build APK and run in Android emulator
     ReactNativeAndroidEmulator,
-    // Future: Native Android (Java/Kotlin)
-    // NativeAndroidEmulator,
+    
+    // Native Android (Java/Kotlin) emulator target
+    NativeAndroidEmulator,
+    
+    // Flutter Android emulator target (Phase 2)
+    FlutterAndroidEmulator,
 }
 
 impl BuildTarget {
@@ -36,6 +40,8 @@ impl BuildTarget {
         match self {
             // Android emulator requires Linux (headless, software rendering)
             BuildTarget::ReactNativeAndroidEmulator => RequiredOS::Linux,
+            BuildTarget::NativeAndroidEmulator => RequiredOS::Linux,
+            BuildTarget::FlutterAndroidEmulator => RequiredOS::Linux,
             // Everything else can run on any supported OS
             _ => RequiredOS::Any,
         }
@@ -46,8 +52,12 @@ impl BuildTarget {
         match self {
             BuildTarget::CppNative | BuildTarget::Typescript | BuildTarget::Python => 2,
             BuildTarget::RustNative => 4,
-            // Emulator requires 6GB (emulator process + app + Gradle + node)
+            // Emulator requires 6GB (emulator process + app + Gradle + node/dart)
             BuildTarget::ReactNativeAndroidEmulator => 6,
+            // Native Android needs less RAM (no Metro bundler/Node.js)
+            BuildTarget::NativeAndroidEmulator => 5,
+            // Flutter needs similar to React Native
+            BuildTarget::FlutterAndroidEmulator => 6,
         }
     }
 
@@ -58,6 +68,10 @@ impl BuildTarget {
             BuildTarget::RustNative => 3,
             // Emulator needs: system image (2GB) + AVD (2GB) + node_modules (1GB) + Gradle (3GB)
             BuildTarget::ReactNativeAndroidEmulator => 10,
+            // Native Android needs less (no node_modules)
+            BuildTarget::NativeAndroidEmulator => 8,
+            // Flutter needs: Flutter SDK (2GB) + pub cache (1GB) + Gradle (3GB) + emulator
+            BuildTarget::FlutterAndroidEmulator => 12,
         }
     }
 
@@ -70,6 +84,10 @@ impl BuildTarget {
             BuildTarget::Python => 5,
             // Emulator: boot (~120s) + npm install (~60s) + gradle (~120s) + app launch (~30s)
             BuildTarget::ReactNativeAndroidEmulator => 330,
+            // Native Android: boot (~120s) + gradle (~180s) + app launch (~30s)
+            BuildTarget::NativeAndroidEmulator => 330,
+            // Flutter: boot (~120s) + pub get (~30s) + flutter build (~180s) + app launch (~30s)
+            BuildTarget::FlutterAndroidEmulator => 360,
         }
     }
 
@@ -81,18 +99,47 @@ impl BuildTarget {
             | BuildTarget::Typescript
             | BuildTarget::Python => &[
                 CapabilityClass::LinuxBasic,
-                CapabilityClass::LinuxReactNativeEmulator,
+                CapabilityClass::LinuxAndroidEmulator,
             ],
 
-            // Emulator execution requires the emulator capability class
-            BuildTarget::ReactNativeAndroidEmulator => &[CapabilityClass::LinuxReactNativeEmulator],
+            // All Android emulator targets require Android emulator capability
+            BuildTarget::ReactNativeAndroidEmulator => &[CapabilityClass::LinuxAndroidEmulator],
+            BuildTarget::NativeAndroidEmulator => &[CapabilityClass::LinuxAndroidEmulator],
+            BuildTarget::FlutterAndroidEmulator => &[CapabilityClass::LinuxAndroidEmulator],
         }
     }
 
     /// Whether this is a mobile/emulator target
     pub fn is_mobile_target(&self) -> bool {
-        matches!(self, BuildTarget::ReactNativeAndroidEmulator)
+        matches!(
+            self,
+            BuildTarget::ReactNativeAndroidEmulator
+                | BuildTarget::NativeAndroidEmulator
+                | BuildTarget::FlutterAndroidEmulator
+        )
     }
+
+    /// Returns the mobile platform type for this target
+    pub fn mobile_platform(&self) -> Option<MobilePlatform> {
+        match self {
+            BuildTarget::ReactNativeAndroidEmulator => Some(MobilePlatform::ReactNative),
+            BuildTarget::NativeAndroidEmulator => Some(MobilePlatform::NativeAndroid),
+            BuildTarget::FlutterAndroidEmulator => Some(MobilePlatform::Flutter),
+            _ => None,
+        }
+    }
+}
+
+/// Mobile platform type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MobilePlatform {
+    /// React Native (JavaScript/TypeScript)
+    ReactNative,
+    /// Native Android (Java/Kotlin)
+    NativeAndroid,
+    /// Flutter (Dart)
+    Flutter,
 }
 
 // ============================================================
@@ -106,9 +153,10 @@ pub enum CapabilityClass {
     /// Basic Linux worker: C++, Rust, TypeScript, Python only
     LinuxBasic,
 
-    /// Linux with Node.js + Android SDK + Emulator (React Native mobile dev)
-    /// Includes: Node.js, npm, Java, Android SDK, cmdline-tools, emulator, system-images
-    LinuxReactNativeEmulator,
+    /// Linux with Android SDK + Emulator (all mobile targets)
+    /// Includes: Node.js, npm, Java, Android SDK, cmdline-tools, emulator, 
+    /// system-images, Flutter SDK (optional)
+    LinuxAndroidEmulator,
 }
 
 impl CapabilityClass {
@@ -121,27 +169,29 @@ impl CapabilityClass {
                 BuildTarget::Typescript,
                 BuildTarget::Python,
             ],
-            CapabilityClass::LinuxReactNativeEmulator => vec![
+            CapabilityClass::LinuxAndroidEmulator => vec![
                 BuildTarget::CppNative,
                 BuildTarget::RustNative,
                 BuildTarget::Typescript,
                 BuildTarget::Python,
-                // Mobile emulator execution
+                // Mobile emulator targets
                 BuildTarget::ReactNativeAndroidEmulator,
+                BuildTarget::NativeAndroidEmulator,
+                BuildTarget::FlutterAndroidEmulator,
             ],
         }
     }
 
     /// Whether this capability class supports mobile development
     pub fn supports_mobile(&self) -> bool {
-        matches!(self, CapabilityClass::LinuxReactNativeEmulator)
+        matches!(self, CapabilityClass::LinuxAndroidEmulator)
     }
 
     /// Required toolchains for this capability class
     pub fn required_toolchains(&self) -> &'static [&'static str] {
         match self {
             CapabilityClass::LinuxBasic => &["gcc", "rustc", "node", "python3"],
-            CapabilityClass::LinuxReactNativeEmulator => &[
+            CapabilityClass::LinuxAndroidEmulator => &[
                 "gcc",
                 "rustc",
                 "node",
@@ -151,7 +201,16 @@ impl CapabilityClass {
                 "emulator",
                 "avdmanager",
                 "npx",
+                "gradle",
             ],
+        }
+    }
+
+    /// Optional toolchains that enhance capability
+    pub fn optional_toolchains(&self) -> &'static [&'static str] {
+        match self {
+            CapabilityClass::LinuxBasic => &[],
+            CapabilityClass::LinuxAndroidEmulator => &["flutter", "dart"],
         }
     }
 }
@@ -613,11 +672,11 @@ pub enum LogSource {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Diagnostic {
-    pub file: String,
-    pub line: u32,
-    pub column: u32,
-    pub severity: DiagnosticSeverity,
+    pub severity: String,
     pub message: String,
+    pub file: Option<String>,
+    pub line: Option<u32>,
+    pub column: Option<u32>,
     pub code: Option<String>,
 }
 
@@ -718,36 +777,80 @@ mod tests {
 
     #[test]
     fn test_emulator_target_requirements() {
-        // Emulator requires Linux
+        // All emulator targets require Linux
         assert_eq!(
             BuildTarget::ReactNativeAndroidEmulator.required_os(),
+            RequiredOS::Linux
+        );
+        assert_eq!(
+            BuildTarget::NativeAndroidEmulator.required_os(),
+            RequiredOS::Linux
+        );
+        assert_eq!(
+            BuildTarget::FlutterAndroidEmulator.required_os(),
             RequiredOS::Linux
         );
         // Non-mobile targets can run anywhere
         assert_eq!(BuildTarget::CppNative.required_os(), RequiredOS::Any);
         // Resource requirements
         assert_eq!(BuildTarget::ReactNativeAndroidEmulator.min_ram_gb(), 6);
+        assert_eq!(BuildTarget::NativeAndroidEmulator.min_ram_gb(), 5);
+        assert_eq!(BuildTarget::FlutterAndroidEmulator.min_ram_gb(), 6);
         assert_eq!(BuildTarget::ReactNativeAndroidEmulator.min_disk_gb(), 10);
+        assert_eq!(BuildTarget::NativeAndroidEmulator.min_disk_gb(), 8);
+        assert_eq!(BuildTarget::FlutterAndroidEmulator.min_disk_gb(), 12);
         assert_eq!(BuildTarget::CppNative.min_ram_gb(), 2);
     }
 
     #[test]
     fn test_capability_compatibility() {
-        // Emulator target only works with emulator capability
-        let targets = BuildTarget::ReactNativeAndroidEmulator.compatible_capabilities();
-        assert!(targets.contains(&CapabilityClass::LinuxReactNativeEmulator));
-        assert!(!targets.contains(&CapabilityClass::LinuxBasic));
+        // All emulator targets require Android emulator capability
+        let rn_targets = BuildTarget::ReactNativeAndroidEmulator.compatible_capabilities();
+        assert!(rn_targets.contains(&CapabilityClass::LinuxAndroidEmulator));
+        assert!(!rn_targets.contains(&CapabilityClass::LinuxBasic));
+
+        let native_targets = BuildTarget::NativeAndroidEmulator.compatible_capabilities();
+        assert!(native_targets.contains(&CapabilityClass::LinuxAndroidEmulator));
+
+        let flutter_targets = BuildTarget::FlutterAndroidEmulator.compatible_capabilities();
+        assert!(flutter_targets.contains(&CapabilityClass::LinuxAndroidEmulator));
 
         // Basic targets work on both capability classes
         let cpp_targets = BuildTarget::CppNative.compatible_capabilities();
         assert!(cpp_targets.contains(&CapabilityClass::LinuxBasic));
-        assert!(cpp_targets.contains(&CapabilityClass::LinuxReactNativeEmulator));
+        assert!(cpp_targets.contains(&CapabilityClass::LinuxAndroidEmulator));
     }
 
     #[test]
     fn test_capability_class_mobile_support() {
-        assert!(CapabilityClass::LinuxReactNativeEmulator.supports_mobile());
+        assert!(CapabilityClass::LinuxAndroidEmulator.supports_mobile());
         assert!(!CapabilityClass::LinuxBasic.supports_mobile());
+    }
+
+    #[test]
+    fn test_mobile_platform() {
+        assert_eq!(
+            BuildTarget::ReactNativeAndroidEmulator.mobile_platform(),
+            Some(MobilePlatform::ReactNative)
+        );
+        assert_eq!(
+            BuildTarget::NativeAndroidEmulator.mobile_platform(),
+            Some(MobilePlatform::NativeAndroid)
+        );
+        assert_eq!(
+            BuildTarget::FlutterAndroidEmulator.mobile_platform(),
+            Some(MobilePlatform::Flutter)
+        );
+        assert_eq!(BuildTarget::CppNative.mobile_platform(), None);
+    }
+
+    #[test]
+    fn test_is_mobile_target() {
+        assert!(BuildTarget::ReactNativeAndroidEmulator.is_mobile_target());
+        assert!(BuildTarget::NativeAndroidEmulator.is_mobile_target());
+        assert!(BuildTarget::FlutterAndroidEmulator.is_mobile_target());
+        assert!(!BuildTarget::CppNative.is_mobile_target());
+        assert!(!BuildTarget::Python.is_mobile_target());
     }
 
     #[test]

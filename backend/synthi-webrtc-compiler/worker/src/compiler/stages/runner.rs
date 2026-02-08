@@ -1,6 +1,3 @@
-use std::sync::Arc;
-use std::collections::HashMap;
-use std::process::Stdio;
 use anyhow::{Context, Result};
 use tokio::process::Command;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, AsyncReadExt, BufReader};
@@ -8,20 +5,22 @@ use tokio::sync::mpsc;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
+use std::process::Stdio;
+use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::Command;
+use tokio::sync::mpsc;
+use std::collections::HashMap;
+use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType};
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
-use webrtc::rtp::packet::Packet;
-use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType};
-use webrtc::util::Unmarshal;
 
-use crate::compiler::context::CompileContext;
 use crate::compiler::builder::ModuleHashes;
-use crate::infra::messages::CompileRequest;
-use crate::runtime::runner_state::RunnerState;
+use crate::compiler::context::CompileContext;
 use crate::infra::constants::GUI_TOOLS;
-use crate::infra::utils::system_command;
-use crate::infra::observability::{LogEntry, LogLevel, ReloadMetricsTracker, ReloadId};
-use crate::runtime::capability::{detect_capabilities, HmrStatus as CapabilityHmrStatus}; // Aliasing if needed, or check definition
+use crate::infra::messages::CompileRequest;
+use crate::infra::observability::{ReloadId};
+use crate::runtime::runner_state::RunnerState; // Aliasing if needed, or check definition
 
 pub async fn handle_runner_execution(
     ctx: &CompileContext,
@@ -32,11 +31,11 @@ pub async fn handle_runner_execution(
     new_hashes: ModuleHashes,
     core_lib_path: String,
     gui_lib_path: String,
-    timestamp: i64,
-    compile_start: std::time::Instant,
-    reload_id: ReloadId,
-    module_id: String,
-    session_id: Option<String>
+    _timestamp: i64,
+    _compile_start: std::time::Instant,
+    _reload_id: ReloadId,
+    _module_id: String,
+    session_id: Option<String>,
 ) -> Result<()> {
     // Unified Runner Logic
     if modules_to_load.is_empty() {
@@ -139,8 +138,8 @@ pub async fn handle_runner_execution(
         let mut gst_display_str = reused_gst_display;
         let mut xvfb_process: Option<tokio::process::Child> = reused_xvfb;
         let mut gst_pipeline: Option<gst::Pipeline> = reused_pipeline;
-        let mut sdl_tx_opt: Option<mpsc::UnboundedSender<String>> = reused_sdl_tx;
-        let mut video_src_opt: Option<gst_app::AppSrc> = None;
+        let sdl_tx_opt: Option<mpsc::UnboundedSender<String>> = reused_sdl_tx;
+        let _video_src_opt: Option<gst_app::AppSrc> = None;
 
         if req.is_gui {
             let width = req_width;
@@ -155,7 +154,8 @@ pub async fn handle_runner_execution(
                         "type": "stderr",
                         "line": msg
                         });
-                        let _ = ctx.log_dc
+                        let _ = ctx
+                            .log_dc
                             .send_text(serde_json::to_string(&payload).unwrap_or_default())
                             .await;
                         return Ok(());
@@ -163,10 +163,10 @@ pub async fn handle_runner_execution(
                 }
 
                 // Start Xvfb (Virtual Framebuffer)
-                // Try finding a free display or use separate ones per worker? 
+                // Try finding a free display or use separate ones per worker?
                 // For simplified single-worker model, we can use :99
                 let display_num = 99;
-                
+
                 // [Fix] Clean up stale lock files from previous runs
                 let lock_file = format!("/tmp/.X11-unix/X{}", display_num);
                 if std::path::Path::new(&lock_file).exists() {
@@ -175,24 +175,27 @@ pub async fn handle_runner_execution(
                 }
                 let lock_file_tmp = format!("/tmp/.X{}-lock", display_num);
                 if std::path::Path::new(&lock_file_tmp).exists() {
-                     println!("Removing stale Xvfb lock file: {}", lock_file_tmp);
-                     let _ = std::fs::remove_file(&lock_file_tmp);
+                    println!("Removing stale Xvfb lock file: {}", lock_file_tmp);
+                    let _ = std::fs::remove_file(&lock_file_tmp);
                 }
 
                 wsl_display_str = format!(":{}", display_num);
                 gst_display_str = wsl_display_str.clone();
-                
+
                 println!("Starting Xvfb on display {}", wsl_display_str);
 
                 let mut xvfb_cmd = Command::new("Xvfb");
-                xvfb_cmd.arg(&wsl_display_str)
-                        .arg("-screen").arg("0").arg(format!("{}x{}x24", width, height))
-                        .arg("-ac"); // Disable access control
-                
+                xvfb_cmd
+                    .arg(&wsl_display_str)
+                    .arg("-screen")
+                    .arg("0")
+                    .arg(format!("{}x{}x24", width, height))
+                    .arg("-ac"); // Disable access control
+
                 xvfb_cmd.kill_on_drop(true);
                 let child = xvfb_cmd.spawn().context("Failed to spawn Xvfb")?;
                 xvfb_process = Some(child);
-                
+
                 // Give Xvfb a moment to start
                 tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
@@ -201,7 +204,9 @@ pub async fn handle_runner_execution(
                 wm_cmd.env("DISPLAY", &wsl_display_str);
                 wm_cmd.kill_on_drop(true);
                 // We don't keep the WM handle, assuming it dies when Xvfb dies or worker dies
-                let _ = wm_cmd.spawn().context("Failed to spawn matchbox-window-manager")?;
+                let _ = wm_cmd
+                    .spawn()
+                    .context("Failed to spawn matchbox-window-manager")?;
 
                 println!("Xvfb and Window Manager started.");
             }
@@ -220,8 +225,8 @@ pub async fn handle_runner_execution(
             let mut selected_mime_type = "video/H264".to_owned();
             let mut encoder_idx = 0;
             let mut pipeline = None;
-            let width = req_width;
-            let height = req_height;
+            let _width = req_width;
+            let _height = req_height;
 
             while encoder_idx < encoders.len() {
                 let (encoder, payloader, mime_type) = encoders[encoder_idx];
@@ -230,7 +235,7 @@ pub async fn handle_runner_execution(
                 // ximagesrc -> videoscale -> videoconvert -> encoder -> payloader -> appsink
                 // audiotestsrc (silence) -> opusenc -> rtpopuspay -> appsink
                 // We use audiotestsrc instead of pulsesrc to be robust in headless environments
-                
+
                 let pipeline_str = format!(
                     "ximagesrc display-name=\"{}\" use-damage=0 ! video/x-raw,framerate=30/1 ! videoscale ! videoconvert ! {} ! {} name=video_pay ! appsink name=video_sink sync=false \
                      audiotestsrc is-live=true wave=silence ! opusenc ! rtpopuspay name=audio_pay ! appsink name=audio_sink sync=false",
@@ -246,29 +251,37 @@ pub async fn handle_runner_execution(
                                     // ideally we wait for state change success
                                     let bus = pipe.bus().unwrap();
                                     // wait up to 0.5s for error
-                                    if let Some(msg) = bus.timed_pop(gst::ClockTime::from_mseconds(500)) {
-                                         if let gst::MessageView::Error(err) = msg.view() {
+                                    if let Some(msg) =
+                                        bus.timed_pop(gst::ClockTime::from_mseconds(500))
+                                    {
+                                        if let gst::MessageView::Error(err) = msg.view() {
                                             println!("Encoder {} failed: {}", encoder, err.error());
                                             let _ = pipe.set_state(gst::State::Null);
-                                         } else {
+                                        } else {
                                             println!("Encoder {} started successfully.", encoder);
                                             pipeline = Some(pipe);
                                             selected_mime_type = mime_type.to_string();
                                             break;
-                                         }
+                                        }
                                     } else {
-                                        println!("Encoder {} started successfully (no immediate error).", encoder);
+                                        println!(
+                                            "Encoder {} started successfully (no immediate error).",
+                                            encoder
+                                        );
                                         pipeline = Some(pipe);
                                         selected_mime_type = mime_type.to_string();
                                         break;
                                     }
-                                },
+                                }
                                 Err(err) => {
-                                     println!("Failed to set state for encoder {}: {}", encoder, err);
+                                    println!(
+                                        "Failed to set state for encoder {}: {}",
+                                        encoder, err
+                                    );
                                 }
                             }
                         }
-                    },
+                    }
                     Err(err) => {
                         println!("Failed to parse pipeline with {}: {}", encoder, err);
                     }
@@ -277,14 +290,17 @@ pub async fn handle_runner_execution(
             }
 
             if pipeline.is_none() {
-                 let msg = "Error: Failed to initialize any video encoder. Please check GStreamer installation.";
-                 let payload = serde_json::json!({
-                    "sessionId": session_id.clone(),
-                    "type": "stderr",
-                    "line": msg
-                 });
-                 let _ = ctx.log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
-                 return Ok(());
+                let msg = "Error: Failed to initialize any video encoder. Please check GStreamer installation.";
+                let payload = serde_json::json!({
+                   "sessionId": session_id.clone(),
+                   "type": "stderr",
+                   "line": msg
+                });
+                let _ = ctx
+                    .log_dc
+                    .send_text(serde_json::to_string(&payload).unwrap_or_default())
+                    .await;
+                return Ok(());
             }
 
             let (v_tx, mut v_rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -292,10 +308,18 @@ pub async fn handle_runner_execution(
 
             gst_pipeline = pipeline;
             let pipeline_ref = gst_pipeline.as_ref().unwrap();
-            
+
             // Get AppSinks
-            let video_sink = pipeline_ref.by_name("video_sink").unwrap().dynamic_cast::<gst_app::AppSink>().unwrap();
-            let audio_sink = pipeline_ref.by_name("audio_sink").unwrap().dynamic_cast::<gst_app::AppSink>().unwrap();
+            let video_sink = pipeline_ref
+                .by_name("video_sink")
+                .unwrap()
+                .dynamic_cast::<gst_app::AppSink>()
+                .unwrap();
+            let audio_sink = pipeline_ref
+                .by_name("audio_sink")
+                .unwrap()
+                .dynamic_cast::<gst_app::AppSink>()
+                .unwrap();
 
             // Setup Video Track
             let mime = selected_mime_type.clone();
@@ -312,8 +336,7 @@ pub async fn handle_runner_execution(
             let v_tx_clone = v_tx.clone();
             video_sink.set_callbacks(
                 gst_app::AppSinkCallbacks::builder()
-                .new_sample(move |sink| {
-                    match sink.pull_sample() {
+                    .new_sample(move |sink| match sink.pull_sample() {
                         Ok(sample) => {
                             if let Some(buffer) = sample.buffer() {
                                 if let Ok(map) = buffer.map_readable() {
@@ -324,9 +347,8 @@ pub async fn handle_runner_execution(
                             Ok(gst::FlowSuccess::Ok)
                         }
                         Err(_) => Err(gst::FlowError::Eos),
-                    }
-                })
-                .build()
+                    })
+                    .build(),
             );
 
             // Spawn async task to write video RTP packets
@@ -334,10 +356,10 @@ pub async fn handle_runner_execution(
             tokio::spawn(async move {
                 while let Some(data) = v_rx.recv().await {
                     if let Err(e) = v_track_clone.write(&data).await {
-                         if e.to_string().contains("closed") {
-                             break;
-                         }
-                         eprintln!("RTP write error: {}", e);
+                        if e.to_string().contains("closed") {
+                            break;
+                        }
+                        eprintln!("RTP write error: {}", e);
                     }
                 }
             });
@@ -356,10 +378,9 @@ pub async fn handle_runner_execution(
             let a_tx_clone = a_tx.clone();
             audio_sink.set_callbacks(
                 gst_app::AppSinkCallbacks::builder()
-                .new_sample(move |sink| {
-                    match sink.pull_sample() {
+                    .new_sample(move |sink| match sink.pull_sample() {
                         Ok(sample) => {
-                             if let Some(buffer) = sample.buffer() {
+                            if let Some(buffer) = sample.buffer() {
                                 if let Ok(map) = buffer.map_readable() {
                                     let data = map.as_slice().to_vec();
                                     let _ = a_tx_clone.send(data);
@@ -368,19 +389,18 @@ pub async fn handle_runner_execution(
                             Ok(gst::FlowSuccess::Ok)
                         }
                         Err(_) => Err(gst::FlowError::Eos),
-                    }
-                })
-                .build()
+                    })
+                    .build(),
             );
 
             // Spawn async task to write audio RTP packets
             let a_track_clone = audio_track.clone();
             tokio::spawn(async move {
                 while let Some(data) = a_rx.recv().await {
-                   if let Err(e) = a_track_clone.write(&data).await {
-                         if e.to_string().contains("closed") {
-                             break;
-                         }
+                    if let Err(e) = a_track_clone.write(&data).await {
+                        if e.to_string().contains("closed") {
+                            break;
+                        }
                     }
                 }
             });
@@ -413,34 +433,37 @@ pub async fn handle_runner_execution(
         }
 
         let mut child = cmd.spawn().context("Failed to spawn runner process")?;
-        
+
         // Capture stdout/stderr
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
         let stdin = child.stdin.take().unwrap();
-        
+
         let (log_tx, _) = tokio::sync::broadcast::channel::<String>(100);
         let log_tx_clone = log_tx.clone();
-        
+
         // Forward stdout/stderr to log_dc
         let ctx_clone = ctx.clone();
         let session_id_clone = session_id.clone();
-        
+
         // Stdout Reader
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
             while let Ok(line) = reader.next_line().await {
                 match line {
                     Some(l) => {
-                         let _ = log_tx_clone.send(l.clone());
-                         // Send to frontend
-                         let payload = serde_json::json!({
-                            "sessionId": session_id_clone,
-                            "type": "stdout",
-                            "line": l
-                         });
-                         let _ = ctx_clone.log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
-                    },
+                        let _ = log_tx_clone.send(l.clone());
+                        // Send to frontend
+                        let payload = serde_json::json!({
+                           "sessionId": session_id_clone,
+                           "type": "stdout",
+                           "line": l
+                        });
+                        let _ = ctx_clone
+                            .log_dc
+                            .send_text(serde_json::to_string(&payload).unwrap_or_default())
+                            .await;
+                    }
                     None => break,
                 }
             }
@@ -454,17 +477,21 @@ pub async fn handle_runner_execution(
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(line) = reader.next_line().await {
-                 match line {
+                match line {
                     Some(l) => {
-                         let _ = log_tx_clone2.send(l.clone());
-                         // Send to frontend
-                         let payload = serde_json::json!({
-                            "sessionId": session_id_clone2,
-                            "type": "stderr",
-                            "line": l
-                         });
-                         let _ = ctx_clone2.log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
-                    },
+                        eprintln!("[Runner Stderr] {}", l);
+                        let _ = log_tx_clone2.send(l.clone());
+                        // Send to frontend
+                        let payload = serde_json::json!({
+                           "sessionId": session_id_clone2,
+                           "type": "stderr",
+                           "line": l
+                        });
+                        let _ = ctx_clone2
+                            .log_dc
+                            .send_text(serde_json::to_string(&payload).unwrap_or_default())
+                            .await;
+                    }
                     None => break,
                 }
             }
@@ -580,27 +607,37 @@ pub async fn handle_runner_execution(
 
         // Load Modules
         for (name, path) in &modules_to_load {
-             if let Some(stdin) = state.stdin.as_mut() {
-                 let cmd = format!("load {} {}\n", name, path);
-                 println!("[Main] Sending command to runner: {}", cmd.trim());
-                 if let Err(e) = stdin.write_all(cmd.as_bytes()).await {
-                      eprintln!("Failed to write to runner stdin: {}", e);
-                 }
-                 if let Err(e) = stdin.flush().await {
-                      eprintln!("Failed to flush runner stdin: {}", e);
-                 }
-                 // Give it a moment to load
-                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-             }
+            // Check if process is still alive
+            if let Some(child) = state.process.as_mut() {
+                if let Ok(Some(status)) = child.try_wait() {
+                    eprintln!("[Main] Runner process has already exited with status: {}", status);
+                    break;
+                }
+            }
+
+            if let Some(stdin) = state.stdin.as_mut() {
+                let cmd = format!("load {} {}\n", name, path);
+                println!("[Main] Sending command to runner: {}", cmd.trim());
+                if let Err(e) = stdin.write_all(cmd.as_bytes()).await {
+                    eprintln!("Failed to write to runner stdin: {}", e);
+                }
+                if let Err(e) = stdin.flush().await {
+                    eprintln!("Failed to flush runner stdin: {}", e);
+                }
+                // Wait for the supervisor to process the command before sending the next one.
+                // The supervisor reads text from stdin, converts to binary IPC, and forwards
+                // to the worker child. 500ms gives adequate time for this round-trip.
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            }
         }
-        
+
         // Update RunnerState
         state.module_hashes = new_hashes;
         if !core_lib_path.is_empty() {
-             state.loaded_core_path = Some(core_lib_path.clone());
+            state.loaded_core_path = Some(core_lib_path.clone());
         }
         if !gui_lib_path.is_empty() {
-             state.loaded_gui_path = Some(gui_lib_path.clone());
+            state.loaded_gui_path = Some(gui_lib_path.clone());
         }
     }
 

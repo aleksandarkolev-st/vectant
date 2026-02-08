@@ -11,26 +11,26 @@ pub fn calculate_hash<T: Hash>(t: &T) -> u64 {
 /// Parse AppState struct fields from shared.h content
 /// Returns a list of (field_name, field_type, default_value) tuples for int fields
 /// Default value is extracted from declarations like "int btn_x = 200;"
-pub fn parse_appstate_int_fields_with_defaults(shared_content: &str) -> Vec<(String, String, Option<i64>)> {
+pub fn parse_appstate_int_fields_with_defaults(
+    shared_content: &str,
+) -> Vec<(String, String, Option<i64>)> {
     let mut fields = Vec::new();
-    
+
     // Find AppState struct definition
     let struct_re = Regex::new(r"struct\s+AppState\s*\{([^}]*)\}").ok();
-    
+
     if let Some(re) = struct_re {
         if let Some(captures) = re.captures(shared_content) {
             if let Some(body) = captures.get(1) {
                 let body_str = body.as_str();
 
-                
                 // Parse individual field declarations WITH default values
                 // Match patterns like: int x; or int x = 10; or int btn_x = 330, btn_y = 10;
                 // Also handle inline declarations like: int x = 0, y = 0, dx = 5, dy = 5;
 
                 // First, handle comma-separated declarations on single lines
                 // Pattern: int field1 = val1, field2 = val2, ...;
-                let multi_decl_re =
-                    Regex::new(r"\b(int|unsigned|char|short|long)\s+([^;]+);").ok();
+                let multi_decl_re = Regex::new(r"\b(int|unsigned|char|short|long)\s+([^;]+);").ok();
 
                 if let Some(mre) = multi_decl_re {
                     for cap in mre.captures_iter(body_str) {

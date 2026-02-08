@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::Once;
 
 /// Ensures Android SDK tools are visible to the current Rust process
 /// even when launched via `cargo run` / `cargo test` (which does not
@@ -55,6 +56,46 @@ pub fn ensure_android_sdk_env() -> Option<PathBuf> {
     }
 
     sdk_root
+}
+
+static LOAD_ANDROID_ENV_ONCE: Once = Once::new();
+
+pub fn load_android_env_file() {
+    LOAD_ANDROID_ENV_ONCE.call_once(|| {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let path = Path::new(manifest_dir).join("src").join("android").join(".env");
+        if !path.exists() {
+            return;
+        }
+
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            return;
+        };
+
+        for raw_line in contents.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let key = key.trim();
+            if key.is_empty() || std::env::var_os(key).is_some() {
+                continue;
+            }
+            let mut value = value.trim().trim_end_matches('\r').to_string();
+            if (value.starts_with('"') && value.ends_with('"'))
+                || (value.starts_with('\'') && value.ends_with('\''))
+            {
+                value = value[1..value.len().saturating_sub(1)].to_string();
+            }
+            if value.is_empty() {
+                continue;
+            }
+            std::env::set_var(key, value);
+        }
+    });
 }
 
 pub fn log_android_env_diagnostics(context: &str) {

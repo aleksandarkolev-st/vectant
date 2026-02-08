@@ -153,21 +153,40 @@ class Embedder:
     Supports:
     - Google text-embedding-004 (default)
     - Batch processing for efficiency
-    - Caching (optional)
+    - Query embedding caching for faster repeated queries
+    - Request deduplication for concurrent identical requests
     """
+    
+    # Model dimensions mapping
+    MODEL_DIMENSIONS = {
+        "text-embedding-004": 768,
+        "gemini-embedding-001": 3072,
+        "text-embedding-gecko": 768,
+    }
     
     def __init__(
         self,
-        model: str = "text-embedding-004",
+        model: str = "gemini-embedding-001",  # Newer model with better performance
         api_key: Optional[str] = None,
         batch_size: int = 100,
+        cache_size: int = 1000,  # Increased cache size for better TTFT
     ):
         self.model = model
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.batch_size = batch_size
         
         self._client = None
-        self._dimension = 768  # text-embedding-004
+        self._dimension = self.MODEL_DIMENSIONS.get(model, 3072)  # Default to gemini-embedding-001 dimensions
+        
+        # Query embedding cache for faster repeated queries (primary TTFT optimization)
+        self._query_cache: dict = {}
+        self._cache_size = cache_size
+        
+        # In-flight request deduplication to avoid duplicate API calls
+        # Maps query -> Future, so concurrent identical requests share one API call
+        self._in_flight: dict = {}
+        import threading
+        self._in_flight_lock = threading.Lock()
     
     def _get_client(self):
         """Lazy-load Google GenAI client."""
@@ -179,52 +198,182 @@ class Embedder:
             except ImportError:
                 raise ImportError("google-generativeai package required for embeddings")
         return self._client
+
+    def has_cached_query_embedding(self, query: str) -> bool:
+        """Check if a query embedding is cached."""
+        if query in self._query_cache:
+            return True
+        normalized = query.lower().strip()
+        return normalized in self._query_cache
+
+    def get_cached_query_embedding(self, query: str) -> Optional[List[float]]:
+        """Get a cached query embedding if present."""
+        if query in self._query_cache:
+            return self._query_cache.get(query)
+        normalized = query.lower().strip()
+        return self._query_cache.get(normalized)
+
+    def cache_query_embedding(self, query: str, embedding: List[float]) -> None:
+        """Manually cache a query embedding (with LRU eviction)."""
+        if not query:
+            return
+        normalized = query.lower().strip()
+        # Evict oldest entry if over limit
+        if len(self._query_cache) >= self._cache_size:
+            oldest_key = next(iter(self._query_cache))
+            del self._query_cache[oldest_key]
+        self._query_cache[query] = embedding
+        if normalized != query:
+            self._query_cache[normalized] = embedding
     
-    def embed_text(self, text: str) -> List[float]:
+    def embed_text(self, text: str, max_retries: int = 3) -> List[float]:
         """
-        Embed a single text string.
+        Embed a single text string with retry logic for rate limiting.
         
         Args:
             text: Text to embed
+            max_retries: Maximum retry attempts for 429 errors
             
         Returns:
             Embedding vector
         """
+        import time
+        import random
+        
         client = self._get_client()
         
         # Truncate if too long (model limit is ~10k tokens)
         if len(text) > 30000:
             text = text[:30000]
         
-        result = client.embed_content(
-            model=f"models/{self.model}",
-            content=text,
-            task_type="RETRIEVAL_DOCUMENT",
-        )
+        last_error = None
+        for attempt in range(max_retries + 1):
+            try:
+                result = client.embed_content(
+                    model=f"models/{self.model}",
+                    content=text,
+                    task_type="RETRIEVAL_DOCUMENT",
+                )
+                return result['embedding']
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+                # Check for rate limiting (429) or resource exhausted errors
+                if '429' in error_str or 'resource' in error_str or 'quota' in error_str:
+                    if attempt < max_retries:
+                        # Exponential backoff with jitter: 0.5s, 1s, 2s base
+                        delay = (0.5 * (2 ** attempt)) + (random.random() * 0.3)
+                        logger.warning(f"Rate limited on embed, retry {attempt + 1}/{max_retries} after {delay:.2f}s")
+                        time.sleep(delay)
+                        continue
+                # Non-retryable error
+                raise
         
-        return result['embedding']
+        raise last_error
     
-    def embed_query(self, query: str) -> List[float]:
+    def embed_query(self, query: str, max_retries: int = 3) -> List[float]:
         """
-        Embed a query for retrieval.
+        Embed a query for retrieval with retry logic for rate limiting.
         
         Uses RETRIEVAL_QUERY task type for better query embeddings.
+        Caches results to avoid re-embedding the same queries.
+        Deduplicates concurrent identical requests.
         
         Args:
             query: Search query to embed
+            max_retries: Maximum retry attempts for 429 errors
             
         Returns:
             Embedding vector
         """
+        import time
+        import random
+        from concurrent.futures import Future
+        
+        # Check cache first - this is the primary TTFT optimization
+        if query in self._query_cache:
+            logger.debug(f"Query embedding cache hit: '{query[:50]}...'")
+            return self._query_cache[query]
+        
+        # Also check normalized query (lowercase, stripped)
+        normalized = query.lower().strip()
+        if normalized in self._query_cache:
+            logger.debug(f"Query embedding cache hit (normalized): '{query[:50]}...'")
+            return self._query_cache[normalized]
+        
+        # Request deduplication: if an identical request is in-flight, wait for it
+        with self._in_flight_lock:
+            if normalized in self._in_flight:
+                logger.debug(f"Query embedding in-flight hit: '{query[:50]}...'")
+                future = self._in_flight[normalized]
+            else:
+                # Create a future for this request
+                future = Future()
+                self._in_flight[normalized] = future
+        
+        # If we found an in-flight request, wait for it
+        if future.done() or (normalized in self._in_flight and self._in_flight[normalized] is not future):
+            try:
+                return future.result(timeout=30)
+            except Exception:
+                pass  # Fall through to make our own request
+        
+        try:
+            embedding = self._do_embed_query(query, normalized, max_retries)
+            future.set_result(embedding)
+            return embedding
+        except Exception as e:
+            future.set_exception(e)
+            raise
+        finally:
+            # Clean up in-flight tracking
+            with self._in_flight_lock:
+                if normalized in self._in_flight and self._in_flight[normalized] is future:
+                    del self._in_flight[normalized]
+    
+    def _do_embed_query(self, query: str, normalized: str, max_retries: int) -> List[float]:
+        """Internal method to actually perform the embedding request."""
+        import time
+        import random
+        
         client = self._get_client()
         
-        result = client.embed_content(
-            model=f"models/{self.model}",
-            content=query,
-            task_type="RETRIEVAL_QUERY",
-        )
+        last_error = None
+        for attempt in range(max_retries + 1):
+            try:
+                result = client.embed_content(
+                    model=f"models/{self.model}",
+                    content=query,
+                    task_type="RETRIEVAL_QUERY",
+                )
+                
+                embedding = result['embedding']
+                
+                # Cache both original and normalized query
+                if len(self._query_cache) >= self._cache_size:
+                    # Remove oldest entry (simple LRU approximation)
+                    oldest_key = next(iter(self._query_cache))
+                    del self._query_cache[oldest_key]
+                self._query_cache[query] = embedding
+                self._query_cache[normalized] = embedding
+                
+                return embedding
+                
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+                # Check for rate limiting (429) or resource exhausted errors
+                if '429' in error_str or 'resource' in error_str or 'quota' in error_str:
+                    if attempt < max_retries:
+                        # Exponential backoff with jitter: 0.3s, 0.6s, 1.2s base (faster for queries)
+                        delay = (0.3 * (2 ** attempt)) + (random.random() * 0.2)
+                        logger.warning(f"Rate limited on query embed, retry {attempt + 1}/{max_retries} after {delay:.2f}s")
+                        time.sleep(delay)
+                        continue
+                # Non-retryable error
+                raise
         
-        return result['embedding']
+        raise last_error
     
     def embed_texts(self, texts: List[str]) -> List[List[float]]:
         """
@@ -262,6 +411,8 @@ class Embedder:
                 logger.error(f"Embedding batch failed: {e}")
                 # Fill with None for failed batch
                 all_embeddings.extend([None] * len(batch))
+
+        return all_embeddings
     
     def embed_chunk(self, chunk: SemanticChunk) -> SemanticChunk:
         """
@@ -385,19 +536,16 @@ def get_embedder(
     Get or create the embedder.
     
     Args:
-        use_local: Use local model instead of Gemini
+        use_local: Ignored (Gemini-only policy)
         model: Override model name
     """
     global _embedder
     
     if _embedder is None:
-        if use_local:
-            _embedder = LocalEmbedder(model=model or "all-MiniLM-L6-v2")
-        else:
-            config = get_config()
-            _embedder = Embedder(
-                model=model or config.indexer.embedding_model,
-                api_key=config.gemini_api_key,
-            )
+        config = get_config()
+        _embedder = Embedder(
+            model=model or config.indexer.embedding_model,
+            api_key=config.gemini_api_key,
+        )
     
     return _embedder

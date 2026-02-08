@@ -47,7 +47,8 @@ pub enum TaskState {
 }
 
 /// Task completion callback (called in runner context)
-pub type TaskCompleteFn = unsafe extern "C" fn(handle: u64, result: *const c_void, user_data: *mut c_void);
+pub type TaskCompleteFn =
+    unsafe extern "C" fn(handle: u64, result: *const c_void, user_data: *mut c_void);
 
 /// Task info tracked by runner
 struct TaskInfo {
@@ -107,7 +108,7 @@ pub struct PluginResourceRegistry {
 
 /// Resource counts per module
 #[derive(Debug, Clone, Default)]
-struct ModuleResourceCount {
+pub struct ModuleResourceCount {
     active_tasks: u32,
     pending_timers: u32,
     registered_callbacks: u32,
@@ -123,15 +124,15 @@ impl PluginResourceRegistry {
             module_counts: RwLock::new(HashMap::new()),
         }
     }
-    
+
     fn next_handle(&self) -> u64 {
         self.next_handle.fetch_add(1, Ordering::SeqCst)
     }
-    
+
     /// Spawn a task owned by a module
     pub fn spawn_task(&self, module_id: &str) -> TaskHandle {
         let handle = TaskHandle(self.next_handle());
-        
+
         let info = TaskInfo {
             handle,
             module_id: module_id.to_string(),
@@ -139,26 +140,37 @@ impl PluginResourceRegistry {
             started_at: None,
             completed_at: None,
         };
-        
+
         self.tasks.write().unwrap().insert(handle, info);
         self.increment_count(module_id, |c| c.active_tasks += 1);
-        
+
         handle
     }
-    
+
     /// Mark task as completed
     pub fn complete_task(&self, handle: TaskHandle, success: bool) {
         if let Some(info) = self.tasks.write().unwrap().get_mut(&handle) {
-            info.state = if success { TaskState::Completed } else { TaskState::Failed };
+            info.state = if success {
+                TaskState::Completed
+            } else {
+                TaskState::Failed
+            };
             info.completed_at = Some(Instant::now());
-            self.decrement_count(&info.module_id, |c| c.active_tasks = c.active_tasks.saturating_sub(1));
+            self.decrement_count(&info.module_id, |c| {
+                c.active_tasks = c.active_tasks.saturating_sub(1)
+            });
         }
     }
-    
+
     /// Register a timer owned by a module
-    pub fn register_timer(&self, module_id: &str, interval: Duration, repeating: bool) -> TimerHandle {
+    pub fn register_timer(
+        &self,
+        module_id: &str,
+        interval: Duration,
+        repeating: bool,
+    ) -> TimerHandle {
         let handle = TimerHandle(self.next_handle());
-        
+
         let info = TimerInfo {
             handle,
             module_id: module_id.to_string(),
@@ -167,75 +179,85 @@ impl PluginResourceRegistry {
             next_fire: Instant::now() + interval,
             cancelled: false,
         };
-        
+
         self.timers.write().unwrap().insert(handle, info);
         self.increment_count(module_id, |c| c.pending_timers += 1);
-        
+
         handle
     }
-    
+
     /// Cancel a timer
     pub fn cancel_timer(&self, handle: TimerHandle) {
         if let Some(info) = self.timers.write().unwrap().get_mut(&handle) {
             if !info.cancelled {
                 info.cancelled = true;
-                self.decrement_count(&info.module_id, |c| c.pending_timers = c.pending_timers.saturating_sub(1));
+                self.decrement_count(&info.module_id, |c| {
+                    c.pending_timers = c.pending_timers.saturating_sub(1)
+                });
             }
         }
     }
-    
+
     /// Register a callback owned by a module
-    pub fn register_callback(&self, module_id: &str, callback_ptr: *const c_void) -> CallbackHandle {
+    pub fn register_callback(
+        &self,
+        module_id: &str,
+        callback_ptr: *const c_void,
+    ) -> CallbackHandle {
         let handle = CallbackHandle(self.next_handle());
-        
+
         let info = CallbackInfo {
             handle,
             module_id: module_id.to_string(),
             callback_ptr,
             active: true,
         };
-        
+
         self.callbacks.write().unwrap().insert(handle, info);
         self.increment_count(module_id, |c| c.registered_callbacks += 1);
-        
+
         handle
     }
-    
+
     /// Unregister a callback
     pub fn unregister_callback(&self, handle: CallbackHandle) {
         if let Some(info) = self.callbacks.write().unwrap().remove(&handle) {
             if info.active {
-                self.decrement_count(&info.module_id, |c| c.registered_callbacks = c.registered_callbacks.saturating_sub(1));
+                self.decrement_count(&info.module_id, |c| {
+                    c.registered_callbacks = c.registered_callbacks.saturating_sub(1)
+                });
             }
         }
     }
-    
+
     /// Get resource counts for a module
     pub fn get_module_counts(&self, module_id: &str) -> ModuleResourceCount {
-        self.module_counts.read().unwrap()
+        self.module_counts
+            .read()
+            .unwrap()
             .get(module_id)
             .cloned()
             .unwrap_or_default()
     }
-    
+
     /// Check if module is quiescent (no active resources)
     pub fn is_module_quiescent(&self, module_id: &str) -> QuiescenceCheck {
         let counts = self.get_module_counts(module_id);
-        
+
         QuiescenceCheck {
-            is_quiescent: counts.active_tasks == 0 
-                && counts.pending_timers == 0 
+            is_quiescent: counts.active_tasks == 0
+                && counts.pending_timers == 0
                 && counts.registered_callbacks == 0,
             active_tasks: counts.active_tasks,
             pending_timers: counts.pending_timers,
             registered_callbacks: counts.registered_callbacks,
         }
     }
-    
+
     /// Cancel all resources for a module
     pub fn cancel_module_resources(&self, module_id: &str) -> u32 {
         let mut cancelled = 0u32;
-        
+
         // Cancel tasks
         {
             let mut tasks = self.tasks.write().unwrap();
@@ -246,7 +268,7 @@ impl PluginResourceRegistry {
                 }
             }
         }
-        
+
         // Cancel timers
         {
             let mut timers = self.timers.write().unwrap();
@@ -257,7 +279,7 @@ impl PluginResourceRegistry {
                 }
             }
         }
-        
+
         // Deactivate callbacks
         {
             let mut callbacks = self.callbacks.write().unwrap();
@@ -268,19 +290,19 @@ impl PluginResourceRegistry {
                 }
             }
         }
-        
+
         // Clear counts
         self.module_counts.write().unwrap().remove(module_id);
-        
+
         cancelled
     }
-    
+
     fn increment_count<F: FnOnce(&mut ModuleResourceCount)>(&self, module_id: &str, f: F) {
         let mut counts = self.module_counts.write().unwrap();
         let count = counts.entry(module_id.to_string()).or_default();
         f(count);
     }
-    
+
     fn decrement_count<F: FnOnce(&mut ModuleResourceCount)>(&self, module_id: &str, f: F) {
         let mut counts = self.module_counts.write().unwrap();
         if let Some(count) = counts.get_mut(module_id) {
@@ -309,61 +331,55 @@ pub struct ExtendedRunnerApi {
     /// Base runner API (for compatibility)
     pub base_size: u32,
     pub base_version: u32,
-    
+
     // === Task API (use instead of std::thread::spawn) ===
-    
     /// Spawn a task (returns handle, calls callback on completion)
     /// Plugin must NOT call this after quiescence requested
-    pub spawn_task: Option<unsafe extern "C" fn(
-        task_fn: unsafe extern "C" fn(*mut c_void) -> *const c_void,
-        arg: *mut c_void,
-        on_complete: TaskCompleteFn,
-        user_data: *mut c_void,
-    ) -> u64>,
-    
+    pub spawn_task: Option<
+        unsafe extern "C" fn(
+            task_fn: unsafe extern "C" fn(*mut c_void) -> *const c_void,
+            arg: *mut c_void,
+            on_complete: TaskCompleteFn,
+            user_data: *mut c_void,
+        ) -> u64,
+    >,
+
     /// Cancel a task (best-effort, task may still complete)
     pub cancel_task: Option<unsafe extern "C" fn(handle: u64) -> bool>,
-    
+
     /// Check if task is complete
     pub is_task_complete: Option<unsafe extern "C" fn(handle: u64) -> bool>,
-    
+
     // === Timer API (use instead of sleep loops) ===
-    
     /// Register a timer
-    pub register_timer: Option<unsafe extern "C" fn(
-        interval_ms: u32,
-        repeating: bool,
-        callback: TimerCallbackFn,
-        user_data: *mut c_void,
-    ) -> u64>,
-    
+    pub register_timer: Option<
+        unsafe extern "C" fn(
+            interval_ms: u32,
+            repeating: bool,
+            callback: TimerCallbackFn,
+            user_data: *mut c_void,
+        ) -> u64,
+    >,
+
     /// Cancel a timer
     pub cancel_timer: Option<unsafe extern "C" fn(handle: u64)>,
-    
+
     // === Callback Registration (for tracking) ===
-    
     /// Register a callback with the runner
     /// Used to track callbacks for safe unloading
-    pub register_callback: Option<unsafe extern "C" fn(
-        callback_ptr: *const c_void,
-    ) -> u64>,
-    
+    pub register_callback: Option<unsafe extern "C" fn(callback_ptr: *const c_void) -> u64>,
+
     /// Unregister a callback
     pub unregister_callback: Option<unsafe extern "C" fn(handle: u64)>,
-    
+
     // === Quiescence Protocol ===
-    
     /// Called by runner when preparing to unload
     /// Plugin should start draining and return estimated time to quiescence
-    pub on_quiescence_requested: Option<unsafe extern "C" fn(
-        state: *mut c_void,
-    ) -> u32>, // Returns estimated ms to quiescence
-    
+    pub on_quiescence_requested: Option<unsafe extern "C" fn(state: *mut c_void) -> u32>, // Returns estimated ms to quiescence
+
     /// Called to check if plugin is quiescent
-    pub is_quiescent: Option<unsafe extern "C" fn(
-        state: *mut c_void,
-    ) -> bool>,
-    
+    pub is_quiescent: Option<unsafe extern "C" fn(state: *mut c_void) -> bool>,
+
     /// Reserved for future extensions
     pub _reserved: [usize; 8],
 }
@@ -381,14 +397,14 @@ impl ContractValidator {
     pub fn new(registry: Arc<PluginResourceRegistry>) -> Self {
         Self { registry }
     }
-    
+
     /// Validate that a module can be safely unloaded
     pub fn validate_for_unload(&self, module_id: &str, timeout: Duration) -> UnloadValidation {
         let start = Instant::now();
-        
+
         // First check: immediate quiescence
         let check = self.registry.is_module_quiescent(module_id);
-        
+
         if check.is_quiescent {
             return UnloadValidation {
                 can_unload: true,
@@ -397,18 +413,20 @@ impl ContractValidator {
                 wait_time: Duration::ZERO,
             };
         }
-        
+
         // Second check: wait for quiescence
-        eprintln!("[Contract] Module {} not quiescent: {} tasks, {} timers, {} callbacks",
-            module_id, check.active_tasks, check.pending_timers, check.registered_callbacks);
-        
+        eprintln!(
+            "[Contract] Module {} not quiescent: {} tasks, {} timers, {} callbacks",
+            module_id, check.active_tasks, check.pending_timers, check.registered_callbacks
+        );
+
         // Request cancellation
         let cancelled = self.registry.cancel_module_resources(module_id);
-        
+
         // Wait for cancellation to take effect
         while start.elapsed() < timeout {
             std::thread::sleep(Duration::from_millis(50));
-            
+
             let check = self.registry.is_module_quiescent(module_id);
             if check.is_quiescent {
                 return UnloadValidation {
@@ -419,25 +437,30 @@ impl ContractValidator {
                 };
             }
         }
-        
+
         // Final check
         let check = self.registry.is_module_quiescent(module_id);
-        
+
         UnloadValidation {
             can_unload: false,
             reason: Some(format!(
                 "Module still has {} active tasks, {} timers, {} callbacks after {}ms",
-                check.active_tasks, check.pending_timers, check.registered_callbacks,
+                check.active_tasks,
+                check.pending_timers,
+                check.registered_callbacks,
                 timeout.as_millis()
             )),
             resources_cancelled: cancelled,
             wait_time: start.elapsed(),
         }
     }
-    
+
     /// Force unload (unsafe, may cause crashes)
     pub fn force_unload(&self, module_id: &str) -> u32 {
-        eprintln!("[Contract] FORCE UNLOAD of {} - this may cause crashes!", module_id);
+        eprintln!(
+            "[Contract] FORCE UNLOAD of {} - this may cause crashes!",
+            module_id
+        );
         self.registry.cancel_module_resources(module_id)
     }
 }
@@ -460,15 +483,15 @@ pub mod contract_symbols {
     /// Check if plugin is quiescent (no active work)
     /// bool hot_is_quiescent(State* state)
     pub const IS_QUIESCENT: &[u8] = b"hot_is_quiescent\0";
-    
+
     /// Request quiescence - plugin should start draining
     /// uint32_t hot_request_quiescence(State* state) -> estimated ms
     pub const REQUEST_QUIESCENCE: &[u8] = b"hot_request_quiescence\0";
-    
+
     /// Cancel quiescence request - plugin can resume
     /// void hot_cancel_quiescence(State* state)
     pub const CANCEL_QUIESCENCE: &[u8] = b"hot_cancel_quiescence\0";
-    
+
     /// Get module's self-reported resource counts
     /// void hot_get_resource_counts(uint32_t* tasks, uint32_t* timers, uint32_t* callbacks)
     pub const GET_RESOURCE_COUNTS: &[u8] = b"hot_get_resource_counts\0";
@@ -499,7 +522,7 @@ impl SingletonTracker {
             singletons: RwLock::new(HashMap::new()),
         }
     }
-    
+
     /// Register a singleton owned by a module
     pub fn register(
         &self,
@@ -515,15 +538,18 @@ impl SingletonTracker {
             destructor,
             ptr,
         };
-        
-        self.singletons.write().unwrap().insert(name.to_string(), info);
+
+        self.singletons
+            .write()
+            .unwrap()
+            .insert(name.to_string(), info);
     }
-    
+
     /// Destroy all singletons for a module
     pub fn destroy_module_singletons(&self, module_id: &str) -> u32 {
         let mut destroyed = 0u32;
         let mut to_remove = Vec::new();
-        
+
         {
             let singletons = self.singletons.read().unwrap();
             for (name, info) in singletons.iter() {
@@ -532,17 +558,19 @@ impl SingletonTracker {
                 }
             }
         }
-        
+
         let mut singletons = self.singletons.write().unwrap();
         for name in to_remove {
             if let Some(info) = singletons.remove(&name) {
                 if let Some(dtor) = info.destructor {
-                    unsafe { dtor(info.ptr); }
+                    unsafe {
+                        dtor(info.ptr);
+                    }
                 }
                 destroyed += 1;
             }
         }
-        
+
         destroyed
     }
 }
@@ -554,50 +582,50 @@ impl SingletonTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_resource_registry() {
         let registry = PluginResourceRegistry::new();
-        
+
         // Spawn tasks
         let h1 = registry.spawn_task("test_module");
         let h2 = registry.spawn_task("test_module");
-        
+
         let check = registry.is_module_quiescent("test_module");
         assert!(!check.is_quiescent);
         assert_eq!(check.active_tasks, 2);
-        
+
         // Complete one task
         registry.complete_task(h1, true);
-        
+
         let check = registry.is_module_quiescent("test_module");
         assert!(!check.is_quiescent);
         assert_eq!(check.active_tasks, 1);
-        
+
         // Complete second task
         registry.complete_task(h2, true);
-        
+
         let check = registry.is_module_quiescent("test_module");
         assert!(check.is_quiescent);
     }
-    
+
     #[test]
     fn test_cancel_module_resources() {
         let registry = PluginResourceRegistry::new();
-        
+
         registry.spawn_task("mod1");
         registry.spawn_task("mod1");
         registry.register_timer("mod1", Duration::from_secs(1), false);
-        
+
         registry.spawn_task("mod2");
-        
+
         // Cancel mod1
         let cancelled = registry.cancel_module_resources("mod1");
         assert!(cancelled > 0);
-        
+
         // mod1 should be quiescent
         assert!(registry.is_module_quiescent("mod1").is_quiescent);
-        
+
         // mod2 should still have resources
         assert!(!registry.is_module_quiescent("mod2").is_quiescent);
     }

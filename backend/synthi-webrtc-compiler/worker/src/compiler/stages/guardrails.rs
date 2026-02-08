@@ -10,9 +10,15 @@ use regex::Regex;
 /// Apply guardrails to shared.h content
 pub fn apply_shared_guardrails(content: &str) -> String {
     let mut result = content.to_string();
-    
+
     // Guardrails: AI sometimes typedefs X11 types to void, which conflicts with Xlib headers.
-    for bad in ["typedef void Display", "typedef void GC", "typedef void Atom", "typedef void XIM", "typedef void XIC"] {
+    for bad in [
+        "typedef void Display",
+        "typedef void GC",
+        "typedef void Atom",
+        "typedef void XIM",
+        "typedef void XIC",
+    ] {
         if result.contains(bad) {
             result = result.replace(bad, "// stripped invalid typedef\n");
         }
@@ -20,7 +26,14 @@ pub fn apply_shared_guardrails(content: &str) -> String {
 
     // Strip conflicting forward declarations of X11 types and normalize struct field types.
     for bad in [
-        "struct Display;", "struct Window;", "struct Atom;", "struct XIM;", "struct XIC;", "struct Pixmap;", "struct GC;", "struct XWindowAttributes;"
+        "struct Display;",
+        "struct Window;",
+        "struct Atom;",
+        "struct XIM;",
+        "struct XIC;",
+        "struct Pixmap;",
+        "struct GC;",
+        "struct XWindowAttributes;",
     ] {
         if result.contains(bad) {
             result = result.replace(bad, "// stripped conflicting X11 forward decl\n");
@@ -48,22 +61,23 @@ pub fn apply_shared_guardrails(content: &str) -> String {
     }
 
     // FIX: gui_on_load declaration MUST have 3 parameters to match implementation
-    if result.contains("gui_on_load(void* prev_state, void* window_ptr)") && 
-       !result.contains("gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)") {
+    if result.contains("gui_on_load(void* prev_state, void* window_ptr)")
+        && !result.contains("gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)")
+    {
         result = result.replace(
             "gui_on_load(void* prev_state, void* window_ptr)",
-            "gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)"
+            "gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)",
         );
         eprintln!("[Guardrail] Fixed gui_on_load declaration in shared.h: added missing core_api_ptr parameter");
     }
-    
+
     result
 }
 
 /// Apply guardrails to core.cpp content (requires processed shared.h for context)
-pub fn apply_core_guardrails(content: &str, shared_content: &str, allow_gui: bool) -> String {
+pub fn apply_core_guardrails(content: &str, _shared_content: &str, allow_gui: bool) -> String {
     let mut result = content.to_string();
-    
+
     // Fix common AI mistakes in core.cpp before compilation.
     if result.contains("is_running") {
         result = result.replace("is_running", "running");
@@ -73,17 +87,35 @@ pub fn apply_core_guardrails(content: &str, shared_content: &str, allow_gui: boo
     // Only applies if we are strictly enforcing core/gui split (allow_gui = false)
     if !allow_gui {
         let x11_type_patterns = [
-            "Display*", "Display *", "Window*", "XIM", "XIC", "Atom", "Colormap", "Pixmap", "GC ",
-            "XEvent", "XOpenDisplay", "XCloseDisplay", "XCreateWindow", "XDestroyWindow",
-            "XOpenIM", "XCreateIC", "XCreateGC", "XFreeGC", "XCreatePixmap", "XFreePixmap",
+            "Display*",
+            "Display *",
+            "Window*",
+            "XIM",
+            "XIC",
+            "Atom",
+            "Colormap",
+            "Pixmap",
+            "GC ",
+            "XEvent",
+            "XOpenDisplay",
+            "XCloseDisplay",
+            "XCreateWindow",
+            "XDestroyWindow",
+            "XOpenIM",
+            "XCreateIC",
+            "XCreateGC",
+            "XFreeGC",
+            "XCreatePixmap",
+            "XFreePixmap",
         ];
-        
+
         let mut cleaned_lines = Vec::new();
         for line in result.lines() {
             let has_x11 = x11_type_patterns.iter().any(|pat| line.contains(pat));
-            let is_comment = line.trim_start().starts_with("//") || line.trim_start().starts_with("/*");
+            let is_comment =
+                line.trim_start().starts_with("//") || line.trim_start().starts_with("/*");
             let is_include = line.trim_start().starts_with("#include");
-            
+
             if has_x11 && !is_comment && !is_include {
                 cleaned_lines.push(format!("// [X11-stripped] {}", line));
             } else {
@@ -107,39 +139,70 @@ pub fn apply_core_guardrails(content: &str, shared_content: &str, allow_gui: boo
 
     // CRITICAL FIX: Transform malloc-based on_load to static storage
     if result.contains("malloc(sizeof(AppState))") && result.contains("on_load") {
-        if !result.contains("static AppState app_state") && !result.contains("static CoreState core_state") {
+        if !result.contains("static AppState app_state")
+            && !result.contains("static CoreState core_state")
+        {
             if let Some(on_load_pos) = result.find("extern \"C\" void* on_load") {
                 result.insert_str(on_load_pos, "// [Guardrail] Injected static storage for HMR\nstatic AppState app_state = {0};\n\n");
             } else if let Some(on_load_pos) = result.find("extern \"C\" void* core_on_load") {
                 result.insert_str(on_load_pos, "// [Guardrail] Injected static storage for HMR\nstatic AppState app_state = {0};\n\n");
             }
         }
-        
+
         let re_malloc = Regex::new(r"AppState\*\s+state\s*=\s*\(AppState\*\)\s*malloc\s*\(\s*sizeof\s*\(\s*AppState\s*\)\s*\)\s*;").unwrap();
         result = re_malloc.replace_all(&result, "AppState* state = (prev_state) ? (AppState*)prev_state : &app_state; // [Guardrail] Fixed malloc->static").to_string();
-        
+
         let re_malloc2 = Regex::new(r"CoreState\*\s+state\s*=\s*\(CoreState\*\)\s*malloc\s*\(\s*sizeof\s*\(\s*CoreState\s*\)\s*\)\s*;").unwrap();
         result = re_malloc2.replace_all(&result, "CoreState* state = (prev_state) ? (CoreState*)prev_state : &core_state; // [Guardrail] Fixed malloc->static").to_string();
-        
-        let re_if_malloc = Regex::new(r"if\s*\(\s*!prev_state\s*\)\s*\{\s*state\s*=\s*\(AppState\*\)\s*malloc[^}]+\}").unwrap();
-        result = re_if_malloc.replace_all(&result, "if (!prev_state) { state = &app_state; /* [Guardrail] Fixed malloc->static */ }").to_string();
+
+        let re_if_malloc = Regex::new(
+            r"if\s*\(\s*!prev_state\s*\)\s*\{\s*state\s*=\s*\(AppState\*\)\s*malloc[^}]+\}",
+        )
+        .unwrap();
+        result = re_if_malloc
+            .replace_all(
+                &result,
+                "if (!prev_state) { state = &app_state; /* [Guardrail] Fixed malloc->static */ }",
+            )
+            .to_string();
     }
 
     // FIX: Detect and warn about free(state) which causes crashes on reload
     if result.contains("free(state)") {
-        result = result.replace("free(state);", "// free(state); // Commented - runner manages state");
+        result = result.replace(
+            "free(state);",
+            "// free(state); // Commented - runner manages state",
+        );
     }
 
     // FIX: Detect and warn about memset on state which wipes preserved HMR state
-    if result.contains("memset(state") || result.contains("memset(&app_state") || 
-        result.contains("memset(&state") || result.contains("memset(&core_state") ||
-        result.contains("memset( state") {
-        let re_memset = Regex::new(r"memset\s*\(\s*(state|&app_state|&core_state|&state|&gui_app_state)[^;]*\)\s*;").unwrap();
-        result = re_memset.replace_all(&result, "// [Guardrail] memset REMOVED to preserve HMR state").to_string();
+    if result.contains("memset(state")
+        || result.contains("memset(&app_state")
+        || result.contains("memset(&state")
+        || result.contains("memset(&core_state")
+        || result.contains("memset( state")
+    {
+        let re_memset = Regex::new(
+            r"memset\s*\(\s*(state|&app_state|&core_state|&state|&gui_app_state)[^;]*\)\s*;",
+        )
+        .unwrap();
+        result = re_memset
+            .replace_all(
+                &result,
+                "// [Guardrail] memset REMOVED to preserve HMR state",
+            )
+            .to_string();
     }
 
     // Drop writes/reads to non-existent XWindowAttributes fields
-    for bad_field in ["event_mask", "damage", "border_pixel", "background_pixel", "saved_attributes", "attributes_mask"] {
+    for bad_field in [
+        "event_mask",
+        "damage",
+        "border_pixel",
+        "background_pixel",
+        "saved_attributes",
+        "attributes_mask",
+    ] {
         if result.contains(bad_field) {
             let mut cleaned = String::new();
             for line in result.lines() {
@@ -163,10 +226,17 @@ pub fn apply_core_guardrails(content: &str, shared_content: &str, allow_gui: boo
     if result.contains("SDL_") && !result.contains("#include <SDL2/SDL.h>") {
         result = format!("#include <SDL2/SDL.h>\n{}", result);
     }
-    if (result.contains("XLookupString") || result.contains("XK_Escape")) && !result.contains("#include <X11/Xutil.h>") {
-        result = format!("#include <X11/Xutil.h>\n#include <X11/keysym.h>\n{}", result);
+    if (result.contains("XLookupString") || result.contains("XK_Escape"))
+        && !result.contains("#include <X11/Xutil.h>")
+    {
+        result = format!(
+            "#include <X11/Xutil.h>\n#include <X11/keysym.h>\n{}",
+            result
+        );
     }
-    if (result.contains("dlopen") || result.contains("dlsym")) && !result.contains("#include <dlfcn.h>") {
+    if (result.contains("dlopen") || result.contains("dlsym"))
+        && !result.contains("#include <dlfcn.h>")
+    {
         result = format!("#include <dlfcn.h>\n{}", result);
     }
 
@@ -182,8 +252,11 @@ pub fn apply_core_guardrails(content: &str, shared_content: &str, allow_gui: boo
     // FIX: Remove duplicate defines that are already in shared.h
     if result.contains("#include \"shared.h\"") {
         result = result.replace("#define CORE_STATE_MAGIC", "// #define CORE_STATE_MAGIC");
-        result = result.replace("#define SYNTHI_ABI_VERSION", "// #define SYNTHI_ABI_VERSION");
-        
+        result = result.replace(
+            "#define SYNTHI_ABI_VERSION",
+            "// #define SYNTHI_ABI_VERSION",
+        );
+
         // Strip duplicate AppState struct/typedef
         if let Some(start) = result.find("typedef struct AppState") {
             if let Some(end) = result[start..].find("} AppState;") {
@@ -195,12 +268,65 @@ pub fn apply_core_guardrails(content: &str, shared_content: &str, allow_gui: boo
 
         if let Some(start) = result.find("typedef struct {") {
             if let Some(end) = result[start..].find("} AppState;") {
-                 let block_end = start + end + "} AppState;".len();
-                 let block = result[start..block_end].to_string();
-                 if block.contains("magic") && block.contains("struct_size") {
-                     result = result.replace(&block, "// AppState defined in shared.h");
-                 }
+                let block_end = start + end + "} AppState;".len();
+                let block = result[start..block_end].to_string();
+                if block.contains("magic") && block.contains("struct_size") {
+                    result = result.replace(&block, "// AppState defined in shared.h");
+                }
             }
+        }
+    }
+
+    // FIX: Support standard main() C++ apps by transforming them to plugin format
+    // This allows users to paste standard X11/SDL code with int main() and have it run inside the runner
+    if !result.contains("core_on_load") && !result.contains("on_load") {
+        let re_main_no_args = Regex::new(r"\bint\s+main\s*\(\s*(void)?\s*\)").unwrap();
+        let re_main_args = Regex::new(r"\bint\s+main\s*\(").unwrap();
+        
+        let mut handled = false;
+
+        if re_main_no_args.is_match(&result) {
+             // Case 1: int main()
+             result = re_main_no_args.replace(&result, "int user_main()").to_string();
+             
+             result.push_str("\n\n// [Guardrail] Injected main() adapter (no-args)\n");
+             result.push_str("#include <pthread.h>\n");
+             result.push_str("int user_main();\n"); 
+             result.push_str("extern \"C\" {\n");
+             result.push_str("    static void* main_thread_func(void* arg) {\n");
+             result.push_str("        user_main();\n");
+             result.push_str("        return NULL;\n");
+             result.push_str("    }\n");
+             handled = true;
+        } else if re_main_args.is_match(&result) {
+             // Case 2: int main(argc, argv) or similar
+             result = re_main_args.replace(&result, "int user_main(").to_string();
+             
+             result.push_str("\n\n// [Guardrail] Injected main() adapter (with-args)\n");
+             result.push_str("#include <pthread.h>\n");
+             result.push_str("int user_main(int argc, char** argv);\n");
+             result.push_str("extern \"C\" {\n");
+             result.push_str("    static void* main_thread_func(void* arg) {\n");
+             result.push_str("        char* app_name = (char*)\"app\";\n");
+             result.push_str("        char* argv[] = {app_name, NULL};\n");
+             result.push_str("        user_main(1, argv);\n");
+             result.push_str("        return NULL;\n");
+             result.push_str("    }\n");
+             handled = true;
+        }
+
+        if handled {
+            // Implement required plugin ABI (common)
+            result.push_str("    void* core_on_load(void* prev_state, void* api) {\n");
+            result.push_str("        pthread_t thread;\n");
+            result.push_str("        pthread_create(&thread, NULL, main_thread_func, NULL);\n");
+            result.push_str("        pthread_detach(thread);\n");
+            result.push_str("        return NULL;\n");
+            result.push_str("    }\n");
+            result.push_str("    void core_on_update(void* state, float dt) {\n");
+            result.push_str("        // Main loop is running in separate thread\n");
+            result.push_str("    }\n");
+            result.push_str("}\n");
         }
     }
 
@@ -317,17 +443,33 @@ typedef struct HostKvApiV1 {
 /// Apply guardrails to gui.cpp content (requires processed shared.h for context)
 pub fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
     let mut result = content.to_string();
-    
+
     // Detect if shared.h has full struct definitions
-    let shared_has_full_hostkv = shared_content.contains("struct HostKvApiV1 {") ||
-                                  shared_content.contains("struct SynthiHostContextV1 {") ||
-                                  shared_content.contains("struct SynthiNamespaceSchemaV1 {");
+    let shared_has_full_hostkv = shared_content.contains("struct HostKvApiV1 {")
+        || shared_content.contains("struct SynthiHostContextV1 {")
+        || shared_content.contains("struct SynthiNamespaceSchemaV1 {");
 
     // Strip X11-related functions
     let x11_type_patterns = [
-        "Display*", "Display *", "XIM", "XIC", "Atom", "Colormap", "Pixmap", "GC ",
-        "XEvent", "XOpenDisplay", "XCloseDisplay", "XCreateWindow", "XDestroyWindow",
-        "XOpenIM", "XCreateIC", "XCreateGC", "XFreeGC", "XCreatePixmap", "XFreePixmap",
+        "Display*",
+        "Display *",
+        "XIM",
+        "XIC",
+        "Atom",
+        "Colormap",
+        "Pixmap",
+        "GC ",
+        "XEvent",
+        "XOpenDisplay",
+        "XCloseDisplay",
+        "XCreateWindow",
+        "XDestroyWindow",
+        "XOpenIM",
+        "XCreateIC",
+        "XCreateGC",
+        "XFreeGC",
+        "XCreatePixmap",
+        "XFreePixmap",
     ];
     let mut cleaned_lines = Vec::new();
     for line in result.lines() {
@@ -355,7 +497,7 @@ pub fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
             result = format!("#include \"shared.h\"\n{}", result);
         }
     }
-    
+
     // Strip duplicate AppState definitions
     if result.contains("#include \"shared.h\"") {
         if let Some(start) = result.find("typedef struct AppState") {
@@ -368,14 +510,14 @@ pub fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
 
         if let Some(start) = result.find("typedef struct {") {
             if let Some(end) = result[start..].find("} AppState;") {
-                 let block_end = start + end + "} AppState;".len();
-                 let block = result[start..block_end].to_string();
-                 if block.contains("magic") && block.contains("struct_size") {
-                     result = result.replace(&block, "// AppState defined in shared.h");
-                 }
+                let block_end = start + end + "} AppState;".len();
+                let block = result[start..block_end].to_string();
+                if block.contains("magic") && block.contains("struct_size") {
+                    result = result.replace(&block, "// AppState defined in shared.h");
+                }
             }
         }
-        
+
         if let Some(start) = result.find("struct AppState {") {
             if let Some(end) = result[start..].find("};") {
                 let block_end = start + end + "};".len();
@@ -387,31 +529,41 @@ pub fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
         }
 
         // Handle Host KV structs
-        for struct_name in &["HostKvApiV1", "SynthiHostContextV1", "SynthiNamespaceSchemaV1"] {
-             let typedef_pattern = format!("typedef struct {} {};", struct_name, struct_name);
-             if result.contains(&typedef_pattern) {
-                 result = result.replace(&typedef_pattern, &format!("// {} forward-declared in shared.h", struct_name));
-             }
-             
-             if shared_has_full_hostkv {
-                 let struct_decl = format!("struct {} {{", struct_name);
-                 if let Some(start) = result.find(&struct_decl) {
-                     if let Some(end) = result[start..].find("};") {
-                         let block_end = start + end + "};".len();
-                         let block = result[start..block_end].to_string();
-                         result = result.replace(&block, &format!("// {} fully defined in shared.h", struct_name));
-                     }
-                 }
-             }
+        for struct_name in &[
+            "HostKvApiV1",
+            "SynthiHostContextV1",
+            "SynthiNamespaceSchemaV1",
+        ] {
+            let typedef_pattern = format!("typedef struct {} {};", struct_name, struct_name);
+            if result.contains(&typedef_pattern) {
+                result = result.replace(
+                    &typedef_pattern,
+                    &format!("// {} forward-declared in shared.h", struct_name),
+                );
+            }
+
+            if shared_has_full_hostkv {
+                let struct_decl = format!("struct {} {{", struct_name);
+                if let Some(start) = result.find(&struct_decl) {
+                    if let Some(end) = result[start..].find("};") {
+                        let block_end = start + end + "};".len();
+                        let block = result[start..block_end].to_string();
+                        result = result.replace(
+                            &block,
+                            &format!("// {} fully defined in shared.h", struct_name),
+                        );
+                    }
+                }
+            }
         }
-        
+
         // Inject Host KV definitions if needed
-        let uses_hostkv_types = result.contains("SynthiHostContextV1") || 
-                                result.contains("SynthiNamespaceSchemaV1") ||
-                                result.contains("HostKvApiV1") ||
-                                result.contains("g_gui_schemas") ||
-                                result.contains("host_kv_schemas");
-        
+        let uses_hostkv_types = result.contains("SynthiHostContextV1")
+            || result.contains("SynthiNamespaceSchemaV1")
+            || result.contains("HostKvApiV1")
+            || result.contains("g_gui_schemas")
+            || result.contains("host_kv_schemas");
+
         if uses_hostkv_types && !shared_has_full_hostkv {
             let hostkv_header = get_hostkv_header();
             if let Some(include_end) = result.rfind("#include") {
@@ -426,17 +578,23 @@ pub fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
     }
 
     // FIX: gui_on_load MUST have 3 parameters
-    if result.contains("gui_on_load(void* prev_state, void* window_ptr)") && 
-       !result.contains("gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)") {
+    if result.contains("gui_on_load(void* prev_state, void* window_ptr)")
+        && !result.contains("gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)")
+    {
         result = result.replace(
             "gui_on_load(void* prev_state, void* window_ptr)",
-            "gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)"
+            "gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)",
         );
     }
 
     // FIX: Comment out SDL_RenderPresent
     let re_present = Regex::new(r"SDL_RenderPresent\s*\([^)]*\)\s*;").unwrap();
-    result = re_present.replace_all(&result, "/* SDL_RenderPresent removed - runner handles this */").to_string();
+    result = re_present
+        .replace_all(
+            &result,
+            "/* SDL_RenderPresent removed - runner handles this */",
+        )
+        .to_string();
 
     // FIX: Replace SDL_GetKeyboardWindow
     if result.contains("SDL_GetKeyboardWindow") {
@@ -445,30 +603,47 @@ pub fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
 
     // Convert malloc-based gui_on_load to static storage
     if result.contains("malloc(sizeof(AppState))") && result.contains("gui_on_load") {
-        if !result.contains("static AppState gui_app_state") && !result.contains("static GuiState gui_state") {
+        if !result.contains("static AppState gui_app_state")
+            && !result.contains("static GuiState gui_state")
+        {
             if let Some(on_load_pos) = result.find("extern \"C\" void* gui_on_load") {
                 result.insert_str(on_load_pos, "// [Guardrail] Injected static storage for HMR\nstatic AppState gui_app_state = {0};\n\n");
             }
         }
-        
+
         let re_malloc = Regex::new(r"AppState\*\s+state\s*=\s*\(AppState\*\)\s*malloc\s*\(\s*sizeof\s*\(\s*AppState\s*\)\s*\)\s*;").unwrap();
         result = re_malloc.replace_all(&result, "AppState* state = (prev_state) ? (AppState*)prev_state : &gui_app_state; // [Guardrail] Fixed malloc->static").to_string();
-        
+
         let re_malloc2 = Regex::new(r"GuiState\*\s+state\s*=\s*\(GuiState\*\)\s*malloc\s*\(\s*sizeof\s*\(\s*GuiState\s*\)\s*\)\s*;").unwrap();
         result = re_malloc2.replace_all(&result, "GuiState* state = (prev_state) ? (GuiState*)prev_state : &gui_state; // [Guardrail] Fixed malloc->static").to_string();
     }
 
     // FIX: free(state) crashes
     if result.contains("free(state)") {
-        result = result.replace("free(state);", "// free(state); // Commented - runner manages state");
+        result = result.replace(
+            "free(state);",
+            "// free(state); // Commented - runner manages state",
+        );
     }
 
     // FIX: memset wipes HMR state
-    if result.contains("memset(state") || result.contains("memset(&app_state") || 
-        result.contains("memset(&gui_state") || result.contains("memset(&state") ||
-        result.contains("memset(&gui_app_state") || result.contains("memset( state") {
-        let re_memset = Regex::new(r"memset\s*\(\s*(state|&app_state|&gui_state|&state|&gui_app_state)[^;]*\)\s*;").unwrap();
-        result = re_memset.replace_all(&result, "// [Guardrail] memset REMOVED to preserve HMR state").to_string();
+    if result.contains("memset(state")
+        || result.contains("memset(&app_state")
+        || result.contains("memset(&gui_state")
+        || result.contains("memset(&state")
+        || result.contains("memset(&gui_app_state")
+        || result.contains("memset( state")
+    {
+        let re_memset = Regex::new(
+            r"memset\s*\(\s*(state|&app_state|&gui_state|&state|&gui_app_state)[^;]*\)\s*;",
+        )
+        .unwrap();
+        result = re_memset
+            .replace_all(
+                &result,
+                "// [Guardrail] memset REMOVED to preserve HMR state",
+            )
+            .to_string();
     }
 
     // FIX: app_state -> gui_app_state in gui.cpp
@@ -476,7 +651,7 @@ pub fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
         if result.contains("&app_state") && !result.contains("&gui_app_state") {
             result = result.replace("&app_state", "&gui_app_state");
         }
-        
+
         if result.contains("gui_app_state") {
             let placeholder = "__GUI_APP_STATE_PLACEHOLDER__";
             let temp_content = result.replace("gui_app_state", placeholder);
@@ -489,16 +664,33 @@ pub fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
 
     // Add entrypoint if needed
     if result.contains("main(") && !result.contains("extern \"C\" void* entrypoint") {
-         result.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
+        result.push_str(
+            "\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n",
+        );
     }
 
     // FIX: renderer -> state->renderer
-    if result.contains("SDL_Render") || result.contains("SDL_SetRenderDrawColor") || result.contains("draw_text") {
+    if result.contains("SDL_Render")
+        || result.contains("SDL_SetRenderDrawColor")
+        || result.contains("draw_text")
+    {
         let fixes = [
-            ("SDL_RenderFillRect(renderer,", "SDL_RenderFillRect(state->renderer,"),
-            ("SDL_RenderDrawRect(renderer,", "SDL_RenderDrawRect(state->renderer,"),
-            ("SDL_SetRenderDrawColor(renderer,", "SDL_SetRenderDrawColor(state->renderer,"),
-            ("SDL_RenderClear(renderer)", "SDL_RenderClear(state->renderer)"),
+            (
+                "SDL_RenderFillRect(renderer,",
+                "SDL_RenderFillRect(state->renderer,",
+            ),
+            (
+                "SDL_RenderDrawRect(renderer,",
+                "SDL_RenderDrawRect(state->renderer,",
+            ),
+            (
+                "SDL_SetRenderDrawColor(renderer,",
+                "SDL_SetRenderDrawColor(state->renderer,",
+            ),
+            (
+                "SDL_RenderClear(renderer)",
+                "SDL_RenderClear(state->renderer)",
+            ),
             ("draw_text(renderer,", "draw_text(state->renderer,"),
         ];
         for (wrong, correct) in &fixes {
@@ -524,11 +716,12 @@ pub fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
             }
         }
     }
-    
+
     // Inject GUI state serialization stubs
-    if result.contains("gui_on_load") && 
-       !result.contains("gui_on_save_state") &&
-       !result.contains("gui_get_state_schema_hash") {
+    if result.contains("gui_on_load")
+        && !result.contains("gui_on_save_state")
+        && !result.contains("gui_get_state_schema_hash")
+    {
         let gui_serial_stubs = r#"
 
 // [Guardrail] State serialization stubs for Full HMR capability (GUI)
@@ -550,6 +743,6 @@ extern "C" void synthi_free_json(char* json) {
 "#;
         result.push_str(gui_serial_stubs);
     }
-    
+
     result
 }

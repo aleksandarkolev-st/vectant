@@ -41,6 +41,7 @@ class ExpansionRule:
     direction: str  # "forward", "backward", "both"
     max_hops: int
     score_decay: float  # How much to reduce score per hop
+    causal_cost: float = 1.0  # Causal distance per hop
     priority: int = 0  # Higher = process first
     max_per_source: int = 5  # Max expansions per source symbol
 
@@ -76,37 +77,37 @@ class GraphExpander:
         # Find definitions of things we import/use (HIGH PRIORITY)
         ExpansionRule(
             EdgeType.IMPORTS, "forward", max_hops=1, score_decay=0.8,
-            priority=10, max_per_source=5
+            priority=10, max_per_source=5, causal_cost=0.7
         ),
         
         # Find what we call (MEDIUM-HIGH - needed for understanding)
         ExpansionRule(
-            EdgeType.CALLS, "forward", max_hops=2, score_decay=0.6,
-            priority=8, max_per_source=5
+            EdgeType.CALLS, "forward", max_hops=3, score_decay=0.6,
+            priority=8, max_per_source=5, causal_cost=0.5
         ),
         
         # Find implementations (HIGH - needed for interfaces)
         ExpansionRule(
             EdgeType.IMPLEMENTS, "forward", max_hops=1, score_decay=0.85,
-            priority=9, max_per_source=3
+            priority=9, max_per_source=3, causal_cost=0.6
         ),
         
         # Find parent classes (MEDIUM)
         ExpansionRule(
-            EdgeType.INHERITS, "forward", max_hops=2, score_decay=0.7,
-            priority=7, max_per_source=3
+            EdgeType.INHERITS, "forward", max_hops=3, score_decay=0.7,
+            priority=7, max_per_source=3, causal_cost=0.7
         ),
         
         # Find type definitions (MEDIUM)
         ExpansionRule(
             EdgeType.USES_TYPE, "forward", max_hops=1, score_decay=0.65,
-            priority=6, max_per_source=5
+            priority=6, max_per_source=5, causal_cost=0.8
         ),
         
         # Find callers (LOW PRIORITY - can explode quickly)
         ExpansionRule(
             EdgeType.CALLS, "backward", max_hops=1, score_decay=0.4,
-            priority=3, max_per_source=3  # Very limited!
+            priority=3, max_per_source=3, causal_cost=1.2  # Very limited!
         ),
     ]
     
@@ -303,6 +304,7 @@ class GraphExpander:
                 candidate.combined_score,
                 candidate.expansion_depth,
                 candidate.expansion_path,
+                candidate.causal_distance,
                 seen_ids,
                 module_symbol_counts,
                 module_file_counts,
@@ -327,6 +329,7 @@ class GraphExpander:
         base_score: float,
         current_depth: int,
         current_path: List[str],
+        current_causal: float,
         seen_ids: Set[str],
         module_symbol_counts: Dict[str, int],
         module_file_counts: Dict[str, Set[str]],
@@ -351,6 +354,7 @@ class GraphExpander:
                         seen_ids,
                         module_symbol_counts,
                         module_file_counts,
+                        causal_distance=current_causal + rule.causal_cost,
                     )
                     if cand:
                         candidates.append(cand)
@@ -369,6 +373,7 @@ class GraphExpander:
                         seen_ids,
                         module_symbol_counts,
                         module_file_counts,
+                        causal_distance=current_causal + rule.causal_cost,
                     )
                     if cand:
                         candidates.append(cand)
@@ -385,6 +390,7 @@ class GraphExpander:
         seen_ids: Set[str],
         module_symbol_counts: Dict[str, int],
         module_file_counts: Dict[str, Set[str]],
+        causal_distance: float = 0.0,
     ) -> Optional[RetrievalCandidate]:
         """Create a retrieval candidate from a symbol name with limit checks."""
         # Look up the symbol in structural index
@@ -419,6 +425,7 @@ class GraphExpander:
             source=source,
             expansion_depth=depth,
             expansion_path=path,
+            causal_distance=causal_distance,
         )
     
     def _get_chunk_for_symbol(

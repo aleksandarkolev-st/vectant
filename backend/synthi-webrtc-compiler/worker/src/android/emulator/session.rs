@@ -19,6 +19,7 @@ impl EmulatorSession {
                 state: Arc::new(Mutex::new(EmulatorState::Stopped)),
                 emulator_process: Arc::new(Mutex::new(None)),
                 xvfb_process: Arc::new(Mutex::new(None)),
+                x11_display: Arc::new(Mutex::new(String::new())),
                 serial: Arc::new(Mutex::new(None)),
                 shutdown_tx: None,
                 logcat_process: Arc::new(Mutex::new(None)),

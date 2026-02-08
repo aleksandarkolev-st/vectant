@@ -520,7 +520,11 @@ pub async fn reconcile_and_stream_with_rules(
         }
 
         let is_text = is_probably_text(&ch.path, &ch.bytes);
-        let mode = if ch.existed_before { "overwrite" } else { "create" };
+        let mode = if ch.existed_before {
+            "overwrite"
+        } else {
+            "create"
+        };
 
         let b64 = base64::engine::general_purpose::STANDARD.encode(&ch.bytes);
         let chunk_chars = cfg.chunk_chars.max(4096);

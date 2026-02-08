@@ -1,19 +1,19 @@
 #[cfg(target_os = "linux")]
-use x11rb::connection::Connection;
-#[cfg(target_os = "linux")]
-use x11rb::protocol::xproto::*;
-#[cfg(target_os = "linux")]
-use x11rb::protocol::shm::ConnectionExt as ShmConnectionExt;
-#[cfg(target_os = "linux")]
-use std::time::{Duration, Instant};
-#[cfg(target_os = "linux")]
-use std::ptr;
+// use crate::runtime::platform::sdl_defs::*;
 #[cfg(target_os = "linux")]
 use std::ffi::c_void;
 #[cfg(target_os = "linux")]
+use std::ptr;
+#[cfg(target_os = "linux")]
 use std::sync::mpsc;
 #[cfg(target_os = "linux")]
-use crate::runtime::platform::sdl_defs::*;
+use std::time::{Duration, Instant};
+#[cfg(target_os = "linux")]
+use x11rb::connection::Connection;
+#[cfg(target_os = "linux")]
+use x11rb::protocol::shm::ConnectionExt as ShmConnectionExt;
+#[cfg(target_os = "linux")]
+use x11rb::protocol::xproto::*;
 
 #[cfg(target_os = "linux")]
 pub fn create_shm_segment(size: usize) -> Option<(i32, *mut u8)> {
@@ -68,9 +68,7 @@ pub fn capture_frame(
                 // Check if window is mapped (viewable)
                 if let Ok(attrs) = x11_conn.get_window_attributes(child) {
                     if let Ok(attr_reply) = attrs.reply() {
-                        if attr_reply.map_state
-                            == MapState::VIEWABLE
-                        {
+                        if attr_reply.map_state == MapState::VIEWABLE {
                             found_window = Some(child);
                             break;
                         }

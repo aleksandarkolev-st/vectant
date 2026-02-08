@@ -104,23 +104,24 @@ impl KnownGoodStore {
             persistence_path: None,
         }
     }
-    
+
     pub fn with_persistence(path: PathBuf) -> Self {
         let mut store = Self::new();
         store.persistence_path = Some(path.clone());
-        
+
         // Try to load existing data
         if path.exists() {
             if let Ok(data) = std::fs::read_to_string(&path) {
-                if let Ok(loaded) = serde_json::from_str::<HashMap<String, KnownGoodModule>>(&data) {
+                if let Ok(loaded) = serde_json::from_str::<HashMap<String, KnownGoodModule>>(&data)
+                {
                     store.modules = loaded;
                 }
             }
         }
-        
+
         store
     }
-    
+
     /// Mark a module as known good
     pub fn mark_good(
         &mut self,
@@ -140,16 +141,16 @@ impl KnownGoodStore {
             uptime_secs,
             snapshot_path: None,
         };
-        
+
         self.modules.insert(slot_id.to_string(), info);
         self.persist();
     }
-    
+
     /// Get last known good for a slot
     pub fn get(&self, slot_id: &str) -> Option<&KnownGoodModule> {
         self.modules.get(slot_id)
     }
-    
+
     /// Check if known good exists and is still valid
     pub fn is_valid(&self, slot_id: &str) -> bool {
         if let Some(info) = self.modules.get(slot_id) {
@@ -159,7 +160,7 @@ impl KnownGoodStore {
             false
         }
     }
-    
+
     fn persist(&self) {
         if let Some(ref path) = self.persistence_path {
             if let Ok(data) = serde_json::to_string_pretty(&self.modules) {
@@ -241,18 +242,18 @@ pub enum RestartDecision {
     /// Restart immediately with new module
     RestartNow { module_path: PathBuf },
     /// Wait before restarting
-    WaitThenRestart { 
-        delay: Duration, 
+    WaitThenRestart {
+        delay: Duration,
         module_path: PathBuf,
         reason: String,
     },
     /// Fallback to last known good
-    FallbackToKnownGood { 
+    FallbackToKnownGood {
         module_path: PathBuf,
         reason: String,
     },
     /// Circuit breaker open - don't restart
-    CircuitOpen { 
+    CircuitOpen {
         retry_after: Duration,
         reason: String,
     },
@@ -268,13 +269,14 @@ impl RestartController {
             known_good,
         }
     }
-    
+
     /// Get or create state for a slot
     fn get_state(&mut self, slot_id: &str) -> &mut SlotRestartState {
-        self.slot_states.entry(slot_id.to_string())
+        self.slot_states
+            .entry(slot_id.to_string())
             .or_insert_with(SlotRestartState::default)
     }
-    
+
     /// Record a failure and get restart decision
     pub fn record_failure(
         &mut self,
@@ -286,23 +288,23 @@ impl RestartController {
         let circuit_breaker_timeout = self.config.circuit_breaker_timeout;
         let circuit_breaker_threshold = self.config.circuit_breaker_threshold;
         let fallback_threshold = self.config.fallback_threshold;
-        
+
         let now = Instant::now();
-        
+
         // Get state and update failure counts
         let state = self.get_state(slot_id);
         state.failure_count += 1;
         state.total_failures += 1;
         state.last_failure = Some(now);
-        
+
         let failure_count = state.failure_count;
         let circuit_state = state.circuit_state;
-        
+
         eprintln!(
             "[RestartControl] Slot '{}' failure #{}: {}",
             slot_id, failure_count, error
         );
-        
+
         // Check circuit breaker
         match circuit_state {
             CircuitBreakerState::Open { opened_at } => {
@@ -311,7 +313,10 @@ impl RestartController {
                     // Try half-open
                     let state = self.get_state(slot_id);
                     state.circuit_state = CircuitBreakerState::HalfOpen;
-                    eprintln!("[RestartControl] Circuit breaker half-open for '{}'", slot_id);
+                    eprintln!(
+                        "[RestartControl] Circuit breaker half-open for '{}'",
+                        slot_id
+                    );
                 } else {
                     let retry_after = circuit_breaker_timeout - elapsed;
                     return RestartDecision::CircuitOpen {
@@ -351,7 +356,7 @@ impl RestartController {
                 }
             }
         }
-        
+
         // Check if we should fallback
         if failure_count >= fallback_threshold {
             if let Some(known_good) = self.known_good.get(slot_id) {
@@ -375,13 +380,13 @@ impl RestartController {
                 }
             }
         }
-        
+
         // Calculate backoff
         let base_backoff = self.calculate_backoff(failure_count);
         let jittered_backoff = self.apply_jitter(base_backoff);
         let state = self.get_state(slot_id);
         state.current_backoff = jittered_backoff;
-        
+
         RestartDecision::WaitThenRestart {
             delay: jittered_backoff,
             module_path: new_module_path.clone(),
@@ -391,40 +396,40 @@ impl RestartController {
             ),
         }
     }
-    
+
     /// Record a successful start
     pub fn record_success(&mut self, slot_id: &str, module_path: &PathBuf) {
         // Copy config values to avoid borrow conflicts
         let success_reset_duration = self.config.success_reset_duration;
         let initial_backoff = self.config.initial_backoff;
-        
+
         let now = Instant::now();
-        
+
         // Get initial state values
         let state = self.get_state(slot_id);
         let last_success = state.last_success;
         let circuit_state = state.circuit_state;
-        
+
         // Check if this counts as "stable" (ran for success_reset_duration)
         let should_mark_good = if let Some(last_success_time) = last_success {
             now.duration_since(last_success_time) >= success_reset_duration
         } else {
             true
         };
-        
+
         // Reset failure count and update state
         state.failure_count = 0;
         state.last_success = Some(now);
         state.current_backoff = initial_backoff;
         state.in_fallback = false;
         state.total_restarts += 1;
-        
+
         // Close circuit breaker
         if circuit_state != CircuitBreakerState::Closed {
             eprintln!("[RestartControl] Circuit breaker CLOSED for '{}'", slot_id);
             state.circuit_state = CircuitBreakerState::Closed;
         }
-        
+
         // Mark as known good if stable (drop the mutable borrow first)
         if should_mark_good {
             // Note: In real implementation, get these from the actual module
@@ -442,18 +447,18 @@ impl RestartController {
             );
         }
     }
-    
+
     fn calculate_backoff(&self, failure_count: u32) -> Duration {
         let base = self.config.initial_backoff.as_millis() as f64;
         let multiplied = base * self.config.multiplier.powi(failure_count as i32 - 1);
         let capped = multiplied.min(self.config.max_backoff.as_millis() as f64);
         Duration::from_millis(capped as u64)
     }
-    
+
     fn apply_jitter(&self, base: Duration) -> Duration {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        
+
         // Simple pseudo-random jitter based on current time
         let mut hasher = DefaultHasher::new();
         std::time::SystemTime::now()
@@ -462,15 +467,15 @@ impl RestartController {
             .as_nanos()
             .hash(&mut hasher);
         let hash = hasher.finish();
-        
+
         // Convert to -jitter..+jitter range
         let random_factor = (hash as f64 / u64::MAX as f64) * 2.0 - 1.0; // -1.0 to 1.0
         let jitter_amount = random_factor * self.config.jitter;
-        
+
         let adjusted = base.as_millis() as f64 * (1.0 + jitter_amount);
         Duration::from_millis(adjusted.max(0.0) as u64)
     }
-    
+
     /// Get statistics for a slot
     pub fn get_stats(&self, slot_id: &str) -> Option<SlotRestartStats> {
         self.slot_states.get(slot_id).map(|state| SlotRestartStats {
@@ -531,7 +536,7 @@ fn format_timestamp(ts: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_backoff_calculation() {
         let config = BackoffConfig {
@@ -541,15 +546,15 @@ mod tests {
             jitter: 0.0, // No jitter for deterministic test
             ..Default::default()
         };
-        
+
         let controller = RestartController::new(config, KnownGoodStore::new());
-        
+
         assert_eq!(controller.calculate_backoff(1), Duration::from_millis(100));
         assert_eq!(controller.calculate_backoff(2), Duration::from_millis(200));
         assert_eq!(controller.calculate_backoff(3), Duration::from_millis(400));
         assert_eq!(controller.calculate_backoff(4), Duration::from_millis(800));
     }
-    
+
     #[test]
     fn test_circuit_breaker() {
         let config = BackoffConfig {
@@ -557,37 +562,37 @@ mod tests {
             circuit_breaker_timeout: Duration::from_millis(100),
             ..Default::default()
         };
-        
+
         let mut controller = RestartController::new(config, KnownGoodStore::new());
         let path = PathBuf::from("/test/module.so");
-        
+
         // First two failures should allow restart
         let d1 = controller.record_failure("test", &path, "error 1");
         assert!(matches!(d1, RestartDecision::WaitThenRestart { .. }));
-        
+
         let d2 = controller.record_failure("test", &path, "error 2");
         assert!(matches!(d2, RestartDecision::WaitThenRestart { .. }));
-        
+
         // Third failure should open circuit
         let d3 = controller.record_failure("test", &path, "error 3");
         assert!(matches!(d3, RestartDecision::CircuitOpen { .. }));
     }
-    
+
     #[test]
     fn test_success_resets_count() {
         let config = BackoffConfig::default();
         let mut controller = RestartController::new(config, KnownGoodStore::new());
         let path = PathBuf::from("/test/module.so");
-        
+
         // Record some failures
         controller.record_failure("test", &path, "error 1");
         controller.record_failure("test", &path, "error 2");
-        
+
         assert_eq!(controller.slot_states.get("test").unwrap().failure_count, 2);
-        
+
         // Success should reset
         controller.record_success("test", &path);
-        
+
         assert_eq!(controller.slot_states.get("test").unwrap().failure_count, 0);
     }
 }

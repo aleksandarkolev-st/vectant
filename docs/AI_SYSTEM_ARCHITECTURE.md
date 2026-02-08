@@ -4,6 +4,264 @@ Technical deep-dive into how code is indexed, stored, and retrieved.
 
 ---
 
+## 0. Production Blueprint (Tiers, Pipeline, Retrieval)
+
+### A. Data model and storage tiers
+
+**Tier 0: Workspace filesystem (authoritative)**
+- Repo lives on server disk (container/VM/PVC).
+- All tools (LSP, ripgrep, build, tests) operate here.
+- File watching is server-side.
+
+**Tier 1: Metadata index (cheap, complete, always-on)**
+- Store for every path, even huge repos:
+    - `path`, `size`, `mtime`, `content_hash`
+    - `language`, `is_text`, `is_generated`, `is_vendor`, `is_binary`
+    - optional: git blame summary, `last_author`, `last_commit`
+- Load this on app start (manifest). Not contents.
+
+**Tier 2: Lexical index (BM25)**
+- Index chunk text for fast exact matching on names, errors, identifiers.
+- Engine: Lucene/Elastic/OpenSearch/Meilisearch (pick one).
+- Store: `chunk_id`, `path`, `start_line`, `end_line`, `text` (or pointer).
+
+**Tier 3: Vector index (embeddings)**
+- Embedding per chunk, plus metadata filters.
+- Store: `chunk_id`, embedding, `path`, `language`, `hash`, `scope_id`, `symbols`.
+
+**Tier 4: Blob store for raw chunk text (optional)**
+- Do not force vectordb to store large text bodies.
+- Keep chunk text in a KV/blob store keyed by `chunk_id` and hash.
+
+**Tier 5: Repo intelligence cache (summaries + graphs)**
+- `file_summary`, `module_summary`, `repo_digest`.
+- import graph, call graph (approx), symbol index.
+- “facts store”: small structured triples extracted from code/docs.
+
+### B. Client behavior (fast startup, good UX)
+
+**On web app load**
+- Fetch manifest only (metadata table).
+- Fetch user settings + ignore patterns + last session “hot files”.
+- Render file tree immediately.
+
+**When opening a file**
+- Fetch file contents from server.
+- Cache in browser using a bounded LRU by bytes.
+- Prefetch:
+    - adjacent files in same folder
+    - direct imports of current file (from server symbol/import index)
+    - last N opened files
+
+**Hard limits**
+- per-tab memory budget (ex: 50–150 MB depending on device)
+- per-file size cap (do not cache huge files)
+
+**Critical**: browser cache is for editing only. AI does not depend on it.
+
+### C. Server indexing pipeline (progressive, budgeted, incremental)
+
+**1) Ingestion triggers**
+- repo cloned / workspace opened
+- file saved
+- git checkout / branch change
+- dependency install completion (optional)
+
+**2) File classification**
+- Skip or deprioritize:
+    - `node_modules/`, `dist/`, `build/`, `.git/`, vendor dirs
+    - generated files (heuristics: minified, protobuf, OpenAPI generated, etc.)
+    - binaries, images, archives
+    - very large files (cap per file, cap per repo)
+
+**3) Chunking strategy (do not do naive fixed tokens)**
+- Chunk by syntax where possible:
+    - functions, classes, methods, top-level blocks
+- Fallback: sliding window with overlap
+- Store scope metadata:
+    - `scope_name`, `scope_type`, `symbols_defined`, `symbols_used`
+
+**4) Build indexes incrementally**
+- For each changed file:
+    - compute hash
+    - re-chunk only if hash changed
+    - update BM25 docs for changed chunks
+    - update embeddings only for changed chunks
+    - update symbol index/import graph if parseable
+
+**5) Background scheduling**
+- Use a job queue:
+    - high priority: opened files, recently changed files
+    - medium: core source dirs
+    - low: everything else
+- Throttle by:
+    - CPU load, memory, queue depth
+    - per-tenant rate limits
+- Expose progress:
+    - “Indexing: 3,421 / 12,900 files (core ready)”
+- User trust depends on visibility.
+
+### E. AI retrieval that is actually good
+
+**Step 0: Query understanding**
+- Parse user request into:
+    - intent (bugfix, implement feature, refactor, explain)
+    - constraints (files, modules, tests)
+    - signals: error strings, stack traces, symbol names
+
+**Step 1: Candidate generation (wide net, cheap)**
+- Combine:
+    - BM25 top 200–1000 chunks
+    - filename/path matches (manifest)
+    - symbol index hits (definitions + references)
+    - “hot set” boost: open files, recently edited, touched in current branch
+
+**Step 2: Semantic rerank (narrow, smart)**
+- vector similarity rerank to top 20–60 chunks
+- cross-encoder reranker if you can afford it (quality jump)
+
+**Step 3: Graph expansion**
+- From top chunks, expand to:
+    - definitions of referenced symbols (via LSP)
+    - callers/callees (approx call graph)
+    - import chain parents
+    - config files that affect runtime (env, build, tsconfig, etc.)
+
+**Step 4: Context assembly with budgets**
+- Assemble:
+    - direct evidence chunks
+    - minimal supporting context (defs, types, interfaces)
+    - relevant summaries (file/module)
+- Hard rules:
+    - dedupe by file
+    - prefer smaller, more precise scopes
+    - never stuff whole files unless tiny
+
+**Step 5: Verification loop**
+- Before proposing changes:
+    - search exact strings (ripgrep)
+    - LSP “go to definition”
+    - read file slices
+- After changes:
+    - run targeted tests or typecheck when possible
+    - re-run search to confirm no missed references
+
+If you skip verification, you will be worse than Cursor on real repos.
+
+### F. Summarization that works (and does not rot)
+
+**Levels**
+- Chunk notes (optional): 1–3 bullets of purpose + key invariants.
+- File summary:
+    - responsibilities
+    - public APIs (exports/classes)
+    - key side effects, IO boundaries
+    - important invariants and gotchas
+- Module/package summary:
+    - how files collaborate
+    - main flows
+    - dependency direction
+- Repo digest:
+    - architecture overview
+    - build/run/test instructions
+    - key domains
+
+**How to generate summaries safely**
+- Bad approach: “summarize the whole file” from scratch each time.
+- Correct approach:
+    - summaries are tied to `content_hash`
+    - on change: compute diff or changed scopes
+    - update only affected parts
+    - always include pointers:
+        - list of top symbols + where defined
+        - key config files
+    - store summaries with citations to `chunk_id`
+
+If summaries are not anchored to evidence, they become lies.
+
+**Memory for long sessions**
+- Maintain a small structured store:
+    - entities: services, DB tables, endpoints, events
+    - relations: calls, publishes, depends_on
+- Extracted automatically from code + docs + LSP, updated incrementally.
+
+### G. “Smarter than Cursor / deeper than Copilot” (what actually matters)
+
+You cannot “will” this into existence. You need measurable advantages:
+
+**1) Better grounding and tool use**
+- Cursor often guesses. You must verify via tools every time:
+    - definitions, references, build output, tests
+- Provide “evidence view”: show which files/snippets were used.
+
+**2) Better retrieval (graph + rerank)**
+- Copilot is often local-context heavy. Win by:
+    - combining BM25 + vector + symbol graph expansion
+    - reranking with a stronger model
+    - using LSP to pull the right types/defs
+
+**3) Task planning + patch discipline**
+- generate a plan, then execute in small diffs
+- enforce compilation/tests after each logical step
+- prefer minimal patches
+- track constraints: style, lint, existing patterns
+
+**4) Repo-wide consistency**
+- enforce architecture rules from repo digest
+- detect patterns (how errors handled, logging, config)
+- propose changes consistent with local conventions
+
+**5) Evaluation harness (this is where most teams fail)**
+- Build:
+    - a suite of real repo tasks: bugfixes, refactors, feature adds
+    - success metrics: tests passing, typecheck, diff size, review score, latency, hallucination rate
+    - regression tracking per model and per retrieval strategy
+
+Without evals, “smarter” is marketing.
+
+### H. APIs and components (implementation blueprint)
+
+**Services**
+- Workspace service
+    - checkout, file read/write, diff, patch apply
+- Indexer service
+    - chunker, embedder, BM25 writer, metadata writer
+- Symbol service
+    - LSP bridge: defs, refs, hover, diagnostics
+- Retrieval service
+    - query → candidates → rerank → graph expand → context pack
+- Agent runtime
+    - tools + policy + verification loop + patch generation
+
+**Tooling surface for the agent**
+- Minimum tools:
+    - read file slice (range)
+    - search (ripgrep)
+    - list symbols/defs/refs (LSP)
+    - apply patch
+    - run tests/typecheck/build (sandboxed)
+    - inspect logs/diagnostics
+
+**Policy (non-negotiable)**
+- never edit without reading relevant slices first
+- never claim something exists without tool confirmation
+- always cite evidence in internal trace (for debugging)
+
+### I. Defaults that are “production-sufficient”
+
+- Client loads manifest only.
+- Server starts indexing immediately with budgets and skip rules.
+- AI retrieval uses BM25 + vector + LSP graph expansion + rerank.
+- Summaries are hierarchical and hash-anchored.
+- Agent verifies via tools and runs tests/typecheck when feasible.
+- You ship with an eval suite from day 1.
+
+**Common wrong decisions (fix these now)**
+- Storing “tokenized contents” as the primary representation. Wrong. Tokenization is model-specific and unstable.
+- Depending on browser cache for intelligence. Wrong. Browser is for UX.
+- No reranker, no graph expansion, no verification. You will be worse than Cursor.
+- No eval harness. You will stagnate.
+
 ## 1. Semantic Chunking
 
 Code is NOT stored as files or arbitrary token windows. Each **SemanticChunk** is a self-describing code unit:

@@ -1,10 +1,20 @@
 import os
+import time
 from typing import Any, Mapping, Optional, Sequence, Dict
 
 from openai import AsyncOpenAI
 
 from llm.prompts import build_prompt, build_fullfile_prompt, build_patch_prompt
 from .base import AiProvider
+
+
+def _get_metrics_collector():
+    """Lazy import to avoid circular dependencies."""
+    try:
+        from metrics import get_metrics_collector
+        return get_metrics_collector()
+    except ImportError:
+        return None
 
 
 class ChatGPTProvider(AiProvider):
@@ -38,20 +48,33 @@ class ChatGPTProvider(AiProvider):
         if not api_key and not os.getenv("OPENAI_API_KEY"):
             return "LLM disabled: set OPENAI_API_KEY or provide api_key to enable suggestions."
 
-        if mode and isinstance(mode, str) and mode.lower() == 'fullfile':
+        # Prefer explicit mode flag. Support 'fullfile', 'patch', and 'explain' modes.
+        mode_lower = mode.lower() if mode and isinstance(mode, str) else ''
+        
+        if mode_lower == 'fullfile':
             full_prompt = build_fullfile_prompt(code, lang, prompt or '', files=files, focus=focus)
-        elif mode and isinstance(mode, str) and mode.lower() == 'patch':
+        elif mode_lower == 'patch':
             full_prompt = build_patch_prompt(code, lang, prompt or '', files=files, focus=focus)
+        elif mode_lower == 'explain':
+            # Explicit explain mode - no code changes, just explanation
+            full_prompt = build_prompt(code, lang, user_prompt=prompt or '', files=files, focus=focus, mode='explain')
         else:
             if prompt and 'Respond only with the updated full file contents' in prompt:
                 full_prompt = build_fullfile_prompt(code, lang, prompt, files=files, focus=focus)
             else:
-                augmented = (prompt or '') + "\n\nWhen possible prefer minimal edits and only change what the user requests."
-                full_prompt = build_prompt(code, lang, user_prompt=augmented, files=files, focus=focus)
+                # build_prompt will auto-detect explain queries based on keywords
+                full_prompt = build_prompt(code, lang, user_prompt=prompt or '', files=files, focus=focus)
 
         try:
             client = self._get_client(api_key)
             model_name = model or self.model_name
+            
+            # Metrics tracking
+            start_time = time.time()
+            first_token_time = None
+            total_tokens = 0
+            prompt_tokens = len(full_prompt.split())  # Rough estimate
+            
             stream = await client.chat.completions.create(
                 model=model_name,
                 messages=[{"role": "user", "content": full_prompt}],
@@ -62,19 +85,58 @@ class ChatGPTProvider(AiProvider):
 
             chunks = []
             async for chunk in stream:
+                # Track TTFT
+                if first_token_time is None:
+                    first_token_time = time.time()
+                
                 try:
                     delta = chunk.choices[0].delta.content or ''
                 except Exception:
                     delta = ''
                 if delta:
                     chunks.append(delta)
+                    total_tokens += len(delta.split())
 
             combined = ''.join(chunks).strip()
+            
+            # Record metrics
+            end_time = time.time()
+            total_latency_ms = (end_time - start_time) * 1000
+            ttft_ms = (first_token_time - start_time) * 1000 if first_token_time else total_latency_ms
+            
+            collector = _get_metrics_collector()
+            if collector:
+                collector.record_streaming_completion(
+                    ttft_ms=ttft_ms,
+                    total_latency_ms=total_latency_ms,
+                    tokens=total_tokens,
+                    prompt_tokens=prompt_tokens,
+                    output_tokens=total_tokens,
+                )
+                collector.record_inference(
+                    model=model_name,
+                    inference_time_ms=total_latency_ms,
+                    success=bool(combined),
+                    is_timeout=False,
+                    error_type=None,
+                )
+            
             if not combined:
                 return "No suggestion returned."
             return combined
 
         except Exception as e:
+            # Record error metrics
+            is_timeout = "timeout" in str(e).lower()
+            collector = _get_metrics_collector()
+            if collector:
+                collector.record_inference(
+                    model=model or self.model_name,
+                    inference_time_ms=(time.time() - start_time) * 1000 if 'start_time' in dir() else 0,
+                    success=False,
+                    is_timeout=is_timeout,
+                    error_type=type(e).__name__,
+                )
             return f"LLM error: {type(e).__name__}: {e}"
 
     def __repr__(self) -> str:

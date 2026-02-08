@@ -1,0 +1,31 @@
+{
+  "queries": [
+    {
+      "id": "code-intel-pipeline",
+      "query": "Where is the code intelligence retrieval pipeline implemented?",
+      "expected_chunks": [],
+      "expected_files": [
+        "ai-backend/ai-engine/code_intel/retrieval/pipeline.py"
+      ],
+      "expected_symbols": []
+    },
+    {
+      "id": "collab-autoflush",
+      "query": "Where is the collab auto-flush writing to disk implemented?",
+      "expected_chunks": [],
+      "expected_files": [
+        "backend/collab-server/server.js"
+      ],
+      "expected_symbols": []
+    },
+    {
+      "id": "chat-route",
+      "query": "Where is the chat API route that calls code intel?",
+      "expected_chunks": [],
+      "expected_files": [
+        "synthi/src/app/api/chat/route.js"
+      ],
+      "expected_symbols": []
+    }
+  ]
+}

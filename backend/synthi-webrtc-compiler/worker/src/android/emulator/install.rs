@@ -31,11 +31,7 @@ impl EmulatorSession {
             .await
             .ok_or_else(|| anyhow::anyhow!("No emulator serial"))?;
 
-        let adb = self
-            .core
-            .config
-            .android_sdk_root
-            .join("platform-tools/adb");
+        let adb = self.core.config.android_sdk_root.join("platform-tools/adb");
 
         // Install APK
         let output = timeout(

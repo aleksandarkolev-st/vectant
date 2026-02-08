@@ -25,7 +25,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
-from ..core.types import SemanticChunk, FileSummary, RepoSummary, ContextBudget, TokenCounter
+from ..core.types import SemanticChunk, FileSummary, RepoSummary, ModuleSummary, ContextBudget, TokenCounter
 from ..core.config import ContextConfig
 from .retriever import RetrievalCandidate
 
@@ -43,7 +43,9 @@ class BudgetAllocation:
     
     # Variable allocations
     file_summary_tokens: int = 0
+    module_summary_tokens: int = 0
     code_chunk_tokens: int = 0
+    spec_chunk_tokens: int = 0
     
     # Reserve for response
     response_reserve: int = 0
@@ -55,7 +57,9 @@ class BudgetAllocation:
     
     # What fit
     included_chunks: List[RetrievalCandidate] = field(default_factory=list)
+    included_spec_chunks: List[RetrievalCandidate] = field(default_factory=list)
     included_file_summaries: List[str] = field(default_factory=list)
+    included_module_summaries: List[str] = field(default_factory=list)
     truncated_chunks: List[RetrievalCandidate] = field(default_factory=list)
     excluded_chunks: List[RetrievalCandidate] = field(default_factory=list)
 
@@ -76,7 +80,7 @@ class BudgetEnforcer:
     def __init__(
         self,
         config: Optional[ContextConfig] = None,
-        target_model: str = "gpt-4",
+        target_model: str = "gemini-2.5-flash-lite",
     ):
         self.config = config or ContextConfig()
         self.token_counter = TokenCounter(target_model)
@@ -84,8 +88,10 @@ class BudgetEnforcer:
     def enforce(
         self,
         candidates: List[RetrievalCandidate],
+        spec_candidates: Optional[List[RetrievalCandidate]] = None,
         repo_summary: Optional[RepoSummary] = None,
         file_summaries: Optional[Dict[str, FileSummary]] = None,
+        module_summaries: Optional[Dict[str, ModuleSummary]] = None,
         budget: Optional[ContextBudget] = None,
     ) -> BudgetAllocation:
         """
@@ -105,6 +111,7 @@ class BudgetEnforcer:
             reserved_for_response=self.config.response_reserve_tokens,
         )
         file_summaries = file_summaries or {}
+        module_summaries = module_summaries or {}
         
         allocation = BudgetAllocation(
             total_budget=budget.max_tokens,
@@ -120,14 +127,33 @@ class BudgetEnforcer:
             available -= repo_tokens
         
         # Step 2: Allocate to code chunks (main budget)
-        chunk_budget = int(available * 0.75)  # 75% for code
-        summary_budget = available - chunk_budget  # 25% for summaries
+        spec_budget = max(0, int(available * 0.10))  # 10% for specs
+        chunk_budget = max(0, int(available * 0.70))  # 70% for code
+        summary_budget = max(0, available - chunk_budget - spec_budget)  # 20% for summaries
+        module_budget = int(summary_budget * 0.4)
+        file_summary_budget = summary_budget - module_budget
         
-        # Step 3: Add chunks until budget exhausted
+        # Step 3: Add spec chunks first (if provided)
+        used_spec_tokens = 0
+        for cand in spec_candidates or []:
+            chunk_tokens = self._estimate_chunk_tokens(cand.chunk)
+            if used_spec_tokens + chunk_tokens <= spec_budget:
+                allocation.included_spec_chunks.append(cand)
+                used_spec_tokens += chunk_tokens
+            else:
+                allocation.excluded_chunks.append(cand)
+
+        allocation.spec_chunk_tokens = used_spec_tokens
+
+        # Step 4: Add chunks until budget exhausted
         used_chunk_tokens = 0
         files_with_chunks: Set[str] = set()
+        max_chunks = getattr(self.config, "max_chunks", None)
         
         for cand in candidates:
+            if max_chunks is not None and len(allocation.included_chunks) >= max_chunks:
+                allocation.excluded_chunks.append(cand)
+                continue
             chunk_tokens = self._estimate_chunk_tokens(cand.chunk)
             
             if used_chunk_tokens + chunk_tokens <= chunk_budget:
@@ -150,17 +176,24 @@ class BudgetEnforcer:
         
         allocation.code_chunk_tokens = used_chunk_tokens
         
-        # Step 4: Add file summaries for included files
+        # Step 5: Add module summaries
         used_summary_tokens = 0
+        used_module_tokens = 0
+
+        for module_path, summary in module_summaries.items():
+            module_tokens = self._estimate_tokens(self._format_module_summary(module_path, summary))
+            if used_module_tokens + module_tokens <= module_budget:
+                allocation.included_module_summaries.append(module_path)
+                used_module_tokens += module_tokens
+
+        allocation.module_summary_tokens = used_module_tokens
+
+        # Step 6: Add file summaries (prefer raw chunks; skip summaries for files with chunks)
         
         # Prioritize summaries for files with included chunks
         priority_files = sorted(
-            files_with_chunks,
-            key=lambda f: sum(
-                1 for c in allocation.included_chunks
-                if c.chunk.file_path == f
-            ),
-            reverse=True,
+            [f for f in file_summaries.keys() if f not in files_with_chunks],
+            key=lambda f: f,
         )
         
         for file_path in priority_files:
@@ -170,7 +203,7 @@ class BudgetEnforcer:
             summary = file_summaries[file_path]
             summary_tokens = self._estimate_tokens(self._format_file_summary(file_path, summary))
             
-            if used_summary_tokens + summary_tokens <= summary_budget:
+            if used_summary_tokens + summary_tokens <= file_summary_budget:
                 allocation.included_file_summaries.append(file_path)
                 used_summary_tokens += summary_tokens
         
@@ -179,8 +212,10 @@ class BudgetEnforcer:
         # Calculate totals
         allocation.used_tokens = (
             allocation.repo_summary_tokens +
+            allocation.module_summary_tokens +
             allocation.file_summary_tokens +
-            allocation.code_chunk_tokens
+            allocation.code_chunk_tokens +
+            allocation.spec_chunk_tokens
         )
         allocation.remaining_tokens = (
             allocation.total_budget -
@@ -197,6 +232,9 @@ class BudgetEnforcer:
         CRITICAL: This must match the model being prompted.
         """
         return self.token_counter.count(text)
+
+    def _format_module_summary(self, module_path: str, summary: ModuleSummary) -> str:
+        return f"## {module_path}\n{summary.summary}\n"
     
     def _estimate_chunk_tokens(self, chunk: SemanticChunk) -> int:
         """Estimate tokens for a chunk using target tokenizer."""

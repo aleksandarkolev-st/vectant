@@ -72,7 +72,7 @@ class VectorIndex:
     
     def __init__(
         self,
-        dimension: int = 768,
+        dimension: int = 3072,
         persist_path: Optional[str] = None,
         hnsw_threshold: int = HNSW_THRESHOLD,
     ):
@@ -80,7 +80,7 @@ class VectorIndex:
         Initialize vector index.
         
         Args:
-            dimension: Embedding dimension (768 for text-embedding-004)
+            dimension: Embedding dimension (3072 for gemini-embedding-001)
             persist_path: Optional path for persistence (.npz format)
             hnsw_threshold: Number of chunks at which to switch to HNSW
         """
@@ -121,6 +121,34 @@ class VectorIndex:
             return ""
         base = self.persist_path.rsplit(".", 1)[0] if "." in self.persist_path else self.persist_path
         return f"{base}_meta.json"
+    
+    def _clear_for_rebuild(self, vectors_path: str, meta_path: str) -> None:
+        """
+        Clear the index for rebuild due to dimension mismatch or corruption.
+        
+        Deletes old index files and resets in-memory state.
+        """
+        # Delete old files
+        try:
+            if os.path.exists(vectors_path):
+                os.remove(vectors_path)
+                logger.info(f"Deleted old vectors file: {vectors_path}")
+            if os.path.exists(meta_path):
+                os.remove(meta_path)
+                logger.info(f"Deleted old metadata file: {meta_path}")
+        except Exception as e:
+            logger.error(f"Failed to delete old index files: {e}")
+        
+        # Reset in-memory state
+        self._ids = []
+        self._matrix = None
+        self._id_to_idx = {}
+        self._chunks = {}
+        self._hnsw_index = None
+        self._using_hnsw = False
+        self._dirty = False
+        
+        logger.info("Index cleared for rebuild with new embedding dimensions")
     
     def _normalize_embedding(self, embedding: np.ndarray) -> np.ndarray:
         """
@@ -544,6 +572,7 @@ class VectorIndex:
                 "is_public": chunk.metadata.is_public,
                 "is_test": chunk.metadata.is_test,
                 "module_group": chunk.metadata.module_group,
+                "chunking_version": chunk.metadata.chunking_version,
                 "token_count": chunk.token_count,
                 "content_hash": chunk.content_hash,  # For lazy loading verification
                 # Note: code_body not saved - loaded lazily from disk
@@ -564,20 +593,43 @@ class VectorIndex:
         logger.info(f"Persisted vector index: {len(self)} chunks (binary format, atomic)")
     
     def _load(self) -> None:
-        """Load index from disk."""
+        """Load index from disk. Auto-clears if dimension mismatch detected."""
         vectors_path = self._get_vectors_path()
         meta_path = self._get_metadata_path()
+        
+        expected_dimension = self.dimension  # Store expected dimension before loading
         
         # Load vectors
         if os.path.exists(vectors_path):
             try:
                 data = np.load(vectors_path, allow_pickle=True)
+                loaded_dimension = int(data['dimension'][0]) if 'dimension' in data else None
+                
+                # Check for dimension mismatch (e.g., switching embedding models)
+                if loaded_dimension is not None and loaded_dimension != expected_dimension:
+                    logger.warning(
+                        f"Embedding dimension mismatch: index has {loaded_dimension}, "
+                        f"expected {expected_dimension}. Clearing index for rebuild."
+                    )
+                    self._clear_for_rebuild(vectors_path, meta_path)
+                    return
+                
                 self._ids = data['ids'].tolist()
                 self._matrix = data['vectors'].astype(np.float32)
-                if 'dimension' in data:
-                    self.dimension = int(data['dimension'][0])
+                
+                # Verify loaded vectors have correct dimension
+                if self._matrix is not None and len(self._matrix) > 0:
+                    actual_dim = self._matrix.shape[1]
+                    if actual_dim != expected_dimension:
+                        logger.warning(
+                            f"Vector dimension mismatch: loaded {actual_dim}, "
+                            f"expected {expected_dimension}. Clearing index for rebuild."
+                        )
+                        self._clear_for_rebuild(vectors_path, meta_path)
+                        return
+                
                 self._id_to_idx = {cid: i for i, cid in enumerate(self._ids) if cid}
-                logger.info(f"Loaded {len(self._ids)} vectors from binary storage")
+                logger.info(f"Loaded {len(self._ids)} vectors from binary storage (dim={expected_dimension})")
             except Exception as e:
                 logger.error(f"Failed to load vectors: {e}")
         
@@ -587,7 +639,14 @@ class VectorIndex:
                 with open(meta_path, "r") as f:
                     data = json.load(f)
                 
-                self.dimension = data.get("dimension", self.dimension)
+                # Check dimension from metadata (don't override - we already validated above)
+                meta_dimension = data.get("dimension")
+                if meta_dimension is not None and meta_dimension != expected_dimension:
+                    logger.warning(
+                        f"Metadata dimension mismatch: {meta_dimension} vs {expected_dimension}. "
+                        "Index was already cleared, skipping metadata load."
+                    )
+                    return
                 
                 from ..core.types import ChunkMetadata, SymbolType
                 
@@ -605,6 +664,7 @@ class VectorIndex:
                         is_public=chunk_data.get("is_public", True),
                         is_test=chunk_data.get("is_test", False),
                         module_group=chunk_data.get("module_group", ""),
+                        chunking_version=chunk_data.get("chunking_version", ""),
                     )
                     
                     # Get embedding from matrix if available

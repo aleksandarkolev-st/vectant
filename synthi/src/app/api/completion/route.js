@@ -223,28 +223,60 @@ export async function POST(request) {
   const prompt = buildPrompt(context, language, body?.cursor);
 
   try {
-    const response = await withTimeout(
-      ai.models.generateContent({
-        model: 'gemini-2.5-flash-lite',
-        contents: prompt,
-        generationConfig: {
-          maxOutputTokens: AI_COMPLETION_MAX_OUTPUT_TOKENS,
-          temperature: 0.2,
-        },
-      }),
-      COMPLETION_TIMEOUT_MS
-    );
-    const completionText = extractText(response);
+    // P2: Use streaming API to reduce perceived latency — accumulate chunks
+    // and return the full result. This allows the server to start generating
+    // before the full response is ready, reducing TTFT.
+    let completionText = '';
+    try {
+      const stream = await withTimeout(
+        ai.models.generateContentStream({
+          model: 'gemini-2.5-flash-lite',
+          contents: prompt,
+          generationConfig: {
+            maxOutputTokens: AI_COMPLETION_MAX_OUTPUT_TOKENS,
+            temperature: 0.2,
+          },
+        }),
+        COMPLETION_TIMEOUT_MS
+      );
+      for await (const chunk of stream) {
+        const chunkText = extractText(chunk);
+        if (chunkText) completionText += chunkText;
+      }
+    } catch (streamErr) {
+      // Fallback to non-streaming if streaming fails
+      const response = await withTimeout(
+        ai.models.generateContent({
+          model: 'gemini-2.5-flash-lite',
+          contents: prompt,
+          generationConfig: {
+            maxOutputTokens: AI_COMPLETION_MAX_OUTPUT_TOKENS,
+            temperature: 0.2,
+          },
+        }),
+        COMPLETION_TIMEOUT_MS
+      );
+      completionText = extractText(response);
+    }
     const cleaned = sanitize(completionText);
     const dedupedCleaned = suppressEcho(cleaned, typeof bodyForContext?.code === 'string' ? bodyForContext.code : '');
 
-    // Extract JSON between <JSON>...</JSON> markers
+    // Extract JSON between <JSON>...</JSON> markers, or fallback to markdown blocks
     let parsed = null;
     try {
       const markerMatch = cleaned.match(/<JSON>[\s\S]*?<\/JSON>/i);
       if (markerMatch) {
         const jsonText = markerMatch[0].replace(/^<JSON>/i, '').replace(/<\/JSON>$/i, '');
         parsed = JSON.parse(jsonText);
+      } else {
+        // Fallback: try to find markdown code block
+        const codeBlockMatch = cleaned.match(/```json([\s\S]*?)```/i) || cleaned.match(/```([\s\S]*?)```/i);
+        if (codeBlockMatch) {
+          parsed = JSON.parse(codeBlockMatch[1]);
+        } else if (cleaned.trim().startsWith('{') && cleaned.trim().endsWith('}')) {
+          // Fallback: try to parse raw JSON
+          parsed = JSON.parse(cleaned);
+        }
       }
     } catch (e) {
       parsed = null;

@@ -24,8 +24,8 @@ use std::time::{Duration, Instant};
 // rand is used via full path
 
 // Import boundary types
-pub use crate::safety::boundary::BoundaryId;
 use crate::hmr::state_manager::StateManager;
+pub use crate::safety::boundary::BoundaryId;
 
 // ============================================================
 // RELOAD CLASS TAXONOMY
@@ -330,7 +330,7 @@ pub struct ReloadChanges {
 // ============================================================
 // Snapshot everything before reload for instant crash revert
 // OPTIMIZED: Validity tracking is O(1), not O(n)
-// 
+//
 // STATE FORMAT: Snapshots store (build_id, bytes, format, state_version)
 // - build_id: unique identifier for the module build
 // - bytes: serialized state data (MsgPack preferred)
@@ -395,32 +395,32 @@ impl ReloadSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateSnapshot {
     pub boundary_id: BoundaryId,
-    
+
     /// Unique identifier for the module build that created this state
     pub build_id: u64,
-    
+
     /// Serialized state bytes (MsgPack or JSON)
     /// None if state was captured as handle only (lazy serialization)
     pub bytes: Option<Vec<u8>>,
-    
+
     /// Format of the serialized bytes
     pub format: SnapshotFormat,
-    
+
     /// Module's state_version when this snapshot was created
     /// Used for migration decisions
     pub state_version: u32,
-    
+
     /// Legacy: state handle for lazy serialization
     /// Deprecated: prefer `bytes` for cross-version compatibility
     #[serde(skip)]
     pub state_handle: u64,
-    
+
     /// Hash for quick equality check without deserialize
     pub state_hash: u64,
-    
+
     /// ABI version of the module
     pub abi_version: u32,
-    
+
     /// Hash of the source code
     pub source_hash: u64,
 }
@@ -436,13 +436,13 @@ impl StateSnapshot {
     ) -> Self {
         // Compute hash of the bytes
         let state_hash = {
-            use std::hash::{Hash, Hasher};
             use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
             let mut hasher = DefaultHasher::new();
             bytes.hash(&mut hasher);
             hasher.finish()
         };
-        
+
         Self {
             boundary_id,
             build_id,
@@ -455,7 +455,7 @@ impl StateSnapshot {
             source_hash: 0,
         }
     }
-    
+
     /// Create a lazy snapshot (handle only, serialize on revert)
     /// Deprecated: Use new() with serialized bytes instead
     pub fn new_lazy(boundary_id: BoundaryId, state_handle: u64) -> Self {
@@ -471,12 +471,12 @@ impl StateSnapshot {
             source_hash: 0,
         }
     }
-    
+
     /// Check if this snapshot has serialized bytes
     pub fn has_bytes(&self) -> bool {
         self.bytes.is_some() && !self.bytes.as_ref().unwrap().is_empty()
     }
-    
+
     /// Get the serialized bytes if available
     pub fn get_bytes(&self) -> Option<&[u8]> {
         self.bytes.as_deref()
@@ -557,11 +557,11 @@ impl SnapshotManager {
             // Store handle only, no serialized bytes
             // For proper cross-version migration, use create_snapshot_with_bytes
             state_snapshots.insert(
-                boundary_id.clone(), 
-                StateSnapshot::new_lazy(boundary_id.clone(), snapshot_id)
+                boundary_id.clone(),
+                StateSnapshot::new_lazy(boundary_id.clone(), snapshot_id),
             );
         }
-        
+
         let snapshot = ReloadSnapshot {
             snapshot_id,
             created_at: Instant::now(),
@@ -573,17 +573,17 @@ impl SnapshotManager {
             generation,
             invalidation_reason: None,
         };
-        
+
         self.snapshots.push_back(snapshot);
-        
+
         // Enforce retention
         while self.snapshots.len() > self.max_snapshots {
             self.snapshots.pop_front();
         }
-        
+
         snapshot_id
     }
-    
+
     /// Create a snapshot with serialized state bytes (preferred for HMR)
     /// This is the recommended method for cross-version migration
     pub fn create_snapshot_with_bytes(
@@ -593,7 +593,7 @@ impl SnapshotManager {
     ) -> u64 {
         let snapshot_id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let generation = self.current_generation.fetch_add(1, Ordering::SeqCst);
-        
+
         let mut state_snapshots = HashMap::new();
         for (boundary_id, build_id, bytes, format, state_version) in boundary_states {
             state_snapshots.insert(

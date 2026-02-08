@@ -464,9 +464,8 @@ pub fn is_blocking(lib_path: &Path) -> bool {
 // This replaces the multi-symbol legacy ABI.
 // ============================================================
 
-use crate::compiler::plugin_contract::{
-    HotApi, HotGetApiFn, HOT_API_VERSION, HOT_API_MIN_VERSION,
-    MAX_STATE_ALIGNMENT,
+use crate::runtime::plugin_contract::{
+    HotApi, HotGetApiFn, HOT_API_MIN_VERSION, HOT_API_VERSION, MAX_STATE_ALIGNMENT,
 };
 
 /// Result of validating a new-style hot module
@@ -509,12 +508,10 @@ pub fn validate_hot_api(lib: &Library) -> HotApiValidation {
         errors: Vec::new(),
         warnings: Vec::new(),
     };
-    
+
     // Try to get the hot_get_api symbol
-    let hot_get_api: Result<Symbol<HotGetApiFn>, _> = unsafe {
-        lib.get(b"hot_get_api")
-    };
-    
+    let hot_get_api: Result<Symbol<HotGetApiFn>, _> = unsafe { lib.get(b"hot_get_api") };
+
     let hot_get_api = match hot_get_api {
         Ok(f) => {
             result.has_hot_api = true;
@@ -522,24 +519,29 @@ pub fn validate_hot_api(lib: &Library) -> HotApiValidation {
         }
         Err(_) => {
             // Not a new-style module, might be legacy
-            result.warnings.push("Module does not export hot_get_api - may be legacy ABI".to_string());
+            result
+                .warnings
+                .push("Module does not export hot_get_api - may be legacy ABI".to_string());
             return result;
         }
     };
-    
+
     // Call hot_get_api to get the table pointer
     let api_ptr: *const HotApi = unsafe { hot_get_api() };
-    
+
     if api_ptr.is_null() {
-        result.errors.push("hot_get_api() returned NULL".to_string());
+        result
+            .errors
+            .push("hot_get_api() returned NULL".to_string());
         return result;
     }
-    
+
     // Read and validate the HotApi table
     let api = unsafe { &*api_ptr };
-    
+
     // 1. Validate struct_size (must be at least minimum required)
-    let min_size = std::mem::offset_of!(HotApi, migrate) + std::mem::size_of::<Option<crate::compiler::plugin_contract::MigrateFn>>();
+    let min_size = std::mem::offset_of!(HotApi, migrate)
+        + std::mem::size_of::<Option<crate::runtime::plugin_contract::MigrateFn>>();
     if (api.struct_size as usize) < min_size {
         result.errors.push(format!(
             "struct_size {} too small - minimum required is {} (missing required fields)",
@@ -547,7 +549,7 @@ pub fn validate_hot_api(lib: &Library) -> HotApiValidation {
         ));
         return result;
     }
-    
+
     // 2. Validate API version
     if api.api_version < HOT_API_MIN_VERSION {
         result.errors.push(format!(
@@ -556,14 +558,14 @@ pub fn validate_hot_api(lib: &Library) -> HotApiValidation {
         ));
         return result;
     }
-    
+
     if api.api_version > HOT_API_VERSION {
         result.warnings.push(format!(
             "api_version {} is newer than runner ({}) - some features may not be supported",
             api.api_version, HOT_API_VERSION
         ));
     }
-    
+
     // 3. Validate state_align_bytes is power of 2
     if api.state_align_bytes == 0 || !api.state_align_bytes.is_power_of_two() {
         result.errors.push(format!(
@@ -572,7 +574,7 @@ pub fn validate_hot_api(lib: &Library) -> HotApiValidation {
         ));
         return result;
     }
-    
+
     // 4. Validate state_align_bytes is within sane range
     if api.state_align_bytes > MAX_STATE_ALIGNMENT {
         result.errors.push(format!(
@@ -581,7 +583,7 @@ pub fn validate_hot_api(lib: &Library) -> HotApiValidation {
         ));
         return result;
     }
-    
+
     // 5. Validate state_size_bytes is multiple of alignment
     if api.state_size_bytes % api.state_align_bytes != 0 {
         result.errors.push(format!(
@@ -590,13 +592,15 @@ pub fn validate_hot_api(lib: &Library) -> HotApiValidation {
         ));
         return result;
     }
-    
+
     // 6. Check required init function
     if api.init.is_none() {
-        result.errors.push("init function is required but missing".to_string());
+        result
+            .errors
+            .push("init function is required but missing".to_string());
         return result;
     }
-    
+
     // Build HotApiInfo
     result.api = Some(HotApiInfo {
         struct_size: api.struct_size,
@@ -611,74 +615,93 @@ pub fn validate_hot_api(lib: &Library) -> HotApiValidation {
         has_render: api.render.is_some(),
         has_event: api.event.is_some(),
         has_migrate: api.migrate.is_some(),
-        has_msgpack_serialization: api.save_state_msgpack_size.is_some() && api.save_state_msgpack_write.is_some(),
-        has_json_serialization: api.save_state_json_size.is_some() && api.save_state_json_write.is_some(),
+        has_msgpack_serialization: api.save_state_msgpack_size.is_some()
+            && api.save_state_msgpack_write.is_some(),
+        has_json_serialization: api.save_state_json_size.is_some()
+            && api.save_state_json_write.is_some(),
     });
-    
+
     // Add warnings for missing optional but recommended features
     if api.migrate.is_none() {
-        result.warnings.push("migrate function not provided - cross-version state migration will fail".to_string());
+        result.warnings.push(
+            "migrate function not provided - cross-version state migration will fail".to_string(),
+        );
     }
-    
+
     if api.save_state_msgpack_size.is_none() || api.save_state_msgpack_write.is_none() {
-        result.warnings.push("MsgPack serialization not provided - state cannot be preserved across reloads".to_string());
+        result.warnings.push(
+            "MsgPack serialization not provided - state cannot be preserved across reloads"
+                .to_string(),
+        );
     }
-    
+
     result
 }
 
 /// Check if a library supports Host KV by looking for relevant exports
 fn check_host_kv_support(lib: &Library) -> bool {
-    type LoadHostFn = unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_void) -> *mut std::ffi::c_void;
+    type LoadHostFn = unsafe extern "C" fn(
+        *mut std::ffi::c_void,
+        *const std::ffi::c_void,
+    ) -> *mut std::ffi::c_void;
     type SchemaLenFn = unsafe extern "C" fn() -> u32;
     type SchemasFn = unsafe extern "C" fn() -> *const std::ffi::c_void;
-    
+
     unsafe {
         // Check for any of the on_load_host variants
         let has_on_load_host = lib.get::<Symbol<LoadHostFn>>(b"core_on_load_host").is_ok()
             || lib.get::<Symbol<LoadHostFn>>(b"gui_on_load_host").is_ok()
             || lib.get::<Symbol<LoadHostFn>>(b"on_load_host").is_ok();
-        
+
         // Check for schema exports
-        let has_core_schemas = lib.get::<Symbol<SchemaLenFn>>(b"core_host_kv_schemas_len").is_ok()
-            && lib.get::<Symbol<SchemasFn>>(b"core_host_kv_schemas").is_ok();
-        let has_gui_schemas = lib.get::<Symbol<SchemaLenFn>>(b"gui_host_kv_schemas_len").is_ok()
+        let has_core_schemas = lib
+            .get::<Symbol<SchemaLenFn>>(b"core_host_kv_schemas_len")
+            .is_ok()
+            && lib
+                .get::<Symbol<SchemasFn>>(b"core_host_kv_schemas")
+                .is_ok();
+        let has_gui_schemas = lib
+            .get::<Symbol<SchemaLenFn>>(b"gui_host_kv_schemas_len")
+            .is_ok()
             && lib.get::<Symbol<SchemasFn>>(b"gui_host_kv_schemas").is_ok();
-        let has_legacy_schemas = lib.get::<Symbol<SchemaLenFn>>(b"host_kv_schemas_len").is_ok()
+        let has_legacy_schemas = lib
+            .get::<Symbol<SchemaLenFn>>(b"host_kv_schemas_len")
+            .is_ok()
             && lib.get::<Symbol<SchemasFn>>(b"host_kv_schemas").is_ok();
-        
+
         has_on_load_host || has_core_schemas || has_gui_schemas || has_legacy_schemas
     }
 }
 
 /// Detect capabilities including new-style HotApi
-pub fn detect_capabilities_v2(lib_path: &Path) -> Result<(CapabilityReport, Option<HotApiValidation>), String> {
+pub fn detect_capabilities_v2(
+    lib_path: &Path,
+) -> Result<(CapabilityReport, Option<HotApiValidation>), String> {
     let lib = unsafe {
         #[cfg(unix)]
         {
-            use libloading::os::unix::{Library as UnixLib, RTLD_NOW, RTLD_LOCAL};
+            use libloading::os::unix::{Library as UnixLib, RTLD_LOCAL, RTLD_NOW};
             UnixLib::open(Some(lib_path), RTLD_NOW | RTLD_LOCAL)
                 .map(|l| Library::from(l))
                 .map_err(|e| format!("Failed to load library: {}", e))?
         }
         #[cfg(not(unix))]
         {
-            Library::new(lib_path)
-                .map_err(|e| format!("Failed to load library: {}", e))?
+            Library::new(lib_path).map_err(|e| format!("Failed to load library: {}", e))?
         }
     };
-    
+
     // First try new-style HotApi
     let hot_validation = validate_hot_api(&lib);
-    
+
     if hot_validation.has_hot_api && hot_validation.errors.is_empty() {
         // New-style module - create capability report from HotApiInfo
         let api_info = hot_validation.api.as_ref().unwrap();
-        
+
         // Check for host_kv capability by looking for the on_load_host export
         let has_host_kv = check_host_kv_support(&lib);
         let uses_host_context = has_host_kv; // If it has host_kv, it uses host context
-        
+
         let report = CapabilityReport {
             module_type: ModuleType::Main, // New API doesn't distinguish core/gui
             hmr_capability: if api_info.has_msgpack_serialization {
@@ -693,10 +716,10 @@ pub fn detect_capabilities_v2(lib_path: &Path) -> Result<(CapabilityReport, Opti
             has_host_kv,
             uses_host_context,
         };
-        
+
         return Ok((report, Some(hot_validation)));
     }
-    
+
     // Fall back to legacy detection
     let exports = probe_exports(&lib);
     let abi_version = probe_abi_version(&lib, &exports);
@@ -705,7 +728,7 @@ pub fn detect_capabilities_v2(lib_path: &Path) -> Result<(CapabilityReport, Opti
     let can_shim = can_generate_shim(&exports);
     let has_host_kv = exports.has_host_kv();
     let uses_host_context = exports.uses_host_context();
-    
+
     let report = CapabilityReport {
         module_type,
         hmr_capability,
@@ -716,7 +739,7 @@ pub fn detect_capabilities_v2(lib_path: &Path) -> Result<(CapabilityReport, Opti
         has_host_kv,
         uses_host_context,
     };
-    
+
     Ok((report, Some(hot_validation)))
 }
 

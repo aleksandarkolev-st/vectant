@@ -1,6 +1,8 @@
-use std::ffi::{c_uint, c_void};
+use crate::runtime::plugin_contract::{
+    ModuleSlot,
+};
 use libloading::{Library, Symbol};
-use crate::runtime::plugin_contract::{ModuleSlot, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION};
+use std::ffi::{c_uint, c_void};
 
 pub struct ValidationInfo {
     pub has_required_symbols: bool,
@@ -20,22 +22,16 @@ pub unsafe fn validate_symbols(new_lib: &Library, name: &str) -> ValidationInfo 
                 Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>,
                 _,
             > = new_lib.get(b"core_on_load");
-            let core_update: Result<
-                Symbol<unsafe extern "C" fn(*mut c_void, f64)>,
-                _,
-            > = new_lib.get(b"core_on_update");
-            let _core_get_api: Result<
-                Symbol<unsafe extern "C" fn() -> *mut c_void>,
-                _,
-            > = new_lib.get(b"core_get_api");
+            let core_update: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> =
+                new_lib.get(b"core_on_update");
+            let _core_get_api: Result<Symbol<unsafe extern "C" fn() -> *mut c_void>, _> =
+                new_lib.get(b"core_get_api");
             let legacy_load: Result<
                 Symbol<unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>,
                 _,
             > = new_lib.get(b"on_load");
-            let legacy_update: Result<
-                Symbol<unsafe extern "C" fn(*mut c_void, f64)>,
-                _,
-            > = new_lib.get(b"on_update"); // Legacy
+            let legacy_update: Result<Symbol<unsafe extern "C" fn(*mut c_void, f64)>, _> =
+                new_lib.get(b"on_update"); // Legacy
 
             if (core_load.is_ok() && core_update.is_ok())
                 || (legacy_load.is_ok() && legacy_update.is_ok())
@@ -100,9 +96,9 @@ pub unsafe fn validate_symbols(new_lib: &Library, name: &str) -> ValidationInfo 
             }
         }
     }
-    
+
     ValidationInfo {
         has_required_symbols,
-        module_abi_version
+        module_abi_version,
     }
 }
