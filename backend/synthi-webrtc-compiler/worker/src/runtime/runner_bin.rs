@@ -210,8 +210,9 @@ fn main() {
     }
 
     // When DISPLAY is pre-set, the worker manages Xvfb, GStreamer, and video
-    // streaming.  The runner only needs to load .so modules — skip creating our
-    // own SDL window / X11 connection / SHM so the user's app window is visible.
+    // streaming.  Skip creating our own Xvfb / X11 connection / SHM since the
+    // worker captures frames via GStreamer ximagesrc.  BUT we still need an SDL
+    // window + renderer so loaded modules can render into the worker's Xvfb.
     #[cfg(target_os = "linux")]
     let worker_managed_display = !std::env::var("DISPLAY").unwrap_or_default().is_empty();
     #[cfg(not(target_os = "linux"))]
@@ -228,7 +229,7 @@ fn main() {
         let root = conn.setup().roots[screen_num].root;
         (c, Some(conn), screen_num, root)
     } else {
-        eprintln!("[Runner] Worker manages display — skipping X11/SDL init");
+        eprintln!("[Runner] Worker manages display — skipping Xvfb/X11/SHM (worker captures via ximagesrc)");
         (None, None, 0, 0u32)
     };
 
@@ -243,13 +244,11 @@ fn main() {
         (0u32, ptr::null_mut())
     };
 
-    // Initialize SDL2 only when runner owns the display
+    // Always init SDL2 — modules need a renderer to draw into.
+    // When worker manages display, the SDL window renders into the worker's Xvfb
+    // and the worker's GStreamer ximagesrc captures it automatically.
     #[cfg(target_os = "linux")]
-    let (window, renderer) = if !worker_managed_display {
-        unsafe { init_sdl() }
-    } else {
-        (ptr::null_mut(), ptr::null_mut())
-    };
+    let (window, renderer) = unsafe { init_sdl() };
 
     #[cfg(target_os = "linux")]
     let _sdl_texture = unsafe {
@@ -458,8 +457,17 @@ fn main() {
     // ============================================================
     // Session ID for Host KV scoping. Must be set via "set_session" command
     // before loading modules that use Host KV.
-    let mut session_id: Option<String> = None;
-    let mut session_id_cstring: Option<CString> = None;
+    // Read session from env var (set by worker when spawning us) as initial
+    // fallback. The worker also sends a 'set_session' text command, but
+    // having the env var ensures session is available immediately for the
+    // first module loads without a race against stdin ordering.
+    let mut session_id: Option<String> = std::env::var("SYNTHI_SESSION_ID").ok();
+    let mut session_id_cstring: Option<CString> = session_id
+        .as_ref()
+        .and_then(|s| CString::new(s.clone()).ok());
+    if let Some(ref sid) = session_id {
+        eprintln!("[Runner] Session ID from env: {}", sid);
+    }
     let kv_api = create_kv_api();
 
     #[cfg(target_os = "linux")]

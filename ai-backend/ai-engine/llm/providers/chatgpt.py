@@ -58,6 +58,11 @@ class ChatGPTProvider(AiProvider):
         elif mode_lower == 'explain':
             # Explicit explain mode - no code changes, just explanation
             full_prompt = build_prompt(code, lang, user_prompt=prompt or '', files=files, focus=focus, mode='explain')
+        elif mode_lower == 'split':
+            # Split mode: send the split prompt directly with the code embedded.
+            # Do NOT wrap in build_prompt() — that adds general-analysis framing
+            # which causes the LLM to emit explanation prose before the JSON.
+            full_prompt = (prompt or '') + f"\n\nHere is the code to split (language: {lang}):\n```{lang}\n{code}\n```\n\nRespond with ONLY the JSON object. No explanation."
         else:
             if prompt and 'Respond only with the updated full file contents' in prompt:
                 full_prompt = build_fullfile_prompt(code, lang, prompt, files=files, focus=focus)
