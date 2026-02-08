@@ -17,6 +17,15 @@ use crate::infra::host_kv::{
     module_slot_to_u32, read_schema_table, HostKvApiV1, HostKvSchemaEvent,
     SynthiHostContextV1, KV_STORE,
 };
+use crate::compiler::plugin_contract::ModuleSlot as CompilerModuleSlot;
+
+fn to_compiler_slot(slot: ModuleSlot) -> CompilerModuleSlot {
+    match slot {
+        ModuleSlot::Core => CompilerModuleSlot::Core,
+        ModuleSlot::Gui => CompilerModuleSlot::Gui,
+        ModuleSlot::Main => CompilerModuleSlot::Main,
+    }
+}
 
 pub unsafe fn process_load_command(
     name: &str,

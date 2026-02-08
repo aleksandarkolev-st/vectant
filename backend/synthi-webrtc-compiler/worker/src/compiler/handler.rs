@@ -225,7 +225,7 @@ pub async fn handle_compile_request(
                  modules_to_load.push(("main".to_string(), core_lib_path.clone()));
              } else {
                  modules_to_load.push(("core".to_string(), core_lib_path.clone()));
-                 if !gui_lib_path.is_empty() {
+                 if !gui_lib_path.is_empty() && !processed_gui.trim().is_empty() {
                      modules_to_load.push(("gui".to_string(), gui_lib_path.clone()));
                  }
              }
@@ -241,7 +241,7 @@ pub async fn handle_compile_request(
             // For now, let's just reload core.
         }
         RebuildScope::GuiOnly => {
-            if !gui_lib_path.is_empty() {
+            if !gui_lib_path.is_empty() && !processed_gui.trim().is_empty() {
                 modules_to_load.push(("gui".to_string(), gui_lib_path.clone()));
             }
         }

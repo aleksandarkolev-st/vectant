@@ -1,17 +1,14 @@
 use anyhow::{Context, Result};
 use tokio::process::Command;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
-use tokio::sync::mpsc;
 use std::collections::HashMap;
-use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType};
+use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
 
@@ -580,7 +577,10 @@ pub async fn handle_runner_execution(
                 println!("[Main] Replacing video track on transceiver");
                 for t in &transceivers {
                     if t.kind() == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video {
-                        let _ = t.sender().await.replace_track(Some(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>)).await;
+                        match t.sender().await.replace_track(Some(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>)).await {
+                            Ok(_) => println!("[Main] Video track replaced successfully"),
+                            Err(e) => eprintln!("[Main] ERROR replacing video track: {:?}", e),
+                        }
                         break;
                     }
                 }
@@ -589,7 +589,10 @@ pub async fn handle_runner_execution(
                 println!("[Main] Replacing audio track on transceiver");
                 for t in &transceivers {
                     if t.kind() == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Audio {
-                        let _ = t.sender().await.replace_track(Some(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>)).await;
+                        match t.sender().await.replace_track(Some(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>)).await {
+                            Ok(_) => println!("[Main] Audio track replaced successfully"),
+                            Err(e) => eprintln!("[Main] ERROR replacing audio track: {:?}", e),
+                        }
                         break;
                     }
                 }

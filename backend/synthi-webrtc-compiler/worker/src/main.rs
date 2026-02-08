@@ -897,11 +897,10 @@ async fn create_peer(
         let placeholder_video = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
                 mime_type: "video/H264".to_owned(),
-                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
-                rtcp_feedback: vec![RTCPFeedback {
-                    typ: "transport-cc".to_owned(),
-                    parameter: "".to_owned(),
-                }],
+                // Keep fmtp_line minimal — the real track (created by GStreamer) will
+                // replace this via replace_track() and carry the encoder's actual params.
+                // Overly specific profile-level-id here can cause SDP mismatches on
+                // some browsers if the negotiated profile differs.
                 ..Default::default()
             },
             "video".to_owned(),
@@ -1378,11 +1377,16 @@ async fn wire_peer_channels(
                     let sdl_store_for_msg = sdl_store_outer.clone();
                     let runner_store_for_term = runner_store_outer.clone();
                     let build_log_store_for_term = store.clone();
+                    // Track which sessions we've already warned about missing x11 senders
+                    // to avoid flooding logs with repeated messages on every mouse/key event.
+                    let x11_warned: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>> =
+                        Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
                     dc.on_message(Box::new(move |msg| {
                         let term_store_for_msg = term_store.clone();
                         let sdl_store = sdl_store_for_msg.clone();
                         let runner_store_term = runner_store_for_term.clone();
                         let build_log_term = build_log_store_for_term.clone();
+                        let x11_warned = x11_warned.clone();
                         async move {
                             if msg.is_string {
                                 // diagnostic log
@@ -1444,6 +1448,11 @@ async fn wire_peer_channels(
                                                                 let mut term_guard = term_store_for_msg.lock().await;
                                                                 term_guard.remove(sid);
                                                             }
+                                                            // Reset x11 warning so it fires again if session reconnects
+                                                            {
+                                                                let mut warned = x11_warned.lock().await;
+                                                                warned.remove(sid);
+                                                            }
                                                             // Notify frontend that the runner has ended
                                                             let log_guard = build_log_term.lock().await;
                                                             if let Some(dc) = log_guard.as_ref() {
@@ -1502,7 +1511,12 @@ async fn wire_peer_channels(
                                                             let _ = sender.send(cmd);
                                                         }
                                                     } else {
-                                                        println!("[worker] no x11 sender for session {}", sid);
+                                                        // Only warn once per session to avoid log spam
+                                                        // (this fires on every mouse/key event)
+                                                        let mut warned = x11_warned.lock().await;
+                                                        if warned.insert(sid.to_string()) {
+                                                            println!("[worker] no x11 sender for session {} (further warnings suppressed)", sid);
+                                                        }
                                                     }
                                                 }
                                             }

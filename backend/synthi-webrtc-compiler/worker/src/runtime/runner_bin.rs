@@ -235,7 +235,7 @@ fn main() {
     #[cfg(target_os = "linux")]
     let (shm_seg, shm_ptr) = if let Some(ref conn) = x11_conn {
         let size = 800 * 600 * 4;
-        let (id, ptr) = crate::runtime::runner::capture::create_shm_segment(size).expect("Failed to create SHM");
+        let (id, ptr) = worker::runtime::runner::capture::create_shm_segment(size).expect("Failed to create SHM");
         let seg = conn.generate_id().unwrap();
         conn.shm_attach(seg, id as u32, false).unwrap();
         (seg, ptr)
@@ -1033,7 +1033,7 @@ fn main() {
 
         #[cfg(target_os = "linux")]
         if let Some(ref conn) = x11_conn {
-             crate::runtime::runner::capture::capture_frame(
+             worker::runtime::runner::capture::capture_frame(
                  conn,
                  x11_root,
                  shm_seg,
