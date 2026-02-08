@@ -458,8 +458,17 @@ fn main() {
     // ============================================================
     // Session ID for Host KV scoping. Must be set via "set_session" command
     // before loading modules that use Host KV.
-    let mut session_id: Option<String> = None;
-    let mut session_id_cstring: Option<CString> = None;
+    // Read session from env var (set by worker when spawning us) as initial
+    // fallback. The worker also sends a 'set_session' text command, but
+    // having the env var ensures session is available immediately for the
+    // first module loads without a race against stdin ordering.
+    let mut session_id: Option<String> = std::env::var("SYNTHI_SESSION_ID").ok();
+    let mut session_id_cstring: Option<CString> = session_id
+        .as_ref()
+        .and_then(|s| CString::new(s.clone()).ok());
+    if let Some(ref sid) = session_id {
+        eprintln!("[Runner] Session ID from env: {}", sid);
+    }
     let kv_api = create_kv_api();
 
     #[cfg(target_os = "linux")]

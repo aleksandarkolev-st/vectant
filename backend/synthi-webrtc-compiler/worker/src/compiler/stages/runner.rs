@@ -608,29 +608,49 @@ pub async fn handle_runner_execution(
             let _ = ctx.log_dc.send_text(gui_start.to_string()).await;
         }
 
-        // Load Modules
-        for (name, path) in &modules_to_load {
-            // Check if process is still alive
+        // ============================================================
+        // SEND SESSION + LOAD COMMANDS (BATCHED)
+        // ============================================================
+        // We send all commands back-to-back and flush once.  The runner's
+        // main loop uses try_recv() to drain ALL pending commands before
+        // the next render frame, so batching ensures atomic multi-module
+        // swap: no intermediate frame where new core state is rendered
+        // by old GUI code (which would read corrupt data).
+        // ============================================================
+        if let Some(stdin) = state.stdin.as_mut() {
+            // Check if process is still alive before sending anything
+            let mut process_alive = true;
             if let Some(child) = state.process.as_mut() {
                 if let Ok(Some(status)) = child.try_wait() {
                     eprintln!("[Main] Runner process has already exited with status: {}", status);
-                    break;
+                    process_alive = false;
                 }
             }
 
-            if let Some(stdin) = state.stdin.as_mut() {
-                let cmd = format!("load {} {}\n", name, path);
-                println!("[Main] Sending command to runner: {}", cmd.trim());
-                if let Err(e) = stdin.write_all(cmd.as_bytes()).await {
-                    eprintln!("Failed to write to runner stdin: {}", e);
+            if process_alive {
+                // Send set_session first (required for Host KV support).
+                // The runner needs the session ID before any module load
+                // so modules can read/write persistent key-value state.
+                if let Some(ref sid) = session_id {
+                    let session_cmd = format!("set_session {}\n", sid);
+                    eprintln!("[Main] Sending session to runner: {}", session_cmd.trim());
+                    let _ = stdin.write_all(session_cmd.as_bytes()).await;
                 }
+
+                // Send all load commands back-to-back (no sleep between them)
+                for (name, path) in &modules_to_load {
+                    let cmd = format!("load {} {}\n", name, path);
+                    println!("[Main] Sending command to runner: {}", cmd.trim());
+                    if let Err(e) = stdin.write_all(cmd.as_bytes()).await {
+                        eprintln!("Failed to write to runner stdin: {}", e);
+                        break;
+                    }
+                }
+
+                // Single flush pushes all commands at once
                 if let Err(e) = stdin.flush().await {
                     eprintln!("Failed to flush runner stdin: {}", e);
                 }
-                // Wait for the supervisor to process the command before sending the next one.
-                // The supervisor reads text from stdin, converts to binary IPC, and forwards
-                // to the worker child. 500ms gives adequate time for this round-trip.
-                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             }
         }
 
