@@ -108,7 +108,7 @@ pub struct PluginResourceRegistry {
 
 /// Resource counts per module
 #[derive(Debug, Clone, Default)]
-struct ModuleResourceCount {
+pub struct ModuleResourceCount {
     active_tasks: u32,
     pending_timers: u32,
     registered_callbacks: u32,

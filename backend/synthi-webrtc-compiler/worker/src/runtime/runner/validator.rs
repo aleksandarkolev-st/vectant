@@ -1,5 +1,5 @@
 use crate::runtime::plugin_contract::{
-    ModuleSlot, SYNTHI_CORE_ABI_VERSION, SYNTHI_GUI_ABI_VERSION,
+    ModuleSlot,
 };
 use libloading::{Library, Symbol};
 use std::ffi::{c_uint, c_void};

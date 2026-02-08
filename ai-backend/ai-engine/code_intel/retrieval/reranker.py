@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import logging
 import re
+import json
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -101,12 +103,16 @@ class LightweightReranker:
         query_symbols = query_symbols or []
         
         # Extract query terms
+
+
         query_terms = self._extract_terms(query)
         query_terms.update(self._extract_terms(" ".join(query_symbols)))
         
         # Rerank each candidate
         results: List[RerankedResult] = []
         seen_signatures: Set[str] = set()  # For deduplication
+
+
         
         for chunk, original_score in candidates:
             # Compute reranking factors
@@ -124,6 +130,7 @@ class LightweightReranker:
                 self.config.code_quality_weight * code_quality +
                 self.config.context_alignment_weight * context_alignment
             )
+
             
             # Filter low scores
             if rerank_score < self.config.min_relevance_score:
@@ -372,3 +379,120 @@ def rerank_results(
     """Convenience function for reranking."""
     reranker = LightweightReranker()
     return reranker.rerank(candidates, query, **kwargs)
+
+
+@dataclass
+class LlmRerankResult:
+    """LLM reranker output entry."""
+    chunk_id: str
+    score: float
+    reason: str = ""
+
+
+class GeminiReranker:
+    """
+    LLM-based reranker using Gemini.
+
+    This is optional and only used when an API key is available.
+    It scores candidates from 0.0 to 1.0 based on query relevance.
+    """
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: str = "gemini-2.5-flash-lite",
+        timeout_ms: int = 6000,
+    ):
+        self.api_key = api_key
+        self.model = model
+        self.timeout_ms = timeout_ms
+
+    def rerank(
+        self,
+        candidates: List[Tuple[SemanticChunk, float]],
+        query: str,
+        max_results: int = 20,
+    ) -> List[LlmRerankResult]:
+        if not candidates:
+            return []
+        if not self.api_key:
+            return []
+
+        try:
+            import google.generativeai as genai
+        except Exception:
+            return []
+
+        genai.configure(api_key=self.api_key)
+        model = genai.GenerativeModel(self.model)
+
+        payload = []
+        for chunk, score in candidates[:max_results]:
+            snippet = (chunk.code_body or "")
+            snippet = snippet[:700]
+            payload.append({
+                "id": chunk.id,
+                "file": chunk.metadata.file_path,
+                "symbol": chunk.metadata.symbol_name,
+                "signature": chunk.metadata.signature,
+                "doc": (chunk.metadata.docstring or "")[:200],
+                "score": float(score),
+                "snippet": snippet,
+            })
+
+        prompt = (
+            "You are a code retrieval reranker. "
+            "Score each candidate from 0.0 to 1.0 for relevance to the query. "
+            "Return ONLY valid JSON: {\"results\": [{\"id\":...,\"score\":...,\"reason\":...}, ...]}.\n\n"
+            f"Query:\n{query}\n\nCandidates:\n{json.dumps(payload, ensure_ascii=False)}"
+        )
+
+        start = time.time()
+        try:
+            response = model.generate_content(
+                prompt,
+                generation_config={"temperature": 0.1, "max_output_tokens": 512},
+            )
+        except Exception:
+            return []
+
+        if (time.time() - start) * 1000 > self.timeout_ms:
+            return []
+
+        text = (response.text or "").strip()
+        parsed = self._extract_json(text)
+        if not parsed:
+            return []
+
+        results = []
+        for item in parsed.get("results", []):
+            try:
+                cid = str(item.get("id"))
+                score = float(item.get("score"))
+                reason = str(item.get("reason") or "")
+            except Exception:
+                continue
+            results.append(LlmRerankResult(chunk_id=cid, score=score, reason=reason))
+
+        return results
+
+    def _extract_json(self, text: str) -> Optional[Dict]:
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+
+        fence_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text)
+        if fence_match:
+            try:
+                return json.loads(fence_match.group(1))
+            except Exception:
+                return None
+
+        obj_match = re.search(r"(\{[\s\S]*\})", text)
+        if obj_match:
+            try:
+                return json.loads(obj_match.group(1))
+            except Exception:
+                return None
+        return None

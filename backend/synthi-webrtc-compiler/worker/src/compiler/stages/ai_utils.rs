@@ -1,6 +1,6 @@
 use crate::infra::messages::CompileRequest;
 use crate::infra::utils::get_wsl_host_ip;
-use anyhow::{Context, Result};
+use anyhow::{Result};
 use regex::Regex;
 use reqwest;
 use serde_json;
@@ -351,8 +351,8 @@ fn try_local_deletion_patch(
         .and_then(|c| c.as_str())
         .unwrap_or("");
 
-    let mut new_core = core_content.to_string();
-    let mut new_gui = gui_content.to_string();
+    let new_core = core_content.to_string();
+    let new_gui = gui_content.to_string();
     let mut new_shared = shared_content.to_string();
     let mut any_changes = false;
 
@@ -636,18 +636,21 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     }
 
     // Level 3: Full AI Split
+    // The AI engine exposes /refactor/split (NOT /generate/split).
+    // It expects an AnalyzeAiRequest: { code, lang, mode?, ... }
+    // and returns { result: "<raw LLM JSON string>", lang }.
+    // The LLM JSON inside "result" is: { core: {filename, content}, gui: {...}, shared: {...} }
     let client = reqwest::Client::new();
     let payload = serde_json::json!({
-        "source": req.source,
-        "language": req.language,
-        "is_gui": req.is_gui,
-        "filename": req.filename
+        "code": req.source,
+        "lang": req.language,
+        "mode": "split"
     });
 
     let backend_url = get_ai_backend_url();
-    let url = format!("{}/generate/split", backend_url);
+    let url = format!("{}/refactor/split", backend_url);
     eprintln!("[AI Split] Calling FULL AI split endpoint: {}", url);
-    let res = client
+    let raw_response = client
         .post(&url)
         .json(&payload)
         .timeout(std::time::Duration::from_secs(60))
@@ -655,6 +658,71 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         .await?
         .json::<serde_json::Value>()
         .await?;
+
+    // Parse the response: extract "result" string and parse the LLM JSON within it.
+    // The AI engine wraps the LLM output as { "result": "<json string>", "lang": "cpp" }.
+    // The LLM may return explanation text BEFORE a ```json code fence, so we must
+    // search for the fence anywhere in the text, not just at the start.
+    let res = if let Some(result_str) = raw_response.get("result").and_then(|r| r.as_str()) {
+        let cleaned = result_str.trim();
+
+        // Strategy: find the LAST ```json (or ```) fenced block in the text.
+        // LLMs often emit explanation prose before the JSON code fence.
+        let json_str = if let Some(fence_start) = cleaned.rfind("```json")
+            .or_else(|| cleaned.rfind("```\n{"))
+        {
+            // Skip past the opening fence line (```json\n)
+            let after_fence = &cleaned[fence_start..];
+            let content_start = after_fence.find('\n').map(|p| p + 1).unwrap_or(7);
+            let inner = &after_fence[content_start..];
+            // Find the closing ``` fence
+            if let Some(close) = inner.find("```") {
+                inner[..close].trim()
+            } else {
+                // No closing fence — take everything after the opening
+                inner.trim()
+            }
+        } else if cleaned.starts_with("```") {
+            // Entire response is a single fenced block (no lang tag)
+            let without_opening = if let Some(pos) = cleaned.find('\n') {
+                &cleaned[pos + 1..]
+            } else {
+                cleaned.trim_start_matches("```")
+            };
+            without_opening.trim_end_matches("```").trim()
+        } else {
+            cleaned
+        };
+
+        // Within the extracted block, find the outermost JSON object { ... }
+        let json_str = if let Some(start) = json_str.find('{') {
+            if let Some(end) = json_str.rfind('}') {
+                &json_str[start..=end]
+            } else {
+                json_str
+            }
+        } else {
+            json_str
+        };
+
+        match serde_json::from_str::<serde_json::Value>(json_str) {
+            Ok(parsed) => {
+                eprintln!("[AI Split] Successfully parsed LLM JSON from result wrapper");
+                parsed
+            }
+            Err(e) => {
+                eprintln!("[AI Split] Failed to parse LLM JSON from result: {}. Raw prefix: {}", e, &result_str[..result_str.len().min(300)]);
+                anyhow::bail!("AI split returned unparseable result: {}", e);
+            }
+        }
+    } else if raw_response.get("core").is_some() {
+        // Direct structured response (no wrapper) — use as-is
+        eprintln!("[AI Split] Response already in structured format (no wrapper)");
+        raw_response
+    } else {
+        eprintln!("[AI Split] Unexpected response format: {}", &raw_response.to_string()[..raw_response.to_string().len().min(200)]);
+        anyhow::bail!("AI split returned unexpected response format");
+    };
 
     // Cache result
     let cached_entry = CachedSplit {

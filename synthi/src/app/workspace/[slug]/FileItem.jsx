@@ -335,6 +335,13 @@ useEffect(() => {
     handleFileClick(e);
   };
 
+  // Handle drag start for chat context
+  const handleDragStart = (e) => {
+    e.dataTransfer.setData('text/workspace-path', item.path);
+    e.dataTransfer.setData('text/plain', item.name);
+    e.dataTransfer.effectAllowed = 'copy';
+  };
+
   // Standard Display Rendering
   return (
     <>
@@ -342,6 +349,9 @@ useEffect(() => {
         ref={fileContentRef}
         data-node-path={item.path}
         data-node-path-id={item.path}
+        data-node-name={item.name}
+        draggable
+        onDragStart={handleDragStart}
         className={`file-item relative group flex items-center py-1.5 px-2 rounded-md hover:bg-[#1d2230] cursor-pointer transition-all ${
           isSelected ? 'bg-[#1f2d4a] border-l-[3px] border-[#7fffe1] shadow-[0_0_0_1px_rgba(127,255,225,0.18)]' : 'border-l-[3px] border-transparent'
         }`}

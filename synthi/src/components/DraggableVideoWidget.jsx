@@ -217,6 +217,7 @@ export function DraggableVideoWidget({
                 <button 
                     onClick={(e) => { 
                         e.stopPropagation(); 
+                        sendGuiEvent({ type: 'stop-runner' });
                         setGuiConfig(null); 
                         setIsGuiRunning(false); 
                     }} 

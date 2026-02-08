@@ -1,4 +1,5 @@
 import os
+import time
 from typing import Any, Mapping, Optional, Sequence, Dict
 from .base import AiProvider
 
@@ -8,6 +9,15 @@ from dotenv import load_dotenv
 from llm.prompts import build_prompt, build_fullfile_prompt, build_patch_prompt
 
 load_dotenv()  # Load once at import
+
+
+def _get_metrics_collector():
+    """Lazy import to avoid circular dependencies."""
+    try:
+        from metrics import get_metrics_collector
+        return get_metrics_collector()
+    except ImportError:
+        return None
 
 
 class GeminiProvider(AiProvider):
@@ -56,26 +66,41 @@ class GeminiProvider(AiProvider):
             raise ValueError("LLM disabled: set GEMINI_API_KEY or provide api_key to enable suggestions.")
 
         # Build prompt with user's question and code context
-        # Prefer explicit mode flag. Support 'fullfile' (return full file in fenced block)
-        # and 'patch' (return a unified diff). For other cases, prefer the standard prompt
-        # but include the user's instruction.
-        if mode and isinstance(mode, str) and mode.lower() == 'fullfile':
+        # Prefer explicit mode flag. Support 'fullfile' (return full file in fenced block),
+        # 'patch' (return a unified diff), and 'explain' (no code changes, just explanation).
+        # For other cases, prefer the standard prompt but include the user's instruction.
+        mode_lower = mode.lower() if mode and isinstance(mode, str) else ''
+        
+        if mode_lower == 'fullfile':
             full_prompt = build_fullfile_prompt(code, lang, prompt or '', files=files, focus=focus)
-        elif mode and isinstance(mode, str) and mode.lower() == 'patch':
+        elif mode_lower == 'patch':
             full_prompt = build_patch_prompt(code, lang, prompt or '', files=files, focus=focus)
+        elif mode_lower == 'explain':
+            # Explicit explain mode - no code changes, just explanation
+            full_prompt = build_prompt(code, lang, user_prompt=prompt or '', files=files, focus=focus, mode='explain')
+        elif mode_lower == 'split':
+            # Split mode: send the split prompt directly with the code embedded.
+            # Do NOT wrap in build_prompt() — that adds general-analysis framing
+            # which causes the LLM to emit explanation prose before the JSON.
+            full_prompt = (prompt or '') + f"\n\nHere is the code to split (language: {lang}):\n```{lang}\n{code}\n```\n\nRespond with ONLY the JSON object. No explanation."
         else:
             # Backwards-compat: some clients include the instructive string in `prompt`.
             if prompt and 'Respond only with the updated full file contents' in prompt:
                 full_prompt = build_fullfile_prompt(code, lang, prompt, files=files, focus=focus)
             else:
-                # If user's prompt explicitly asks for minimal edits or renames,
-                # augment the prompt with an instruction to prefer minimal changes.
-                augmented = (prompt or '') + "\n\nWhen possible prefer minimal edits and only change what the user requests." 
-                full_prompt = build_prompt(code, lang, user_prompt=augmented, files=files, focus=focus)
+                # build_prompt will auto-detect explain queries based on keywords
+                # Only add "prefer minimal edits" for non-explain queries
+                full_prompt = build_prompt(code, lang, user_prompt=prompt or '', files=files, focus=focus)
 
         try:
             model_name = model or self.model_name
             client = self._get_client(api_key, model_name)
+            
+            # Metrics tracking
+            start_time = time.time()
+            first_token_time = None
+            total_tokens = 0
+            
             # Stream tokens from the Gemini API, accumulating text so the AI chat window
             # can display the final suggestion as a plain string.
             response = await client.generate_content_async(full_prompt, stream=True)
@@ -83,6 +108,10 @@ class GeminiProvider(AiProvider):
             chunks = []
             prompt_feedback = None
             async for chunk in response:
+                # Track TTFT
+                if first_token_time is None:
+                    first_token_time = time.time()
+                
                 if getattr(chunk, "prompt_feedback", None):
                     prompt_feedback = chunk.prompt_feedback
                 
@@ -101,18 +130,43 @@ class GeminiProvider(AiProvider):
                                     part_text = getattr(part, "text", None)
                                     if part_text:
                                         chunks.append(part_text)
+                                        total_tokens += len(part_text.split())  # Rough token estimate
                                 continue
                     
                     # Fallback: try the .text accessor
                     text = chunk.text
                     if text:
                         chunks.append(text)
+                        total_tokens += len(text.split())
                 except (ValueError, AttributeError):
                     # .text accessor throws ValueError if no valid parts
                     # This is expected when finish_reason is STOP without content
                     pass
 
             combined = "".join(chunks).strip()
+            
+            # Record metrics
+            end_time = time.time()
+            total_latency_ms = (end_time - start_time) * 1000
+            ttft_ms = (first_token_time - start_time) * 1000 if first_token_time else total_latency_ms
+            prompt_tokens = len(full_prompt.split())  # Rough estimate
+            
+            collector = _get_metrics_collector()
+            if collector:
+                collector.record_streaming_completion(
+                    ttft_ms=ttft_ms,
+                    total_latency_ms=total_latency_ms,
+                    tokens=total_tokens,
+                    prompt_tokens=prompt_tokens,
+                    output_tokens=total_tokens,
+                )
+                collector.record_inference(
+                    model=model_name,
+                    inference_time_ms=total_latency_ms,
+                    success=bool(combined),
+                    is_timeout=False,
+                    error_type=None,
+                )
 
             if not combined:
                 feedback = prompt_feedback or getattr(response, "prompt_feedback", None)
@@ -130,6 +184,17 @@ class GeminiProvider(AiProvider):
             return combined
 
         except Exception as e:
+            # Record error metrics
+            is_timeout = "timeout" in str(e).lower()
+            collector = _get_metrics_collector()
+            if collector:
+                collector.record_inference(
+                    model=model or self.model_name,
+                    inference_time_ms=(time.time() - start_time) * 1000 if 'start_time' in dir() else 0,
+                    success=False,
+                    is_timeout=is_timeout,
+                    error_type=type(e).__name__,
+                )
             return f"LLM error: {type(e).__name__}: {e}"
 
     def __repr__(self) -> str:

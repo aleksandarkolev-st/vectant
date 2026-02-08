@@ -1,17 +1,12 @@
-use anyhow::{Context, Result};
+use anyhow::{Result};
 use chrono::Utc;
-use serde_json::Value;
-use std::env;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use crate::compiler::builder::{
     hash_content, hash_shared_header_semantic, ModuleHashes, RebuildScope,
 };
 use crate::compiler::context::CompileContext;
 use crate::infra::messages::CompileRequest;
-use crate::infra::observability::{LogEntry, LogLevel, ReloadId, ReloadMetricsTracker};
-use crate::runtime::capability::detect_capabilities;
+use crate::infra::observability::{ReloadId, ReloadMetricsTracker};
 
 // Import our new modular stages
 use crate::compiler::stages::ai_utils::perform_ai_split;
@@ -29,7 +24,7 @@ pub async fn handle_compile_request(
 ) -> Result<serde_json::Value> {
     let compile_start = std::time::Instant::now();
     let timestamp = Utc::now().timestamp_millis();
-    let app_id = format!("app_{}", timestamp);
+    let _app_id = format!("app_{}", timestamp);
 
     // Directory setup
     let output_dir = ctx.workspace_path.join("build");
@@ -38,7 +33,7 @@ pub async fn handle_compile_request(
     }
 
     // Platform detection (WSL/Linux compat)
-    let is_wsl = {
+    let _is_wsl = {
         if let Ok(content) = std::fs::read_to_string("/proc/version") {
             content.to_lowercase().contains("microsoft")
         } else {
@@ -50,7 +45,7 @@ pub async fn handle_compile_request(
     // Initialize metrics
     let reload_id = ReloadId::new();
     // Use start explicitly
-    let tracker = ReloadMetricsTracker::start(reload_id, "compile_request".to_string());
+    let _tracker = ReloadMetricsTracker::start(reload_id, "compile_request".to_string());
 
     // Manual logging instead of record_step for now
     eprintln!("[Compile] Step: Handler started");
@@ -160,6 +155,28 @@ pub async fn handle_compile_request(
     // Manual logging
     eprintln!("[Compile] Step: Starting compilation");
 
+    // Validate: bail early if AI split produced empty core content.
+    // Without this guard, an empty .cpp is compiled into a .so with no
+    // symbols, compile_core returns Ok(None), and the handler emits
+    // "Core compilation failed" with zero diagnostic information.
+    if rebuild_scope != RebuildScope::None
+        && rebuild_scope != RebuildScope::GuiOnly
+        && processed_core.trim().is_empty()
+    {
+        let msg = "AI split returned empty core module content. Cannot compile.";
+        eprintln!("[Handler] {}", msg);
+        let payload = serde_json::json!({
+            "sessionId": session_id.clone(),
+            "type": "stderr",
+            "line": format!("[Error] {}\n", msg)
+        });
+        let _ = ctx
+            .log_dc
+            .send_text(serde_json::to_string(&payload).unwrap_or_default())
+            .await;
+        anyhow::bail!(msg);
+    }
+
     // Ensure shared header exists before compilation starts
     if rebuild_scope != RebuildScope::None {
         let shared_fname = split_data
@@ -214,21 +231,45 @@ pub async fn handle_compile_request(
 
     // Determine modules to load
     let mut modules_to_load = Vec::new();
+    
+    // When NOT using AI split and the source is a standard main() app
+    // (no core_on_load/core_on_update exports), load as a single "main" module.
+    // The runner's "main" slot accepts entrypoint() which guardrails add for main() apps.
+    let is_blocking_main_app = !req.use_ai_split 
+        && !processed_core.contains("core_on_load")
+        && !processed_core.contains("core_on_update")
+        && (processed_core.contains("int main(") || processed_core.contains("entrypoint"));
+
     match rebuild_scope {
         RebuildScope::Both | RebuildScope::FullReload => {
-            modules_to_load.push(("core".to_string(), core_lib_path.clone()));
-            if !gui_lib_path.is_empty() {
-                modules_to_load.push(("gui".to_string(), gui_lib_path.clone()));
+             if is_blocking_main_app {
+                 // Load user's code as "main" module (accepts entrypoint symbol)
+                 modules_to_load.push(("main".to_string(), core_lib_path.clone()));
+             } else {
+                 modules_to_load.push(("core".to_string(), core_lib_path.clone()));
+                 if !gui_lib_path.is_empty() && !processed_gui.trim().is_empty() {
+                     modules_to_load.push(("gui".to_string(), gui_lib_path.clone()));
+                 }
+             }
+        },
+        RebuildScope::CoreOnly => {
+            if is_blocking_main_app {
+                modules_to_load.push(("main".to_string(), core_lib_path.clone()));
+            } else {
+                modules_to_load.push(("core".to_string(), core_lib_path.clone()));
+                // CRITICAL: GUI must also reload when core changes.
+                // gui_on_render receives core's state (app_state.raw) and the GUI
+                // module caches the CoreAPI pointer from core_get_api(). After core
+                // is swapped to a new .so, the old GUI's cached pointers become
+                // dangling.  Re-loading GUI forces gui_on_load to re-acquire the
+                // new core's API and re-bind to the new AppState layout.
+                if !gui_lib_path.is_empty() && !processed_gui.trim().is_empty() {
+                    modules_to_load.push(("gui".to_string(), gui_lib_path.clone()));
+                }
             }
         }
-        RebuildScope::CoreOnly => {
-            modules_to_load.push(("core".to_string(), core_lib_path.clone()));
-            // Core reload often requires GUI storage reload, but logic depends on runner capabilities
-            // Often we reload both to be safe unless we are strictly preserving state.
-            // For now, let's just reload core.
-        }
         RebuildScope::GuiOnly => {
-            if !gui_lib_path.is_empty() {
+            if !gui_lib_path.is_empty() && !processed_gui.trim().is_empty() {
                 modules_to_load.push(("gui".to_string(), gui_lib_path.clone()));
             }
         }

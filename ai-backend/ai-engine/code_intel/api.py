@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
 from pydantic import BaseModel, Field
 
 from .engine import CodeIntelEngine, create_engine
@@ -36,8 +36,12 @@ def resolve_workspace_path(workspace_path: str) -> str:
     2. If it's a slug, resolve to {project_root}/backend/collab-server/repos/{slug}
     3. If that doesn't exist, try relative to current working directory
     """
-    # If it's already an absolute path that exists, use it directly
+    # If it's already an absolute path that exists, use it directly (unless slug-only is enforced)
+    require_slug = os.getenv("CODE_INTEL_REQUIRE_SLUG", "false").lower() == "true"
     if os.path.isabs(workspace_path) and os.path.exists(workspace_path):
+        if require_slug:
+            logger.warning("Absolute workspace paths are disabled by CODE_INTEL_REQUIRE_SLUG")
+            return "__INVALID__"
         logger.debug(f"Using absolute path directly: {workspace_path}")
         return workspace_path
     
@@ -88,6 +92,15 @@ def resolve_workspace_path(workspace_path: str) -> str:
 router = APIRouter(prefix="/code-intel", tags=["code-intelligence"])
 
 
+def _require_api_key(request: Request) -> None:
+    required = os.getenv("CODE_INTEL_API_KEY")
+    if not required:
+        return
+    provided = request.headers.get("x-code-intel-key") or request.headers.get("X-Code-Intel-Key")
+    if not provided or provided != required:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
 # ============================================================================
 # Request/Response Models
 # ============================================================================
@@ -126,6 +139,9 @@ class ContextResponse(BaseModel):
     # Deterministic controller output
     sufficiency: str = Field("UNKNOWN", description="Context sufficiency: SUFFICIENT, PARTIAL, INSUFFICIENT, EMPTY, UNKNOWN")
     refusal: Optional[str] = Field(None, description="Refusal reason if context is insufficient")
+    trace: Optional[List[Dict[str, Any]]] = Field(None, description="Selection trace for observability")
+    grounding_spans: Optional[List[Dict[str, Any]]] = Field(None, description="Grounding spans for verifier")
+    clarifying_question: Optional[str] = Field(None, description="Clarifying question when uncertainty is high")
 
 
 class ToolCallRequest(BaseModel):
@@ -164,6 +180,98 @@ class SummaryResponse(BaseModel):
     token_count: int
 
 
+class MetricsRequest(BaseModel):
+    """Request for metrics."""
+    workspace_path: str = Field(..., description="Path to workspace")
+    include_all: bool = Field(False, description="Include all comprehensive metrics")
+
+
+class LatencyMetrics(BaseModel):
+    """Latency percentiles."""
+    p50: float = 0.0
+    p95: float = 0.0
+    p99: float = 0.0
+
+
+class ThroughputMetrics(BaseModel):
+    """Throughput metrics."""
+    tokens_per_second: LatencyMetrics = Field(default_factory=LatencyMetrics)
+    requests_per_second: float = 0.0
+    peak_rps: float = 0.0
+
+
+class ModelMetrics(BaseModel):
+    """Model/inference metrics."""
+    inference_time: LatencyMetrics = Field(default_factory=LatencyMetrics)
+    by_model: Dict[str, LatencyMetrics] = Field(default_factory=dict)
+
+
+class RetrievalQualityMetrics(BaseModel):
+    """Retrieval quality metrics."""
+    recall_at_1: Optional[Dict[str, float]] = None
+    recall_at_5: Optional[Dict[str, float]] = None
+    recall_at_10: Optional[Dict[str, float]] = None
+    mrr: Optional[Dict[str, float]] = None
+
+
+class ReliabilityMetrics(BaseModel):
+    """Reliability metrics."""
+    total_requests: int = 0
+    errors: int = 0
+    error_rate: float = 0.0
+    timeout_rate: float = 0.0
+    timeouts: int = 0
+    cold_starts: int = 0
+    cold_start_latency: LatencyMetrics = Field(default_factory=LatencyMetrics)
+    error_types: Dict[str, int] = Field(default_factory=dict)
+
+
+class LoadMetrics(BaseModel):
+    """Load behavior metrics."""
+    latency_vs_concurrency: Dict[str, LatencyMetrics] = Field(default_factory=dict)
+    current_concurrency: int = 0
+    peak_concurrency: int = 0
+    p95_at_peak: float = 0.0
+
+
+class PromptOutputDistribution(BaseModel):
+    """Prompt and output size distribution."""
+    prompt_size: Dict[str, float] = Field(default_factory=dict)
+    output_size: Dict[str, float] = Field(default_factory=dict)
+
+
+class MetricsResponse(BaseModel):
+    """Comprehensive metrics response."""
+    # Original fields (backward compatible)
+    latency: Dict[str, Dict[str, float]]
+    counters: Dict[str, int]
+    budgets: Dict[str, int]
+    index_generation: Optional[str] = None
+    
+    # NEW: Enhanced latency metrics
+    ttft: Optional[LatencyMetrics] = None  # Time to first token
+    completion_latency: Optional[LatencyMetrics] = None  # Full completion time
+    queue_delay: Optional[LatencyMetrics] = None  # Queue/scheduling delay
+    
+    # NEW: Throughput metrics
+    throughput: Optional[ThroughputMetrics] = None
+    
+    # NEW: Model/inference metrics
+    model: Optional[ModelMetrics] = None
+    
+    # NEW: Retrieval quality metrics
+    retrieval_quality: Optional[RetrievalQualityMetrics] = None
+    
+    # NEW: Reliability metrics
+    reliability: Optional[ReliabilityMetrics] = None
+    
+    # NEW: Load behavior metrics
+    load: Optional[LoadMetrics] = None
+    
+    # NEW: Prompt/output distribution
+    prompt_output_distribution: Optional[PromptOutputDistribution] = None
+
+
 class EditPlanRequest(BaseModel):
     """Request to create an edit plan."""
     workspace_path: str = Field(..., description="Path to workspace")
@@ -189,6 +297,8 @@ _engines: Dict[str, CodeIntelEngine] = {}
 def get_engine(workspace_path: str) -> CodeIntelEngine:
     """Get or create engine for workspace, resolving the path first."""
     resolved_path = resolve_workspace_path(workspace_path)
+    if resolved_path == "__INVALID__":
+        raise HTTPException(status_code=403, detail="Absolute workspace paths are not allowed")
     
     if resolved_path not in _engines:
         logger.info(f"Creating new engine for: {resolved_path}")
@@ -201,13 +311,14 @@ def get_engine(workspace_path: str) -> CodeIntelEngine:
 # ============================================================================
 
 @router.post("/index", response_model=IndexResponse)
-async def index_workspace(request: IndexRequest) -> IndexResponse:
+async def index_workspace(request: IndexRequest, http_request: Request) -> IndexResponse:
     """
     Index a workspace.
     
     Parses all code files and builds vector + structural indices.
     """
     try:
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         stats = await engine.index_workspace(incremental=request.incremental)
         
@@ -236,13 +347,14 @@ class IndexFileResponse(BaseModel):
 
 
 @router.post("/index/file", response_model=IndexFileResponse)
-async def index_file(request: IndexFileRequest) -> IndexFileResponse:
+async def index_file(request: IndexFileRequest, http_request: Request) -> IndexFileResponse:
     """
     Index a single file.
     
     Used for incremental updates after file edits.
     """
     try:
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         chunks_indexed = await engine.index_file(request.file_path)
         
@@ -256,7 +368,7 @@ async def index_file(request: IndexFileRequest) -> IndexFileResponse:
 
 
 @router.post("/context", response_model=ContextResponse)
-async def get_context(request: ContextRequest) -> ContextResponse:
+async def get_context(request: ContextRequest, http_request: Request) -> ContextResponse:
     """
     Get context for a query.
     
@@ -265,6 +377,7 @@ async def get_context(request: ContextRequest) -> ContextResponse:
     Returns sufficiency indicator so LLM knows if context is complete.
     """
     try:
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         
         result = await engine.get_context(
@@ -282,13 +395,39 @@ async def get_context(request: ContextRequest) -> ContextResponse:
         else:
             sufficiency = str(sufficiency) if sufficiency else 'UNKNOWN'
         
-        # Extract refusal reason if present
+        # Extract refusal reason if present - convert RefusalReason object to string
         refusal = getattr(result, 'refusal_reason', None)
-        if refusal and hasattr(refusal, 'value'):
-            refusal = refusal.value
-        elif refusal and hasattr(refusal, 'name'):
-            refusal = refusal.name
+        if refusal:
+            if hasattr(refusal, 'message'):
+                refusal = refusal.message
+            elif hasattr(refusal, 'value'):
+                refusal = refusal.value
+            elif hasattr(refusal, 'name'):
+                refusal = refusal.name
+            else:
+                refusal = str(refusal)
         
+        trace = result.trace if result.trace else None
+        if os.getenv("CODE_INTEL_DEBUG") and result.debug:
+            if trace is None:
+                trace = []
+            trace.append({"debug": result.debug})
+
+        score_by_chunk_id: Dict[str, float] = {}
+        if trace:
+            for item in trace:
+                if item.get("reason") != "included":
+                    continue
+                chunk_id = item.get("chunk_id")
+                if not chunk_id:
+                    continue
+                score = item.get("score")
+                if score is None:
+                    continue
+                prev = score_by_chunk_id.get(chunk_id)
+                if prev is None or score > prev:
+                    score_by_chunk_id[chunk_id] = score
+
         return ContextResponse(
             context=result.assembled_context,
             chunks_used=len(result.chunks),
@@ -301,10 +440,13 @@ async def get_context(request: ContextRequest) -> ContextResponse:
                     "start_line": c.metadata.start_line,
                     "end_line": c.metadata.end_line,
                     "symbol": c.metadata.symbol_name,
-                    "score": c.metadata.relevance_score,
+                    "score": score_by_chunk_id.get(c.id, 0.0),
                 }
                 for c in result.chunks
             ],
+            trace=trace,
+            grounding_spans=result.grounding_spans if result.grounding_spans else None,
+            clarifying_question=result.clarifying_question,
         )
     except Exception as e:
         logger.exception("Context retrieval failed")
@@ -312,13 +454,14 @@ async def get_context(request: ContextRequest) -> ContextResponse:
 
 
 @router.post("/tools/definitions", response_model=ToolDefinitionsResponse)
-async def get_tool_definitions(request: ToolDefinitionsRequest) -> ToolDefinitionsResponse:
+async def get_tool_definitions(request: ToolDefinitionsRequest, http_request: Request) -> ToolDefinitionsResponse:
     """
     Get tool definitions for LLM.
     
     Returns tool schemas in OpenAI or Anthropic format.
     """
     try:
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         tools = engine.get_tool_definitions(format=request.format)
         
@@ -329,13 +472,14 @@ async def get_tool_definitions(request: ToolDefinitionsRequest) -> ToolDefinitio
 
 
 @router.post("/tools/execute", response_model=ToolCallResponse)
-async def execute_tool(request: ToolCallRequest) -> ToolCallResponse:
+async def execute_tool(request: ToolCallRequest, http_request: Request) -> ToolCallResponse:
     """
     Execute an exploration tool.
     
     Runs a tool like find_usages, get_definition, etc.
     """
     try:
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         
         result = await engine.execute_tool(
@@ -353,13 +497,14 @@ async def execute_tool(request: ToolCallRequest) -> ToolCallResponse:
 
 
 @router.post("/summary/repo", response_model=SummaryResponse)
-async def get_repo_summary(request: SummaryRequest) -> SummaryResponse:
+async def get_repo_summary(request: SummaryRequest, http_request: Request) -> SummaryResponse:
     """
     Get repository summary.
     
     Returns a high-level summary of the entire repository.
     """
     try:
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         summary = engine.get_repo_summary()
         
@@ -378,7 +523,7 @@ async def get_repo_summary(request: SummaryRequest) -> SummaryResponse:
 
 
 @router.post("/summary/file", response_model=SummaryResponse)
-async def get_file_summary(request: SummaryRequest) -> SummaryResponse:
+async def get_file_summary(request: SummaryRequest, http_request: Request) -> SummaryResponse:
     """
     Get file summary.
     
@@ -388,6 +533,7 @@ async def get_file_summary(request: SummaryRequest) -> SummaryResponse:
         if not request.file_path:
             raise HTTPException(status_code=400, detail="file_path required")
         
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         summary = engine.get_file_summary(request.file_path)
         
@@ -405,14 +551,129 @@ async def get_file_summary(request: SummaryRequest) -> SummaryResponse:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/metrics", response_model=MetricsResponse)
+async def get_metrics(request: MetricsRequest, http_request: Request) -> MetricsResponse:
+    """Get retrieval latency and budget metrics.
+    
+    Set include_all=True to get comprehensive metrics including:
+    - TTFT (Time to First Token) P50/P95/P99
+    - Full completion latency P50/P95
+    - Queue/scheduling delay P50/P95
+    - Tokens per second P50/P95
+    - Requests per second at saturation
+    - Inference time P50/P95
+    - Prompt/output size distribution
+    - Retrieval latency P50/P95/P99
+    - Recall@k / MRR (quality metrics)
+    - Error rate, timeout rate
+    - Cold start latency
+    - Latency vs concurrency curve
+    - P95 under peak load
+    """
+    try:
+        _require_api_key(http_request)
+        engine = get_engine(request.workspace_path)
+        metrics = engine.get_retrieval_metrics(include_all=request.include_all)
+        
+        # Build basic response
+        response = MetricsResponse(
+            latency=metrics.get("latency", {}),
+            counters=metrics.get("counters", {}),
+            budgets=metrics.get("budgets", {}),
+            index_generation=metrics.get("index_generation"),
+        )
+        
+        # Add comprehensive metrics if requested
+        if request.include_all:
+            all_metrics = metrics.get("all", {})
+            
+            # Helper to safely get percentile dict with defaults
+            def get_latency(data: dict, *keys) -> dict:
+                result = data
+                for key in keys:
+                    result = result.get(key, {}) if isinstance(result, dict) else {}
+                return {"p50": result.get("p50", 0.0), "p95": result.get("p95", 0.0), "p99": result.get("p99", 0.0)}
+            
+            # Latency metrics - always populate
+            latency_data = all_metrics.get("latency", {})
+            response.ttft = LatencyMetrics(**get_latency(latency_data, "ttft"))
+            response.completion_latency = LatencyMetrics(**get_latency(latency_data, "completion"))
+            response.queue_delay = LatencyMetrics(**get_latency(latency_data, "queue_delay"))
+            
+            # Throughput - always populate
+            t = all_metrics.get("throughput", {})
+            response.throughput = ThroughputMetrics(
+                tokens_per_second=LatencyMetrics(**get_latency(t, "tokens_per_second")),
+                requests_per_second=t.get("requests_per_second", 0.0),
+                peak_rps=t.get("peak_rps", 0.0),
+            )
+            
+            # Model metrics - always populate
+            m = all_metrics.get("model", {})
+            by_model = {}
+            for model_name, vals in m.get("by_model", {}).items():
+                by_model[model_name] = LatencyMetrics(**get_latency({"v": vals}, "v"))
+            response.model = ModelMetrics(
+                inference_time=LatencyMetrics(**get_latency(m, "inference_time")),
+                by_model=by_model,
+            )
+            
+            # Retrieval quality - always populate
+            q = all_metrics.get("retrieval", {}).get("quality", {})
+            response.retrieval_quality = RetrievalQualityMetrics(
+                recall_at_1=q.get("recall_at_1"),
+                recall_at_5=q.get("recall_at_5"),
+                recall_at_10=q.get("recall_at_10"),
+                mrr=q.get("mrr"),
+            )
+            
+            # Reliability - always populate
+            r = all_metrics.get("reliability", {})
+            response.reliability = ReliabilityMetrics(
+                total_requests=r.get("total_requests", 0),
+                errors=r.get("errors", 0),
+                error_rate=r.get("error_rate", 0.0),
+                timeout_rate=r.get("timeout_rate", 0.0),
+                timeouts=r.get("timeouts", 0),
+                cold_starts=r.get("cold_starts", 0),
+                cold_start_latency=LatencyMetrics(**get_latency(r, "cold_start_latency")),
+                error_types=r.get("error_types", {}),
+            )
+            
+            # Load behavior - always populate
+            l = all_metrics.get("load", {})
+            latency_by_concurrency = {}
+            for conc, vals in l.get("latency_vs_concurrency", {}).items():
+                latency_by_concurrency[conc] = LatencyMetrics(**get_latency({"v": vals}, "v"))
+            response.load = LoadMetrics(
+                latency_vs_concurrency=latency_by_concurrency,
+                current_concurrency=l.get("current_concurrency", 0),
+                peak_concurrency=l.get("peak_concurrency", 0),
+                p95_at_peak=l.get("p95_at_peak", 0.0),
+            )
+            
+            # Prompt/output distribution - always populate
+            pod = all_metrics.get("prompt_output_distribution", {})
+            response.prompt_output_distribution = PromptOutputDistribution(
+                prompt_size=pod.get("prompt_size", {}),
+                output_size=pod.get("output_size", {}),
+            )
+        
+        return response
+    except Exception as e:
+        logger.exception("Metrics retrieval failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/edit", response_model=EditPlanResponse)
-async def execute_edits(request: EditPlanRequest) -> EditPlanResponse:
+async def execute_edits(request: EditPlanRequest, http_request: Request) -> EditPlanResponse:
     """
     Execute code edits.
     
     Applies a set of edits with validation and rollback support.
     """
     try:
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         
         # Create session
@@ -464,9 +725,10 @@ async def execute_edits(request: EditPlanRequest) -> EditPlanResponse:
 
 
 @router.post("/save")
-async def save_state(request: SummaryRequest) -> Dict[str, bool]:
+async def save_state(request: SummaryRequest, http_request: Request) -> Dict[str, bool]:
     """Save engine state to disk."""
     try:
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         await engine.save()
         return {"success": True}
@@ -476,9 +738,10 @@ async def save_state(request: SummaryRequest) -> Dict[str, bool]:
 
 
 @router.post("/load")
-async def load_state(request: SummaryRequest) -> Dict[str, bool]:
+async def load_state(request: SummaryRequest, http_request: Request) -> Dict[str, bool]:
     """Load engine state from disk."""
     try:
+        _require_api_key(http_request)
         engine = get_engine(request.workspace_path)
         loaded = await engine.load()
         return {"success": loaded}

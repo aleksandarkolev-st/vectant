@@ -204,6 +204,12 @@ def _response_format_instructions(mode: str, focus_path: Optional[str]) -> str:
         return (
             "Respond ONLY with the C++ migration function inside a fenced code block."
         )
+    if mode == "explain":
+        return (
+            "Provide a clear, informative explanation. Do NOT use `FILE:` markers or suggest code changes. "
+            "If you include code snippets for illustration, use standard fenced code blocks without file markers. "
+            "Focus on answering the user's question - do not offer improvements or modifications unless explicitly asked."
+        )
     return (
         base
         + " When sharing code, still follow the `FILE: <path>` + fenced block pattern so the user knows which file "
@@ -261,6 +267,15 @@ You are a "Splitter+Adapter" bot.
 Your job is to (1) split code into separate files and (2) apply ONLY the minimal platform adaptation required
 to compile and run inside the Synthi SDL-only runner (see SPLIT CONTRACT).
 You are NOT a code improver. You are NOT a refactorer. You are NOT a linter.
+
+# ZERO HALLUCINATION RULE (HIGHEST PRIORITY)
+**DO NOT ADD any code, UI elements, struct fields, string literals, or visual elements that are NOT in the user's original source code.**
+
+- If the user's code has NO button → do NOT add button fields (btn_x, btn_y, etc.) or draw a button.
+- If the user's code has NO text rendering → do NOT add font arrays, draw_text, or XDrawString replacements.
+- If the user's code has NO Host KV usage → do NOT add KV structs, schema tables, or on_load_host.
+- AppState fields must come ONLY from variables that exist in the user's code, plus the mandatory ABI fields (magic, struct_size, abi_version, renderer).
+- Example patterns in this prompt are STRUCTURAL TEMPLATES, not code to copy. Replace example values with the user's actual values.
 
 # ABSOLUTE PROHIBITIONS (VIOLATION = HMR FAILURE)
 
@@ -327,26 +342,18 @@ app_state.struct_size = sizeof(AppState);
 app_state.abi_version = 1;
 app_state.running = 1;
 app_state.paused = 0;
-app_state.x = 0;
-app_state.y = 200;
-app_state.dx = 5;
-// CRITICAL: Initialize button fields from original code values!
-app_state.btn_x = 200;  // From original: int btn_x = 200
-app_state.btn_y = 10;   // From original: int btn_y = 10
-app_state.btn_w = 120;  // From original: int btn_w = 120  
-app_state.btn_h = 40;   // From original: int btn_h = 40
-// ... other fields explicitly set ...
+// ... initialize ALL fields from user's original code with their original values ...
 ```
 
-## BUTTON/UI FIELD INITIALIZATION (CRITICAL - COMMON MISTAKE)
-**ALL UI fields (btn_x, btn_y, btn_w, btn_h) MUST be initialized in EVERY state init block.**
+## USER FIELD INITIALIZATION (CRITICAL - COMMON MISTAKE)
+**ALL fields from the user's original code MUST be initialized in EVERY state init block.**
 
-If the original code has `int btn_x = 200, btn_y = 10, btn_w = 120, btn_h = 40;`, you MUST initialize these in:
+For every variable in the user's original code, you MUST initialize it in:
 1. The `prev_state` valid path (copy from prev_state)
 2. The ABI mismatch path (field-by-field init)
 3. The first load path (field-by-field init)
 
-**Failure to initialize button fields = invisible buttons at (0,0) with size 0x0!**
+**Only add fields that exist in the user's code. Do NOT invent new fields.**
 
 ## INCLUDE SHARED.H - DO NOT REDEFINE STRUCTS (CRITICAL)
 **core.cpp and gui.cpp MUST include shared.h and MUST NOT redefine AppState.**
@@ -450,8 +457,8 @@ The runner handles window creation and cleanup - plugins must not contain these 
 - Only implement SDL text input if the original code already did text input.
 
 ### State stability (important for HMR)
-- Do NOT invent new `AppState` fields.
-- Keep existing user-visible buffers/fields (e.g. `wbuffer`) exactly as-is (name + size).
+- Do NOT invent new `AppState` fields. Only include fields from the user's original code.
+- Keep existing user-visible buffers/fields exactly as-is (name + size).
 - Only add the mandatory ABI safety fields (`magic`, `struct_size`, `abi_version`) and required runtime fields (`renderer`).
 
 # STRICT PRESERVATION PROTOCOL (SECOND PRIORITY)
@@ -463,7 +470,7 @@ User-visible output must be preserved.
 - DO NOT rewrite text: keep the exact string literals, including casing, punctuation, and spacing.
 - DO NOT replace user labels with new labels (e.g. do not change "PAUSE" → "Pause").
 - DO NOT omit labels: if the user draws text, you MUST draw text.
-- DO NOT delete or rename any buffers used to build labels (e.g. `wbuffer`, `buf`, `message`). If it exists in the user code, it must exist in `AppState` with the same name and size.
+- DO NOT delete or rename any buffers used to build labels. If a buffer exists in the user code, it must exist in `AppState` with the same name and size.
 
 ### Comments and identifiers MUST be preserved
 - Keep the exact comment text wherever it appears.
@@ -479,119 +486,18 @@ Your output may change API calls (X11 to SDL2), but it must preserve *behavior*.
 - XFillRectangle / XDrawRectangle → SDL_RenderFillRect / SDL_RenderDrawRect using the same rectangle geometry.
 - XSetForeground / pixel values → SDL_SetRenderDrawColor with the same intended color (do not "pretty up" colors).
 
-### XDrawString MUST be implemented (do not skip)
-SDL2 has no built-in text rendering. You MUST implement a tiny built-in bitmap text renderer *inside gui.cpp*.
+### XDrawString → SDL2 text rendering (ONLY if the user's code draws text)
+**If the user's original code does NOT use XDrawString or text rendering, DO NOT add any font/text code.**
 
-Requirements:
-- The renderer must be self-contained: NO SDL_ttf, NO external assets, NO filesystem loads.
-- It must render ASCII text well enough to show the exact same labels the user used.
-- It must accept both string literals and runtime buffers (e.g. `char buf[]`).
-- Use a fixed-size pixel font (e.g. 5x7 or 8x8) implemented as a static table you write in the file.
-- Render by drawing pixels/rectangles via SDL_RenderFillRect (or SDL_RenderDrawPoint), using the same foreground color.
+Only if the user's code calls XDrawString/XDrawText, implement a minimal bitmap text renderer:
+- Self-contained in gui.cpp: NO SDL_ttf, NO external assets.
+- Support ONLY the characters that appear in the user's actual string literals.
+- Use an 8x8 bitmap font with individual glyph arrays and a switch-based lookup.
+- Render using SDL_RenderFillRect with the current draw color.
+- Use `SDL_GetRenderDrawColor` to preserve the caller's color.
 
-Visibility rules (CRITICAL):
-- The text renderer MUST NOT hardcode white text.
-- It MUST render using the *current* SDL draw color (or an explicit `(r,g,b,a)` passed through from the caller).
-    - Preferred: call `SDL_GetRenderDrawColor(renderer, &r, &g, &b, &a)` once at the start of `draw_text` and use that.
-    - This ensures text remains visible when the button fill is light.
-
-Font table correctness rules (CRITICAL):
-- If you choose an 8x8 font, the table MUST be exactly `font_data[95][8]` covering ASCII 32..126.
-- Each glyph MUST contain exactly 8 rows (8 bytes). Do NOT accidentally provide 7 or 9 rows for any character.
-- The font MUST include at least the glyphs needed by the program's string literals (e.g. letters in "Resume" and "dsadsadsa").
-    Do not leave lowercase letters blank.
-
-Alternative allowed approach (often safer than a full 95-glyph table):
-- You MAY implement a minimal built-in font that supports ONLY the characters that actually appear in the program's string literals.
-    - Example set for this test: letters in `"Resume"`, `"dsadsadsa"`, and `"HUIIII"`, plus space.
-    - Implement this as `const uint8_t* glyph8x8_for(char c)` using a `switch` and return a pointer to an 8-byte glyph.
-    - For unsupported characters, render a '?' glyph (also 8x8) rather than rendering random glyphs.
-
-Glyph mapping rules (CRITICAL):
-- The glyph selection MUST be keyed by the actual ASCII code of the input character.
-    Incorrect indexing (e.g. wrong offsets) will cause visible corruption like rendering '+'/'b' when the text is "dsadsadsa".
-- If using the 95-glyph table, indexing MUST be `font_index = (unsigned char)c - 32` and must check the range 32..126.
-
-MANDATORY FOR THIS PROJECT (override):
-- DO NOT generate a full 95-glyph ASCII font table. Models frequently hallucinate incorrect glyph tables which renders garbage.
-- You MUST use the EXACT reference font implementation provided below. Do not invent glyph data.
-
-### REFERENCE FONT IMPLEMENTATION (COPY THIS EXACTLY INTO gui.cpp)
-```cpp
-#define FONT_W 8
-#define FONT_H 8
-
-// Verified 8x8 bitmap glyphs - DO NOT MODIFY THESE VALUES
-static const uint8_t font_A[8] = {0x18,0x24,0x42,0x42,0x7E,0x42,0x42,0x00};
-static const uint8_t font_D[8] = {0x7C,0x42,0x42,0x42,0x42,0x42,0x7C,0x00};
-static const uint8_t font_E[8] = {0x7E,0x40,0x40,0x7C,0x40,0x40,0x7E,0x00};
-static const uint8_t font_H[8] = {0x42,0x42,0x42,0x7E,0x42,0x42,0x42,0x00};
-static const uint8_t font_I[8] = {0x3E,0x08,0x08,0x08,0x08,0x08,0x3E,0x00};
-static const uint8_t font_P[8] = {0x7C,0x42,0x42,0x7C,0x40,0x40,0x40,0x00};
-static const uint8_t font_R[8] = {0x7C,0x42,0x42,0x7C,0x48,0x44,0x42,0x00};
-static const uint8_t font_S[8] = {0x3C,0x42,0x40,0x3C,0x02,0x42,0x3C,0x00};
-static const uint8_t font_U[8] = {0x42,0x42,0x42,0x42,0x42,0x42,0x3C,0x00};
-static const uint8_t font_a[8] = {0x00,0x00,0x3C,0x02,0x3E,0x42,0x3E,0x00};
-static const uint8_t font_d[8] = {0x02,0x02,0x3E,0x42,0x42,0x42,0x3E,0x00};
-static const uint8_t font_e[8] = {0x00,0x00,0x3C,0x42,0x7E,0x40,0x3C,0x00};
-static const uint8_t font_f[8] = {0x0C,0x12,0x10,0x7C,0x10,0x10,0x10,0x00};
-static const uint8_t font_m[8] = {0x00,0x00,0x76,0x49,0x49,0x49,0x49,0x00};
-static const uint8_t font_s[8] = {0x00,0x00,0x3E,0x40,0x3C,0x02,0x7C,0x00};
-static const uint8_t font_u[8] = {0x00,0x00,0x42,0x42,0x42,0x46,0x3A,0x00};
-static const uint8_t font_space[8] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
-static const uint8_t font_qmark[8] = {0x3C,0x42,0x02,0x0C,0x10,0x00,0x10,0x00};
-
-static const uint8_t* get_glyph(char c) {
-    switch(c) {
-        case 'A': return font_A; case 'D': return font_D; case 'E': return font_E;
-        case 'H': return font_H; case 'I': return font_I; case 'P': return font_P;
-        case 'R': return font_R; case 'S': return font_S; case 'U': return font_U;
-        case 'a': return font_a; case 'd': return font_d; case 'e': return font_e;
-        case 'f': return font_f; case 'm': return font_m; case 's': return font_s;
-        case 'u': return font_u; case ' ': return font_space;
-        default: return font_qmark;
-    }
-}
-
-static void draw_text(SDL_Renderer* r, int x, int y, const char* text, int len) {
-    Uint8 cr, cg, cb, ca;
-    SDL_GetRenderDrawColor(r, &cr, &cg, &cb, &ca);
-    for (int i = 0; i < len; i++) {
-        const uint8_t* g = get_glyph(text[i]);
-        for (int row = 0; row < FONT_H; row++) {
-            for (int col = 0; col < FONT_W; col++) {
-                if ((g[row] >> (7 - col)) & 1) {
-                    // NOTE: Original X11 code used `y` as baseline
-                    // For SDL: if original y was btn_y+25, text renders correctly
-                    // If original y was btn_y+10, add FONT_H to make text visible
-                    SDL_Rect px = {x + i * FONT_W + col, y + row, 1, 1};
-                    SDL_RenderFillRect(r, &px);
-                }
-            }
-        }
-    }
-}
-```
-
-**TEXT POSITION RULE (CRITICAL):**
-- The original X11 code used `XDrawString(dpy, win, gc, btn_x + 40, btn_y + 25, label, len)`
-- In SDL: `draw_text(renderer, btn_x + 40, btn_y + 25 - FONT_H, label, len)` preserves baseline
-- BUT if the original button height is 40 and btn_y is 10, then text at btn_y+10 would be off-screen
-- BETTER: Use `draw_text(renderer, btn_x + 10, btn_y + 15, label, len)` for clarity (no baseline math)
-
-**TEXT COLOR RULE (CRITICAL):**
-- Text on blue button background MUST use BLACK (0,0,0) or WHITE (255,255,255) for contrast
-- NEVER draw white text on white button - it's invisible!
-- Set color BEFORE calling draw_text:
-  ```cpp
-  SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);  // Black text
-  draw_text(renderer, btn_x + 10, btn_y + 15, label, strlen(label));
-  ```
-
-If the program uses characters not in this list, add them using the same 8x8 bitmap format.
-The bit order is MSB-first: bit 7 is the leftmost pixel, bit 0 is the rightmost.
-
-This is the #1 reason button text "disappears" or becomes junk.
+If text rendering IS needed (user code has XDrawString), implement the font with individual glyph arrays
+for ONLY the characters used in the user's actual string literals. Use MSB-first bit order (bit 7 = leftmost pixel).
 
 Mapping rule:
 - Each `XDrawString(dpy, win, gc, x, y, text, len)` becomes `draw_text(state->renderer, x, y, text, len)`.
@@ -613,7 +519,7 @@ Strict rules:
 - NEVER forward-declare X11 typedef names as structs (e.g. `struct Colormap;` is INVALID because `Colormap` is a typedef in X11 headers).
 
 If the original code used X11 input (e.g. IME via `XOpenIM`/`XCreateIC` and key translation via `XLookupString`/`XwcLookupString`):
-- Keep any user-visible buffers/fields (e.g. `wbuffer`) in `AppState` exactly as-is to preserve ABI expectations.
+- Keep any user-visible buffers/fields in `AppState` exactly as-is to preserve ABI expectations.
 - But DO NOT implement X11 input methods. Instead, preserve behavior using SDL2 events:
     - Escape handling must use `SDLK_ESCAPE` (from `SDL_Event` / `SDL_KeyboardEvent`).
     - Mouse click handling must use SDL mouse coordinates.
@@ -716,15 +622,7 @@ extern "C" void* on_load(void* prev_state, void* window_ptr) {
             app_state.struct_size = sizeof(AppState);
             app_state.abi_version = 1;
             app_state.running = 1;
-            app_state.paused = 0;
-            app_state.x = 0;
-            app_state.y = 200;
-            app_state.dx = 5;
-            // CRITICAL: Initialize ALL UI fields from original code!
-            app_state.btn_x = 200;
-            app_state.btn_y = 10;
-            app_state.btn_w = 120;
-            app_state.btn_h = 40;
+            // ... initialize ALL fields from user's original code with their original values ...
         }
     } else {
         // First load: Initialize fresh BUT NO memset!
@@ -732,15 +630,7 @@ extern "C" void* on_load(void* prev_state, void* window_ptr) {
         app_state.struct_size = sizeof(AppState);
         app_state.abi_version = 1;
         app_state.running = 1;
-        app_state.paused = 0;
-        app_state.x = 0;
-        app_state.y = 200;
-        app_state.dx = 5;
-        // CRITICAL: Initialize ALL UI fields from original code!
-        app_state.btn_x = 200;
-        app_state.btn_y = 10;
-        app_state.btn_w = 120;
-        app_state.btn_h = 40;
+        // ... initialize ALL fields from user's original code with their original values ...
     }
     
     // Always update renderer (may change between reloads)
@@ -893,10 +783,7 @@ extern "C" void* on_load(void* prev_state, void* window_ptr) {
         app_state.struct_size = sizeof(AppState);
         app_state.abi_version = 1;
         app_state.running = 1;
-        app_state.paused = 0;
-        app_state.x = 0;
-        app_state.y = 200;
-        app_state.dx = 5;
+        // ... initialize ALL fields from user's original code with their original values ...
     }
     app_state.renderer = (SDL_Renderer*)window_ptr;
     return &app_state;  // Return STATIC address, NOT malloc!
@@ -905,10 +792,7 @@ extern "C" void* on_load(void* prev_state, void* window_ptr) {
 extern "C" void on_update(void* state_ptr, double dt) {
     AppState* state = (AppState*)state_ptr;
     if (!state) return;
-    if (!state->paused) {
-        state->x += state->dx;
-        if (state->x > 590 || state->x < 0) state->dx = -state->dx;
-    }
+    // Update logic from user's original code (NO event polling here)
 }
 
 extern "C" void on_event(void* state_ptr, void* event_ptr) {
@@ -1062,13 +946,8 @@ typedef struct CoreState {
     uint32_t struct_size;     // sizeof(CoreState)
     uint32_t abi_version;     // Increment when layout changes
     
-    // Business logic state (owned by core)
-    int x, y;                 // Position
-    int dx, dy;               // Velocity
-    int running;
-    int paused;
-    
-    // Application-specific fields...
+    // Include ONLY fields from user's original code
+    // ... user's variables go here ...
 } CoreState;
 
 // ============================================
@@ -1082,11 +961,8 @@ typedef struct GuiState {
     // Rendering handles (owned by runner, stored here)
     SDL_Renderer* renderer;
     
-    // View-only state (animations, UI caches)
-    float fade_alpha;
-    float hover_time;
-    int last_rendered_x;      // Cache for dirty-rect optimization
-    int last_rendered_y;
+    // View-only state (animations, UI caches) - from user's original GUI code
+    // ... user's GUI-specific variables go here ...
     
     // Pointer to core state (READ-ONLY from GUI's perspective)
     CoreState* core;          // GUI reads this, never modifies
@@ -1124,7 +1000,6 @@ extern "C" void* on_load(void* prev_state, void* window_ptr) {
         app_state.struct_size = sizeof(AppState);
         app_state.abi_version = 1;
         app_state.running = 1;
-        app_state.paused = 0;
         // ... init other fields from original code
     }
     
@@ -1136,11 +1011,8 @@ extern "C" void on_update(void* state_ptr, double dt) {
     AppState* state = (AppState*)state_ptr;
     if (!state) return;
     
-    // Business logic updates only
-    if (!state->paused) {
-        state->x += state->dx;
-        if (state->x > 590 || state->x < 0) state->dx = -state->dx;
-    }
+    // Business logic updates only - from user's original code
+    // Do NOT add event polling here
 }
 
 extern "C" void on_event(void* state_ptr, void* event_ptr) {
@@ -1215,11 +1087,9 @@ extern "C" void gui_on_render(void* state_ptr) {
     SDL_SetRenderDrawColor(state->renderer, 255, 255, 255, 255);
     SDL_RenderClear(state->renderer);
     
-    // Draw based on state - in split mode, this is CORE's state
-    // Core's on_update animates x, y, and gui_on_render just draws it
-    SDL_SetRenderDrawColor(state->renderer, 0, 0, 0, 255);
-    SDL_Rect rect = {state->x, state->y, 50, 50};
-    SDL_RenderFillRect(state->renderer, &rect);
+    // Draw using state fields from the user's original code.
+    // Map user's original draw calls to SDL2 equivalents.
+    // Example: XFillRectangle -> SDL_RenderFillRect, etc.
     
     // DO NOT call SDL_RenderPresent - runner does this
 }
@@ -1288,7 +1158,7 @@ CRITICAL: DO NOT forward declare SDL2 types if you include <SDL2/SDL.h>.
   * Original: `int player_x;` -> AppState: `int player_x;`
   * BAD: `int player_x;` -> AppState: `int x;` or `int playerX;`
 - Do NOT prefix variables with `m_` or `_`.
-- Do NOT rename `wbuffer` to `input_buffer`. Keep it `wbuffer`.
+- Do NOT rename any user variables. Keep their exact original names.
 
 ## 7. MAIN LOOP UNWRAPPING & CLEAN LOGS (CRITICAL)
 - **NO BLOCKING LOOPS**: You MUST remove the main `while(running)` loop.
@@ -1320,21 +1190,11 @@ struct AppState {
     // SDL2 handles ONLY - NO X11 handles!
     SDL_Renderer* renderer; // Provided by Runner via window_ptr
 
-    // Position and size (converted from user's X11 code)
-    int x;
-    int y;
-    int dx;  // velocity
-    int width;
-    int height;
+    // Include ONLY fields that exist in the user's original code.
+    // Do NOT add fields the user doesn't have.
+    // Example: int x; int y; int running; etc.
     
-    // Button state (converted from user's btn_x, btn_y, etc.)
-    int btn_x, btn_y, btn_w, btn_h;
-    
-    // State flags
-    int running;
-    int paused;
-    
-    // Add ANY other variables from user's code here
+    // ... user's original variables go here ...
 };
 
 ## 4. EVENT LOOP HANDLING (CRITICAL - MUST READ)
@@ -1921,11 +1781,11 @@ void gui_on_render(AppState* state) {
 
 CRITICAL: When accessing arrays in AppState, you MUST use state->array_name. Example:
 
-    Original: wbuffer[0] = '\0';
+    Original: my_buffer[0] = '\0';
 
-    Correct: state->wbuffer[0] = '\0';
+    Correct: state->my_buffer[0] = '\0';
 
-    Incorrect: wbuffer[0] = '\0'; (This will cause a compilation error!)
+    Incorrect: my_buffer[0] = '\0'; (This will cause a compilation error!)
 
 6.3 Resource Persistence (CRITICAL)
 
@@ -2386,15 +2246,16 @@ Core should ONLY contain business logic and state management.
 # ============================================================
 # HOST KV API (PERSISTENT STATE ACROSS HOT RELOADS)
 # ============================================================
-# The Host KV API provides persistent key-value storage that survives
-# hot reloads. Use this when you want state to persist even when code changes.
-# This enables "Fast Refresh-like" behavior from React/Next.js.
+# ⚠️ CONDITIONAL SECTION: ONLY include Host KV code if the user's original
+# code explicitly uses persistent storage, save/load functionality, or
+# the user explicitly asks for it. For simple demos, animations, or
+# programs without state persistence, SKIP THIS ENTIRE SECTION.
 # ============================================================
 
 ## 12. HOST KV API OVERVIEW
 
 The Runner provides a KV storage API that plugins can use to persist state across hot reloads.
-This is OPTIONAL but recommended for better developer experience.
+This is OPTIONAL. **Do NOT generate Host KV code for simple programs like bouncing shapes, color demos, or basic animations.**
 
 ### 12.1 WHEN TO USE HOST KV
 
@@ -2518,10 +2379,7 @@ extern "C" void* core_on_load_host(void* prev_state, const SynthiHostContextV1* 
         state->struct_size = sizeof(AppState);
         state->abi_version = 1;
         state->running = 1;
-        state->paused = 0;
-        state->x = 0;
-        state->y = 0;
-        // ... initialize other fields ...
+        // ... initialize fields from user's original code ...
         
         // Try to restore from KV storage
         uint8_t* data;
@@ -2686,21 +2544,107 @@ If generating Host KV code, verify:
 - [ ] `host_free()` is called after `get_bytes()`
 """
 
+# Keywords that indicate the user WANTS code changes
+_CHANGE_KEYWORDS = [
+    # Direct modification verbs
+    "fix", "change", "modify", "update", "edit", "refactor", "rename",
+    "add", "remove", "delete", "insert", "append", "prepend",
+    "create", "implement", "write", "generate", "build", "make",
+    "replace", "swap", "convert", "transform", "migrate",
+    # Bug/error related
+    "bug", "error", "issue", "problem", "broken", "wrong", "incorrect",
+    # Improvement related
+    "improve", "optimize", "enhance", "upgrade", "simplify",
+    # File operations
+    "new file", "new class", "new function", "new method", "new component",
+]
+
+# Keywords that indicate the user wants explanation/understanding (NO code changes)
+_EXPLAIN_KEYWORDS = [
+    "explain", "describe", "what does", "what is", "how does", "how is",
+    "why does", "why is", "tell me about", "understand", "meaning of",
+    "purpose of", "walk me through", "help me understand", "clarify",
+    "what are", "how are", "can you explain", "what's the", "whats the",
+    "show me how", "teach me", "learn about", "overview of", "summary of",
+    "difference between", "compare", "list the", "what options",
+]
+
+
+def _detect_query_intent(prompt: str) -> str:
+    """
+    Detect the intent of a user's prompt.
+    
+    Returns:
+        'change' - User wants code modifications
+        'explain' - User wants explanation/understanding
+        'unknown' - Cannot determine (defaults to checking for question patterns)
+    """
+    if not prompt:
+        return "unknown"
+    lower = prompt.lower().strip()
+    
+    # Check for explicit change indicators first (higher priority for action verbs at start)
+    for kw in _CHANGE_KEYWORDS:
+        if lower.startswith(kw) or lower.startswith("please " + kw) or lower.startswith("can you " + kw):
+            return "change"
+    
+    # Check for explain indicators
+    if any(kw in lower for kw in _EXPLAIN_KEYWORDS):
+        return "explain"
+    
+    # Check for change keywords anywhere in the prompt
+    if any(kw in lower for kw in _CHANGE_KEYWORDS):
+        return "change"
+    
+    # Questions without action words are typically explanation requests
+    if (lower.endswith("?") or lower.startswith("what") or 
+        lower.startswith("how") or lower.startswith("why") or
+        lower.startswith("where") or lower.startswith("when") or
+        lower.startswith("which") or lower.startswith("who") or
+        lower.startswith("is ") or lower.startswith("are ") or
+        lower.startswith("does ") or lower.startswith("do ") or
+        lower.startswith("can ") or lower.startswith("could ")):
+        return "explain"
+    
+    # Default to change for imperative statements (commands)
+    return "change"
+
+
+def _needs_code_changes(prompt: str) -> bool:
+    """Determine if the user's prompt requires code changes."""
+    return _detect_query_intent(prompt) == "change"
+
+
 def build_prompt(
     code: str,
     lang: str,
     user_prompt: str = None,
     files: Optional[Sequence[Mapping[str, Any]]] = None,
     focus: Optional[str] = None,
+    mode: Optional[str] = None,
 ):
     """General analysis prompt. Returns a human-readable analysis or focused response.
 
     If `user_prompt` is provided, include it as the user's question. This prompt is intended
     for general code review and explanation tasks.
+    
+    The function automatically detects user intent:
+    - If mode='explain' or the query doesn't need code changes, uses explain format (no FILE: markers)
+    - If mode='change' or the query needs code changes, uses the standard format with FILE: markers
     """
     file_section, detected_focus = _format_files_context(files)
     focus_path = focus or detected_focus
     guidance = _file_guidance(focus_path) if (file_section or focus_path) else ""
+    
+    # Determine if this needs code changes based on explicit mode or detected intent
+    if mode == "explain":
+        needs_changes = False
+    elif mode == "change":
+        needs_changes = True
+    else:
+        needs_changes = _needs_code_changes(user_prompt or "")
+    
+    response_mode = "general" if needs_changes else "explain"
 
     header_parts = [base_instructions.strip()]
     if guidance:
@@ -2709,10 +2653,12 @@ def build_prompt(
     if file_section:
         header_parts.append("FILES:\n" + file_section)
     header_parts.append(f"Active file code:\n```{lang}\n{code}\n```")
-    header_parts.append(_response_format_instructions("general", focus_path))
+    header_parts.append(_response_format_instructions(response_mode, focus_path))
     header = "\n\n".join(filter(bool, header_parts)) + "\n\n"
 
     if user_prompt and user_prompt.strip():
+        if not needs_changes:
+            return header + f"User's Question: {user_prompt}\n\nProvide a clear explanation. Do NOT suggest code changes or improvements unless explicitly requested."
         return header + f"User's Question: {user_prompt}\n\nProvide a focused response explaining any issues, improvement suggestions, and a minimal example if helpful."
 
     return header + "Provide:\n- Where the user can improve the code\n- Where issues may arise\n- Refactor suggestions (with short example snippets if relevant)\n"

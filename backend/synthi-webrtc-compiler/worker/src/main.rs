@@ -9,12 +9,12 @@ use std::hash::{Hash, Hasher};
 use std::process::Stdio;
 use std::sync::Arc;
 
-pub mod android;
-pub mod compiler;
-pub mod hmr;
-pub mod infra;
-pub mod runtime;
-pub mod safety;
+use worker::android;
+use worker::compiler;
+use worker::hmr;
+use worker::infra;
+use worker::runtime;
+use worker::safety;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -43,29 +43,31 @@ use hmr::fast_refresh::{
 };
 
 use infra::observability::{
-    LogEntry,
+    StructuredLogger,
     LogFormat,
     LogLevel,
+    LogEntry,
     MetricsAggregator,
     // ReloadMetricsTracker, // unused
     // ReloadId, // unused
-    StructuredLogger,
 };
 
+
+use safety::slot_isolation::{IsolationModel, IsolationManager};
+use safety::restart_control::{RestartController, BackoffConfig, KnownGoodStore};
 use safety::hardened_ipc::IpcConfig;
 use safety::quiescence::QuiescenceConfig;
-use safety::restart_control::{BackoffConfig, KnownGoodStore, RestartController};
-use safety::slot_isolation::{IsolationManager, IsolationModel};
 
 use infra::watcher::{PreemptiveConfig, PreemptiveMessage, SpeculativeCache};
 
 // use runtime::shim::{auto_shim, ShimMode, detect_shim_mode};
 
-use gstreamer as gst;
-use gstreamer::prelude::{Cast, ElementExt, GstBinExt, GstObjectExt};
-use gstreamer_app as gst_app;
 #[allow(unused_imports)]
-use hmr::incremental_cache::{compile_with_cache, link_objects, IncrementalCache};
+use hmr::incremental_cache::{IncrementalCache, compile_with_cache, link_objects};
+use gstreamer as gst;
+use gstreamer::prelude::ElementExt;
+// use gstreamer::prelude::{Cast, GstBinExt, GstObjectExt};
+// use gstreamer_app as gst_app;
 
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -104,24 +106,30 @@ use serde::{Deserialize, Serialize};
 
 // use printer::compile_context::CompileContext; // Legacy path
 use compiler::context::CompileContext;
-use hmr::orchestrator::{HmrOrchestrator, OrchestratorConfig};
 use infra::constants::{/*GUI_TOOLS,*/ REQUIRED_TOOLS};
-use infra::lsp_util::{rewrite_uris, LspSessionState};
+use infra::lsp_util::{LspSessionState, rewrite_uris};
 use infra::messages::{CompileRequest, /*FileEntry,*/ IceServerEnv, SignalMessage};
-use infra::utils::{get_wsl_host_ip, make_chunks};
 use runtime::runner_state::RunnerState;
+use hmr::orchestrator::{HmrOrchestrator, OrchestratorConfig};
+use infra::utils::{make_chunks, get_wsl_host_ip};
 
-use crate::compiler::builder;
-use crate::infra::server;
-use crate::infra::storage;
-use crate::infra::watcher;
-use crate::safety::security;
+use worker::safety::security;
+use worker::infra::watcher;
+use worker::compiler::builder;
+use worker::infra::server;
+use worker::infra::storage;
+
+
+
+
 
 
 fn get_ai_backend_url() -> String {
     if let Ok(url) = std::env::var("AI_BACKEND_URL") {
         return url;
     }
+    
+    // Auto-detect WSL host IP
     if let Some(host_ip) = get_wsl_host_ip() {
         return format!("http://{}:8000", host_ip);
     }
@@ -185,14 +193,13 @@ fn extract_fingerprint(sdp: &str) -> Option<String> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    eprintln!("=== WORKER BUILD 2026-02-06-LSP-DEBUG ===");
+    eprintln!("[Worker] Starting up (PID: {})", std::process::id());
     println!("Worker starting...");
     println!("Operating System: {}", std::env::consts::OS);
-
+    
     // v2.1: Print security audit at startup (requirement #9)
-    if std::env::var("SYNTHI_SECURITY_AUDIT")
-        .map(|v| v == "1")
-        .unwrap_or(false)
-    {
+    if std::env::var("SYNTHI_SECURITY_AUDIT").map(|v| v == "1").unwrap_or(false) {
         security::print_security_audit();
     } else {
         // Brief security notice
@@ -200,7 +207,7 @@ async fn main() -> Result<()> {
         eprintln!("[Security] Status: {} enforced, {} partial, {} stub (set SYNTHI_SECURITY_AUDIT=1 for details)",
             audit.enforced_count, audit.partial_count, audit.stub_count);
     }
-
+    
     // ============================================================
     // v2.1 HMR INFRASTRUCTURE INITIALIZATION (Requirements #1-10)
     // ============================================================
@@ -211,20 +218,14 @@ async fn main() -> Result<()> {
     // - IpcConfig for hardened communication (#4)
     // - HmrOrchestrator for central coordination
     // ============================================================
-
+    
     // Initialize structured logging (requirement #10)
-    let hmr_log_format = if std::env::var("SYNTHI_JSON_LOGS")
-        .map(|v| v == "1")
-        .unwrap_or(false)
-    {
+    let hmr_log_format = if std::env::var("SYNTHI_JSON_LOGS").map(|v| v == "1").unwrap_or(false) {
         LogFormat::Json
     } else {
         LogFormat::Human
     };
-    let hmr_log_level = match std::env::var("SYNTHI_LOG_LEVEL")
-        .unwrap_or_default()
-        .as_str()
-    {
+    let hmr_log_level = match std::env::var("SYNTHI_LOG_LEVEL").unwrap_or_default().as_str() {
         "trace" => LogLevel::Trace,
         "debug" => LogLevel::Debug,
         "warn" => LogLevel::Warn,
@@ -232,90 +233,63 @@ async fn main() -> Result<()> {
         _ => LogLevel::Info,
     };
     let structured_logger = Arc::new(StructuredLogger::new(hmr_log_format, hmr_log_level));
-
+    
     // Initialize metrics aggregator for reload performance tracking
     let metrics_aggregator = Arc::new(tokio::sync::Mutex::new(MetricsAggregator::new()));
-
+    
     // Log startup
-    structured_logger.log(
-        &LogEntry::new(
-            LogLevel::Info,
-            "main",
-            "Worker starting with HMR v2.1 hardening",
-        )
+    structured_logger.log(&LogEntry::new(LogLevel::Info, "main", "Worker starting with HMR v2.1 hardening")
         .with_field("os", std::env::consts::OS)
-        .with_field("log_format", format!("{:?}", hmr_log_format)),
-    );
-
+        .with_field("log_format", format!("{:?}", hmr_log_format)));
+    
     // Initialize isolation manager (requirement #7)
-    let isolation_model = match std::env::var("SYNTHI_ISOLATION_MODEL")
-        .unwrap_or_default()
-        .as_str()
-    {
+    let isolation_model = match std::env::var("SYNTHI_ISOLATION_MODEL").unwrap_or_default().as_str() {
         "worker_per_slot" => IsolationModel::WorkerPerSlot,
         "grouped" => IsolationModel::GroupedWorkers,
         _ => IsolationModel::SingleWorker, // Default: simpler, lower overhead
     };
-    let isolation_manager = Arc::new(tokio::sync::Mutex::new(IsolationManager::new(
-        isolation_model,
-    )));
+    let isolation_manager = Arc::new(tokio::sync::Mutex::new(IsolationManager::new(isolation_model)));
     eprintln!("[HMR v2.1] Isolation model: {:?}", isolation_model);
-
+    
     // Initialize restart controller with backoff (requirement #8)
     let known_good_dir = std::env::temp_dir().join("synthi_known_good");
     let _ = std::fs::create_dir_all(&known_good_dir);
     let known_good_store = KnownGoodStore::with_persistence(known_good_dir.join("known_good.json"));
     let backoff_config = BackoffConfig::default();
-    let restart_controller = Arc::new(tokio::sync::Mutex::new(RestartController::new(
-        backoff_config,
-        known_good_store,
-    )));
+    let restart_controller = Arc::new(tokio::sync::Mutex::new(
+        RestartController::new(backoff_config, known_good_store)
+    ));
     eprintln!("[HMR v2.1] Restart controller initialized with backoff/fallback");
-
+    
     // Initialize hardened IPC config (requirement #4)
     let ipc_config = Arc::new(IpcConfig::default());
-    eprintln!(
-        "[HMR v2.1] IPC config: max_frame_size={}MB, read_timeout={}s",
+    eprintln!("[HMR v2.1] IPC config: max_frame_size={}MB, read_timeout={}s",
         ipc_config.max_frame_size / (1024 * 1024),
-        ipc_config.read_timeout.as_secs()
-    );
-
+        ipc_config.read_timeout.as_secs());
+    
     // Initialize HMR orchestrator (central coordination)
     let orchestrator_config = OrchestratorConfig {
         prefer_binary_state: true,
         max_snapshots: 10,
         max_consecutive_crashes: 3,
         task_shutdown_timeout: std::time::Duration::from_secs(5),
-        strict_abi: std::env::var("SYNTHI_STRICT_ABI")
-            .map(|v| v == "1")
-            .unwrap_or(false),
+        strict_abi: std::env::var("SYNTHI_STRICT_ABI").map(|v| v == "1").unwrap_or(false),
         max_boundaries_per_module: 20,
     };
-    let hmr_orchestrator = Arc::new(tokio::sync::Mutex::new(HmrOrchestrator::with_config(
-        orchestrator_config,
-    )));
-    eprintln!(
-        "[HMR v2.1] Orchestrator initialized (binary_state={}, strict_abi={})",
-        true,
-        std::env::var("SYNTHI_STRICT_ABI")
-            .map(|v| v == "1")
-            .unwrap_or(false)
-    );
-
+    let hmr_orchestrator = Arc::new(tokio::sync::Mutex::new(HmrOrchestrator::with_config(orchestrator_config)));
+    eprintln!("[HMR v2.1] Orchestrator initialized (binary_state={}, strict_abi={})",
+        true, std::env::var("SYNTHI_STRICT_ABI").map(|v| v == "1").unwrap_or(false));
+    
     // Initialize quiescence config (requirement #6)
     let _quiescence_config = QuiescenceConfig::default();
     eprintln!("[HMR v2.1] Quiescence protocol ready");
-
-    structured_logger.log(&LogEntry::new(
-        LogLevel::Info,
-        "main",
-        "HMR v2.1 infrastructure initialized",
-    ));
-
+    
+    structured_logger.log(&LogEntry::new(LogLevel::Info, "main", "HMR v2.1 infrastructure initialized"));
+    
     // ============================================================
     // END v2.1 INFRASTRUCTURE
     // ============================================================
-
+    
     // Cargo does not source shell rc files, so ensure Android SDK tools are visible
     // to this process deterministically before any SDK checks or emulator logic.
     android::ensure_android_sdk_env();
@@ -332,7 +306,17 @@ async fn main() -> Result<()> {
     println!("ANDROID_HOME = {:?}", std::env::var("ANDROID_HOME"));
     println!("===========================================");
 
-    gst::init()?;
+    eprintln!("[Worker] Initializing GStreamer...");
+    match gst::init() {
+        Ok(_) => eprintln!("[Worker] GStreamer initialized successfully"),
+        Err(e) => {
+            eprintln!("[Worker] FATAL: GStreamer initialization failed: {}", e);
+            // We want to return the error to fail specifically
+            return Err(anyhow::anyhow!("GStreamer init failed: {}", e));
+        }
+    }
+    
+    eprintln!("[Worker] Verifying tooling...");
     verify_tooling().await?;
     let signaling_url = get_signaling_url();
     println!("Connecting to signaling server at: {}", signaling_url);
@@ -913,11 +897,10 @@ async fn create_peer(
         let placeholder_video = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
                 mime_type: "video/H264".to_owned(),
-                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
-                rtcp_feedback: vec![RTCPFeedback {
-                    typ: "transport-cc".to_owned(),
-                    parameter: "".to_owned(),
-                }],
+                // Keep fmtp_line minimal — the real track (created by GStreamer) will
+                // replace this via replace_track() and carry the encoder's actual params.
+                // Overly specific profile-level-id here can cause SDP mismatches on
+                // some browsers if the negotiated profile differs.
                 ..Default::default()
             },
             "video".to_owned(),
@@ -1058,6 +1041,7 @@ async fn wire_peer_channels(
         let ipc_config_outer = ipc_config_for_callback.clone();
         async move {
             let label = dc.label();
+            eprintln!("[on_data_channel] Received data channel: label='{}', id={}", label, dc.id());
                 if label == "compile" {
                     // Clone terminal store out of the FnMut closure into a local
                     // that can be moved into the async block below without
@@ -1234,7 +1218,7 @@ async fn wire_peer_channels(
                                                         return;
                                                     };
 
-                                                    if let Err(e) = crate::android::job::handle_react_native_emulator_job(
+                                                    if let Err(e) = worker::android::job::handle_react_native_emulator_job(
                                                         log_clone,
                                                         session_id.clone(),
                                                         workspace_path,
@@ -1381,9 +1365,18 @@ async fn wire_peer_channels(
                     // Terminal datachannel - used to receive stdin messages for running
                     // processes. Messages are expected as JSON: { type: 'stdin', sessionId, data }
                     let sdl_store_for_msg = sdl_store_outer.clone();
+                    let runner_store_for_term = runner_store_outer.clone();
+                    let build_log_store_for_term = store.clone();
+                    // Track which sessions we've already warned about missing x11 senders
+                    // to avoid flooding logs with repeated messages on every mouse/key event.
+                    let x11_warned: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>> =
+                        Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
                     dc.on_message(Box::new(move |msg| {
                         let term_store_for_msg = term_store.clone();
                         let sdl_store = sdl_store_for_msg.clone();
+                        let runner_store_term = runner_store_for_term.clone();
+                        let build_log_term = build_log_store_for_term.clone();
+                        let x11_warned = x11_warned.clone();
                         async move {
                             if msg.is_string {
                                 // diagnostic log
@@ -1407,6 +1400,62 @@ async fn wire_peer_channels(
                                             // Handle GUI event by sending to persistent SDL process
                                             if let Some(sid) = v.get("sessionId").and_then(|x| x.as_str()) {
                                                 if let Some(evt) = v.get("event") {
+                                                    // Handle stop-runner before SDL sender lookup
+                                                    // (runner may not have an SDL sender registered)
+                                                    if let Some(typ) = evt.get("type").and_then(|x| x.as_str()) {
+                                                        if typ == "stop-runner" {
+                                                            println!("[worker] stop-runner requested for session {}", sid);
+                                                            // Take and destroy runner state
+                                                            let mut rg = runner_store_term.lock().await;
+                                                            if let Some(mut state) = rg.take() {
+                                                                // Stop GStreamer pipeline FIRST (before killing Xvfb)
+                                                                // to avoid capture-from-dead-display crashes
+                                                                if let Some(ref pipeline) = state.gst_pipeline {
+                                                                    let _ = pipeline.set_state(gst::State::Null);
+                                                                    println!("[worker] GStreamer pipeline stopped");
+                                                                }
+                                                                state.gst_pipeline = None;
+                                                                // Kill the runner process
+                                                                if let Some(ref mut child) = state.process {
+                                                                    let _ = child.kill().await;
+                                                                    println!("[worker] runner process killed");
+                                                                }
+                                                                // Kill Xvfb (safe now that GStreamer is stopped)
+                                                                if let Some(ref mut xvfb) = state.xvfb_process {
+                                                                    let _ = xvfb.kill().await;
+                                                                    println!("[worker] Xvfb killed");
+                                                                }
+                                                                // Drop the sdl_tx sender to close the xdotool channel
+                                                                state.sdl_tx = None;
+                                                                drop(state);
+                                                            }
+                                                            // Clean up SDL and terminal input senders for this session
+                                                            {
+                                                                let mut sdl_guard = sdl_store.lock().await;
+                                                                sdl_guard.remove(sid);
+                                                            }
+                                                            {
+                                                                let mut term_guard = term_store_for_msg.lock().await;
+                                                                term_guard.remove(sid);
+                                                            }
+                                                            // Reset x11 warning so it fires again if session reconnects
+                                                            {
+                                                                let mut warned = x11_warned.lock().await;
+                                                                warned.remove(sid);
+                                                            }
+                                                            // Notify frontend that the runner has ended
+                                                            let log_guard = build_log_term.lock().await;
+                                                            if let Some(dc) = log_guard.as_ref() {
+                                                                let end_msg = serde_json::json!({
+                                                                    "type": "run-gui-end"
+                                                                });
+                                                                let _ = dc.send_text(end_msg.to_string()).await;
+                                                            }
+                                                            // Early return - don't try SDL sender lookup
+                                                            return;
+                                                        }
+                                                    }
+
                                                     let guard = sdl_store.lock().await;
                                                     if let Some(sender) = guard.get(sid) {
                                                         let mut cmd = String::new();
@@ -1452,7 +1501,12 @@ async fn wire_peer_channels(
                                                             let _ = sender.send(cmd);
                                                         }
                                                     } else {
-                                                        println!("[worker] no x11 sender for session {}", sid);
+                                                        // Only warn once per session to avoid log spam
+                                                        // (this fires on every mouse/key event)
+                                                        let mut warned = x11_warned.lock().await;
+                                                        if warned.insert(sid.to_string()) {
+                                                            println!("[worker] no x11 sender for session {} (further warnings suppressed)", sid);
+                                                        }
                                                     }
                                                 }
                                             }
@@ -1492,6 +1546,7 @@ async fn wire_peer_channels(
                     .boxed()
                 }));
 
+                println!("[on_data_channel] LSP branch matched: lang='{}', spawning handler task...", lang);
                 tokio::spawn(async move {
                     // Try to download the workspace files
                     let slug_to_use = slug_opt.as_deref().unwrap_or("test-workspace");
@@ -1517,6 +1572,29 @@ async fn wire_peer_channels(
                             workspace_path_for_lsp.as_ref().clone()
                         }
                     };
+
+                    // ── Install dependencies + language server in parallel ─────
+                    // These two steps are independent: dep_installer scans
+                    // manifest files and runs package managers, while
+                    // lsp_installer downloads/installs the LSP binary.
+                    // Running them concurrently shaves seconds off first-load.
+                    // Both are idempotent (marker-file cached) so subsequent
+                    // connections for other languages are near-instant.
+                    let (_, lsp_result) = tokio::join!(
+                        infra::dep_installer::install_all_deps(&workspace_path, &lang, false),
+                        infra::lsp_installer::ensure_lsp_installed(&lang, &workspace_path),
+                    );
+                    match lsp_result {
+                        Ok(bin) => println!("[LSP] Server binary ready: {}", bin),
+                        Err(e) => eprintln!("[LSP] Server install warning: {}", e),
+                    }
+
+                    // ── Generate minimal LSP config for standalone files ─────
+                    // If the workspace has no project config for this language,
+                    // create a minimal one so the language server provides
+                    // useful intellisense (completions, go-to-def, etc.)
+                    // even for a single file without a project manifest.
+                    ensure_lsp_config(&workspace_path, &lang);
 
                     println!("Starting LSP for language: {}", lang);
                     let mut cmd = match lang.as_str() {
@@ -1546,6 +1624,84 @@ async fn wire_peer_channels(
                              let mut c = system_command("typescript-language-server");
                              c.arg("--stdio");
                              c
+                        },
+                        "java" => {
+                            // Eclipse JDT Language Server
+                            // Expects `jdtls` wrapper script on PATH (installed via jdtls or eclipse.jdt.ls)
+                            let data_dir = workspace_path.join(".jdtls-data");
+                            let _ = std::fs::create_dir_all(&data_dir);
+                            let mut c = system_command("jdtls");
+                            c.arg("-data").arg(data_dir.to_string_lossy().to_string());
+                            c
+                        },
+                        "go" => {
+                            // gopls — the official Go language server
+                            let mut c = system_command("gopls");
+                            c.arg("serve");
+                            c
+                        },
+                        "csharp" | "cs" => {
+                            // OmniSharp language server for C# / .NET
+                            let mut c = system_command("OmniSharp");
+                            c.arg("-lsp");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "ruby" | "rb" => {
+                            // ruby-lsp (Shopify) — modern Ruby language server
+                            let mut c = system_command("ruby-lsp");
+                            c
+                        },
+                        "php" => {
+                            // phpactor — PHP language server
+                            let mut c = system_command("phpactor");
+                            c.arg("language-server");
+                            c
+                        },
+                        "kotlin" | "kt" => {
+                            // Kotlin Language Server
+                            let mut c = system_command("kotlin-language-server");
+                            c
+                        },
+                        "zig" => {
+                            // ZLS — Zig Language Server
+                            let mut c = system_command("zls");
+                            c
+                        },
+                        "dart" => {
+                            // Dart SDK language server
+                            let mut c = system_command("dart");
+                            c.arg("language-server");
+                            c.arg("--protocol=lsp");
+                            c
+                        },
+                        "lua" => {
+                            // lua-language-server (LuaLS)
+                            let mut c = system_command("lua-language-server");
+                            c
+                        },
+                        "elixir" | "ex" => {
+                            // ElixirLS language server
+                            let mut c = system_command("elixir-ls");
+                            c
+                        },
+                        "svelte" => {
+                            // Svelte Language Server
+                            let mut c = system_command("svelteserver");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "css" | "scss" | "less" => {
+                            // VSCode CSS/SCSS/LESS language server
+                            let mut c = system_command("css-languageserver");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "html" => {
+                            // VSCode HTML language server
+                            let mut c = system_command("html-languageserver");
+                            c.arg("--stdio");
+                            c
                         },
                         _ => {
                             println!("Unsupported language for LSP: {}", lang);
@@ -1621,19 +1777,8 @@ async fn wire_peer_channels(
                                     // Try to parse and process
                                     let mut processed = false;
 
-                                    // Debug: Print raw data length
-                                    println!("Received LSP data from WebRTC: {} bytes", data.len());
-                                    if let Ok(s) = String::from_utf8(data.clone()) {
-                                        println!("Received LSP data content: {}", s.chars().take(200).collect::<String>());
-                                    }
-
                                     if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(json_bytes) {
                                         let mut guard = state.lock().await;
-
-                                        // Debug: Print method
-                                        if let Some(method) = json_val.get("method").and_then(|m| m.as_str()) {
-                                            println!("Received LSP method: {}", method);
-                                        }
 
                                         // 1. Capture client root URI from initialize
                                         if json_val.get("method").and_then(|m| m.as_str()) == Some("initialize") {
@@ -1668,21 +1813,21 @@ async fn wire_peer_channels(
                                         // 2. Rewrite URIs (Client -> Server)
                                         rewrite_uris(&mut json_val, &guard, true);
 
-                                        // 3. Handle didOpen file writing
+                                        // 3. Handle didOpen file writing (skip empty content — the server reads from disk)
                                         if json_val.get("method").and_then(|m| m.as_str()) == Some("textDocument/didOpen") {
                                             if let Some(params) = json_val.get("params") {
                                                 if let Some(doc) = params.get("textDocument") {
                                                     if let (Some(uri), Some(text)) = (doc.get("uri").and_then(|s| s.as_str()), doc.get("text").and_then(|s| s.as_str())) {
-                                                        if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
-                                                            let rel = rel.trim_start_matches('/');
-                                                            let file_path = workspace_path.join(rel);
-                                                            if let Some(parent) = file_path.parent() {
-                                                                let _ = tokio::fs::create_dir_all(parent).await;
-                                                            }
-                                                            if let Err(e) = tokio::fs::write(&file_path, text).await {
-                                                                eprintln!("Failed to write file {}: {}", file_path.display(), e);
-                                                            } else {
-                                                                println!("Wrote file to disk: {}", file_path.display());
+                                                        if !text.is_empty() {
+                                                            if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
+                                                                let rel = rel.trim_start_matches('/');
+                                                                let file_path = workspace_path.join(rel);
+                                                                if let Some(parent) = file_path.parent() {
+                                                                    let _ = tokio::fs::create_dir_all(parent).await;
+                                                                }
+                                                                if let Err(e) = tokio::fs::write(&file_path, text).await {
+                                                                    eprintln!("Failed to write file {}: {}", file_path.display(), e);
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -1690,26 +1835,92 @@ async fn wire_peer_channels(
                                             }
                                         }
 
-                                        // 4. Handle didChange file writing (only if full sync)
+                                        // 4. Handle didChange file writing (full sync AND incremental)
                                         if json_val.get("method").and_then(|m| m.as_str()) == Some("textDocument/didChange") {
                                             if let Some(params) = json_val.get("params") {
                                                 if let Some(changes) = params.get("contentChanges").and_then(|c| c.as_array()) {
-                                                    if changes.len() == 1 {
-                                                        if let Some(change) = changes.first() {
-                                                            if change.get("range").is_none() {
-                                                                if let Some(text) = change.get("text").and_then(|s| s.as_str()) {
-                                                                    if let Some(doc) = params.get("textDocument") {
-                                                                        if let Some(uri) = doc.get("uri").and_then(|s| s.as_str()) {
-                                                                            if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
-                                                                                let rel = rel.trim_start_matches('/');
-                                                                                let file_path = workspace_path.join(rel);
-                                                                                if let Err(e) = tokio::fs::write(&file_path, text).await {
-                                                                                    eprintln!("Failed to update file {}: {}", file_path.display(), e);
-                                                                                } else {
-                                                                                    println!("Updated file on disk: {}", file_path.display());
-                                                                                }
-                                                                            }
+                                                    if let Some(doc) = params.get("textDocument") {
+                                                        if let Some(uri) = doc.get("uri").and_then(|s| s.as_str()) {
+                                                            if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
+                                                                let rel = rel.trim_start_matches('/');
+                                                                let file_path = workspace_path.join(rel);
+
+                                                                if changes.len() == 1 && changes[0].get("range").is_none() {
+                                                                    // Full sync: single change without range = entire file content
+                                                                    if let Some(text) = changes[0].get("text").and_then(|s| s.as_str()) {
+                                                                        if let Err(e) = tokio::fs::write(&file_path, text).await {
+                                                                            eprintln!("Failed to update file {}: {}", file_path.display(), e);
                                                                         }
+                                                                    }
+                                                                } else {
+                                                                    // Incremental sync: changes have range fields.
+                                                                    // Read current file, apply each change, write back.
+                                                                    let current = tokio::fs::read_to_string(&file_path).await.unwrap_or_default();
+                                                                    let mut lines: Vec<String> = current.split('\n').map(|s| s.to_string()).collect();
+
+                                                                    // Apply changes in reverse order so earlier positions stay valid
+                                                                    let mut sorted_changes = changes.clone();
+                                                                    sorted_changes.sort_by(|a, b| {
+                                                                        let a_start = a.get("range").and_then(|r| r.get("start"));
+                                                                        let b_start = b.get("range").and_then(|r| r.get("start"));
+                                                                        let a_line = a_start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
+                                                                        let b_line = b_start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
+                                                                        let a_char = a_start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0);
+                                                                        let b_char = b_start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0);
+                                                                        b_line.cmp(&a_line).then(b_char.cmp(&a_char))
+                                                                    });
+
+                                                                    for change in &sorted_changes {
+                                                                        if let (Some(range), Some(text)) = (change.get("range"), change.get("text").and_then(|t| t.as_str())) {
+                                                                            let start_line = range.get("start").and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize;
+                                                                            let start_char = range.get("start").and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize;
+                                                                            let end_line = range.get("end").and_then(|e| e.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize;
+                                                                            let end_char = range.get("end").and_then(|e| e.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize;
+
+                                                                            // Clamp to valid line range
+                                                                            let sl = start_line.min(lines.len().saturating_sub(1));
+                                                                            let el = end_line.min(lines.len().saturating_sub(1));
+
+                                                                            // Build the prefix (before the edit) and suffix (after the edit)
+                                                                            let prefix = if sl < lines.len() {
+                                                                                let line_content = &lines[sl];
+                                                                                let sc = start_char.min(line_content.len());
+                                                                                line_content[..sc].to_string()
+                                                                            } else {
+                                                                                String::new()
+                                                                            };
+                                                                            let suffix = if el < lines.len() {
+                                                                                let line_content = &lines[el];
+                                                                                let ec = end_char.min(line_content.len());
+                                                                                line_content[ec..].to_string()
+                                                                            } else {
+                                                                                String::new()
+                                                                            };
+
+                                                                            // Split the replacement text into lines
+                                                                            let new_text_lines: Vec<&str> = text.split('\n').collect();
+
+                                                                            // Build replacement lines
+                                                                            let mut replacement = Vec::new();
+                                                                            if new_text_lines.len() == 1 {
+                                                                                replacement.push(format!("{}{}{}", prefix, new_text_lines[0], suffix));
+                                                                            } else {
+                                                                                replacement.push(format!("{}{}", prefix, new_text_lines[0]));
+                                                                                for mid in &new_text_lines[1..new_text_lines.len()-1] {
+                                                                                    replacement.push(mid.to_string());
+                                                                                }
+                                                                                replacement.push(format!("{}{}", new_text_lines[new_text_lines.len()-1], suffix));
+                                                                            }
+
+                                                                            // Splice the lines array
+                                                                            let remove_end = (el + 1).min(lines.len());
+                                                                            lines.splice(sl..remove_end, replacement);
+                                                                        }
+                                                                    }
+
+                                                                    let new_content = lines.join("\n");
+                                                                    if let Err(e) = tokio::fs::write(&file_path, &new_content).await {
+                                                                        eprintln!("Failed to update file {}: {}", file_path.display(), e);
                                                                     }
                                                                 }
                                                             }
@@ -1785,26 +1996,16 @@ async fn wire_peer_channels(
                                         let mut buf = vec![0u8; content_length];
                                         match reader.read_exact(&mut buf).await {
                                             Ok(_) => {
-                                                println!("Received {} bytes from LSP stdout", content_length);
                                                 if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(&buf) {
-                                                    // Log initialize response and force Full text sync
-                                                    if let Some(result) = json_val.get_mut("result") {
-                                                        if let Some(caps) = result.get_mut("capabilities") {
-                                                            println!("LSP Initialize Response Capabilities: {:?}", caps);
-
-                                                            // Force textDocumentSync to Full (1) to ensure we always get full content
-                                                            // so we can keep the file on disk in sync for clangd.
-                                                            if let Some(caps_obj) = caps.as_object_mut() {
-                                                                if let Some(sync) = caps_obj.get_mut("textDocumentSync") {
-                                                                    if sync.is_number() {
-                                                                        *sync = serde_json::json!(1);
-                                                                    } else if let Some(sync_obj) = sync.as_object_mut() {
-                                                                        sync_obj.insert("change".to_string(), serde_json::json!(1));
-                                                                    }
-                                                                } else {
-                                                                    // If not present, default to Full (1)
-                                                                    caps_obj.insert("textDocumentSync".to_string(), serde_json::json!(1));
-                                                                }
+                                                    // Log initialize response capabilities (for debugging)
+                                                    // NOTE: We no longer force textDocumentSync to Full(1).
+                                                    // The worker's didChange handler now supports both full
+                                                    // and incremental sync modes, applying range-based edits
+                                                    // to the file on disk when ranges are present.
+                                                    if let Some(result) = json_val.get("result") {
+                                                        if let Some(caps) = result.get("capabilities") {
+                                                            if let Some(sync) = caps.get("textDocumentSync") {
+                                                                println!("[LSP] Server textDocumentSync capability: {}", sync);
                                                             }
                                                         }
                                                     }
@@ -1818,7 +2019,6 @@ async fn wire_peer_channels(
                                                         if data_len > 60000 {
                                                             let msg_id = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() % 0xFFFFFFFF) as u32;
                                                             let chunks = make_chunks(&new_content, msg_id);
-                                                            println!("Sending {} bytes in {} chunks (ID: {})", data_len, chunks.len(), msg_id);
                                                             for chunk in chunks {
                                                                 let data = Bytes::from(chunk);
                                                                 if let Err(e) = dc_out.send(&data).await {
@@ -1828,7 +2028,6 @@ async fn wire_peer_channels(
                                                             }
                                                         } else {
                                                             let data = Bytes::copy_from_slice(&new_content);
-                                                            println!("Sending {} bytes to WebRTC (LSP stdout)", data.len());
                                                             if let Err(e) = dc_out.send(&data).await {
                                                                 eprintln!("Failed to send to WebRTC: {}", e);
                                                                 break;
@@ -1836,9 +2035,8 @@ async fn wire_peer_channels(
                                                         }
                                                     }
                                                 } else {
-                                                    // Failed to parse JSON, but we read `content_length` bytes.
-                                                    // Send just the body?
-                                                    println!("Failed to parse JSON from LSP stdout, sending raw bytes");
+                                                    // Failed to parse JSON — send raw body
+                                                    eprintln!("[LSP] Failed to parse JSON from stdout, forwarding raw bytes");
                                                     let data = Bytes::copy_from_slice(&buf);
                                                     if let Err(e) = dc_out.send(&data).await {
                                                         eprintln!("Failed to send raw bytes to WebRTC: {}", e);
@@ -1881,10 +2079,152 @@ async fn wire_peer_channels(
                             let _ = child.wait().await;
                         }
                         Err(e) => {
-                            eprintln!("Failed to spawn LSP: {}", e);
+                            eprintln!("Failed to spawn LSP for {}: {}", lang, e);
+                            // Send an LSP-shaped error response back so the frontend
+                            // doesn't hang forever waiting for `initialize` to respond.
+                            let error_response = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": 1, // initialize is always id=1
+                                "error": {
+                                    "code": -32002, // ServerNotInitialized
+                                    "message": format!(
+                                        "Failed to start {} language server: {}. \
+                                         The server binary may not be installed on the worker.",
+                                        lang, e
+                                    )
+                                }
+                            });
+                            if let Ok(payload) = serde_json::to_vec(&error_response) {
+                                let _ = dc_clone.send(&bytes::Bytes::from(payload)).await;
+                            }
                         }
                     }
                 });
+            }
+            else if label == "file-sync" {
+                // ── Real-time file sync channel ──────────────────────────
+                // The browser sends JSON messages when files are created,
+                // edited, renamed, or deleted.  We write the changes to disk
+                // so the LSP server (which indexes from the filesystem) sees
+                // them immediately.  This closes the "staleness gap" where
+                // files created in the browser editor don't exist on the
+                // worker's disk.
+                //
+                // Message format:
+                //   { "op": "write",  "path": "src/utils.py", "content": "..." }
+                //   { "op": "delete", "path": "old_file.py" }
+                //   { "op": "rename", "from": "a.py", "to": "b.py" }
+                //   { "op": "mkdir",  "path": "src/new_dir" }
+                //
+                // Paths are workspace-relative (same convention as LSP URIs
+                // without the `file:///synthi/` prefix).
+                let workspace_path_for_sync = workspace_path_for_dc.clone();
+                dc.on_message(Box::new(move |msg| {
+                    let ws_path = workspace_path_for_sync.clone();
+                    async move {
+                        let data = if msg.is_string {
+                            msg.data.clone()
+                        } else {
+                            msg.data.clone()
+                        };
+
+                        let json: serde_json::Value = match serde_json::from_slice(&data) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("[file-sync] Invalid JSON: {}", e);
+                                return;
+                            }
+                        };
+
+                        let op = json.get("op").and_then(|o| o.as_str()).unwrap_or("");
+
+                        // Resolve workspace root.  The files were downloaded to
+                        // /tmp/workspaces/{slug}/ by storage::download, but we may
+                        // also have a slug in the message for safety.
+                        let base = if let Some(slug) = json.get("slug").and_then(|s| s.as_str()) {
+                            let p = std::path::PathBuf::from(format!("/tmp/workspaces/{}", slug));
+                            if p.exists() { p } else { ws_path.as_ref().clone() }
+                        } else {
+                            ws_path.as_ref().clone()
+                        };
+
+                        match op {
+                            "write" => {
+                                if let (Some(rel_path), Some(content)) = (
+                                    json.get("path").and_then(|p| p.as_str()),
+                                    json.get("content").and_then(|c| c.as_str()),
+                                ) {
+                                    // Sanitize: prevent path traversal
+                                    let rel = rel_path.trim_start_matches('/');
+                                    if rel.contains("..") {
+                                        eprintln!("[file-sync] Rejected path traversal: {}", rel);
+                                        return;
+                                    }
+                                    let file_path = base.join(rel);
+                                    if let Some(parent) = file_path.parent() {
+                                        let _ = tokio::fs::create_dir_all(parent).await;
+                                    }
+                                    match tokio::fs::write(&file_path, content).await {
+                                        Ok(()) => println!("[file-sync] ✓ write {}", rel),
+                                        Err(e) => eprintln!("[file-sync] ✗ write {}: {}", rel, e),
+                                    }
+                                }
+                            }
+                            "delete" => {
+                                if let Some(rel_path) = json.get("path").and_then(|p| p.as_str()) {
+                                    let rel = rel_path.trim_start_matches('/');
+                                    if rel.contains("..") { return; }
+                                    let file_path = base.join(rel);
+                                    if file_path.is_dir() {
+                                        match tokio::fs::remove_dir_all(&file_path).await {
+                                            Ok(()) => println!("[file-sync] ✓ rmdir {}", rel),
+                                            Err(e) => eprintln!("[file-sync] ✗ rmdir {}: {}", rel, e),
+                                        }
+                                    } else {
+                                        match tokio::fs::remove_file(&file_path).await {
+                                            Ok(()) => println!("[file-sync] ✓ delete {}", rel),
+                                            Err(e) => eprintln!("[file-sync] ✗ delete {}: {}", rel, e),
+                                        }
+                                    }
+                                }
+                            }
+                            "rename" => {
+                                if let (Some(from), Some(to)) = (
+                                    json.get("from").and_then(|f| f.as_str()),
+                                    json.get("to").and_then(|t| t.as_str()),
+                                ) {
+                                    let from = from.trim_start_matches('/');
+                                    let to = to.trim_start_matches('/');
+                                    if from.contains("..") || to.contains("..") { return; }
+                                    let from_path = base.join(from);
+                                    let to_path = base.join(to);
+                                    if let Some(parent) = to_path.parent() {
+                                        let _ = tokio::fs::create_dir_all(parent).await;
+                                    }
+                                    match tokio::fs::rename(&from_path, &to_path).await {
+                                        Ok(()) => println!("[file-sync] ✓ rename {} → {}", from, to),
+                                        Err(e) => eprintln!("[file-sync] ✗ rename {} → {}: {}", from, to, e),
+                                    }
+                                }
+                            }
+                            "mkdir" => {
+                                if let Some(rel_path) = json.get("path").and_then(|p| p.as_str()) {
+                                    let rel = rel_path.trim_start_matches('/');
+                                    if rel.contains("..") { return; }
+                                    let dir_path = base.join(rel);
+                                    match tokio::fs::create_dir_all(&dir_path).await {
+                                        Ok(()) => println!("[file-sync] ✓ mkdir {}", rel),
+                                        Err(e) => eprintln!("[file-sync] ✗ mkdir {}: {}", rel, e),
+                                    }
+                                }
+                            }
+                            _ => {
+                                eprintln!("[file-sync] Unknown op: {}", op);
+                            }
+                        }
+                    }
+                    .boxed()
+                }));
             }
             else if label == "emulator-input" {
                 dc.on_message(Box::new(move |msg| {
@@ -1892,12 +2232,8 @@ async fn wire_peer_channels(
                         if !msg.is_string {
                             return;
                         }
-                        
-                        // Log raw message arrival
-                        // eprintln!("[emulator-input] Received raw message: {}", String::from_utf8_lossy(&msg.data));
-
-                        if let Ok(v) = serde_json::from_slice::<crate::android::webrtc::input::EmulatorInputMessage>(&msg.data) {
-                            if let Err(e) = crate::android::webrtc::input::handle_input_message(v).await {
+                        if let Ok(v) = serde_json::from_slice::<worker::android::webrtc::input::EmulatorInputMessage>(&msg.data) {
+                            if let Err(e) = worker::android::webrtc::input::handle_input_message(v).await {
                                 eprintln!("[emulator-input] error: {:#}", e);
                             }
                         } else {
@@ -2044,15 +2380,9 @@ fn extract_string_literals(source: &str) -> Vec<String> {
 /// Apply guardrails to shared.h content
 fn apply_shared_guardrails(content: &str) -> String {
     let mut result = content.to_string();
-
+    
     // Guardrails: AI sometimes typedefs X11 types to void, which conflicts with Xlib headers.
-    for bad in [
-        "typedef void Display",
-        "typedef void GC",
-        "typedef void Atom",
-        "typedef void XIM",
-        "typedef void XIC",
-    ] {
+    for bad in ["typedef void Display", "typedef void GC", "typedef void Atom", "typedef void XIM", "typedef void XIC"] {
         if result.contains(bad) {
             result = result.replace(bad, "// stripped invalid typedef\n");
         }
@@ -2060,14 +2390,7 @@ fn apply_shared_guardrails(content: &str) -> String {
 
     // Strip conflicting forward declarations of X11 types and normalize struct field types.
     for bad in [
-        "struct Display;",
-        "struct Window;",
-        "struct Atom;",
-        "struct XIM;",
-        "struct XIC;",
-        "struct Pixmap;",
-        "struct GC;",
-        "struct XWindowAttributes;",
+        "struct Display;", "struct Window;", "struct Atom;", "struct XIM;", "struct XIC;", "struct Pixmap;", "struct GC;", "struct XWindowAttributes;"
     ] {
         if result.contains(bad) {
             result = result.replace(bad, "// stripped conflicting X11 forward decl\n");
@@ -2095,27 +2418,26 @@ fn apply_shared_guardrails(content: &str) -> String {
     }
 
     // FIX: gui_on_load declaration MUST have 3 parameters to match implementation
-    if result.contains("gui_on_load(void* prev_state, void* window_ptr)")
-        && !result.contains("gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)")
-    {
+    if result.contains("gui_on_load(void* prev_state, void* window_ptr)") && 
+       !result.contains("gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)") {
         result = result.replace(
             "gui_on_load(void* prev_state, void* window_ptr)",
-            "gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)",
+            "gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)"
         );
         eprintln!("[Guardrail] Fixed gui_on_load declaration in shared.h: added missing core_api_ptr parameter");
     }
-
+    
     result
 }
 
 /// Apply guardrails to core.cpp content (requires processed shared.h for context)
 fn apply_core_guardrails(content: &str, shared_content: &str) -> String {
     let mut result = content.to_string();
-
+    
     // Detect if shared.h has full struct definitions or just forward declarations
-    let shared_has_full_hostkv = shared_content.contains("struct HostKvApiV1 {")
-        || shared_content.contains("struct SynthiHostContextV1 {")
-        || shared_content.contains("struct SynthiNamespaceSchemaV1 {");
+    let shared_has_full_hostkv = shared_content.contains("struct HostKvApiV1 {") ||
+                                  shared_content.contains("struct SynthiHostContextV1 {") ||
+                                  shared_content.contains("struct SynthiNamespaceSchemaV1 {");
 
     // Fix common AI mistakes in core.cpp before compilation.
     if result.contains("is_running") {
@@ -2124,34 +2446,17 @@ fn apply_core_guardrails(content: &str, shared_content: &str) -> String {
 
     // CRITICAL: Strip X11-related functions that the AI incorrectly preserved from the input.
     let x11_type_patterns = [
-        "Display*",
-        "Display *",
-        "Window*",
-        "XIM",
-        "XIC",
-        "Atom",
-        "Colormap",
-        "Pixmap",
-        "GC ",
-        "XEvent",
-        "XOpenDisplay",
-        "XCloseDisplay",
-        "XCreateWindow",
-        "XDestroyWindow",
-        "XOpenIM",
-        "XCreateIC",
-        "XCreateGC",
-        "XFreeGC",
-        "XCreatePixmap",
-        "XFreePixmap",
+        "Display*", "Display *", "Window*", "XIM", "XIC", "Atom", "Colormap", "Pixmap", "GC ",
+        "XEvent", "XOpenDisplay", "XCloseDisplay", "XCreateWindow", "XDestroyWindow",
+        "XOpenIM", "XCreateIC", "XCreateGC", "XFreeGC", "XCreatePixmap", "XFreePixmap",
     ];
-
+    
     let mut cleaned_lines = Vec::new();
     for line in result.lines() {
         let has_x11 = x11_type_patterns.iter().any(|pat| line.contains(pat));
         let is_comment = line.trim_start().starts_with("//") || line.trim_start().starts_with("/*");
         let is_include = line.trim_start().starts_with("#include");
-
+        
         if has_x11 && !is_comment && !is_include {
             cleaned_lines.push(format!("// [X11-stripped] {}", line));
         } else {
@@ -2174,70 +2479,39 @@ fn apply_core_guardrails(content: &str, shared_content: &str) -> String {
 
     // CRITICAL FIX: Transform malloc-based on_load to static storage
     if result.contains("malloc(sizeof(AppState))") && result.contains("on_load") {
-        if !result.contains("static AppState app_state")
-            && !result.contains("static CoreState core_state")
-        {
+        if !result.contains("static AppState app_state") && !result.contains("static CoreState core_state") {
             if let Some(on_load_pos) = result.find("extern \"C\" void* on_load") {
                 result.insert_str(on_load_pos, "// [Guardrail] Injected static storage for HMR\nstatic AppState app_state = {0};\n\n");
             } else if let Some(on_load_pos) = result.find("extern \"C\" void* core_on_load") {
                 result.insert_str(on_load_pos, "// [Guardrail] Injected static storage for HMR\nstatic AppState app_state = {0};\n\n");
             }
         }
-
+        
         let re_malloc = regex::Regex::new(r"AppState\*\s+state\s*=\s*\(AppState\*\)\s*malloc\s*\(\s*sizeof\s*\(\s*AppState\s*\)\s*\)\s*;").unwrap();
         result = re_malloc.replace_all(&result, "AppState* state = (prev_state) ? (AppState*)prev_state : &app_state; // [Guardrail] Fixed malloc->static").to_string();
-
+        
         let re_malloc2 = regex::Regex::new(r"CoreState\*\s+state\s*=\s*\(CoreState\*\)\s*malloc\s*\(\s*sizeof\s*\(\s*CoreState\s*\)\s*\)\s*;").unwrap();
         result = re_malloc2.replace_all(&result, "CoreState* state = (prev_state) ? (CoreState*)prev_state : &core_state; // [Guardrail] Fixed malloc->static").to_string();
-
-        let re_if_malloc = regex::Regex::new(
-            r"if\s*\(\s*!prev_state\s*\)\s*\{\s*state\s*=\s*\(AppState\*\)\s*malloc[^}]+\}",
-        )
-        .unwrap();
-        result = re_if_malloc
-            .replace_all(
-                &result,
-                "if (!prev_state) { state = &app_state; /* [Guardrail] Fixed malloc->static */ }",
-            )
-            .to_string();
+        
+        let re_if_malloc = regex::Regex::new(r"if\s*\(\s*!prev_state\s*\)\s*\{\s*state\s*=\s*\(AppState\*\)\s*malloc[^}]+\}").unwrap();
+        result = re_if_malloc.replace_all(&result, "if (!prev_state) { state = &app_state; /* [Guardrail] Fixed malloc->static */ }").to_string();
     }
 
     // FIX: Detect and warn about free(state) which causes crashes on reload
     if result.contains("free(state)") {
-        result = result.replace(
-            "free(state);",
-            "// free(state); // Commented - runner manages state",
-        );
+        result = result.replace("free(state);", "// free(state); // Commented - runner manages state");
     }
 
     // FIX: Detect and warn about memset on state which wipes preserved HMR state
-    if result.contains("memset(state")
-        || result.contains("memset(&app_state")
-        || result.contains("memset(&state")
-        || result.contains("memset(&core_state")
-        || result.contains("memset( state")
-    {
-        let re_memset = regex::Regex::new(
-            r"memset\s*\(\s*(state|&app_state|&core_state|&state|&gui_app_state)[^;]*\)\s*;",
-        )
-        .unwrap();
-        result = re_memset
-            .replace_all(
-                &result,
-                "// [Guardrail] memset REMOVED to preserve HMR state",
-            )
-            .to_string();
+    if result.contains("memset(state") || result.contains("memset(&app_state") || 
+        result.contains("memset(&state") || result.contains("memset(&core_state") ||
+        result.contains("memset( state") {
+        let re_memset = regex::Regex::new(r"memset\s*\(\s*(state|&app_state|&core_state|&state|&gui_app_state)[^;]*\)\s*;").unwrap();
+        result = re_memset.replace_all(&result, "// [Guardrail] memset REMOVED to preserve HMR state").to_string();
     }
 
     // Drop writes/reads to non-existent XWindowAttributes fields
-    for bad_field in [
-        "event_mask",
-        "damage",
-        "border_pixel",
-        "background_pixel",
-        "saved_attributes",
-        "attributes_mask",
-    ] {
+    for bad_field in ["event_mask", "damage", "border_pixel", "background_pixel", "saved_attributes", "attributes_mask"] {
         if result.contains(bad_field) {
             let mut cleaned = String::new();
             for line in result.lines() {
@@ -2261,17 +2535,10 @@ fn apply_core_guardrails(content: &str, shared_content: &str) -> String {
     if result.contains("SDL_") && !result.contains("#include <SDL2/SDL.h>") {
         result = format!("#include <SDL2/SDL.h>\n{}", result);
     }
-    if (result.contains("XLookupString") || result.contains("XK_Escape"))
-        && !result.contains("#include <X11/Xutil.h>")
-    {
-        result = format!(
-            "#include <X11/Xutil.h>\n#include <X11/keysym.h>\n{}",
-            result
-        );
+    if (result.contains("XLookupString") || result.contains("XK_Escape")) && !result.contains("#include <X11/Xutil.h>") {
+        result = format!("#include <X11/Xutil.h>\n#include <X11/keysym.h>\n{}", result);
     }
-    if (result.contains("dlopen") || result.contains("dlsym"))
-        && !result.contains("#include <dlfcn.h>")
-    {
+    if (result.contains("dlopen") || result.contains("dlsym")) && !result.contains("#include <dlfcn.h>") {
         result = format!("#include <dlfcn.h>\n{}", result);
     }
 
@@ -2287,11 +2554,8 @@ fn apply_core_guardrails(content: &str, shared_content: &str) -> String {
     // FIX: Remove duplicate defines that are already in shared.h
     if result.contains("#include \"shared.h\"") {
         result = result.replace("#define CORE_STATE_MAGIC", "// #define CORE_STATE_MAGIC");
-        result = result.replace(
-            "#define SYNTHI_ABI_VERSION",
-            "// #define SYNTHI_ABI_VERSION",
-        );
-
+        result = result.replace("#define SYNTHI_ABI_VERSION", "// #define SYNTHI_ABI_VERSION");
+        
         // Strip duplicate AppState struct/typedef
         if let Some(start) = result.find("typedef struct AppState") {
             if let Some(end) = result[start..].find("} AppState;") {
@@ -2303,17 +2567,18 @@ fn apply_core_guardrails(content: &str, shared_content: &str) -> String {
 
         if let Some(start) = result.find("typedef struct {") {
             if let Some(end) = result[start..].find("} AppState;") {
-                let block_end = start + end + "} AppState;".len();
-                let block = result[start..block_end].to_string();
-                if block.contains("magic") && block.contains("struct_size") {
-                    result = result.replace(&block, "// AppState defined in shared.h");
-                }
+                 let block_end = start + end + "} AppState;".len();
+                 let block = result[start..block_end].to_string();
+                 if block.contains("magic") && block.contains("struct_size") {
+                     result = result.replace(&block, "// AppState defined in shared.h");
+                 }
             }
         }
     }
 
     result
 }
+
 
 /// Patch string literals in cached JSON result with new strings from source
 /// Returns (patched_result, did_patch_anything)
@@ -2374,36 +2639,22 @@ fn is_semantic_string(s: &str) -> bool {
     color_names.iter().any(|c| lower == *c)
 }
 
+
+
 /// Apply guardrails to gui.cpp content (requires processed shared.h for context)
 fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
     let mut result = content.to_string();
-
+    
     // Detect if shared.h has full struct definitions
-    let shared_has_full_hostkv = shared_content.contains("struct HostKvApiV1 {")
-        || shared_content.contains("struct SynthiHostContextV1 {")
-        || shared_content.contains("struct SynthiNamespaceSchemaV1 {");
+    let shared_has_full_hostkv = shared_content.contains("struct HostKvApiV1 {") ||
+                                  shared_content.contains("struct SynthiHostContextV1 {") ||
+                                  shared_content.contains("struct SynthiNamespaceSchemaV1 {");
 
     // Strip X11-related functions
     let x11_type_patterns = [
-        "Display*",
-        "Display *",
-        "XIM",
-        "XIC",
-        "Atom",
-        "Colormap",
-        "Pixmap",
-        "GC ",
-        "XEvent",
-        "XOpenDisplay",
-        "XCloseDisplay",
-        "XCreateWindow",
-        "XDestroyWindow",
-        "XOpenIM",
-        "XCreateIC",
-        "XCreateGC",
-        "XFreeGC",
-        "XCreatePixmap",
-        "XFreePixmap",
+        "Display*", "Display *", "XIM", "XIC", "Atom", "Colormap", "Pixmap", "GC ",
+        "XEvent", "XOpenDisplay", "XCloseDisplay", "XCreateWindow", "XDestroyWindow",
+        "XOpenIM", "XCreateIC", "XCreateGC", "XFreeGC", "XCreatePixmap", "XFreePixmap",
     ];
     let mut cleaned_lines = Vec::new();
     for line in result.lines() {
@@ -2431,7 +2682,7 @@ fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
             result = format!("#include \"shared.h\"\n{}", result);
         }
     }
-
+    
     // Strip duplicate AppState definitions
     if result.contains("#include \"shared.h\"") {
         if let Some(start) = result.find("typedef struct AppState") {
@@ -2444,14 +2695,14 @@ fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
 
         if let Some(start) = result.find("typedef struct {") {
             if let Some(end) = result[start..].find("} AppState;") {
-                let block_end = start + end + "} AppState;".len();
-                let block = result[start..block_end].to_string();
-                if block.contains("magic") && block.contains("struct_size") {
-                    result = result.replace(&block, "// AppState defined in shared.h");
-                }
+                 let block_end = start + end + "} AppState;".len();
+                 let block = result[start..block_end].to_string();
+                 if block.contains("magic") && block.contains("struct_size") {
+                     result = result.replace(&block, "// AppState defined in shared.h");
+                 }
             }
         }
-
+        
         if let Some(start) = result.find("struct AppState {") {
             if let Some(end) = result[start..].find("};") {
                 let block_end = start + end + "};".len();
@@ -2463,41 +2714,31 @@ fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
         }
 
         // Handle Host KV structs
-        for struct_name in &[
-            "HostKvApiV1",
-            "SynthiHostContextV1",
-            "SynthiNamespaceSchemaV1",
-        ] {
-            let typedef_pattern = format!("typedef struct {} {};", struct_name, struct_name);
-            if result.contains(&typedef_pattern) {
-                result = result.replace(
-                    &typedef_pattern,
-                    &format!("// {} forward-declared in shared.h", struct_name),
-                );
-            }
-
-            if shared_has_full_hostkv {
-                let struct_decl = format!("struct {} {{", struct_name);
-                if let Some(start) = result.find(&struct_decl) {
-                    if let Some(end) = result[start..].find("};") {
-                        let block_end = start + end + "};".len();
-                        let block = result[start..block_end].to_string();
-                        result = result.replace(
-                            &block,
-                            &format!("// {} fully defined in shared.h", struct_name),
-                        );
-                    }
-                }
-            }
+        for struct_name in &["HostKvApiV1", "SynthiHostContextV1", "SynthiNamespaceSchemaV1"] {
+             let typedef_pattern = format!("typedef struct {} {};", struct_name, struct_name);
+             if result.contains(&typedef_pattern) {
+                 result = result.replace(&typedef_pattern, &format!("// {} forward-declared in shared.h", struct_name));
+             }
+             
+             if shared_has_full_hostkv {
+                 let struct_decl = format!("struct {} {{", struct_name);
+                 if let Some(start) = result.find(&struct_decl) {
+                     if let Some(end) = result[start..].find("};") {
+                         let block_end = start + end + "};".len();
+                         let block = result[start..block_end].to_string();
+                         result = result.replace(&block, &format!("// {} fully defined in shared.h", struct_name));
+                     }
+                 }
+             }
         }
-
+        
         // Inject Host KV definitions if needed
-        let uses_hostkv_types = result.contains("SynthiHostContextV1")
-            || result.contains("SynthiNamespaceSchemaV1")
-            || result.contains("HostKvApiV1")
-            || result.contains("g_gui_schemas")
-            || result.contains("host_kv_schemas");
-
+        let uses_hostkv_types = result.contains("SynthiHostContextV1") || 
+                                result.contains("SynthiNamespaceSchemaV1") ||
+                                result.contains("HostKvApiV1") ||
+                                result.contains("g_gui_schemas") ||
+                                result.contains("host_kv_schemas");
+        
         if uses_hostkv_types && !shared_has_full_hostkv {
             let hostkv_header = get_hostkv_header();
             if let Some(include_end) = result.rfind("#include") {
@@ -2512,23 +2753,17 @@ fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
     }
 
     // FIX: gui_on_load MUST have 3 parameters
-    if result.contains("gui_on_load(void* prev_state, void* window_ptr)")
-        && !result.contains("gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)")
-    {
+    if result.contains("gui_on_load(void* prev_state, void* window_ptr)") && 
+       !result.contains("gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)") {
         result = result.replace(
             "gui_on_load(void* prev_state, void* window_ptr)",
-            "gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)",
+            "gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr)"
         );
     }
 
     // FIX: Comment out SDL_RenderPresent
     let re_present = regex::Regex::new(r"SDL_RenderPresent\s*\([^)]*\)\s*;").unwrap();
-    result = re_present
-        .replace_all(
-            &result,
-            "/* SDL_RenderPresent removed - runner handles this */",
-        )
-        .to_string();
+    result = re_present.replace_all(&result, "/* SDL_RenderPresent removed - runner handles this */").to_string();
 
     // FIX: Replace SDL_GetKeyboardWindow
     if result.contains("SDL_GetKeyboardWindow") {
@@ -2537,47 +2772,30 @@ fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
 
     // Convert malloc-based gui_on_load to static storage
     if result.contains("malloc(sizeof(AppState))") && result.contains("gui_on_load") {
-        if !result.contains("static AppState gui_app_state")
-            && !result.contains("static GuiState gui_state")
-        {
+        if !result.contains("static AppState gui_app_state") && !result.contains("static GuiState gui_state") {
             if let Some(on_load_pos) = result.find("extern \"C\" void* gui_on_load") {
                 result.insert_str(on_load_pos, "// [Guardrail] Injected static storage for HMR\nstatic AppState gui_app_state = {0};\n\n");
             }
         }
-
+        
         let re_malloc = regex::Regex::new(r"AppState\*\s+state\s*=\s*\(AppState\*\)\s*malloc\s*\(\s*sizeof\s*\(\s*AppState\s*\)\s*\)\s*;").unwrap();
         result = re_malloc.replace_all(&result, "AppState* state = (prev_state) ? (AppState*)prev_state : &gui_app_state; // [Guardrail] Fixed malloc->static").to_string();
-
+        
         let re_malloc2 = regex::Regex::new(r"GuiState\*\s+state\s*=\s*\(GuiState\*\)\s*malloc\s*\(\s*sizeof\s*\(\s*GuiState\s*\)\s*\)\s*;").unwrap();
         result = re_malloc2.replace_all(&result, "GuiState* state = (prev_state) ? (GuiState*)prev_state : &gui_state; // [Guardrail] Fixed malloc->static").to_string();
     }
 
     // FIX: free(state) crashes
     if result.contains("free(state)") {
-        result = result.replace(
-            "free(state);",
-            "// free(state); // Commented - runner manages state",
-        );
+        result = result.replace("free(state);", "// free(state); // Commented - runner manages state");
     }
 
     // FIX: memset wipes HMR state
-    if result.contains("memset(state")
-        || result.contains("memset(&app_state")
-        || result.contains("memset(&gui_state")
-        || result.contains("memset(&state")
-        || result.contains("memset(&gui_app_state")
-        || result.contains("memset( state")
-    {
-        let re_memset = regex::Regex::new(
-            r"memset\s*\(\s*(state|&app_state|&gui_state|&state|&gui_app_state)[^;]*\)\s*;",
-        )
-        .unwrap();
-        result = re_memset
-            .replace_all(
-                &result,
-                "// [Guardrail] memset REMOVED to preserve HMR state",
-            )
-            .to_string();
+    if result.contains("memset(state") || result.contains("memset(&app_state") || 
+        result.contains("memset(&gui_state") || result.contains("memset(&state") ||
+        result.contains("memset(&gui_app_state") || result.contains("memset( state") {
+        let re_memset = regex::Regex::new(r"memset\s*\(\s*(state|&app_state|&gui_state|&state|&gui_app_state)[^;]*\)\s*;").unwrap();
+        result = re_memset.replace_all(&result, "// [Guardrail] memset REMOVED to preserve HMR state").to_string();
     }
 
     // FIX: app_state -> gui_app_state in gui.cpp
@@ -2585,7 +2803,7 @@ fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
         if result.contains("&app_state") && !result.contains("&gui_app_state") {
             result = result.replace("&app_state", "&gui_app_state");
         }
-
+        
         if result.contains("gui_app_state") {
             let placeholder = "__GUI_APP_STATE_PLACEHOLDER__";
             let temp_content = result.replace("gui_app_state", placeholder);
@@ -2598,33 +2816,16 @@ fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
 
     // Add entrypoint if needed
     if result.contains("main(") && !result.contains("extern \"C\" void* entrypoint") {
-        result.push_str(
-            "\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n",
-        );
+         result.push_str("\n\nextern \"C\" void* entrypoint(void* state) {\n    main();\n    return 0;\n}\n");
     }
 
     // FIX: renderer -> state->renderer
-    if result.contains("SDL_Render")
-        || result.contains("SDL_SetRenderDrawColor")
-        || result.contains("draw_text")
-    {
+    if result.contains("SDL_Render") || result.contains("SDL_SetRenderDrawColor") || result.contains("draw_text") {
         let fixes = [
-            (
-                "SDL_RenderFillRect(renderer,",
-                "SDL_RenderFillRect(state->renderer,",
-            ),
-            (
-                "SDL_RenderDrawRect(renderer,",
-                "SDL_RenderDrawRect(state->renderer,",
-            ),
-            (
-                "SDL_SetRenderDrawColor(renderer,",
-                "SDL_SetRenderDrawColor(state->renderer,",
-            ),
-            (
-                "SDL_RenderClear(renderer)",
-                "SDL_RenderClear(state->renderer)",
-            ),
+            ("SDL_RenderFillRect(renderer,", "SDL_RenderFillRect(state->renderer,"),
+            ("SDL_RenderDrawRect(renderer,", "SDL_RenderDrawRect(state->renderer,"),
+            ("SDL_SetRenderDrawColor(renderer,", "SDL_SetRenderDrawColor(state->renderer,"),
+            ("SDL_RenderClear(renderer)", "SDL_RenderClear(state->renderer)"),
             ("draw_text(renderer,", "draw_text(state->renderer,"),
         ];
         for (wrong, correct) in &fixes {
@@ -2650,12 +2851,11 @@ fn apply_gui_guardrails(content: &str, shared_content: &str) -> String {
             }
         }
     }
-
+    
     // Inject GUI state serialization stubs
-    if result.contains("gui_on_load")
-        && !result.contains("gui_on_save_state")
-        && !result.contains("gui_get_state_schema_hash")
-    {
+    if result.contains("gui_on_load") && 
+       !result.contains("gui_on_save_state") &&
+       !result.contains("gui_get_state_schema_hash") {
         let gui_serial_stubs = r#"
 
 // [Guardrail] State serialization stubs for Full HMR capability (GUI)
@@ -2677,7 +2877,7 @@ extern "C" void synthi_free_json(char* json) {
 "#;
         result.push_str(gui_serial_stubs);
     }
-
+    
     result
 }
 /// Get the Host KV header definitions
@@ -2728,6 +2928,12 @@ typedef struct HostKvApiV1 {
 "#
 }
 
+
+
+
+
+
+
 /// Check if any changed strings are semantic (would need AI re-processing)
 fn has_semantic_string_changes(old_strings: &[String], new_strings: &[String]) -> bool {
     for (old, new) in old_strings.iter().zip(new_strings.iter()) {
@@ -2755,19 +2961,18 @@ fn collect_string_changes(old_strings: &[String], new_strings: &[String]) -> Vec
 /// Parse AppState struct fields from shared.h content
 /// Returns a list of (field_name, field_type, default_value) tuples for int fields
 /// Default value is extracted from declarations like "int btn_x = 200;"
-fn parse_appstate_int_fields_with_defaults(
-    shared_content: &str,
-) -> Vec<(String, String, Option<i64>)> {
+fn parse_appstate_int_fields_with_defaults(shared_content: &str) -> Vec<(String, String, Option<i64>)> {
     let mut fields = Vec::new();
-
+    
     // Find AppState struct definition
     let struct_re = regex::Regex::new(r"struct\s+AppState\s*\{([^}]*)\}").ok();
-
+    
     if let Some(re) = struct_re {
         if let Some(captures) = re.captures(shared_content) {
             if let Some(body) = captures.get(1) {
                 let body_str = body.as_str();
 
+                
                 // Parse individual field declarations WITH default values
                 // Match patterns like: int x; or int x = 10; or int btn_x = 330, btn_y = 10;
                 // Also handle inline declarations like: int x = 0, y = 0, dx = 5, dy = 5;
@@ -2842,7 +3047,7 @@ fn generate_state_serialization_code_with_defaults(
     fields: &[(String, String, Option<i64>)],
     prefix: &str,
 ) -> String {
-    crate::hmr::binary_state::generate_msgpack_serialization_code_with_defaults(fields, prefix)
+    worker::hmr::binary_state::generate_msgpack_serialization_code_with_defaults(fields, prefix)
 }
 
 /// Detect structural DELETIONS between old and new source code
@@ -2984,47 +3189,31 @@ fn try_local_deletion_patch(
 fn detect_gui_modifications(old_source: &str, new_source: &str) -> Option<String> {
     let old_lines: Vec<&str> = old_source.lines().collect();
     let new_lines: Vec<&str> = new_source.lines().collect();
-
+    
     // GUI-related keywords that indicate drawable/interactive elements
     let gui_keywords = [
-        "XFillRectangle",
-        "XDrawRectangle",
-        "XDrawString",
-        "XDrawLine",
-        "XSetForeground",
-        "XSetBackground",
-        "XDrawArc",
-        "XFillArc",
-        "SDL_Rect",
-        "SDL_RenderFillRect",
-        "SDL_RenderDrawRect",
-        "btn_x",
-        "btn_y",
-        "btn_w",
-        "btn_h",
-        "button",
-        "color",
-        "Color",
-        "width",
-        "height",
-        "position",
+        "XFillRectangle", "XDrawRectangle", "XDrawString", "XDrawLine",
+        "XSetForeground", "XSetBackground", "XDrawArc", "XFillArc",
+        "SDL_Rect", "SDL_RenderFillRect", "SDL_RenderDrawRect",
+        "btn_x", "btn_y", "btn_w", "btn_h", "button",
+        "color", "Color", "width", "height", "position",
     ];
-
+    
     let mut modifications = Vec::new();
-
+    
     // Find modified lines (lines that have similar structure but different values)
     for new_line in &new_lines {
         let trimmed_new = new_line.trim();
         if trimmed_new.is_empty() || trimmed_new.starts_with("//") {
             continue;
         }
-
+        
         // Check if this line contains GUI keywords
         let is_gui_line = gui_keywords.iter().any(|kw| trimmed_new.contains(kw));
         if !is_gui_line {
             continue;
         }
-
+        
         // Check if a SIMILAR line exists in old (same function call, different args)
         let has_similar_in_old = old_lines.iter().any(|old_line| {
             let trimmed_old = old_line.trim();
@@ -3041,25 +3230,20 @@ fn detect_gui_modifications(old_source: &str, new_source: &str) -> Option<String
             }
             false
         });
-
+        
         // If this GUI line doesn't have an exact match in old, it's new or modified
-        let exists_exactly_in_old = old_lines
-            .iter()
-            .any(|old_line| old_line.trim() == trimmed_new);
-
+        let exists_exactly_in_old = old_lines.iter().any(|old_line| old_line.trim() == trimmed_new);
+        
         if is_gui_line && has_similar_in_old && !exists_exactly_in_old {
             modifications.push(trimmed_new.to_string());
         }
     }
-
+    
     if modifications.is_empty() {
         return None;
     }
-
-    eprintln!(
-        "[AI Split] Detected {} GUI modifications",
-        modifications.len()
-    );
+    
+    eprintln!("[AI Split] Detected {} GUI modifications", modifications.len());
     Some(modifications.join("\n"))
 }
 
@@ -3832,27 +4016,14 @@ async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value> {
         }
         // Level 2.8: Check for GUI modifications (position, color, size changes)
         // These are lines that exist in both but with different values
-        else if let Some(gui_changes) =
-            detect_gui_modifications(&cached.original_source, &req.source)
-        {
+        else if let Some(gui_changes) = detect_gui_modifications(&cached.original_source, &req.source) {
             eprintln!("[AI Split] ╔═══════════════════════════════════════════════════════════╗");
             eprintln!("[AI Split] ║  GUI MODIFICATION DETECTED - Using fast delta path       ║");
             eprintln!("[AI Split] ╚═══════════════════════════════════════════════════════════╝");
             eprintln!("[AI Split] Delta type: GUI MODIFICATION (position/color/size change)");
-            eprintln!(
-                "[AI Split] Modified GUI code:\n{}",
-                gui_changes.lines().take(5).collect::<Vec<_>>().join("\n")
-            );
-
-            match perform_structural_ai_update(
-                &cached.result,
-                &cached.original_source,
-                &req.source,
-                &gui_changes,
-                &req.language,
-            )
-            .await
-            {
+            eprintln!("[AI Split] Modified GUI code:\n{}", gui_changes.lines().take(5).collect::<Vec<_>>().join("\n"));
+            
+            match perform_structural_ai_update(&cached.result, &cached.original_source, &req.source, &gui_changes, &req.language).await {
                 Ok(updated_result) => {
                     let cached_entry = CachedSplit {
                         result: updated_result.clone(),
@@ -4076,7 +4247,7 @@ async fn handle_compile(
         restart_controller,
         ipc_config,
     };
-
+    
     // Call the unified handler
     // We ignore the return value (JSON graph) for now as the void return type expects
     let session_id = req
@@ -4110,6 +4281,134 @@ fn system_command(program: &str) -> Command {
         cmd
     } else {
         Command::new(program)
+    }
+}
+
+/// Generate minimal LSP configuration files for standalone workspaces.
+///
+/// When a user has a single `main.py` or `index.js` without a project
+/// structure, the language server still needs certain config files to provide
+/// useful intellisense (completions, go-to-def, diagnostics).  This function
+/// creates them **only if they don't already exist** — existing configs are
+/// never overwritten.
+fn ensure_lsp_config(workspace: &std::path::Path, lang: &str) {
+    use std::io::Write;
+
+    match lang {
+        "javascript" | "js" => {
+            // typescript-language-server needs a jsconfig.json to treat the
+            // workspace as a JS project and resolve node_modules imports.
+            let config_path = workspace.join("jsconfig.json");
+            if !config_path.exists() && !workspace.join("tsconfig.json").exists() {
+                if let Ok(mut f) = std::fs::File::create(&config_path) {
+                    let _ = f.write_all(br#"{
+  "compilerOptions": {
+    "checkJs": true,
+    "module": "commonjs",
+    "target": "es2020",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "baseUrl": "."
+  },
+  "include": ["**/*.js", "**/*.jsx"],
+  "exclude": ["node_modules"]
+}
+"#);
+                    println!("[LSP-CONFIG] Created jsconfig.json for standalone JS workspace");
+                }
+            }
+        }
+        "typescript" | "ts" => {
+            let config_path = workspace.join("tsconfig.json");
+            if !config_path.exists() && !workspace.join("jsconfig.json").exists() {
+                if let Ok(mut f) = std::fs::File::create(&config_path) {
+                    let _ = f.write_all(br#"{
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "strict": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "baseUrl": "."
+  },
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules"]
+}
+"#);
+                    println!("[LSP-CONFIG] Created tsconfig.json for standalone TS workspace");
+                }
+            }
+        }
+        "go" => {
+            // gopls requires a go.mod to provide module-aware completions.
+            let go_mod = workspace.join("go.mod");
+            if !go_mod.exists() {
+                if let Ok(mut f) = std::fs::File::create(&go_mod) {
+                    let _ = f.write_all(b"module synthi-workspace\n\ngo 1.21\n");
+                    println!("[LSP-CONFIG] Created go.mod for standalone Go workspace");
+                }
+            }
+        }
+        "rust" => {
+            // rust-analyzer needs a Cargo.toml to index the project.
+            let cargo_toml = workspace.join("Cargo.toml");
+            if !cargo_toml.exists() {
+                // Find the main .rs file name for the binary target
+                let bin_name = std::fs::read_dir(workspace)
+                    .ok()
+                    .and_then(|entries| {
+                        entries.flatten()
+                            .find(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
+                            .map(|e| e.file_name().to_string_lossy().trim_end_matches(".rs").to_string())
+                    })
+                    .unwrap_or_else(|| "main".to_string());
+
+                if let Ok(mut f) = std::fs::File::create(&cargo_toml) {
+                    let _ = write!(f, r#"[package]
+name = "synthi-workspace"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "{}"
+path = "{}.rs"
+"#, bin_name, bin_name);
+                    println!("[LSP-CONFIG] Created Cargo.toml for standalone Rust workspace");
+                }
+            }
+        }
+        "dart" => {
+            let pubspec = workspace.join("pubspec.yaml");
+            if !pubspec.exists() {
+                if let Ok(mut f) = std::fs::File::create(&pubspec) {
+                    let _ = f.write_all(b"name: synthi_workspace\nenvironment:\n  sdk: '>=3.0.0 <4.0.0'\n");
+                    println!("[LSP-CONFIG] Created pubspec.yaml for standalone Dart workspace");
+                }
+            }
+        }
+        "lua" => {
+            // lua-language-server reads .luarc.json for project settings
+            let luarc = workspace.join(".luarc.json");
+            if !luarc.exists() {
+                if let Ok(mut f) = std::fs::File::create(&luarc) {
+                    let _ = f.write_all(br#"{
+  "runtime.version": "Lua 5.4",
+  "diagnostics.globals": ["vim"],
+  "workspace.library": [],
+  "workspace.checkThirdParty": false
+}
+"#);
+                    println!("[LSP-CONFIG] Created .luarc.json for standalone Lua workspace");
+                }
+            }
+        }
+        // Python: pylsp/pyright works well for standalone files without extra config.
+        // C/C++: compile_flags.txt is created in the cmd match arm below.
+        // Java: jdtls creates .jdtls-data itself.
+        _ => {}
     }
 }
 

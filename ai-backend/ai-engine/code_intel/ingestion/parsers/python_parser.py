@@ -121,6 +121,7 @@ class PythonParser(BaseParser):
                         alias=alias.asname,
                         line=node.lineno - 1,
                         is_relative=False,
+                        level=0,
                     ))
             
             elif isinstance(node, ast.ImportFrom):
@@ -133,6 +134,7 @@ class PythonParser(BaseParser):
                     alias=None,
                     line=node.lineno - 1,
                     is_relative=node.level > 0,
+                    level=int(node.level or 0),
                 ))
         
         return imports
@@ -216,6 +218,7 @@ class PythonParser(BaseParser):
         
         # Detect references in function body
         references = self._find_references(node, imported_names)
+        type_refs = self._extract_type_refs(node)
         
         # Check static/classmethod
         is_static = "staticmethod" in decorators
@@ -238,6 +241,8 @@ class PythonParser(BaseParser):
             is_async=is_async,
             is_static=is_static or is_classmethod,
             references=references,
+            imports=references,
+            type_refs=type_refs,
         )
         
         return symbol
@@ -255,6 +260,7 @@ class PythonParser(BaseParser):
         
         # Extract bases for signature
         bases = [self._node_to_string(b) for b in node.bases]
+        type_refs = set(bases)
         signature = f"class {name}" + (f"({', '.join(bases)})" if bases else "")
         
         # Extract docstring
@@ -287,6 +293,7 @@ class PythonParser(BaseParser):
             decorators=decorators,
             is_public=self._is_public_name(name),
             imports=set(bases),  # Track base classes as "imports"
+            type_refs=type_refs,
         )
         
         # Parse nested symbols (methods)
@@ -423,3 +430,40 @@ class PythonParser(BaseParser):
                         references.add(child.value.id)
         
         return references
+
+    def _extract_type_refs(self, node: ast.AST) -> Set[str]:
+        """Extract type reference names from annotations."""
+        refs: Set[str] = set()
+
+        def add_ref(n: ast.AST) -> None:
+            if isinstance(n, ast.Name):
+                refs.add(n.id)
+            elif isinstance(n, ast.Attribute):
+                base = []
+                cur = n
+                while isinstance(cur, ast.Attribute):
+                    base.append(cur.attr)
+                    cur = cur.value
+                if isinstance(cur, ast.Name):
+                    base.append(cur.id)
+                if base:
+                    refs.add(".".join(reversed(base)))
+            elif isinstance(n, ast.Subscript):
+                add_ref(n.value)
+                if hasattr(n, "slice"):
+                    add_ref(n.slice)
+            elif isinstance(n, ast.Tuple):
+                for elt in n.elts:
+                    add_ref(elt)
+
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for arg in node.args.args + node.args.kwonlyargs:
+                if arg.annotation:
+                    add_ref(arg.annotation)
+            if node.returns:
+                add_ref(node.returns)
+        elif isinstance(node, ast.ClassDef):
+            for base in node.bases:
+                add_ref(base)
+
+        return refs

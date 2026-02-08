@@ -1,15 +1,26 @@
 use futures_util::StreamExt;
+use lazy_static::lazy_static;
 use object_store::{
     gcp::{GoogleCloudStorageBuilder, GoogleConfigKey},
     path::Path,
     ObjectStore,
 };
 use serde_json::json;
+use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
+
+lazy_static! {
+    /// Slugs that have been successfully downloaded in this worker session.
+    /// Subsequent `download()` calls for the same slug return the cached path
+    /// instantly instead of re-listing + re-downloading from GCS.
+    /// The file-sync data channel keeps the on-disk workspace up to date,
+    /// so a full re-download is unnecessary.
+    static ref DOWNLOADED_SLUGS: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
+}
 
 // Helper function to send progress updates
 async fn send_progress_update(
@@ -45,6 +56,22 @@ pub async fn download(
             local_dir.display()
         );
         return Ok(local_dir);
+    }
+
+    // ── Session-level cache ──────────────────────────────────────
+    // After the first successful download for a slug, subsequent
+    // calls return immediately.  The file-sync data channel keeps
+    // the on-disk workspace in sync with the browser editor, so
+    // re-downloading from GCS is unnecessary.
+    {
+        let cache = DOWNLOADED_SLUGS.lock().unwrap();
+        if cache.contains(slug) && local_dir.exists() {
+            println!(
+                "[STORAGE] Slug '{}' already downloaded this session, skipping GCS sync",
+                slug
+            );
+            return Ok(local_dir);
+        }
     }
 
     let credentials_json = json!({
@@ -248,6 +275,13 @@ pub async fn download(
     // Write updated manifest.
     if let Ok(s) = serde_json::to_string_pretty(&next_manifest) {
         let _ = fs::write(&manifest_path, s);
+    }
+
+    // Mark this slug as downloaded for the session so subsequent
+    // LSP channels skip the expensive GCS listing + download.
+    {
+        let mut cache = DOWNLOADED_SLUGS.lock().unwrap();
+        cache.insert(slug.to_string());
     }
 
     // Return the local directory path so the caller can navigate to it

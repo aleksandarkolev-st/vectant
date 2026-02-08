@@ -31,7 +31,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from ..core.types import SemanticChunk, FileSummary, RepoSummary
+from ..core.types import SemanticChunk, FileSummary, RepoSummary, ModuleSummary
+from ..core.config import ContextConfig
 from .retriever import RetrievalCandidate
 from .budget_enforcer import BudgetAllocation
 
@@ -54,6 +55,7 @@ class AssembledContext:
     # What was included
     included_files: List[str] = field(default_factory=list)
     included_symbols: List[str] = field(default_factory=list)
+    included_chunk_ids: List[str] = field(default_factory=list)
     
     # What was excluded (for transparency)
     excluded_count: int = 0
@@ -71,14 +73,15 @@ class ContextAssembler:
     - Note what's missing for transparency
     """
     
-    def __init__(self):
-        pass
+    def __init__(self, config: Optional[ContextConfig] = None):
+        self.config = config or ContextConfig()
     
     def assemble(
         self,
         allocation: BudgetAllocation,
         repo_summary: Optional[RepoSummary] = None,
         file_summaries: Optional[Dict[str, FileSummary]] = None,
+        module_summaries: Optional[Dict[str, ModuleSummary]] = None,
         query_summary: Optional[str] = None,
     ) -> AssembledContext:
         """
@@ -94,13 +97,23 @@ class ContextAssembler:
             AssembledContext ready for LLM
         """
         file_summaries = file_summaries or {}
+        module_summaries = module_summaries or {}
         sections = []
         
         # Section 1: Repository Overview
         if repo_summary:
             sections.append(self._format_repo_section(repo_summary))
         
-        # Section 2: File Summaries
+        # Section 2: Module Summaries
+        if allocation.included_module_summaries:
+            module_section = self._format_module_summaries_section(
+                allocation.included_module_summaries,
+                module_summaries,
+            )
+            if module_section:
+                sections.append(module_section)
+
+        # Section 3: File Summaries
         if allocation.included_file_summaries:
             summaries_section = self._format_file_summaries_section(
                 allocation.included_file_summaries,
@@ -108,8 +121,14 @@ class ContextAssembler:
             )
             if summaries_section:
                 sections.append(summaries_section)
+
+        # Section 3b: Spec Context (docs/tests)
+        if allocation.included_spec_chunks:
+            spec_section = self._format_spec_section(allocation.included_spec_chunks)
+            if spec_section:
+                sections.append(spec_section)
         
-        # Section 3: Code Chunks (grouped by file)
+        # Section 4: Code Chunks (grouped by file)
         code_section = self._format_code_section(
             allocation.included_chunks,
             allocation.truncated_chunks,
@@ -117,7 +136,7 @@ class ContextAssembler:
         if code_section:
             sections.append(code_section)
         
-        # Section 4: Missing Context Note
+        # Section 5: Missing Context Note
         if allocation.excluded_chunks:
             note = self._format_missing_note(
                 allocation.excluded_chunks,
@@ -127,14 +146,22 @@ class ContextAssembler:
         
         # Combine sections
         content = "\n\n".join(sections)
+
+        # Redact secrets from assembled context
+        if getattr(self.config, "redact_secrets", False):
+            content = self._redact(content)
         
         # Collect metadata
         included_files = list(set(
-            c.chunk.file_path for c in allocation.included_chunks
+            c.chunk.file_path for c in allocation.included_chunks + allocation.included_spec_chunks
         ))
         included_symbols = [
-            c.chunk.symbol_name for c in allocation.included_chunks
+            c.chunk.symbol_name for c in allocation.included_chunks + allocation.included_spec_chunks
             if c.chunk.symbol_name
+        ]
+        included_chunk_ids = [
+            c.chunk.id for c in allocation.included_chunks + allocation.included_spec_chunks
+            if c.chunk.id
         ]
         
         return AssembledContext(
@@ -144,9 +171,22 @@ class ContextAssembler:
             file_count=len(included_files),
             included_files=included_files,
             included_symbols=included_symbols,
+            included_chunk_ids=included_chunk_ids,
             excluded_count=len(allocation.excluded_chunks),
             truncation_note=self._get_truncation_note(allocation),
         )
+
+    def _redact(self, text: str) -> str:
+        import re
+
+        redacted = text
+        patterns = getattr(self.config, "redaction_patterns", []) or []
+        for pattern in patterns:
+            try:
+                redacted = re.sub(pattern, "[REDACTED]", redacted)
+            except re.error:
+                continue
+        return redacted
     
     def _format_repo_section(self, summary: RepoSummary) -> str:
         """Format repository overview section."""
@@ -205,6 +245,37 @@ class ContextAssembler:
             
             lines.append("")
         
+        return "\n".join(lines)
+
+    def _format_spec_section(
+        self,
+        spec_chunks: List[RetrievalCandidate],
+    ) -> str:
+        lines = ["# Spec Context", ""]
+        for cand in spec_chunks:
+            chunk = cand.chunk
+            lines.append(f"## {chunk.file_path}")
+            if chunk.code_body:
+                lines.append(chunk.code_body)
+            lines.append("")
+        return "\n".join(lines)
+
+    def _format_module_summaries_section(
+        self,
+        module_paths: List[str],
+        summaries: Dict[str, ModuleSummary],
+    ) -> str:
+        lines = [
+            "# Module Summaries",
+            "",
+        ]
+        for path in module_paths:
+            summary = summaries.get(path)
+            if not summary:
+                continue
+            lines.append(f"## {path}")
+            lines.append(summary.summary)
+            lines.append("")
         return "\n".join(lines)
     
     def _format_code_section(

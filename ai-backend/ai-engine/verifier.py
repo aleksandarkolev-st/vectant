@@ -71,6 +71,7 @@ class ViolationType(str, Enum):
     INVALID_STRUCTURE = "invalid_structure"
     ABI_MISMATCH = "abi_mismatch"
     MISSING_EXPORT = "missing_export"
+    UNGROUNDED_REFERENCE = "ungrounded_reference"
 
 
 @dataclass
@@ -388,6 +389,19 @@ class AIOutputVerifier:
         # 3. Extract symbols from AI output
         new_symbols = SymbolTable.from_code(ai_output, lang)
         
+        # 3b. Grounding enforcement (optional)
+        if context and context.get("grounding_spans"):
+            spans = context.get("grounding_spans") or []
+            allowed = {s.get("symbol") for s in spans if s.get("symbol")}
+            referenced = self._extract_referenced_symbols(ai_output)
+            ungrounded = [s for s in referenced if s not in allowed]
+            for sym in ungrounded:
+                violations.append(Violation(
+                    type=ViolationType.UNGROUNDED_REFERENCE,
+                    message=f"Symbol '{sym}' is not grounded in provided context spans",
+                    severity="error",
+                ))
+        
         # 4. Compare with original if provided
         if original_code:
             orig_symbols = SymbolTable.from_code(original_code, lang)
@@ -572,6 +586,19 @@ class AIOutputVerifier:
         
         return violations
     
+    def _extract_referenced_symbols(self, text: str) -> List[str]:
+        backticked = re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", text)
+        identifiers = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b", text)
+        combined = backticked + identifiers
+        seen = set()
+        out = []
+        for s in combined:
+            if s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+        return out
+
     def _check_syntax_structure(self, code: str, lang: str) -> List[Violation]:
         """Check for basic syntax structure issues."""
         violations = []

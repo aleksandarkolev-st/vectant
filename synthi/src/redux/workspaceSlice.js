@@ -211,6 +211,19 @@ export const selectFileThunk = createAsyncThunk(
 
             loadScheduler.prefetch(slug, Array.from(medium.values()), { priority: 'medium' });
 
+            // Prefetch direct imports from server-side import index
+            try {
+                const importRes = await api.fetchFileImports(slug, targetPath);
+                const importPaths = Array.isArray(importRes?.resolved) ? importRes.resolved : [];
+                const MAX_IMPORT_PREFETCH = 50;
+                const uniqueImports = Array.from(new Set(importPaths)).slice(0, MAX_IMPORT_PREFETCH);
+                if (uniqueImports.length) {
+                    loadScheduler.prefetch(slug, uniqueImports, { priority: 'high' });
+                }
+            } catch (_) {
+                // ignore
+            }
+
             // Lowest priority crawl pool (remaining files)
             loadScheduler.setLowPriorityPool(slug, all.map(n => n.path).filter(p => p && p !== targetPath));
         } catch (e) {
@@ -272,6 +285,16 @@ export const handleCreateItemThunk = createAsyncThunk(
             // Don't throw - item was still created in GCS, just may not appear until refresh
         }
         
+        // ── Sync new file/folder to worker disk for LSP cross-file resolution ──
+        try {
+            const client = getCompilerClient();
+            if (isFolder) {
+                client.mkdirSync(fullPath);
+            } else {
+                client.syncFile(fullPath, '');
+            }
+        } catch (_) { /* best-effort */ }
+        
         // Dispatch cleanup and revalidation
         dispatch(cancelUiAction());
         await dispatch(fetchFilesThunk(slug));
@@ -314,6 +337,11 @@ export const handleRenameItemThunk = createAsyncThunk(
         // Perform complex state update in reducer/sync action
         dispatch(renameItemStateUpdate({ item, newName, newPath }));
         
+        // ── Sync rename to worker disk so LSP sees the new path ──
+        try {
+            getCompilerClient().renameFile(item.path, newPath);
+        } catch (_) { /* best-effort */ }
+        
         dispatch(cancelUiAction());
         await dispatch(fetchFilesThunk(slug));
     }
@@ -336,6 +364,11 @@ export const deleteItemThunk = createAsyncThunk(
         const itemPath = getItemPathInBucket(item);
 
         await api.deleteItem(state.slug, itemPath);
+        
+        // ── Sync deletion to worker disk so LSP stops indexing the file ──
+        try {
+            getCompilerClient().deleteFile(item.path);
+        } catch (_) { /* best-effort */ }
         
         await dispatch(fetchFilesThunk(state.slug));
         
@@ -380,19 +413,23 @@ const workspaceSlice = createSlice({
         // Synchronous reducers for quick state updates
         updateContent: (state, action) => {
             const newContent = action.payload || '';
+            // P0: Skip entirely if content hasn't changed — prevents redundant
+            // re-renders of every component subscribed to currentContent
+            if (state.currentContent === newContent) return;
             state.currentContent = newContent;
-            // ALWAYS update cache on edit to ensure related file analysis has fresh content
             try {
                 if (state.activeFile && state.activeFile.path) {
                     state.fileContentCache.set(state.activeFile.path, newContent);
                     const activePath = state.activeFile.path;
                     // Normalize trailing newlines for comparison to prevent false unsaved states from Yjs sync
-                    // Only strip newlines, not spaces/tabs, so whitespace changes are still detected
                     const normalizeTrailing = (s) => s ? s.replace(/[\r\n]+$/, '') : '';
                     const isUnsaved = normalizeTrailing(newContent) !== normalizeTrailing(state.savedContent);
                     const idx = state.openFiles.findIndex(f => f.path === activePath);
                     if (idx !== -1) {
-                        state.openFiles[idx] = { ...state.openFiles[idx], isUnsaved };
+                        // P0: Only create a new object if isUnsaved actually changed
+                        if (state.openFiles[idx].isUnsaved !== isUnsaved) {
+                            state.openFiles[idx] = { ...state.openFiles[idx], isUnsaved };
+                        }
                     }
                 }
             } catch (e) { /* ignore */ }

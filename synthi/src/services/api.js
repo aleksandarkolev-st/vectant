@@ -23,11 +23,23 @@ function languageFromExtension(ext) {
 }
 
 function buildTreeFromFlatMeta(flatFiles) {
+    const ignoredPrefixes = [
+        '.git/',
+        'node_modules/',
+        '.next/',
+        'dist/',
+        'build/',
+        'out/',
+        '.cache/',
+        '.turbo/',
+        '.code_intel/',
+    ];
     const root = { name: 'root', isFolder: true, children: [], path: '' };
     const files = Array.isArray(flatFiles) ? flatFiles : [];
 
     for (const f of files) {
         const relPath = String(f.path || '').replace(/\\/g, '/');
+        if (ignoredPrefixes.some((prefix) => relPath.startsWith(prefix))) continue;
         if (!relPath) continue;
         const parts = relPath.split('/').filter(Boolean);
         let currentNode = root;
@@ -171,6 +183,17 @@ export class ApiClient {
 
         const response = await fetch(`${this.baseUrl}/${slug}/item?filePath=${encodeURIComponent(filePath)}`, { signal: options.signal });
         return this._handleResponse(response).then(r => r.text());
+    }
+
+    async fetchFileImports(slug, filePath, options = {}) {
+        try {
+            const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
+            const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/imports?path=${encodeURIComponent(filePath)}`, { signal: options.signal });
+            if (res.ok) return await res.json();
+        } catch (_) {
+            // fall back
+        }
+        return { status: 'error', file: filePath, imports: [], resolved: [] };
     }
 
     // READ (Storage only; skips collab server)

@@ -1,26 +1,22 @@
 use anyhow::{Context, Result};
+use tokio::process::Command;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::mpsc;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
-use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
-use tokio::sync::mpsc;
-use webrtc::rtp::packet::Packet;
-use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType};
+use std::collections::HashMap;
+use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
-use webrtc::util::Unmarshal;
 
 use crate::compiler::builder::ModuleHashes;
 use crate::compiler::context::CompileContext;
 use crate::infra::constants::GUI_TOOLS;
 use crate::infra::messages::CompileRequest;
-use crate::infra::observability::{LogEntry, LogLevel, ReloadId, ReloadMetricsTracker};
-use crate::infra::utils::system_command;
-use crate::runtime::capability::{detect_capabilities, HmrStatus as CapabilityHmrStatus};
+use crate::infra::observability::{ReloadId};
 use crate::runtime::runner_state::RunnerState; // Aliasing if needed, or check definition
 
 pub async fn handle_runner_execution(
@@ -32,10 +28,10 @@ pub async fn handle_runner_execution(
     new_hashes: ModuleHashes,
     core_lib_path: String,
     gui_lib_path: String,
-    timestamp: i64,
-    compile_start: std::time::Instant,
-    reload_id: ReloadId,
-    module_id: String,
+    _timestamp: i64,
+    _compile_start: std::time::Instant,
+    _reload_id: ReloadId,
+    _module_id: String,
     session_id: Option<String>,
 ) -> Result<()> {
     // Unified Runner Logic
@@ -120,11 +116,12 @@ pub async fn handle_runner_execution(
             audio_track_opt = state.audio_track;
         } else {
             println!("Full restart (resolution/GUI mode changed)...");
-            if let Some(mut child) = state.xvfb_process {
-                let _ = child.kill().await;
-            }
+            // Stop GStreamer BEFORE killing Xvfb to avoid capture-from-dead-display crashes
             if let Some(pipeline) = state.gst_pipeline {
                 let _ = pipeline.set_state(gst::State::Null);
+            }
+            if let Some(mut child) = state.xvfb_process {
+                let _ = child.kill().await;
             }
         }
     }
@@ -138,8 +135,8 @@ pub async fn handle_runner_execution(
         let mut gst_display_str = reused_gst_display;
         let mut xvfb_process: Option<tokio::process::Child> = reused_xvfb;
         let mut gst_pipeline: Option<gst::Pipeline> = reused_pipeline;
-        let mut sdl_tx_opt: Option<mpsc::UnboundedSender<String>> = reused_sdl_tx;
-        let mut video_src_opt: Option<gst_app::AppSrc> = None;
+        let sdl_tx_opt: Option<mpsc::UnboundedSender<String>> = reused_sdl_tx;
+        let _video_src_opt: Option<gst_app::AppSrc> = None;
 
         if req.is_gui {
             let width = req_width;
@@ -225,8 +222,8 @@ pub async fn handle_runner_execution(
             let mut selected_mime_type = "video/H264".to_owned();
             let mut encoder_idx = 0;
             let mut pipeline = None;
-            let width = req_width;
-            let height = req_height;
+            let _width = req_width;
+            let _height = req_height;
 
             while encoder_idx < encoders.len() {
                 let (encoder, payloader, mime_type) = encoders[encoder_idx];
@@ -416,14 +413,17 @@ pub async fn handle_runner_execution(
 
         let mut cmd = Command::new(runner_path);
         cmd.env("DISPLAY", &wsl_display_str)
-            .env(
-                "LD_LIBRARY_PATH",
-                std::env::var("LD_LIBRARY_PATH").unwrap_or_default(),
-            )
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+           .env("LD_LIBRARY_PATH", std::env::var("LD_LIBRARY_PATH").unwrap_or_default())
+           // The worker already manages Xvfb, GStreamer, and video streaming.
+           // The runner only needs to load .so modules and execute them in-process.
+           // ProcessIsolated mode spawns a supervisor + child that conflicts with
+           // the worker's own Xvfb on :99 and uses binary IPC instead of the text
+           // protocol the worker sends.
+           .env("SYNTHI_UNSAFE_INPROCESS", "1")
+           .stdin(Stdio::piped())
+           .stdout(Stdio::piped())
+           .stderr(Stdio::piped())
+           .kill_on_drop(true);
 
         if let Some(sid) = &session_id {
             cmd.env("SYNTHI_SESSION_ID", sid);
@@ -476,6 +476,7 @@ pub async fn handle_runner_execution(
             while let Ok(line) = reader.next_line().await {
                 match line {
                     Some(l) => {
+                        eprintln!("[Runner Stderr] {}", l);
                         let _ = log_tx_clone2.send(l.clone());
                         // Send to frontend
                         let payload = serde_json::json!({
@@ -502,12 +503,12 @@ pub async fn handle_runner_execution(
             hmr_capability: None,
             xvfb_process,
             gst_pipeline,
-            sdl_tx: sdl_tx_opt,
+            sdl_tx: sdl_tx_opt.clone(),
             video_track: video_track_opt,
             audio_track: audio_track_opt,
             width: req_width,
             height: req_height,
-            wsl_display_str,
+            wsl_display_str: wsl_display_str.clone(),
             gst_display_str,
             module_hashes: ModuleHashes::new(),
             loaded_core_path: None,
@@ -515,39 +516,141 @@ pub async fn handle_runner_execution(
             loaded_widget_paths: HashMap::new(),
             widget_hashes: HashMap::new(),
         });
+
+        // Set up xdotool input channel for GUI apps (only on fresh start, not reuse)
+        if req.is_gui && sdl_tx_opt.is_none() {
+            if let Some(ref sid) = session_id {
+                let (input_tx, mut input_rx) = mpsc::unbounded_channel::<String>();
+
+                // Store sender in RunnerState
+                if let Some(state) = guard.as_mut() {
+                    state.sdl_tx = Some(input_tx.clone());
+                }
+
+                // Register in sdl_input_store so terminal handler can route events
+                {
+                    let mut sdl_guard = ctx.sdl_input_store.lock().await;
+                    sdl_guard.insert(sid.clone(), input_tx);
+                }
+
+                // Spawn xdotool command executor
+                let display_for_xdotool = wsl_display_str.clone();
+                tokio::spawn(async move {
+                    while let Some(cmd) = input_rx.recv().await {
+                        // Split command into program args for xdotool
+                        let parts: Vec<&str> = cmd.split_whitespace().collect();
+                        if parts.is_empty() {
+                            continue;
+                        }
+                        let result = tokio::process::Command::new("xdotool")
+                            .args(&parts)
+                            .env("DISPLAY", &display_for_xdotool)
+                            .output()
+                            .await;
+                        if let Err(e) = result {
+                            eprintln!("[xdotool] Failed to run '{}': {}", cmd, e);
+                        }
+                    }
+                    eprintln!("[xdotool] Input channel closed");
+                });
+
+                println!("[Main] xdotool input channel registered for session {}", sid);
+            }
+        } else if req.is_gui {
+            // Reusing existing sdl_tx - re-register it in the store
+            if let Some(ref sid) = session_id {
+                if let Some(state) = guard.as_ref() {
+                    if let Some(tx) = &state.sdl_tx {
+                        let mut sdl_guard = ctx.sdl_input_store.lock().await;
+                        sdl_guard.insert(sid.clone(), tx.clone());
+                    }
+                }
+            }
+        }
     }
 
     if let Some(state) = guard.as_mut() {
         if !existing_runner_can_hmr {
+            // Replace tracks on pre-allocated transceivers instead of adding new ones
+            let transceivers = ctx.pc.get_transceivers().await;
             if let Some(track) = &state.video_track {
-                println!("[Main] Adding video track to PeerConnection");
-                let _ = ctx
-                    .pc
-                    .add_track(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>)
-                    .await?;
+                println!("[Main] Replacing video track on transceiver");
+                for t in &transceivers {
+                    if t.kind() == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video {
+                        match t.sender().await.replace_track(Some(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>)).await {
+                            Ok(_) => println!("[Main] Video track replaced successfully"),
+                            Err(e) => eprintln!("[Main] ERROR replacing video track: {:?}", e),
+                        }
+                        break;
+                    }
+                }
             }
             if let Some(track) = &state.audio_track {
-                println!("[Main] Adding audio track to PeerConnection");
-                let _ = ctx
-                    .pc
-                    .add_track(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>)
-                    .await?;
+                println!("[Main] Replacing audio track on transceiver");
+                for t in &transceivers {
+                    if t.kind() == webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Audio {
+                        match t.sender().await.replace_track(Some(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>)).await {
+                            Ok(_) => println!("[Main] Audio track replaced successfully"),
+                            Err(e) => eprintln!("[Main] ERROR replacing audio track: {:?}", e),
+                        }
+                        break;
+                    }
+                }
             }
+
+            // Signal the frontend to show the GUI widget
+            let gui_start = serde_json::json!({
+                "type": "run-gui-start",
+                "sessionId": session_id,
+                "width": state.width,
+                "height": state.height,
+            });
+            let _ = ctx.log_dc.send_text(gui_start.to_string()).await;
         }
 
-        // Load Modules
-        for (name, path) in &modules_to_load {
-            if let Some(stdin) = state.stdin.as_mut() {
-                let cmd = format!("load {} {}\n", name, path);
-                println!("[Main] Sending command to runner: {}", cmd.trim());
-                if let Err(e) = stdin.write_all(cmd.as_bytes()).await {
-                    eprintln!("Failed to write to runner stdin: {}", e);
+        // ============================================================
+        // SEND SESSION + LOAD COMMANDS (BATCHED)
+        // ============================================================
+        // We send all commands back-to-back and flush once.  The runner's
+        // main loop uses try_recv() to drain ALL pending commands before
+        // the next render frame, so batching ensures atomic multi-module
+        // swap: no intermediate frame where new core state is rendered
+        // by old GUI code (which would read corrupt data).
+        // ============================================================
+        if let Some(stdin) = state.stdin.as_mut() {
+            // Check if process is still alive before sending anything
+            let mut process_alive = true;
+            if let Some(child) = state.process.as_mut() {
+                if let Ok(Some(status)) = child.try_wait() {
+                    eprintln!("[Main] Runner process has already exited with status: {}", status);
+                    process_alive = false;
                 }
+            }
+
+            if process_alive {
+                // Send set_session first (required for Host KV support).
+                // The runner needs the session ID before any module load
+                // so modules can read/write persistent key-value state.
+                if let Some(ref sid) = session_id {
+                    let session_cmd = format!("set_session {}\n", sid);
+                    eprintln!("[Main] Sending session to runner: {}", session_cmd.trim());
+                    let _ = stdin.write_all(session_cmd.as_bytes()).await;
+                }
+
+                // Send all load commands back-to-back (no sleep between them)
+                for (name, path) in &modules_to_load {
+                    let cmd = format!("load {} {}\n", name, path);
+                    println!("[Main] Sending command to runner: {}", cmd.trim());
+                    if let Err(e) = stdin.write_all(cmd.as_bytes()).await {
+                        eprintln!("Failed to write to runner stdin: {}", e);
+                        break;
+                    }
+                }
+
+                // Single flush pushes all commands at once
                 if let Err(e) = stdin.flush().await {
                     eprintln!("Failed to flush runner stdin: {}", e);
                 }
-                // Give it a moment to load
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             }
         }
 

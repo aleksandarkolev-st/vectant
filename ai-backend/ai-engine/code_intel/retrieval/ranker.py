@@ -57,6 +57,10 @@ class RankingFactors:
     
     # Graph-based
     graph_distance: float = 0.0  # Proximity to initial results
+    causal_distance: float = 0.0  # Causal distance along call/data-flow graph
+
+    # Spec alignment
+    spec_alignment: float = 0.0  # Alignment with specs/docs/tests
     
     # Importance
     file_importance: float = 0.0  # Entry point vs utility
@@ -69,6 +73,9 @@ class RankingFactors:
     
     # Namespace proximity
     namespace_bonus: float = 0.0  # Same package/dependency
+
+    # Recency
+    recency_boost: float = 0.0  # Recently edited files
     
     # Final
     final_score: float = 0.0
@@ -100,12 +107,15 @@ class ContextRanker:
     
     # Ranking weights for ADDITIVE scoring (sum to 1.0)
     WEIGHTS = {
-        "semantic_relevance": 0.35,
-        "symbol_match": 0.15,
-        "graph_distance": 0.20,  # Increased - graph proximity matters
-        "file_importance": 0.10,
-        "public_api_bonus": 0.10,
-        "namespace_bonus": 0.10,  # New: namespace proximity
+        "semantic_relevance": 0.30,
+        "symbol_match": 0.14,
+        "graph_distance": 0.14,  # Increased - graph proximity matters
+        "causal_distance": 0.08,
+        "file_importance": 0.08,
+        "public_api_bonus": 0.08,
+        "namespace_bonus": 0.06,
+        "spec_alignment": 0.06,
+        "recency_boost": 0.06,
     }
     
     # Penalty weights (subtracted)
@@ -197,6 +207,14 @@ class ContextRanker:
         # 3. Graph distance (linear decay instead of multiplicative)
         # 0 depth = 1.0, each hop reduces by 0.15
         factors.graph_distance = max(0.0, 1.0 - candidate.expansion_depth * 0.15)
+
+        # 3b. Causal distance (call/data-flow)
+        if hasattr(candidate, "causal_distance") and candidate.causal_distance is not None:
+            factors.causal_distance = 1.0 / (1.0 + max(0.0, float(candidate.causal_distance)))
+
+        # 3c. Spec alignment
+        if hasattr(candidate, "spec_alignment") and candidate.spec_alignment is not None:
+            factors.spec_alignment = float(candidate.spec_alignment)
         
         # 4. File importance
         if chunk.file_path in file_importance_map:
@@ -216,6 +234,10 @@ class ContextRanker:
         factors.namespace_bonus = self._compute_namespace_bonus(
             chunk, query_context
         )
+
+        # 6b. Recency boost (edits-aware)
+        if hasattr(candidate, "recency_score") and candidate.recency_score is not None:
+            factors.recency_boost = float(candidate.recency_score)
         
         # 7. Test penalty
         if chunk.metadata and chunk.metadata.is_test:
@@ -445,14 +467,21 @@ class ContextRanker:
         public = max(0.0, min(1.0, factors.public_api_bonus))
         namespace = max(0.0, min(1.0, factors.namespace_bonus))
         
+        causal = max(0.0, min(1.0, factors.causal_distance))
+        spec = max(0.0, min(1.0, factors.spec_alignment))
+        recency = max(0.0, min(1.0, factors.recency_boost))
+
         # Additive combination of normalized factors
         score = 0.0
         score += self.WEIGHTS["semantic_relevance"] * semantic
         score += self.WEIGHTS["symbol_match"] * symbol
         score += self.WEIGHTS["graph_distance"] * graph
+        score += self.WEIGHTS["causal_distance"] * causal
         score += self.WEIGHTS["file_importance"] * file_imp
         score += self.WEIGHTS["public_api_bonus"] * public
         score += self.WEIGHTS["namespace_bonus"] * namespace
+        score += self.WEIGHTS["spec_alignment"] * spec
+        score += self.WEIGHTS["recency_boost"] * recency
         
         # Subtract normalized penalties
         test_pen = max(0.0, min(1.0, factors.test_penalty))
