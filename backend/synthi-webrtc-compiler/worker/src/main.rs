@@ -4385,26 +4385,43 @@ fn ensure_lsp_config(workspace: &std::path::Path, lang: &str) {
             if has_cargo {
                 let cargo_toml = workspace.join("Cargo.toml");
                 if !cargo_toml.exists() {
-                    let bin_name = std::fs::read_dir(workspace)
+                    // Collect ALL .rs files so rust-analyzer indexes everything
+                    let mut rs_files: Vec<String> = std::fs::read_dir(workspace)
                         .ok()
-                        .and_then(|entries| {
+                        .map(|entries| {
                             entries.flatten()
-                                .find(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
-                                .map(|e| e.file_name().to_string_lossy().trim_end_matches(".rs").to_string())
+                                .filter(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
+                                .map(|e| e.file_name().to_string_lossy().to_string())
+                                .collect()
                         })
-                        .unwrap_or_else(|| "main".to_string());
+                        .unwrap_or_else(|| vec!["main.rs".to_string()]);
+
+                    if rs_files.is_empty() {
+                        rs_files.push("main.rs".to_string());
+                    }
+
+                    // Sort so main.rs comes first (if present)
+                    rs_files.sort_by(|a, b| {
+                        if a == "main.rs" { std::cmp::Ordering::Less }
+                        else if b == "main.rs" { std::cmp::Ordering::Greater }
+                        else { a.cmp(b) }
+                    });
 
                     if let Ok(mut f) = std::fs::File::create(&cargo_toml) {
                         let _ = write!(f, r#"[package]
 name = "synthi-workspace"
 version = "0.1.0"
 edition = "2021"
-
+"#);
+                        for rs_file in &rs_files {
+                            let bin_name = rs_file.trim_end_matches(".rs");
+                            let _ = write!(f, r#"
 [[bin]]
 name = "{}"
-path = "{}.rs"
-"#, bin_name, bin_name);
-                        println!("[LSP-CONFIG] Created Cargo.toml for standalone Rust workspace");
+path = "{}"
+"#, bin_name, rs_file);
+                        }
+                        println!("[LSP-CONFIG] Created Cargo.toml with {} bin targets for standalone Rust workspace", rs_files.len());
                     }
                 }
             } else {
@@ -4412,6 +4429,16 @@ path = "{}.rs"
                 // This lets RA provide completions, hover, go-to-def without cargo.
                 let rp_json = workspace.join("rust-project.json");
                 if !rp_json.exists() {
+                    // Try to install rust-src via rustup first — this is needed
+                    // for rust-analyzer to resolve stdlib types (Vec, String, etc.).
+                    // If rustup isn't available or rust-src is already installed,
+                    // this is a harmless no-op.
+                    let _ = std::process::Command::new("rustup")
+                        .args(["component", "add", "rust-src"])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+
                     // Try to find sysroot_src from rustc.
                     // Check multiple known locations — system rustc (apt) installs
                     // rust-src to different paths than rustup.

@@ -56,12 +56,16 @@ export const EDITOR_OPTIONS = {
         comments: false,
         strings: false
     },
+    wordBasedSuggestions: 'currentDocument', // Fallback: suggest words from current file
+    suggestOnTriggerCharacters: true, // Ensure :: . ( etc. trigger completions
+    acceptSuggestionOnCommitCharacter: true, // Accept suggestion on . ( etc.
     suggest: {
         snippetsPreventQuickSuggestions: false,
         showIcons: true,
         showStatusBar: true,
         preview: true,
-        previewMode: 'subwordSmart'
+        previewMode: 'subwordSmart',
+        filterGraceful: true, // Fuzzy matching for better results after ::
     },
     semanticHighlighting: { enabled: true },
     // Focus ring color
