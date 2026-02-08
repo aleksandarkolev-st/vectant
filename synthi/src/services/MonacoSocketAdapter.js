@@ -7,6 +7,15 @@
  * `dataChannel.onmessage`, etc. directly — those are owned by this
  * adapter.  Instead, use the `waitUntilOpen()` helper or listen to
  * the adapter-level `onopen` property.
+ *
+ * NOTE: `toSocket()` from vscode-ws-jsonrpc sets `onmessage`, `onerror`,
+ * and `onclose` expecting a standard WebSocket event signature:
+ *   - onmessage receives { data }           → _processMessage already wraps this
+ *   - onerror  receives an Event with .message → we synthesize a compatible object
+ *   - onclose  receives an Event with .code/.reason → we synthesize a compatible object
+ * If these contracts are violated, WebSocketMessageReader never fires
+ * close/error events, vscode-jsonrpc never learns the transport died,
+ * and every pending + future request promise hangs forever.
  */
 export class MonacoSocketAdapter {
     constructor(dataChannel) {
@@ -88,12 +97,31 @@ export class MonacoSocketAdapter {
         };
 
         this.dataChannel.onerror = (error) => {
-            if (this.onerror) this.onerror(error);
+            // FIX: toSocket()'s onError handler expects an Event-like object
+            // and checks `Object.hasOwn(event, 'message')`.  RTCDataChannel
+            // error events may be an RTCErrorEvent or a plain Event — neither
+            // of which reliably has an own `message` property.  Wrap it so
+            // the WebSocketMessageReader always receives the error.
+            const errorEvent = {
+                message: error?.error?.message
+                    || error?.message
+                    || (typeof error === 'string' ? error : 'RTCDataChannel error'),
+            };
+            if (this.onerror) this.onerror(errorEvent);
         };
 
         this.dataChannel.onclose = () => {
+            console.warn('[MonacoSocketAdapter] Channel closed');
             this.readyState = 3;
-            if (this.onclose) this.onclose();
+            // FIX: toSocket()'s onClose handler destructures `event.code` and
+            // `event.reason`.  Calling this.onclose() with no arguments caused
+            // a TypeError — WebSocketMessageReader never learned the transport
+            // died, so vscode-jsonrpc never transitioned to CLOSED state and
+            // every subsequent request promise hung forever.
+            // Synthesize a WebSocket-compatible CloseEvent.
+            if (this.onclose) {
+                this.onclose({ code: 1006, reason: 'RTCDataChannel closed' });
+            }
         };
     }
 
@@ -144,16 +172,38 @@ export class MonacoSocketAdapter {
 
     send(data) {
         if (this.readyState === 1) {
+            // FIX: Wrap dataChannel.send() in try/catch.  If the channel is
+            // in a transitional state (e.g. closing), send() throws.  We must
+            // let the error propagate so WebSocketMessageWriter.write() sees
+            // it and fires an error event, AND so vscode-jsonrpc's sendRequest
+            // catch-block rejects the response promise instead of registering
+            // an orphaned promise that hangs forever.
+            //
+            // Also check the actual DC state — the adapter's readyState can
+            // lag behind the real channel state by one microtask.
+            if (this.dataChannel.readyState !== 'open') {
+                this.readyState = (this.dataChannel.readyState === 'closing' || this.dataChannel.readyState === 'closed') ? 3 : 0;
+                throw new Error(`RTCDataChannel is ${this.dataChannel.readyState}, cannot send`);
+            }
             this.dataChannel.send(data);
         } else {
-            this.messageQueue.push(data);
+            // Channel not open — throw so the caller knows the message
+            // was NOT sent.  Silent queueing causes orphaned promises in
+            // vscode-jsonrpc that hang every LSP feature forever.
+            throw new Error(`MonacoSocketAdapter not open (readyState=${this.readyState}), cannot send`);
         }
     }
 
     _flushQueue() {
         while (this.messageQueue.length > 0) {
             const msg = this.messageQueue.shift();
-            this.send(msg);
+            try {
+                this.send(msg);
+            } catch (e) {
+                console.warn('[MonacoSocketAdapter] Failed to flush queued message:', e.message);
+                // Re-queue remaining messages and stop — channel may have died
+                break;
+            }
         }
     }
 

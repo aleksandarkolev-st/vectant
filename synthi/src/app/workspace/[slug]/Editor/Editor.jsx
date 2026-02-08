@@ -545,9 +545,80 @@ const EditorPanel = ({
         // The adapter owns ALL dataChannel event handlers (onopen, onmessage,
         // onerror, onclose).  External code must NEVER overwrite them directly.
         adapter = new MonacoSocketAdapter(lspChannel);
-        const socket = toSocket(adapter);
+        const rawSocket = toSocket(adapter);
+
+        // ── Smart socket wrapper ──────────────────────────────────
+        // Track outgoing request IDs and incoming response IDs so we
+        // can suppress $/cancelRequest notifications for requests the
+        // server already completed.  Without this, the cancel/response
+        // race condition causes lsp4j to log "Unmatched cancel
+        // notification" and — in some servers like Eclipse JDT.LS —
+        // can corrupt internal request tracking, breaking all
+        // subsequent LSP features (completion, hover, diagnostics).
+        const _completedRequestIds = new Set();
+        const _pendingRequestIds = new Set();
+        let _cancelFilterStats = { filtered: 0, passed: 0 };
+        const socket = {
+            send: (content) => {
+                try {
+                    const msg = JSON.parse(content);
+                    // Track outgoing requests (has both id AND method)
+                    if (msg.id !== undefined && msg.method && msg.method !== '$/cancelRequest') {
+                        _pendingRequestIds.add(msg.id);
+                    }
+                    // Filter $/cancelRequest for already-completed requests
+                    if (msg.method === '$/cancelRequest' && msg.params?.id !== undefined) {
+                        const cancelId = msg.params.id;
+                        if (_completedRequestIds.has(cancelId)) {
+                            _completedRequestIds.delete(cancelId);
+                            _pendingRequestIds.delete(cancelId);
+                            _cancelFilterStats.filtered++;
+                            console.debug(`[LSP] Suppressed stale $/cancelRequest for completed request ${cancelId} (${_cancelFilterStats.filtered} filtered total)`);
+                            return;
+                        }
+                    }
+                } catch (_e) { /* not JSON, pass through */ }
+                rawSocket.send(content);
+            },
+            onMessage: (cb) => {
+                rawSocket.onMessage((data) => {
+                    try {
+                        const msg = JSON.parse(data);
+                        // Track incoming responses (has id but NO method)
+                        if (msg.id !== undefined && !msg.method) {
+                            _pendingRequestIds.delete(msg.id);
+                            _completedRequestIds.add(msg.id);
+                            // Bound memory — keep only the last 500 IDs
+                            if (_completedRequestIds.size > 500) {
+                                const iter = _completedRequestIds.values();
+                                for (let i = 0; i < 250; i++) {
+                                    _completedRequestIds.delete(iter.next().value);
+                                }
+                            }
+                        }
+                    } catch (_e) { /* not JSON, pass through */ }
+                    cb(data);
+                });
+            },
+            onError: rawSocket.onError.bind(rawSocket),
+            onClose: rawSocket.onClose.bind(rawSocket),
+            dispose: rawSocket.dispose.bind(rawSocket),
+        };
         const reader = new WebSocketMessageReader(socket);
         const writer = new WebSocketMessageWriter(socket);
+
+        // FIX: Monitor reader/writer errors so we know when the transport
+        // dies.  Without this, silent send failures create orphaned promises
+        // in vscode-jsonrpc that hang every LSP feature.
+        reader.onError((error) => {
+            console.error(`[LSP] Reader error for ${backendLang}:`, error);
+        });
+        writer.onError(([error]) => {
+            console.error(`[LSP] Writer error for ${backendLang}:`, error);
+        });
+        reader.onClose(() => {
+            console.warn(`[LSP] Reader closed for ${backendLang} — transport is dead`);
+        });
 
         Promise.all([
             import('monaco-languageclient'),
@@ -580,6 +651,9 @@ const EditorPanel = ({
             // can send a manual fallback if @codingame/monaco-vscode-api's
             // TextDocument wrapper cached a stale languageId.
             const autoDidOpenUris = new Set();
+
+            // Track consecutive completion failures to trigger document re-sync
+            let completionFailCount = 0;
 
             // Build a robust documentSelector that matches BOTH by language
             // AND by file pattern.  This is critical because @codingame/monaco-
@@ -620,11 +694,65 @@ const EditorPanel = ({
                         },
                         // P0: Let monaco-languageclient's built-in bridge handle completions
                         // for better isIncomplete handling and fewer edge cases.
-                        provideCompletionItem: (document, position, context, token, next) => {
-                            return next(document, position, context, token);
+                        // FIX: Wrap in error recovery to prevent a single failed
+                        // completion from permanently breaking the completion provider.
+                        // We do NOT add a client-side timeout — Java/JDT.LS can
+                        // legitimately take 15-30s on the first completion while
+                        // indexing.  Monaco's own CancellationToken (fired when the
+                        // user types more) drives the lifecycle instead.
+                        provideCompletionItem: async (document, position, context, token, next) => {
+                            try {
+                                const result = await next(document, position, context, token);
+                                // Reset failure counter on success
+                                completionFailCount = 0;
+                                return result;
+                            } catch (err) {
+                                // Don't log noise for normal cancellations
+                                const msg = err?.message || String(err);
+                                if (msg === 'Canceled' || msg === 'cancelled' || err?.code === -32800) {
+                                    return undefined;
+                                }
+                                completionFailCount++;
+                                console.warn(`[LSP] Completion error #${completionFailCount} for ${backendLang}:`, msg);
+                                // After 3 consecutive non-cancellation failures, force a
+                                // document re-sync to recover from server-side document
+                                // state divergence (e.g. a lost didChange over WebRTC).
+                                if (completionFailCount >= 3 && languageClient.isRunning()) {
+                                    completionFailCount = 0;
+                                    const model = editorInstance?.getModel();
+                                    if (model) {
+                                        const uri = model.uri.toString();
+                                        const langId = model.getLanguageId();
+                                        console.warn(`[LSP] Triggering document re-sync for ${uri} (${backendLang})`);
+                                        try {
+                                            languageClient.sendNotification('textDocument/didClose', {
+                                                textDocument: { uri }
+                                            });
+                                            languageClient.sendNotification('textDocument/didOpen', {
+                                                textDocument: {
+                                                    uri,
+                                                    languageId: langId,
+                                                    version: model.getVersionId?.() ?? 1,
+                                                    text: model.getValue(),
+                                                }
+                                            });
+                                        } catch (syncErr) {
+                                            console.error(`[LSP] Document re-sync failed:`, syncErr);
+                                        }
+                                    }
+                                }
+                                return undefined;
+                            }
                         },
-                        resolveCompletionItem: (item, token, next) => {
-                            return next(item, token);
+                        resolveCompletionItem: async (item, token, next) => {
+                            try {
+                                return await next(item, token);
+                            } catch (err) {
+                                // Return the unresolved item rather than failing —
+                                // the user still gets the completion, just without
+                                // extra documentation/detail.
+                                return item;
+                            }
                         }
                     },
                     errorHandler: {
@@ -1015,17 +1143,21 @@ const EditorPanel = ({
         };
         window.addEventListener('unhandledrejection', handler);
 
-        // Also patch console.error to suppress "Canceled" logs from libraries
+        // Patch console.error to suppress ONLY the known-harmless "Canceled"
+        // logs from Monaco/vscode-api internals.  The previous filter was too
+        // broad — it swallowed real LSP pipeline errors that happened to
+        // contain the word "Canceled", making transport failures invisible.
         const originalError = console.error;
         console.error = (...args) => {
             if (args.length > 0) {
                 const first = args[0];
-                if (first === 'Canceled' || (typeof first === 'string' && first.includes('Canceled'))) {
-                    return;
-                }
-                if (first?.message === 'Canceled' || first?.name === 'Canceled') {
-                    return;
-                }
+                // Suppress bare "Canceled" strings (Monaco dispose noise)
+                if (first === 'Canceled') return;
+                // Suppress CancellationError objects (vscode-api internals)
+                if (first?.name === 'CancellationError' || (first?.constructor?.name === 'CancellationError')) return;
+                // DO NOT suppress strings that merely *contain* "Canceled"
+                // — those often carry important diagnostic context like
+                // "Response handler 'textDocument/completion' failed: Canceled"
             }
             originalError.apply(console, args);
         };
