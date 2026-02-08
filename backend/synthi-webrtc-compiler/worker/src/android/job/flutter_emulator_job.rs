@@ -28,6 +28,15 @@ use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::track::track_local::TrackLocal;
 use webrtc::stats::StatsReportType;
 
+async fn wait_for_cancel(session_id: &str) {
+    loop {
+        if is_session_cancelled(session_id) {
+            return;
+        }
+        sleep(Duration::from_millis(500)).await;
+    }
+}
+
 use crate::android::emulator::{
     acquire_emulator_daemon, detect_kvm, ensure_emulator_ready, EmulatorConfig, EnsureReadyResult,
     LogcatEntry, LogLevel,
@@ -460,7 +469,7 @@ pub async fn handle_flutter_emulator_job(
         .unwrap_or_else(|_| PathBuf::from("/opt/android-sdk"));
 
     // Start emulator prewarm in background
-    let stream_config = EmulatorStreamConfig::from_env();
+    let mut stream_config = EmulatorStreamConfig::from_env();
     let mut emulator_config = EmulatorConfig::default();
     emulator_config.android_sdk_root = sdk_root.clone();
 
@@ -543,6 +552,7 @@ pub async fn handle_flutter_emulator_job(
     if is_session_cancelled(&session_id) {
         eprintln!("[flutter-job] Session {} cancelled before build", session_id);
         clear_cancelled_session(&session_id);
+        // Do not abort prewarm - let it finish for reuse
         bail!("Session cancelled by user");
     }
 
@@ -631,12 +641,21 @@ pub async fn handle_flutter_emulator_job(
     }
 
     // Execute build
-    let build_result = build_flutter_apk(&build_config, Some(log_callback)).await;
+    let build_result = tokio::select! {
+        res = build_flutter_apk(&build_config, Some(log_callback)) => res,
+        _ = wait_for_cancel(&session_id) => {
+            let _ = build_done_tx.send(true);
+            // Do not abort prewarm - let it finish for reuse
+            anyhow::bail!("Session cancelled by user during build");
+        }
+    };
     let _ = build_done_tx.send(true);
 
     let build_result = build_result.context("Flutter build failed")?;
 
     if !build_result.success {
+        // Do not abort prewarm - user might fix and restart immediately
+        
         let error_summary = {
             let buf = recent_lines.lock().await;
             buf.iter()
@@ -696,10 +715,27 @@ pub async fn handle_flutter_emulator_job(
     )
     .await;
 
-    let emulator_result = emulator_prewarm
-        .await
-        .context("Emulator prewarm task panicked")?
-        .context("Emulator failed to start")?;
+    // Wait for prewarm to complete OR cancel (allowing detach for reuse)
+    tokio::select! {
+        res = emulator_prewarm => {
+            res.context("Emulator prewarm task panicked")??;
+        }
+        _ = wait_for_cancel(&session_id) => {
+             // Detach prewarm (it keeps running)
+             anyhow::bail!("Session cancelled by user during emulator boot");
+        }
+    }
+
+    // Acquire the emulator daemon lock. This ensures we "own" the emulator session.
+    // The lock is held until `daemon` is dropped at the end of the function.
+    let (mut daemon, emulator_result) = tokio::select! {
+        res = acquire_emulator_daemon(emulator_config.clone()) => {
+             res.context("Failed to acquire emulator daemon")?
+        }
+        _ = wait_for_cancel(&session_id) => {
+             anyhow::bail!("Session cancelled by user during emulator boot");
+        }
+    };
 
     send_status(
         &log_dc,
@@ -771,15 +807,13 @@ pub async fn handle_flutter_emulator_job(
             if w > 0 && h > 0 {
                 if w > 720 {
                     // High-res device: request 1/2 scale from the emulator to reduce bandwidth 
-                    // Note: Since stream_config is immutable here (cloned before), we can't update it in place easily
-                    // But we used a local clone earlier? No, it's from arg.
-                    // We need to pass the updated config to stream_frames.
-                    // Let's modify a clone.
-                    // Actually stream_config is from `EmulatorStreamConfig::from_env()`.
-                    // We can clone it.
+                    stream_config.grpc.target_width = Some(w / 2);
+                    stream_config.grpc.target_height = Some(h / 2);
                     app_cfg.width = w / 2;
                     app_cfg.height = h / 2;
                 } else {
+                    stream_config.grpc.target_width = Some(w);
+                    stream_config.grpc.target_height = Some(h);
                     app_cfg.width = w;
                     app_cfg.height = h;
                 }
@@ -798,13 +832,7 @@ pub async fn handle_flutter_emulator_job(
         )
         .await;
 
-        let mut grpc_stream_config = stream_config.grpc.clone();
-        if app_cfg.width > 0 {
-            grpc_stream_config.target_width = Some(app_cfg.width);
-            grpc_stream_config.target_height = Some(app_cfg.height);
-        }
-
-        let mut frame_rx = match emulator_grpc::stream_frames(&grpc_stream_config).await {
+        let frame_rx = match emulator_grpc::stream_frames(&stream_config.grpc).await {
             Ok(rx) => rx,
             Err(e) => {
                 send_log(
@@ -849,145 +877,146 @@ pub async fn handle_flutter_emulator_job(
                 .output().await;
         });
 
-        let log_dc_for_grpc = log_dc.clone();
-        let session_id_for_grpc = session_id.clone();
-        let expected_w = app_cfg.width;
-        let expected_h = app_cfg.height;
-        let expected_format = app_cfg.format.clone();
-        grpc_frame_task = Some(tokio::spawn(async move {
-            let mut frames: u64 = 0;
-            let mut dropped: u64 = 0;
-            let mut last_log = Instant::now();
-            let mut last_frame_at = Instant::now();
-            let mut mismatch_logged = false;
-            let mut last_frame_size: Option<(u32, u32)> = None;
-            let mut interval = tokio::time::interval(Duration::from_secs(5));
-            let mut last_push_buffer: Option<gst::Buffer> = None;
+    let log_dc_for_grpc = log_dc.clone();
+    let session_id_for_grpc = session_id.clone();
+    let expected_w = app_cfg.width;
+    let expected_h = app_cfg.height;
+    let expected_format = app_cfg.format.clone();
+    
+    // We used to have `mut frame_rx` in logic above, but in the `match` block it returns `rx` which is `mpsc::Receiver`.
+    // We need to move it into the spawn.
+    let mut frame_rx_moved = frame_rx;
 
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        let elapsed = last_frame_at.elapsed();
-                        if frames == 0 {
+    grpc_frame_task = Some(tokio::spawn(async move {
+        let mut frames: u64 = 0;
+        let mut dropped: u64 = 0;
+        let mut last_log = Instant::now();
+        let mut last_frame_at = Instant::now();
+        let mut mismatch_logged = false;
+        let mut last_frame_size: Option<(u32, u32)> = None;
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        let mut last_push_buffer: Option<gst::Buffer> = None;
+
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    let elapsed = last_frame_at.elapsed();
+                    if frames == 0 {
+                        send_log(
+                            &log_dc_for_grpc,
+                            &session_id_for_grpc,
+                            "[grpc] no frames received yet (display may be inactive)",
+                            "emulator",
+                        )
+                        .await;
+                    } else if elapsed >= Duration::from_secs(10) {
+                            if elapsed.as_secs() % 30 < 5 {
                             send_log(
                                 &log_dc_for_grpc,
                                 &session_id_for_grpc,
-                                "[grpc] no frames received yet (display may be inactive)",
+                                &format!(
+                                    "[grpc] display idle: last update {}s ago (heartbeat active)",
+                                    elapsed.as_secs()
+                                ),
                                 "emulator",
                             )
                             .await;
-                        } else if elapsed >= Duration::from_secs(10) {
-                             if elapsed.as_secs() % 30 < 5 {
-                                send_log(
-                                    &log_dc_for_grpc,
-                                    &session_id_for_grpc,
-                                    &format!(
-                                        "[grpc] display idle: last update {}s ago (heartbeat active)",
-                                        elapsed.as_secs()
-                                    ),
-                                    "emulator",
-                                )
-                                .await;
-                             }
-                        }
-                    }
-                    _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                        if let Some(buf) = &last_push_buffer {
-                            let _ = appsrc.push_buffer(buf.clone());
-                        }
-                    }
-                    maybe = frame_rx.recv() => {
-                        let Some(frame) = maybe else {
-                            send_log(
-                                &log_dc_for_grpc,
-                                &session_id_for_grpc,
-                                "[grpc] frame stream closed by emulator",
-                                "emulator",
-                            )
-                            .await;
-                            break;
-                        };
-                        frames += 1;
-                        last_frame_at = Instant::now();
-                        
-                        if frame.width > 0 && frame.height > 0 {
-                            let size = (frame.width, frame.height);
-                            if last_frame_size != Some(size) {
-                                emulator_input::update_grpc_frame_size(
-                                    &session_id_for_grpc,
-                                    frame.width,
-                                    frame.height,
-                                );
-                                last_frame_size = Some(size);
                             }
-                        }
-
-                        if !mismatch_logged
-                            && (frame.width != expected_w
-                                || frame.height != expected_h
-                                || frame.format != expected_format)
-                        {
-                            mismatch_logged = true;
-                            send_log(
-                                &log_dc_for_grpc,
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    if let Some(buf) = &last_push_buffer {
+                        let _ = appsrc.push_buffer(buf.clone());
+                    }
+                }
+                maybe = frame_rx_moved.recv() => {
+                    let Some(frame) = maybe else {
+                        send_log(
+                            &log_dc_for_grpc,
+                            &session_id_for_grpc,
+                            "[grpc] frame stream closed by emulator",
+                            "emulator",
+                        )
+                        .await;
+                        break;
+                    };
+                    frames += 1;
+                    last_frame_at = Instant::now();
+                    
+                    if frame.width > 0 && frame.height > 0 {
+                        let size = (frame.width, frame.height);
+                        if last_frame_size != Some(size) {
+                            emulator_input::update_grpc_frame_size(
                                 &session_id_for_grpc,
-                                &format!(
-                                    "[grpc] frame format mismatch: stream={}x{} {} expected={}x{} {}",
-                                    frame.width,
-                                    frame.height,
-                                    frame.format,
-                                    expected_w,
-                                    expected_h,
-                                    expected_format
-                                ),
-                                "emulator",
-                            )
-                            .await;
+                                frame.width,
+                                frame.height,
+                            );
+                            last_frame_size = Some(size);
                         }
+                    }
 
-                        if frame.format != expected_format {
-                            dropped += 1;
-                            continue;
-                        }
+                    if !mismatch_logged
+                        && (frame.width != expected_w
+                            || frame.height != expected_h
+                            || frame.format != expected_format)
+                    {
+                        mismatch_logged = true;
+                        send_log(
+                            &log_dc_for_grpc,
+                            &session_id_for_grpc,
+                            &format!(
+                                "[grpc] frame format mismatch: stream={}x{} {} expected={}x{} {}",
+                                frame.width,
+                                frame.height,
+                                frame.format,
+                                expected_w,
+                                expected_h,
+                                expected_format
+                            ),
+                            "emulator",
+                        )
+                        .await;
+                    }
 
-                        let buffer = gst::Buffer::from_slice(frame.data);
-                        last_push_buffer = Some(buffer.clone());
+                    if frame.format != expected_format {
+                        dropped += 1;
+                        continue;
+                    }
 
-                        if appsrc.push_buffer(buffer).is_err() {
-                            dropped += 1;
-                        }
+                    let buffer = gst::Buffer::from_slice(frame.data);
+                    last_push_buffer = Some(buffer.clone());
 
-                        if last_log.elapsed() >= Duration::from_secs(5) {
-                            send_log(
-                                &log_dc_for_grpc,
-                                &session_id_for_grpc,
-                                &format!(
-                                    "[grpc] frames={} dropped={} expected={}x{} {}",
-                                    frames, dropped, expected_w, expected_h, expected_format
-                                ),
-                                "emulator",
-                            )
-                            .await;
-                            last_log = Instant::now();
-                        }
+                    if appsrc.push_buffer(buffer).is_err() {
+                        dropped += 1;
+                    }
+
+                    if last_log.elapsed() >= Duration::from_secs(5) {
+                        send_log(
+                            &log_dc_for_grpc,
+                            &session_id_for_grpc,
+                            &format!(
+                                "[grpc] frames={} dropped={} expected={}x{} {}",
+                                frames, dropped, expected_w, expected_h, expected_format
+                            ),
+                            "emulator",
+                        )
+                        .await;
+                        last_log = Instant::now();
                     }
                 }
             }
-        }));
+        }
+    }));
 
-        (
-            pipeline,
-            format!(
-                "grpc://{}:{}",
-                stream_config.grpc.host, stream_config.grpc.port
-            ),
-        )
+    (
+        pipeline,
+        format!(
+            "grpc://{}:{}",
+            stream_config.grpc.host, stream_config.grpc.port
+        ),
+    )
     } else {
         // Use the same X11 display as the emulator session.
-        let (mut daemon, _) = acquire_emulator_daemon(emulator_config.clone())
-            .await
-            .context("Failed to acquire emulator daemon for video setup")?;
-
         let session_display = {
              let d = daemon.session_mut().core.x11_display.lock().await.clone();
              d
@@ -1221,7 +1250,26 @@ pub async fn handle_flutter_emulator_job(
     send_log(&log_dc, &session_id, "Waking up device (and disabling sleep)...", "system").await;
     
     // Wait for boot completion before trying to wake/install
-    let _ = wait_for_boot_completion(&adb_path_wake, &serial_wake, &log_dc, &session_id).await;
+    if let Err(_) = tokio::select! {
+        res = wait_for_boot_completion(&adb_path_wake, &serial_wake, &log_dc, &session_id) => res,
+        _ = wait_for_cancel(&session_id) => {
+             // Just break out, subsequent steps will check cancellation
+             Ok(()) 
+        }
+    } {
+        // Log warning but continue
+    }
+
+    if is_session_cancelled(&session_id) {
+        logcat_task.abort();
+        if let Some(task) = &grpc_frame_task { task.abort(); }
+        if let Some(task) = &adaptation_task { task.abort(); }
+        let _ = daemon.session_mut().stop_logcat().await;
+        daemon.release_keepalive().await;
+        emulator_input::unregister_session_sync(&session_id);
+        pipeline.stop();
+        anyhow::bail!("Session cancelled by user");
+    }
 
     // Disable sleep
     let _ = Command::new(&adb_path_wake)
@@ -1246,7 +1294,20 @@ pub async fn handle_flutter_emulator_job(
 
     let device_serial = &emulator_result.serial;
 
-    let install_result = install_apk(&apk_path, device_serial).await;
+    let install_result = tokio::select! {
+        res = install_apk(&apk_path, device_serial) => res,
+        _ = wait_for_cancel(&session_id) => {
+             logcat_task.abort();
+             if let Some(task) = &grpc_frame_task { task.abort(); }
+             if let Some(task) = &adaptation_task { task.abort(); }
+             let _ = daemon.session_mut().stop_logcat().await;
+             daemon.release_keepalive().await;
+             emulator_input::unregister_session_sync(&session_id);
+             pipeline.stop();
+             anyhow::bail!("Session cancelled by user during APK install");
+        }
+    };
+
     if let Err(e) = &install_result {
         send_status(
             &log_dc,
@@ -1286,7 +1347,20 @@ pub async fn handle_flutter_emulator_job(
     )
     .await;
 
-    let launch_result = launch_app(&app_id, device_serial).await;
+    let launch_result = tokio::select! {
+        res = launch_app(&app_id, device_serial) => res,
+        _ = wait_for_cancel(&session_id) => {
+             logcat_task.abort();
+             if let Some(task) = &grpc_frame_task { task.abort(); }
+             if let Some(task) = &adaptation_task { task.abort(); }
+             let _ = daemon.session_mut().stop_logcat().await;
+             daemon.release_keepalive().await;
+             emulator_input::unregister_session_sync(&session_id);
+             pipeline.stop();
+             Err(anyhow::anyhow!("Session cancelled by user"))
+        }
+    };
+    
     if let Err(e) = &launch_result {
         send_log(
             &log_dc,
@@ -1330,7 +1404,7 @@ pub async fn handle_flutter_emulator_job(
     let session_id_for_logcat = session_id.clone();
     let app_id_for_logcat = app_id.clone();
     let device_for_logcat = device_serial.to_string();
-    tokio::spawn(async move {
+    let logcat_task = tokio::spawn(async move {
         if let Err(e) = stream_logcat(
             &log_dc_for_logcat,
             &session_id_for_logcat,
@@ -1362,19 +1436,28 @@ pub async fn handle_flutter_emulator_job(
     loop {
         if is_session_cancelled(&session_id) {
             eprintln!("[flutter-job] Session {} cancelled", session_id);
-            clear_cancelled_session(&session_id);
             break;
         }
         sleep(Duration::from_millis(500)).await;
     }
 
     // Cleanup tasks
+    logcat_task.abort();
     if let Some(task) = grpc_frame_task {
         task.abort();
     }
     if let Some(task) = adaptation_task {
         task.abort();
     }
+
+    // Cleanup emulator state
+    let _ = daemon.session_mut().stop_logcat().await;
+    daemon.release_keepalive().await;
+    emulator_input::unregister_session_sync(&session_id);
+    pipeline.stop();
+
+    // Clear cancelled flag so next session can start fresh
+    clear_cancelled_session(&session_id);
 
     send_status(&log_dc, &session_id, "stopped", "Session ended", None).await;
 
@@ -1416,12 +1499,22 @@ async fn find_flutter_project_root(start_path: &PathBuf, workspace_path: &PathBu
 async fn install_apk(apk_path: &PathBuf, device_serial: &str) -> Result<()> {
     use tokio::process::Command;
 
-    let output = Command::new("adb")
-        .args(["-s", device_serial, "install", "-r", "-t"])
-        .arg(apk_path)
-        .output()
-        .await
-        .context("Failed to run adb install")?;
+    let mut cmd = Command::new("adb");
+    cmd.args(["-s", device_serial, "install", "-r", "-t"])
+       .arg(apk_path);
+
+    // Ensure kill_on_drop behavior if using child handle directly, 
+    // but .output() manages the child. If we drop the future returned by .output(), 
+    // tokio::process::Command usually leaves it running.
+    // To support cancellation, we should spawn and wait.
+    
+    cmd.kill_on_drop(true);
+    // Suppress output unless error
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    
+    let child = cmd.spawn().context("Failed to spawn adb install")?;
+    let output = child.wait_with_output().await.context("Failed to wait for adb install")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1437,8 +1530,8 @@ async fn launch_app(app_id: &str, device_serial: &str) -> Result<()> {
     use tokio::process::Command;
 
     // Use monkey to launch the app (works for most apps)
-    let output = Command::new("adb")
-        .args([
+    let mut cmd = Command::new("adb");
+    cmd.args([
             "-s",
             device_serial,
             "shell",
@@ -1448,8 +1541,10 @@ async fn launch_app(app_id: &str, device_serial: &str) -> Result<()> {
             "-c",
             "android.intent.category.LAUNCHER",
             "1",
-        ])
-        .output()
+        ]);
+    cmd.kill_on_drop(true);
+    
+    let output = cmd.output()
         .await
         .context("Failed to run adb shell monkey")?;
 
