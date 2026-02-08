@@ -210,8 +210,9 @@ fn main() {
     }
 
     // When DISPLAY is pre-set, the worker manages Xvfb, GStreamer, and video
-    // streaming.  The runner only needs to load .so modules — skip creating our
-    // own SDL window / X11 connection / SHM so the user's app window is visible.
+    // streaming.  Skip creating our own Xvfb / X11 connection / SHM since the
+    // worker captures frames via GStreamer ximagesrc.  BUT we still need an SDL
+    // window + renderer so loaded modules can render into the worker's Xvfb.
     #[cfg(target_os = "linux")]
     let worker_managed_display = !std::env::var("DISPLAY").unwrap_or_default().is_empty();
     #[cfg(not(target_os = "linux"))]
@@ -228,7 +229,7 @@ fn main() {
         let root = conn.setup().roots[screen_num].root;
         (c, Some(conn), screen_num, root)
     } else {
-        eprintln!("[Runner] Worker manages display — skipping X11/SDL init");
+        eprintln!("[Runner] Worker manages display — skipping Xvfb/X11/SHM (worker captures via ximagesrc)");
         (None, None, 0, 0u32)
     };
 
@@ -243,13 +244,11 @@ fn main() {
         (0u32, ptr::null_mut())
     };
 
-    // Initialize SDL2 only when runner owns the display
+    // Always init SDL2 — modules need a renderer to draw into.
+    // When worker manages display, the SDL window renders into the worker's Xvfb
+    // and the worker's GStreamer ximagesrc captures it automatically.
     #[cfg(target_os = "linux")]
-    let (window, renderer) = if !worker_managed_display {
-        unsafe { init_sdl() }
-    } else {
-        (ptr::null_mut(), ptr::null_mut())
-    };
+    let (window, renderer) = unsafe { init_sdl() };
 
     #[cfg(target_os = "linux")]
     let _sdl_texture = unsafe {
