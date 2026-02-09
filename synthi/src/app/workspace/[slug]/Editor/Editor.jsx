@@ -1262,9 +1262,17 @@ const EditorPanel = ({
                                 };
 
                                 const suggestions = items.map((item, idx) => {
+                                    // Handle both plain string labels and structured
+                                    // CompletionItemLabelDetails ({ label, detail, description })
                                     const label = typeof item.label === 'string'
                                         ? item.label
                                         : item.label?.label || '';
+                                    const labelDetail = typeof item.label === 'object'
+                                        ? item.label?.detail || ''
+                                        : '';
+                                    const labelDescription = typeof item.label === 'object'
+                                        ? item.label?.description || ''
+                                        : '';
 
                                     // Convert LSP documentation to Monaco format
                                     let doc = item.documentation;
@@ -1287,8 +1295,16 @@ const EditorPanel = ({
                                     const serverRange = safeServerRange(item.textEdit);
                                     const range = serverRange || defaultRange;
 
+                                    // Respect the server's filterText — it knows which
+                                    // characters match the typed prefix (e.g. snake_case
+                                    // vs camelCase, re-exports, etc.).  Only fall back
+                                    // to the label when truly absent.
+                                    const filterText = item.filterText || label;
+
                                     return {
-                                        label,
+                                        label: labelDetail
+                                            ? { label, detail: labelDetail, description: labelDescription }
+                                            : label,
                                         kind: lspKindToMonaco(item.kind),
                                         detail: item.detail || '',
                                         documentation: doc,
@@ -1296,7 +1312,7 @@ const EditorPanel = ({
                                         insertTextRules,
                                         range,
                                         sortText: item.sortText || String(idx).padStart(5, '0'),
-                                        filterText: item.filterText || label,
+                                        filterText,
                                         preselect: item.preselect,
                                         commitCharacters: item.commitCharacters,
                                         // Attach original LSP item for resolveCompletionItem
