@@ -230,20 +230,8 @@ class ValidatingPersistence {
       flushTimer = setTimeout(async () => {
         try {
           const content = targetText.toString();
-          const repoPath = gitService.getRepoPath(slug);
-          const fullPath = path.join(repoPath, filePath);
-          
-          // Ensure directory exists
-          const dirPath = path.dirname(fullPath);
-          await fsPromises.mkdir(dirPath, { recursive: true });
-          
-          // Write to disk
-          await fsPromises.writeFile(fullPath, content, 'utf-8');
-          
-          // Update hash cache
-          fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
 
-          // Optional: Sync to GCS for cloud-backed workspaces
+          // ── 1. GCS sync (durable store — always runs first) ────────────
           if (config.GCS_SYNC_ON_FLUSH && gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
             try {
               await gcsSync.syncFileToGcs(slug, filePath, content);
@@ -251,6 +239,19 @@ class ValidatingPersistence {
               console.warn(`[Collab AutoFlush] GCS sync failed for ${filePath}:`, e?.message || e);
             }
           }
+
+          // ── 2. Disk write (ephemeral cache — only if working tree exists) ──
+          const repoCache = require('./repoCache');
+          if (repoCache.has(slug)) {
+            const repoPath = gitService.getRepoPath(slug);
+            const fullPath = path.join(repoPath, filePath);
+            const dirPath = path.dirname(fullPath);
+            await fsPromises.mkdir(dirPath, { recursive: true });
+            await fsPromises.writeFile(fullPath, content, 'utf-8');
+          }
+          
+          // Update hash cache
+          fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
 
           // Optional: Trigger incremental code-intel indexing
           if (config.CODE_INTEL_AUTO_INDEX && fetchFunc && CODE_INTEL_URL) {
@@ -268,7 +269,7 @@ class ValidatingPersistence {
             }
           }
           
-          console.log(`[Collab AutoFlush] ${filePath} -> disk (${content.length} chars)`);
+          console.log(`[Collab AutoFlush] ${filePath} -> GCS + cache (${content.length} chars)`);
         } catch (e) {
           console.error(`[Collab AutoFlush] Failed to flush ${filePath}:`, e.message);
         }
