@@ -20,6 +20,7 @@ import {
     reorderOpenFiles
 } from '@/redux/workspaceSlice';
 import { selectAutoSaveEnabled, selectAutoCompletionEnabled, toggleAutoCompletion, selectShowAnonymousPresence, selectPresenceGranularity, toggleShowAnonymousPresence, setPresenceGranularity, startCreate, setCursorPosition } from '@/redux/uiSlice';
+import { fetchGitStatus } from '@/redux/gitSlice';
 import { Circle, Save, Sparkles, EyeOff, Loader2 } from 'lucide-react'; // Added Sparkles, EyeOff
 import { getFileIcon } from '@/utils/fileIcons';
 import {
@@ -1220,7 +1221,13 @@ const EditorPanel = ({
             reduxSyncTimerRef.current = null;
             dispatch(updateContent(latestCodeRef.current));
         }
-        if (activeFile && isUnsaved) dispatch(saveFileContentThunk());
+        if (activeFile && isUnsaved) {
+            dispatch(saveFileContentThunk());
+        } else if (activeFile && slug) {
+            // Even if not marked unsaved, refresh git status so Source Control
+            // picks up changes that the Yjs auto-flush already wrote to disk.
+            dispatch(fetchGitStatus(slug));
+        }
         // ── Push saved content to worker disk via file-sync channel ──
         // This ensures the worker's filesystem (used by the LSP server for
         // cross-file indexing) always has the latest content.
@@ -1231,7 +1238,7 @@ const EditorPanel = ({
         }
         // Trigger HMR/Compilation on save
         if (onSave) onSave();
-    }, [activeFile, isUnsaved, dispatch, onSave, compilerClient, code]);
+    }, [activeFile, isUnsaved, dispatch, onSave, compilerClient, code, slug]);
 
     // Auto-save
     useEffect(() => {
@@ -1239,6 +1246,30 @@ const EditorPanel = ({
         const t = setTimeout(() => dispatch(saveFileContentThunk()), 500);
         return () => clearTimeout(t);
     }, [code, autoSaveEnabled, isUnsaved, activeFile, dispatch]);
+
+    // Debounced git status refresh — the Yjs auto-flush writes edited content
+    // to the git working tree within 150ms.  Refresh git status ~2s after the
+    // last edit so that Source Control shows changes without waiting for the
+    // 5-second poll or an explicit save.
+    // NOTE: We intentionally do NOT gate on isUnsaved here.  The Yjs auto-flush
+    // can write content to disk (making git see a modification) even before
+    // Redux marks the file as unsaved (300ms debounce).  Always refreshing on
+    // code changes ensures Source Control stays in sync.
+    const gitStatusTimerRef = useRef(null);
+    useEffect(() => {
+        if (!slug || !activeFile) return;
+        if (gitStatusTimerRef.current) clearTimeout(gitStatusTimerRef.current);
+        gitStatusTimerRef.current = setTimeout(() => {
+            gitStatusTimerRef.current = null;
+            dispatch(fetchGitStatus(slug));
+        }, 2000);
+        return () => {
+            if (gitStatusTimerRef.current) {
+                clearTimeout(gitStatusTimerRef.current);
+                gitStatusTimerRef.current = null;
+            }
+        };
+    }, [code, slug, activeFile, dispatch]);
 
     // Key bindings (Ctrl+S, Alt+F)
     useEffect(() => {
