@@ -1392,4 +1392,6 @@ class GitService {
     }
 }
 
-module.exports = new GitService(path.join(__dirname, 'repos'));
+const { REPOS_DIR } = require('./config');
+
+module.exports = new GitService(REPOS_DIR);
