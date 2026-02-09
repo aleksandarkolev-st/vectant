@@ -1076,6 +1076,40 @@ wss.on('connection', (ws, req) => {
   });
 });
 
+// ── WebSocket heartbeat ──────────────────────────────────────────────────────
+// Ping every client every 30s. If a client doesn't respond with pong within
+// 10s, terminate the connection. This prevents stale/zombie connections that
+// accumulate behind proxies and load-balancers.
+const WS_PING_INTERVAL = 30_000;
+
+function startHeartbeat(wsServer, label) {
+  return setInterval(() => {
+    for (const ws of wsServer.clients) {
+      if (ws._isAlive === false) {
+        console.log(`[Heartbeat] Terminating unresponsive ${label} client`);
+        ws.terminate();
+        continue;
+      }
+      ws._isAlive = false;
+      ws.ping();
+    }
+  }, WS_PING_INTERVAL);
+}
+
+// Mark clients alive on connect and pong
+for (const wsServer of [wss, notifyWss]) {
+  wsServer.on('connection', (ws) => {
+    ws._isAlive = true;
+    ws.on('pong', () => { ws._isAlive = true; });
+  });
+}
+
+const hbYjs    = startHeartbeat(wss, 'Yjs');
+const hbNotify = startHeartbeat(notifyWss, 'Notify');
+
+// Clean up heartbeat timers on server close
+server.on('close', () => { clearInterval(hbYjs); clearInterval(hbNotify); });
+
 server.on('upgrade', (request, socket, head) => {
   const pathname = request.url ? request.url.split('?')[0] : '';
   
