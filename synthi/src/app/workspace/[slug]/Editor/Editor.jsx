@@ -1090,7 +1090,6 @@ const EditorPanel = ({
                             //  1 = Invoked (Ctrl+Space or quickSuggestions auto-trigger)
                             //  2 = TriggerCharacter (typed a trigger char like . : etc.)
                             const isTriggerChar = context.triggerKind === monacoInstance.languages.CompletionTriggerKind.TriggerCharacter;
-                            const lspTriggerKind = isTriggerChar ? 2 : 1;
 
                             // ── Debounce trigger-character completions ────────
                             // Multi-char triggers (::, ->, ..) fire two events
@@ -1112,10 +1111,7 @@ const EditorPanel = ({
                                     token.onCancellationRequested(() => resolve());
                                 });
                                 // After debounce, check if we've been superseded
-                                if (myGeneration !== _currentCompletionGen) {
-                                    return { suggestions: [] };
-                                }
-                                if (token.isCancellationRequested) {
+                                if (myGeneration !== _currentCompletionGen || token.isCancellationRequested) {
                                     return { suggestions: [] };
                                 }
                             }
@@ -1135,7 +1131,7 @@ const EditorPanel = ({
                             // the *first* character already.  Sending another
                             // triggerKind=2 with a single ':' or '>' can confuse
                             // some servers into a narrow context lookup.
-                            let effectiveTriggerKind = lspTriggerKind;
+                            let effectiveTriggerKind = isTriggerChar ? 2 : 1;
                             let effectiveTriggerChar = isTriggerChar ? context.triggerCharacter : undefined;
 
                             if (isTriggerChar) {
