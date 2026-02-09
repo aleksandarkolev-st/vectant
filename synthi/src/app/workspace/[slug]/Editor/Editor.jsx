@@ -779,6 +779,7 @@ const EditorPanel = ({
                             return next(document);
                         },
                         didChange: (data, next) => {
+                            console.log('[LSP] middleware didChange →', typeof data);
                             return next(data);
                         },
                         didClose: (document, next) => {
@@ -980,172 +981,23 @@ const EditorPanel = ({
                     return map[kind] ?? m.Text;
                 };
 
-                // ── Patched-context retry for broken-AST completion ───
-                // When the LSP server returns 0 items because the syntax
-                // is invalid (e.g. standalone `Vec::` on a bare line), we
-                // temporarily patch the document to make the line parseable,
-                // re-send textDocument/completion to the REAL server, then
-                // immediately restore the original content.
-                //
-                // This works for ANY type, ANY module, ANY language — no
-                // hardcoded tables.  The actual language server resolves
-                // the symbol using its full index (including dependencies,
-                // trait impls, etc.), so completions are always accurate
-                // and complete.
-                //
-                // How it works:
-                //  1. Detect `IDENT::`, `ident::`, `ident.`, `ident->` at cursor
-                //  2. Check the line has no expression context (let =, return, etc.)
-                //  3. Wrap the line in a synthetic `let _tmp_ = ...` so it parses
-                //  4. Send didChange with patched content → completion → restore
-                //  5. Adjust returned textEdit ranges back to original positions
-                //
-                // The server sees the patched version for ~100ms, gets the
-                // correct completions from its symbol table, then we restore.
-                // `incomplete: true` ensures Monaco re-queries once the user
-                // makes the syntax valid, at which point the real (unpatched)
-                // server response takes over.
-                const retryCompletionWithPatchedContext = async (model, position, uri) => {
-                    const lineContent = model.getLineContent(position.lineNumber);
-                    const textBefore = lineContent.substring(0, position.column - 1);
-
-                    // Detect path-separator patterns that commonly fail in broken AST.
-                    // Works for Rust (::), C++ (::, ., ->), and others.
-                    const colonMatch = textBefore.match(/\b(\w+)::([\w]*)$/);      // Vec::, std::io::
-                    const arrowMatch = !colonMatch ? textBefore.match(/\b(\w+)->([\w]*)$/) : null;  // C++ ptr->
-                    const dotMatch   = (!colonMatch && !arrowMatch) ? textBefore.match(/\b(\w+)\.([\w]*)$/) : null;  // obj.method
-                    const pathMatch  = colonMatch || arrowMatch || dotMatch;
-                    if (!pathMatch) return null;
-
-                    // If the line already has an expression context the server
-                    // should have been able to handle it — don't retry.
-                    const beforeIdent = textBefore.substring(0, pathMatch.index).trim();
-                    const HAS_CONTEXT = /(?:let\s+\w[\w:]*(?:\s*:\s*\S+)?\s*=|=|return\b|if\b|while\b|match\b|=>|,|\(|\[|\{|fn\b|const\b|static\b|type\b|for\b|in\b|unsafe\b)\s*$/;
-                    if (HAS_CONTEXT.test(beforeIdent)) return null;
-
-                    // Build language-specific wrapper that makes the line parse
-                    let prefix;
-                    switch (backendLang) {
-                        case 'rust':   prefix = 'let _synthi_tmp_ = '; break;
-                        case 'cpp':
-                        case 'c':      prefix = 'auto _synthi_tmp_ = '; break;
-                        case 'go':     prefix = '_synthi_tmp_ := '; break;
-                        case 'python': prefix = '_synthi_tmp_ = '; break;
-                        default:       prefix = 'let _synthi_tmp_ = '; break;
-                    }
-
-                    // Reconstruct full file content with the patched line.
-                    // Insert prefix after leading whitespace so indentation is preserved.
-                    const lineCount = model.getLineCount();
-                    const eol = model.getEOL();
-                    const lines = [];
-                    for (let i = 1; i <= lineCount; i++) {
-                        if (i === position.lineNumber) {
-                            const raw = model.getLineContent(i);
-                            const indentMatch = raw.match(/^(\s*)/);
-                            const indent = indentMatch ? indentMatch[1] : '';
-                            const rest = raw.substring(indent.length);
-                            lines.push(indent + prefix + rest);
-                        } else {
-                            lines.push(model.getLineContent(i));
-                        }
-                    }
-                    const patchedContent = lines.join(eol);
-                    const originalContent = model.getValue();
-
-                    // Cursor in the patched version is shifted right by prefix.length
-                    const adjustedCharacter = (position.column - 1) + prefix.length;
-
-                    // Use a version far above the real model version so it doesn't
-                    // collide with real edits during the brief patch window.
-                    const currentVersion = model.getVersionId();
-                    const patchVersion   = currentVersion + 10000;
-                    const restoreVersion = patchVersion + 1;
-
-                    const restore = () => {
-                        try {
-                            languageClient.sendNotification('textDocument/didChange', {
-                                textDocument: { uri, version: restoreVersion },
-                                contentChanges: [{ text: originalContent }],
-                            });
-                        } catch (_) { /* best-effort */ }
-                    };
-
-                    try {
-                        // 1. Send patched document to the server
-                        languageClient.sendNotification('textDocument/didChange', {
-                            textDocument: { uri, version: patchVersion },
-                            contentChanges: [{ text: patchedContent }],
-                        });
-
-                        // 2. Brief pause for the server to re-parse the patched AST
-                        await new Promise(r => setTimeout(r, 80));
-
-                        // 3. Request completion at the adjusted cursor position
-                        const result = await Promise.race([
-                            languageClient.sendRequest('textDocument/completion', {
-                                textDocument: { uri },
-                                position: {
-                                    line: position.lineNumber - 1,
-                                    character: adjustedCharacter,
-                                },
-                                context: { triggerKind: 1 }, // Invoked
-                            }),
-                            new Promise((_, reject) =>
-                                setTimeout(() => reject(new Error('patched-ctx timeout')), 4000)),
-                        ]);
-
-                        // 4. Restore original content immediately
-                        restore();
-
-                        if (!result) return null;
-                        const items = Array.isArray(result) ? result : (result.items || []);
-                        if (items.length === 0) return null;
-
-                        // 5. Shift textEdit character positions back by prefix.length
-                        //    so they refer to the original (unpatched) line.
-                        const patchedLineIdx = position.lineNumber - 1; // 0-based
-                        const shiftRange = (range) => {
-                            if (!range) return range;
-                            const out = { start: { ...range.start }, end: { ...range.end } };
-                            if (out.start.line === patchedLineIdx) {
-                                out.start.character = Math.max(0, out.start.character - prefix.length);
-                            }
-                            if (out.end.line === patchedLineIdx) {
-                                out.end.character = Math.max(0, out.end.character - prefix.length);
-                            }
-                            return out;
-                        };
-
-                        return items.map(item => {
-                            const out = { ...item };
-                            if (out.textEdit) {
-                                out.textEdit = { ...out.textEdit };
-                                if (out.textEdit.range)   out.textEdit.range   = shiftRange(out.textEdit.range);
-                                if (out.textEdit.insert)  out.textEdit.insert  = shiftRange(out.textEdit.insert);
-                                if (out.textEdit.replace) out.textEdit.replace = shiftRange(out.textEdit.replace);
-                            }
-                            if (out.additionalTextEdits) {
-                                out.additionalTextEdits = out.additionalTextEdits.map(e => ({
-                                    ...e, range: shiftRange(e.range),
-                                }));
-                            }
-                            return out;
-                        });
-                    } catch (err) {
-                        restore();
-                        if (err.message !== 'patched-ctx timeout') {
-                            console.warn('[LSP] Patched-context retry failed:', err.message);
-                        }
-                        return null;
-                    }
-                };
-
                 for (const langId of documentSelector) {
                     const disp = monacoInstance.languages.registerCompletionItemProvider(langId, {
                         triggerCharacters: allTriggers,
                         provideCompletionItems: async (model, position, context, token) => {
-                            if (!languageClient.isRunning()) return { suggestions: [] };
+                            const lineText = model.getLineContent(position.lineNumber);
+                            const textBeforeCursor = lineText.substring(0, position.column - 1);
+                            console.log(`[LSP] provideCompletionItems CALLED for ${backendLang}`, {
+                                line: position.lineNumber,
+                                col: position.column,
+                                triggerKind: context.triggerKind,
+                                triggerChar: context.triggerCharacter || '(none)',
+                                textBefore: textBeforeCursor.slice(-20),
+                            });
+                            if (!languageClient.isRunning()) {
+                                console.log('[LSP] provideCompletionItems: client not running, returning empty');
+                                return { suggestions: [] };
+                            }
 
                             // Determine the correct URI.  The model URI is
                             // something like file:///synthi/src/main.rs — the
@@ -1160,6 +1012,29 @@ const EditorPanel = ({
                             const isTriggerChar = context.triggerKind === monacoInstance.languages.CompletionTriggerKind.TriggerCharacter;
                             const lspTriggerKind = isTriggerChar ? 2 : 1;
 
+                            // ── Ensure the server has the latest content ─────
+                            // Our direct sendRequest bypasses monaco-languageclient's
+                            // internal document sync pipeline, which may not have
+                            // flushed the didChange for the trigger character yet.
+                            // Send a full-document didChange before the completion
+                            // request so the server always parses up-to-date content.
+                            // This is cheap (one notification) and eliminates the
+                            // race that causes 0 items on `Vec::`.
+                            try {
+                                languageClient.sendNotification('textDocument/didChange', {
+                                    textDocument: {
+                                        uri,
+                                        version: model.getVersionId(),
+                                    },
+                                    contentChanges: [{ text: model.getValue() }],
+                                });
+                            } catch (_) { /* best-effort */ }
+
+                            // Small yield to let the notification travel through
+                            // the WebRTC data channel before the completion request.
+                            await new Promise(r => setTimeout(r, 20));
+                            if (token.isCancellationRequested) return { suggestions: [] };
+
                             try {
                                 const result = await languageClient.sendRequest('textDocument/completion', {
                                     textDocument: { uri },
@@ -1173,25 +1048,18 @@ const EditorPanel = ({
                                     },
                                 });
 
-                                if (!result || token.isCancellationRequested) return { suggestions: [] };
+                                if (!result || token.isCancellationRequested) {
+                                    console.log(`[LSP] provideCompletionItems: ${!result ? 'null result' : 'cancelled'} for ${backendLang}`);
+                                    return { suggestions: [] };
+                                }
                                 let items = Array.isArray(result) ? result : (result.items || []);
                                 const isIncomplete = !Array.isArray(result) && result.isIncomplete;
+                                console.log(`[LSP] Server returned ${items.length} raw items for ${backendLang} (incomplete=${!!isIncomplete})`);
 
-                                // ── Patched-context retry ────────────────────
-                                // When the server returns nothing (broken AST
-                                // in error recovery mode), retry by temporarily
-                                // wrapping the line in a valid expression so
-                                // the parser can resolve the path.  Works for
-                                // ANY type in ANY language — no hardcoded tables.
-                                if (items.length === 0 && !token.isCancellationRequested) {
-                                    const retryItems = await retryCompletionWithPatchedContext(model, position, uri);
-                                    if (retryItems && retryItems.length > 0) {
-                                        items = retryItems;
-                                        console.log(`[LSP] Patched-context retry for ${backendLang}: ${items.length} items (server returned 0 on original)`);
-                                    }
+                                if (items.length === 0) {
+                                    console.log(`[LSP] provideCompletionItems: 0 items after retry for ${backendLang}, returning empty`);
+                                    return { suggestions: [], incomplete: !!isIncomplete };
                                 }
-
-                                if (items.length === 0) return { suggestions: [], incomplete: !!isIncomplete };
 
                                 // ── Compute replacement range ──────────────────
                                 // Use a PLAIN IRange object (not monacoInstance.Range)
@@ -1277,42 +1145,6 @@ const EditorPanel = ({
                                     return { suggestions: [] };
                                 }
                                 console.warn(`[LSP] Direct completion error for ${backendLang}:`, msg);
-                                // The server errored (not cancelled) — try
-                                // patched-context retry so the user gets
-                                // completions in broken-AST contexts.
-                                try {
-                                    const retryItems = await retryCompletionWithPatchedContext(model, position, uri);
-                                    if (retryItems && retryItems.length > 0) {
-                                        console.log(`[LSP] Patched-context retry after error for ${backendLang}: ${retryItems.length} items`);
-                                        const word = model.getWordUntilPosition(position);
-                                        const retryRange = {
-                                            startLineNumber: position.lineNumber,
-                                            startColumn: word.word.length > 0 ? word.startColumn : position.column,
-                                            endLineNumber: position.lineNumber,
-                                            endColumn: position.column,
-                                        };
-                                        const suggestions = retryItems.map((item, idx) => {
-                                            const label = typeof item.label === 'string' ? item.label : item.label?.label || '';
-                                            let doc = item.documentation;
-                                            if (doc && typeof doc === 'object' && doc.value) doc = { value: doc.value };
-                                            return {
-                                                label,
-                                                kind: lspKindToMonaco(item.kind),
-                                                detail: item.detail || '',
-                                                documentation: doc,
-                                                insertText: item.textEdit?.newText || item.insertText || label,
-                                                insertTextRules: item.insertTextFormat === 2 ? monacoInstance.languages.CompletionItemInsertTextRule.InsertAsSnippet : undefined,
-                                                range: retryRange,
-                                                sortText: item.sortText || String(idx).padStart(5, '0'),
-                                                filterText: item.filterText || label,
-                                                preselect: item.preselect,
-                                                data: item.data,
-                                                _lspItem: item,
-                                            };
-                                        });
-                                        return { suggestions, incomplete: true };
-                                    }
-                                } catch (_retryErr) { /* patched retry also failed, give up */ }
                                 return { suggestions: [] };
                             }
                         },
