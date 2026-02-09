@@ -1835,6 +1835,16 @@ async fn wire_peer_channels(
                                         if json_val.get("method").and_then(|m| m.as_str()) == Some("textDocument/didOpen") {
                                             if let Some(params) = json_val.get("params") {
                                                 if let Some(doc) = params.get("textDocument") {
+                                                    // Initialize version tracking from didOpen.
+                                                    // This seeds the monotonic version for this URI
+                                                    // so subsequent didChange can be ordered correctly.
+                                                    if let Some(uri) = doc.get("uri").and_then(|s| s.as_str()) {
+                                                        let open_version = doc.get("version")
+                                                            .and_then(|v| v.as_i64())
+                                                            .unwrap_or(0); // default to 0 if null/missing
+                                                        guard.doc_versions.insert(uri.to_string(), open_version);
+                                                    }
+
                                                     if let (Some(uri), Some(text)) = (doc.get("uri").and_then(|s| s.as_str()), doc.get("text").and_then(|s| s.as_str())) {
                                                         if !text.is_empty() {
                                                             if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
@@ -1860,11 +1870,22 @@ async fn wire_peer_channels(
                                                 if let Some(changes) = params.get("contentChanges").and_then(|c| c.as_array()) {
                                                     if let Some(doc) = params.get("textDocument") {
                                                         if let Some(uri) = doc.get("uri").and_then(|s| s.as_str()) {
-                                                            // Version check: reject out-of-order didChange
-                                                            let incoming_version = doc.get("version").and_then(|v| v.as_i64()).unwrap_or(0);
-                                                            let last_version = guard.doc_versions.get(uri).copied().unwrap_or(-1);
-                                                            if incoming_version <= last_version {
-                                                                eprintln!("[LSP] Rejecting out-of-order didChange for {} (version {} <= {})", uri, incoming_version, last_version);
+                                                            // Version check: reject out-of-order didChange.
+                                                            // Handle null/missing version gracefully — treat as 0
+                                                            // (some clients may omit it).
+                                                            let incoming_version = doc.get("version")
+                                                                .and_then(|v| if v.is_null() { None } else { v.as_i64() })
+                                                                .unwrap_or(0);
+                                                            let last_version = guard.doc_versions.get(uri).copied();
+                                                            // Out-of-order check:
+                                                            // - If no prior version tracked (None), always accept.
+                                                            // - If prior version exists, incoming must be strictly greater.
+                                                            let is_out_of_order = match last_version {
+                                                                Some(last) => incoming_version <= last,
+                                                                None => false, // first change for this URI, always accept
+                                                            };
+                                                            if is_out_of_order {
+                                                                eprintln!("[LSP] Rejecting out-of-order didChange for {} (version {} <= {:?})", uri, incoming_version, last_version);
                                                                 // Still forward to LSP (it may handle versioning itself) but skip disk write
                                                             } else {
                                                                 guard.doc_versions.insert(uri.to_string(), incoming_version);
