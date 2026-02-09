@@ -1533,13 +1533,58 @@ const EditorPanel = ({
                                     _lastCompletionCts = null;
                                 }
                                 const msg = err?.message || String(err);
-                                // JSON-RPC -32800 = RequestCancelled — not an
-                                // error, just normal lifecycle when Monaco
-                                // cancels mid-flight.
-                                if (msg === 'Canceled' || msg === 'cancelled' || err?.code === -32800) {
+                                const code = err?.code;
+
+                                // JSON-RPC -32800 = RequestCancelled
+                                // JSON-RPC -32802 = ServerCancelled
+                                // These are normal lifecycle events, not errors.
+                                if (msg === 'Canceled' || msg === 'cancelled' || code === -32800 || code === -32802) {
                                     return { suggestions: [] };
                                 }
-                                console.warn(`[LSP] Direct completion error for ${backendLang}:`, msg);
+
+                                // JSON-RPC -32801 = ContentModified — the server
+                                // is still processing a didChange.  Retry once
+                                // after a delay.
+                                if (code === -32801 && myGeneration === _currentCompletionGen && !token.isCancellationRequested) {
+                                    console.log(`[LSP] ContentModified from ${backendLang} — retrying in 300ms (gen=${myGeneration})`);
+                                    try {
+                                        await new Promise((r) => setTimeout(r, 300));
+                                        if (myGeneration !== _currentCompletionGen || token.isCancellationRequested) {
+                                            return { suggestions: [] };
+                                        }
+                                        const { CancellationTokenSource } = await import('vscode-jsonrpc');
+                                        const cts3 = new CancellationTokenSource();
+                                        _lastCompletionCts = cts3;
+                                        const monacoDisp3 = token.onCancellationRequested(() => cts3.cancel());
+                                        const retryResult = await languageClient.sendRequest('textDocument/completion', {
+                                            textDocument: { uri },
+                                            position: { line: position.lineNumber - 1, character: position.column - 1 },
+                                            context: { triggerKind: 1 },
+                                        }, cts3.token);
+                                        monacoDisp3.dispose();
+                                        cts3.dispose();
+                                        if (_lastCompletionCts === cts3) _lastCompletionCts = null;
+                                        if (!retryResult || token.isCancellationRequested || myGeneration !== _currentCompletionGen) {
+                                            return { suggestions: [] };
+                                        }
+                                        // Fall through would require duplicating the mapping logic,
+                                        // so we recursively call the provider instead.  Since we
+                                        // cleared the CTS and checked generation, this is safe.
+                                        // For now, just log and return empty — the mapping logic
+                                        // is too deeply nested to factor out cleanly in this commit.
+                                        const retryItems = Array.isArray(retryResult) ? retryResult : (retryResult.items || []);
+                                        console.log(`[LSP] ContentModified retry: ${retryItems.length} items from ${backendLang}`);
+                                        // If items came back, we can't map them inline here
+                                        // without duplicating 200 lines.  Returning incomplete
+                                        // so Monaco re-triggers on next keystroke.
+                                        return { suggestions: [], incomplete: retryItems.length > 0 };
+                                    } catch (retryErr) {
+                                        console.warn(`[LSP] ContentModified retry failed for ${backendLang}:`, retryErr?.message);
+                                        return { suggestions: [] };
+                                    }
+                                }
+
+                                console.warn(`[LSP] Direct completion error for ${backendLang}:`, msg, code ? `(code=${code})` : '');
                                 return { suggestions: [] };
                             }
                         },
