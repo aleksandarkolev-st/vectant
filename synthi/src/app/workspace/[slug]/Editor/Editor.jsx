@@ -1273,9 +1273,14 @@ const EditorPanel = ({
                                     // Retry with escalating delays.  rust-analyzer
                                     // cold start can take seconds to index stdlib.
                                     // Use longer delays for rust since it's heavier.
+                                    //
+                                    // If the server responded in under 5ms, it
+                                    // hasn't even started processing — use bigger
+                                    // initial delay.
+                                    const instantResponse = parseFloat(elapsed) < 5;
                                     const retryDelays = (backendLang === 'rust')
-                                        ? [400, 800, 1500]
-                                        : [300, 600];
+                                        ? (instantResponse ? [500, 1000, 2000] : [400, 800, 1500])
+                                        : (instantResponse ? [400, 800] : [300, 600]);
                                     for (let attempt = 0; attempt < retryDelays.length; attempt++) {
                                         const delay = retryDelays[attempt];
                                         console.log(`[LSP] 0 items + incomplete — retry ${attempt + 1} in ${delay}ms for ${backendLang} (gen=${myGeneration})`);
