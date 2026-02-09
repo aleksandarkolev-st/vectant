@@ -209,12 +209,10 @@ export function GitStatus({ slug }) {
   useEffect(() => {
     if (!slug) return;
     refreshGitData();
+    // Refresh on window re-focus instead of polling (avoids GCS bandwidth thrashing)
     const handleFocus = () => refreshGitData();
     window.addEventListener('focus', handleFocus);
-    const interval = setInterval(() => {
-      if (document.hasFocus()) dispatch(fetchGitStatus(slug));
-    }, 5000);
-    return () => { clearInterval(interval); window.removeEventListener('focus', handleFocus); };
+    return () => { window.removeEventListener('focus', handleFocus); };
   }, [slug, dispatch, refreshGitData]);
 
   // ── handlers ───────────────────────────────────
