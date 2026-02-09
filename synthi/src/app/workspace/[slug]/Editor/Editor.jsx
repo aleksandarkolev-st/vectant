@@ -779,6 +779,12 @@ const EditorPanel = ({
                 // some RA versions to disable project discovery entirely.
             } : undefined;
 
+            // Timestamp of the last didChange middleware call.
+            // Declared here (before the client constructor) so the
+            // middleware closure and the completion provider can both
+            // access it.
+            let _lastDidChangeTs = 0;
+
             const languageClient = new SynthiLanguageClient({
                 name: `Synthi Language Client (${backendLang})`,
                 clientOptions: {
@@ -1035,7 +1041,6 @@ const EditorPanel = ({
                 // and sending a completion request.  Ensures the server has
                 // time to ingest the change before we ask for completions.
                 const MIN_CHANGE_GAP_MS = 30;
-                let _lastDidChangeTs = 0;
 
                 // Cache the CancellationTokenSource constructor to avoid
                 // a dynamic import() on every completion request.
@@ -1266,44 +1271,56 @@ const EditorPanel = ({
                                 // the didChange for the final character was only
                                 // just sent.
                                 if (items.length === 0 && isIncomplete && myGeneration === _currentCompletionGen && !token.isCancellationRequested) {
-                                    console.log(`[LSP] 0 items + incomplete — retrying in 250ms for ${backendLang} (gen=${myGeneration})`);
-                                    await new Promise((r) => setTimeout(r, 250));
+                                    // Retry with escalating delays.  rust-analyzer
+                                    // can take 500ms+ to process changes in cold caches.
+                                    const retryDelays = [300, 600];
+                                    for (let attempt = 0; attempt < retryDelays.length; attempt++) {
+                                        const delay = retryDelays[attempt];
+                                        console.log(`[LSP] 0 items + incomplete — retry ${attempt + 1} in ${delay}ms for ${backendLang} (gen=${myGeneration})`);
+                                        await new Promise((r) => setTimeout(r, delay));
 
-                                    if (myGeneration !== _currentCompletionGen || token.isCancellationRequested) {
-                                        return { suggestions: [] };
+                                        if (myGeneration !== _currentCompletionGen || token.isCancellationRequested) {
+                                            return { suggestions: [] };
+                                        }
+
+                                        const cts2 = new CancellationTokenSource();
+                                        _lastCompletionCts = cts2;
+                                        const monacoDisp2 = token.onCancellationRequested(() => cts2.cancel());
+
+                                        // On the last attempt, try TriggerCharacter
+                                        // context with ':' — rust-analyzer may respond
+                                        // better to the explicit trigger after catching up.
+                                        const retryContext = (attempt === retryDelays.length - 1 && isTriggerChar)
+                                            ? { triggerKind: 2, triggerCharacter: context.triggerCharacter }
+                                            : { triggerKind: 1 };
+
+                                        const t1 = performance.now();
+                                        const retryResult = await languageClient.sendRequest('textDocument/completion', {
+                                            textDocument: { uri },
+                                            position: {
+                                                line: position.lineNumber - 1,
+                                                character: position.column - 1,
+                                            },
+                                            context: retryContext,
+                                        }, cts2.token);
+                                        const retryElapsed = (performance.now() - t1).toFixed(0);
+
+                                        monacoDisp2.dispose();
+                                        cts2.dispose();
+                                        if (_lastCompletionCts === cts2) _lastCompletionCts = null;
+
+                                        if (!retryResult || token.isCancellationRequested || myGeneration !== _currentCompletionGen) {
+                                            console.log(`[LSP] Retry ${attempt + 1}: ${!retryResult ? 'null' : 'stale/cancelled'} for ${backendLang} (gen=${myGeneration}, ${retryElapsed}ms)`);
+                                            return { suggestions: [] };
+                                        }
+
+                                        items = Array.isArray(retryResult) ? retryResult : (retryResult.items || []);
+                                        isIncomplete = !Array.isArray(retryResult) && retryResult.isIncomplete;
+                                        console.log(`[LSP] Retry ${attempt + 1} returned ${items.length} items for ${backendLang} in ${retryElapsed}ms (incomplete=${!!isIncomplete})`);
+
+                                        if (items.length > 0) break;
+                                        if (!isIncomplete) break; // server says it's done
                                     }
-
-                                    const cts2 = new CancellationTokenSource();
-                                    _lastCompletionCts = cts2;
-                                    const monacoDisp2 = token.onCancellationRequested(() => cts2.cancel());
-
-                                    const t1 = performance.now();
-                                    const retryResult = await languageClient.sendRequest('textDocument/completion', {
-                                        textDocument: { uri },
-                                        position: {
-                                            line: position.lineNumber - 1,
-                                            character: position.column - 1,
-                                        },
-                                        context: {
-                                            // Retry as Invoked — the trigger-char
-                                            // event is stale at this point.
-                                            triggerKind: 1,
-                                        },
-                                    }, cts2.token);
-                                    const retryElapsed = (performance.now() - t1).toFixed(0);
-
-                                    monacoDisp2.dispose();
-                                    cts2.dispose();
-                                    if (_lastCompletionCts === cts2) _lastCompletionCts = null;
-
-                                    if (!retryResult || token.isCancellationRequested || myGeneration !== _currentCompletionGen) {
-                                        console.log(`[LSP] Retry: ${!retryResult ? 'null' : 'stale/cancelled'} for ${backendLang} (gen=${myGeneration}, ${retryElapsed}ms)`);
-                                        return { suggestions: [] };
-                                    }
-
-                                    items = Array.isArray(retryResult) ? retryResult : (retryResult.items || []);
-                                    isIncomplete = !Array.isArray(retryResult) && retryResult.isIncomplete;
-                                    console.log(`[LSP] Retry returned ${items.length} items for ${backendLang} in ${retryElapsed}ms (incomplete=${!!isIncomplete})`);
                                 }
 
                                 if (items.length === 0) {
