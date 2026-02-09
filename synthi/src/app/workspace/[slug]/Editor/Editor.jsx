@@ -1050,6 +1050,7 @@ const EditorPanel = ({
                                 triggerChar: context.triggerCharacter || '(none)',
                                 textBefore: textBeforeCursor.slice(-20),
                             });
+                            const providerT0 = performance.now();
                             if (!languageClient.isRunning()) {
                                 console.log('[LSP] provideCompletionItems: client not running, returning empty');
                                 return { suggestions: [] };
@@ -1515,7 +1516,8 @@ const EditorPanel = ({
                                     return { suggestions: [] };
                                 }
 
-                                console.log(`[LSP] Direct completion for ${backendLang}: ${suggestions.length} items in ${elapsed}ms (gen=${myGeneration}, incomplete=${!!isIncomplete})`, {
+                                const totalMs = (performance.now() - providerT0).toFixed(0);
+                                console.log(`[LSP] Direct completion for ${backendLang}: ${suggestions.length} items in ${elapsed}ms (total=${totalMs}ms, gen=${myGeneration}, incomplete=${!!isIncomplete})`, {
                                     pos: { line: position.lineNumber, col: position.column },
                                     word: word.word || '(empty)',
                                     defaultRange,
