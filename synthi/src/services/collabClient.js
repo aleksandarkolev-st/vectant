@@ -377,6 +377,46 @@ class CollabClient {
     this.docs = new Map(); // key -> {doc, provider, bindings: Set}
     // awareness listener registry: key -> Map<originalCb, wrappedCb>
     this._awarenessListeners = new Map();
+
+    // ── Connection status tracking ──
+    // Aggregated status across all active providers: 'connected' | 'connecting' | 'disconnected'
+    this._connectionStatus = 'disconnected';
+    this._statusListeners = new Set();
+  }
+
+  /**
+   * Current aggregate connection status.
+   * @returns {'connected'|'connecting'|'disconnected'}
+   */
+  get connectionStatus() { return this._connectionStatus; }
+
+  /**
+   * Subscribe to connection status changes.
+   * @param {(status: string) => void} cb
+   * @returns {() => void} unsubscribe function
+   */
+  onStatusChange(cb) {
+    this._statusListeners.add(cb);
+    return () => this._statusListeners.delete(cb);
+  }
+
+  /** Re-derive aggregate status from all active providers */
+  _updateConnectionStatus() {
+    let hasConnected = false;
+    let hasConnecting = false;
+    for (const entry of this.docs.values()) {
+      if (entry.provider?.wsconnected) hasConnected = true;
+      else if (entry.provider?.wsconnecting) hasConnecting = true;
+    }
+    const next = hasConnected ? 'connected'
+      : hasConnecting ? 'connecting'
+      : 'disconnected';
+    if (next !== this._connectionStatus) {
+      this._connectionStatus = next;
+      for (const cb of this._statusListeners) {
+        try { cb(next); } catch (_) { /* ignore listener errors */ }
+      }
+    }
   }
 
   _roomKey(slug, path) {
@@ -435,6 +475,7 @@ class CollabClient {
       try { entry.doc.destroy(); } catch (_) {}
       
       this.docs.delete(key);
+      this._updateConnectionStatus();
       console.log('[Collab] Destroyed document for', key);
     } catch (e) {
       console.warn('[Collab] Failed to destroy document:', e);
@@ -449,6 +490,7 @@ class CollabClient {
     const provider = new WebsocketProvider(this.serverUrl, key, doc, { connect: true });
     provider.on('status', (ev) => {
       console.debug('[Collab] Provider status for', key, ev.status);
+      this._updateConnectionStatus();
     });
 
     // text element to use as monaco binding

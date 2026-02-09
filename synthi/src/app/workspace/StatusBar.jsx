@@ -5,7 +5,8 @@ import { BranchSelector } from '@/components/git/BranchSelector';
 import { selectCursorPosition } from '@/redux/uiSlice';
 import { selectActiveFile } from '@/redux/workspaceSlice';
 import { getMonacoLanguage } from '@/utils/languageMapper';
-import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2 } from 'lucide-react';
+import { useCollabStatus } from '@/hooks/useCollabStatus';
+import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff } from 'lucide-react';
 
 /**
  * StatusBar Component - Synthi styled bottom status bar
@@ -63,6 +64,21 @@ export default function StatusBar({
   
   const statusStyle = getCompilerStatusStyle();
   
+  // Aggregated collaboration WebSocket status
+  const collabStatus = useCollabStatus();
+  const getCollabStyle = () => {
+    switch (collabStatus) {
+      case 'connected':
+        return { dot: 'bg-[#4ade80]', text: 'Synced', textColor: 'text-[#4ade80]', Icon: Wifi };
+      case 'connecting':
+        return { dot: 'bg-[#fbbf24] animate-pulse', text: 'Syncing…', textColor: 'text-[#fbbf24]', Icon: Wifi };
+      case 'disconnected':
+      default:
+        return { dot: 'bg-[#ff5757]', text: 'Offline', textColor: 'text-[#ff5757]', Icon: WifiOff };
+    }
+  };
+  const collabStyle = getCollabStyle();
+  
   // Determine if there are problems to show
   const hasProblems = diagnosticSummary.errors > 0 || diagnosticSummary.warnings > 0;
 
@@ -118,6 +134,15 @@ export default function StatusBar({
           <Cpu className={`w-3.5 h-3.5 ${statusStyle.textColor}`} strokeWidth={2} />
           <div className={`w-2 h-2 rounded-full ${statusStyle.dot}`} />
           <span className={`${statusStyle.textColor} font-semibold`}>{statusStyle.text}</span>
+        </div>
+        
+        <div className="w-px h-4 bg-[#1a1b24]"></div>
+        
+        {/* Collab Sync Status - green/yellow/red indicator */}
+        <div className="flex items-center gap-2 px-2.5 py-1 transition-all cursor-default" title={`Collaboration: ${collabStyle.text}`}>
+          <collabStyle.Icon className={`w-3.5 h-3.5 ${collabStyle.textColor}`} strokeWidth={2} />
+          <div className={`w-2 h-2 rounded-full ${collabStyle.dot}`} />
+          <span className={`${collabStyle.textColor} font-semibold`}>{collabStyle.text}</span>
         </div>
       </div>
       
