@@ -1195,16 +1195,11 @@ const EditorPanel = ({
                                 // last didChange so the server has time to
                                 // ingest the notification before we send the
                                 // completion request.
-                                const sinceLast = performance.now() - _lastDidChangeTs;
-                                const yieldMs = Math.max(0, MIN_CHANGE_GAP_MS - sinceLast);
-                                if (yieldMs > 0) {
-                                    await new Promise((r) => setTimeout(r, yieldMs));
-                                } else {
-                                    // Even when the change gap is sufficient,
-                                    // yield 10ms to let any queued WebRTC
-                                    // frames flush before the completion request.
-                                    await new Promise((r) => setTimeout(r, 10));
-                                }
+                                const sinceLast = _lastDidChangeTs > 0
+                                    ? performance.now() - _lastDidChangeTs
+                                    : Infinity; // No didChange yet — don't delay
+                                const yieldMs = Math.max(10, MIN_CHANGE_GAP_MS - sinceLast);
+                                await new Promise((r) => setTimeout(r, yieldMs));
                                 if (token.isCancellationRequested || myGeneration !== _currentCompletionGen) {
                                     return { suggestions: [] };
                                 }
