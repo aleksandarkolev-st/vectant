@@ -1201,8 +1201,57 @@ const EditorPanel = ({
                                 }
 
                                 let items = Array.isArray(result) ? result : (result.items || []);
-                                const isIncomplete = !Array.isArray(result) && result.isIncomplete;
+                                let isIncomplete = !Array.isArray(result) && result.isIncomplete;
                                 console.log(`[LSP] Server returned ${items.length} raw items for ${backendLang} in ${elapsed}ms (incomplete=${!!isIncomplete})`);
+
+                                // ── Retry on 0-item incomplete ────────────────
+                                // Servers (especially rust-analyzer) may return
+                                // incomplete=true with 0 items when their internal
+                                // index hasn't caught up with the latest didChange.
+                                // Wait a short interval and retry once.  This is
+                                // critical for multi-char triggers (::, ->) where
+                                // the didChange for the final character was only
+                                // just sent.
+                                if (items.length === 0 && isIncomplete && myGeneration === _currentCompletionGen && !token.isCancellationRequested) {
+                                    console.log(`[LSP] 0 items + incomplete — retrying in 250ms for ${backendLang} (gen=${myGeneration})`);
+                                    await new Promise((r) => setTimeout(r, 250));
+
+                                    if (myGeneration !== _currentCompletionGen || token.isCancellationRequested) {
+                                        return { suggestions: [] };
+                                    }
+
+                                    const cts2 = new CancellationTokenSource();
+                                    _lastCompletionCts = cts2;
+                                    const monacoDisp2 = token.onCancellationRequested(() => cts2.cancel());
+
+                                    const t1 = performance.now();
+                                    const retryResult = await languageClient.sendRequest('textDocument/completion', {
+                                        textDocument: { uri },
+                                        position: {
+                                            line: position.lineNumber - 1,
+                                            character: position.column - 1,
+                                        },
+                                        context: {
+                                            // Retry as Invoked — the trigger-char
+                                            // event is stale at this point.
+                                            triggerKind: 1,
+                                        },
+                                    }, cts2.token);
+                                    const retryElapsed = (performance.now() - t1).toFixed(0);
+
+                                    monacoDisp2.dispose();
+                                    cts2.dispose();
+                                    if (_lastCompletionCts === cts2) _lastCompletionCts = null;
+
+                                    if (!retryResult || token.isCancellationRequested || myGeneration !== _currentCompletionGen) {
+                                        console.log(`[LSP] Retry: ${!retryResult ? 'null' : 'stale/cancelled'} for ${backendLang} (gen=${myGeneration}, ${retryElapsed}ms)`);
+                                        return { suggestions: [] };
+                                    }
+
+                                    items = Array.isArray(retryResult) ? retryResult : (retryResult.items || []);
+                                    isIncomplete = !Array.isArray(retryResult) && retryResult.isIncomplete;
+                                    console.log(`[LSP] Retry returned ${items.length} items for ${backendLang} in ${retryElapsed}ms (incomplete=${!!isIncomplete})`);
+                                }
 
                                 if (items.length === 0) {
                                     console.log(`[LSP] provideCompletionItems: server returned 0 items for ${backendLang} (gen=${myGeneration}, ${elapsed}ms, incomplete=${!!isIncomplete})`);
