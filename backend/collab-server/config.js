@@ -50,6 +50,24 @@ const CODE_INTEL_AUTO_INDEX = String(process.env.CODE_INTEL_AUTO_INDEX || 'true'
 /** Debounce interval (ms) before Yjs changes are flushed to disk. */
 const FLUSH_DEBOUNCE_MS = Number(process.env.FLUSH_DEBOUNCE_MS) || 150;
 
+// ── Ephemeral repo cache ─────────────────────────────────────────────────────
+/**
+ * Directory used for ephemeral working trees.  Treat as a disposable cache:
+ * GCS is the durable store; this folder can be wiped at any time.
+ */
+const REPO_CACHE_DIR = path.resolve(
+  process.env.REPO_CACHE_DIR || path.join(__dirname, 'repos')
+);
+
+/** Maximum number of working trees kept in the LRU cache. */
+const REPO_CACHE_MAX = Number(process.env.REPO_CACHE_MAX) || 50;
+
+/**
+ * Time-to-live for an idle working tree (ms).
+ * After this period with no acquire(), the tree is eligible for eviction.
+ */
+const REPO_CACHE_TTL_MS = Number(process.env.REPO_CACHE_TTL_MS) || 5 * 60 * 1000; // 5 min
+
 module.exports = {
     REPOS_DIR,
     LEVELDB_DIR,
@@ -65,4 +83,7 @@ module.exports = {
     GCS_SYNC_ON_FLUSH,
     CODE_INTEL_AUTO_INDEX,
     FLUSH_DEBOUNCE_MS,
+    REPO_CACHE_DIR,
+    REPO_CACHE_MAX,
+    REPO_CACHE_TTL_MS,
 };
