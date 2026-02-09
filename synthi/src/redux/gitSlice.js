@@ -7,6 +7,17 @@ export const fetchGitStatus = createAsyncThunk(
         const status = await gitClient.getStatus(slug);
         const branches = await gitClient.getBranches(slug);
         return { status, branches };
+    },
+    {
+        // Prevent redundant concurrent fetches — if a fetchGitStatus is already
+        // in-flight (state.git.loading === true from this thunk), skip.
+        condition: (_, { getState }) => {
+            const { git } = getState();
+            // Only block if loading is specifically from a status fetch.
+            // We use a dedicated flag to avoid conflating with other thunks
+            // that also set `loading`.
+            if (git._statusFetching) return false;
+        },
     }
 );
 
@@ -327,6 +338,7 @@ const gitSlice = createSlice({
         blameData: [],
         currentBranch: 'main',
         loading: false,
+        _statusFetching: false, // de-dup guard for fetchGitStatus
         // actionError persists until explicitly dismissed by user or next
         // user-initiated action — background refreshes never clear it.
         actionError: null,
@@ -348,9 +360,11 @@ const gitSlice = createSlice({
         builder
             .addCase(fetchGitStatus.pending, (state) => {
                 state.loading = true;
+                state._statusFetching = true;
             })
             .addCase(fetchGitStatus.fulfilled, (state, action) => {
                 state.loading = false;
+                state._statusFetching = false;
                 state.error = null;
                 state.status = action.payload.status;
                 state.branches = action.payload.branches || { local: [], all: [] };
@@ -360,6 +374,7 @@ const gitSlice = createSlice({
             })
             .addCase(fetchGitStatus.rejected, (state, action) => {
                 state.loading = false;
+                state._statusFetching = false;
                 state.error = action.error.message;
                 state.errorCode = action.error.code || null;
             });
