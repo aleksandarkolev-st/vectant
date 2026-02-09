@@ -1168,7 +1168,14 @@ const EditorPanel = ({
                                 _lastCompletionCts = null;
                             }
 
-                            console.log(`[LSP] Sending textDocument/completion for ${backendLang} (gen=${myGeneration}, L${position.lineNumber}:${position.column}, triggerKind=${effectiveTriggerKind}${effectiveTriggerChar ? ', char=' + effectiveTriggerChar : ''})`);
+                            console.log(`[LSP] Sending textDocument/completion for ${backendLang} (gen=${myGeneration}, L${position.lineNumber}:${position.column}, triggerKind=${effectiveTriggerKind}${effectiveTriggerChar ? ', char=' + effectiveTriggerChar : ''})`, {
+                                modelContent: model.getLineContent(position.lineNumber).substring(
+                                    Math.max(0, position.column - 21), position.column - 1
+                                ) + '|' + model.getLineContent(position.lineNumber).substring(
+                                    position.column - 1, position.column + 9
+                                ),
+                                sinceLastChange: `${(performance.now() - _lastDidChangeTs).toFixed(0)}ms`,
+                            });
 
                             try {
                                 // Yield at least MIN_CHANGE_GAP_MS after the
