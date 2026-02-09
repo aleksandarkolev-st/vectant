@@ -980,10 +980,16 @@ const EditorPanel = ({
                 // explicit and handle surrogate pairs correctly.
 
                 /** LSP character (0-based UTF-16 offset) → Monaco column (1-based) */
-                const lspCharToMonacoCol = (lspChar) => lspChar + 1;
+                const lspCharToMonacoCol = (lspChar) => {
+                    const n = Number(lspChar);
+                    return Number.isFinite(n) && n >= 0 ? n + 1 : 1;
+                };
 
                 /** Monaco column (1-based) → LSP character (0-based UTF-16 offset) */
-                const monacoColToLspChar = (monacoCol) => monacoCol - 1;
+                const monacoColToLspChar = (monacoCol) => {
+                    const n = Number(monacoCol);
+                    return Number.isFinite(n) && n >= 1 ? n - 1 : 0;
+                };
 
                 /**
                  * Convert an LSP Range to a Monaco IRange.
@@ -991,11 +997,15 @@ const EditorPanel = ({
                  */
                 const lspRangeToMonaco = (range) => {
                     if (!range?.start || !range?.end) return null;
+                    const sl = Math.max(1, (range.start.line ?? 0) + 1);
+                    const el = Math.max(sl, (range.end.line ?? 0) + 1);
+                    const sc = lspCharToMonacoCol(range.start.character ?? 0);
+                    const ec = lspCharToMonacoCol(range.end.character ?? 0);
                     return {
-                        startLineNumber: range.start.line + 1,
-                        startColumn:     lspCharToMonacoCol(range.start.character),
-                        endLineNumber:   range.end.line + 1,
-                        endColumn:       lspCharToMonacoCol(range.end.character),
+                        startLineNumber: sl,
+                        startColumn:     sc,
+                        endLineNumber:   el,
+                        endColumn:       ec,
                     };
                 };
 
@@ -1051,6 +1061,12 @@ const EditorPanel = ({
                             // If the user types again before we get a response,
                             // _currentCompletionGen will advance and we'll
                             // discard the stale result.
+                            // Prevent overflow: reset counter well before
+                            // Number.MAX_SAFE_INTEGER so equality checks
+                            // stay reliable.
+                            if (_completionGeneration >= 0x40000000) {
+                                _completionGeneration = 0;
+                            }
                             const myGeneration = ++_completionGeneration;
                             _currentCompletionGen = myGeneration;
 

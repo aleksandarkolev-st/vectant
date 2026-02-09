@@ -71,6 +71,15 @@ export class MonacoSocketAdapter {
                         const chunkIdx = view.getUint32(8);
                         const totalChunks = view.getUint32(12);
 
+                        // Sanity: reject malformed chunk headers
+                        if (totalChunks === 0 || chunkIdx >= totalChunks) {
+                            console.warn(
+                                `[MonacoSocketAdapter] Malformed chunk header: ` +
+                                `msgId=${msgId}, chunkIdx=${chunkIdx}, total=${totalChunks}`
+                            );
+                            return;
+                        }
+
                         if (!this.chunkStore.has(msgId)) {
                             this.chunkStore.set(msgId, {
                                 total: totalChunks,
