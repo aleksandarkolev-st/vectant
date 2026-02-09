@@ -23,6 +23,7 @@ import {
   commitWebUrl, parseConventionalCommit, ccColor, groupCommitsByDate,
   buildCommitGraph, relativeTime
 } from './gitUtils';
+import { MergeConflictEditor } from './MergeConflictEditor';
 
 /* ─────────────── tiny sub-components ─────────────── */
 
@@ -191,6 +192,7 @@ export function GitStatus({ slug }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const [securityDismissed, setSecurityDismissed] = useState(false);
+  const [conflictEditorFile, setConflictEditorFile] = useState(null);
   const searchInputRef = useRef(null);
 
   // ── data refresh ───────────────────────────────
@@ -333,11 +335,7 @@ export function GitStatus({ slug }) {
     }));
   };
   const handleConflictFileClick = (filePath) => {
-    dispatch(selectFileThunk({
-      name: filePath.split('/').pop(),
-      path: filePath,
-      language: getFileLanguage(filePath),
-    }));
+    setConflictEditorFile(filePath);
   };
 
   const handleInit = async () => {
@@ -474,6 +472,23 @@ export function GitStatus({ slug }) {
   }
 
   // ──────────────── RENDER ────────────────────────
+
+  // ── Merge Conflict Editor overlay ──────────────
+  if (conflictEditorFile) {
+    return (
+      <MergeConflictEditor
+        slug={slug}
+        filePath={conflictEditorFile}
+        onClose={() => setConflictEditorFile(null)}
+        onResolved={() => {
+          setConflictEditorFile(null);
+          dispatch(fetchGitStatus(slug));
+          toast.success(`Resolved ${conflictEditorFile.split('/').pop()}`);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-col h-full w-full overflow-hidden" style={graphStyle}>
       {/* ── Header ────────────────────────────────── */}
