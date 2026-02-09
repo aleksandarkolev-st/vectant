@@ -3,6 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
+const config = require('./config');
+const repoCache = require('./repoCache');
 
 const TEXT_EXTENSIONS = new Set([
     'js','jsx','ts','tsx','json','md','txt','py','rs','go','java','c','h','cpp','hpp','cs','html','css','yml','yaml','toml','xml','sh',
@@ -140,19 +142,25 @@ const repoLock = new RepoLock();
 
 class GitService {
     constructor(baseDir) {
-        this.baseDir = baseDir;
+        this.baseDir = baseDir || config.REPO_CACHE_DIR;
         if (!fs.existsSync(this.baseDir)) {
             fs.mkdirSync(this.baseDir, { recursive: true });
         }
     }
 
-    // Helper to run operations with lock
+    // Helper to run operations with lock + repo cache acquire/release
     async withLock(slug, operation) {
-        const release = await repoLock.acquire(slug);
+        const releaseLock = await repoLock.acquire(slug);
         try {
-            return await operation();
+            // Ensure working tree is materialised before the operation
+            await repoCache.acquire(slug);
+            try {
+                return await operation();
+            } finally {
+                repoCache.release(slug);
+            }
         } finally {
-            release();
+            releaseLock();
         }
     }
 
@@ -215,22 +223,12 @@ class GitService {
 
     async initRepo(slug, remoteUrl) {
         return this.withLock(slug, async () => {
+            // repoCache.acquire (inside withLock) already materialised files
+            // from GCS if needed, so we only need to git-init if missing.
             const repoPath = this.getRepoPath(slug);
             
             if (!fs.existsSync(repoPath)) {
                 fs.mkdirSync(repoPath, { recursive: true });
-            }
-
-            // Download files from GCS before initializing git
-            // This ensures all workspace files are in the repo
-            if (gcsSync.isGcsConfigured()) {
-                console.log(`[GitService] Downloading workspace files from GCS for slug: ${slug}`);
-                try {
-                    const downloadResult = await gcsSync.downloadGcsToRepo(slug, repoPath);
-                    console.log(`[GitService] GCS download complete:`, downloadResult);
-                } catch (e) {
-                    console.warn(`[GitService] Failed to download from GCS, continuing with init:`, e.message);
-                }
             }
 
             if (!fs.existsSync(path.join(repoPath, '.git'))) {
