@@ -52,7 +52,8 @@ try {
 }
 const Y = require('yjs');
 const fileIndex = require('./fileIndex');
-const fs = require('fs').promises;
+const fs = require('fs');
+const fsPromises = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
@@ -123,7 +124,7 @@ async function getActualFileContent(slug, filePath) {
   try {
     const repoPath = gitService.getRepoPath(slug);
     const fullPath = path.join(repoPath, filePath);
-    const content = await fs.readFile(fullPath, 'utf8');
+    const content = await fsPromises.readFile(fullPath, 'utf8');
     return content;
   } catch (e) {
     console.log(`[Collab] Could not read file ${slug}/${filePath}:`, e.code || e.message);
@@ -234,10 +235,10 @@ class ValidatingPersistence {
           
           // Ensure directory exists
           const dirPath = path.dirname(fullPath);
-          await fs.mkdir(dirPath, { recursive: true });
+          await fsPromises.mkdir(dirPath, { recursive: true });
           
           // Write to disk
-          await fs.writeFile(fullPath, content, 'utf-8');
+          await fsPromises.writeFile(fullPath, content, 'utf-8');
           
           // Update hash cache
           fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
@@ -1102,4 +1103,18 @@ server.on('upgrade', (request, socket, head) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Collaboration server (y-websocket) listening on port ${PORT}`);
   console.log(`[Collab DEBUG] Server started with persistence: ${LeveldbPersistence ? 'LevelDB' : 'In-Memory'}`);
+  console.log(`[Config] REPOS_DIR  = ${config.REPOS_DIR}`);
+  console.log(`[Config] LEVELDB   = ${config.LEVELDB_DIR}`);
+  console.log(`[Config] CODE_INTEL = ${config.CODE_INTEL_URL}`);
+  console.log(`[Config] GCS sync  = ${config.GCS_SYNC_ON_FLUSH ? 'ON' : 'OFF'}`);
+
+  // Warn about legacy workspaces.json if it still exists on disk
+  const legacyWsFile = path.join(__dirname, 'workspaces.json');
+  if (fs.existsSync(legacyWsFile)) {
+    console.warn(
+      '[DEPRECATION] workspaces.json still exists on disk — it is no longer read.\n' +
+      '  Workspace metadata now lives in-memory via workspaceManager.js and the\n' +
+      '  Prisma DB in the main Synthi app. You can safely delete workspaces.json.'
+    );
+  }
 });
