@@ -1099,6 +1099,30 @@ const EditorPanel = ({
                                 }
                             }
 
+                            // ── Skip known-invalid trigger contexts ───────────
+                            // After the debounce we re-read the text before the
+                            // cursor.  Some single-char triggers are only valid
+                            // when preceded by certain characters:
+                            //  • Rust  ':' → only valid as '::' (path separator)
+                            //  • C/C++ '>' → only valid as '->'
+                            // Sending a request for a lone ':' or '>' wastes a
+                            // round-trip and often returns 0 items.
+                            if (isTriggerChar) {
+                                const freshLine = model.getLineContent(position.lineNumber);
+                                const freshBefore = freshLine.substring(0, position.column - 1);
+                                const ch = context.triggerCharacter;
+                                const prev = freshBefore.length >= 2 ? freshBefore[freshBefore.length - 2] : '';
+
+                                const isInvalidContext =
+                                    (ch === ':' && prev !== ':' && (backendLang === 'rust' || backendLang === 'cpp' || backendLang === 'c')) ||
+                                    (ch === '>' && prev !== '-' && (backendLang === 'rust' || backendLang === 'cpp' || backendLang === 'c'));
+
+                                if (isInvalidContext) {
+                                    console.log(`[LSP] Skipping invalid trigger context '${prev}${ch}' for ${backendLang}`);
+                                    return { suggestions: [] };
+                                }
+                            }
+
                             // NOTE: We rely on monaco-languageclient's native
                             // didChange sync (via the middleware passthrough) to
                             // keep the server up-to-date.  Sending a full-document
