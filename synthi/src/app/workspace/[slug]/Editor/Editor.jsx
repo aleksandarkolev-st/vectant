@@ -1279,30 +1279,43 @@ const EditorPanel = ({
                             }
                         },
                         resolveCompletionItem: async (item, token) => {
-                            // Ask the LSP server for full documentation/detail
+                            // Ask the LSP server for full documentation/detail.
+                            // This is called lazily when the user highlights an
+                            // item in the suggest widget.
                             if (!languageClient.isRunning() || !item._lspItem) return item;
                             try {
                                 const resolved = await languageClient.sendRequest(
                                     'completionItem/resolve', item._lspItem
                                 );
-                                if (resolved && !token.isCancellationRequested) {
-                                    if (resolved.documentation) {
-                                        let doc = resolved.documentation;
-                                        if (doc && typeof doc === 'object' && doc.value) doc = { value: doc.value };
-                                        item.documentation = doc;
-                                    }
-                                    if (resolved.detail) item.detail = resolved.detail;
-                                    if (resolved.additionalTextEdits) {
-                                        item.additionalTextEdits = resolved.additionalTextEdits
-                                            .map(e => {
-                                                const r = lspRangeToMonaco(e.range);
-                                                if (!r) return null;
-                                                return { range: r, text: e.newText };
-                                            })
-                                            .filter(Boolean);
-                                    }
+                                if (!resolved || token.isCancellationRequested) return item;
+
+                                // Merge resolved fields back into the Monaco item
+                                if (resolved.documentation) {
+                                    let doc = resolved.documentation;
+                                    if (doc && typeof doc === 'object' && doc.value) doc = { value: doc.value };
+                                    item.documentation = doc;
                                 }
-                            } catch (_) { /* resolve is best-effort */ }
+                                if (resolved.detail) item.detail = resolved.detail;
+                                // Some servers refine insertText on resolve
+                                if (resolved.insertText && resolved.insertText !== item.insertText) {
+                                    item.insertText = resolved.insertText;
+                                }
+                                if (resolved.additionalTextEdits) {
+                                    item.additionalTextEdits = resolved.additionalTextEdits
+                                        .map(e => {
+                                            const r = lspRangeToMonaco(e.range);
+                                            if (!r) return null;
+                                            return { range: r, text: e.newText };
+                                        })
+                                        .filter(Boolean);
+                                }
+                            } catch (err) {
+                                // Resolve is best-effort — log but don't fail
+                                const msg = err?.message || '';
+                                if (msg !== 'Canceled' && msg !== 'cancelled') {
+                                    console.warn(`[LSP] resolveCompletionItem error:`, msg);
+                                }
+                            }
                             return item;
                         },
                     });
