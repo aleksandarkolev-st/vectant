@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { use } from 'react';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent, selectFileCacheEntries } from '@/redux/workspaceSlice';
+import collabClient from '@/services/collabClient';
 import { 
     selectShowTerminal, 
     selectShowEmulatorPreview,
@@ -316,6 +317,18 @@ export default function EditorPage({ params }) {
             };
             init();
         }
+    }, [slug, dispatch]);
+
+    // Subscribe to server-side file-tree-changed notifications so
+    // all connected clients stay in sync when any teammate mutates the tree.
+    useEffect(() => {
+        if (!slug) return;
+        const teardown = collabClient.connectNotifications(slug, {
+            onFileTreeChanged: () => {
+                dispatch(fetchFilesThunk(slug));
+            },
+        });
+        return teardown;
     }, [slug, dispatch]);
 
     // 2. Consume global state directly via selectors

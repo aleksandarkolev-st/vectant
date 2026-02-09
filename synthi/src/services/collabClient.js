@@ -357,14 +357,34 @@ class MonacoTextBinding {
 
 class CollabClient {
   constructor(serverUrl) {
-    this.serverUrl = serverUrl || (typeof window !== 'undefined' ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:1234` : 'ws://localhost:1234');
+    // Derive WebSocket URL from the env var used everywhere else, or fall back
+    // to auto-detecting from the current page's location.
+    if (serverUrl) {
+      this.serverUrl = serverUrl;
+    } else if (typeof process !== 'undefined' && process.env && process.env.NEXT_PUBLIC_COLLAB_SERVER_URL) {
+      // Convert http(s) URL to ws(s) URL
+      this.serverUrl = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL
+        .replace(/^http:/, 'ws:')
+        .replace(/^https:/, 'wss:');
+    } else if (typeof window !== 'undefined') {
+      const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const host = window.location.hostname;
+      const port = process.env.NEXT_PUBLIC_COLLAB_PORT || '1234';
+      this.serverUrl = `${proto}://${host}:${port}`;
+    } else {
+      this.serverUrl = 'ws://localhost:1234';
+    }
     this.docs = new Map(); // key -> {doc, provider, bindings: Set}
     // awareness listener registry: key -> Map<originalCb, wrappedCb>
     this._awarenessListeners = new Map();
   }
 
   _roomKey(slug, path) {
-    const safePath = path ? path.replace(/[^a-zA-Z0-9_.\-\/]/g, '_') : 'root';
+    // Use the raw file path without sanitization. The server's parseDocName
+    // extracts the path as-is from the room name, so any client-side
+    // sanitization would cause a mismatch: the server would look for the
+    // sanitized path on disk and fail to find it.
+    const safePath = path || 'root';
     return `workspace:${slug}:${safePath}`;
   }
 
@@ -775,6 +795,77 @@ class CollabClient {
       });
       entry._seeded = true;
     }
+  }
+
+  /**
+   * Connect to the server's notification WebSocket for a workspace.
+   * Listens for server-side events (e.g., file-tree-changed) and
+   * invokes registered callbacks.
+   *
+   * @param {string} slug - workspace slug
+   * @param {{ onFileTreeChanged?: Function }} handlers - event callbacks
+   * @returns {Function} teardown function to close the connection
+   */
+  connectNotifications(slug, handlers = {}) {
+    if (!slug) return () => {};
+
+    // Build ws(s) URL for /notifications
+    const base = this.serverUrl.replace(/\/$/, '');
+    const url = `${base}/notifications?slug=${encodeURIComponent(slug)}`;
+
+    let ws;
+    let reconnectTimer = null;
+    let destroyed = false;
+
+    const connect = () => {
+      if (destroyed) return;
+      try {
+        ws = new WebSocket(url);
+      } catch (e) {
+        console.warn('[Collab] Notification WS connect error:', e.message);
+        scheduleReconnect();
+        return;
+      }
+
+      ws.onopen = () => {
+        console.log('[Collab] Notification WS connected for slug:', slug);
+      };
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'file-tree-changed' && msg.slug === slug) {
+            if (typeof handlers.onFileTreeChanged === 'function') {
+              handlers.onFileTreeChanged();
+            }
+          }
+        } catch (_) {
+          // Not JSON — ignore
+        }
+      };
+      ws.onclose = () => {
+        if (!destroyed) scheduleReconnect();
+      };
+      ws.onerror = () => {
+        // onclose will fire after this
+      };
+    };
+
+    const scheduleReconnect = () => {
+      if (reconnectTimer || destroyed) return;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, 3000);
+    };
+
+    connect();
+
+    // Return teardown function
+    return () => {
+      destroyed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (ws) { try { ws.close(); } catch (_) {} }
+    };
   }
 
   disconnect() {

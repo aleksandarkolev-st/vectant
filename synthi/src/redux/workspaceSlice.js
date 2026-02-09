@@ -88,9 +88,8 @@ export const saveFileContentThunk = createAsyncThunk(
         let usedCrdt = false;
         
         try {
-            // Build the key the same way collabClient does
-            const safePath = activeFile.path.replace(/[^a-zA-Z0-9_.\-\/]/g, '_');
-            const key = `workspace:${slug}:${safePath}`;
+            // Build the key the same way collabClient._roomKey() does (raw path, no sanitisation)
+            const key = `workspace:${slug}:${activeFile.path}`;
             const entry = collabClient.docs.get(key);
             
             if (entry && entry.ytext) {
@@ -110,10 +109,8 @@ export const saveFileContentThunk = createAsyncThunk(
         }
 
         try {
-            await api.saveFileContent(slug, activeFile.path, contentToSave, activeFile.name);
-            
-            // Sync to Git
-            dispatch(syncFileToGit({ slug, filePath: activeFile.path, content: contentToSave }));
+            // Single write through collab-server (writes to disk, GCS sync handled by auto-flush)
+            await dispatch(syncFileToGit({ slug, filePath: activeFile.path, content: contentToSave })).unwrap();
             dispatch(fetchGitStatus(slug));
 
         } catch (e) {

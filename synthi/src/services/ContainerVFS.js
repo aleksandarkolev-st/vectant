@@ -22,7 +22,7 @@ import { gitClient } from './gitClient';
 // Configuration
 // ============================================================================
 
-const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_URL || 'http://localhost:1234';
+const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
 const FLUSH_DEBOUNCE_MS = 100; // Debounce disk flushes
 const VALIDATION_INTERVAL_MS = 5000; // How often to validate client matches server
 
