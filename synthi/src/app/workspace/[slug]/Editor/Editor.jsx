@@ -1152,6 +1152,13 @@ const EditorPanel = ({
                                 }, cts.token);
 
                                 monacoDisp.dispose();
+                                cts.dispose();
+                                // Clear the reference so that the *next*
+                                // request does not wastefully cancel a
+                                // finished CTS.
+                                if (_lastCompletionCts === cts) {
+                                    _lastCompletionCts = null;
+                                }
 
                                 if (!result || token.isCancellationRequested) {
                                     console.log(`[LSP] provideCompletionItems: ${!result ? 'null result' : 'cancelled'} for ${backendLang}`);
