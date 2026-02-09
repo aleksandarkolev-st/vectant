@@ -702,8 +702,9 @@ const EditorPanel = ({
 
         Promise.all([
             import('monaco-languageclient'),
-            import('monaco-languageclient/vscodeApiWrapper')
-        ]).then(async ([{ MonacoLanguageClient }, { MonacoVscodeApiWrapper }]) => {
+            import('monaco-languageclient/vscodeApiWrapper'),
+            import('vscode-languageclient/lib/common/completion'),
+        ]).then(async ([{ MonacoLanguageClient }, { MonacoVscodeApiWrapper }, { CompletionItemFeature }]) => {
             if (languageClientsRef.current.has(backendLang)) {
                 lspInitPendingRef.current.delete(backendLang);
                 return;
@@ -724,6 +725,20 @@ const EditorPanel = ({
                         uri: "file:///synthi/",
                         name: "synthi"
                     }];
+                }
+                // Skip the built-in CompletionItemFeature.  It registers
+                // a VS Code completion provider through the extension host
+                // that races against our direct Monaco completion provider.
+                // When both are active, the built-in one returns empty
+                // results instantly (via middleware returning []), which
+                // causes VS Code's suggest model to dismiss the widget
+                // before our async provider's 34 items arrive.
+                registerFeature(feature) {
+                    if (feature instanceof CompletionItemFeature) {
+                        console.log('[LSP] Skipping built-in CompletionItemFeature — using direct provider');
+                        return;
+                    }
+                    super.registerFeature(feature);
                 }
             }
 
@@ -764,6 +779,12 @@ const EditorPanel = ({
                 // some RA versions to disable project discovery entirely.
             } : undefined;
 
+            // Timestamp of the last didChange middleware call.
+            // Declared here (before the client constructor) so the
+            // middleware closure and the completion provider can both
+            // access it.
+            let _lastDidChangeTs = 0;
+
             const languageClient = new SynthiLanguageClient({
                 name: `Synthi Language Client (${backendLang})`,
                 clientOptions: {
@@ -784,7 +805,15 @@ const EditorPanel = ({
                             return next(document);
                         },
                         didChange: (data, next) => {
-                            console.log('[LSP] middleware didChange →', typeof data);
+                            // The middleware receives a TextDocumentChangeEvent:
+                            //   { document: TextDocument, contentChanges: [...] }
+                            // TextDocument has .uri, .version, .languageId, etc.
+                            const doc = data?.document ?? data;
+                            const ver = doc?.version ?? data?.textDocument?.version ?? '?';
+                            const uri = doc?.uri?.toString?.() ?? data?.textDocument?.uri ?? '';
+                            const shortUri = typeof uri === 'string' ? uri.split('/').pop() : '?';
+                            console.log(`[LSP] middleware didChange → ${shortUri} v${ver}`);
+                            _lastDidChangeTs = performance.now();
                             return next(data);
                         },
                         didClose: (document, next) => {
@@ -797,33 +826,11 @@ const EditorPanel = ({
                             console.log('[LSP] middleware didSave', uri);
                             return next(document);
                         },
-                        // P0: Completions are handled by the direct Monaco
-                        // completion provider registered below, which sends
-                        // textDocument/completion straight to the server via
-                        // sendRequest().  We skip the built-in bridge here to
-                        // avoid duplicate requests — the bridge often fails
-                        // anyway because @codingame/monaco-vscode-api can't
-                        // resolve the TextDocument for the model URI.
-                        provideCompletionItem: async (document, position, context, token, next) => {
-                            // Return a proper empty CompletionList rather than
-                            // `undefined`.  With @codingame/monaco-vscode-api,
-                            // returning undefined can cause the VS-Code-based
-                            // suggest model to treat this provider's result as
-                            // "pending/unresolved" rather than "empty", which
-                            // blocks the widget from showing even when other
-                            // providers (our direct one) return real items.
-                            return [];
-                        },
-                        resolveCompletionItem: async (item, token, next) => {
-                            try {
-                                return await next(item, token);
-                            } catch (err) {
-                                // Return the unresolved item rather than failing —
-                                // the user still gets the completion, just without
-                                // extra documentation/detail.
-                                return item;
-                            }
-                        }
+                        // NOTE: provideCompletionItem middleware is NOT needed —
+                        // CompletionItemFeature is skipped entirely in
+                        // registerFeature() above, so the built-in bridge
+                        // never registers a completion provider.  Completions
+                        // are handled solely by the direct Monaco provider below.
                     },
                     errorHandler: {
                         error: () => ({ action: ErrorAction.Continue }),
@@ -878,11 +885,9 @@ const EditorPanel = ({
                 }
             }
             console.log(`[LSP] Channel ready for ${backendLang}`);
-            // Completions are handled entirely by monaco-languageclient's built-in
-            // provider (activated by the middleware passthrough).  No manual bridge
-            // needed — having both caused duplicate textDocument/completion requests
-            // and "Unmatched cancel notification" spam from the server.
-            const bridgeDisposables = [];
+            // Disposables for the direct completion provider(s) registered
+            // below.  Cleaned up when the data channel closes.
+            const completionDisposables = [];
 
 
             // start() sends 'initialize' to the server and waits for a response.
@@ -942,18 +947,11 @@ const EditorPanel = ({
                 }
             } catch (_) { /* language defaults may not exist */ }
 
-            // ── Direct Monaco completion provider (PRIMARY) ─────────
-            // @codingame/monaco-vscode-api's extension host layer often
-            // fails to create its internal TextDocument for the model URI
-            // (e.g. "Unable to retrieve document from URI"), which silently
-            // prevents the vscode-languageclient's built-in completion
-            // provider from working.  This direct provider bypasses the
-            // vscode-api layer entirely and sends textDocument/completion
-            // straight to the LSP server over JSON-RPC.
-            //
-            // This is the PRIMARY completion source — the middleware bridge
-            // above is a bonus that may or may not work depending on
-            // @codingame/monaco-vscode-api's TextDocument resolution.
+            // ── Direct Monaco completion provider ─────────────────
+            // Sends textDocument/completion straight to the LSP server
+            // over JSON-RPC, bypassing the vscode-languageclient's
+            // built-in CompletionItemFeature (which is skipped in
+            // registerFeature() to avoid dual-provider conflicts).
             {
                 const serverTriggerChars = languageClient.initializeResult
                     ?.capabilities?.completionProvider?.triggerCharacters || [];
@@ -1032,6 +1030,32 @@ const EditorPanel = ({
                 // outdated suggestions.
                 let _completionGeneration = 0;
                 let _currentCompletionGen = 0; // the live "latest" gen
+                // Track the cancellation token source for the last completion
+                // request so we can cancel it when a new one arrives.
+                let _lastCompletionCts = null;
+                // Debounce timer for trigger-character completions.
+                // Multi-char triggers like :: -> .. fire two separate trigger
+                // events in rapid succession.  Without debounce, the first
+                // char triggers a wasted request at an invalid position
+                // (e.g. `Vec:` instead of `Vec::`) and the second request
+                // may arrive before didChange propagates.
+                let _triggerDebounceTimer = null;
+                const TRIGGER_DEBOUNCE_MS = 100;
+                // Minimum gap (ms) between the last didChange notification
+                // and sending a completion request.  Ensures the server has
+                // time to ingest the change before we ask for completions.
+                const MIN_CHANGE_GAP_MS = 30;
+
+                // Cache the CancellationTokenSource constructor to avoid
+                // a dynamic import() on every completion request.
+                let _CancellationTokenSource = null;
+                const getCTS = async () => {
+                    if (!_CancellationTokenSource) {
+                        const mod = await import('vscode-jsonrpc');
+                        _CancellationTokenSource = mod.CancellationTokenSource;
+                    }
+                    return _CancellationTokenSource;
+                };
 
                 for (const langId of documentSelector) {
                     const disp = monacoInstance.languages.registerCompletionItemProvider(langId, {
@@ -1046,6 +1070,7 @@ const EditorPanel = ({
                                 triggerChar: context.triggerCharacter || '(none)',
                                 textBefore: textBeforeCursor.slice(-20),
                             });
+                            const providerT0 = performance.now();
                             if (!languageClient.isRunning()) {
                                 console.log('[LSP] provideCompletionItems: client not running, returning empty');
                                 return { suggestions: [] };
@@ -1073,20 +1098,126 @@ const EditorPanel = ({
                             // Build the LSP triggerKind:
                             //  1 = Invoked (Ctrl+Space or quickSuggestions auto-trigger)
                             //  2 = TriggerCharacter (typed a trigger char like . : etc.)
-                            //  3 = TriggerForIncompleteCompletions
                             const isTriggerChar = context.triggerKind === monacoInstance.languages.CompletionTriggerKind.TriggerCharacter;
-                            const lspTriggerKind = isTriggerChar ? 2 : 1;
 
-                            // NOTE: We rely on monaco-languageclient's native
-                            // didChange sync (via the middleware passthrough) to
-                            // keep the server up-to-date.  Sending a full-document
-                            // didChange before every completion is expensive and
-                            // floods slow servers (TS, Java).  If completions are
-                            // stale, the root cause is ordering/versioning, not
-                            // missing content — fix that at the transport layer.
+                            // ── Debounce trigger-character completions ────────
+                            // Multi-char triggers (::, ->, ..) fire two events
+                            // in quick succession.  Wait a short interval to
+                            // coalesce them and let didChange propagate.
+                            if (isTriggerChar) {
+                                // Cancel any pending debounce timer
+                                if (_triggerDebounceTimer) {
+                                    clearTimeout(_triggerDebounceTimer);
+                                    _triggerDebounceTimer = null;
+                                }
+                                await new Promise((resolve) => {
+                                    _triggerDebounceTimer = setTimeout(() => {
+                                        _triggerDebounceTimer = null;
+                                        resolve();
+                                    }, TRIGGER_DEBOUNCE_MS);
+                                    // If Monaco cancels while waiting, resolve
+                                    // immediately (we'll check the token below).
+                                    token.onCancellationRequested(() => resolve());
+                                });
+                                // After debounce, check if we've been superseded
+                                if (myGeneration !== _currentCompletionGen || token.isCancellationRequested) {
+                                    return { suggestions: [] };
+                                }
+                            }
+
+                            // ── Skip known-invalid trigger contexts ───────────
+                            // After the debounce we re-read the text before the
+                            // cursor.  Some single-char triggers are only valid
+                            // when preceded by certain characters:
+                            //  • Rust  ':' → only valid as '::' (path separator)
+                            //  • C/C++ '>' → only valid as '->'
+                            // Sending a request for a lone ':' or '>' wastes a
+                            // round-trip and often returns 0 items.
+                            //
+                            // For *valid* multi-char sequences (::, ->), keep
+                            // the original triggerKind=2 + triggerCharacter.
+                            // rust-analyzer specifically expects triggerKind=2
+                            // with ':' for :: path completions — sending as
+                            // Invoked causes it to skip the trigger-char path
+                            // resolution and return fewer or no results.
+                            let effectiveTriggerKind = isTriggerChar ? 2 : 1;
+                            let effectiveTriggerChar = isTriggerChar ? context.triggerCharacter : undefined;
+
+                            if (isTriggerChar) {
+                                const freshLine = model.getLineContent(position.lineNumber);
+                                const freshBefore = freshLine.substring(0, position.column - 1);
+                                const ch = context.triggerCharacter;
+                                const prev = freshBefore.length >= 2 ? freshBefore[freshBefore.length - 2] : '';
+
+                                const isInvalidContext =
+                                    (ch === ':' && prev !== ':' && (backendLang === 'rust' || backendLang === 'cpp' || backendLang === 'c')) ||
+                                    (ch === '>' && prev !== '-' && (backendLang === 'rust' || backendLang === 'cpp' || backendLang === 'c'));
+
+                                if (isInvalidContext) {
+                                    console.log(`[LSP] Skipping invalid trigger context '${prev}${ch}' for ${backendLang}`);
+                                    return { suggestions: [] };
+                                }
+
+                                // Log multi-char trigger detection for diagnostics
+                                const isMultiCharTrigger =
+                                    (ch === ':' && prev === ':') ||
+                                    (ch === '>' && prev === '-');
+                                if (isMultiCharTrigger) {
+                                    console.log(`[LSP] Multi-char trigger '${prev}${ch}' — keeping triggerKind=2 with char='${ch}'`);
+                                }
+                            }
+
+                            // We rely on the middleware passthrough for didChange
+                            // to keep the server in sync.  The micro-yield above
+                            // ensures the notification is flushed before we send
+                            // the completion request.
                             if (token.isCancellationRequested) return { suggestions: [] };
 
+                            // Cancel the previous in-flight completion request
+                            // so the server can free resources.  The JSON-RPC
+                            // layer sends $/cancelRequest automatically.
+                            if (_lastCompletionCts) {
+                                _lastCompletionCts.cancel();
+                                _lastCompletionCts = null;
+                            }
+
+                            console.log(`[LSP] Sending textDocument/completion for ${backendLang} (gen=${myGeneration}, L${position.lineNumber}:${position.column}, triggerKind=${effectiveTriggerKind}${effectiveTriggerChar ? ', char=' + effectiveTriggerChar : ''})`, {
+                                modelContent: model.getLineContent(position.lineNumber).substring(
+                                    Math.max(0, position.column - 21), position.column - 1
+                                ) + '|' + model.getLineContent(position.lineNumber).substring(
+                                    position.column - 1, position.column + 9
+                                ),
+                                sinceLastChange: `${(performance.now() - _lastDidChangeTs).toFixed(0)}ms`,
+                            });
+
                             try {
+                                // Yield at least MIN_CHANGE_GAP_MS after the
+                                // last didChange so the server has time to
+                                // ingest the notification before we send the
+                                // completion request.
+                                const sinceLast = _lastDidChangeTs > 0
+                                    ? performance.now() - _lastDidChangeTs
+                                    : Infinity; // No didChange yet — don't delay
+                                const yieldMs = Math.max(10, MIN_CHANGE_GAP_MS - sinceLast);
+                                await new Promise((r) => setTimeout(r, yieldMs));
+                                const actualGap = _lastDidChangeTs > 0
+                                    ? (performance.now() - _lastDidChangeTs).toFixed(0)
+                                    : 'n/a';
+                                console.log(`[LSP] Post-yield: ${actualGap}ms since last didChange (yielded ${yieldMs}ms) for gen=${myGeneration}`);
+                                if (token.isCancellationRequested || myGeneration !== _currentCompletionGen) {
+                                    return { suggestions: [] };
+                                }
+
+                                // Create a cancellation source that combines Monaco's
+                                // token with our own generation-based cancellation.
+                                const CancellationTokenSource = await getCTS();
+                                const cts = new CancellationTokenSource();
+                                _lastCompletionCts = cts;
+
+                                // If Monaco cancels, propagate to our CTS
+                                const monacoDisp = token.onCancellationRequested(() => cts.cancel());
+
+                                const t0 = performance.now();
                                 const result = await languageClient.sendRequest('textDocument/completion', {
                                     textDocument: { uri },
                                     position: {
@@ -1094,13 +1225,25 @@ const EditorPanel = ({
                                         character: position.column - 1,
                                     },
                                     context: {
-                                        triggerKind: lspTriggerKind,
-                                        triggerCharacter: isTriggerChar ? context.triggerCharacter : undefined,
+                                        triggerKind: effectiveTriggerKind,
+                                        triggerCharacter: effectiveTriggerChar,
                                     },
-                                });
+                                }, cts.token);
+                                const elapsed = (performance.now() - t0).toFixed(0);
+
+                                monacoDisp.dispose();
+                                cts.dispose();
+                                // Clear the reference so that the *next*
+                                // request does not wastefully cancel a
+                                // finished CTS.
+                                if (_lastCompletionCts === cts) {
+                                    _lastCompletionCts = null;
+                                }
 
                                 if (!result || token.isCancellationRequested) {
-                                    console.log(`[LSP] provideCompletionItems: ${!result ? 'null result' : 'cancelled'} for ${backendLang}`);
+                                    console.log(
+                                        `[LSP] provideCompletionItems: ${!result ? 'server returned null' : 'cancelled after response'} for ${backendLang} (gen=${myGeneration}, ${elapsed}ms)`
+                                    );
                                     return { suggestions: [] };
                                 }
 
@@ -1115,11 +1258,80 @@ const EditorPanel = ({
                                 }
 
                                 let items = Array.isArray(result) ? result : (result.items || []);
-                                const isIncomplete = !Array.isArray(result) && result.isIncomplete;
-                                console.log(`[LSP] Server returned ${items.length} raw items for ${backendLang} (incomplete=${!!isIncomplete})`);
+                                let isIncomplete = !Array.isArray(result) && result.isIncomplete;
+                                console.log(`[LSP] Server returned ${items.length} raw items for ${backendLang} in ${elapsed}ms (incomplete=${!!isIncomplete})`);
+
+                                // ── Retry on 0-item incomplete ────────────────
+                                // Servers (especially rust-analyzer) may return
+                                // incomplete=true with 0 items when their internal
+                                // index hasn't caught up with the latest didChange.
+                                // Wait a short interval and retry once.  This is
+                                // critical for multi-char triggers (::, ->) where
+                                // the didChange for the final character was only
+                                // just sent.
+                                if (items.length === 0 && isIncomplete && myGeneration === _currentCompletionGen && !token.isCancellationRequested) {
+                                    // Retry with escalating delays.  rust-analyzer
+                                    // cold start can take seconds to index stdlib.
+                                    // Use longer delays for rust since it's heavier.
+                                    //
+                                    // If the server responded in under 5ms, it
+                                    // hasn't even started processing — use bigger
+                                    // initial delay.
+                                    const instantResponse = parseFloat(elapsed) < 5;
+                                    const retryDelays = (backendLang === 'rust')
+                                        ? (instantResponse ? [500, 1000, 2000] : [400, 800, 1500])
+                                        : (instantResponse ? [400, 800] : [300, 600]);
+                                    for (let attempt = 0; attempt < retryDelays.length; attempt++) {
+                                        const delay = retryDelays[attempt];
+                                        console.log(`[LSP] 0 items + incomplete — retry ${attempt + 1} in ${delay}ms for ${backendLang} (gen=${myGeneration})`);
+                                        await new Promise((r) => setTimeout(r, delay));
+
+                                        if (myGeneration !== _currentCompletionGen || token.isCancellationRequested) {
+                                            return { suggestions: [] };
+                                        }
+
+                                        const cts2 = new CancellationTokenSource();
+                                        _lastCompletionCts = cts2;
+                                        const monacoDisp2 = token.onCancellationRequested(() => cts2.cancel());
+
+                                        // Alternate between trigger contexts on retries:
+                                        // even attempts: same as original (TriggerChar if trigger, else Invoked)
+                                        // odd attempts: Invoked (gives server a fresh context lookup)
+                                        const retryContext = (attempt % 2 === 1)
+                                            ? { triggerKind: 1 }
+                                            : { triggerKind: effectiveTriggerKind, triggerCharacter: effectiveTriggerChar };
+
+                                        const t1 = performance.now();
+                                        const retryResult = await languageClient.sendRequest('textDocument/completion', {
+                                            textDocument: { uri },
+                                            position: {
+                                                line: position.lineNumber - 1,
+                                                character: position.column - 1,
+                                            },
+                                            context: retryContext,
+                                        }, cts2.token);
+                                        const retryElapsed = (performance.now() - t1).toFixed(0);
+
+                                        monacoDisp2.dispose();
+                                        cts2.dispose();
+                                        if (_lastCompletionCts === cts2) _lastCompletionCts = null;
+
+                                        if (!retryResult || token.isCancellationRequested || myGeneration !== _currentCompletionGen) {
+                                            console.log(`[LSP] Retry ${attempt + 1}: ${!retryResult ? 'null' : 'stale/cancelled'} for ${backendLang} (gen=${myGeneration}, ${retryElapsed}ms)`);
+                                            return { suggestions: [] };
+                                        }
+
+                                        items = Array.isArray(retryResult) ? retryResult : (retryResult.items || []);
+                                        isIncomplete = !Array.isArray(retryResult) && retryResult.isIncomplete;
+                                        console.log(`[LSP] Retry ${attempt + 1} returned ${items.length} items for ${backendLang} in ${retryElapsed}ms (incomplete=${!!isIncomplete})`);
+
+                                        if (items.length > 0) break;
+                                        if (!isIncomplete) break; // server says it's done
+                                    }
+                                }
 
                                 if (items.length === 0) {
-                                    console.log(`[LSP] provideCompletionItems: 0 items after retry for ${backendLang}, returning empty`);
+                                    console.log(`[LSP] provideCompletionItems: server returned 0 items for ${backendLang} (gen=${myGeneration}, ${elapsed}ms, incomplete=${!!isIncomplete})`);
                                     return { suggestions: [], incomplete: !!isIncomplete };
                                 }
 
@@ -1134,9 +1346,37 @@ const EditorPanel = ({
                                 // or when the server range start is AFTER the cursor
                                 // (InsertReplaceEdit edge-case).
                                 const word = model.getWordUntilPosition(position);
+                                let rangeStartCol = word.word.length > 0
+                                    ? word.startColumn
+                                    : position.column;
+
+                                // When the word is empty (cursor right after :: . ->),
+                                // the default range is zero-width and Monaco has no
+                                // prefix to match against.  Widen it to include the
+                                // preceding separator chain so items can still show.
+                                if (word.word.length === 0 && position.column > 1) {
+                                    const lineText = model.getLineContent(position.lineNumber);
+                                    const textBefore = lineText.substring(0, position.column - 1);
+                                    // Walk backwards past separator chars (::, ., ->)
+                                    const sepMatch = textBefore.match(/[.:>-]+$/);
+                                    if (sepMatch) {
+                                        // Include the identifier before the separator
+                                        const beforeSep = textBefore.substring(0, textBefore.length - sepMatch[0].length);
+                                        const identMatch = beforeSep.match(/[\w$]+$/);
+                                        if (identMatch) {
+                                            // Don't move startCol — keep it at cursor.
+                                            // The filterText for items after :: should
+                                            // match against an empty prefix (all items show).
+                                            // But if the server provides a textEdit that
+                                            // starts before the separator, safeServerRange
+                                            // will handle it.
+                                        }
+                                    }
+                                }
+
                                 const defaultRange = {
                                     startLineNumber: position.lineNumber,
-                                    startColumn: word.word.length > 0 ? word.startColumn : position.column,
+                                    startColumn: rangeStartCol,
                                     endLineNumber: position.lineNumber,
                                     endColumn: position.column,
                                 };
@@ -1156,10 +1396,17 @@ const EditorPanel = ({
                                  */
                                 const safeServerRange = (textEdit) => {
                                     if (!textEdit) return null;
-                                    // textEdit may be TextEdit or InsertReplaceEdit
-                                    const range = textEdit.range
-                                        || textEdit.replace   // InsertReplaceEdit
-                                        || textEdit.insert;   // InsertReplaceEdit
+
+                                    // LSP defines two edit shapes:
+                                    //   TextEdit:           { range, newText }
+                                    //   InsertReplaceEdit:  { insert, replace, newText }
+                                    // For InsertReplaceEdit, prefer the `insert` range
+                                    // (narrower, doesn't overwrite text after cursor)
+                                    // so Monaco's prefix filtering stays aligned.
+                                    const isInsertReplace = !textEdit.range && (textEdit.insert || textEdit.replace);
+                                    const range = isInsertReplace
+                                        ? (textEdit.insert || textEdit.replace)
+                                        : textEdit.range;
                                     if (!range?.start || !range?.end) return null;
 
                                     // Use UTF-16 aware conversion
@@ -1202,18 +1449,49 @@ const EditorPanel = ({
                                         if (!/^[.:\->]+$/.test(gapText)) return null;
                                     }
 
-                                    return {
+                                    const result = {
                                         startLineNumber: startLine,
                                         startColumn: startCol,
                                         endLineNumber: endLine,
                                         endColumn: endCol,
                                     };
+
+                                    // For InsertReplaceEdit, also compute the replace
+                                    // range and return { inserting, replacing } if the
+                                    // replace range differs (Monaco supports this format).
+                                    if (isInsertReplace && textEdit.replace) {
+                                        const rep = textEdit.replace;
+                                        if (rep?.start && rep?.end) {
+                                            const repEndCol = lspCharToMonacoCol(rep.end.character);
+                                            if (repEndCol !== endCol) {
+                                                return {
+                                                    inserting: result,
+                                                    replacing: {
+                                                        startLineNumber: startLine,
+                                                        startColumn: startCol,
+                                                        endLineNumber: rep.end.line + 1,
+                                                        endColumn: repEndCol,
+                                                    },
+                                                };
+                                            }
+                                        }
+                                    }
+
+                                    return result;
                                 };
 
                                 const suggestions = items.map((item, idx) => {
+                                    // Handle both plain string labels and structured
+                                    // CompletionItemLabelDetails ({ label, detail, description })
                                     const label = typeof item.label === 'string'
                                         ? item.label
                                         : item.label?.label || '';
+                                    const labelDetail = typeof item.label === 'object'
+                                        ? item.label?.detail || ''
+                                        : '';
+                                    const labelDescription = typeof item.label === 'object'
+                                        ? item.label?.description || ''
+                                        : '';
 
                                     // Convert LSP documentation to Monaco format
                                     let doc = item.documentation;
@@ -1236,8 +1514,16 @@ const EditorPanel = ({
                                     const serverRange = safeServerRange(item.textEdit);
                                     const range = serverRange || defaultRange;
 
+                                    // Respect the server's filterText — it knows which
+                                    // characters match the typed prefix (e.g. snake_case
+                                    // vs camelCase, re-exports, etc.).  Only fall back
+                                    // to the label when truly absent.
+                                    const filterText = item.filterText || label;
+
                                     return {
-                                        label,
+                                        label: labelDetail
+                                            ? { label, detail: labelDetail, description: labelDescription }
+                                            : label,
                                         kind: lspKindToMonaco(item.kind),
                                         detail: item.detail || '',
                                         documentation: doc,
@@ -1245,7 +1531,7 @@ const EditorPanel = ({
                                         insertTextRules,
                                         range,
                                         sortText: item.sortText || String(idx).padStart(5, '0'),
-                                        filterText: item.filterText || label,
+                                        filterText,
                                         preselect: item.preselect,
                                         commitCharacters: item.commitCharacters,
                                         // Attach original LSP item for resolveCompletionItem
@@ -1264,12 +1550,20 @@ const EditorPanel = ({
                                     return { suggestions: [] };
                                 }
 
-                                console.log(`[LSP] Direct completion for ${backendLang}: ${suggestions.length} items (incomplete=${!!isIncomplete})`, {
+                                const totalMs = (performance.now() - providerT0).toFixed(0);
+                                console.log(`[LSP] Direct completion for ${backendLang}: ${suggestions.length} items in ${elapsed}ms (total=${totalMs}ms, gen=${myGeneration}, incomplete=${!!isIncomplete})`, {
                                     pos: { line: position.lineNumber, col: position.column },
                                     word: word.word || '(empty)',
-                                    range: defaultRange,
+                                    defaultRange,
+                                    // Show range decision for first 3 items
+                                    itemRanges: suggestions.slice(0, 3).map(s => ({
+                                        label: typeof s.label === 'string' ? s.label : s.label?.label,
+                                        filterText: s.filterText,
+                                        usedServerRange: s.range !== defaultRange,
+                                        range: s.range,
+                                    })),
                                     firstItem: suggestions[0] ? {
-                                        label: suggestions[0].label,
+                                        label: typeof suggestions[0].label === 'string' ? suggestions[0].label : suggestions[0].label?.label,
                                         insertText: suggestions[0].insertText?.substring(0, 40),
                                         filterText: suggestions[0].filterText,
                                         kind: suggestions[0].kind,
@@ -1277,43 +1571,116 @@ const EditorPanel = ({
                                 });
                                 return { suggestions, incomplete: !!isIncomplete };
                             } catch (err) {
+                                // Ensure the CTS is cleaned up on error too,
+                                // otherwise a failed request blocks future
+                                // cancel logic from seeing a null slot.
+                                if (_lastCompletionCts) {
+                                    try { _lastCompletionCts.dispose(); } catch (_) { /* already disposed */ }
+                                    _lastCompletionCts = null;
+                                }
                                 const msg = err?.message || String(err);
-                                if (msg === 'Canceled' || msg === 'cancelled' || err?.code === -32800) {
+                                const code = err?.code;
+
+                                // JSON-RPC cancellation / lifecycle codes:
+                                // -32800 = RequestCancelled
+                                // -32802 = ServerCancelled
+                                // -32803 = RequestFailed (server busy)
+                                // Also match common message strings from various
+                                // JSON-RPC libraries.
+                                const isCancellation =
+                                    code === -32800 || code === -32802 || code === -32803 ||
+                                    msg === 'Canceled' || msg === 'cancelled' ||
+                                    msg.includes('Request failed');
+                                if (isCancellation) {
                                     return { suggestions: [] };
                                 }
-                                console.warn(`[LSP] Direct completion error for ${backendLang}:`, msg);
+
+                                // JSON-RPC -32801 = ContentModified — the server
+                                // is still processing a didChange.  Retry once
+                                // after a delay.
+                                if (code === -32801 && myGeneration === _currentCompletionGen && !token.isCancellationRequested) {
+                                    console.log(`[LSP] ContentModified from ${backendLang} — retrying in 300ms (gen=${myGeneration})`);
+                                    try {
+                                        await new Promise((r) => setTimeout(r, 300));
+                                        if (myGeneration !== _currentCompletionGen || token.isCancellationRequested) {
+                                            return { suggestions: [] };
+                                        }
+                                        const CancellationTokenSource = await getCTS();
+                                        const cts3 = new CancellationTokenSource();
+                                        _lastCompletionCts = cts3;
+                                        const monacoDisp3 = token.onCancellationRequested(() => cts3.cancel());
+                                        const retryResult = await languageClient.sendRequest('textDocument/completion', {
+                                            textDocument: { uri },
+                                            position: { line: position.lineNumber - 1, character: position.column - 1 },
+                                            context: { triggerKind: 1 },
+                                        }, cts3.token);
+                                        monacoDisp3.dispose();
+                                        cts3.dispose();
+                                        if (_lastCompletionCts === cts3) _lastCompletionCts = null;
+                                        if (!retryResult || token.isCancellationRequested || myGeneration !== _currentCompletionGen) {
+                                            return { suggestions: [] };
+                                        }
+                                        const retryItems = Array.isArray(retryResult) ? retryResult : (retryResult.items || []);
+                                        console.log(`[LSP] ContentModified retry: ${retryItems.length} items from ${backendLang}`);
+                                        // Return incomplete=true so Monaco will
+                                        // re-trigger completions on next keystroke
+                                        // and pick up the full results then.
+                                        return { suggestions: [], incomplete: true };
+                                    } catch (retryErr) {
+                                        const retryMsg = retryErr?.message || '';
+                                        if (retryMsg !== 'Canceled' && retryMsg !== 'cancelled') {
+                                            console.warn(`[LSP] ContentModified retry failed for ${backendLang}:`, retryMsg);
+                                        }
+                                        return { suggestions: [] };
+                                    }
+                                }
+
+                                console.warn(`[LSP] Direct completion error for ${backendLang}:`, msg, code ? `(code=${code})` : '');
                                 return { suggestions: [] };
                             }
                         },
                         resolveCompletionItem: async (item, token) => {
-                            // Ask the LSP server for full documentation/detail
+                            // Ask the LSP server for full documentation/detail.
+                            // This is called lazily when the user highlights an
+                            // item in the suggest widget.
                             if (!languageClient.isRunning() || !item._lspItem) return item;
                             try {
                                 const resolved = await languageClient.sendRequest(
                                     'completionItem/resolve', item._lspItem
                                 );
-                                if (resolved && !token.isCancellationRequested) {
-                                    if (resolved.documentation) {
-                                        let doc = resolved.documentation;
-                                        if (doc && typeof doc === 'object' && doc.value) doc = { value: doc.value };
-                                        item.documentation = doc;
-                                    }
-                                    if (resolved.detail) item.detail = resolved.detail;
-                                    if (resolved.additionalTextEdits) {
-                                        item.additionalTextEdits = resolved.additionalTextEdits
-                                            .map(e => {
-                                                const r = lspRangeToMonaco(e.range);
-                                                if (!r) return null;
-                                                return { range: r, text: e.newText };
-                                            })
-                                            .filter(Boolean);
-                                    }
+                                if (!resolved || token.isCancellationRequested) return item;
+
+                                // Merge resolved fields back into the Monaco item
+                                if (resolved.documentation) {
+                                    let doc = resolved.documentation;
+                                    if (doc && typeof doc === 'object' && doc.value) doc = { value: doc.value };
+                                    item.documentation = doc;
                                 }
-                            } catch (_) { /* resolve is best-effort */ }
+                                if (resolved.detail) item.detail = resolved.detail;
+                                // Some servers refine insertText on resolve
+                                if (resolved.insertText && resolved.insertText !== item.insertText) {
+                                    item.insertText = resolved.insertText;
+                                }
+                                if (resolved.additionalTextEdits) {
+                                    item.additionalTextEdits = resolved.additionalTextEdits
+                                        .map(e => {
+                                            const r = lspRangeToMonaco(e.range);
+                                            if (!r) return null;
+                                            return { range: r, text: e.newText };
+                                        })
+                                        .filter(Boolean);
+                                }
+                            } catch (err) {
+                                // Resolve is best-effort — log but don't fail
+                                const msg = err?.message || '';
+                                if (msg !== 'Canceled' && msg !== 'cancelled') {
+                                    console.warn(`[LSP] resolveCompletionItem error:`, msg);
+                                }
+                            }
                             return item;
                         },
                     });
-                    bridgeDisposables.push(disp);
+                    completionDisposables.push(disp);
                 }
             }
 
@@ -1338,7 +1705,12 @@ const EditorPanel = ({
                             textDocument: {
                                 uri: activeUri,
                                 languageId: lang,
-                                version: currentModel.getVersionId?.() ?? 1,
+                                // Use version 1 (not getVersionId() which can
+                                // be very large after many edits).  The worker
+                                // tracks versions — starting high would make
+                                // all subsequent didChange versions look out-
+                                // of-order and get rejected.
+                                version: 1,
                                 text: content,
                             }
                         });
@@ -1438,8 +1810,18 @@ const EditorPanel = ({
             // we don't overwrite MonacoSocketAdapter's own close handler.
             lspChannel.addEventListener('close', async () => {
                 console.log(`[LSP] Channel closed for ${backendLang}`);
-                bridgeDisposables.forEach(d => d.dispose());
+                completionDisposables.forEach(d => d.dispose());
                 changeDisposable.dispose();
+                // Clean up any pending debounce timer
+                if (_triggerDebounceTimer) {
+                    clearTimeout(_triggerDebounceTimer);
+                    _triggerDebounceTimer = null;
+                }
+                // Dispose the CTS if a request was in-flight
+                if (_lastCompletionCts) {
+                    try { _lastCompletionCts.dispose(); } catch (_) {}
+                    _lastCompletionCts = null;
+                }
 
                 // P2: Send shutdown→exit for a clean server shutdown
                 if (languageClient.isRunning()) {
