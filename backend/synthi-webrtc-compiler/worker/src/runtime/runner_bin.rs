@@ -209,40 +209,44 @@ fn main() {
         eprintln!("[Runner] Crash handlers installed successfully");
     }
 
-    // Spawn Xvfb and setup X11
+    // When DISPLAY is pre-set, the worker manages Xvfb, GStreamer, and video
+    // streaming.  Skip creating our own Xvfb / X11 connection / SHM since the
+    // worker captures frames via GStreamer ximagesrc.  BUT we still need an SDL
+    // window + renderer so loaded modules can render into the worker's Xvfb.
     #[cfg(target_os = "linux")]
-    let (_xvfb_proc, x11_conn, _x11_screen_num, x11_root) = {
-        let existing_display = std::env::var("DISPLAY").ok();
-        let display_val = existing_display.as_deref().unwrap_or(":99");
+    let worker_managed_display = !std::env::var("DISPLAY").unwrap_or_default().is_empty();
+    #[cfg(not(target_os = "linux"))]
+    let worker_managed_display = false;
 
-        let child = if existing_display.is_none() {
-            let mut cmd = Command::new("Xvfb");
-            cmd.args(&[":99", "-screen", "0", "800x600x24"]);
-            let child = cmd.spawn().ok();
-            thread::sleep(Duration::from_millis(100));
-            std::env::set_var("DISPLAY", ":99");
-            child
-        } else {
-            eprintln!("[Runner] Using existing DISPLAY={}", display_val);
-            None
-        };
-
-        let (conn, screen_num) = x11rb::connect(Some(display_val)).expect("Failed to connect to X11");
+    #[cfg(target_os = "linux")]
+    let (_xvfb_proc, x11_conn, _x11_screen_num, x11_root) = if !worker_managed_display {
+        let mut cmd = Command::new("Xvfb");
+        cmd.args(&[":99", "-screen", "0", "800x600x24"]);
+        let c = cmd.spawn().ok();
+        thread::sleep(Duration::from_millis(100));
+        std::env::set_var("DISPLAY", ":99");
+        let (conn, screen_num) = x11rb::connect(Some(":99")).expect("Failed to connect to X11");
         let root = conn.setup().roots[screen_num].root;
-        (child, conn, screen_num, root)
+        (c, Some(conn), screen_num, root)
+    } else {
+        eprintln!("[Runner] Worker manages display — skipping Xvfb/X11/SHM (worker captures via ximagesrc)");
+        (None, None, 0, 0u32)
     };
 
     #[cfg(target_os = "linux")]
-    let (shm_seg, shm_ptr) = {
+    let (shm_seg, shm_ptr) = if let Some(ref conn) = x11_conn {
         let size = 800 * 600 * 4;
-        let (id, ptr) = worker::runtime::runner::capture::create_shm_segment(size)
-            .expect("Failed to create SHM");
-        let seg = x11_conn.generate_id().unwrap();
-        x11_conn.shm_attach(seg, id as u32, false).unwrap();
+        let (id, ptr) = worker::runtime::runner::capture::create_shm_segment(size).expect("Failed to create SHM");
+        let seg = conn.generate_id().unwrap();
+        conn.shm_attach(seg, id as u32, false).unwrap();
         (seg, ptr)
+    } else {
+        (0u32, ptr::null_mut())
     };
 
-    // Initialize SDL2
+    // Always init SDL2 — modules need a renderer to draw into.
+    // When worker manages display, the SDL window renders into the worker's Xvfb
+    // and the worker's GStreamer ximagesrc captures it automatically.
     #[cfg(target_os = "linux")]
     let (window, renderer) = unsafe { init_sdl() };
 
@@ -453,8 +457,17 @@ fn main() {
     // ============================================================
     // Session ID for Host KV scoping. Must be set via "set_session" command
     // before loading modules that use Host KV.
-    let mut session_id: Option<String> = None;
-    let mut session_id_cstring: Option<CString> = None;
+    // Read session from env var (set by worker when spawning us) as initial
+    // fallback. The worker also sends a 'set_session' text command, but
+    // having the env var ensures session is available immediately for the
+    // first module loads without a race against stdin ordering.
+    let mut session_id: Option<String> = std::env::var("SYNTHI_SESSION_ID").ok();
+    let mut session_id_cstring: Option<CString> = session_id
+        .as_ref()
+        .and_then(|s| CString::new(s.clone()).ok());
+    if let Some(ref sid) = session_id {
+        eprintln!("[Runner] Session ID from env: {}", sid);
+    }
     let kv_api = create_kv_api();
 
     #[cfg(target_os = "linux")]
@@ -1027,21 +1040,17 @@ fn main() {
         }
 
         #[cfg(target_os = "linux")]
-        {
-            // Only capture frames internally if NOT in ProcessIsolated mode.
-            // In ProcessIsolated mode, the Supervisor handles capture via GStreamer ximagesrc.
-            if !matches!(execution_mode, process_isolation::ExecutionMode::ProcessIsolated) {
-                worker::runtime::runner::capture::capture_frame(
-                    &x11_conn,
-                    x11_root,
-                    shm_seg,
-                    shm_ptr,
-                    &frame_tx,
-                    &mut frame_count,
-                    &mut frames_sent,
-                    &mut last_frame_log,
-                );
-            }
+        if let Some(ref conn) = x11_conn {
+             worker::runtime::runner::capture::capture_frame(
+                 conn,
+                 x11_root,
+                 shm_seg,
+                 shm_ptr,
+                 &frame_tx,
+                 &mut frame_count,
+                 &mut frames_sent,
+                 &mut last_frame_log
+             );
         }
 
         // Cap at ~60 FPS

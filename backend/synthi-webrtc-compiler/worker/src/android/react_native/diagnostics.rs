@@ -1,4 +1,4 @@
-use crate::android::routing::Diagnostic;
+use crate::android::routing::{Diagnostic, DiagnosticSeverity};
 
 /// Parses a line for Gradle build errors
 pub(crate) fn parse_gradle_diagnostic(line: &str) -> Option<Diagnostic> {
@@ -14,11 +14,15 @@ pub(crate) fn parse_gradle_diagnostic(line: &str) -> Option<Diagnostic> {
         .ok()
         .and_then(|re| re.captures(trimmed))
     {
-        let severity = caps.get(3)?.as_str().to_string();
+        let severity = match caps.get(3)?.as_str() {
+            "error" => DiagnosticSeverity::Error,
+            "warning" => DiagnosticSeverity::Warning,
+            _ => return None,
+        };
         return Some(Diagnostic {
-            file: Some(caps.get(1)?.as_str().to_string()),
-            line: caps.get(2)?.as_str().parse().ok(),
-            column: Some(1),
+            file: caps.get(1)?.as_str().to_string(),
+            line: caps.get(2)?.as_str().parse().ok()?,
+            column: 1,
             severity,
             message: caps.get(4)?.as_str().to_string(),
             code: None,
@@ -31,10 +35,10 @@ pub(crate) fn parse_gradle_diagnostic(line: &str) -> Option<Diagnostic> {
         .and_then(|re| re.captures(trimmed))
     {
         return Some(Diagnostic {
-            file: Some(caps.get(1)?.as_str().to_string()),
-            line: caps.get(2)?.as_str().parse().ok(),
-            column: caps.get(3)?.as_str().parse().ok(),
-            severity: "error".to_string(),
+            file: caps.get(1)?.as_str().to_string(),
+            line: caps.get(2)?.as_str().parse().ok()?,
+            column: caps.get(3)?.as_str().parse().ok()?,
+            severity: DiagnosticSeverity::Error,
             message: caps.get(4)?.as_str().to_string(),
             code: None,
         });
@@ -58,10 +62,10 @@ pub(crate) fn parse_metro_diagnostic(line: &str) -> Option<Diagnostic> {
             .and_then(|re| re.captures(trimmed))
     {
         return Some(Diagnostic {
-            file: Some(caps.get(1)?.as_str().to_string()),
-            line: caps.get(2)?.as_str().parse().ok(),
-            column: caps.get(3)?.as_str().parse().ok(),
-            severity: "error".to_string(),
+            file: caps.get(1)?.as_str().to_string(),
+            line: caps.get(2)?.as_str().parse().ok()?,
+            column: caps.get(3)?.as_str().parse().ok()?,
+            severity: DiagnosticSeverity::Error,
             message: caps.get(5)?.as_str().to_string(),
             code: Some(caps.get(4)?.as_str().to_string()),
         });
@@ -73,10 +77,10 @@ pub(crate) fn parse_metro_diagnostic(line: &str) -> Option<Diagnostic> {
         .and_then(|re| re.captures(trimmed))
     {
         return Some(Diagnostic {
-            file: Some(caps.get(1)?.as_str().to_string()),
-            line: caps.get(3)?.as_str().parse().ok(),
-            column: caps.get(4)?.as_str().parse().ok(),
-            severity: "error".to_string(),
+            file: caps.get(1)?.as_str().to_string(),
+            line: caps.get(3)?.as_str().parse().ok()?,
+            column: caps.get(4)?.as_str().parse().ok()?,
+            severity: DiagnosticSeverity::Error,
             message: caps.get(2)?.as_str().to_string(),
             code: None,
         });

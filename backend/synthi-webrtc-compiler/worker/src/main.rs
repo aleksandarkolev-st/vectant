@@ -897,11 +897,10 @@ async fn create_peer(
         let placeholder_video = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
                 mime_type: "video/H264".to_owned(),
-                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
-                rtcp_feedback: vec![RTCPFeedback {
-                    typ: "transport-cc".to_owned(),
-                    parameter: "".to_owned(),
-                }],
+                // Keep fmtp_line minimal — the real track (created by GStreamer) will
+                // replace this via replace_track() and carry the encoder's actual params.
+                // Overly specific profile-level-id here can cause SDP mismatches on
+                // some browsers if the negotiated profile differs.
                 ..Default::default()
             },
             "video".to_owned(),
@@ -1233,17 +1232,15 @@ async fn wire_peer_channels(
                                                 return;
                                             }
                                             
-                                            // Native Android (Java/Kotlin) emulator target
-                                            if target == "native-android-emulator" {
+                                            // Flutter Android emulator target
+                                            if target == "flutter-android-emulator" {
                                                 let session_id = req.session_id.clone().unwrap_or_else(|| {
                                                     format!("sess-{}-{}", chrono::Utc::now().timestamp_millis(), uuid::Uuid::new_v4().as_u128() % 100000)
                                                 });
                                                 let project_root = req.project_root.clone();
                                                 let slug = req.slug.clone();
                                                 let log_clone = log.clone();
-                                                let pc_clone = pc_for_compile.clone();
                                                 tokio::spawn(async move {
-                                                    // Download/sync the workspace if slug is provided.
                                                     let workspace_path = if let Some(s) = &slug {
                                                         let local_dir = std::path::PathBuf::from("/synthi").join(s);
                                                         let force_redownload = std::env::var("SYNTHI_MOBILE_FORCE_REDOWNLOAD")
@@ -1257,25 +1254,20 @@ async fn wire_peer_channels(
                                                         if force_redownload && local_dir.exists() {
                                                             if let Err(e) = std::fs::remove_dir_all(&local_dir) {
                                                                 eprintln!(
-                                                                    "[NativeAndroid] Failed to clear existing workspace {}: {}",
+                                                                    "[Flutter] Failed to clear existing workspace {}: {}",
                                                                     local_dir.display(),
                                                                     e
-                                                                );
-                                                            } else {
-                                                                eprintln!(
-                                                                    "[NativeAndroid] Cleared existing workspace {} (force redownload)",
-                                                                    local_dir.display()
                                                                 );
                                                             }
                                                         }
 
                                                         match storage::download(&s, None).await {
                                                             Ok(path) => {
-                                                                eprintln!("[NativeAndroid] Workspace ready at: {}", path.display());
+                                                                eprintln!("[Flutter] Workspace ready at: {}", path.display());
                                                                 path
                                                             },
                                                             Err(e) => {
-                                                                eprintln!("[NativeAndroid] Failed to download workspace: {}", e);
+                                                                eprintln!("[Flutter] Failed to download workspace: {}", e);
                                                                 let payload = serde_json::json!({
                                                                     "sessionId": session_id,
                                                                     "type": "mobile-status",
@@ -1287,29 +1279,26 @@ async fn wire_peer_channels(
                                                             }
                                                         }
                                                     } else {
-                                                        eprintln!("[NativeAndroid] No slug provided, cannot download workspace");
+                                                        eprintln!("[Flutter] No slug provided, cannot download workspace");
                                                         let payload = serde_json::json!({
                                                             "sessionId": session_id,
                                                             "type": "mobile-status",
                                                             "status": "error",
-                                                            "message": "No workspace slug provided for native Android build",
+                                                            "message": "No workspace slug provided for Flutter build",
                                                         });
                                                         let _ = log_clone.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
                                                         return;
                                                     };
 
-                                                    eprintln!("[NativeAndroid] Starting native Android build for session: {}", session_id);
-                                                    
-                                                    // Use the native Android job handler
-                                                    if let Err(e) = crate::android::job::handle_native_android_job_simple(
+                                                    if let Err(e) = crate::android::job::handle_flutter_emulator_job(
                                                         log_clone,
                                                         session_id.clone(),
                                                         workspace_path,
                                                         project_root,
                                                         false, // debug build by default
-                                                        pc_clone,
+                                                        pc_for_compile.clone(),
                                                     ).await {
-                                                        eprintln!("[Main] Native Android emulator job failed: {:?}", e);
+                                                        eprintln!("[Main] Flutter emulator job failed: {:?}", e);
                                                     }
                                                 });
                                                 return;
@@ -1378,11 +1367,16 @@ async fn wire_peer_channels(
                     let sdl_store_for_msg = sdl_store_outer.clone();
                     let runner_store_for_term = runner_store_outer.clone();
                     let build_log_store_for_term = store.clone();
+                    // Track which sessions we've already warned about missing x11 senders
+                    // to avoid flooding logs with repeated messages on every mouse/key event.
+                    let x11_warned: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>> =
+                        Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
                     dc.on_message(Box::new(move |msg| {
                         let term_store_for_msg = term_store.clone();
                         let sdl_store = sdl_store_for_msg.clone();
                         let runner_store_term = runner_store_for_term.clone();
                         let build_log_term = build_log_store_for_term.clone();
+                        let x11_warned = x11_warned.clone();
                         async move {
                             if msg.is_string {
                                 // diagnostic log
@@ -1414,21 +1408,25 @@ async fn wire_peer_channels(
                                                             // Take and destroy runner state
                                                             let mut rg = runner_store_term.lock().await;
                                                             if let Some(mut state) = rg.take() {
+                                                                // Stop GStreamer pipeline FIRST (before killing Xvfb)
+                                                                // to avoid capture-from-dead-display crashes
+                                                                if let Some(ref pipeline) = state.gst_pipeline {
+                                                                    let _ = pipeline.set_state(gst::State::Null);
+                                                                    println!("[worker] GStreamer pipeline stopped");
+                                                                }
+                                                                state.gst_pipeline = None;
                                                                 // Kill the runner process
                                                                 if let Some(ref mut child) = state.process {
                                                                     let _ = child.kill().await;
                                                                     println!("[worker] runner process killed");
                                                                 }
-                                                                // Kill Xvfb
+                                                                // Kill Xvfb (safe now that GStreamer is stopped)
                                                                 if let Some(ref mut xvfb) = state.xvfb_process {
                                                                     let _ = xvfb.kill().await;
                                                                     println!("[worker] Xvfb killed");
                                                                 }
-                                                                // Stop GStreamer pipeline
-                                                                if let Some(ref pipeline) = state.gst_pipeline {
-                                                                    let _ = pipeline.set_state(gst::State::Null);
-                                                                    println!("[worker] GStreamer pipeline stopped");
-                                                                }
+                                                                // Drop the sdl_tx sender to close the xdotool channel
+                                                                state.sdl_tx = None;
                                                                 drop(state);
                                                             }
                                                             // Clean up SDL and terminal input senders for this session
@@ -1439,6 +1437,11 @@ async fn wire_peer_channels(
                                                             {
                                                                 let mut term_guard = term_store_for_msg.lock().await;
                                                                 term_guard.remove(sid);
+                                                            }
+                                                            // Reset x11 warning so it fires again if session reconnects
+                                                            {
+                                                                let mut warned = x11_warned.lock().await;
+                                                                warned.remove(sid);
                                                             }
                                                             // Notify frontend that the runner has ended
                                                             let log_guard = build_log_term.lock().await;
@@ -1498,7 +1501,12 @@ async fn wire_peer_channels(
                                                             let _ = sender.send(cmd);
                                                         }
                                                     } else {
-                                                        println!("[worker] no x11 sender for session {}", sid);
+                                                        // Only warn once per session to avoid log spam
+                                                        // (this fires on every mouse/key event)
+                                                        let mut warned = x11_warned.lock().await;
+                                                        if warned.insert(sid.to_string()) {
+                                                            println!("[worker] no x11 sender for session {} (further warnings suppressed)", sid);
+                                                        }
                                                     }
                                                 }
                                             }

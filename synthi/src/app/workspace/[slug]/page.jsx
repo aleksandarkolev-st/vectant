@@ -1378,6 +1378,35 @@ export default function EditorPage({ params }) {
         }
     }, [rawFiles, slug]);
 
+    // Helper to detect if source code contains Flutter imports
+    const detectFlutterInSource = useCallback((source) => {
+        if (!source) return false;
+        return source.includes('package:flutter/');
+    }, []);
+
+    // Helper to detect if workspace is a Flutter project (checks pubspec.yaml)
+    const detectFlutterProject = useCallback(async () => {
+        try {
+            const pubspecFile = rawFiles?.find(f => 
+                f.name === 'pubspec.yaml' && 
+                (!f.path || f.path === 'pubspec.yaml' || f.path === '/pubspec.yaml')
+            );
+            if (!pubspecFile) return false;
+            
+            const cached = fileCache.get('pubspec.yaml');
+            let content = cached;
+            if (content === undefined) {
+                content = await api.fetchFileContent(slug, 'pubspec.yaml');
+            }
+            if (!content) return false;
+            
+            return content.includes('sdk: flutter');
+        } catch (e) {
+            console.debug('Failed to detect Flutter project', e);
+            return false;
+        }
+    }, [rawFiles, slug]);
+
     const handleRun = useCallback(async ({ skipCancel = false } = {}) => {
         if (!activeFile) {
             console.warn('No active file selected for compilation.');
@@ -1432,11 +1461,22 @@ export default function EditorPage({ params }) {
         const hasRnImports = isJsxFile && detectReactNativeInSource(source);
         const hasRnPackage = await detectReactNativeProject();
         const isReactNative = hasRnImports || hasRnPackage;
-        const target = isReactNative ? 'react-native-emulator' : null;
+
+        // Detect Flutter
+        const isDartFile = ext === 'dart';
+        const hasFlutterImports = isDartFile && detectFlutterInSource(source);
+        const hasFlutterPackage = await detectFlutterProject();
+        const isFlutter = hasFlutterImports || hasFlutterPackage;
+
+        let target = null;
+        if (isReactNative) target = 'react-native-emulator';
+        else if (isFlutter) target = 'flutter-android-emulator';
+
+        const isMobile = isReactNative || isFlutter;
 
         // Auto-open the emulator panel when we run a mobile build.
         let mobileSid = null;
-        if (isReactNative) {
+        if (isMobile) {
             // Cancel previous session if restart
             if (emulatorSessionId && !skipCancel) {
                 console.log('[handleRun] Restarting - cancelling previous session:', emulatorSessionId);
@@ -1453,12 +1493,16 @@ export default function EditorPage({ params }) {
         // Derive project root from active file's directory path
         // e.g., "mobile/app.tsx" -> "mobile", "src/screens/Home.tsx" -> "src/screens"
         let projectRoot = null;
-        if (isReactNative && filename) {
+        if (isMobile && filename) {
             const fileParts = filename.replace(/\\/g, '/').split('/');
             // Remove the filename to get directory
             fileParts.pop();
             projectRoot = fileParts.join('/') || '/';
-            appendBuildLog(`Detected React Native project at: ${projectRoot}`);
+            if (isReactNative) {
+                appendBuildLog(`Detected React Native project at: ${projectRoot}`);
+            } else if (isFlutter) {
+                appendBuildLog(`Detected Flutter project at: ${projectRoot}`);
+            }
         }
 
         try {

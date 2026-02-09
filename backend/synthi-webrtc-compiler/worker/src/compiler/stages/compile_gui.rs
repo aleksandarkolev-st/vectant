@@ -22,6 +22,14 @@ pub async fn compile_gui(
 ) -> Result<Option<String>> {
     let dir_path = &ctx.workspace_path;
 
+    // Skip compilation entirely when the GUI source is empty or whitespace-only.
+    // An empty .cpp compiles to a valid .so with no exported symbols, which the
+    // runner's validator will reject ("Module 'gui' missing required symbols").
+    if processed_gui.trim().is_empty() {
+        eprintln!("[CompileGUI] Skipping – no GUI content");
+        return Ok(None);
+    }
+
     if split_data.get("gui").is_some() {
         // Only compile GUI if scope includes it
         if rebuild_scope == RebuildScope::Both || rebuild_scope == RebuildScope::GuiOnly {
@@ -106,6 +114,7 @@ pub async fn compile_gui(
 
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);
+                    eprintln!("[CompileGUI] g++ FAILED:\n{}", stderr);
                     let payload = serde_json::json!({
                         "sessionId": session_id.clone(),
                         "status": "done",

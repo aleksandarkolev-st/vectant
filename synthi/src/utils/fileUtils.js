@@ -12,6 +12,9 @@ export const getFileLanguage = (fileName) => {
         'tsx': 'typescript',
         'py': 'python',
         'java': 'java',
+        'kt': 'kotlin',
+        'kts': 'kotlin',
+        'dart': 'dart',
         'cpp': 'cpp',
         'c': 'c',
         'cs': 'csharp',
@@ -74,10 +77,12 @@ export const findFirstFile = (nodes) => {
     return null;
 };
 
+// TO DO: MERGE findFileInTree and findFolderInTree into a single function with a type parameter.
+
 /**
- * Recursively finds a file by full path for existence check (Creation validation).
+ * Recursively finds a file by its full path for existence check (Creation validation).
  * @param {Array<Node>} nodes - File tree nodes.
- * @param {string} filePath - Full path of the file to find.
+ * @param {string} filePath - Full path of the file to find (e.g., "folder1/folder2/file.txt").
  * @returns {Object | null} The file node found.
  */
 export const findFileInTree = (nodes, filePath) => {
@@ -95,9 +100,9 @@ export const findFileInTree = (nodes, filePath) => {
 
 
 /**
- * Recursively finds a folder by full path for existence check (Creation validation).
+ * Recursively finds a folder by its full path for existence check (Creation validation).
  * @param {Array<Node>} nodes - File tree nodes.
- * @param {string} folderPath - Full path of the folder to find.
+ * @param {string} folderPath - Full path of the folder to find (e.g., "folder1/folder2").
  * @returns {Object | null} The folder node found.
  */
 export const findFolderInTree = (nodes, folderPath) => {
