@@ -496,7 +496,7 @@ class GitService {
                 if (!remotes || remotes.length === 0) {
                     try {
                         const workspaceManager = require('./workspaceManager');
-                        const ws = workspaceManager.getAllWorkspaces().find(w => w.slug === slug);
+                        const ws = workspaceManager.getBySlug(slug);
                         if (ws && ws.repoUrl) {
                             await git.addRemote('origin', ws.repoUrl);
                         } else {
@@ -1085,7 +1085,24 @@ class GitService {
         await fs.promises.mkdir(dir, { recursive: true });
         await fs.promises.writeFile(fullPath, content);
     }
-    
+
+    /**
+     * Rename / move a file or directory.
+     * @param {string} slug - Workspace slug
+     * @param {string} oldPath - Current relative path
+     * @param {string} newPath - Desired relative path
+     * @returns {Promise<{success: boolean}>}
+     */
+    async renameItem(slug, oldPath, newPath) {
+        const repoPath = this.getRepoPath(slug);
+        const absOld = path.join(repoPath, oldPath);
+        const absNew = path.join(repoPath, newPath);
+        // Ensure the target directory exists
+        await fs.promises.mkdir(path.dirname(absNew), { recursive: true });
+        await fs.promises.rename(absOld, absNew);
+        return { success: true };
+    }
+
     async deleteFile(slug, filePath) {
         const repoPath = this.getRepoPath(slug);
         const fullPath = path.join(repoPath, filePath);
