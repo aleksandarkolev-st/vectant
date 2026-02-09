@@ -1,839 +1,868 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { fetchGitStatus, fetchRemote, commitChanges, pushChanges, pullChanges, stageFile, unstageFile, discardChange, initRepo, cloneRepo, addRemote, removeRemote, fetchRemotes, fetchCommitHistory, fetchUnpushedCommits, fetchIncomingCommits, fetchStashList, stashPush, stashPop, stashDrop, clearError, stageAll, unstageAll, discardAll, resolveConflictOurs, resolveConflictTheirs, markResolved, abortMerge } from '@/redux/gitSlice';
+import {
+  fetchGitStatus, fetchRemote, commitChanges, pushChanges, pullChanges,
+  stageFile, unstageFile, discardChange, initRepo, cloneRepo,
+  addRemote, removeRemote, fetchRemotes, fetchCommitHistory,
+  fetchUnpushedCommits, fetchIncomingCommits, fetchStashList,
+  stashPush, stashPop, stashDrop, clearError, stageAll, unstageAll,
+  discardAll, resolveConflictOurs, resolveConflictTheirs,
+  markResolved, abortMerge
+} from '@/redux/gitSlice';
 import { refreshWorkspaceThunk, openDiffThunk, fetchFilesThunk, selectFileThunk } from '@/redux/workspaceSlice';
-import { RefreshCw, Check, UploadCloud, Plus, Minus, DownloadCloud, Undo2, Globe, Trash2, Copy, Archive, ArchiveRestore, AlertTriangle, GitMerge, X, Edit3 } from 'lucide-react';
+import {
+  RefreshCw, Check, UploadCloud, Plus, Minus, DownloadCloud,
+  Undo2, Globe, Trash2, Copy, Archive, ArchiveRestore,
+  AlertTriangle, GitMerge, X, Edit3, Search, ChevronDown, ChevronRight,
+  ExternalLink, ShieldAlert, ArrowUpCircle, ArrowDownCircle
+} from 'lucide-react';
 import { getFileLanguage } from '@/utils/fileUtils';
+import {
+  maskRemoteUrl, urlContainsToken, detectProvider, humanRemoteUrl,
+  commitWebUrl, parseConventionalCommit, ccColor, groupCommitsByDate,
+  buildCommitGraph, relativeTime
+} from './gitUtils';
+
+/* ─────────────── tiny sub-components ─────────────── */
+
+/** GitHub / GitLab / Bitbucket / Azure logo SVGs (16×16) */
+function ProviderIcon({ provider, className = 'w-3.5 h-3.5' }) {
+  if (provider === 'github') {
+    return (
+      <svg className={className} viewBox="0 0 16 16" fill="currentColor">
+        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38
+        0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15
+        -.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87
+        .51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12
+        0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82
+        2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65
+        3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013
+        0 0016 8c0-4.42-3.58-8-8-8z" />
+      </svg>
+    );
+  }
+  if (provider === 'gitlab') {
+    return (
+      <svg className={className} viewBox="0 0 16 16" fill="currentColor">
+        <path d="M15.97 9.058l-.895-2.756L13.3.842a.37.37 0 00-.702 0L10.82 6.302H5.18L3.402.842a.37.37 0 00-.702 0L.925 6.302.03 9.058a.734.734 0 00.267.82L8 15.227l7.703-5.35a.734.734 0 00.267-.819" />
+      </svg>
+    );
+  }
+  if (provider === 'bitbucket') {
+    return (
+      <svg className={className} viewBox="0 0 16 16" fill="currentColor">
+        <path d="M.778 1.211a.768.768 0 00-.768.892l2.17 13.177a1.043 1.043 0 001.032.862h9.825a.768.768 0 00.768-.646L16 2.103a.768.768 0 00-.768-.892H.778zM9.68 10.592H6.35L5.474 6.166h5.112L9.68 10.592z" />
+      </svg>
+    );
+  }
+  return <Globe className={className} strokeWidth={1.5} />;
+}
+
+/** Collapsible section header */
+function SectionHeader({ title, count, children, defaultOpen = true, actions }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="mb-3">
+      <div className="flex items-center gap-1 w-full px-1 py-0.5">
+        <button
+          onClick={() => setOpen(v => !v)}
+          className="flex items-center gap-1 text-xs font-semibold text-[#a1a1aa] hover:text-[#e4e4e7] transition-colors select-none"
+        >
+          {open
+            ? <ChevronDown className="w-3 h-3 flex-shrink-0" strokeWidth={2} />
+            : <ChevronRight className="w-3 h-3 flex-shrink-0" strokeWidth={2} />}
+          <span className="uppercase tracking-wider">{title}</span>
+        </button>
+        {count > 0 && (
+          <span className="text-[10px] bg-[#27272a] text-[#a1a1aa] px-1.5 rounded-full font-normal">{count}</span>
+        )}
+        {actions && <div className="ml-auto flex items-center gap-0.5">{actions}</div>}
+      </div>
+      {open && <div className="mt-1">{children}</div>}
+    </div>
+  );
+}
+
+/** CC-styled commit message */
+function CommitMessage({ message }) {
+  const cc = parseConventionalCommit(message);
+  if (!cc) return <span className="truncate text-[#e4e4e7]">{message}</span>;
+  return (
+    <span className="truncate">
+      <span className={`inline-block px-1 py-0 rounded text-[10px] font-semibold mr-1 leading-tight ${ccColor(cc.type)}`}>
+        {cc.type}
+      </span>
+      {cc.scope && <span className="text-[#71717a] text-[10px] mr-1">({cc.scope})</span>}
+      {cc.breaking && <span className="text-red-400 text-[10px] mr-1">!</span>}
+      <span className="text-[#e4e4e7]">{cc.subject}</span>
+    </span>
+  );
+}
+
+/** Commit graph column (SVG) */
+function CommitGraphColumn({ graphNode, rowHeight = 32, totalLanes }) {
+  if (!graphNode) return null;
+  const cols = Math.max(totalLanes || 1, (graphNode.laneCount || 1));
+  const colW = 14;
+  const width = cols * colW + 6;
+  const cx = graphNode.col * colW + colW / 2 + 3;
+  const cy = rowHeight / 2;
+  const r = graphNode.isMerge ? 5 : 3.5;
+
+  return (
+    <svg width={width} height={rowHeight} className="flex-shrink-0" style={{ minWidth: width }}>
+      {/* Active lane lines */}
+      {graphNode.activeLanes.map((lane, idx) => {
+        if (lane === null) return null;
+        const x = idx * colW + colW / 2 + 3;
+        const color = `var(--graph-${idx % 8})`;
+        return (
+          <line key={idx} x1={x} y1={0} x2={x} y2={rowHeight} stroke={color} strokeWidth={1.5} opacity={0.4} />
+        );
+      })}
+      {/* Merge lines */}
+      {graphNode.mergeFromCols.map((mc, i) => {
+        const mx = mc * colW + colW / 2 + 3;
+        return (
+          <line key={`m-${i}`} x1={mx} y1={0} x2={cx} y2={cy} stroke={graphNode.color} strokeWidth={1.5} opacity={0.6} />
+        );
+      })}
+      {/* Node */}
+      <circle cx={cx} cy={cy} r={r} fill={graphNode.isMerge ? '#18181b' : graphNode.color}
+        stroke={graphNode.color} strokeWidth={graphNode.isMerge ? 2 : 0} />
+    </svg>
+  );
+}
+
+/* ───── Security alert banner ─────────────────────── */
+
+function TokenSecurityAlert({ remotes, onDismiss }) {
+  const hasToken = useMemo(() => (remotes || []).some(r =>
+    urlContainsToken(r?.refs?.push) || urlContainsToken(r?.refs?.fetch)
+  ), [remotes]);
+
+  if (!hasToken) return null;
+
+  return (
+    <div className="mb-3 p-2 bg-amber-900/30 border border-amber-600/50 rounded text-xs space-y-1">
+      <div className="flex items-start gap-1.5">
+        <ShieldAlert className="w-3.5 h-3.5 text-amber-400 flex-shrink-0 mt-0.5" />
+        <div>
+          <p className="text-amber-300 font-semibold">Access token detected in remote URL</p>
+          <p className="text-amber-200/70 mt-0.5 leading-relaxed">
+            A Personal Access Token was found in your remote configuration. Consider revoking it
+            and using a credential manager or SSH keys instead for better security.
+          </p>
+        </div>
+      </div>
+      <button
+        onClick={onDismiss}
+        className="text-[10px] text-amber-400 hover:text-amber-300 underline mt-1"
+      >
+        Dismiss
+      </button>
+    </div>
+  );
+}
+
+/* ═════════════════ MAIN COMPONENT ═════════════════ */
 
 export function GitStatus({ slug }) {
-    const dispatch = useDispatch();
-    const { status, loading, error, remotes, stashList } = useSelector(state => state.git);
-    const { commitHistory, unpushedCommits, incomingCommits } = useSelector(state => state.git);
-    const [message, setMessage] = useState('');
-    const [commitBody, setCommitBody] = useState(''); // Multi-line commit body
-    const [showCommitBody, setShowCommitBody] = useState(false);
-    const [showAddRemote, setShowAddRemote] = useState(false);
-    const [newRemoteName, setNewRemoteName] = useState('origin');
-    const [newRemoteUrl, setNewRemoteUrl] = useState('');
-    const [showAllCommits, setShowAllCommits] = useState(false);
-    const [showStash, setShowStash] = useState(false);
-    const [stashMessage, setStashMessage] = useState('');
-    
-    // Use visibility-based refresh instead of constant polling
-    const refreshGitData = useCallback(() => {
-        if (slug) {
-            dispatch(fetchGitStatus(slug));
-            dispatch(fetchRemotes(slug));
-            dispatch(fetchCommitHistory({ slug }));
-            dispatch(fetchUnpushedCommits({ slug, max: 50 }));
-            dispatch(fetchIncomingCommits({ slug, max: 50 }));
-            dispatch(fetchStashList(slug));
-        }
-    }, [slug, dispatch]);
+  const dispatch = useDispatch();
+  const { status, loading, error, actionError, remotes, stashList } = useSelector(s => s.git);
+  const { commitHistory, unpushedCommits, incomingCommits } = useSelector(s => s.git);
+  const [message, setMessage] = useState('');
+  const [commitBody, setCommitBody] = useState('');
+  const [showCommitBody, setShowCommitBody] = useState(false);
+  const [showAddRemote, setShowAddRemote] = useState(false);
+  const [newRemoteName, setNewRemoteName] = useState('origin');
+  const [newRemoteUrl, setNewRemoteUrl] = useState('');
+  const [showAllCommits, setShowAllCommits] = useState(false);
+  const [stashMessage, setStashMessage] = useState('');
+  const [cloneUrl, setCloneUrl] = useState('');
+  const [showClone, setShowClone] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showSearch, setShowSearch] = useState(false);
+  const [securityDismissed, setSecurityDismissed] = useState(false);
 
-    useEffect(() => {
-        if (slug) {
-            // Initial fetch
-            refreshGitData();
-            
-            // Refresh on window focus instead of constant polling
-            const handleFocus = () => {
-                refreshGitData();
-            };
-            
-            window.addEventListener('focus', handleFocus);
-            
-            // Light poll every 30 seconds instead of 5 (only status)
-            const interval = setInterval(() => {
-                if (document.hasFocus()) {
-                    dispatch(fetchGitStatus(slug));
-                }
-            }, 30000); 
-            
-            return () => {
-                clearInterval(interval);
-                window.removeEventListener('focus', handleFocus);
-            };
-        }
-    }, [slug, dispatch, refreshGitData]);
+  // ── data refresh ───────────────────────────────
+  const refreshGitData = useCallback(() => {
+    if (!slug) return;
+    dispatch(fetchGitStatus(slug));
+    dispatch(fetchRemotes(slug));
+    dispatch(fetchCommitHistory({ slug }));
+    dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+    dispatch(fetchIncomingCommits({ slug, max: 50 }));
+    dispatch(fetchStashList(slug));
+  }, [slug, dispatch]);
 
-    const handleSync = () => {
-        if (slug) {
-            dispatch(fetchRemote(slug));
-            dispatch(fetchRemotes(slug));
-            dispatch(fetchCommitHistory({ slug }));
-            dispatch(fetchUnpushedCommits({ slug, max: 50 }));
-            dispatch(fetchIncomingCommits({ slug, max: 50 }));
-        }
-    };
+  useEffect(() => {
+    if (!slug) return;
+    refreshGitData();
+    const handleFocus = () => refreshGitData();
+    window.addEventListener('focus', handleFocus);
+    const interval = setInterval(() => {
+      if (document.hasFocus()) dispatch(fetchGitStatus(slug));
+    }, 30000);
+    return () => { clearInterval(interval); window.removeEventListener('focus', handleFocus); };
+  }, [slug, dispatch, refreshGitData]);
 
-    const handleAddRemote = async () => {
-        if (slug && newRemoteName && newRemoteUrl) {
-            // Basic validation for URL like 'https://' or git@ as SSH
-            const valid = newRemoteUrl.startsWith('http://') || newRemoteUrl.startsWith('https://') || newRemoteUrl.includes('@');
-            if (!valid) {
-                alert('Please enter a valid remote URL (https://... or git@...)');
-                return;
-            }
-            await dispatch(addRemote({ slug, name: newRemoteName, url: newRemoteUrl }));
-            setShowAddRemote(false);
-            setNewRemoteUrl('');
-        }
-    };
+  // ── handlers ───────────────────────────────────
+  const handleSync = () => {
+    if (!slug) return;
+    dispatch(fetchRemote(slug));
+    dispatch(fetchRemotes(slug));
+    dispatch(fetchCommitHistory({ slug }));
+    dispatch(fetchUnpushedCommits({ slug, max: 50 }));
+    dispatch(fetchIncomingCommits({ slug, max: 50 }));
+  };
 
-    const handleRemoveRemote = async (name) => {
-        if (slug && name) {
-            if (confirm(`Are you sure you want to remove remote '${name}'?`)) {
-                await dispatch(removeRemote({ slug, name }));
-            }
-        }
-    };
+  const handleAddRemote = async () => {
+    if (!slug || !newRemoteName || !newRemoteUrl) return;
+    const valid = newRemoteUrl.startsWith('http://') || newRemoteUrl.startsWith('https://') || newRemoteUrl.includes('@');
+    if (!valid) { alert('Please enter a valid remote URL (https://... or git@...)'); return; }
+    await dispatch(addRemote({ slug, name: newRemoteName, url: newRemoteUrl }));
+    setShowAddRemote(false);
+    setNewRemoteUrl('');
+  };
 
-    const handlePull = async () => {
-        if (slug) {
-            const result = await dispatch(pullChanges(slug));
-            if (pullChanges.fulfilled.match(result)) {
-                dispatch(refreshWorkspaceThunk());
-            }
-        }
-    };
-
-    const handlePush = () => {
-        if (slug) {
-            dispatch(pushChanges(slug));
-        }
-    };
-
-    const handleFetchHistory = () => {
-        if (slug) dispatch(fetchCommitHistory({ slug }));
-    };
-
-    const handleFetchUnpushed = () => {
-        if (slug) dispatch(fetchUnpushedCommits({ slug, max: 50 }));
-    };
-
-    const handleRemoveRemoteClick = async (name) => {
-        if (slug && name) {
-            await dispatch(removeRemote({ slug, name }));
-        }
-    };
-
-    const handleCommit = async () => {
-        if (slug && message) {
-            // Combine title and body for multi-line commit message
-            const fullMessage = commitBody ? `${message}\n\n${commitBody}` : message;
-            const resultAction = await dispatch(commitChanges({ slug, message: fullMessage }));
-            if (commitChanges.fulfilled.match(resultAction)) {
-                setMessage('');
-                setCommitBody('');
-                setShowCommitBody(false);
-            }
-        }
-    };
-
-    // Stash handlers
-    const handleStashPush = async () => {
-        if (slug) {
-            await dispatch(stashPush({ slug, message: stashMessage }));
-            setStashMessage('');
-            dispatch(fetchGitStatus(slug));
-        }
-    };
-
-    const handleStashPop = async (index = 0) => {
-        if (slug) {
-            await dispatch(stashPop({ slug, index }));
-            dispatch(refreshWorkspaceThunk());
-        }
-    };
-
-    const handleStashDrop = async (index = 0) => {
-        if (slug && confirm('Are you sure you want to drop this stash?')) {
-            await dispatch(stashDrop({ slug, index }));
-        }
-    };
-
-    const handleStage = (e, filePath) => {
-        e.stopPropagation();
-        dispatch(stageFile({ slug, filePath }));
-    };
-
-    const handleStageAll = () => {
-        if (slug) {
-            dispatch(stageAll(slug));
-        }
-    };
-
-    const handleUnstage = (e, filePath) => {
-        e.stopPropagation();
-        dispatch(unstageFile({ slug, filePath }));
-    };
-
-    const handleUnstageAll = () => {
-        if (slug) {
-            dispatch(unstageAll(slug));
-        }
-    };
-
-    const handleDiscard = async (e, filePath) => {
-        e.stopPropagation();
-        if (confirm(`Are you sure you want to discard changes in ${filePath}?`)) {
-            const result = await dispatch(discardChange({ slug, filePath }));
-            if (discardChange.fulfilled.match(result)) {
-                dispatch(refreshWorkspaceThunk());
-            }
-        }
-    };
-
-    const handleDiscardAll = async () => {
-        if (confirm('Are you sure you want to discard ALL changes? This cannot be undone!')) {
-            const result = await dispatch(discardAll(slug));
-            if (discardAll.fulfilled.match(result)) {
-                dispatch(refreshWorkspaceThunk());
-            }
-        }
-    };
-
-    const handleFileClick = (fileStatus) => {
-        const file = {
-            name: fileStatus.path.split('/').pop(),
-            path: fileStatus.path,
-            originalPath: fileStatus.from || fileStatus.path, // Handle renames
-            language: getFileLanguage(fileStatus.path)
-        };
-        dispatch(openDiffThunk(file));
-    };
-
-    // Open conflict files in regular editor (not diff view) so the conflict banner works
-    const handleConflictFileClick = (filePath) => {
-        const file = {
-            name: filePath.split('/').pop(),
-            path: filePath,
-            language: getFileLanguage(filePath)
-        };
-        dispatch(selectFileThunk(file));
-    };
-
-    const [cloneUrl, setCloneUrl] = useState('');
-    const [showClone, setShowClone] = useState(false);
-
-    const handleInit = async () => {
-        if (slug) {
-            try {
-                await dispatch(initRepo({ slug, remoteUrl: null }));
-                dispatch(fetchFilesThunk(slug));
-                dispatch(fetchGitStatus(slug));
-            } catch (e) {
-                console.error('Init repo failed', e);
-            }
-        }
-    };
-
-    const handleCloneRepo = async () => {
-        if (slug && cloneUrl) {
-            try {
-                await dispatch(cloneRepo({ slug, repoUrl: cloneUrl, token: null }));
-                dispatch(fetchFilesThunk(slug));
-                dispatch(fetchGitStatus(slug));
-                setCloneUrl('');
-                setShowClone(false);
-            } catch (e) {
-                console.error('Clone repo failed', e);
-            }
-        }
-    };
-
-    if (status === null) {
-        return (
-            <div className="p-2 h-full flex flex-col justify-center items-center">
-                <div className="mb-1.5 text-xs text-[#a1a1aa]">Git not initialized for this workspace.</div>
-                <div className="flex gap-1.5">
-                    <button
-                        onClick={handleInit}
-                        className="border border-[#3f3f46] bg-transparent hover:bg-[#27272a] text-[#e4e4e7] px-2 py-0.5 rounded text-xs transition-colors"
-                    >
-                        Initialize Git
-                    </button>
-                    <button
-                        onClick={() => setShowClone(v => !v)}
-                        className="border border-[#3b82f6] bg-transparent hover:bg-[#3b82f6]/10 text-[#3b82f6] px-2 py-0.5 rounded text-xs transition-colors"
-                    >
-                        Clone from Git
-                    </button>
-                </div>
-                {showClone && (
-                    <div className="mt-1.5 w-full">
-                        <input
-                            className="w-full bg-[#18181b] border border-[#3f3f46] rounded px-2 py-0.5 text-xs text-[#e4e4e7] focus:outline-none focus:border-[#3b82f6]"
-                            placeholder="https://github.com/owner/repo.git"
-                            value={cloneUrl}
-                            onChange={(e) => setCloneUrl(e.target.value)}
-                        />
-                        <div className="flex gap-1.5 mt-1.5">
-                            <button
-                                onClick={handleCloneRepo}
-                                className="border border-[#3b82f6] bg-transparent hover:bg-[#3b82f6]/10 text-[#3b82f6] px-2 py-0.5 rounded text-xs transition-colors"
-                            >
-                                Clone
-                            </button>
-                            <button
-                                onClick={() => setShowClone(false)}
-                                className="border border-[#3f3f46] bg-transparent hover:bg-[#27272a] text-[#a1a1aa] px-2 py-0.5 rounded text-xs transition-colors"
-                            >
-                                Cancel
-                            </button>
-                        </div>
-                    </div>
-                )}
-            </div>
-        );
+  const handleRemoveRemoteClick = async (name) => {
+    if (slug && name && confirm(`Remove remote '${name}'?`)) {
+      await dispatch(removeRemote({ slug, name }));
     }
+  };
 
-    const staged = status.files ? status.files.filter(f => f.index !== ' ' && f.index !== '?') : [];
-    const changes = status.files ? status.files.filter(f => f.working_dir !== ' ' || f.index === '?') : [];
-    
-    // Check for merge conflicts
-    const conflictedFiles = status.conflictedFiles || [];
-    const hasConflicts = status.hasConflicts || conflictedFiles.length > 0;
+  const handlePull = async () => {
+    if (!slug) return;
+    const result = await dispatch(pullChanges(slug));
+    if (pullChanges.fulfilled.match(result)) dispatch(refreshWorkspaceThunk());
+  };
 
-    // Note: A file can be both staged and modified (appear in both lists)
+  const handlePush = () => { if (slug) dispatch(pushChanges(slug)); };
 
-    const hasChanges = staged.length > 0 || changes.length > 0;
+  const handleCommit = async () => {
+    if (!slug || !message) return;
+    const fullMessage = commitBody ? `${message}\n\n${commitBody}` : message;
+    const resultAction = await dispatch(commitChanges({ slug, message: fullMessage }));
+    if (commitChanges.fulfilled.match(resultAction)) {
+      setMessage('');
+      setCommitBody('');
+      setShowCommitBody(false);
+    }
+  };
 
-    // Conflict resolution handlers
-    const handleResolveOurs = async (e, filePath) => {
-        e.stopPropagation();
-        if (slug) {
-            await dispatch(resolveConflictOurs({ slug, filePath }));
-            dispatch(refreshWorkspaceThunk());
-        }
-    };
+  const handleStashPush = async () => {
+    if (!slug) return;
+    await dispatch(stashPush({ slug, message: stashMessage }));
+    setStashMessage('');
+    dispatch(fetchGitStatus(slug));
+  };
+  const handleStashPop = async (index = 0) => {
+    if (!slug) return;
+    await dispatch(stashPop({ slug, index }));
+    dispatch(refreshWorkspaceThunk());
+  };
+  const handleStashDrop = async (index = 0) => {
+    if (slug && confirm('Drop this stash?')) dispatch(stashDrop({ slug, index }));
+  };
 
-    const handleResolveTheirs = async (e, filePath) => {
-        e.stopPropagation();
-        if (slug) {
-            await dispatch(resolveConflictTheirs({ slug, filePath }));
-            dispatch(refreshWorkspaceThunk());
-        }
-    };
+  const handleStage = (e, filePath) => { e.stopPropagation(); dispatch(stageFile({ slug, filePath })); };
+  const handleStageAll = () => { if (slug) dispatch(stageAll(slug)); };
+  const handleUnstage = (e, filePath) => { e.stopPropagation(); dispatch(unstageFile({ slug, filePath })); };
+  const handleUnstageAll = () => { if (slug) dispatch(unstageAll(slug)); };
 
-    const handleMarkResolved = async (e, filePath) => {
-        e.stopPropagation();
-        if (slug) {
-            await dispatch(markResolved({ slug, filePath }));
-        }
-    };
+  const handleDiscard = async (e, filePath) => {
+    e.stopPropagation();
+    if (!confirm(`Discard changes in ${filePath}?`)) return;
+    const result = await dispatch(discardChange({ slug, filePath }));
+    if (discardChange.fulfilled.match(result)) dispatch(refreshWorkspaceThunk());
+  };
+  const handleDiscardAll = async () => {
+    if (!confirm('Discard ALL changes? This cannot be undone!')) return;
+    const result = await dispatch(discardAll(slug));
+    if (discardAll.fulfilled.match(result)) dispatch(refreshWorkspaceThunk());
+  };
 
-    const handleAbortMerge = async () => {
-        if (slug && confirm('Are you sure you want to abort the merge? All merge progress will be lost.')) {
-            await dispatch(abortMerge(slug));
-            dispatch(refreshWorkspaceThunk());
-        }
-    };
+  const handleFileClick = (fileStatus) => {
+    dispatch(openDiffThunk({
+      name: fileStatus.path.split('/').pop(),
+      path: fileStatus.path,
+      originalPath: fileStatus.from || fileStatus.path,
+      language: getFileLanguage(fileStatus.path),
+    }));
+  };
+  const handleConflictFileClick = (filePath) => {
+    dispatch(selectFileThunk({
+      name: filePath.split('/').pop(),
+      path: filePath,
+      language: getFileLanguage(filePath),
+    }));
+  };
 
-    return (
-        <div className="flex flex-col h-full w-full overflow-hidden">
-            <div className="p-2 font-semibold text-xs uppercase tracking-wider text-[#a1a1aa] border-b border-[#27272a] flex justify-between items-center">
-                <span>Source Control</span>
-                <div className="flex gap-1">
-                    <button onClick={handlePull} disabled={loading} className="hover:bg-[#27272a] p-1 rounded text-[#a1a1aa] hover:text-[#e4e4e7] transition-colors disabled:opacity-50" title="Pull from Remote">
-                        <DownloadCloud className="w-3 h-3" strokeWidth={1.5} />
-                    </button>
-                    <button onClick={handlePush} disabled={loading} className="hover:bg-[#27272a] p-1 rounded text-[#a1a1aa] hover:text-[#e4e4e7] transition-colors disabled:opacity-50" title="Push to Remote">
-                        <UploadCloud className="w-3 h-3" strokeWidth={1.5} />
-                    </button>
-                    <button onClick={handleSync} disabled={loading} className="hover:bg-[#27272a] p-1 rounded text-[#a1a1aa] hover:text-[#e4e4e7] transition-colors disabled:opacity-50" title="Fetch Remote">
-                        <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} strokeWidth={1.5} />
-                    </button>
-                </div>
-            </div>
-            {/* previous position removed */}
-            {/* Branch & status badges */}
-            <div className="p-2 flex items-center gap-2 text-xs text-[#a1a1aa] border-b border-[#27272a]">
-                <div className="text-[#e4e4e7] text-sm font-medium">{status && status.current ? status.current : 'unknown'}</div>
-                {status && (status.ahead || status.behind) && (
-                    <div className="flex items-center gap-1 text-xs text-[#a1a1aa]">
-                        {status.ahead > 0 && <div className="px-2 py-0.5 bg-yellow-600/20 text-yellow-300 rounded">↑ {status.ahead}</div>}
-                        {status.behind > 0 && <div className="px-2 py-0.5 bg-[#3b82f6]/20 text-[#60a5fa] rounded">↓ {status.behind}</div>}
-                    </div>
-                )}
-                {status && (!status.ahead && !status.behind) && (
-                    <div className="px-2 py-0.5 bg-[#86efac]/10 text-[#86efac] rounded text-xs">Up to date</div>
-                )}
-            </div>
-            <div className="flex-1 overflow-y-auto p-2">
-                {error && (
-                    <div className="mb-2 p-2 bg-[#f87171]/10 border border-[#f87171]/30 rounded text-xs text-[#f87171] break-words">
-                        {error}
-                            {(
-                                error.includes('No configured push destination') || error.includes('No remote configured') || error.toLowerCase().includes('authentication failed') || error.toLowerCase().includes('repository not found') || error.toLowerCase().includes('remote repository not found')
-                            ) && (
-                            <div className="mt-2">
-                                <button 
-                                    onClick={() => setShowAddRemote(true)}
-                                    className="border border-[#f87171] bg-transparent hover:bg-[#f87171]/10 text-[#f87171] px-2 py-1 rounded text-xs w-full transition-colors"
-                                >
-                                    Configure Remote
-                                </button>
-                            </div>
-                        )}
-                            {error.toLowerCase().includes('authentication failed') && (
-                                <div className="mt-2 text-xs text-[#a1a1aa]">
-                                    Authentication failed — the server attempted to push but couldn't authenticate with the remote. You can either add a remote URL with an access token (https://&lt;token&gt;@github.com/owner/repo.git) or configure SSH/credentials for the collab server.
-                                </div>
-                            )}
-                    </div>
-                )}
+  const handleInit = async () => {
+    if (!slug) return;
+    try {
+      await dispatch(initRepo({ slug, remoteUrl: null }));
+      dispatch(fetchFilesThunk(slug));
+      dispatch(fetchGitStatus(slug));
+    } catch (e) { console.error('Init repo failed', e); }
+  };
+  const handleCloneRepo = async () => {
+    if (!slug || !cloneUrl) return;
+    try {
+      await dispatch(cloneRepo({ slug, repoUrl: cloneUrl, token: null }));
+      dispatch(fetchFilesThunk(slug));
+      dispatch(fetchGitStatus(slug));
+      setCloneUrl('');
+      setShowClone(false);
+    } catch (e) { console.error('Clone repo failed', e); }
+  };
 
-                {/* Merge Conflict Warning Banner */}
-                {hasConflicts && (
-                    <div className="mb-4 p-3 bg-orange-900/50 border border-orange-700 rounded">
-                        <div className="flex items-center gap-2 mb-2">
-                            <AlertTriangle className="w-4 h-4 text-orange-400" />
-                            <span className="text-sm font-semibold text-orange-300">Merge Conflicts Detected</span>
-                        </div>
-                        <p className="text-xs text-orange-200 mb-2">
-                            {conflictedFiles.length} file{conflictedFiles.length > 1 ? 's' : ''} have conflicts that must be resolved before you can commit.
-                        </p>
-                        <button
-                            onClick={handleAbortMerge}
-                            className="bg-orange-700 hover:bg-orange-600 text-white px-3 py-1 rounded text-xs flex items-center gap-1"
-                        >
-                            <X className="w-3 h-3" />
-                            Abort Merge
-                        </button>
-                    </div>
-                )}
+  const handleAbortMerge = async () => {
+    if (slug && confirm('Abort the merge? All merge progress will be lost.')) {
+      await dispatch(abortMerge(slug));
+      dispatch(refreshWorkspaceThunk());
+    }
+  };
+  const handleResolveOurs = async (e, filePath) => {
+    e.stopPropagation();
+    if (slug) { await dispatch(resolveConflictOurs({ slug, filePath })); dispatch(refreshWorkspaceThunk()); }
+  };
+  const handleResolveTheirs = async (e, filePath) => {
+    e.stopPropagation();
+    if (slug) { await dispatch(resolveConflictTheirs({ slug, filePath })); dispatch(refreshWorkspaceThunk()); }
+  };
+  const handleMarkResolved = async (e, filePath) => {
+    e.stopPropagation();
+    if (slug) await dispatch(markResolved({ slug, filePath }));
+  };
 
-                {/* Conflicted Files Section */}
-                {hasConflicts && conflictedFiles.length > 0 && (
-                    <div className="mb-4">
-                        <div className="flex items-center gap-2 mb-2 px-1">
-                            <GitMerge className="w-3 h-3 text-orange-400" />
-                            <div className="text-xs font-semibold text-orange-400">MERGE CONFLICTS</div>
-                        </div>
-                        <ul className="text-sm space-y-1">
-                            {conflictedFiles.map(filePath => (
-                                <li 
-                                    key={`conflict-${filePath}`} 
-                                    className="flex items-center justify-between bg-orange-900/20 hover:bg-orange-900/30 p-2 rounded group border border-orange-800/50"
-                                    onClick={() => handleConflictFileClick(filePath)}
-                                >
-                                    <div className="flex items-center gap-2 overflow-hidden">
-                                        <AlertTriangle className="w-3 h-3 text-orange-400 flex-shrink-0" />
-                                        <span className="truncate text-orange-200" title={filePath}>{filePath}</span>
-                                    </div>
-                                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                                        <button 
-                                            onClick={(e) => handleResolveOurs(e, filePath)}
-                                            className="bg-blue-700 hover:bg-blue-600 px-2 py-0.5 rounded text-xs text-white"
-                                            title="Accept current branch (ours)"
-                                        >
-                                            Ours
-                                        </button>
-                                        <button 
-                                            onClick={(e) => handleResolveTheirs(e, filePath)}
-                                            className="bg-green-700 hover:bg-green-600 px-2 py-0.5 rounded text-xs text-white"
-                                            title="Accept incoming changes (theirs)"
-                                        >
-                                            Theirs
-                                        </button>
-                                        <button 
-                                            onClick={(e) => handleMarkResolved(e, filePath)}
-                                            className="bg-gray-600 hover:bg-gray-500 px-2 py-0.5 rounded text-xs text-white"
-                                            title="Mark as resolved (after manual edit)"
-                                        >
-                                            Resolved
-                                        </button>
-                                    </div>
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
-                )}
+  // ── derived data ───────────────────────────────
+  const staged = status?.files?.filter(f => f.index !== ' ' && f.index !== '?') ?? [];
+  const changes = status?.files?.filter(f => f.working_dir !== ' ' || f.index === '?') ?? [];
+  const hasChanges = staged.length > 0 || changes.length > 0;
+  const conflictedFiles = status?.conflictedFiles ?? [];
+  const hasConflicts = status?.hasConflicts || conflictedFiles.length > 0;
 
-                {/* Remotes Section */}
-                <div className="mb-4">
-                    <div className="flex justify-between items-center mb-1 px-1">
-                        <div className="text-xs font-semibold text-[#a1a1aa]">REMOTES</div>
-                        <button 
-                            onClick={() => setShowAddRemote(!showAddRemote)}
-                            className="hover:bg-[#27272a] p-1 rounded text-[#a1a1aa] hover:text-[#e4e4e7]"
-                            title="Add Remote"
-                        >
-                            <Plus className="w-3 h-3" strokeWidth={1.5} />
-                        </button>
-                    </div>
-                    
-                    {showAddRemote && (
-                        <div className="mb-2 p-2 bg-[#18181b] border border-[#3f3f46] rounded">
-                            <input
-                                className="w-full bg-[#09090b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#e4e4e7] mb-2 focus:outline-none focus:border-[#3b82f6]"
-                                placeholder="Remote Name (e.g. origin)"
-                                value={newRemoteName}
-                                onChange={(e) => setNewRemoteName(e.target.value)}
-                            />
-                            <input
-                                className="w-full bg-[#09090b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#e4e4e7] mb-2 focus:outline-none focus:border-[#3b82f6]"
-                                placeholder="Remote URL"
-                                value={newRemoteUrl}
-                                onChange={(e) => setNewRemoteUrl(e.target.value)}
-                            />
-                            <div className="flex gap-2">
-                                <button
-                                    onClick={handleAddRemote}
-                                    disabled={loading}
-                                    className="border border-[#3b82f6] bg-transparent hover:bg-[#3b82f6]/10 disabled:opacity-50 text-[#3b82f6] px-2 py-1 rounded text-xs flex-1 flex justify-center items-center gap-1 transition-colors"
-                                >
-                                    {loading ? <RefreshCw className="w-3 h-3 animate-spin" strokeWidth={1.5} /> : 'Add'}
-                                </button>
-                                <button
-                                    onClick={() => setShowAddRemote(false)}
-                                    className="border border-[#3f3f46] bg-transparent hover:bg-[#27272a] text-[#a1a1aa] px-2 py-1 rounded text-xs flex-1 transition-colors"
-                                >
-                                    Cancel
-                                </button>
-                            </div>
-                        </div>
-                    )}
-
-                    {remotes && remotes.length > 0 ? (
-                        <ul className="text-sm space-y-1">
-                            {remotes.map(remote => (
-                                <li key={remote.name} className="flex items-center gap-2 px-1 py-0.5 text-[#a1a1aa] hover:text-[#e4e4e7] group">
-                                    <Globe className="w-3 h-3" strokeWidth={1.5} />
-                                    <span className="text-xs">{remote.name}</span>
-                                    <span className="text-xs text-[#52525b] truncate flex-1 text-right" title={remote.refs.push}>{remote.refs.push}</span>
-                                    <div className="flex items-center gap-1">
-                                        {remote.refs && remote.refs.push && remote.refs.push.startsWith('https') && (
-                                            <a
-                                                href={remote.refs.push.replace(/\.git$/, '')}
-                                                target="_blank"
-                                                rel="noreferrer"
-                                                className="opacity-0 group-hover:opacity-100 hover:bg-[#27272a] p-1 rounded text-[#a1a1aa] hover:text-[#e4e4e7] transition-all text-xs"
-                                            >
-                                                Open
-                                            </a>
-                                        )}
-                                        <button 
-                                        onClick={() => handleRemoveRemoteClick(remote.name)}
-                                        className="opacity-0 group-hover:opacity-100 hover:bg-[#f87171]/10 p-1 rounded text-[#a1a1aa] hover:text-[#f87171] transition-all"
-                                        title="Remove Remote"
-                                    >
-                                        <Trash2 className="w-3 h-3" strokeWidth={1.5} />
-                                    </button>
-                                    </div>
-                                </li>
-                            ))}
-                        </ul>
-                    ) : (
-                        <div className="text-xs text-[#52525b] px-1 italic">No remotes configured</div>
-                    )}
-                </div>
-
-                {/* Unpushed commits section */}
-                <div className="mb-4">
-                    <div className="flex justify-between items-center mb-1 px-1">
-                        <div className="text-xs font-semibold text-[#a1a1aa]">UNPUSHED COMMITS</div>
-                            {unpushedCommits && unpushedCommits.length > 0 && (
-                                <div className="flex items-center gap-2">
-                                <div className="text-xs text-[#52525b]">{unpushedCommits.length} commit{unpushedCommits.length > 1 ? 's' : ''}</div>
-                                <button onClick={handlePush} className="border border-[#3b82f6] bg-transparent hover:bg-[#3b82f6]/10 text-[#3b82f6] px-2 py-0.5 rounded text-xs transition-colors">Push</button>
-                                </div>
-                        )}
-                    </div>
-                    {unpushedCommits && unpushedCommits.length > 0 ? (
-                                <ul className="text-sm space-y-1">
-                            {unpushedCommits.map(c => (
-                                <li key={c.hash} className="p-1 rounded hover:bg-[#27272a] flex items-center gap-2">
-                                    <div className="font-mono text-xs text-[#a1a1aa]">{c.hash.substring(0,7)}</div>
-                                    <div className="truncate text-[#e4e4e7] text-xs">{c.message}</div>
-                                    <div className="text-xs text-[#52525b] ml-auto">{c.author_name} • {c.date}</div>
-                                    <button onClick={() => navigator.clipboard.writeText(c.hash)} title="Copy hash" className="ml-2 opacity-80 hover:text-[#e4e4e7] text-[#a1a1aa] p-1 rounded">
-                                        <Copy className="w-3 h-3" strokeWidth={1.5} />
-                                    </button>
-                                </li>
-                            ))}
-                        </ul>
-                    ) : (
-                        <div className="text-xs text-[#52525b] px-1 italic">No unpushed commits</div>
-                    )}
-                </div>
-
-                {/* Incoming commits section (after fetch, before pull) */}
-                <div className="mb-4">
-                    <div className="flex justify-between items-center mb-1 px-1">
-                        <div className="text-xs font-semibold text-gray-400">INCOMING COMMITS</div>
-                            {incomingCommits && incomingCommits.length > 0 && (
-                                <div className="flex items-center gap-2">
-                                <div className="text-xs text-gray-500">{incomingCommits.length} commit{incomingCommits.length > 1 ? 's' : ''}</div>
-                                <button onClick={handlePull} className="bg-green-600 hover:bg-green-700 text-white px-2 py-0.5 rounded text-xs">Pull</button>
-                                </div>
-                        )}
-                    </div>
-                    {incomingCommits && incomingCommits.length > 0 ? (
-                                <ul className="text-sm space-y-1">
-                            {incomingCommits.map(c => (
-                                <li key={c.hash} className="p-1 rounded hover:bg-gray-800 flex items-center gap-2 border-l-2 border-green-600 pl-2">
-                                    <div className="font-mono text-xs text-green-400">{c.hash.substring(0,7)}</div>
-                                    <div className="truncate text-gray-200 text-xs">{c.message}</div>
-                                    <div className="text-xs text-gray-500 ml-auto">{c.author_name} • {c.date}</div>
-                                    <button onClick={() => navigator.clipboard.writeText(c.hash)} title="Copy hash" className="ml-2 opacity-80 hover:text-white text-gray-400 p-1 rounded">
-                                        <Copy className="w-3 h-3" />
-                                    </button>
-                                </li>
-                            ))}
-                        </ul>
-                    ) : (
-                        <div className="text-xs text-gray-600 px-1 italic">No incoming commits (fetch to check)</div>
-                    )}
-                </div>
-
-                {/* Stash Section */}
-                <div className="mb-4">
-                    <div className="flex justify-between items-center mb-1 px-1">
-                        <div className="text-xs font-semibold text-[#a1a1aa]">STASH</div>
-                        <button 
-                            onClick={() => setShowStash(!showStash)}
-                            className="hover:bg-[#27272a] p-1 rounded text-[#a1a1aa] hover:text-[#e4e4e7]"
-                            title={showStash ? "Hide stash" : "Show stash"}
-                        >
-                            <Archive className="w-3 h-3" strokeWidth={1.5} />
-                        </button>
-                    </div>
-                    {showStash && (
-                        <div className="space-y-2">
-                            {hasChanges && (
-                                <div className="flex gap-2">
-                                    <input
-                                        type="text"
-                                        value={stashMessage}
-                                        onChange={(e) => setStashMessage(e.target.value)}
-                                        placeholder="Stash message (optional)..."
-                                        className="flex-1 bg-[#18181b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#e4e4e7] focus:outline-none focus:border-[#3b82f6]"
-                                    />
-                                    <button 
-                                        onClick={handleStashPush}
-                                        disabled={!hasChanges}
-                                        className="border border-[#c084fc] bg-transparent hover:bg-[#c084fc]/10 disabled:opacity-50 text-[#c084fc] px-2 py-1 rounded text-xs transition-colors"
-                                        title="Stash changes"
-                                    >
-                                        Stash
-                                    </button>
-                                </div>
-                            )}
-                            {stashList && stashList.length > 0 ? (
-                                <ul className="text-sm space-y-1">
-                                    {stashList.map((s, idx) => (
-                                        <li key={s.hash || idx} className="p-1 rounded hover:bg-[#27272a] flex items-center gap-2 group">
-                                            <div className="font-mono text-xs text-[#a1a1aa]">stash@{`{${idx}}`}</div>
-                                            <div className="truncate text-[#e4e4e7] text-xs flex-1">{s.message || 'WIP'}</div>
-                                            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                                                <button 
-                                                    onClick={() => handleStashPop(idx)}
-                                                    className="hover:bg-[#27272a] p-1 rounded text-[#a1a1aa] hover:text-[#e4e4e7]"
-                                                    title="Pop stash"
-                                                >
-                                                    <ArchiveRestore className="w-3 h-3" strokeWidth={1.5} />
-                                                </button>
-                                                <button 
-                                                    onClick={() => handleStashDrop(idx)}
-                                                    className="hover:bg-[#f87171]/10 p-1 rounded text-[#a1a1aa] hover:text-[#f87171]"
-                                                    title="Drop stash"
-                                                >
-                                                    <Trash2 className="w-3 h-3" strokeWidth={1.5} />
-                                                </button>
-                                            </div>
-                                        </li>
-                                    ))}
-                                </ul>
-                            ) : (
-                                <div className="text-xs text-[#52525b] px-1 italic">No stashed changes</div>
-                            )}
-                        </div>
-                    )}
-                </div>
-
-                {/* Commit history */}
-                <div className="mb-4">
-                    <div className="flex justify-between items-center mb-1 px-1">
-                        <div className="text-xs font-semibold text-[#a1a1aa]">COMMIT HISTORY</div>
-                        <div className="flex gap-2">
-                            <button onClick={() => dispatch(fetchCommitHistory({ slug }))} className="hover:bg-[#27272a] p-1 rounded text-[#a1a1aa] text-xs">Refresh</button>
-                        </div>
-                    </div>
-                    {commitHistory && commitHistory.all && commitHistory.all.length > 0 ? (
-                                <ul className="text-sm space-y-1">
-                            {(showAllCommits ? commitHistory.all : commitHistory.all.slice(0, 20)).map(c => (
-                                <li key={c.hash} className="p-1 rounded hover:bg-[#27272a] flex items-start gap-2">
-                                    <div className="font-mono text-xs text-[#a1a1aa]">{c.hash.substring(0,7)}</div>
-                                    <div className="flex-1">
-                                        <div className="text-xs text-[#e4e4e7] truncate">{c.message}</div>
-                                        <div className="text-xs text-[#52525b]">{c.author_name} • {c.date}</div>
-                                    </div>
-                                    <div className="flex flex-col items-end gap-1">
-                                        <button onClick={() => navigator.clipboard.writeText(c.hash)} title="Copy hash" className="ml-2 opacity-80 hover:text-[#e4e4e7] text-[#a1a1aa] p-1 rounded">
-                                            <Copy className="w-3 h-3" strokeWidth={1.5} />
-                                        </button>
-                                        {remotes && remotes.length > 0 && remotes[0].refs && remotes[0].refs.push && (
-                                            <a className="text-xs text-[#52525b] hover:text-[#3b82f6]" target="_blank" rel="noreferrer" href={`${remotes[0].refs.push.replace(/\.git$/, '')}/commit/${c.hash}`}>View</a>
-                                        )}
-                                    </div>
-                                </li>
-                            ))}
-                        </ul>
-                    ) : (
-                        <div className="text-xs text-[#52525b] px-1 italic">No commits yet</div>
-                    )}
-                    {commitHistory && commitHistory.all && commitHistory.all.length > 20 && (
-                        <div className="mt-2 flex justify-center">
-                            <button onClick={() => setShowAllCommits(v => !v)} className="text-xs text-[#a1a1aa] hover:text-[#e4e4e7] underline">{showAllCommits ? 'Collapse' : `View all (${commitHistory.all.length})`}</button>
-                        </div>
-                    )}
-                </div>
-
-                {!hasChanges ? (
-                    <p className="text-sm text-[#52525b] italic text-center mt-4">No changes detected.</p>
-                ) : (
-                    <div className="space-y-4">
-                        {/* Staged Changes */}
-                        {staged.length > 0 && (
-                            <div>
-                                <div className="flex items-center justify-between mb-1 px-1">
-                                    <div className="text-xs font-semibold text-[#a1a1aa]">STAGED CHANGES</div>
-                                    <button 
-                                        onClick={handleUnstageAll}
-                                        className="text-xs text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#27272a] px-2 py-0.5 rounded transition-all"
-                                        title="Unstage All"
-                                    >
-                                        Unstage All
-                                    </button>
-                                </div>
-                                <ul className="text-sm space-y-1">
-                                    {staged.map(file => (
-                                        <li 
-                                            key={`staged-${file.path}`} 
-                                            className="flex items-center justify-between hover:bg-[#27272a] p-1 rounded group cursor-pointer"
-                                            onClick={() => handleFileClick(file)}
-                                        >
-                                            <div className="flex items-center gap-2 overflow-hidden">
-                                                <span className="w-4 text-center font-mono text-xs text-[#86efac]">
-                                                    {file.index}
-                                                </span>
-                                                <span className="truncate text-[#e4e4e7]" title={file.path}>{file.path}</span>
-                                            </div>
-                                            <button 
-                                                onClick={(e) => handleUnstage(e, file.path)}
-                                                className="opacity-0 group-hover:opacity-100 hover:bg-[#27272a] p-1 rounded text-[#a1a1aa] hover:text-[#e4e4e7] transition-all"
-                                                title="Unstage Changes"
-                                            >
-                                                <Minus className="w-3 h-3" strokeWidth={1.5} />
-                                            </button>
-                                        </li>
-                                    ))}
-                                </ul>
-                            </div>
-                        )}
-
-                        {/* Changes */}
-                        {changes.length > 0 && (
-                            <div>
-                                <div className="flex items-center justify-between mb-1 px-1">
-                                    <div className="text-xs font-semibold text-[#a1a1aa]">CHANGES</div>
-                                    <div className="flex gap-1">
-                                        <button 
-                                            onClick={handleDiscardAll}
-                                            className="text-xs text-[#a1a1aa] hover:text-[#f87171] hover:bg-[#27272a] px-2 py-0.5 rounded transition-all"
-                                            title="Discard All Changes"
-                                        >
-                                            Discard All
-                                        </button>
-                                        <button 
-                                            onClick={handleStageAll}
-                                            className="text-xs text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#27272a] px-2 py-0.5 rounded transition-all"
-                                            title="Stage All Changes"
-                                        >
-                                            Stage All
-                                        </button>
-                                    </div>
-                                </div>
-                                <ul className="text-sm space-y-1">
-                                    {changes.map(file => (
-                                        <li 
-                                            key={`changes-${file.path}`} 
-                                            className="flex items-center justify-between hover:bg-[#27272a] p-1 rounded group cursor-pointer"
-                                            onClick={() => handleFileClick(file)}
-                                        >
-                                            <div className="flex items-center gap-2 overflow-hidden">
-                                                <span className="w-4 text-center font-mono text-xs text-yellow-500">
-                                                    {file.working_dir === '?' ? 'U' : 'M'}
-                                                </span>
-                                                <span className="truncate text-[#e4e4e7]" title={file.path}>{file.path}</span>
-                                            </div>
-                                            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                                                <button 
-                                                    onClick={(e) => handleDiscard(e, file.path)}
-                                                    className="hover:bg-[#27272a] p-1 rounded text-[#a1a1aa] hover:text-[#e4e4e7]"
-                                                    title="Discard Changes"
-                                                >
-                                                    <Undo2 className="w-3 h-3" strokeWidth={1.5} />
-                                                </button>
-                                                <button 
-                                                    onClick={(e) => handleStage(e, file.path)}
-                                                    className="hover:bg-[#27272a] p-1 rounded text-[#a1a1aa] hover:text-[#e4e4e7]"
-                                                    title="Stage Changes"
-                                                >
-                                                    <Plus className="w-3 h-3" strokeWidth={1.5} />
-                                                </button>
-                                            </div>
-                                        </li>
-                                    ))}
-                                </ul>
-                            </div>
-                        )}
-                    </div>
-                )}
-            </div>
-            {hasChanges && (
-                <div className="p-2 border-t border-[#27272a]">
-                    <div className="space-y-2">
-                        <div className="flex gap-2">
-                            <input 
-                                type="text" 
-                                value={message}
-                                onChange={(e) => setMessage(e.target.value)}
-                                placeholder="Commit message title..."
-                                className="flex-1 bg-[#18181b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#e4e4e7] focus:outline-none focus:border-[#3b82f6]"
-                                onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleCommit()}
-                            />
-                            <button 
-                                onClick={() => setShowCommitBody(!showCommitBody)}
-                                className={`p-1 rounded text-xs ${showCommitBody ? 'bg-[#27272a] text-[#e4e4e7]' : 'text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#27272a]'}`}
-                                title="Add description"
-                            >
-                                ⋮
-                            </button>
-                            <button 
-                                onClick={handleCommit}
-                                disabled={!message || staged.length === 0}
-                                className="border border-[#3b82f6] bg-transparent hover:bg-[#3b82f6]/10 disabled:opacity-50 disabled:cursor-not-allowed text-[#3b82f6] p-1 rounded transition-colors"
-                                title="Commit Staged"
-                            >
-                                <Check className="w-4 h-4" strokeWidth={1.5} />
-                            </button>
-                        </div>
-                        {showCommitBody && (
-                            <textarea
-                                value={commitBody}
-                                onChange={(e) => setCommitBody(e.target.value)}
-                                placeholder="Extended description (optional)..."
-                                className="w-full bg-[#18181b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#e4e4e7] focus:outline-none focus:border-[#3b82f6] resize-none"
-                                rows={3}
-                            />
-                        )}
-                    </div>
-                </div>
-            )}
-        </div>
+  // Filtered commits for search
+  const allCommits = commitHistory?.all ?? [];
+  const filteredCommits = useMemo(() => {
+    if (!searchQuery.trim()) return allCommits;
+    const q = searchQuery.toLowerCase();
+    return allCommits.filter(c =>
+      c.hash?.toLowerCase().includes(q) ||
+      c.message?.toLowerCase().includes(q) ||
+      c.author_name?.toLowerCase().includes(q)
     );
+  }, [allCommits, searchQuery]);
+
+  const displayCommits = showAllCommits ? filteredCommits : filteredCommits.slice(0, 20);
+  const dateGroups = useMemo(() => groupCommitsByDate(displayCommits), [displayCommits]);
+  const graphNodes = useMemo(() => buildCommitGraph(displayCommits), [displayCommits]);
+  const maxLanes = useMemo(() => Math.max(1, ...graphNodes.map(g => g.laneCount)), [graphNodes]);
+
+  // Primary remote URL (for commit links)
+  const primaryRemoteUrl = remotes?.[0]?.refs?.push ?? null;
+
+  // Sync tooltip
+  const syncTooltip = useMemo(() => {
+    const parts = [];
+    if (unpushedCommits?.length) parts.push(`Push ${unpushedCommits.length} commit${unpushedCommits.length > 1 ? 's' : ''}`);
+    if (incomingCommits?.length) parts.push(`Pull ${incomingCommits.length} commit${incomingCommits.length > 1 ? 's' : ''}`);
+    return parts.length > 0 ? parts.join(', ') : 'Fetch updates from remote';
+  }, [unpushedCommits, incomingCommits]);
+
+  // The error to display (prefer actionError since it persists)
+  const displayError = actionError || error;
+
+  // ── CSS custom properties for graph colours ────
+  const graphStyle = {
+    '--graph-0': '#3b82f6', '--graph-1': '#10b981', '--graph-2': '#f59e0b', '--graph-3': '#ec4899',
+    '--graph-4': '#8b5cf6', '--graph-5': '#06b6d4', '--graph-6': '#f43f5e', '--graph-7': '#84cc16',
+  };
+
+  // ── No git ─────────────────────────────────────
+  if (status === null) {
+    return (
+      <div className="p-2 h-full flex flex-col justify-center items-center">
+        <div className="mb-1.5 text-xs text-[#a1a1aa]">Git not initialized for this workspace.</div>
+        <div className="flex gap-1.5">
+          <button onClick={handleInit} className="border border-[#3f3f46] bg-transparent hover:bg-[#27272a] text-[#e4e4e7] px-2 py-0.5 rounded text-xs transition-colors">
+            Initialize Git
+          </button>
+          <button onClick={() => setShowClone(v => !v)} className="border border-[#3b82f6] bg-transparent hover:bg-[#3b82f6]/10 text-[#3b82f6] px-2 py-0.5 rounded text-xs transition-colors">
+            Clone from Git
+          </button>
+        </div>
+        {showClone && (
+          <div className="mt-1.5 w-full">
+            <input
+              className="w-full bg-[#18181b] border border-[#3f3f46] rounded px-2 py-0.5 text-xs text-[#e4e4e7] focus:outline-none focus:border-[#3b82f6]"
+              placeholder="https://github.com/owner/repo.git"
+              value={cloneUrl}
+              onChange={(e) => setCloneUrl(e.target.value)}
+            />
+            <div className="flex gap-1.5 mt-1.5">
+              <button onClick={handleCloneRepo} className="border border-[#3b82f6] bg-transparent hover:bg-[#3b82f6]/10 text-[#3b82f6] px-2 py-0.5 rounded text-xs transition-colors">
+                Clone
+              </button>
+              <button onClick={() => setShowClone(false)} className="border border-[#3f3f46] bg-transparent hover:bg-[#27272a] text-[#a1a1aa] px-2 py-0.5 rounded text-xs transition-colors">
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ──────────────── RENDER ────────────────────────
+  return (
+    <div className="flex flex-col h-full w-full overflow-hidden" style={graphStyle}>
+      {/* ── Header ────────────────────────────────── */}
+      <div className="px-2 py-1.5 font-semibold text-xs uppercase tracking-wider text-[#a1a1aa] border-b border-[#27272a] flex justify-between items-center">
+        <span>Source Control</span>
+        <div className="flex gap-0.5">
+          <button onClick={handlePull} disabled={loading} title="Pull from Remote"
+            className="hover:bg-[#27272a] p-1 rounded text-[#a1a1aa] hover:text-[#e4e4e7] transition-colors disabled:opacity-50">
+            <DownloadCloud className="w-3 h-3" strokeWidth={1.5} />
+          </button>
+          <button onClick={handlePush} disabled={loading} title="Push to Remote"
+            className="hover:bg-[#27272a] p-1 rounded text-[#a1a1aa] hover:text-[#e4e4e7] transition-colors disabled:opacity-50">
+            <UploadCloud className="w-3 h-3" strokeWidth={1.5} />
+          </button>
+          <button onClick={handleSync} disabled={loading} title={syncTooltip}
+            className="hover:bg-[#27272a] p-1 rounded text-[#a1a1aa] hover:text-[#e4e4e7] transition-colors disabled:opacity-50">
+            <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} strokeWidth={1.5} />
+          </button>
+        </div>
+      </div>
+
+      {/* ── Branch & Sync indicators ──────────────── */}
+      <div className="px-2 py-1.5 flex items-center gap-2 text-xs border-b border-[#27272a]">
+        <div className="text-[#e4e4e7] text-sm font-medium truncate">{status?.current || 'unknown'}</div>
+        <div className="flex items-center gap-1 ml-auto flex-shrink-0">
+          {unpushedCommits?.length > 0 && (
+            <div className="flex items-center gap-0.5 px-1.5 py-0.5 bg-amber-600/20 text-amber-300 rounded text-[10px] font-semibold" title={`${unpushedCommits.length} unpushed`}>
+              <ArrowUpCircle className="w-2.5 h-2.5" /> {unpushedCommits.length}
+            </div>
+          )}
+          {incomingCommits?.length > 0 && (
+            <div className="flex items-center gap-0.5 px-1.5 py-0.5 bg-blue-600/20 text-blue-300 rounded text-[10px] font-semibold" title={`${incomingCommits.length} incoming`}>
+              <ArrowDownCircle className="w-2.5 h-2.5" /> {incomingCommits.length}
+            </div>
+          )}
+          {(!unpushedCommits?.length && !incomingCommits?.length) && (
+            <div className="px-1.5 py-0.5 bg-emerald-500/10 text-emerald-400 rounded text-[10px]">Up to date</div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Scrollable body ───────────────────────── */}
+      <div className="flex-1 overflow-y-auto px-2 pt-2 pb-1">
+
+        {/* Error banner (persists until next action or dismiss) */}
+        {displayError && (
+          <div className="mb-3 p-2 bg-red-900/20 border border-red-500/30 rounded text-xs text-red-400 break-words">
+            <div className="flex items-start gap-1.5">
+              <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 text-red-400" />
+              <div className="flex-1 min-w-0">
+                <p className="font-medium">{displayError}</p>
+                {(displayError.includes('No configured push destination') ||
+                  displayError.includes('No remote configured') ||
+                  displayError.toLowerCase().includes('authentication failed') ||
+                  displayError.toLowerCase().includes('repository not found') ||
+                  displayError.toLowerCase().includes('remote repository not found')
+                ) && (
+                  <button onClick={() => setShowAddRemote(true)}
+                    className="mt-1.5 border border-red-500/40 bg-transparent hover:bg-red-500/10 text-red-400 px-2 py-0.5 rounded text-xs w-full transition-colors">
+                    Configure Remote
+                  </button>
+                )}
+                {displayError.toLowerCase().includes('authentication failed') && (
+                  <p className="mt-1.5 text-red-300/60 leading-relaxed">
+                    The server could not authenticate with the remote. Add a remote URL with an
+                    access token or configure SSH/credentials for the collab server.
+                  </p>
+                )}
+              </div>
+              <button onClick={() => dispatch(clearError())} className="flex-shrink-0 hover:text-red-300 p-0.5 rounded" title="Dismiss">
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Security alert for tokens in remotes */}
+        {!securityDismissed && <TokenSecurityAlert remotes={remotes} onDismiss={() => setSecurityDismissed(true)} />}
+
+        {/* ── Merge Conflicts ─────────────────────── */}
+        {hasConflicts && (
+          <>
+            <div className="mb-3 p-2 bg-orange-900/30 border border-orange-700/50 rounded">
+              <div className="flex items-center gap-2 mb-1.5">
+                <AlertTriangle className="w-3.5 h-3.5 text-orange-400" />
+                <span className="text-xs font-semibold text-orange-300">Merge Conflicts</span>
+                <span className="text-[10px] text-orange-400/60 ml-auto">{conflictedFiles.length} file{conflictedFiles.length > 1 ? 's' : ''}</span>
+              </div>
+              <button onClick={handleAbortMerge}
+                className="bg-orange-700/60 hover:bg-orange-600 text-white px-2 py-0.5 rounded text-xs flex items-center gap-1 transition-colors">
+                <X className="w-2.5 h-2.5" /> Abort Merge
+              </button>
+            </div>
+            <SectionHeader title="Conflicted Files" count={conflictedFiles.length}>
+              <ul className="space-y-0.5">
+                {conflictedFiles.map(filePath => (
+                  <li key={`conflict-${filePath}`}
+                    className="flex items-center justify-between bg-orange-900/15 hover:bg-orange-900/25 px-2 py-1 rounded group cursor-pointer border border-orange-800/30"
+                    onClick={() => handleConflictFileClick(filePath)}>
+                    <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
+                      <AlertTriangle className="w-3 h-3 text-orange-400 flex-shrink-0" />
+                      <span className="truncate text-xs text-orange-200" title={filePath}>{filePath}</span>
+                    </div>
+                    <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                      <button onClick={(e) => handleResolveOurs(e, filePath)} className="bg-blue-700 hover:bg-blue-600 px-1.5 py-0.5 rounded text-[10px] text-white" title="Accept ours">Ours</button>
+                      <button onClick={(e) => handleResolveTheirs(e, filePath)} className="bg-green-700 hover:bg-green-600 px-1.5 py-0.5 rounded text-[10px] text-white" title="Accept theirs">Theirs</button>
+                      <button onClick={(e) => handleMarkResolved(e, filePath)} className="bg-zinc-600 hover:bg-zinc-500 px-1.5 py-0.5 rounded text-[10px] text-white" title="Resolved">Resolved</button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </SectionHeader>
+          </>
+        )}
+
+        {/* ── Remotes ─────────────────────────────── */}
+        <SectionHeader title="Remotes" count={remotes?.length ?? 0}>
+          {showAddRemote && (
+            <div className="mb-2 p-2 bg-[#18181b] border border-[#3f3f46] rounded">
+              <input className="w-full bg-[#09090b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#e4e4e7] mb-1.5 focus:outline-none focus:border-[#3b82f6]"
+                placeholder="Remote Name (e.g. origin)" value={newRemoteName} onChange={e => setNewRemoteName(e.target.value)} />
+              <input className="w-full bg-[#09090b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#e4e4e7] mb-1.5 focus:outline-none focus:border-[#3b82f6]"
+                placeholder="Remote URL" value={newRemoteUrl} onChange={e => setNewRemoteUrl(e.target.value)} />
+              <div className="flex gap-1.5">
+                <button onClick={handleAddRemote} disabled={loading}
+                  className="border border-[#3b82f6] bg-transparent hover:bg-[#3b82f6]/10 disabled:opacity-50 text-[#3b82f6] px-2 py-0.5 rounded text-xs flex-1 transition-colors">
+                  {loading ? <RefreshCw className="w-3 h-3 animate-spin mx-auto" /> : 'Add'}
+                </button>
+                <button onClick={() => setShowAddRemote(false)}
+                  className="border border-[#3f3f46] bg-transparent hover:bg-[#27272a] text-[#a1a1aa] px-2 py-0.5 rounded text-xs flex-1 transition-colors">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+          {remotes?.length > 0 ? (
+            <ul className="space-y-0.5">
+              {remotes.map(remote => {
+                const provider = detectProvider(remote.refs?.push);
+                const hasTokenInUrl = urlContainsToken(remote.refs?.push);
+                const displayUrl = hasTokenInUrl ? maskRemoteUrl(remote.refs?.push) : humanRemoteUrl(remote.refs?.push);
+                const cleanWebUrl = remote.refs?.push?.replace(/\.git$/, '').replace(/https?:\/\/[^@/]+@/, 'https://');
+
+                return (
+                  <li key={remote.name} className="flex items-center gap-1.5 px-1.5 py-1 hover:bg-[#27272a] rounded group transition-colors">
+                    <ProviderIcon provider={provider} className="w-3.5 h-3.5 text-[#a1a1aa] flex-shrink-0" />
+                    <span className="text-xs font-medium text-[#e4e4e7]">{remote.name}</span>
+                    <span className="text-[10px] text-[#52525b] truncate flex-1 text-right" title={remote.refs?.push}>
+                      {displayUrl}
+                    </span>
+                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                      {cleanWebUrl?.startsWith('https') && (
+                        <a href={cleanWebUrl} target="_blank" rel="noreferrer"
+                          className="hover:bg-[#3f3f46] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Open in browser">
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
+                      <button onClick={() => handleRemoveRemoteClick(remote.name)}
+                        className="hover:bg-red-500/10 p-0.5 rounded text-[#a1a1aa] hover:text-red-400" title="Remove remote">
+                        <Trash2 className="w-3 h-3" strokeWidth={1.5} />
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <div className="text-[10px] text-[#52525b] px-1 italic">No remotes configured</div>
+          )}
+          {!showAddRemote && (
+            <button onClick={() => setShowAddRemote(true)}
+              className="mt-1 flex items-center gap-1 text-[10px] text-[#52525b] hover:text-[#a1a1aa] px-1 transition-colors">
+              <Plus className="w-2.5 h-2.5" /> Add remote
+            </button>
+          )}
+        </SectionHeader>
+
+        {/* ── Unpushed commits ────────────────────── */}
+        <SectionHeader title="Unpushed" count={unpushedCommits?.length ?? 0} defaultOpen={!!unpushedCommits?.length}>
+          {unpushedCommits?.length > 0 ? (
+            <>
+              <ul className="space-y-0.5">
+                {unpushedCommits.map(c => (
+                  <li key={c.hash} className="flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-[#27272a] group">
+                    <code className="font-mono text-[10px] text-[#a1a1aa] flex-shrink-0">{c.hash?.substring(0, 7)}</code>
+                    <div className="truncate text-xs min-w-0 flex-1"><CommitMessage message={c.message} /></div>
+                    <span className="text-[10px] text-[#52525b] flex-shrink-0 hidden sm:inline">{relativeTime(c.date)}</span>
+                    <button onClick={() => navigator.clipboard.writeText(c.hash)} title="Copy hash"
+                      className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-[#3f3f46] text-[#a1a1aa] hover:text-[#e4e4e7] transition-opacity flex-shrink-0">
+                      <Copy className="w-2.5 h-2.5" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <button onClick={handlePush}
+                className="mt-1.5 w-full border border-[#3b82f6]/40 bg-transparent hover:bg-[#3b82f6]/10 text-[#3b82f6] py-0.5 rounded text-xs transition-colors">
+                Push {unpushedCommits.length} commit{unpushedCommits.length > 1 ? 's' : ''}
+              </button>
+            </>
+          ) : (
+            <div className="text-[10px] text-[#52525b] px-1 italic">Nothing to push</div>
+          )}
+        </SectionHeader>
+
+        {/* ── Incoming commits ────────────────────── */}
+        <SectionHeader title="Incoming" count={incomingCommits?.length ?? 0} defaultOpen={!!incomingCommits?.length}>
+          {incomingCommits?.length > 0 ? (
+            <>
+              <ul className="space-y-0.5">
+                {incomingCommits.map(c => (
+                  <li key={c.hash} className="flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-[#27272a] border-l-2 border-emerald-600 group">
+                    <code className="font-mono text-[10px] text-emerald-400 flex-shrink-0">{c.hash?.substring(0, 7)}</code>
+                    <div className="truncate text-xs min-w-0 flex-1"><CommitMessage message={c.message} /></div>
+                    <span className="text-[10px] text-[#52525b] flex-shrink-0 hidden sm:inline">{relativeTime(c.date)}</span>
+                    <button onClick={() => navigator.clipboard.writeText(c.hash)} title="Copy hash"
+                      className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-[#3f3f46] text-[#a1a1aa] hover:text-[#e4e4e7] transition-opacity flex-shrink-0">
+                      <Copy className="w-2.5 h-2.5" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <button onClick={handlePull}
+                className="mt-1.5 w-full border border-emerald-600/40 bg-transparent hover:bg-emerald-600/10 text-emerald-400 py-0.5 rounded text-xs transition-colors">
+                Pull {incomingCommits.length} commit{incomingCommits.length > 1 ? 's' : ''}
+              </button>
+            </>
+          ) : (
+            <div className="text-[10px] text-[#52525b] px-1 italic">No incoming commits (fetch to check)</div>
+          )}
+        </SectionHeader>
+
+        {/* ── Stash ───────────────────────────────── */}
+        <SectionHeader title="Stash" count={stashList?.length ?? 0} defaultOpen={false}>
+          {hasChanges && (
+            <div className="flex gap-1.5 mb-1.5">
+              <input type="text" value={stashMessage} onChange={e => setStashMessage(e.target.value)}
+                placeholder="Stash message (optional)..."
+                className="flex-1 bg-[#18181b] border border-[#3f3f46] rounded px-2 py-0.5 text-xs text-[#e4e4e7] focus:outline-none focus:border-[#3b82f6]" />
+              <button onClick={handleStashPush} disabled={!hasChanges}
+                className="border border-purple-500/40 bg-transparent hover:bg-purple-500/10 disabled:opacity-50 text-purple-400 px-2 py-0.5 rounded text-xs transition-colors">
+                Stash
+              </button>
+            </div>
+          )}
+          {stashList?.length > 0 ? (
+            <ul className="space-y-0.5">
+              {stashList.map((s, idx) => (
+                <li key={s.hash || idx} className="flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-[#27272a] group">
+                  <code className="font-mono text-[10px] text-[#a1a1aa] flex-shrink-0">stash@{`{${idx}}`}</code>
+                  <span className="truncate text-xs text-[#e4e4e7] flex-1">{s.message || 'WIP'}</span>
+                  <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                    <button onClick={() => handleStashPop(idx)} className="hover:bg-[#27272a] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Pop stash">
+                      <ArchiveRestore className="w-3 h-3" strokeWidth={1.5} />
+                    </button>
+                    <button onClick={() => handleStashDrop(idx)} className="hover:bg-red-500/10 p-0.5 rounded text-[#a1a1aa] hover:text-red-400" title="Drop stash">
+                      <Trash2 className="w-3 h-3" strokeWidth={1.5} />
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="text-[10px] text-[#52525b] px-1 italic">No stashed changes</div>
+          )}
+        </SectionHeader>
+
+        {/* ── Commit History ──────────────────────── */}
+        <div className="mb-3">
+          <div className="flex items-center gap-1 px-1 mb-1">
+            <button onClick={() => setShowSearch(v => !v)}
+              className={`p-0.5 rounded transition-colors ${showSearch ? 'bg-[#27272a] text-[#e4e4e7]' : 'text-[#71717a] hover:text-[#a1a1aa]'}`}>
+              <Search className="w-3 h-3" />
+            </button>
+            <span className="text-xs font-semibold text-[#a1a1aa] uppercase tracking-wider">Commit History</span>
+            <span className="text-[10px] text-[#52525b] ml-auto">
+              {filteredCommits.length !== allCommits.length
+                ? `${filteredCommits.length}/${allCommits.length}`
+                : allCommits.length}
+            </span>
+          </div>
+
+          {showSearch && (
+            <div className="px-1 mb-1.5">
+              <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+                placeholder="Filter by message, author, or SHA…"
+                className="w-full bg-[#18181b] border border-[#3f3f46] rounded px-2 py-0.5 text-xs text-[#e4e4e7] focus:outline-none focus:border-[#3b82f6]"
+                autoFocus />
+            </div>
+          )}
+
+          {dateGroups.length > 0 ? (
+            <div>
+              {dateGroups.map(group => (
+                <div key={group.label} className="mb-2">
+                  <div className="text-[10px] text-[#52525b] font-medium uppercase tracking-wider px-1 mb-0.5">{group.label}</div>
+                  <ul className="space-y-0">
+                    {group.commits.map(c => {
+                      const gIdx = displayCommits.indexOf(c);
+                      const gn = graphNodes[gIdx];
+                      const webUrl = commitWebUrl(primaryRemoteUrl, c.hash);
+                      return (
+                        <li key={c.hash} className="flex items-center hover:bg-[#27272a] rounded group transition-colors">
+                          <CommitGraphColumn graphNode={gn} totalLanes={maxLanes} />
+                          <div className="flex-1 min-w-0 py-1 pr-1">
+                            <div className="flex items-center gap-1">
+                              <code className="font-mono text-[10px] text-[#71717a] flex-shrink-0">{c.hash?.substring(0, 7)}</code>
+                              <div className="text-xs min-w-0 truncate"><CommitMessage message={c.message} /></div>
+                            </div>
+                            <div className="text-[10px] text-[#52525b] truncate">{c.author_name} · {relativeTime(c.date)}</div>
+                          </div>
+                          {/* Hover actions */}
+                          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 pr-1">
+                            <button onClick={() => navigator.clipboard.writeText(c.hash)} title="Copy hash"
+                              className="p-0.5 rounded hover:bg-[#3f3f46] text-[#71717a] hover:text-[#e4e4e7]">
+                              <Copy className="w-2.5 h-2.5" />
+                            </button>
+                            {webUrl && (
+                              <a href={webUrl} target="_blank" rel="noreferrer" title="View on remote"
+                                className="p-0.5 rounded hover:bg-[#3f3f46] text-[#71717a] hover:text-[#e4e4e7]">
+                                <ExternalLink className="w-2.5 h-2.5" />
+                              </a>
+                            )}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-[10px] text-[#52525b] px-1 italic">
+              {searchQuery ? 'No matching commits' : 'No commits yet'}
+            </div>
+          )}
+
+          {filteredCommits.length > 20 && (
+            <div className="mt-1 flex justify-center">
+              <button onClick={() => setShowAllCommits(v => !v)}
+                className="text-[10px] text-[#71717a] hover:text-[#a1a1aa] underline">
+                {showAllCommits ? 'Collapse' : `Show all ${filteredCommits.length}`}
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* ── Staged + Changes ────────────────────── */}
+        {!hasChanges ? (
+          <p className="text-xs text-[#52525b] italic text-center mt-4">No changes detected.</p>
+        ) : (
+          <div className="space-y-3">
+            {staged.length > 0 && (
+              <SectionHeader title="Staged Changes" count={staged.length}>
+                <div className="flex justify-end mb-0.5">
+                  <button onClick={handleUnstageAll} className="text-[10px] text-[#71717a] hover:text-[#e4e4e7] hover:bg-[#27272a] px-1.5 py-0.5 rounded transition-colors">
+                    Unstage All
+                  </button>
+                </div>
+                <ul className="space-y-0.5">
+                  {staged.map(file => (
+                    <li key={`staged-${file.path}`}
+                      className="flex items-center justify-between hover:bg-[#27272a] px-1.5 py-1 rounded group cursor-pointer transition-colors"
+                      onClick={() => handleFileClick(file)}>
+                      <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
+                        <span className="w-3 text-center font-mono text-[10px] text-emerald-400 flex-shrink-0">{file.index}</span>
+                        <span className="truncate text-xs text-[#e4e4e7]" title={file.path}>{file.path}</span>
+                      </div>
+                      <button onClick={(e) => handleUnstage(e, file.path)}
+                        className="opacity-0 group-hover:opacity-100 hover:bg-[#3f3f46] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7] transition-all flex-shrink-0" title="Unstage">
+                        <Minus className="w-3 h-3" strokeWidth={1.5} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </SectionHeader>
+            )}
+
+            {changes.length > 0 && (
+              <SectionHeader title="Changes" count={changes.length}>
+                <div className="flex justify-end gap-1 mb-0.5">
+                  <button onClick={handleDiscardAll} className="text-[10px] text-[#71717a] hover:text-red-400 hover:bg-[#27272a] px-1.5 py-0.5 rounded transition-colors">
+                    Discard All
+                  </button>
+                  <button onClick={handleStageAll} className="text-[10px] text-[#71717a] hover:text-[#e4e4e7] hover:bg-[#27272a] px-1.5 py-0.5 rounded transition-colors">
+                    Stage All
+                  </button>
+                </div>
+                <ul className="space-y-0.5">
+                  {changes.map(file => (
+                    <li key={`changes-${file.path}`}
+                      className="flex items-center justify-between hover:bg-[#27272a] px-1.5 py-1 rounded group cursor-pointer transition-colors"
+                      onClick={() => handleFileClick(file)}>
+                      <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
+                        <span className="w-3 text-center font-mono text-[10px] text-amber-400 flex-shrink-0">
+                          {file.working_dir === '?' ? 'U' : 'M'}
+                        </span>
+                        <span className="truncate text-xs text-[#e4e4e7]" title={file.path}>{file.path}</span>
+                      </div>
+                      <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                        <button onClick={(e) => handleDiscard(e, file.path)}
+                          className="hover:bg-[#3f3f46] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Discard Changes">
+                          <Undo2 className="w-3 h-3" strokeWidth={1.5} />
+                        </button>
+                        <button onClick={(e) => handleStage(e, file.path)}
+                          className="hover:bg-[#3f3f46] p-0.5 rounded text-[#a1a1aa] hover:text-[#e4e4e7]" title="Stage">
+                          <Plus className="w-3 h-3" strokeWidth={1.5} />
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </SectionHeader>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Commit input (pinned bottom) ──────────── */}
+      {hasChanges && (
+        <div className="p-2 border-t border-[#27272a]">
+          <div className="space-y-1.5">
+            <div className="flex gap-1.5">
+              <input type="text" value={message} onChange={e => setMessage(e.target.value)}
+                placeholder="Commit message…"
+                className="flex-1 bg-[#18181b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#e4e4e7] focus:outline-none focus:border-[#3b82f6] font-mono"
+                onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleCommit()} />
+              <button onClick={() => setShowCommitBody(!showCommitBody)}
+                className={`p-1 rounded text-xs transition-colors ${showCommitBody ? 'bg-[#27272a] text-[#e4e4e7]' : 'text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#27272a]'}`}
+                title="Add description">
+                <Edit3 className="w-3 h-3" />
+              </button>
+              <button onClick={handleCommit} disabled={!message || staged.length === 0}
+                className="border border-[#3b82f6] bg-transparent hover:bg-[#3b82f6]/10 disabled:opacity-50 disabled:cursor-not-allowed text-[#3b82f6] p-1 rounded transition-colors"
+                title="Commit Staged">
+                <Check className="w-4 h-4" strokeWidth={1.5} />
+              </button>
+            </div>
+            {showCommitBody && (
+              <textarea value={commitBody} onChange={e => setCommitBody(e.target.value)}
+                placeholder="Extended description (optional)…"
+                className="w-full bg-[#18181b] border border-[#3f3f46] rounded px-2 py-1 text-xs text-[#e4e4e7] focus:outline-none focus:border-[#3b82f6] resize-none font-mono"
+                rows={3} />
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
