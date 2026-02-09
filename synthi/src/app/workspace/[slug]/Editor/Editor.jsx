@@ -1134,12 +1134,12 @@ const EditorPanel = ({
                             // Sending a request for a lone ':' or '>' wastes a
                             // round-trip and often returns 0 items.
                             //
-                            // For *valid* multi-char sequences (::, ->), we
-                            // downgrade to triggerKind=1 (Invoked) because the
-                            // server received the trigger-char notification for
-                            // the *first* character already.  Sending another
-                            // triggerKind=2 with a single ':' or '>' can confuse
-                            // some servers into a narrow context lookup.
+                            // For *valid* multi-char sequences (::, ->), keep
+                            // the original triggerKind=2 + triggerCharacter.
+                            // rust-analyzer specifically expects triggerKind=2
+                            // with ':' for :: path completions — sending as
+                            // Invoked causes it to skip the trigger-char path
+                            // resolution and return fewer or no results.
                             let effectiveTriggerKind = isTriggerChar ? 2 : 1;
                             let effectiveTriggerChar = isTriggerChar ? context.triggerCharacter : undefined;
 
@@ -1158,16 +1158,12 @@ const EditorPanel = ({
                                     return { suggestions: [] };
                                 }
 
-                                // Detect multi-char trigger sequences.  Send
-                                // these as Invoked rather than TriggerCharacter
-                                // so the server performs a full context lookup.
+                                // Log multi-char trigger detection for diagnostics
                                 const isMultiCharTrigger =
                                     (ch === ':' && prev === ':') ||
                                     (ch === '>' && prev === '-');
                                 if (isMultiCharTrigger) {
-                                    effectiveTriggerKind = 1; // Invoked
-                                    effectiveTriggerChar = undefined;
-                                    console.log(`[LSP] Multi-char trigger '${prev}${ch}' detected — sending as Invoked`);
+                                    console.log(`[LSP] Multi-char trigger '${prev}${ch}' — keeping triggerKind=2 with char='${ch}'`);
                                 }
                             }
 
