@@ -83,7 +83,12 @@ export class MonacoSocketAdapter {
                             const ttlTimer = setTimeout(() => {
                                 const stale = this.chunkStore.get(msgId);
                                 if (stale) {
-                                    console.warn(`[MonacoSocketAdapter] Chunk TTL expired for msgId=${msgId}, evicting (${stale.received}/${stale.total} received)`);
+                                    const ageMs = Date.now() - stale.createdAt;
+                                    console.warn(
+                                        `[MonacoSocketAdapter] Chunk TTL expired: msgId=${msgId}, ` +
+                                        `age=${ageMs}ms, bytes=${stale.bytes}, ` +
+                                        `received=${stale.received}/${stale.total}`
+                                    );
                                     this._chunkPendingBytes -= stale.bytes;
                                     this.chunkStore.delete(msgId);
                                 }
@@ -101,7 +106,11 @@ export class MonacoSocketAdapter {
 
                         // Enforce global byte cap — evict by oldest createdAt first
                         if (this._chunkPendingBytes > this._CHUNK_MAX_BYTES) {
-                            console.warn(`[MonacoSocketAdapter] Chunk buffer exceeded ${this._CHUNK_MAX_BYTES} bytes, evicting oldest`);
+                            console.warn(
+                                `[MonacoSocketAdapter] Chunk byte cap exceeded: ` +
+                                `${this._chunkPendingBytes}/${this._CHUNK_MAX_BYTES} bytes, ` +
+                                `${this.chunkStore.size} pending messages`
+                            );
                             // Sort entries by createdAt ascending so we evict
                             // truly oldest first (Map iteration order is insertion
                             // order, which can differ under interleaved arrivals).
@@ -109,6 +118,12 @@ export class MonacoSocketAdapter {
                                 .filter(([id]) => id !== msgId)
                                 .sort((a, b) => a[1].createdAt - b[1].createdAt);
                             for (const [oldId, oldEntry] of sorted) {
+                                const ageMs = Date.now() - oldEntry.createdAt;
+                                console.warn(
+                                    `[MonacoSocketAdapter] Byte-cap evict: msgId=${oldId}, ` +
+                                    `age=${ageMs}ms, bytes=${oldEntry.bytes}, ` +
+                                    `received=${oldEntry.received}/${oldEntry.total}`
+                                );
                                 this._chunkPendingBytes -= oldEntry.bytes;
                                 this.chunkStore.delete(oldId);
                                 const t = this._chunkTTLTimers.get(oldId);
@@ -162,7 +177,19 @@ export class MonacoSocketAdapter {
             // ── Purge chunk buffer on close ───────────────────────
             // Any incomplete chunked messages are now unreachable.
             if (this.chunkStore.size > 0) {
-                console.warn(`[MonacoSocketAdapter] Purging ${this.chunkStore.size} incomplete chunked messages on close`);
+                const now = Date.now();
+                for (const [id, entry] of this.chunkStore) {
+                    const ageMs = now - entry.createdAt;
+                    console.warn(
+                        `[MonacoSocketAdapter] Close-purge: msgId=${id}, ` +
+                        `age=${ageMs}ms, bytes=${entry.bytes}, ` +
+                        `received=${entry.received}/${entry.total}`
+                    );
+                }
+                console.warn(
+                    `[MonacoSocketAdapter] Purged ${this.chunkStore.size} incomplete ` +
+                    `chunked messages on close (${this._chunkPendingBytes} bytes freed)`
+                );
                 this.chunkStore.clear();
                 this._chunkPendingBytes = 0;
             }
