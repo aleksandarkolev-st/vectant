@@ -1769,6 +1769,7 @@ async fn wire_peer_channels(
                             let state = Arc::new(Mutex::new(LspSessionState {
                                 client_root_uri: None,
                                 server_root_uri: server_root_uri.clone(),
+                                doc_versions: std::collections::HashMap::new(),
                             }));
 
                             // Process incoming messages (buffered + new)
@@ -1853,91 +1854,122 @@ async fn wire_peer_channels(
                                         }
 
                                         // 4. Handle didChange file writing (full sync AND incremental)
+                                        // Track document versions to reject out-of-order changes.
                                         if json_val.get("method").and_then(|m| m.as_str()) == Some("textDocument/didChange") {
                                             if let Some(params) = json_val.get("params") {
                                                 if let Some(changes) = params.get("contentChanges").and_then(|c| c.as_array()) {
                                                     if let Some(doc) = params.get("textDocument") {
                                                         if let Some(uri) = doc.get("uri").and_then(|s| s.as_str()) {
-                                                            if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
-                                                                let rel = rel.trim_start_matches('/');
-                                                                let file_path = workspace_path.join(rel);
+                                                            // Version check: reject out-of-order didChange
+                                                            let incoming_version = doc.get("version").and_then(|v| v.as_i64()).unwrap_or(0);
+                                                            let last_version = guard.doc_versions.get(uri).copied().unwrap_or(-1);
+                                                            if incoming_version <= last_version {
+                                                                eprintln!("[LSP] Rejecting out-of-order didChange for {} (version {} <= {})", uri, incoming_version, last_version);
+                                                                // Still forward to LSP (it may handle versioning itself) but skip disk write
+                                                            } else {
+                                                                guard.doc_versions.insert(uri.to_string(), incoming_version);
 
-                                                                if changes.len() == 1 && changes[0].get("range").is_none() {
-                                                                    // Full sync: single change without range = entire file content
-                                                                    if let Some(text) = changes[0].get("text").and_then(|s| s.as_str()) {
-                                                                        if let Err(e) = tokio::fs::write(&file_path, text).await {
-                                                                            eprintln!("Failed to update file {}: {}", file_path.display(), e);
-                                                                        }
-                                                                    }
-                                                                } else {
-                                                                    // Incremental sync: changes have range fields.
-                                                                    // Read current file, apply each change, write back.
-                                                                    let current = tokio::fs::read_to_string(&file_path).await.unwrap_or_default();
-                                                                    let mut lines: Vec<String> = current.split('\n').map(|s| s.to_string()).collect();
+                                                                if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
+                                                                    let rel = rel.trim_start_matches('/');
+                                                                    let file_path = workspace_path.join(rel);
 
-                                                                    // Apply changes in reverse order so earlier positions stay valid
-                                                                    let mut sorted_changes = changes.clone();
-                                                                    sorted_changes.sort_by(|a, b| {
-                                                                        let a_start = a.get("range").and_then(|r| r.get("start"));
-                                                                        let b_start = b.get("range").and_then(|r| r.get("start"));
-                                                                        let a_line = a_start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
-                                                                        let b_line = b_start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
-                                                                        let a_char = a_start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0);
-                                                                        let b_char = b_start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0);
-                                                                        b_line.cmp(&a_line).then(b_char.cmp(&a_char))
-                                                                    });
-
-                                                                    for change in &sorted_changes {
-                                                                        if let (Some(range), Some(text)) = (change.get("range"), change.get("text").and_then(|t| t.as_str())) {
-                                                                            let start_line = range.get("start").and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize;
-                                                                            let start_char = range.get("start").and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize;
-                                                                            let end_line = range.get("end").and_then(|e| e.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize;
-                                                                            let end_char = range.get("end").and_then(|e| e.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize;
-
-                                                                            // Clamp to valid line range
-                                                                            let sl = start_line.min(lines.len().saturating_sub(1));
-                                                                            let el = end_line.min(lines.len().saturating_sub(1));
-
-                                                                            // Build the prefix (before the edit) and suffix (after the edit)
-                                                                            let prefix = if sl < lines.len() {
-                                                                                let line_content = &lines[sl];
-                                                                                let sc = start_char.min(line_content.len());
-                                                                                line_content[..sc].to_string()
-                                                                            } else {
-                                                                                String::new()
-                                                                            };
-                                                                            let suffix = if el < lines.len() {
-                                                                                let line_content = &lines[el];
-                                                                                let ec = end_char.min(line_content.len());
-                                                                                line_content[ec..].to_string()
-                                                                            } else {
-                                                                                String::new()
-                                                                            };
-
-                                                                            // Split the replacement text into lines
-                                                                            let new_text_lines: Vec<&str> = text.split('\n').collect();
-
-                                                                            // Build replacement lines
-                                                                            let mut replacement = Vec::new();
-                                                                            if new_text_lines.len() == 1 {
-                                                                                replacement.push(format!("{}{}{}", prefix, new_text_lines[0], suffix));
-                                                                            } else {
-                                                                                replacement.push(format!("{}{}", prefix, new_text_lines[0]));
-                                                                                for mid in &new_text_lines[1..new_text_lines.len()-1] {
-                                                                                    replacement.push(mid.to_string());
-                                                                                }
-                                                                                replacement.push(format!("{}{}", new_text_lines[new_text_lines.len()-1], suffix));
+                                                                    if changes.len() == 1 && changes[0].get("range").is_none() {
+                                                                        // Full sync: single change without range = entire file content
+                                                                        // Use atomic write: write to temp file, then rename
+                                                                        if let Some(text) = changes[0].get("text").and_then(|s| s.as_str()) {
+                                                                            let tmp_path = file_path.with_extension("lsp_tmp");
+                                                                            if let Some(parent) = tmp_path.parent() {
+                                                                                let _ = tokio::fs::create_dir_all(parent).await;
                                                                             }
-
-                                                                            // Splice the lines array
-                                                                            let remove_end = (el + 1).min(lines.len());
-                                                                            lines.splice(sl..remove_end, replacement);
+                                                                            match tokio::fs::write(&tmp_path, text).await {
+                                                                                Ok(_) => {
+                                                                                    if let Err(e) = tokio::fs::rename(&tmp_path, &file_path).await {
+                                                                                        eprintln!("Failed to rename temp file {}: {}", file_path.display(), e);
+                                                                                        // Fallback: direct write
+                                                                                        let _ = tokio::fs::write(&file_path, text).await;
+                                                                                    }
+                                                                                }
+                                                                                Err(e) => eprintln!("Failed to write temp file {}: {}", tmp_path.display(), e),
+                                                                            }
                                                                         }
-                                                                    }
+                                                                    } else {
+                                                                        // Incremental sync: changes have range fields.
+                                                                        // Read current file, apply each change, write back atomically.
+                                                                        let current = tokio::fs::read_to_string(&file_path).await.unwrap_or_default();
+                                                                        let mut lines: Vec<String> = current.split('\n').map(|s| s.to_string()).collect();
 
-                                                                    let new_content = lines.join("\n");
-                                                                    if let Err(e) = tokio::fs::write(&file_path, &new_content).await {
-                                                                        eprintln!("Failed to update file {}: {}", file_path.display(), e);
+                                                                        // Apply changes in reverse order so earlier positions stay valid
+                                                                        let mut sorted_changes = changes.clone();
+                                                                        sorted_changes.sort_by(|a, b| {
+                                                                            let a_start = a.get("range").and_then(|r| r.get("start"));
+                                                                            let b_start = b.get("range").and_then(|r| r.get("start"));
+                                                                            let a_line = a_start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
+                                                                            let b_line = b_start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
+                                                                            let a_char = a_start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0);
+                                                                            let b_char = b_start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0);
+                                                                            b_line.cmp(&a_line).then(b_char.cmp(&a_char))
+                                                                        });
+
+                                                                        for change in &sorted_changes {
+                                                                            if let (Some(range), Some(text)) = (change.get("range"), change.get("text").and_then(|t| t.as_str())) {
+                                                                                let start_line = range.get("start").and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize;
+                                                                                let start_char = range.get("start").and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize;
+                                                                                let end_line = range.get("end").and_then(|e| e.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize;
+                                                                                let end_char = range.get("end").and_then(|e| e.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize;
+
+                                                                                // Clamp to valid line range
+                                                                                let sl = start_line.min(lines.len().saturating_sub(1));
+                                                                                let el = end_line.min(lines.len().saturating_sub(1));
+
+                                                                                // Build the prefix (before the edit) and suffix (after the edit)
+                                                                                let prefix = if sl < lines.len() {
+                                                                                    let line_content = &lines[sl];
+                                                                                    let sc = start_char.min(line_content.len());
+                                                                                    line_content[..sc].to_string()
+                                                                                } else {
+                                                                                    String::new()
+                                                                                };
+                                                                                let suffix = if el < lines.len() {
+                                                                                    let line_content = &lines[el];
+                                                                                    let ec = end_char.min(line_content.len());
+                                                                                    line_content[ec..].to_string()
+                                                                                } else {
+                                                                                    String::new()
+                                                                                };
+
+                                                                                // Split the replacement text into lines
+                                                                                let new_text_lines: Vec<&str> = text.split('\n').collect();
+
+                                                                                // Build replacement lines
+                                                                                let mut replacement = Vec::new();
+                                                                                if new_text_lines.len() == 1 {
+                                                                                    replacement.push(format!("{}{}{}", prefix, new_text_lines[0], suffix));
+                                                                                } else {
+                                                                                    replacement.push(format!("{}{}", prefix, new_text_lines[0]));
+                                                                                    for mid in &new_text_lines[1..new_text_lines.len()-1] {
+                                                                                        replacement.push(mid.to_string());
+                                                                                    }
+                                                                                    replacement.push(format!("{}{}", new_text_lines[new_text_lines.len()-1], suffix));
+                                                                                }
+
+                                                                                // Splice the lines array
+                                                                                let remove_end = (el + 1).min(lines.len());
+                                                                                lines.splice(sl..remove_end, replacement);
+                                                                            }
+                                                                        }
+
+                                                                        let new_content = lines.join("\n");
+                                                                        // Atomic write: temp file + rename
+                                                                        let tmp_path = file_path.with_extension("lsp_tmp");
+                                                                        match tokio::fs::write(&tmp_path, &new_content).await {
+                                                                            Ok(_) => {
+                                                                                if let Err(e) = tokio::fs::rename(&tmp_path, &file_path).await {
+                                                                                    eprintln!("Failed to rename temp file {}: {}", file_path.display(), e);
+                                                                                    let _ = tokio::fs::write(&file_path, &new_content).await;
+                                                                                }
+                                                                            }
+                                                                            Err(e) => eprintln!("Failed to write temp file {}: {}", tmp_path.display(), e),
+                                                                        }
                                                                     }
                                                                 }
                                                             }

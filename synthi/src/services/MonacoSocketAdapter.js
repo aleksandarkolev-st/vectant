@@ -29,6 +29,13 @@ export class MonacoSocketAdapter {
         this.messageQueue = [];
         this.chunkStore = new Map();
 
+        // ── Chunk buffer safety limits ────────────────────────────
+        // Prevent memory leaks from dropped chunks or abandoned messages.
+        this._chunkPendingBytes = 0;
+        this._CHUNK_TTL_MS = 30_000;      // per-message deadline
+        this._CHUNK_MAX_BYTES = 10_000_000; // 10 MB cap for all pending chunks
+        this._chunkTTLTimers = new Map();  // msgId → timerId
+
         // ── Channel already open (rare but possible) ──
         if (this.dataChannel.readyState === 'open') {
             this.readyState = 1;
@@ -69,12 +76,40 @@ export class MonacoSocketAdapter {
                                 total: totalChunks,
                                 received: 0,
                                 parts: new Array(totalChunks),
+                                bytes: 0,
                             });
+                            // Start a TTL timer — evict if not completed in time
+                            const ttlTimer = setTimeout(() => {
+                                const stale = this.chunkStore.get(msgId);
+                                if (stale) {
+                                    console.warn(`[MonacoSocketAdapter] Chunk TTL expired for msgId=${msgId}, evicting (${stale.received}/${stale.total} received)`);
+                                    this._chunkPendingBytes -= stale.bytes;
+                                    this.chunkStore.delete(msgId);
+                                }
+                                this._chunkTTLTimers.delete(msgId);
+                            }, this._CHUNK_TTL_MS);
+                            this._chunkTTLTimers.set(msgId, ttlTimer);
                         }
 
                         const entry = this.chunkStore.get(msgId);
-                        entry.parts[chunkIdx] = data.slice(16);
+                        const chunkData = data.slice(16);
+                        entry.parts[chunkIdx] = chunkData;
                         entry.received++;
+                        entry.bytes += chunkData.byteLength;
+                        this._chunkPendingBytes += chunkData.byteLength;
+
+                        // Enforce global byte cap — evict oldest entries first
+                        if (this._chunkPendingBytes > this._CHUNK_MAX_BYTES) {
+                            console.warn(`[MonacoSocketAdapter] Chunk buffer exceeded ${this._CHUNK_MAX_BYTES} bytes, evicting oldest`);
+                            for (const [oldId, oldEntry] of this.chunkStore) {
+                                if (oldId === msgId) continue; // don't evict current
+                                this._chunkPendingBytes -= oldEntry.bytes;
+                                this.chunkStore.delete(oldId);
+                                const t = this._chunkTTLTimers.get(oldId);
+                                if (t) { clearTimeout(t); this._chunkTTLTimers.delete(oldId); }
+                                if (this._chunkPendingBytes <= this._CHUNK_MAX_BYTES) break;
+                            }
+                        }
 
                         if (entry.received === entry.total) {
                             const totalLen = entry.parts.reduce((acc, p) => acc + p.byteLength, 0);
@@ -84,7 +119,11 @@ export class MonacoSocketAdapter {
                                 fullData.set(new Uint8Array(part), offset);
                                 offset += part.byteLength;
                             }
+                            this._chunkPendingBytes -= entry.bytes;
                             this.chunkStore.delete(msgId);
+                            // Clear TTL timer since message completed successfully
+                            const ttl = this._chunkTTLTimers.get(msgId);
+                            if (ttl) { clearTimeout(ttl); this._chunkTTLTimers.delete(msgId); }
                             this._processMessage(new TextDecoder().decode(fullData));
                         }
                         return;
@@ -113,6 +152,19 @@ export class MonacoSocketAdapter {
         this.dataChannel.onclose = () => {
             console.warn('[MonacoSocketAdapter] Channel closed');
             this.readyState = 3;
+
+            // ── Purge chunk buffer on close ───────────────────────
+            // Any incomplete chunked messages are now unreachable.
+            if (this.chunkStore.size > 0) {
+                console.warn(`[MonacoSocketAdapter] Purging ${this.chunkStore.size} incomplete chunked messages on close`);
+                this.chunkStore.clear();
+                this._chunkPendingBytes = 0;
+            }
+            for (const timerId of this._chunkTTLTimers.values()) {
+                clearTimeout(timerId);
+            }
+            this._chunkTTLTimers.clear();
+
             // FIX: toSocket()'s onClose handler destructures `event.code` and
             // `event.reason`.  Calling this.onclose() with no arguments caused
             // a TypeError — WebSocketMessageReader never learned the transport

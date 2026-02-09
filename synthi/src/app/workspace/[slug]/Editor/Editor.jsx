@@ -423,61 +423,40 @@ const EditorPanel = ({
         }
 
         const lang = getMonacoLanguage(activeFile.name);
-        let backendLang = null;
-        let documentSelector = [];
 
-        if (['cpp', 'c'].includes(lang)) {
-            backendLang = 'cpp';
-            documentSelector = ['cpp', 'c'];
-        } else if (lang === 'rust') {
-            backendLang = 'rust';
-            documentSelector = ['rust'];
-        } else if (lang === 'python') {
-            backendLang = 'python';
-            documentSelector = ['python'];
-        } else if (['typescript', 'javascript'].includes(lang)) {
-            backendLang = 'typescript';
-            documentSelector = ['typescript', 'javascript'];
-        } else if (lang === 'java') {
-            backendLang = 'java';
-            documentSelector = ['java'];
-        } else if (lang === 'go') {
-            backendLang = 'go';
-            documentSelector = ['go'];
-        } else if (lang === 'csharp') {
-            backendLang = 'csharp';
-            documentSelector = ['csharp'];
-        } else if (lang === 'ruby') {
-            backendLang = 'ruby';
-            documentSelector = ['ruby'];
-        } else if (lang === 'php') {
-            backendLang = 'php';
-            documentSelector = ['php'];
-        } else if (lang === 'kotlin') {
-            backendLang = 'kotlin';
-            documentSelector = ['kotlin'];
-        } else if (lang === 'zig') {
-            backendLang = 'zig';
-            documentSelector = ['zig'];
-        } else if (lang === 'dart') {
-            backendLang = 'dart';
-            documentSelector = ['dart'];
-        } else if (lang === 'lua') {
-            backendLang = 'lua';
-            documentSelector = ['lua'];
-        } else if (lang === 'elixir') {
-            backendLang = 'elixir';
-            documentSelector = ['elixir'];
-        } else if (lang === 'svelte') {
-            backendLang = 'svelte';
-            documentSelector = ['svelte'];
-        } else if (['css', 'scss', 'less'].includes(lang)) {
-            backendLang = 'css';
-            documentSelector = ['css', 'scss', 'less'];
-        } else if (lang === 'html') {
-            backendLang = 'html';
-            documentSelector = ['html'];
-        }
+        // ── Language → LSP backend mapping table ──────────────────
+        // Single source of truth — replaces the old if-else chain.
+        // Each entry maps one or more Monaco language IDs to a backend
+        // key and the full set of languages handled by that server.
+        const LSP_LANG_TABLE = {
+            cpp:                { backend: 'cpp',        selector: ['cpp', 'c'] },
+            c:                  { backend: 'cpp',        selector: ['cpp', 'c'] },
+            rust:               { backend: 'rust',       selector: ['rust'] },
+            python:             { backend: 'python',     selector: ['python'] },
+            typescript:         { backend: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
+            javascript:         { backend: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
+            typescriptreact:    { backend: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
+            javascriptreact:    { backend: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
+            java:               { backend: 'java',       selector: ['java'] },
+            go:                 { backend: 'go',         selector: ['go'] },
+            csharp:             { backend: 'csharp',     selector: ['csharp'] },
+            ruby:               { backend: 'ruby',       selector: ['ruby'] },
+            php:                { backend: 'php',        selector: ['php'] },
+            kotlin:             { backend: 'kotlin',     selector: ['kotlin'] },
+            zig:                { backend: 'zig',        selector: ['zig'] },
+            dart:               { backend: 'dart',       selector: ['dart'] },
+            lua:                { backend: 'lua',        selector: ['lua'] },
+            elixir:             { backend: 'elixir',     selector: ['elixir'] },
+            svelte:             { backend: 'svelte',     selector: ['svelte'] },
+            css:                { backend: 'css',        selector: ['css', 'scss', 'less'] },
+            scss:               { backend: 'css',        selector: ['css', 'scss', 'less'] },
+            less:               { backend: 'css',        selector: ['css', 'scss', 'less'] },
+            html:               { backend: 'html',       selector: ['html'] },
+        };
+
+        const langEntry = LSP_LANG_TABLE[lang];
+        const backendLang = langEntry?.backend ?? null;
+        const documentSelector = langEntry?.selector ?? [];
 
         if (!backendLang) {
             setLspStatus('No LSP for this file');
@@ -598,6 +577,13 @@ const EditorPanel = ({
         const _pendingCancelTimers = new Map(); // cancelId → timerId
         let _cancelFilterStats = { filtered: 0, passed: 0 };
         const CANCEL_DEBOUNCE_MS = 400;
+
+        // ── In-flight request capping ────────────────────────────
+        // Drop the oldest pending completion request when we exceed
+        // this limit.  Prevents piling up expensive requests on
+        // slow servers when the user types quickly.
+        const MAX_IN_FLIGHT_COMPLETIONS = 3;
+        const _inFlightCompletionIds = new Set(); // track completion request IDs
         const socket = {
             send: (content) => {
                 try {
@@ -605,6 +591,24 @@ const EditorPanel = ({
                     // Track outgoing requests (has both id AND method)
                     if (msg.id !== undefined && msg.method && msg.method !== '$/cancelRequest') {
                         _pendingRequestIds.add(msg.id);
+
+                        // Cap in-flight completion requests
+                        if (msg.method === 'textDocument/completion') {
+                            _inFlightCompletionIds.add(msg.id);
+                            if (_inFlightCompletionIds.size > MAX_IN_FLIGHT_COMPLETIONS) {
+                                // Cancel the oldest one
+                                const oldest = _inFlightCompletionIds.values().next().value;
+                                _inFlightCompletionIds.delete(oldest);
+                                _pendingRequestIds.delete(oldest);
+                                try {
+                                    rawSocket.send(JSON.stringify({
+                                        jsonrpc: '2.0',
+                                        method: '$/cancelRequest',
+                                        params: { id: oldest },
+                                    }));
+                                } catch (_) { /* best effort */ }
+                            }
+                        }
                     }
                     // Debounce $/cancelRequest — hold for CANCEL_DEBOUNCE_MS
                     // to give in-flight responses time to arrive.
@@ -648,6 +652,7 @@ const EditorPanel = ({
                         if (msg.id !== undefined && !msg.method) {
                             _pendingRequestIds.delete(msg.id);
                             _completedRequestIds.add(msg.id);
+                            _inFlightCompletionIds.delete(msg.id);
                             // If a cancel for this ID is pending in debounce,
                             // clear it — no need to send it anymore.
                             const pendingTimer = _pendingCancelTimers.get(msg.id);
@@ -967,6 +972,33 @@ const EditorPanel = ({
                 const allTriggers = [...new Set([...serverTriggerChars, ...langTriggers])];
                 console.log(`[LSP] Registering direct completion provider for ${backendLang} with triggers: ${allTriggers.join(', ')}`);
 
+                // ── LSP ↔ Monaco position conversion ─────────────────
+                // LSP positions use UTF-16 code unit offsets (0-based).
+                // Monaco columns are 1-based and also UTF-16 (JS strings
+                // are UTF-16), but off-by-one bugs are rampant because
+                // of the +1 offset.  These helpers make the conversion
+                // explicit and handle surrogate pairs correctly.
+
+                /** LSP character (0-based UTF-16 offset) → Monaco column (1-based) */
+                const lspCharToMonacoCol = (lspChar) => lspChar + 1;
+
+                /** Monaco column (1-based) → LSP character (0-based UTF-16 offset) */
+                const monacoColToLspChar = (monacoCol) => monacoCol - 1;
+
+                /**
+                 * Convert an LSP Range to a Monaco IRange.
+                 * Returns null if the range is malformed.
+                 */
+                const lspRangeToMonaco = (range) => {
+                    if (!range?.start || !range?.end) return null;
+                    return {
+                        startLineNumber: range.start.line + 1,
+                        startColumn:     lspCharToMonacoCol(range.start.character),
+                        endLineNumber:   range.end.line + 1,
+                        endColumn:       lspCharToMonacoCol(range.end.character),
+                    };
+                };
+
                 const lspKindToMonaco = (kind) => {
                     const m = monacoInstance.languages.CompletionItemKind;
                     const map = {
@@ -1012,27 +1044,13 @@ const EditorPanel = ({
                             const isTriggerChar = context.triggerKind === monacoInstance.languages.CompletionTriggerKind.TriggerCharacter;
                             const lspTriggerKind = isTriggerChar ? 2 : 1;
 
-                            // ── Ensure the server has the latest content ─────
-                            // Our direct sendRequest bypasses monaco-languageclient's
-                            // internal document sync pipeline, which may not have
-                            // flushed the didChange for the trigger character yet.
-                            // Send a full-document didChange before the completion
-                            // request so the server always parses up-to-date content.
-                            // This is cheap (one notification) and eliminates the
-                            // race that causes 0 items on `Vec::`.
-                            try {
-                                languageClient.sendNotification('textDocument/didChange', {
-                                    textDocument: {
-                                        uri,
-                                        version: model.getVersionId(),
-                                    },
-                                    contentChanges: [{ text: model.getValue() }],
-                                });
-                            } catch (_) { /* best-effort */ }
-
-                            // Small yield to let the notification travel through
-                            // the WebRTC data channel before the completion request.
-                            await new Promise(r => setTimeout(r, 20));
+                            // NOTE: We rely on monaco-languageclient's native
+                            // didChange sync (via the middleware passthrough) to
+                            // keep the server up-to-date.  Sending a full-document
+                            // didChange before every completion is expensive and
+                            // floods slow servers (TS, Java).  If completions are
+                            // stale, the root cause is ordering/versioning, not
+                            // missing content — fix that at the transport layer.
                             if (token.isCancellationRequested) return { suggestions: [] };
 
                             try {
@@ -1062,27 +1080,52 @@ const EditorPanel = ({
                                 }
 
                                 // ── Compute replacement range ──────────────────
-                                // Use a PLAIN IRange object (not monacoInstance.Range)
-                                // for maximum compatibility with @codingame/monaco-
-                                // vscode-editor-api.  The Range class from the vscode-
-                                // api shim may not satisfy the internal instanceof
-                                // checks or property expectations of the VS Code
-                                // suggest model that replaces Monaco's built-in one.
+                                // Use a PLAIN IRange object for maximum compat with
+                                // @codingame/monaco-vscode-editor-api.
                                 //
-                                // We intentionally ignore the server's textEdit ranges
-                                // for the Monaco `range` property.  Monaco uses the
-                                // range to compute a "typed prefix" for filtering —
-                                // any misalignment (common with InsertReplaceEdit
-                                // after `::`, `.`, `->`) silently filters ALL items.
-                                //
-                                // getWordUntilPosition gives us the same range Monaco
-                                // would compute internally — safe and cursor-aligned.
+                                // Strategy: respect the server's textEdit range when
+                                // it is a simple same-line replacement that won't
+                                // break Monaco's prefix filtering.  Fall back to the
+                                // word-based range when the edit spans multiple lines
+                                // or when the server range start is AFTER the cursor
+                                // (InsertReplaceEdit edge-case).
                                 const word = model.getWordUntilPosition(position);
                                 const defaultRange = {
                                     startLineNumber: position.lineNumber,
                                     startColumn: word.word.length > 0 ? word.startColumn : position.column,
                                     endLineNumber: position.lineNumber,
                                     endColumn: position.column,
+                                };
+
+                                /**
+                                 * Try to extract a Monaco-safe range from the server's
+                                 * textEdit.  Returns null if the edit is unsuitable.
+                                 */
+                                const safeServerRange = (textEdit) => {
+                                    if (!textEdit) return null;
+                                    // textEdit may be TextEdit or InsertReplaceEdit
+                                    const range = textEdit.range
+                                        || textEdit.replace   // InsertReplaceEdit
+                                        || textEdit.insert;   // InsertReplaceEdit
+                                    if (!range?.start || !range?.end) return null;
+
+                                    const startLine = range.start.line + 1;
+                                    const endLine   = range.end.line + 1;
+                                    const startCol  = range.start.character + 1;
+                                    const endCol    = range.end.character + 1;
+
+                                    // Only use same-line edits that don't start after
+                                    // the cursor (which would break Monaco's filter).
+                                    if (startLine !== position.lineNumber) return null;
+                                    if (endLine   !== position.lineNumber) return null;
+                                    if (startCol  >  position.column)      return null;
+
+                                    return {
+                                        startLineNumber: startLine,
+                                        startColumn: startCol,
+                                        endLineNumber: endLine,
+                                        endColumn: endCol,
+                                    };
                                 };
 
                                 const suggestions = items.map((item, idx) => {
@@ -1096,21 +1139,33 @@ const EditorPanel = ({
                                         doc = { value: doc.value };
                                     }
 
+                                    // Determine insertText — prefer textEdit.newText
+                                    const insertText = item.textEdit?.newText
+                                        || item.insertText
+                                        || label;
+
+                                    // Snippet support: insertTextFormat 2 = Snippet
+                                    const isSnippet = item.insertTextFormat === 2;
+                                    const insertTextRules = isSnippet
+                                        ? monacoInstance.languages.CompletionItemInsertTextRule.InsertAsSnippet
+                                        : undefined;
+
+                                    // Prefer server textEdit range when it's safe
+                                    const serverRange = safeServerRange(item.textEdit);
+                                    const range = serverRange || defaultRange;
+
                                     return {
                                         label,
                                         kind: lspKindToMonaco(item.kind),
                                         detail: item.detail || '',
                                         documentation: doc,
-                                        insertText: item.textEdit?.newText
-                                            || item.insertText
-                                            || label,
-                                        insertTextRules: item.insertTextFormat === 2
-                                            ? monacoInstance.languages.CompletionItemInsertTextRule.InsertAsSnippet
-                                            : undefined,
-                                        range: defaultRange,
+                                        insertText,
+                                        insertTextRules,
+                                        range,
                                         sortText: item.sortText || String(idx).padStart(5, '0'),
                                         filterText: item.filterText || label,
                                         preselect: item.preselect,
+                                        commitCharacters: item.commitCharacters,
                                         // Attach original LSP item for resolveCompletionItem
                                         data: item.data,
                                         _lspItem: item,
@@ -1215,88 +1270,79 @@ const EditorPanel = ({
                 lspOpenedUrisRef.current.set(backendLang, { uri: activeUri, languageId: lang });
             }
 
-            // ── Multi-file didOpen blast ──────────────────────────
-            // Send didOpen for ALL relevant workspace files so the LSP
-            // can index cross-file symbols, resolve imports, and provide
-            // Go-to-Definition across modules.
+            // ── Multi-file workspace priming ──────────────────────
+            // Most LSP servers auto-discover workspace files from the
+            // rootUri and their own file watchers (gopls, rust-analyzer,
+            // jdtls, clangd, etc.).  Sending didOpen for files not
+            // actively edited is non-standard — some servers treat
+            // didOpen as "actively edited" which wastes memory and can
+            // trigger expensive per-file analysis.
             //
-            // Servers like gopls, rust-analyzer, and jdtls auto-index the
-            // workspace from disk, so they don't strictly need this.  But
-            // servers like typescript-language-server and pylsp rely on
-            // didOpen to know about files.  We send content from the file
-            // cache when available; for uncached files we read nothing here
-            // — the worker already wrote them to disk during download, and
-            // we send an empty string (servers that need content will fall
-            // back to their disk watcher / rootUri scan).
-            setTimeout(() => {
-                if (!languageClient.isRunning()) return;
+            // Only servers that genuinely need priming (TS/JS, Python)
+            // get a limited didOpen blast.  All others rely on disk
+            // discovery via rootUri / workspaceFolders.
+            const SERVERS_NEEDING_PRIMING = new Set(['typescript', 'python']);
 
-                // Build a fast lookup for cached content
-                const cacheMap = new Map(fileCacheEntries || []);
-
-                // Flatten the file tree into a list of file nodes
-                const allFiles = [];
-                const walk = (nodes) => {
-                    if (!nodes) return;
-                    for (const node of nodes) {
-                        if (node.isFolder) {
-                            // Skip heavy dependency / build directories
-                            const name = node.name?.toLowerCase();
-                            if (['node_modules', '.git', '__pycache__', 'target', 'build', 'dist',
-                                 '.gradle', '.idea', 'bin', 'obj', '.dart_tool', '_build', 'deps',
-                                 '.elixir_ls', '.jdtls-data', 'zig-cache', '.next', 'vendor',
-                                 'zig-out', '.zig-cache', 'coverage', '.nyc_output'].includes(name)) continue;
-                            walk(node.children);
-                        } else if (node.path) {
-                            allFiles.push(node);
-                        }
-                    }
-                };
-                walk(rawFiles);
-
-                // Filter to files whose language is in this client's documentSelector
-                const langSet = new Set(documentSelector);
-                const activeUri = editorInstance.getModel()?.uri?.toString();
-                // P2: Reduced blast — only open 20 most relevant files with 200ms delay
-                // to prevent DataChannel saturation on init
-                const MAX_BLAST_FILES = 20;
-                const BATCH_SIZE = 5;
-                const BATCH_DELAY_MS = 200;
-
-                // Collect eligible files first
-                const filesToOpen = [];
-                for (const file of allFiles) {
-                    if (filesToOpen.length >= MAX_BLAST_FILES) break;
-                    const fileLang = getMonacoLanguage(file.name);
-                    if (!langSet.has(fileLang)) continue;
-                    const fileUri = `file:///synthi/${file.path}`;
-                    if (fileUri === activeUri) continue;
-                    // Only send files that have cached content — the LSP can
-                    // discover files on disk itself; sending empty strings just
-                    // wastes bandwidth and triggers unnecessary disk writes.
-                    const content = cacheMap.get(file.path);
-                    if (!content) continue;
-                    filesToOpen.push({ uri: fileUri, lang: fileLang, content });
-                }
-
-                // Send in throttled batches to avoid overwhelming the LSP and
-                // the WebRTC data channel with hundreds of messages at once.
-                const sendBatch = (startIdx) => {
+            if (SERVERS_NEEDING_PRIMING.has(backendLang)) {
+                setTimeout(() => {
                     if (!languageClient.isRunning()) return;
-                    const end = Math.min(startIdx + BATCH_SIZE, filesToOpen.length);
-                    for (let i = startIdx; i < end; i++) {
-                        const f = filesToOpen[i];
-                        languageClient.sendNotification('textDocument/didOpen', {
-                            textDocument: { uri: f.uri, languageId: f.lang, version: 1, text: f.content }
-                        });
+
+                    const cacheMap = new Map(fileCacheEntries || []);
+                    const allFiles = [];
+                    const walk = (nodes) => {
+                        if (!nodes) return;
+                        for (const node of nodes) {
+                            if (node.isFolder) {
+                                const name = node.name?.toLowerCase();
+                                if (['node_modules', '.git', '__pycache__', 'target', 'build', 'dist',
+                                     '.gradle', '.idea', 'bin', 'obj', '.dart_tool', '_build', 'deps',
+                                     '.elixir_ls', '.jdtls-data', 'zig-cache', '.next', 'vendor',
+                                     'zig-out', '.zig-cache', 'coverage', '.nyc_output'].includes(name)) continue;
+                                walk(node.children);
+                            } else if (node.path) {
+                                allFiles.push(node);
+                            }
+                        }
+                    };
+                    walk(rawFiles);
+
+                    const langSet = new Set(documentSelector);
+                    const activeUri = editorInstance.getModel()?.uri?.toString();
+                    const MAX_BLAST_FILES = 15;
+                    const BATCH_SIZE = 3;
+                    const BATCH_DELAY_MS = 300;
+
+                    const filesToOpen = [];
+                    for (const file of allFiles) {
+                        if (filesToOpen.length >= MAX_BLAST_FILES) break;
+                        const fileLang = getMonacoLanguage(file.name);
+                        if (!langSet.has(fileLang)) continue;
+                        const fileUri = `file:///synthi/${file.path}`;
+                        if (fileUri === activeUri) continue;
+                        const content = cacheMap.get(file.path);
+                        if (!content) continue;
+                        filesToOpen.push({ uri: fileUri, lang: fileLang, content });
                     }
-                    if (end < filesToOpen.length) {
-                        setTimeout(() => sendBatch(end), BATCH_DELAY_MS);
-                    }
-                };
-                if (filesToOpen.length > 0) sendBatch(0);
-                console.log(`[LSP] Multi-file didOpen blast queued: ${filesToOpen.length} files for ${backendLang}`);
-            }, 800); // Give the server time to finish initialize before blast
+
+                    const sendBatch = (startIdx) => {
+                        if (!languageClient.isRunning()) return;
+                        const end = Math.min(startIdx + BATCH_SIZE, filesToOpen.length);
+                        for (let i = startIdx; i < end; i++) {
+                            const f = filesToOpen[i];
+                            languageClient.sendNotification('textDocument/didOpen', {
+                                textDocument: { uri: f.uri, languageId: f.lang, version: 1, text: f.content }
+                            });
+                        }
+                        if (end < filesToOpen.length) {
+                            setTimeout(() => sendBatch(end), BATCH_DELAY_MS);
+                        }
+                    };
+                    if (filesToOpen.length > 0) sendBatch(0);
+                    console.log(`[LSP] Priming blast queued: ${filesToOpen.length} files for ${backendLang}`);
+                }, 800);
+            } else {
+                console.log(`[LSP] Skipping didOpen blast for ${backendLang} — server auto-indexes via rootUri`);
+            }
 
             // P1: Since middleware now passes didChange through to next(), monaco-languageclient
             // handles sync natively and will respect the server's textDocumentSync capability.
