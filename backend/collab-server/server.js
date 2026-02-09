@@ -123,19 +123,18 @@ async function getActualFileContent(slug, filePath) {
 }
 
 /**
- * Get content from a Yjs document's text type
+ * Canonical text type name used by the Monaco client binding.
+ * All server-side logic must use this consistently.
+ */
+const YTEXT_TYPE = 'monaco';
+
+/**
+ * Get content from a Yjs document's canonical text type.
  */
 function getYDocContent(ydoc) {
   try {
-    // Try common text type names used by Monaco/CodeMirror bindings
-    const textTypes = ['monaco', 'content', 'text', 'codemirror'];
-    for (const name of textTypes) {
-      const text = ydoc.getText(name);
-      if (text && text.length > 0) {
-        return text.toString();
-      }
-    }
-    return '';
+    const text = ydoc.getText(YTEXT_TYPE);
+    return text.length > 0 ? text.toString() : '';
   } catch (e) {
     return '';
   }
@@ -208,17 +207,8 @@ class ValidatingPersistence {
 
     const { slug, filePath } = parsed;
     
-    // Find the text type being used
-    const textTypes = ['monaco', 'content', 'text', 'codemirror'];
-    let targetText = null;
-    for (const name of textTypes) {
-      const text = ydoc.getText(name);
-      if (text) {
-        targetText = text;
-        break;
-      }
-    }
-
+    // Use the canonical text type
+    const targetText = ydoc.getText(YTEXT_TYPE);
     if (!targetText) return;
 
     // Create observer that flushes to disk
@@ -341,19 +331,18 @@ class ValidatingPersistence {
         await this.inner.clearDocument(docName);
       }
 
-      // Reset Yjs document to actual file content
-      // Find the text type and replace its content
-      const textTypes = ['monaco', 'content', 'text', 'codemirror'];
-      for (const name of textTypes) {
-        const text = ydoc.getText(name);
-        if (text) {
-          ydoc.transact(() => {
-            text.delete(0, text.length);
-            text.insert(0, actualContent);
-          });
-          break;
+      // Reset the canonical text type with actual file content
+      // Also clear any ghost content in legacy text type names
+      ydoc.transact(() => {
+        const canonical = ydoc.getText(YTEXT_TYPE);
+        canonical.delete(0, canonical.length);
+        canonical.insert(0, actualContent);
+        // Clear legacy text types to prevent ghost content from older sessions
+        for (const legacy of ['content', 'text', 'codemirror']) {
+          const lt = ydoc.getText(legacy);
+          if (lt.length > 0) lt.delete(0, lt.length);
         }
-      }
+      });
 
       // Update hash cache
       fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
@@ -398,6 +387,96 @@ const persistence = new ValidatingPersistence(basePersistence);
 const gitService = require('./gitService');
 const workspaceManager = require('./workspaceManager');
 
+// ── Access y-websocket internal docs for invalidation ──
+// y-websocket's utils module exports a `docs` Map<docName, WSSharedDoc>.
+// We use this to programmatically destroy stale Y.Docs when git operations
+// change files on disk (checkout, pull, discard, etc.)
+let yWsUtils = null;
+try {
+  yWsUtils = require('y-websocket/bin/utils');
+} catch (_) {
+  try { yWsUtils = require('y-websocket/bin/utils.js'); } catch (_2) {
+    try { yWsUtils = require('y-websocket/dist/bin/utils.cjs'); } catch (_3) { /* already loaded via root */ }
+  }
+}
+const yWsDocs = (yWsUtils && yWsUtils.docs) ? yWsUtils.docs : null;
+
+/**
+ * Invalidate all active Yjs documents for a workspace slug.
+ * Called after git operations that modify files on disk (checkout, pull, discard).
+ * This ensures the next WebSocket connection for each file triggers a fresh
+ * bindState with the new disk content.
+ *
+ * @param {string} slug - Workspace slug
+ * @param {string[]} [filePaths] - Specific file paths to invalidate. If empty/null, invalidates ALL docs for the slug.
+ */
+async function invalidateDocsForSlug(slug, filePaths = null) {
+  const prefix = `workspace:${slug}:`;
+  const toInvalidate = [];
+
+  // Collect doc names to invalidate
+  if (yWsDocs) {
+    for (const docName of yWsDocs.keys()) {
+      if (!docName.startsWith(prefix)) continue;
+      if (filePaths && filePaths.length > 0) {
+        const docPath = docName.slice(prefix.length);
+        if (!filePaths.includes(docPath)) continue;
+      }
+      toInvalidate.push(docName);
+    }
+  }
+
+  // Also scan persistence observer map for docs that may not be in yWsDocs
+  for (const docName of persistence.docObservers.keys()) {
+    if (!docName.startsWith(prefix)) continue;
+    if (filePaths && filePaths.length > 0) {
+      const docPath = docName.slice(prefix.length);
+      if (!filePaths.includes(docPath)) continue;
+    }
+    if (!toInvalidate.includes(docName)) toInvalidate.push(docName);
+  }
+
+  for (const docName of toInvalidate) {
+    // 1. Clean up auto-flush observer so it doesn't overwrite git changes
+    persistence._cleanupAutoFlush(docName);
+
+    // 2. Clear persisted (LevelDB/in-memory) state
+    await persistence.clearDocument(docName);
+
+    // 3. Clear hash cache so next bindState re-reads from disk
+    fileHashCache.delete(docName);
+
+    // 4. Destroy the in-memory Y.Doc so the next connection creates a fresh one.
+    //    y-websocket will call bindState again which reads the new disk content.
+    if (yWsDocs && yWsDocs.has(docName)) {
+      const wsDoc = yWsDocs.get(docName);
+      try { wsDoc.destroy(); } catch (_) {}
+      yWsDocs.delete(docName);
+    }
+
+    activeDocuments.delete(docName);
+  }
+
+  if (toInvalidate.length > 0) {
+    console.log(`[Collab] Invalidated ${toInvalidate.length} Yjs docs for slug ${slug}`);
+  }
+}
+
+/**
+ * Broadcast a file-tree-changed event to notification WebSocket clients
+ * for a specific workspace slug. Clients should re-fetch the file tree.
+ */
+function broadcastFileTreeChanged(slug) {
+  const message = JSON.stringify({ type: 'file-tree-changed', slug });
+  notifyWss.clients.forEach((ws) => {
+    // Only send to clients subscribed to this slug
+    if (ws.readyState === WebSocket.OPEN && ws._slug === slug) {
+      try { ws.send(message); } catch (_) {}
+    }
+  });
+  console.log(`[Collab] Broadcast file-tree-changed for slug ${slug}`);
+}
+
 /**
  * Clear Yjs persistence for a document (used when merge conflicts need fresh file content).
  * @param {string} docName - The document name (room key), e.g., "workspace:slug:filepath"
@@ -408,7 +487,6 @@ async function clearDocumentPersistence(docName) {
       await persistence.clearDocument(docName);
       console.log('[Collab] Cleared persistence for document:', docName);
     } else if (persistence.flushDocument && typeof persistence.flushDocument === 'function') {
-      // LeveldbPersistence may use flushDocument or similar
       await persistence.flushDocument(docName);
       console.log('[Collab] Flushed document from persistence:', docName);
     } else {
@@ -682,6 +760,7 @@ const server = http.createServer(async (req, res) => {
                     console.warn('[Collab] Fetch not available - skipping workspace creation in main app. Set SYNTHI_APP_URL or install node-fetch.');
                   }
 
+                  broadcastFileTreeChanged(slug);
                   break;
                 case 'status':
                     result = await gitService.getStatus(slug);
@@ -691,6 +770,9 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'checkout':
                     result = await gitService.checkout(slug, data.branch, data.create);
+                    // Branch switch may change any file on disk — invalidate all Yjs docs
+                    await invalidateDocsForSlug(slug);
+                    broadcastFileTreeChanged(slug);
                     break;
                 case 'fetch':
                     result = await gitService.fetch(slug);
@@ -718,25 +800,38 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'pull':
                     result = await gitService.pull(slug);
+                    // Pull changes files on disk — invalidate all Yjs docs
+                    await invalidateDocsForSlug(slug);
+                    broadcastFileTreeChanged(slug);
                     break;
                 case 'discard':
                     result = await gitService.discardChange(slug, data.filePath);
+                    // File reverted on disk — invalidate its Yjs doc
+                    if (data.filePath) {
+                      await invalidateDocsForSlug(slug, [data.filePath]);
+                    }
                     break;
                 case 'discard-all':
                     result = await gitService.discardAll(slug);
+                    // All files reverted — invalidate all Yjs docs
+                    await invalidateDocsForSlug(slug);
+                    broadcastFileTreeChanged(slug);
                     break;
                 // Merge conflict resolution
                 case 'resolve-ours':
                     result = await gitService.resolveConflictOurs(slug, data.filePath);
+                    if (data.filePath) await invalidateDocsForSlug(slug, [data.filePath]);
                     break;
                 case 'resolve-theirs':
                     result = await gitService.resolveConflictTheirs(slug, data.filePath);
+                    if (data.filePath) await invalidateDocsForSlug(slug, [data.filePath]);
                     break;
                 case 'mark-resolved':
                     result = await gitService.markResolved(slug, data.filePath);
                     break;
                 case 'abort-merge':
                     result = await gitService.abortMerge(slug);
+                    await invalidateDocsForSlug(slug);
                     break;
                 case 'conflict-versions':
                     result = await gitService.getConflictVersions(slug, data.filePath);
@@ -771,9 +866,13 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'stash-pop':
                     result = await gitService.stashPop(slug, data.index);
+                    await invalidateDocsForSlug(slug);
+                    broadcastFileTreeChanged(slug);
                     break;
                 case 'stash-apply':
                     result = await gitService.stashApply(slug, data.index);
+                    await invalidateDocsForSlug(slug);
+                    broadcastFileTreeChanged(slug);
                     break;
                 case 'stash-drop':
                     result = await gitService.stashDrop(slug, data.index);
@@ -831,6 +930,7 @@ const server = http.createServer(async (req, res) => {
                 case 'write-file':
                     await gitService.writeFile(slug, data.path, data.content);
                     result = { success: true };
+                    broadcastFileTreeChanged(slug);
                     break;
                 case 'write-files-batch':
                   // Batch write many files (supports base64 for binary).
@@ -842,12 +942,26 @@ const server = http.createServer(async (req, res) => {
                 case 'create-directory':
                     await gitService.createDirectory(slug, data.path);
                     result = { success: true };
+                    broadcastFileTreeChanged(slug);
                     break;
                 case 'delete-item':
                     // Delete a file or folder from the workspace
                     console.log('[Collab] delete-item called for:', slug, data.path);
                     result = await gitService.deleteItem(slug, data.path);
                     console.log('[Collab] delete-item result:', result);
+                    if (data.path) {
+                      await invalidateDocsForSlug(slug, [data.path]);
+                    }
+                    broadcastFileTreeChanged(slug);
+                    break;
+                case 'rename-item':
+                    // Rename / move a file or directory
+                    result = await gitService.renameItem(slug, data.oldPath, data.newPath);
+                    // Invalidate old path's Yjs doc (the file no longer exists at old path)
+                    if (data.oldPath) {
+                      await invalidateDocsForSlug(slug, [data.oldPath]);
+                    }
+                    broadcastFileTreeChanged(slug);
                     break;
                 case 'clear-collab':
                     // Clear Yjs persistence for specified files (used after merge conflict resolution)
@@ -899,6 +1013,10 @@ const server = http.createServer(async (req, res) => {
 
 const wss = new WebSocket.Server({ noServer: true });
 
+// Lightweight notification WebSocket server for non-Yjs broadcasts
+// (e.g., file-tree-changed). Clients connect to /notifications?slug=<slug>.
+const notifyWss = new WebSocket.Server({ noServer: true });
+
 // Track active documents and their content for debugging
 const activeDocuments = new Map(); // docName -> { ydoc, lastContent, clientCount }
 
@@ -945,13 +1063,28 @@ wss.on('connection', (ws, req) => {
 });
 
 server.on('upgrade', (request, socket, head) => {
-  const roomName = request.url ? request.url.slice(1).split('?')[0] : 'unknown';
-  console.log(`[Collab DEBUG] Upgrade request for room: ${roomName}`);
+  const pathname = request.url ? request.url.split('?')[0] : '';
   
-  // We accept all WebSocket connections at any path (room name encoded in path)
-  wss.handleUpgrade(request, socket, head, (ws) => {
-    wss.emit('connection', ws, request);
-  });
+  if (pathname === '/notifications') {
+    // Notification channel – lightweight JSON broadcasts
+    notifyWss.handleUpgrade(request, socket, head, (ws) => {
+      // Extract slug from query string: /notifications?slug=<slug>
+      const params = new URLSearchParams((request.url || '').split('?')[1] || '');
+      ws._slug = params.get('slug') || '';
+      notifyWss.emit('connection', ws, request);
+      console.log(`[Collab] Notification client connected for slug: ${ws._slug}`);
+      ws.on('close', () => {
+        console.log(`[Collab] Notification client disconnected for slug: ${ws._slug}`);
+      });
+    });
+  } else {
+    // Yjs sync protocol – per-document CRDT connections
+    const roomName = pathname.slice(1) || 'unknown';
+    console.log(`[Collab DEBUG] Upgrade request for room: ${roomName}`);
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  }
 });
 
 server.listen(PORT, '0.0.0.0', () => {
