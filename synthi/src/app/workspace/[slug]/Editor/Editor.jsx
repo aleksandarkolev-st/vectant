@@ -1037,6 +1037,17 @@ const EditorPanel = ({
                 const MIN_CHANGE_GAP_MS = 30;
                 let _lastDidChangeTs = 0;
 
+                // Cache the CancellationTokenSource constructor to avoid
+                // a dynamic import() on every completion request.
+                let _CancellationTokenSource = null;
+                const getCTS = async () => {
+                    if (!_CancellationTokenSource) {
+                        const mod = await import('vscode-jsonrpc');
+                        _CancellationTokenSource = mod.CancellationTokenSource;
+                    }
+                    return _CancellationTokenSource;
+                };
+
                 for (const langId of documentSelector) {
                     const disp = monacoInstance.languages.registerCompletionItemProvider(langId, {
                         triggerCharacters: allTriggers,
@@ -1199,7 +1210,7 @@ const EditorPanel = ({
 
                                 // Create a cancellation source that combines Monaco's
                                 // token with our own generation-based cancellation.
-                                const { CancellationTokenSource } = await import('vscode-jsonrpc');
+                                const CancellationTokenSource = await getCTS();
                                 const cts = new CancellationTokenSource();
                                 _lastCompletionCts = cts;
 
@@ -1567,7 +1578,7 @@ const EditorPanel = ({
                                         if (myGeneration !== _currentCompletionGen || token.isCancellationRequested) {
                                             return { suggestions: [] };
                                         }
-                                        const { CancellationTokenSource } = await import('vscode-jsonrpc');
+                                        const CancellationTokenSource = await getCTS();
                                         const cts3 = new CancellationTokenSource();
                                         _lastCompletionCts = cts3;
                                         const monacoDisp3 = token.onCancellationRequested(() => cts3.cancel());
