@@ -1161,7 +1161,9 @@ const EditorPanel = ({
                                 }
 
                                 if (!result || token.isCancellationRequested) {
-                                    console.log(`[LSP] provideCompletionItems: ${!result ? 'null result' : 'cancelled'} for ${backendLang}`);
+                                    console.log(
+                                        `[LSP] provideCompletionItems: ${!result ? 'server returned null' : 'cancelled after response'} for ${backendLang} (gen=${myGeneration})`
+                                    );
                                     return { suggestions: [] };
                                 }
 
@@ -1180,7 +1182,7 @@ const EditorPanel = ({
                                 console.log(`[LSP] Server returned ${items.length} raw items for ${backendLang} (incomplete=${!!isIncomplete})`);
 
                                 if (items.length === 0) {
-                                    console.log(`[LSP] provideCompletionItems: 0 items after retry for ${backendLang}, returning empty`);
+                                    console.log(`[LSP] provideCompletionItems: server returned 0 items for ${backendLang} (gen=${myGeneration}, incomplete=${!!isIncomplete})`);
                                     return { suggestions: [], incomplete: !!isIncomplete };
                                 }
 
