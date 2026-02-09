@@ -1028,6 +1028,9 @@ const EditorPanel = ({
                 // Track the cancellation token source for the last completion
                 // request so we can cancel it when a new one arrives.
                 let _lastCompletionCts = null;
+                // Track whether the last completion result was incomplete,
+                // so we can send triggerKind=3 on the next keystroke.
+                let _lastResultIncomplete = false;
 
                 for (const langId of documentSelector) {
                     const disp = monacoInstance.languages.registerCompletionItemProvider(langId, {
@@ -1069,9 +1072,16 @@ const EditorPanel = ({
                             // Build the LSP triggerKind:
                             //  1 = Invoked (Ctrl+Space or quickSuggestions auto-trigger)
                             //  2 = TriggerCharacter (typed a trigger char like . : etc.)
-                            //  3 = TriggerForIncompleteCompletions
+                            //  3 = TriggerForIncompleteCompletions (re-trigger after incomplete result)
                             const isTriggerChar = context.triggerKind === monacoInstance.languages.CompletionTriggerKind.TriggerCharacter;
-                            const lspTriggerKind = isTriggerChar ? 2 : 1;
+                            let lspTriggerKind;
+                            if (_lastResultIncomplete && !isTriggerChar) {
+                                lspTriggerKind = 3; // TriggerForIncompleteCompletions
+                            } else if (isTriggerChar) {
+                                lspTriggerKind = 2;
+                            } else {
+                                lspTriggerKind = 1;
+                            }
 
                             // NOTE: We rely on monaco-languageclient's native
                             // didChange sync (via the middleware passthrough) to
@@ -1364,8 +1374,10 @@ const EditorPanel = ({
                                         kind: suggestions[0].kind,
                                     } : null,
                                 });
+                                _lastResultIncomplete = !!isIncomplete;
                                 return { suggestions, incomplete: !!isIncomplete };
                             } catch (err) {
+                                _lastResultIncomplete = false;
                                 const msg = err?.message || String(err);
                                 if (msg === 'Canceled' || msg === 'cancelled' || err?.code === -32800) {
                                     return { suggestions: [] };
