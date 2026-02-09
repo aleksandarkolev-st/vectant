@@ -20,7 +20,7 @@ import {
     reorderOpenFiles
 } from '@/redux/workspaceSlice';
 import { selectAutoSaveEnabled, selectAutoCompletionEnabled, toggleAutoCompletion, selectShowAnonymousPresence, selectPresenceGranularity, toggleShowAnonymousPresence, setPresenceGranularity, startCreate, setCursorPosition } from '@/redux/uiSlice';
-import { fetchGitStatus } from '@/redux/gitSlice';
+import { fetchGitStatus, syncFileToGit } from '@/redux/gitSlice';
 import { Circle, Save, Sparkles, EyeOff, Loader2 } from 'lucide-react'; // Added Sparkles, EyeOff
 import { getFileIcon } from '@/utils/fileIcons';
 import {
@@ -1272,6 +1272,33 @@ const EditorPanel = ({
             }
         };
     }, [code, slug, activeFile, dispatch]);
+
+    // ── Direct disk-write fallback ──────────────────────────────────────────
+    // The Yjs auto-flush writes content to disk via WebSocket, but if the WS
+    // connection is down (server restart, network blip) the content never
+    // reaches the git working tree and Source Control stays stale.
+    // This effect writes content via HTTP (syncFileToGit) on a 1.5s debounce
+    // as a belt-and-suspenders guarantee.  The server's syncFile endpoint is
+    // idempotent — writing the same content twice is a no-op at the git level.
+    const diskSyncTimerRef = useRef(null);
+    useEffect(() => {
+        if (!slug || !activeFile?.path || !isUnsaved) return;
+        if (diskSyncTimerRef.current) clearTimeout(diskSyncTimerRef.current);
+        diskSyncTimerRef.current = setTimeout(() => {
+            diskSyncTimerRef.current = null;
+            dispatch(syncFileToGit({
+                slug,
+                filePath: activeFile.path,
+                content: latestCodeRef.current ?? code,
+            }));
+        }, 1500);
+        return () => {
+            if (diskSyncTimerRef.current) {
+                clearTimeout(diskSyncTimerRef.current);
+                diskSyncTimerRef.current = null;
+            }
+        };
+    }, [code, slug, activeFile, isUnsaved, dispatch]);
 
     // Key bindings (Ctrl+S, Alt+F)
     useEffect(() => {
