@@ -1063,16 +1063,8 @@ const EditorPanel = ({
                             // Build the LSP triggerKind:
                             //  1 = Invoked (Ctrl+Space or quickSuggestions auto-trigger)
                             //  2 = TriggerCharacter (typed a trigger char like . : etc.)
-                            //  3 = TriggerForIncompleteCompletions (re-trigger after incomplete result)
                             const isTriggerChar = context.triggerKind === monacoInstance.languages.CompletionTriggerKind.TriggerCharacter;
-                            let lspTriggerKind;
-                            if (_lastResultIncomplete && !isTriggerChar) {
-                                lspTriggerKind = 3; // TriggerForIncompleteCompletions
-                            } else if (isTriggerChar) {
-                                lspTriggerKind = 2;
-                            } else {
-                                lspTriggerKind = 1;
-                            }
+                            const lspTriggerKind = isTriggerChar ? 2 : 1;
 
                             // NOTE: We rely on monaco-languageclient's native
                             // didChange sync (via the middleware passthrough) to
@@ -1091,7 +1083,7 @@ const EditorPanel = ({
                                 _lastCompletionCts = null;
                             }
 
-                            console.log(`[LSP] Sending textDocument/completion for ${backendLang} (gen=${myGeneration}, triggerKind=${lspTriggerKind}${_lastResultIncomplete ? ', re-trigger' : ''})`);
+                            console.log(`[LSP] Sending textDocument/completion for ${backendLang} (gen=${myGeneration}, triggerKind=${lspTriggerKind})`);
 
                             try {
                                 // Create a cancellation source that combines Monaco's
