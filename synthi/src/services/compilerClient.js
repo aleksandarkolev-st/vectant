@@ -124,8 +124,7 @@ export class CompilerClient {
         if (['cpp', 'cc', 'cxx', 'hpp', 'h'].includes(ext)) return 'cpp';
         if (ext === 'rs') return 'rust';
         if (ext === 'ts' || ext === 'tsx') return 'ts';
-        if (ext === 'java') return 'java';
-        if (ext === 'kt' || ext === 'kts') return 'kotlin';
+        if (ext === 'dart') return 'dart';
         // Note: js/jsx are intentionally not mapped here - they need special handling
         // for React Native vs browser environments
         return null;
@@ -143,12 +142,6 @@ export class CompilerClient {
             /import.*from\s+['"]react-native-/
         ];
         return rnPatterns.some(pattern => pattern.test(source));
-    }
-
-    // Detect if this is a native Android (Java/Kotlin) file
-    _isNativeAndroidFile(filename = '') {
-        const ext = (filename || '').split('.').pop().toLowerCase();
-        return ext === 'java' || ext === 'kt' || ext === 'kts';
     }
 
     _notifyLog(msg) {
@@ -903,28 +896,29 @@ export class CompilerClient {
         // Auto-detect React Native from source if no target specified and file is JS/JSX/TSX
         const ext = (filename || '').split('.').pop().toLowerCase();
         const isJsxFile = ['js', 'jsx', 'tsx', 'ts'].includes(ext);
+        const isDartFile = ext === 'dart';
         
         let effectiveTarget = target;
+        
+        // Auto-detect Flutter projects from .dart files
+        if (!effectiveTarget && isDartFile) {
+            effectiveTarget = 'flutter-android-emulator';
+            console.log('[CompilerClient] Auto-detected Flutter project from .dart file');
+        }
+        
+        // Auto-detect React Native from source
         if (!effectiveTarget && isJsxFile && this._detectReactNativeInSource(source)) {
             effectiveTarget = 'react-native-emulator';
             console.log('[CompilerClient] Auto-detected React Native project from source imports');
-        }
-        
-        // Auto-detect native Android (Java/Kotlin) projects
-        if (!effectiveTarget && this._isNativeAndroidFile(filename)) {
-            effectiveTarget = 'native-android-emulator';
-            console.log('[CompilerClient] Auto-detected native Android project from file extension');
         }
         
         // REMOVED: Force a clean WebRTC connection for mobile emulator runs.
         // This was causing unnecessary resets/disconnects on every "Run" click.
         // The reset should only happen on explicit Stop/Restart actions if needed.
 
-        // Determine if this is a mobile target
-        const isMobileTarget = ['react-native-emulator', 'native-android-emulator', 'flutter-android-emulator'].includes(effectiveTarget);
-        
         // For mobile targets, language detection is optional
-        const lang = isMobileTarget ? (language || this._mapLanguage(filename) || 'java') : (language || this._mapLanguage(filename));
+        const isMobileTarget = effectiveTarget === 'react-native-emulator' || effectiveTarget === 'flutter-android-emulator';
+        const lang = isMobileTarget ? (language || (isDartFile ? 'dart' : 'javascript')) : (language || this._mapLanguage(filename));
         if (!effectiveTarget && !lang) throw new SynthiException('Unsupported language for compilation', 'The file extension is not supported by the compiler.');
         // Generate a session id early so we can scope client-side WebRTC logs
         // (answer/ontrack) that occur during the initial connect/negotiation.
@@ -1012,7 +1006,7 @@ export class CompilerClient {
                     } catch (_) {}
                 };
                 stopStats();
-                if (isMobileTarget) {
+                if (effectiveTarget === 'react-native-emulator') {
                     let ticks = 0;
                     let lastBytes = null;
                     let sawNonZero = false;
@@ -1068,7 +1062,7 @@ export class CompilerClient {
 
                 // Mobile emulator streams video over WebRTC. If the browser connected earlier without
                 // negotiating an m=video section, ontrack will never fire. Ensure recvonly video now.
-                if (isMobileTarget) {
+                if (effectiveTarget === 'react-native-emulator') {
                     // Fire-and-forget; we don't want to block the job on renegotiation.
                     this._ensureRecvTransceivers({ video: true, audio: false, forceRenegotiate: true, sessionId, onLog: (l) => clientLog(l, sessionId) })
                         .catch(() => {});
@@ -1297,7 +1291,7 @@ export class CompilerClient {
             const handler = (msg) => {
                 const line = typeof msg === 'string' ? msg : String(msg);
                 const target = this._sessionTargets.get(sessionId);
-                const isMobile = ['react-native-emulator', 'native-android-emulator', 'flutter-android-emulator'].includes(target);
+                const isMobile = target === 'react-native-emulator';
                 if (line.includes(sessionId) && (
                     line.includes('cancelled by user') ||
                     line.includes('cancelled')

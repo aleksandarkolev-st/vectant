@@ -252,6 +252,42 @@ export class ApiClient {
     }
 
     async deleteItem(slug, itemPath) {
+        const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
+        
+        // Clean the path - remove trailing slash for collab-server
+        const cleanPath = itemPath.endsWith('/') ? itemPath.slice(0, -1) : itemPath;
+        
+        console.log('[api.deleteItem] Trying collab-server first:', slug, cleanPath);
+        
+        // Try collab-server first (handles local files from worker)
+        try {
+            const collabRes = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/delete-item`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: cleanPath }),
+            });
+            console.log('[api.deleteItem] Collab-server response status:', collabRes.status);
+            
+            if (collabRes.ok) {
+                const result = await collabRes.json();
+                console.log('[api.deleteItem] Collab-server result:', result);
+                if (result.deleted > 0) {
+                    return result;
+                }
+                // If deleted === 0 and not an error, the file wasn't on collab-server
+                // Fall through to try GCS
+            } else {
+                const errText = await collabRes.text();
+                console.warn('[api.deleteItem] Collab-server error:', collabRes.status, errText);
+            }
+        } catch (e) {
+            // Collab-server unavailable, fall through to GCS
+            console.warn('[api.deleteItem] Collab-server request failed:', e.message);
+        }
+        
+        console.log('[api.deleteItem] Falling back to GCS for:', itemPath);
+        
+        // Fall back to GCS storage
         const response = await fetch(`${this.baseUrl}/${slug}/item`, {
             method: 'DELETE',
             headers: { 'Content-Type': 'application/json' },

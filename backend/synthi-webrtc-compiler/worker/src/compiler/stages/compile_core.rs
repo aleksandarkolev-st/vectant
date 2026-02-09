@@ -101,6 +101,10 @@ pub async fn compile_core(
 
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);
+                    // CRITICAL: Log to worker output so errors are visible in
+                    // container logs — not just the data channel (which may be
+                    // disconnected or its send may silently fail).
+                    eprintln!("[CompileCore] g++ FAILED:\n{}", stderr);
                     let payload = serde_json::json!({
                         "sessionId": session_id.clone(),
                         "status": "done",
@@ -108,7 +112,6 @@ pub async fn compile_core(
                         "stage": "compile_core",
                         "error": stderr
                     });
-                    // Use log_dc to send error
                     if let Err(e) = ctx
                         .log_dc
                         .send_text(serde_json::to_string(&payload).unwrap_or_default())
