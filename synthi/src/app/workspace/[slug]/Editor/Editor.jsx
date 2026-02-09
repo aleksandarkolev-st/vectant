@@ -1200,6 +1200,10 @@ const EditorPanel = ({
                                     : Infinity; // No didChange yet — don't delay
                                 const yieldMs = Math.max(10, MIN_CHANGE_GAP_MS - sinceLast);
                                 await new Promise((r) => setTimeout(r, yieldMs));
+                                const actualGap = _lastDidChangeTs > 0
+                                    ? (performance.now() - _lastDidChangeTs).toFixed(0)
+                                    : 'n/a';
+                                console.log(`[LSP] Post-yield: ${actualGap}ms since last didChange (yielded ${yieldMs}ms) for gen=${myGeneration}`);
                                 if (token.isCancellationRequested || myGeneration !== _currentCompletionGen) {
                                     return { suggestions: [] };
                                 }
