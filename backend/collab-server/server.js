@@ -85,6 +85,13 @@ const PORT = process.env.COLLAB_PORT || 1234;
 // Track file hashes to detect when actual files change outside of the editor
 const fileHashCache = new Map(); // docName -> { hash, timestamp }
 
+// Track which slugs have been hydrated from GCS this boot.
+// Solves the case where a repo directory exists (e.g. from a prior run or
+// background indexer) but its contents are stale/partial.  On first access
+// per server lifetime we always call initRepo() which is idempotent (checks
+// for .git before re-initialising) and merges GCS contents via downloadGcsToRepo().
+const hydratedSlugs = new Set();
+
 /**
  * Compute MD5 hash of content for change detection
  */
@@ -588,9 +595,11 @@ const server = http.createServer(async (req, res) => {
     
     try {
       // Ensure repo exists and (when configured) hydrate from GCS before reading.
-      if (!gitService.isRepoExists(slug)) {
+      // Use hydratedSlugs so we re-hydrate once per boot even if the dir exists.
+      if (!hydratedSlugs.has(slug)) {
         try {
           await gitService.initRepo(slug, null);
+          hydratedSlugs.add(slug);
         } catch (e) {
           if (gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
             console.warn('[Collab] FILE-CONTENT auto-init failed for slug:', slug, e?.message || e);
@@ -661,14 +670,16 @@ const server = http.createServer(async (req, res) => {
         // This avoids REPO_NOT_FOUND for fresh workspaces and allows the server to
         // hydrate from GCS automatically (when configured) without requiring a manual
         // "Initialize Git" click.
-        if (action !== 'clone' && !gitService.isRepoExists(slug)) {
+        // Use hydratedSlugs so we re-hydrate once per boot even when the dir already
+        // exists with partial/stale content (e.g. .code_intel artifacts).
+        if (action !== 'clone' && !hydratedSlugs.has(slug)) {
           try {
             // initRepo will mkdir the repo path, init .git, and (when configured)
             // pull the current workspace contents from GCS.
             await gitService.initRepo(slug, null);
+            hydratedSlugs.add(slug);
           } catch (e) {
             // If init fails, continue so the normal handler can return a structured error.
-            // (Most read paths will fail and the frontend can fall back to storage.)
             if (gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
               console.warn('[Collab] auto-init repo failed for slug:', slug, e?.message || e);
             }
@@ -680,6 +691,7 @@ const server = http.createServer(async (req, res) => {
             switch (action) {
                 case 'init':
                     result = await gitService.initRepo(slug, data.remoteUrl);
+                    hydratedSlugs.add(slug);
                     break;
                 case 'add-remote':
                     result = await gitService.addRemote(slug, data.name, data.url);
@@ -692,6 +704,7 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'clone':
                   result = await gitService.cloneRepo(slug, data.repoUrl, data.token);
+                  hydratedSlugs.add(slug);
                   // Save metadata locally
                   workspaceManager.addWorkspace(slug, data.repoUrl, data.owner, data.name);
 
