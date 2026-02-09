@@ -1189,14 +1189,16 @@ const EditorPanel = ({
         cancelActiveCompletion({ resetSuggestion: true, reason: 'edit' });
         latestCodeRef.current = newCode;
 
-        // P0: Debounce Redux sync — only dispatch to Redux after 300ms pause.
+        // P0: Debounce Redux sync — only dispatch to Redux after 150ms pause.
         // Monaco holds the source of truth; Redux only needs eventual consistency
         // for save, tab bar, file explorer, etc.
+        // 150ms matches the server's Yjs auto-flush debounce so the unsaved
+        // indicator appears at roughly the same time content reaches disk.
         if (reduxSyncTimerRef.current) clearTimeout(reduxSyncTimerRef.current);
         reduxSyncTimerRef.current = setTimeout(() => {
             reduxSyncTimerRef.current = null;
             dispatch(updateContent(latestCodeRef.current));
-        }, 300);
+        }, 150);
 
         // Debounce AI Auto-Complete (The "Cursor" experience)
         if (aiDebounceTimerRef.current) clearTimeout(aiDebounceTimerRef.current);
