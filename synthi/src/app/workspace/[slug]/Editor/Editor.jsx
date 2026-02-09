@@ -1119,6 +1119,17 @@ const EditorPanel = ({
                             console.log(`[LSP] Sending textDocument/completion for ${backendLang} (gen=${myGeneration}, triggerKind=${lspTriggerKind})`);
 
                             try {
+                                // Yield one micro-task so that any pending
+                                // didChange notification (which runs on the
+                                // microtask queue from the middleware) is
+                                // written to the transport before we send the
+                                // completion request.  Without this, the
+                                // server may still see the *previous* buffer.
+                                await new Promise((r) => setTimeout(r, 0));
+                                if (token.isCancellationRequested || myGeneration !== _currentCompletionGen) {
+                                    return { suggestions: [] };
+                                }
+
                                 // Create a cancellation source that combines Monaco's
                                 // token with our own generation-based cancellation.
                                 const { CancellationTokenSource } = await import('vscode-jsonrpc');
