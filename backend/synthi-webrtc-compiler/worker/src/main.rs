@@ -1798,6 +1798,11 @@ async fn wire_peer_channels(
                                     // forwarding so we don't record a version the server
                                     // never received.
                                     let mut deferred_version_update: Option<(String, i64)> = None;
+                                    // When an out-of-order didChange is detected, we skip
+                                    // forwarding the stale message and instead send a
+                                    // full-text resync from disk.
+                                    let mut skip_forward = false;
+                                    let mut deferred_resync: Option<(Vec<u8>, String, i64)> = None;
 
                                     if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(json_bytes) {
                                         let mut guard = state.lock().await;
@@ -1889,8 +1894,38 @@ async fn wire_peer_channels(
                                                                 None => false, // first change for this URI, always accept
                                                             };
                                                             if is_out_of_order {
-                                                                eprintln!("[LSP] Rejecting out-of-order didChange for {} (version {} <= {:?})", uri, incoming_version, last_version);
-                                                                // Still forward to LSP (it may handle versioning itself) but skip disk write
+                                                                eprintln!("[LSP] Rejecting out-of-order didChange for {} (version {} <= {:?}), triggering full resync from disk", uri, incoming_version, last_version);
+                                                                // Do NOT forward stale message. Read current disk
+                                                                // content and send a synthetic full-text didChange
+                                                                // so the server re-syncs to the true file state.
+                                                                skip_forward = true;
+                                                                if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
+                                                                    let rel = rel.trim_start_matches('/');
+                                                                    let file_path = workspace_path.join(rel);
+                                                                    if let Ok(disk_content) = tokio::fs::read_to_string(&file_path).await {
+                                                                        let resync_version = last_version.unwrap_or(0) + 1;
+                                                                        let resync_msg = serde_json::json!({
+                                                                            "jsonrpc": "2.0",
+                                                                            "method": "textDocument/didChange",
+                                                                            "params": {
+                                                                                "textDocument": {
+                                                                                    "uri": uri,
+                                                                                    "version": resync_version
+                                                                                },
+                                                                                "contentChanges": [{ "text": disk_content }]
+                                                                            }
+                                                                        });
+                                                                        if let Ok(content) = serde_json::to_vec(&resync_msg) {
+                                                                            let header = format!("Content-Length: {}\r\n\r\n", content.len());
+                                                                            let mut msg_bytes = Vec::with_capacity(header.len() + content.len());
+                                                                            msg_bytes.extend_from_slice(header.as_bytes());
+                                                                            msg_bytes.extend_from_slice(&content);
+                                                                            deferred_resync = Some((msg_bytes, uri.to_string(), resync_version));
+                                                                        }
+                                                                    } else {
+                                                                        eprintln!("[LSP] Resync failed: could not read {} from disk", file_path.display());
+                                                                    }
+                                                                }
                                                             } else {
                                                                 // Defer version update until after forward to LSP stdin
                                                                 deferred_version_update = Some((uri.to_string(), incoming_version));
@@ -2028,13 +2063,24 @@ async fn wire_peer_channels(
                                         data = new_msg;
                                     }
 
-                                    let _ = tx.send(data);
+                                    // Forward message (or resync) to LSP server stdin.
+                                    if skip_forward {
+                                        // Out-of-order detected: send resync instead of stale msg
+                                        if let Some((resync_bytes, uri, version)) = deferred_resync {
+                                            let _ = tx.send(resync_bytes);
+                                            let mut guard = state.lock().await;
+                                            guard.doc_versions.insert(uri, version);
+                                        }
+                                        // else: resync could not be built, message is simply dropped
+                                    } else {
+                                        let _ = tx.send(data);
 
-                                    // Apply deferred version update now that the message
-                                    // has been queued for forwarding to the LSP server.
-                                    if let Some((uri, version)) = deferred_version_update {
-                                        let mut guard = state.lock().await;
-                                        guard.doc_versions.insert(uri, version);
+                                        // Apply deferred version update now that the message
+                                        // has been queued for forwarding to the LSP server.
+                                        if let Some((uri, version)) = deferred_version_update {
+                                            let mut guard = state.lock().await;
+                                            guard.doc_versions.insert(uri, version);
+                                        }
                                     }
                                 }
                             });
