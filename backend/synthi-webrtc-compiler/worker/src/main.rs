@@ -1794,6 +1794,10 @@ async fn wire_peer_channels(
 
                                     // Try to parse and process
                                     let mut processed = false;
+                                    // Deferred version update: store (uri, version) AFTER
+                                    // forwarding so we don't record a version the server
+                                    // never received.
+                                    let mut deferred_version_update: Option<(String, i64)> = None;
 
                                     if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(json_bytes) {
                                         let mut guard = state.lock().await;
@@ -1888,7 +1892,8 @@ async fn wire_peer_channels(
                                                                 eprintln!("[LSP] Rejecting out-of-order didChange for {} (version {} <= {:?})", uri, incoming_version, last_version);
                                                                 // Still forward to LSP (it may handle versioning itself) but skip disk write
                                                             } else {
-                                                                guard.doc_versions.insert(uri.to_string(), incoming_version);
+                                                                // Defer version update until after forward to LSP stdin
+                                                                deferred_version_update = Some((uri.to_string(), incoming_version));
 
                                                                 if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
                                                                     let rel = rel.trim_start_matches('/');
@@ -2024,6 +2029,13 @@ async fn wire_peer_channels(
                                     }
 
                                     let _ = tx.send(data);
+
+                                    // Apply deferred version update now that the message
+                                    // has been queued for forwarding to the LSP server.
+                                    if let Some((uri, version)) = deferred_version_update {
+                                        let mut guard = state.lock().await;
+                                        guard.doc_versions.insert(uri, version);
+                                    }
                                 }
                             });
 
