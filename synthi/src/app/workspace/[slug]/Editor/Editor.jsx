@@ -1123,13 +1123,10 @@ const EditorPanel = ({
                                 }
                             }
 
-                            // NOTE: We rely on monaco-languageclient's native
-                            // didChange sync (via the middleware passthrough) to
-                            // keep the server up-to-date.  Sending a full-document
-                            // didChange before every completion is expensive and
-                            // floods slow servers (TS, Java).  If completions are
-                            // stale, the root cause is ordering/versioning, not
-                            // missing content — fix that at the transport layer.
+                            // We rely on the middleware passthrough for didChange
+                            // to keep the server in sync.  The micro-yield above
+                            // ensures the notification is flushed before we send
+                            // the completion request.
                             if (token.isCancellationRequested) return { suggestions: [] };
 
                             // Cancel the previous in-flight completion request
@@ -1447,7 +1444,17 @@ const EditorPanel = ({
                                 });
                                 return { suggestions, incomplete: !!isIncomplete };
                             } catch (err) {
+                                // Ensure the CTS is cleaned up on error too,
+                                // otherwise a failed request blocks future
+                                // cancel logic from seeing a null slot.
+                                if (_lastCompletionCts) {
+                                    try { _lastCompletionCts.dispose(); } catch (_) { /* already disposed */ }
+                                    _lastCompletionCts = null;
+                                }
                                 const msg = err?.message || String(err);
+                                // JSON-RPC -32800 = RequestCancelled — not an
+                                // error, just normal lifecycle when Monaco
+                                // cancels mid-flight.
                                 if (msg === 'Canceled' || msg === 'cancelled' || err?.code === -32800) {
                                     return { suggestions: [] };
                                 }
@@ -1623,6 +1630,16 @@ const EditorPanel = ({
                 console.log(`[LSP] Channel closed for ${backendLang}`);
                 completionDisposables.forEach(d => d.dispose());
                 changeDisposable.dispose();
+                // Clean up any pending debounce timer
+                if (_triggerDebounceTimer) {
+                    clearTimeout(_triggerDebounceTimer);
+                    _triggerDebounceTimer = null;
+                }
+                // Dispose the CTS if a request was in-flight
+                if (_lastCompletionCts) {
+                    try { _lastCompletionCts.dispose(); } catch (_) {}
+                    _lastCompletionCts = null;
+                }
 
                 // P2: Send shutdown→exit for a clean server shutdown
                 if (languageClient.isRunning()) {
