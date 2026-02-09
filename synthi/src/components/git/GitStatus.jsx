@@ -251,6 +251,16 @@ export function GitStatus({ slug }) {
     if (pullChanges.fulfilled.match(result)) {
       dispatch(refreshWorkspaceThunk());
       toast.success('Pulled latest changes');
+    } else if (pullChanges.rejected.match(result)) {
+      if (result.payload?.code === 'MERGE_CONFLICT') {
+        const count = result.payload.conflicted?.length || 0;
+        toast.error(
+          `Merge conflict — ${count} file${count !== 1 ? 's' : ''} need resolution`,
+          { duration: 6000 }
+        );
+      } else {
+        toast.error(result.payload?.message || result.error?.message || 'Pull failed');
+      }
     }
   };
 

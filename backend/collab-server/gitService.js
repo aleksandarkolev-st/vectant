@@ -603,17 +603,22 @@ class GitService {
                 
                 // Check if pull failed due to merge conflict
                 const msg = (e.message || '').toLowerCase();
-                if (msg.includes('conflict') || msg.includes('merge failed') || msg.includes('automatic merge failed')) {
-                    // Get current status to find conflicted files
+                if (msg.includes('conflict') || msg.includes('merge failed') || msg.includes('automatic merge failed')
+                    || msg.includes('would be overwritten') || msg.includes('please commit your changes or stash')) {
+                    // Always attempt to enumerate the conflicted files from git status
+                    let conflictedFiles = [];
                     try {
                         const status = await this.getStatus(slug);
-                        if (status && status.conflictedFiles && status.conflictedFiles.length > 0) {
-                            throw new MergeConflictError(status.conflictedFiles);
-                        }
+                        conflictedFiles = status?.conflictedFiles ?? [];
                     } catch (statusErr) {
                         if (statusErr instanceof MergeConflictError) throw statusErr;
+                        // If status itself fails, parse file paths from the original error
+                        const fileMatch = e.message.match(/error: Your local changes to the following files would be overwritten[\s\S]*?:\n([\s\S]*?)(?:Please|Aborting)/i);
+                        if (fileMatch) {
+                            conflictedFiles = fileMatch[1].split('\n').map(l => l.trim()).filter(Boolean);
+                        }
                     }
-                    throw new MergeConflictError([]);
+                    throw new MergeConflictError(conflictedFiles);
                 }
                 
                 throw this.mapGitError(e, slug);

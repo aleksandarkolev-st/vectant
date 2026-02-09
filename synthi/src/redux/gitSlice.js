@@ -421,9 +421,10 @@ const gitSlice = createSlice({
             .addCase(pullChanges.fulfilled, (state) => { state.loading = false; })
             .addCase(pullChanges.rejected, (state, action) => { 
                 state.loading = false; 
-                // If it's a merge conflict, don't show it as an error (it's expected)
                 if (action.payload?.code === 'MERGE_CONFLICT') {
-                    state.actionError = null;
+                    const files = action.payload.conflicted || [];
+                    state.actionError = `Merge conflict: ${files.length} file${files.length !== 1 ? 's' : ''} need resolution`;
+                    state.actionErrorCode = 'MERGE_CONFLICT';
                 } else {
                     state.actionError = action.error?.message || action.payload?.message || 'Pull failed';
                     state.actionErrorCode = action.error?.code || null;
