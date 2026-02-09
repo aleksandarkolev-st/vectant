@@ -1581,10 +1581,17 @@ const EditorPanel = ({
                                 const msg = err?.message || String(err);
                                 const code = err?.code;
 
-                                // JSON-RPC -32800 = RequestCancelled
-                                // JSON-RPC -32802 = ServerCancelled
-                                // These are normal lifecycle events, not errors.
-                                if (msg === 'Canceled' || msg === 'cancelled' || code === -32800 || code === -32802) {
+                                // JSON-RPC cancellation / lifecycle codes:
+                                // -32800 = RequestCancelled
+                                // -32802 = ServerCancelled
+                                // -32803 = RequestFailed (server busy)
+                                // Also match common message strings from various
+                                // JSON-RPC libraries.
+                                const isCancellation =
+                                    code === -32800 || code === -32802 || code === -32803 ||
+                                    msg === 'Canceled' || msg === 'cancelled' ||
+                                    msg.includes('Request failed');
+                                if (isCancellation) {
                                     return { suggestions: [] };
                                 }
 
