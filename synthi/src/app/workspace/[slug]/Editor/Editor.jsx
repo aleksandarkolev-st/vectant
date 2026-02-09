@@ -805,8 +805,12 @@ const EditorPanel = ({
                             return next(document);
                         },
                         didChange: (data, next) => {
-                            const ver = data?.textDocument?.version ?? data?.document?.version ?? '?';
-                            const uri = data?.textDocument?.uri ?? data?.document?.uri ?? '';
+                            // The middleware receives a TextDocumentChangeEvent:
+                            //   { document: TextDocument, contentChanges: [...] }
+                            // TextDocument has .uri, .version, .languageId, etc.
+                            const doc = data?.document ?? data;
+                            const ver = doc?.version ?? data?.textDocument?.version ?? '?';
+                            const uri = doc?.uri?.toString?.() ?? data?.textDocument?.uri ?? '';
                             const shortUri = typeof uri === 'string' ? uri.split('/').pop() : '?';
                             console.log(`[LSP] middleware didChange → ${shortUri} v${ver}`);
                             _lastDidChangeTs = performance.now();
@@ -1693,7 +1697,12 @@ const EditorPanel = ({
                             textDocument: {
                                 uri: activeUri,
                                 languageId: lang,
-                                version: currentModel.getVersionId?.() ?? 1,
+                                // Use version 1 (not getVersionId() which can
+                                // be very large after many edits).  The worker
+                                // tracks versions — starting high would make
+                                // all subsequent didChange versions look out-
+                                // of-order and get rejected.
+                                version: 1,
                                 text: content,
                             }
                         });
