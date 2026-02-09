@@ -1100,6 +1100,15 @@ const EditorPanel = ({
                                 /**
                                  * Try to extract a Monaco-safe range from the server's
                                  * textEdit.  Returns null if the edit is unsuitable.
+                                 *
+                                 * Safety checks (all must pass):
+                                 *  1. Same-line edit only
+                                 *  2. Range start ≤ cursor (not after)
+                                 *  3. Range end doesn't extend unreasonably past cursor
+                                 *     when the word at cursor doesn't match the server's
+                                 *     range (filter misalignment)
+                                 *  4. Range start aligns with the word boundary Monaco
+                                 *     would compute, OR is before it (for dotted chains)
                                  */
                                 const safeServerRange = (textEdit) => {
                                     if (!textEdit) return null;
@@ -1109,16 +1118,45 @@ const EditorPanel = ({
                                         || textEdit.insert;   // InsertReplaceEdit
                                     if (!range?.start || !range?.end) return null;
 
+                                    // Use UTF-16 aware conversion
                                     const startLine = range.start.line + 1;
                                     const endLine   = range.end.line + 1;
-                                    const startCol  = range.start.character + 1;
-                                    const endCol    = range.end.character + 1;
+                                    const startCol  = lspCharToMonacoCol(range.start.character);
+                                    const endCol    = lspCharToMonacoCol(range.end.character);
 
-                                    // Only use same-line edits that don't start after
-                                    // the cursor (which would break Monaco's filter).
+                                    // Rule 1: same-line only
                                     if (startLine !== position.lineNumber) return null;
                                     if (endLine   !== position.lineNumber) return null;
+
+                                    // Rule 2: range start must not be after cursor
                                     if (startCol  >  position.column)      return null;
+
+                                    // Rule 3: reject ranges that extend far past the
+                                    // cursor when the current word doesn't cover that
+                                    // span.  A server might return endCol way past the
+                                    // cursor for replace-style edits; Monaco uses the
+                                    // range to compute the typed prefix for filtering,
+                                    // so a mismatch silently filters ALL items.
+                                    if (endCol > position.column) {
+                                        // How far past the cursor does the server range go?
+                                        const overreach = endCol - position.column;
+                                        // How far past the cursor does Monaco's word go?
+                                        const wordEnd = word.endColumn; // 1-based, end of word at cursor
+                                        const wordOverreach = Math.max(0, wordEnd - position.column);
+                                        // If the server extends further than the word, it's
+                                        // likely a replace-range that won't match filtering.
+                                        if (overreach > wordOverreach + 1) return null;
+                                    }
+
+                                    // Rule 4: if the server range starts well before
+                                    // the word boundary AND the text between range-start
+                                    // and word-start isn't just dots/colons/arrows,
+                                    // fall back (avoids mangling unrelated code).
+                                    if (startCol < word.startColumn && word.word.length > 0) {
+                                        const gapText = lineText.substring(startCol - 1, word.startColumn - 1);
+                                        // Allow common chain separators: `.` `::` `->`
+                                        if (!/^[.:\->]+$/.test(gapText)) return null;
+                                    }
 
                                     return {
                                         startLineNumber: startLine,
@@ -1218,15 +1256,13 @@ const EditorPanel = ({
                                     }
                                     if (resolved.detail) item.detail = resolved.detail;
                                     if (resolved.additionalTextEdits) {
-                                        item.additionalTextEdits = resolved.additionalTextEdits.map(e => ({
-                                            range: {
-                                                startLineNumber: e.range.start.line + 1,
-                                                startColumn: e.range.start.character + 1,
-                                                endLineNumber: e.range.end.line + 1,
-                                                endColumn: e.range.end.character + 1,
-                                            },
-                                            text: e.newText,
-                                        }));
+                                        item.additionalTextEdits = resolved.additionalTextEdits
+                                            .map(e => {
+                                                const r = lspRangeToMonaco(e.range);
+                                                if (!r) return null;
+                                                return { range: r, text: e.newText };
+                                            })
+                                            .filter(Boolean);
                                     }
                                 }
                             } catch (_) { /* resolve is best-effort */ }
