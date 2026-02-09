@@ -1127,9 +1127,37 @@ const EditorPanel = ({
                                 // or when the server range start is AFTER the cursor
                                 // (InsertReplaceEdit edge-case).
                                 const word = model.getWordUntilPosition(position);
+                                let rangeStartCol = word.word.length > 0
+                                    ? word.startColumn
+                                    : position.column;
+
+                                // When the word is empty (cursor right after :: . ->),
+                                // the default range is zero-width and Monaco has no
+                                // prefix to match against.  Widen it to include the
+                                // preceding separator chain so items can still show.
+                                if (word.word.length === 0 && position.column > 1) {
+                                    const lineText = model.getLineContent(position.lineNumber);
+                                    const textBefore = lineText.substring(0, position.column - 1);
+                                    // Walk backwards past separator chars (::, ., ->)
+                                    const sepMatch = textBefore.match(/[.:>-]+$/);
+                                    if (sepMatch) {
+                                        // Include the identifier before the separator
+                                        const beforeSep = textBefore.substring(0, textBefore.length - sepMatch[0].length);
+                                        const identMatch = beforeSep.match(/[\w$]+$/);
+                                        if (identMatch) {
+                                            // Don't move startCol — keep it at cursor.
+                                            // The filterText for items after :: should
+                                            // match against an empty prefix (all items show).
+                                            // But if the server provides a textEdit that
+                                            // starts before the separator, safeServerRange
+                                            // will handle it.
+                                        }
+                                    }
+                                }
+
                                 const defaultRange = {
                                     startLineNumber: position.lineNumber,
-                                    startColumn: word.word.length > 0 ? word.startColumn : position.column,
+                                    startColumn: rangeStartCol,
                                     endLineNumber: position.lineNumber,
                                     endColumn: position.column,
                                 };
