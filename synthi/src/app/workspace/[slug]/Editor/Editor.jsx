@@ -799,7 +799,10 @@ const EditorPanel = ({
                             return next(document);
                         },
                         didChange: (data, next) => {
-                            console.log('[LSP] middleware didChange →', typeof data);
+                            const ver = data?.textDocument?.version ?? data?.document?.version ?? '?';
+                            const uri = data?.textDocument?.uri ?? data?.document?.uri ?? '';
+                            const shortUri = typeof uri === 'string' ? uri.split('/').pop() : '?';
+                            console.log(`[LSP] middleware didChange → ${shortUri} v${ver}`);
                             _lastDidChangeTs = performance.now();
                             return next(data);
                         },
