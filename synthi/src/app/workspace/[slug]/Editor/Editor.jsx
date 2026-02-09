@@ -1290,12 +1290,12 @@ const EditorPanel = ({
                                         _lastCompletionCts = cts2;
                                         const monacoDisp2 = token.onCancellationRequested(() => cts2.cancel());
 
-                                        // On the last attempt, try TriggerCharacter
-                                        // context with ':' — rust-analyzer may respond
-                                        // better to the explicit trigger after catching up.
-                                        const retryContext = (attempt === retryDelays.length - 1 && isTriggerChar)
-                                            ? { triggerKind: 2, triggerCharacter: context.triggerCharacter }
-                                            : { triggerKind: 1 };
+                                        // Alternate between trigger contexts on retries:
+                                        // even attempts: same as original (TriggerChar if trigger, else Invoked)
+                                        // odd attempts: Invoked (gives server a fresh context lookup)
+                                        const retryContext = (attempt % 2 === 1)
+                                            ? { triggerKind: 1 }
+                                            : { triggerKind: effectiveTriggerKind, triggerCharacter: effectiveTriggerChar };
 
                                         const t1 = performance.now();
                                         const retryResult = await languageClient.sendRequest('textDocument/completion', {
