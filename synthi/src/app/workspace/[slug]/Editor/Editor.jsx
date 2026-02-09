@@ -1620,19 +1620,17 @@ const EditorPanel = ({
                                         if (!retryResult || token.isCancellationRequested || myGeneration !== _currentCompletionGen) {
                                             return { suggestions: [] };
                                         }
-                                        // Fall through would require duplicating the mapping logic,
-                                        // so we recursively call the provider instead.  Since we
-                                        // cleared the CTS and checked generation, this is safe.
-                                        // For now, just log and return empty — the mapping logic
-                                        // is too deeply nested to factor out cleanly in this commit.
                                         const retryItems = Array.isArray(retryResult) ? retryResult : (retryResult.items || []);
                                         console.log(`[LSP] ContentModified retry: ${retryItems.length} items from ${backendLang}`);
-                                        // If items came back, we can't map them inline here
-                                        // without duplicating 200 lines.  Returning incomplete
-                                        // so Monaco re-triggers on next keystroke.
-                                        return { suggestions: [], incomplete: retryItems.length > 0 };
+                                        // Return incomplete=true so Monaco will
+                                        // re-trigger completions on next keystroke
+                                        // and pick up the full results then.
+                                        return { suggestions: [], incomplete: true };
                                     } catch (retryErr) {
-                                        console.warn(`[LSP] ContentModified retry failed for ${backendLang}:`, retryErr?.message);
+                                        const retryMsg = retryErr?.message || '';
+                                        if (retryMsg !== 'Canceled' && retryMsg !== 'cancelled') {
+                                            console.warn(`[LSP] ContentModified retry failed for ${backendLang}:`, retryMsg);
+                                        }
                                         return { suggestions: [] };
                                     }
                                 }
