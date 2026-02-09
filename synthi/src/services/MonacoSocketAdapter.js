@@ -77,6 +77,7 @@ export class MonacoSocketAdapter {
                                 received: 0,
                                 parts: new Array(totalChunks),
                                 bytes: 0,
+                                createdAt: Date.now(),
                             });
                             // Start a TTL timer — evict if not completed in time
                             const ttlTimer = setTimeout(() => {
@@ -98,11 +99,16 @@ export class MonacoSocketAdapter {
                         entry.bytes += chunkData.byteLength;
                         this._chunkPendingBytes += chunkData.byteLength;
 
-                        // Enforce global byte cap — evict oldest entries first
+                        // Enforce global byte cap — evict by oldest createdAt first
                         if (this._chunkPendingBytes > this._CHUNK_MAX_BYTES) {
                             console.warn(`[MonacoSocketAdapter] Chunk buffer exceeded ${this._CHUNK_MAX_BYTES} bytes, evicting oldest`);
-                            for (const [oldId, oldEntry] of this.chunkStore) {
-                                if (oldId === msgId) continue; // don't evict current
+                            // Sort entries by createdAt ascending so we evict
+                            // truly oldest first (Map iteration order is insertion
+                            // order, which can differ under interleaved arrivals).
+                            const sorted = [...this.chunkStore.entries()]
+                                .filter(([id]) => id !== msgId)
+                                .sort((a, b) => a[1].createdAt - b[1].createdAt);
+                            for (const [oldId, oldEntry] of sorted) {
                                 this._chunkPendingBytes -= oldEntry.bytes;
                                 this.chunkStore.delete(oldId);
                                 const t = this._chunkTTLTimers.get(oldId);
