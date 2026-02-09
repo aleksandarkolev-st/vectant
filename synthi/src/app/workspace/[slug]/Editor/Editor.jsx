@@ -702,8 +702,9 @@ const EditorPanel = ({
 
         Promise.all([
             import('monaco-languageclient'),
-            import('monaco-languageclient/vscodeApiWrapper')
-        ]).then(async ([{ MonacoLanguageClient }, { MonacoVscodeApiWrapper }]) => {
+            import('monaco-languageclient/vscodeApiWrapper'),
+            import('vscode-languageclient/lib/common/completion'),
+        ]).then(async ([{ MonacoLanguageClient }, { MonacoVscodeApiWrapper }, { CompletionItemFeature }]) => {
             if (languageClientsRef.current.has(backendLang)) {
                 lspInitPendingRef.current.delete(backendLang);
                 return;
@@ -724,6 +725,20 @@ const EditorPanel = ({
                         uri: "file:///synthi/",
                         name: "synthi"
                     }];
+                }
+                // Skip the built-in CompletionItemFeature.  It registers
+                // a VS Code completion provider through the extension host
+                // that races against our direct Monaco completion provider.
+                // When both are active, the built-in one returns empty
+                // results instantly (via middleware returning []), which
+                // causes VS Code's suggest model to dismiss the widget
+                // before our async provider's 34 items arrive.
+                registerFeature(feature) {
+                    if (feature instanceof CompletionItemFeature) {
+                        console.log('[LSP] Skipping built-in CompletionItemFeature — using direct provider');
+                        return;
+                    }
+                    super.registerFeature(feature);
                 }
             }
 
