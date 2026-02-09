@@ -1019,6 +1019,14 @@ const EditorPanel = ({
                 // Track the cancellation token source for the last completion
                 // request so we can cancel it when a new one arrives.
                 let _lastCompletionCts = null;
+                // Debounce timer for trigger-character completions.
+                // Multi-char triggers like :: -> .. fire two separate trigger
+                // events in rapid succession.  Without debounce, the first
+                // char triggers a wasted request at an invalid position
+                // (e.g. `Vec:` instead of `Vec::`) and the second request
+                // may arrive before didChange propagates.
+                let _triggerDebounceTimer = null;
+                const TRIGGER_DEBOUNCE_MS = 100;
 
                 for (const langId of documentSelector) {
                     const disp = monacoInstance.languages.registerCompletionItemProvider(langId, {
@@ -1062,6 +1070,34 @@ const EditorPanel = ({
                             //  2 = TriggerCharacter (typed a trigger char like . : etc.)
                             const isTriggerChar = context.triggerKind === monacoInstance.languages.CompletionTriggerKind.TriggerCharacter;
                             const lspTriggerKind = isTriggerChar ? 2 : 1;
+
+                            // ── Debounce trigger-character completions ────────
+                            // Multi-char triggers (::, ->, ..) fire two events
+                            // in quick succession.  Wait a short interval to
+                            // coalesce them and let didChange propagate.
+                            if (isTriggerChar) {
+                                // Cancel any pending debounce timer
+                                if (_triggerDebounceTimer) {
+                                    clearTimeout(_triggerDebounceTimer);
+                                    _triggerDebounceTimer = null;
+                                }
+                                await new Promise((resolve) => {
+                                    _triggerDebounceTimer = setTimeout(() => {
+                                        _triggerDebounceTimer = null;
+                                        resolve();
+                                    }, TRIGGER_DEBOUNCE_MS);
+                                    // If Monaco cancels while waiting, resolve
+                                    // immediately (we'll check the token below).
+                                    token.onCancellationRequested(() => resolve());
+                                });
+                                // After debounce, check if we've been superseded
+                                if (myGeneration !== _currentCompletionGen) {
+                                    return { suggestions: [] };
+                                }
+                                if (token.isCancellationRequested) {
+                                    return { suggestions: [] };
+                                }
+                            }
 
                             // NOTE: We rely on monaco-languageclient's native
                             // didChange sync (via the middleware passthrough) to
