@@ -315,6 +315,8 @@ export function GitStatus({ slug }) {
     if (discardChange.fulfilled.match(result)) {
       dispatch(refreshWorkspaceThunk());
       toast.success(`Discarded changes in ${filePath.split('/').pop()}`);
+    } else {
+      toast.error(`Failed to discard ${filePath.split('/').pop()}`);
     }
   };
   const handleDiscardAll = async () => {
@@ -323,6 +325,8 @@ export function GitStatus({ slug }) {
     if (discardAll.fulfilled.match(result)) {
       dispatch(refreshWorkspaceThunk());
       toast.success('All changes discarded');
+    } else {
+      toast.error('Failed to discard all changes');
     }
   };
 

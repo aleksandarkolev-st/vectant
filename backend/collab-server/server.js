@@ -823,6 +823,7 @@ const server = http.createServer(async (req, res) => {
                     if (data.filePath) {
                       await invalidateDocsForSlug(slug, [data.filePath]);
                     }
+                    broadcastFileTreeChanged(slug);
                     break;
                 case 'discard-all':
                     result = await gitService.discardAll(slug);
