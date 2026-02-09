@@ -1025,6 +1025,9 @@ const EditorPanel = ({
                 // outdated suggestions.
                 let _completionGeneration = 0;
                 let _currentCompletionGen = 0; // the live "latest" gen
+                // Track the cancellation token source for the last completion
+                // request so we can cancel it when a new one arrives.
+                let _lastCompletionCts = null;
 
                 for (const langId of documentSelector) {
                     const disp = monacoInstance.languages.registerCompletionItemProvider(langId, {
@@ -1079,7 +1082,24 @@ const EditorPanel = ({
                             // missing content — fix that at the transport layer.
                             if (token.isCancellationRequested) return { suggestions: [] };
 
+                            // Cancel the previous in-flight completion request
+                            // so the server can free resources.  The JSON-RPC
+                            // layer sends $/cancelRequest automatically.
+                            if (_lastCompletionCts) {
+                                _lastCompletionCts.cancel();
+                                _lastCompletionCts = null;
+                            }
+
                             try {
+                                // Create a cancellation source that combines Monaco's
+                                // token with our own generation-based cancellation.
+                                const { CancellationTokenSource } = await import('vscode-jsonrpc');
+                                const cts = new CancellationTokenSource();
+                                _lastCompletionCts = cts;
+
+                                // If Monaco cancels, propagate to our CTS
+                                const monacoDisp = token.onCancellationRequested(() => cts.cancel());
+
                                 const result = await languageClient.sendRequest('textDocument/completion', {
                                     textDocument: { uri },
                                     position: {
@@ -1090,7 +1110,9 @@ const EditorPanel = ({
                                         triggerKind: lspTriggerKind,
                                         triggerCharacter: isTriggerChar ? context.triggerCharacter : undefined,
                                     },
-                                });
+                                }, cts.token);
+
+                                monacoDisp.dispose();
 
                                 if (!result || token.isCancellationRequested) {
                                     console.log(`[LSP] provideCompletionItems: ${!result ? 'null result' : 'cancelled'} for ${backendLang}`);
