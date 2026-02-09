@@ -1139,6 +1139,7 @@ const EditorPanel = ({
                                 // If Monaco cancels, propagate to our CTS
                                 const monacoDisp = token.onCancellationRequested(() => cts.cancel());
 
+                                const t0 = performance.now();
                                 const result = await languageClient.sendRequest('textDocument/completion', {
                                     textDocument: { uri },
                                     position: {
@@ -1150,6 +1151,7 @@ const EditorPanel = ({
                                         triggerCharacter: isTriggerChar ? context.triggerCharacter : undefined,
                                     },
                                 }, cts.token);
+                                const elapsed = (performance.now() - t0).toFixed(0);
 
                                 monacoDisp.dispose();
                                 cts.dispose();
@@ -1162,7 +1164,7 @@ const EditorPanel = ({
 
                                 if (!result || token.isCancellationRequested) {
                                     console.log(
-                                        `[LSP] provideCompletionItems: ${!result ? 'server returned null' : 'cancelled after response'} for ${backendLang} (gen=${myGeneration})`
+                                        `[LSP] provideCompletionItems: ${!result ? 'server returned null' : 'cancelled after response'} for ${backendLang} (gen=${myGeneration}, ${elapsed}ms)`
                                     );
                                     return { suggestions: [] };
                                 }
@@ -1179,10 +1181,10 @@ const EditorPanel = ({
 
                                 let items = Array.isArray(result) ? result : (result.items || []);
                                 const isIncomplete = !Array.isArray(result) && result.isIncomplete;
-                                console.log(`[LSP] Server returned ${items.length} raw items for ${backendLang} (incomplete=${!!isIncomplete})`);
+                                console.log(`[LSP] Server returned ${items.length} raw items for ${backendLang} in ${elapsed}ms (incomplete=${!!isIncomplete})`);
 
                                 if (items.length === 0) {
-                                    console.log(`[LSP] provideCompletionItems: server returned 0 items for ${backendLang} (gen=${myGeneration}, incomplete=${!!isIncomplete})`);
+                                    console.log(`[LSP] provideCompletionItems: server returned 0 items for ${backendLang} (gen=${myGeneration}, ${elapsed}ms, incomplete=${!!isIncomplete})`);
                                     return { suggestions: [], incomplete: !!isIncomplete };
                                 }
 
