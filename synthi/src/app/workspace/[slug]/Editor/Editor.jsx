@@ -1107,6 +1107,16 @@ const EditorPanel = ({
                             //  • C/C++ '>' → only valid as '->'
                             // Sending a request for a lone ':' or '>' wastes a
                             // round-trip and often returns 0 items.
+                            //
+                            // For *valid* multi-char sequences (::, ->), we
+                            // downgrade to triggerKind=1 (Invoked) because the
+                            // server received the trigger-char notification for
+                            // the *first* character already.  Sending another
+                            // triggerKind=2 with a single ':' or '>' can confuse
+                            // some servers into a narrow context lookup.
+                            let effectiveTriggerKind = lspTriggerKind;
+                            let effectiveTriggerChar = isTriggerChar ? context.triggerCharacter : undefined;
+
                             if (isTriggerChar) {
                                 const freshLine = model.getLineContent(position.lineNumber);
                                 const freshBefore = freshLine.substring(0, position.column - 1);
@@ -1120,6 +1130,18 @@ const EditorPanel = ({
                                 if (isInvalidContext) {
                                     console.log(`[LSP] Skipping invalid trigger context '${prev}${ch}' for ${backendLang}`);
                                     return { suggestions: [] };
+                                }
+
+                                // Detect multi-char trigger sequences.  Send
+                                // these as Invoked rather than TriggerCharacter
+                                // so the server performs a full context lookup.
+                                const isMultiCharTrigger =
+                                    (ch === ':' && prev === ':') ||
+                                    (ch === '>' && prev === '-');
+                                if (isMultiCharTrigger) {
+                                    effectiveTriggerKind = 1; // Invoked
+                                    effectiveTriggerChar = undefined;
+                                    console.log(`[LSP] Multi-char trigger '${prev}${ch}' detected — sending as Invoked`);
                                 }
                             }
 
@@ -1137,7 +1159,7 @@ const EditorPanel = ({
                                 _lastCompletionCts = null;
                             }
 
-                            console.log(`[LSP] Sending textDocument/completion for ${backendLang} (gen=${myGeneration}, L${position.lineNumber}:${position.column}, triggerKind=${lspTriggerKind}${isTriggerChar ? ', char=' + context.triggerCharacter : ''})`);
+                            console.log(`[LSP] Sending textDocument/completion for ${backendLang} (gen=${myGeneration}, L${position.lineNumber}:${position.column}, triggerKind=${effectiveTriggerKind}${effectiveTriggerChar ? ', char=' + effectiveTriggerChar : ''})`);
 
                             try {
                                 // Yield one micro-task so that any pending
@@ -1168,8 +1190,8 @@ const EditorPanel = ({
                                         character: position.column - 1,
                                     },
                                     context: {
-                                        triggerKind: lspTriggerKind,
-                                        triggerCharacter: isTriggerChar ? context.triggerCharacter : undefined,
+                                        triggerKind: effectiveTriggerKind,
+                                        triggerCharacter: effectiveTriggerChar,
                                     },
                                 }, cts.token);
                                 const elapsed = (performance.now() - t0).toFixed(0);
