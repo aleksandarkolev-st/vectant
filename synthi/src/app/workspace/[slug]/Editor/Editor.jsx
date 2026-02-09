@@ -1276,8 +1276,11 @@ const EditorPanel = ({
                                 // just sent.
                                 if (items.length === 0 && isIncomplete && myGeneration === _currentCompletionGen && !token.isCancellationRequested) {
                                     // Retry with escalating delays.  rust-analyzer
-                                    // can take 500ms+ to process changes in cold caches.
-                                    const retryDelays = [300, 600];
+                                    // cold start can take seconds to index stdlib.
+                                    // Use longer delays for rust since it's heavier.
+                                    const retryDelays = (backendLang === 'rust')
+                                        ? [400, 800, 1500]
+                                        : [300, 600];
                                     for (let attempt = 0; attempt < retryDelays.length; attempt++) {
                                         const delay = retryDelays[attempt];
                                         console.log(`[LSP] 0 items + incomplete — retry ${attempt + 1} in ${delay}ms for ${backendLang} (gen=${myGeneration})`);
