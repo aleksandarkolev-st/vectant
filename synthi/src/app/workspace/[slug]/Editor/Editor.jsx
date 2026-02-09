@@ -812,33 +812,11 @@ const EditorPanel = ({
                             console.log('[LSP] middleware didSave', uri);
                             return next(document);
                         },
-                        // P0: Completions are handled by the direct Monaco
-                        // completion provider registered below, which sends
-                        // textDocument/completion straight to the server via
-                        // sendRequest().  We skip the built-in bridge here to
-                        // avoid duplicate requests — the bridge often fails
-                        // anyway because @codingame/monaco-vscode-api can't
-                        // resolve the TextDocument for the model URI.
-                        provideCompletionItem: async (document, position, context, token, next) => {
-                            // Return a proper empty CompletionList rather than
-                            // `undefined`.  With @codingame/monaco-vscode-api,
-                            // returning undefined can cause the VS-Code-based
-                            // suggest model to treat this provider's result as
-                            // "pending/unresolved" rather than "empty", which
-                            // blocks the widget from showing even when other
-                            // providers (our direct one) return real items.
-                            return [];
-                        },
-                        resolveCompletionItem: async (item, token, next) => {
-                            try {
-                                return await next(item, token);
-                            } catch (err) {
-                                // Return the unresolved item rather than failing —
-                                // the user still gets the completion, just without
-                                // extra documentation/detail.
-                                return item;
-                            }
-                        }
+                        // NOTE: provideCompletionItem middleware is NOT needed —
+                        // CompletionItemFeature is skipped entirely in
+                        // registerFeature() above, so the built-in bridge
+                        // never registers a completion provider.  Completions
+                        // are handled solely by the direct Monaco provider below.
                     },
                     errorHandler: {
                         error: () => ({ action: ErrorAction.Continue }),
