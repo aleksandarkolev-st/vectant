@@ -231,6 +231,28 @@ export const selectFileThunk = createAsyncThunk(
     }
 );
 
+// Helper: check if a live Yjs document has content that should be used as
+// the authoritative baseline for savedContent.  When the user switches tabs,
+// the CRDT may already hold edits that haven't been flushed back to the
+// server response yet — using server content as savedContent would make
+// isUnsaved stale.  Returns the CRDT text if it exists and differs from
+// `serverContent`, otherwise returns null.
+function getCrdtBaselineIfNewer(slug, filePath, serverContent) {
+    try {
+        const key = `workspace:${slug}:${filePath}`;
+        const entry = collabClient.docs.get(key);
+        if (!entry?.ytext) return null;
+        const crdtText = entry.ytext.toString();
+        if (!crdtText || crdtText.length === 0) return null;
+        // Only use CRDT if it actually differs (avoids false-positive churn)
+        const norm = (s) => s ? s.replace(/[\r\n]+$/, '') : '';
+        if (norm(crdtText) === norm(serverContent)) return null;
+        return crdtText;
+    } catch (_) {
+        return null;
+    }
+}
+
 // 4. Create Item (Mutation)
 export const handleCreateItemThunk = createAsyncThunk(
     'workspace/createItem',
@@ -610,8 +632,21 @@ const workspaceSlice = createSlice({
                 // Switch to new file
                 state.activeFile = file;
                 state.currentContent = content;
-                state.savedContent = content;
                 state.diffMode = false; // Disable diff mode
+
+                // If a live Yjs document already holds edits for this file
+                // (e.g. user typed, switched tabs, then came back), use the
+                // CRDT text as both currentContent and savedContent so the
+                // isUnsaved indicator reflects the real state.  Without this,
+                // savedContent would be set to the older server response,
+                // causing a permanent false-positive "unsaved" dot.
+                const crdtBaseline = getCrdtBaselineIfNewer(state.slug, file.path, content);
+                if (crdtBaseline !== null) {
+                    state.currentContent = crdtBaseline;
+                    state.savedContent = content; // server version is the "last saved" baseline
+                } else {
+                    state.savedContent = content;
+                }
                 
                 // Update cache if content was newly fetched (and not from cache)
                 if (!fromCache) {
@@ -621,8 +656,13 @@ const workspaceSlice = createSlice({
                 // Ensure the file appears in the open tabs list
                 try {
                     const exists = state.openFiles.find(f => f.path === file.path);
-                    const entry = { ...file, isUnsaved: false };
+                    const hasUnsaved = crdtBaseline !== null;
+                    const entry = { ...file, isUnsaved: hasUnsaved };
                     if (!exists) state.openFiles.push(entry);
+                    else if (exists.isUnsaved !== hasUnsaved) {
+                        const idx = state.openFiles.indexOf(exists);
+                        state.openFiles[idx] = { ...exists, isUnsaved: hasUnsaved };
+                    }
                 } catch (e) { /* ignore */ }
             });
 
