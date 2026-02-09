@@ -1344,9 +1344,8 @@ class GitService {
                     written.push({ path: rel, bytes: (encoding === 'base64') ? Buffer.byteLength(content, 'base64') : Buffer.byteLength(content, 'utf-8') });
 
                     if (syncToGcs && gcsSync.isGcsConfigured()) {
-                        const gcsPath = `workspaces/${slug}/${rel}`;
                         try {
-                            await gcsSync.uploadFile(fullPath, gcsPath);
+                            await gcsSync.syncFileToGcs(slug, rel, content);
                         } catch (e) {
                             // Non-fatal: file is still written to repo, but storage may lag.
                             errors.push({ path: rel, stage: 'gcs_upload', error: e?.message || String(e) });

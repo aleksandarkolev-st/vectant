@@ -5,16 +5,17 @@
 const { Storage } = require('@google-cloud/storage');
 const fs = require('fs');
 const path = require('path');
+const config = require('./config');
 
-// GCS configuration - use environment variables in production
+// GCS configuration — driven entirely by the centralized config module
 const GCS_CONFIG = {
-    projectId: process.env.GCP_PROJECT_ID || 'overview-synti',
-    bucketName: process.env.GCS_BUCKET_NAME || 'synthi-cloud-storage',
-    credentials: process.env.GCP_CREDENTIALS ? JSON.parse(process.env.GCP_CREDENTIALS) : {
-        client_email: process.env.GCP_CLIENT_EMAIL || 'file-uploader-service@overview-synti.iam.gserviceaccount.com',
-        private_key: (process.env.GCP_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
-    }
+    projectId: config.GCS_PROJECT_ID,
+    bucketName: config.GCS_BUCKET_NAME,
+    credentials: config.GCS_CREDENTIALS,
 };
+
+/** Prefix inside the GCS bucket under which workspace files are stored. */
+const GCS_PREFIX = config.GCS_WORKSPACE_PREFIX;
 
 let storage = null;
 let bucket = null;
@@ -115,7 +116,7 @@ async function uploadRepoToGcs(repoPath, slug, options = {}) {
     }
 
     const { onProgress, excludePatterns = ['.git'] } = options;
-    const gcsPrefix = `workspaces/${slug}/`;
+    const gcsPrefix = `${GCS_PREFIX}/${slug}/`;
     
     // Collect all files to upload
     const filesToUpload = [];
@@ -213,7 +214,7 @@ async function downloadGcsToRepo(slug, repoPath, options = {}) {
     }
 
     const { onProgress } = options;
-    const gcsPrefix = `workspaces/${slug}/`;
+    const gcsPrefix = `${GCS_PREFIX}/${slug}/`;
     
     // List all files in GCS
     const files = await listFiles(gcsPrefix);
@@ -290,7 +291,7 @@ async function syncFileToGcs(slug, relativePath, content) {
         return { success: false, reason: 'GCS not configured' };
     }
 
-    const gcsPath = `workspaces/${slug}/${relativePath}`;
+    const gcsPath = `${GCS_PREFIX}/${slug}/${relativePath}`;
     const MAX_RETRIES = 3;
     let lastError = null;
 
@@ -328,7 +329,7 @@ async function deleteFileFromGcs(slug, relativePath) {
         return { success: false, reason: 'GCS not configured' };
     }
 
-    const gcsPath = `workspaces/${slug}/${relativePath}`;
+    const gcsPath = `${GCS_PREFIX}/${slug}/${relativePath}`;
     const { bucket } = getStorage();
     const file = bucket.file(gcsPath);
     
