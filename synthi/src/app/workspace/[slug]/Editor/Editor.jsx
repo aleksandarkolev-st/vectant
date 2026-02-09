@@ -1188,7 +1188,10 @@ const EditorPanel = ({
                                 if (yieldMs > 0) {
                                     await new Promise((r) => setTimeout(r, yieldMs));
                                 } else {
-                                    await new Promise((r) => setTimeout(r, 0));
+                                    // Even when the change gap is sufficient,
+                                    // yield 10ms to let any queued WebRTC
+                                    // frames flush before the completion request.
+                                    await new Promise((r) => setTimeout(r, 10));
                                 }
                                 if (token.isCancellationRequested || myGeneration !== _currentCompletionGen) {
                                     return { suggestions: [] };
