@@ -1177,10 +1177,17 @@ const EditorPanel = ({
                                  */
                                 const safeServerRange = (textEdit) => {
                                     if (!textEdit) return null;
-                                    // textEdit may be TextEdit or InsertReplaceEdit
-                                    const range = textEdit.range
-                                        || textEdit.replace   // InsertReplaceEdit
-                                        || textEdit.insert;   // InsertReplaceEdit
+
+                                    // LSP defines two edit shapes:
+                                    //   TextEdit:           { range, newText }
+                                    //   InsertReplaceEdit:  { insert, replace, newText }
+                                    // For InsertReplaceEdit, prefer the `insert` range
+                                    // (narrower, doesn't overwrite text after cursor)
+                                    // so Monaco's prefix filtering stays aligned.
+                                    const isInsertReplace = !textEdit.range && (textEdit.insert || textEdit.replace);
+                                    const range = isInsertReplace
+                                        ? (textEdit.insert || textEdit.replace)
+                                        : textEdit.range;
                                     if (!range?.start || !range?.end) return null;
 
                                     // Use UTF-16 aware conversion
@@ -1223,12 +1230,35 @@ const EditorPanel = ({
                                         if (!/^[.:\->]+$/.test(gapText)) return null;
                                     }
 
-                                    return {
+                                    const result = {
                                         startLineNumber: startLine,
                                         startColumn: startCol,
                                         endLineNumber: endLine,
                                         endColumn: endCol,
                                     };
+
+                                    // For InsertReplaceEdit, also compute the replace
+                                    // range and return { inserting, replacing } if the
+                                    // replace range differs (Monaco supports this format).
+                                    if (isInsertReplace && textEdit.replace) {
+                                        const rep = textEdit.replace;
+                                        if (rep?.start && rep?.end) {
+                                            const repEndCol = lspCharToMonacoCol(rep.end.character);
+                                            if (repEndCol !== endCol) {
+                                                return {
+                                                    inserting: result,
+                                                    replacing: {
+                                                        startLineNumber: startLine,
+                                                        startColumn: startCol,
+                                                        endLineNumber: rep.end.line + 1,
+                                                        endColumn: repEndCol,
+                                                    },
+                                                };
+                                            }
+                                        }
+                                    }
+
+                                    return result;
                                 };
 
                                 const suggestions = items.map((item, idx) => {
