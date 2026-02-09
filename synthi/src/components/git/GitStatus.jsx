@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import {
   fetchGitStatus, fetchRemote, commitChanges, pushChanges, pullChanges,
@@ -11,11 +11,12 @@ import {
 } from '@/redux/gitSlice';
 import { refreshWorkspaceThunk, openDiffThunk, fetchFilesThunk, selectFileThunk } from '@/redux/workspaceSlice';
 import {
-  RefreshCw, Check, UploadCloud, Plus, Minus, DownloadCloud,
+  RefreshCw, Check, CheckCircle2, UploadCloud, Plus, Minus, DownloadCloud,
   Undo2, Globe, Trash2, Copy, Archive, ArchiveRestore,
   AlertTriangle, GitMerge, X, Edit3, Search, ChevronDown, ChevronRight,
   ExternalLink, ShieldAlert, ArrowUpCircle, ArrowDownCircle
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { getFileLanguage } from '@/utils/fileUtils';
 import {
   maskRemoteUrl, urlContainsToken, detectProvider, humanRemoteUrl,
@@ -83,10 +84,10 @@ function SectionHeader({ title, count, children, defaultOpen = true, actions }) 
   );
 }
 
-/** CC-styled commit message */
+/** CC-styled commit message with semantic highlighting */
 function CommitMessage({ message }) {
   const cc = parseConventionalCommit(message);
-  if (!cc) return <span className="truncate text-[#e4e4e7]">{message}</span>;
+  if (!cc) return <span className="truncate text-[#d4d4d8]">{message}</span>;
   return (
     <span className="truncate">
       <span className={`inline-block px-1 py-0 rounded text-[10px] font-semibold mr-1 leading-tight ${ccColor(cc.type)}`}>
@@ -99,7 +100,7 @@ function CommitMessage({ message }) {
   );
 }
 
-/** Commit graph column (SVG) */
+/** Commit graph column — backbone lines + Bezier merge curves + nodes */
 function CommitGraphColumn({ graphNode, rowHeight = 32, totalLanes }) {
   if (!graphNode) return null;
   const cols = Math.max(totalLanes || 1, (graphNode.laneCount || 1));
@@ -111,25 +112,31 @@ function CommitGraphColumn({ graphNode, rowHeight = 32, totalLanes }) {
 
   return (
     <svg width={width} height={rowHeight} className="flex-shrink-0" style={{ minWidth: width }}>
-      {/* Active lane lines */}
+      {/* Backbone / active lane lines */}
       {graphNode.activeLanes.map((lane, idx) => {
         if (lane === null) return null;
         const x = idx * colW + colW / 2 + 3;
         const color = `var(--graph-${idx % 8})`;
         return (
-          <line key={idx} x1={x} y1={0} x2={x} y2={rowHeight} stroke={color} strokeWidth={1.5} opacity={0.4} />
+          <line key={idx} x1={x} y1={0} x2={x} y2={rowHeight}
+            stroke={color} strokeWidth={1.5} opacity={0.35} />
         );
       })}
-      {/* Merge lines */}
+      {/* Merge curves — smooth Bezier from parent lane to this node */}
       {graphNode.mergeFromCols.map((mc, i) => {
         const mx = mc * colW + colW / 2 + 3;
+        // Smooth cubic Bezier: start at top of merge lane, curve into node
+        const d = `M ${mx} 0 C ${mx} ${cy * 0.6}, ${cx} ${cy * 0.4}, ${cx} ${cy}`;
         return (
-          <line key={`m-${i}`} x1={mx} y1={0} x2={cx} y2={cy} stroke={graphNode.color} strokeWidth={1.5} opacity={0.6} />
+          <path key={`m-${i}`} d={d} fill="none"
+            stroke={graphNode.color} strokeWidth={1.5} opacity={0.5} />
         );
       })}
-      {/* Node */}
-      <circle cx={cx} cy={cy} r={r} fill={graphNode.isMerge ? '#18181b' : graphNode.color}
-        stroke={graphNode.color} strokeWidth={graphNode.isMerge ? 2 : 0} />
+      {/* Node circle */}
+      <circle cx={cx} cy={cy} r={r}
+        fill={graphNode.isMerge ? '#18181b' : graphNode.color}
+        stroke={graphNode.color}
+        strokeWidth={graphNode.isMerge ? 2 : 0} />
     </svg>
   );
 }
@@ -184,6 +191,7 @@ export function GitStatus({ slug }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const [securityDismissed, setSecurityDismissed] = useState(false);
+  const searchInputRef = useRef(null);
 
   // ── data refresh ───────────────────────────────
   const refreshGitData = useCallback(() => {
@@ -203,48 +211,61 @@ export function GitStatus({ slug }) {
     window.addEventListener('focus', handleFocus);
     const interval = setInterval(() => {
       if (document.hasFocus()) dispatch(fetchGitStatus(slug));
-    }, 30000);
+    }, 5000);
     return () => { clearInterval(interval); window.removeEventListener('focus', handleFocus); };
   }, [slug, dispatch, refreshGitData]);
 
   // ── handlers ───────────────────────────────────
-  const handleSync = () => {
+  const handleSync = async () => {
     if (!slug) return;
-    dispatch(fetchRemote(slug));
+    const result = await dispatch(fetchRemote(slug));
     dispatch(fetchRemotes(slug));
     dispatch(fetchCommitHistory({ slug }));
     dispatch(fetchUnpushedCommits({ slug, max: 50 }));
     dispatch(fetchIncomingCommits({ slug, max: 50 }));
+    if (fetchRemote.fulfilled.match(result)) toast.success('Fetched latest from remote');
   };
 
   const handleAddRemote = async () => {
     if (!slug || !newRemoteName || !newRemoteUrl) return;
     const valid = newRemoteUrl.startsWith('http://') || newRemoteUrl.startsWith('https://') || newRemoteUrl.includes('@');
-    if (!valid) { alert('Please enter a valid remote URL (https://... or git@...)'); return; }
-    await dispatch(addRemote({ slug, name: newRemoteName, url: newRemoteUrl }));
-    setShowAddRemote(false);
-    setNewRemoteUrl('');
+    if (!valid) { toast.error('Please enter a valid remote URL (https://... or git@...)'); return; }
+    const result = await dispatch(addRemote({ slug, name: newRemoteName, url: newRemoteUrl }));
+    if (addRemote.fulfilled.match(result)) {
+      toast.success(`Remote '${newRemoteName}' added`);
+      setShowAddRemote(false);
+      setNewRemoteUrl('');
+    }
   };
 
   const handleRemoveRemoteClick = async (name) => {
     if (slug && name && confirm(`Remove remote '${name}'?`)) {
-      await dispatch(removeRemote({ slug, name }));
+      const result = await dispatch(removeRemote({ slug, name }));
+      if (removeRemote.fulfilled.match(result)) toast.success(`Remote '${name}' removed`);
     }
   };
 
   const handlePull = async () => {
     if (!slug) return;
     const result = await dispatch(pullChanges(slug));
-    if (pullChanges.fulfilled.match(result)) dispatch(refreshWorkspaceThunk());
+    if (pullChanges.fulfilled.match(result)) {
+      dispatch(refreshWorkspaceThunk());
+      toast.success('Pulled latest changes');
+    }
   };
 
-  const handlePush = () => { if (slug) dispatch(pushChanges(slug)); };
+  const handlePush = async () => {
+    if (!slug) return;
+    const result = await dispatch(pushChanges(slug));
+    if (pushChanges.fulfilled.match(result)) toast.success('Pushed to remote');
+  };
 
   const handleCommit = async () => {
     if (!slug || !message) return;
     const fullMessage = commitBody ? `${message}\n\n${commitBody}` : message;
     const resultAction = await dispatch(commitChanges({ slug, message: fullMessage }));
     if (commitChanges.fulfilled.match(resultAction)) {
+      toast.success(`Committed: ${message}`);
       setMessage('');
       setCommitBody('');
       setShowCommitBody(false);
@@ -253,17 +274,21 @@ export function GitStatus({ slug }) {
 
   const handleStashPush = async () => {
     if (!slug) return;
-    await dispatch(stashPush({ slug, message: stashMessage }));
+    const result = await dispatch(stashPush({ slug, message: stashMessage }));
+    if (stashPush.fulfilled.match(result)) toast.success('Changes stashed');
     setStashMessage('');
     dispatch(fetchGitStatus(slug));
   };
   const handleStashPop = async (index = 0) => {
     if (!slug) return;
-    await dispatch(stashPop({ slug, index }));
+    const result = await dispatch(stashPop({ slug, index }));
+    if (stashPop.fulfilled.match(result)) toast.success('Stash applied and removed');
     dispatch(refreshWorkspaceThunk());
   };
   const handleStashDrop = async (index = 0) => {
-    if (slug && confirm('Drop this stash?')) dispatch(stashDrop({ slug, index }));
+    if (!slug || !confirm('Drop this stash?')) return;
+    const result = await dispatch(stashDrop({ slug, index }));
+    if (stashDrop.fulfilled.match(result)) toast.success('Stash dropped');
   };
 
   const handleStage = (e, filePath) => { e.stopPropagation(); dispatch(stageFile({ slug, filePath })); };
@@ -275,12 +300,18 @@ export function GitStatus({ slug }) {
     e.stopPropagation();
     if (!confirm(`Discard changes in ${filePath}?`)) return;
     const result = await dispatch(discardChange({ slug, filePath }));
-    if (discardChange.fulfilled.match(result)) dispatch(refreshWorkspaceThunk());
+    if (discardChange.fulfilled.match(result)) {
+      dispatch(refreshWorkspaceThunk());
+      toast.success(`Discarded changes in ${filePath.split('/').pop()}`);
+    }
   };
   const handleDiscardAll = async () => {
     if (!confirm('Discard ALL changes? This cannot be undone!')) return;
     const result = await dispatch(discardAll(slug));
-    if (discardAll.fulfilled.match(result)) dispatch(refreshWorkspaceThunk());
+    if (discardAll.fulfilled.match(result)) {
+      dispatch(refreshWorkspaceThunk());
+      toast.success('All changes discarded');
+    }
   };
 
   const handleFileClick = (fileStatus) => {
@@ -301,40 +332,56 @@ export function GitStatus({ slug }) {
 
   const handleInit = async () => {
     if (!slug) return;
-    try {
-      await dispatch(initRepo({ slug, remoteUrl: null }));
+    const result = await dispatch(initRepo({ slug, remoteUrl: null }));
+    if (initRepo.fulfilled.match(result)) {
+      toast.success('Git repository initialized');
       dispatch(fetchFilesThunk(slug));
       dispatch(fetchGitStatus(slug));
-    } catch (e) { console.error('Init repo failed', e); }
+    }
   };
   const handleCloneRepo = async () => {
     if (!slug || !cloneUrl) return;
-    try {
-      await dispatch(cloneRepo({ slug, repoUrl: cloneUrl, token: null }));
+    const result = await dispatch(cloneRepo({ slug, repoUrl: cloneUrl, token: null }));
+    if (cloneRepo.fulfilled.match(result)) {
+      toast.success('Repository cloned successfully');
       dispatch(fetchFilesThunk(slug));
       dispatch(fetchGitStatus(slug));
       setCloneUrl('');
       setShowClone(false);
-    } catch (e) { console.error('Clone repo failed', e); }
+    }
   };
 
   const handleAbortMerge = async () => {
-    if (slug && confirm('Abort the merge? All merge progress will be lost.')) {
-      await dispatch(abortMerge(slug));
+    if (!slug || !confirm('Abort the merge? All merge progress will be lost.')) return;
+    const result = await dispatch(abortMerge(slug));
+    if (abortMerge.fulfilled.match(result)) {
+      toast.success('Merge aborted');
       dispatch(refreshWorkspaceThunk());
     }
   };
   const handleResolveOurs = async (e, filePath) => {
     e.stopPropagation();
-    if (slug) { await dispatch(resolveConflictOurs({ slug, filePath })); dispatch(refreshWorkspaceThunk()); }
+    if (!slug) return;
+    const result = await dispatch(resolveConflictOurs({ slug, filePath }));
+    if (resolveConflictOurs.fulfilled.match(result)) {
+      toast.success(`Resolved ${filePath.split('/').pop()} (ours)`);
+      dispatch(refreshWorkspaceThunk());
+    }
   };
   const handleResolveTheirs = async (e, filePath) => {
     e.stopPropagation();
-    if (slug) { await dispatch(resolveConflictTheirs({ slug, filePath })); dispatch(refreshWorkspaceThunk()); }
+    if (!slug) return;
+    const result = await dispatch(resolveConflictTheirs({ slug, filePath }));
+    if (resolveConflictTheirs.fulfilled.match(result)) {
+      toast.success(`Resolved ${filePath.split('/').pop()} (theirs)`);
+      dispatch(refreshWorkspaceThunk());
+    }
   };
   const handleMarkResolved = async (e, filePath) => {
     e.stopPropagation();
-    if (slug) await dispatch(markResolved({ slug, filePath }));
+    if (!slug) return;
+    const result = await dispatch(markResolved({ slug, filePath }));
+    if (markResolved.fulfilled.match(result)) toast.success(`${filePath.split('/').pop()} marked as resolved`);
   };
 
   // ── derived data ───────────────────────────────
@@ -453,7 +500,9 @@ export function GitStatus({ slug }) {
             </div>
           )}
           {(!unpushedCommits?.length && !incomingCommits?.length) && (
-            <div className="px-1.5 py-0.5 bg-emerald-500/10 text-emerald-400 rounded text-[10px]">Up to date</div>
+            <div className="flex items-center gap-0.5 px-1.5 py-0.5 bg-emerald-500/10 text-emerald-400 rounded text-[10px]" title="Up to date">
+              <CheckCircle2 className="w-2.5 h-2.5" />
+            </div>
           )}
         </div>
       </div>
@@ -686,26 +735,25 @@ export function GitStatus({ slug }) {
         {/* ── Commit History ──────────────────────── */}
         <div className="mb-3">
           <div className="flex items-center gap-1 px-1 mb-1">
-            <button onClick={() => setShowSearch(v => !v)}
-              className={`p-0.5 rounded transition-colors ${showSearch ? 'bg-[#27272a] text-[#e4e4e7]' : 'text-[#71717a] hover:text-[#a1a1aa]'}`}>
+            <button onClick={() => { setShowSearch(v => { if (!v) setTimeout(() => searchInputRef.current?.focus(), 0); return !v; }); }}
+              className={`p-0.5 rounded transition-colors flex-shrink-0 ${showSearch ? 'bg-[#27272a] text-[#e4e4e7]' : 'text-[#71717a] hover:text-[#a1a1aa]'}`}>
               <Search className="w-3 h-3" />
             </button>
-            <span className="text-xs font-semibold text-[#a1a1aa] uppercase tracking-wider">Commit History</span>
-            <span className="text-[10px] text-[#52525b] ml-auto">
+            {showSearch ? (
+              <input ref={searchInputRef} type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+                placeholder="Filter by message, author, or SHA…"
+                className="flex-1 min-w-0 bg-[#18181b] border border-[#3f3f46] rounded px-2 py-0.5 text-xs text-[#e4e4e7] focus:outline-none focus:border-[#3b82f6] transition-all"
+                onKeyDown={e => { if (e.key === 'Escape') { setShowSearch(false); setSearchQuery(''); } }}
+                autoFocus />
+            ) : (
+              <span className="text-xs font-semibold text-[#a1a1aa] uppercase tracking-wider">Commit History</span>
+            )}
+            <span className="text-[10px] text-[#52525b] ml-auto flex-shrink-0">
               {filteredCommits.length !== allCommits.length
                 ? `${filteredCommits.length}/${allCommits.length}`
                 : allCommits.length}
             </span>
           </div>
-
-          {showSearch && (
-            <div className="px-1 mb-1.5">
-              <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
-                placeholder="Filter by message, author, or SHA…"
-                className="w-full bg-[#18181b] border border-[#3f3f46] rounded px-2 py-0.5 text-xs text-[#e4e4e7] focus:outline-none focus:border-[#3b82f6]"
-                autoFocus />
-            </div>
-          )}
 
           {dateGroups.length > 0 ? (
             <div>
@@ -717,24 +765,29 @@ export function GitStatus({ slug }) {
                       const gIdx = displayCommits.indexOf(c);
                       const gn = graphNodes[gIdx];
                       const webUrl = commitWebUrl(primaryRemoteUrl, c.hash);
+                      const cc = parseConventionalCommit(c.message);
+                      const isoDate = c.date ? new Date(c.date).toISOString() : '';
                       return (
-                        <li key={c.hash} className="flex items-center hover:bg-[#27272a] rounded group transition-colors">
+                        <li key={c.hash} className="flex items-center hover:bg-[#27272a] rounded-md group transition-colors"
+                          title={`${c.hash}\n${isoDate}`}>
                           <CommitGraphColumn graphNode={gn} totalLanes={maxLanes} />
                           <div className="flex-1 min-w-0 py-1 pr-1">
                             <div className="flex items-center gap-1">
                               <code className="font-mono text-[10px] text-[#71717a] flex-shrink-0">{c.hash?.substring(0, 7)}</code>
                               <div className="text-xs min-w-0 truncate"><CommitMessage message={c.message} /></div>
                             </div>
-                            <div className="text-[10px] text-[#52525b] truncate">{c.author_name} · {relativeTime(c.date)}</div>
+                            <div className={`text-[10px] truncate ${cc ? 'text-[#52525b]' : 'text-[#52525b]/70'}`}
+                              title={isoDate}>{c.author_name} · {relativeTime(c.date)}</div>
                           </div>
                           {/* Hover actions */}
                           <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 pr-1">
-                            <button onClick={() => navigator.clipboard.writeText(c.hash)} title="Copy hash"
+                            <button onClick={() => { navigator.clipboard.writeText(c.hash); toast.success('Commit hash copied'); }}
+                              title={`Copy full hash: ${c.hash}`}
                               className="p-0.5 rounded hover:bg-[#3f3f46] text-[#71717a] hover:text-[#e4e4e7]">
                               <Copy className="w-2.5 h-2.5" />
                             </button>
                             {webUrl && (
-                              <a href={webUrl} target="_blank" rel="noreferrer" title="View on remote"
+                              <a href={webUrl} target="_blank" rel="noreferrer" title="View commit on remote"
                                 className="p-0.5 rounded hover:bg-[#3f3f46] text-[#71717a] hover:text-[#e4e4e7]">
                                 <ExternalLink className="w-2.5 h-2.5" />
                               </a>
