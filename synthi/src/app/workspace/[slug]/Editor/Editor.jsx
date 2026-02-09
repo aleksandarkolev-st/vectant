@@ -1019,9 +1019,6 @@ const EditorPanel = ({
                 // Track the cancellation token source for the last completion
                 // request so we can cancel it when a new one arrives.
                 let _lastCompletionCts = null;
-                // Track whether the last completion result was incomplete,
-                // so we can send triggerKind=3 on the next keystroke.
-                let _lastResultIncomplete = false;
 
                 for (const langId of documentSelector) {
                     const disp = monacoInstance.languages.registerCompletionItemProvider(langId, {
@@ -1366,10 +1363,8 @@ const EditorPanel = ({
                                         kind: suggestions[0].kind,
                                     } : null,
                                 });
-                                _lastResultIncomplete = !!isIncomplete;
                                 return { suggestions, incomplete: !!isIncomplete };
                             } catch (err) {
-                                _lastResultIncomplete = false;
                                 const msg = err?.message || String(err);
                                 if (msg === 'Canceled' || msg === 'cancelled' || err?.code === -32800) {
                                     return { suggestions: [] };
