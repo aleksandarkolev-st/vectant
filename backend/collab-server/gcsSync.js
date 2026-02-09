@@ -282,7 +282,8 @@ async function downloadGcsToRepo(slug, repoPath, options = {}) {
 }
 
 /**
- * Sync a single file change to GCS (for real-time sync)
+ * Sync a single file change to GCS (for real-time sync) with retry logic.
+ * Retries up to 3 times with exponential backoff on transient failures.
  */
 async function syncFileToGcs(slug, relativePath, content) {
     if (!isGcsConfigured()) {
@@ -290,16 +291,33 @@ async function syncFileToGcs(slug, relativePath, content) {
     }
 
     const gcsPath = `workspaces/${slug}/${relativePath}`;
-    const { bucket } = getStorage();
-    const file = bucket.file(gcsPath);
-    
-    await file.save(content, {
-        resumable: false,
-        contentType: 'application/octet-stream',
-        metadata: { cacheControl: 'no-cache' }
-    });
-    
-    return { success: true, path: gcsPath };
+    const MAX_RETRIES = 3;
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            const { bucket } = getStorage();
+            const file = bucket.file(gcsPath);
+
+            await file.save(content, {
+                resumable: false,
+                contentType: 'application/octet-stream',
+                metadata: { cacheControl: 'no-cache' }
+            });
+
+            return { success: true, path: gcsPath };
+        } catch (e) {
+            lastError = e;
+            if (attempt < MAX_RETRIES) {
+                const delay = Math.min(500 * Math.pow(2, attempt - 1), 4000);
+                console.warn(`[GCS] syncFileToGcs attempt ${attempt} failed for ${gcsPath}: ${e.message}. Retrying in ${delay}ms...`);
+                await new Promise(r => setTimeout(r, delay));
+            }
+        }
+    }
+
+    console.error(`[GCS] syncFileToGcs failed after ${MAX_RETRIES} attempts for ${gcsPath}:`, lastError?.message);
+    throw lastError;
 }
 
 /**
