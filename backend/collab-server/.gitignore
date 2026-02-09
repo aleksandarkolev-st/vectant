@@ -20,4 +20,7 @@ logs/
 .DS_Store
 Thumbs.db
 
+# Legacy workspace metadata (contains secrets — never commit)
+workspaces.json
+
 repos/
