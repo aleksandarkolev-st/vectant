@@ -871,11 +871,9 @@ const EditorPanel = ({
                 }
             }
             console.log(`[LSP] Channel ready for ${backendLang}`);
-            // Completions are handled entirely by monaco-languageclient's built-in
-            // provider (activated by the middleware passthrough).  No manual bridge
-            // needed — having both caused duplicate textDocument/completion requests
-            // and "Unmatched cancel notification" spam from the server.
-            const bridgeDisposables = [];
+            // Disposables for the direct completion provider(s) registered
+            // below.  Cleaned up when the data channel closes.
+            const completionDisposables = [];
 
 
             // start() sends 'initialize' to the server and waits for a response.
@@ -935,18 +933,11 @@ const EditorPanel = ({
                 }
             } catch (_) { /* language defaults may not exist */ }
 
-            // ── Direct Monaco completion provider (PRIMARY) ─────────
-            // @codingame/monaco-vscode-api's extension host layer often
-            // fails to create its internal TextDocument for the model URI
-            // (e.g. "Unable to retrieve document from URI"), which silently
-            // prevents the vscode-languageclient's built-in completion
-            // provider from working.  This direct provider bypasses the
-            // vscode-api layer entirely and sends textDocument/completion
-            // straight to the LSP server over JSON-RPC.
-            //
-            // This is the PRIMARY completion source — the middleware bridge
-            // above is a bonus that may or may not work depending on
-            // @codingame/monaco-vscode-api's TextDocument resolution.
+            // ── Direct Monaco completion provider ─────────────────
+            // Sends textDocument/completion straight to the LSP server
+            // over JSON-RPC, bypassing the vscode-languageclient's
+            // built-in CompletionItemFeature (which is skipped in
+            // registerFeature() to avoid dual-provider conflicts).
             {
                 const serverTriggerChars = languageClient.initializeResult
                     ?.capabilities?.completionProvider?.triggerCharacters || [];
@@ -1436,7 +1427,7 @@ const EditorPanel = ({
                             return item;
                         },
                     });
-                    bridgeDisposables.push(disp);
+                    completionDisposables.push(disp);
                 }
             }
 
@@ -1561,7 +1552,7 @@ const EditorPanel = ({
             // we don't overwrite MonacoSocketAdapter's own close handler.
             lspChannel.addEventListener('close', async () => {
                 console.log(`[LSP] Channel closed for ${backendLang}`);
-                bridgeDisposables.forEach(d => d.dispose());
+                completionDisposables.forEach(d => d.dispose());
                 changeDisposable.dispose();
 
                 // P2: Send shutdown→exit for a clean server shutdown
