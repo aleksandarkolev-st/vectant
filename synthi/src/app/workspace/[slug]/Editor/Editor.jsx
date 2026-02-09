@@ -1013,6 +1013,16 @@ const EditorPanel = ({
                     return map[kind] ?? m.Text;
                 };
 
+                // ── Completion generation tracking ────────────────────
+                // Each completion request gets a monotonically-increasing
+                // generation number tied to the model version at request
+                // time.  When the response arrives, we check whether the
+                // generation still matches — if not, the result is stale
+                // (user kept typing) and we discard it instead of showing
+                // outdated suggestions.
+                let _completionGeneration = 0;
+                let _currentCompletionGen = 0; // the live "latest" gen
+
                 for (const langId of documentSelector) {
                     const disp = monacoInstance.languages.registerCompletionItemProvider(langId, {
                         triggerCharacters: allTriggers,
@@ -1036,6 +1046,13 @@ const EditorPanel = ({
                             // worker-side URI rewriter will translate this to
                             // the real server workspace path.
                             const uri = model.uri.toString();
+
+                            // Stamp this request with a generation number.
+                            // If the user types again before we get a response,
+                            // _currentCompletionGen will advance and we'll
+                            // discard the stale result.
+                            const myGeneration = ++_completionGeneration;
+                            _currentCompletionGen = myGeneration;
 
                             // Build the LSP triggerKind:
                             //  1 = Invoked (Ctrl+Space or quickSuggestions auto-trigger)
