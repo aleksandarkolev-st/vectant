@@ -87,12 +87,14 @@ async function materialize(slug, repoPath) {
 
 /**
  * Restore a .git tarball from GCS (if available).
- * This is a no-op placeholder — archiveGitState() / restoreGitArchive()
- * are wired up in a later commit.
  */
 async function restoreGitArchive(slug, repoPath) {
-  // Will be implemented in the .git archival commit.
-  // For now, skip silently.
+  if (!gcsSync.isGcsConfigured()) return;
+  const result = await gcsSync.restoreGitFromGcs(slug, repoPath);
+  if (result.success) {
+    console.log(`[RepoCache] Restored .git archive for ${slug}`);
+  }
+  // Not critical — if missing, callers can git init / clone
 }
 
 // ── LRU Cache instance ──────────────────────────────────────────────────────

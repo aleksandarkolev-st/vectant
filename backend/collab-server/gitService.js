@@ -195,6 +195,18 @@ class GitService {
         return path.join(this.baseDir, slug);
     }
 
+    /**
+     * Archive the .git directory to GCS for fast re-hydration.
+     * Called after mutating git operations (commit, pull, checkout, clone).
+     * Fire-and-forget — failures are logged but never thrown.
+     */
+    _archiveGitAsync(slug) {
+        const repoPath = this.getRepoPath(slug);
+        gcsSync.archiveGitToGcs(slug, repoPath).catch((e) => {
+            console.warn(`[GitService] .git archive failed for ${slug}:`, e.message);
+        });
+    }
+
     isRepoExists(slug) {
         const repoPath = this.getRepoPath(slug);
         return fs.existsSync(repoPath);
@@ -285,6 +297,9 @@ class GitService {
                     // Don't fail the clone operation, just log the warning
                 }
             }
+
+            // Archive .git to GCS for fast re-hydration after eviction
+            this._archiveGitAsync(slug);
             
             return { success: true, path: repoPath };
         });
@@ -350,6 +365,7 @@ class GitService {
                 } else {
                     await git.checkout(branchName);
                 }
+                this._archiveGitAsync(slug);
                 return this.getStatus(slug);
             } catch (e) {
                 throw this.mapGitError(e, slug);
@@ -374,6 +390,7 @@ class GitService {
             try {
                 const git = this.getGit(slug);
                 await git.commit(message);
+                this._archiveGitAsync(slug);
                 return this.getStatus(slug);
             } catch (e) {
                 throw this.mapGitError(e, slug);
@@ -588,6 +605,8 @@ class GitService {
                     throw new MergeConflictError(status.conflictedFiles);
                 }
                 
+                this._archiveGitAsync(slug);
+                
                 return {
                     ...status,
                     pullSummary: {
@@ -597,6 +616,8 @@ class GitService {
                     }
                 };
             } catch (e) {
+                // Archive .git even on conflict so the state is persisted
+                this._archiveGitAsync(slug);
                 if (e instanceof MergeConflictError) throw e;
                 
                 // Check if pull failed due to merge conflict

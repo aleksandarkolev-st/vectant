@@ -342,6 +342,101 @@ async function deleteFileFromGcs(slug, relativePath) {
     }
 }
 
+/**
+ * Archive the .git directory as a tarball and upload to GCS.
+ * Used for fast re-hydration when a working tree is materialised.
+ *
+ * The tarball is stored at `<GCS_PREFIX>/<slug>/.git-archive.tar.gz`.
+ *
+ * @param {string} slug
+ * @param {string} repoPath - local working tree root
+ */
+async function archiveGitToGcs(slug, repoPath) {
+    if (!isGcsConfigured()) return { success: false, reason: 'GCS not configured' };
+
+    const gitDir = path.join(repoPath, '.git');
+    if (!fs.existsSync(gitDir)) {
+        return { success: false, reason: '.git directory does not exist' };
+    }
+
+    const { createGzip } = require('zlib');
+    const tar = require('tar');
+
+    const gcsPath = `${GCS_PREFIX}/${slug}/.git-archive.tar.gz`;
+
+    try {
+        const { bucket } = getStorage();
+        const file = bucket.file(gcsPath);
+
+        // Stream tar.gz directly to GCS (no temp file)
+        await new Promise((resolve, reject) => {
+            const uploadStream = file.createWriteStream({
+                resumable: false,
+                contentType: 'application/gzip',
+                metadata: { cacheControl: 'no-cache' },
+            });
+
+            tar.create(
+                { gzip: true, cwd: repoPath },
+                ['.git']
+            )
+            .pipe(uploadStream)
+            .on('error', reject)
+            .on('finish', resolve);
+        });
+
+        console.log(`[GCS] Archived .git for ${slug} → ${gcsPath}`);
+        return { success: true, path: gcsPath };
+    } catch (e) {
+        console.error(`[GCS] Failed to archive .git for ${slug}:`, e.message);
+        return { success: false, error: e.message };
+    }
+}
+
+/**
+ * Restore a .git tarball from GCS into a working tree.
+ *
+ * @param {string} slug
+ * @param {string} repoPath - local working tree root
+ * @returns {{ success: boolean }}
+ */
+async function restoreGitFromGcs(slug, repoPath) {
+    if (!isGcsConfigured()) return { success: false, reason: 'GCS not configured' };
+
+    const tar = require('tar');
+
+    const gcsPath = `${GCS_PREFIX}/${slug}/.git-archive.tar.gz`;
+
+    try {
+        const { bucket } = getStorage();
+        const file = bucket.file(gcsPath);
+
+        const [exists] = await file.exists();
+        if (!exists) {
+            return { success: false, reason: 'No .git archive found in GCS' };
+        }
+
+        // Ensure target dir exists
+        if (!fs.existsSync(repoPath)) {
+            fs.mkdirSync(repoPath, { recursive: true });
+        }
+
+        // Stream download + extract
+        await new Promise((resolve, reject) => {
+            file.createReadStream()
+                .pipe(tar.extract({ cwd: repoPath }))
+                .on('error', reject)
+                .on('finish', resolve);
+        });
+
+        console.log(`[GCS] Restored .git for ${slug} from ${gcsPath}`);
+        return { success: true };
+    } catch (e) {
+        console.error(`[GCS] Failed to restore .git for ${slug}:`, e.message);
+        return { success: false, error: e.message };
+    }
+}
+
 module.exports = {
     isGcsConfigured,
     uploadRepoToGcs,
@@ -351,4 +446,6 @@ module.exports = {
     uploadFile,
     downloadFile,
     listFiles,
+    archiveGitToGcs,
+    restoreGitFromGcs,
 };
