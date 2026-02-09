@@ -1140,7 +1140,7 @@ const EditorPanel = ({
                                 _lastCompletionCts = null;
                             }
 
-                            console.log(`[LSP] Sending textDocument/completion for ${backendLang} (gen=${myGeneration}, triggerKind=${lspTriggerKind})`);
+                            console.log(`[LSP] Sending textDocument/completion for ${backendLang} (gen=${myGeneration}, L${position.lineNumber}:${position.column}, triggerKind=${lspTriggerKind}${isTriggerChar ? ', char=' + context.triggerCharacter : ''})`);
 
                             try {
                                 // Yield one micro-task so that any pending
@@ -1427,7 +1427,7 @@ const EditorPanel = ({
                                     return { suggestions: [] };
                                 }
 
-                                console.log(`[LSP] Direct completion for ${backendLang}: ${suggestions.length} items (incomplete=${!!isIncomplete})`, {
+                                console.log(`[LSP] Direct completion for ${backendLang}: ${suggestions.length} items in ${elapsed}ms (gen=${myGeneration}, incomplete=${!!isIncomplete})`, {
                                     pos: { line: position.lineNumber, col: position.column },
                                     word: word.word || '(empty)',
                                     defaultRange,
