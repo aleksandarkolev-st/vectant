@@ -800,6 +800,7 @@ const EditorPanel = ({
                         },
                         didChange: (data, next) => {
                             console.log('[LSP] middleware didChange →', typeof data);
+                            _lastDidChangeTs = performance.now();
                             return next(data);
                         },
                         didClose: (document, next) => {
@@ -1027,6 +1028,11 @@ const EditorPanel = ({
                 // may arrive before didChange propagates.
                 let _triggerDebounceTimer = null;
                 const TRIGGER_DEBOUNCE_MS = 100;
+                // Minimum gap (ms) between the last didChange notification
+                // and sending a completion request.  Ensures the server has
+                // time to ingest the change before we ask for completions.
+                const MIN_CHANGE_GAP_MS = 30;
+                let _lastDidChangeTs = 0;
 
                 for (const langId of documentSelector) {
                     const disp = monacoInstance.languages.registerCompletionItemProvider(langId, {
@@ -1162,13 +1168,17 @@ const EditorPanel = ({
                             console.log(`[LSP] Sending textDocument/completion for ${backendLang} (gen=${myGeneration}, L${position.lineNumber}:${position.column}, triggerKind=${effectiveTriggerKind}${effectiveTriggerChar ? ', char=' + effectiveTriggerChar : ''})`);
 
                             try {
-                                // Yield one micro-task so that any pending
-                                // didChange notification (which runs on the
-                                // microtask queue from the middleware) is
-                                // written to the transport before we send the
-                                // completion request.  Without this, the
-                                // server may still see the *previous* buffer.
-                                await new Promise((r) => setTimeout(r, 0));
+                                // Yield at least MIN_CHANGE_GAP_MS after the
+                                // last didChange so the server has time to
+                                // ingest the notification before we send the
+                                // completion request.
+                                const sinceLast = performance.now() - _lastDidChangeTs;
+                                const yieldMs = Math.max(0, MIN_CHANGE_GAP_MS - sinceLast);
+                                if (yieldMs > 0) {
+                                    await new Promise((r) => setTimeout(r, yieldMs));
+                                } else {
+                                    await new Promise((r) => setTimeout(r, 0));
+                                }
                                 if (token.isCancellationRequested || myGeneration !== _currentCompletionGen) {
                                     return { suggestions: [] };
                                 }
