@@ -816,6 +816,17 @@ class CollabClient {
     let ws;
     let reconnectTimer = null;
     let destroyed = false;
+    let attempt = 0;
+
+    // Exponential backoff: 1s → 2s → 4s → … → 30s cap, plus ±25% jitter
+    const BACKOFF_BASE_MS = 1000;
+    const BACKOFF_MAX_MS  = 30_000;
+
+    const getBackoffDelay = () => {
+      const exponential = Math.min(BACKOFF_BASE_MS * 2 ** attempt, BACKOFF_MAX_MS);
+      const jitter = exponential * (0.75 + Math.random() * 0.5); // ±25%
+      return Math.round(jitter);
+    };
 
     const connect = () => {
       if (destroyed) return;
@@ -828,6 +839,7 @@ class CollabClient {
       }
 
       ws.onopen = () => {
+        attempt = 0; // Reset backoff on successful connection
         console.log('[Collab] Notification WS connected for slug:', slug);
       };
       ws.onmessage = (ev) => {
@@ -852,10 +864,13 @@ class CollabClient {
 
     const scheduleReconnect = () => {
       if (reconnectTimer || destroyed) return;
+      const delay = getBackoffDelay();
+      attempt++;
+      console.log(`[Collab] Notification WS reconnecting in ${delay}ms (attempt ${attempt})`);
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
         connect();
-      }, 3000);
+      }, delay);
     };
 
     connect();
