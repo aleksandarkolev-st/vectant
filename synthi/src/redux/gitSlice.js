@@ -327,6 +327,10 @@ const gitSlice = createSlice({
         blameData: [],
         currentBranch: 'main',
         loading: false,
+        // actionError persists until explicitly dismissed by user or next
+        // user-initiated action — background refreshes never clear it.
+        actionError: null,
+        actionErrorCode: null,
         error: null,
         errorCode: null, // For structured error handling
     },
@@ -334,9 +338,13 @@ const gitSlice = createSlice({
         clearError: (state) => {
             state.error = null;
             state.errorCode = null;
+            state.actionError = null;
+            state.actionErrorCode = null;
         }
     },
     extraReducers: (builder) => {
+        // ── Background refresh thunks ─────────────────────────
+        // These NEVER touch actionError so user-facing errors persist.
         builder
             .addCase(fetchGitStatus.pending, (state) => {
                 state.loading = true;
@@ -357,16 +365,16 @@ const gitSlice = createSlice({
             });
 
         builder
-            .addCase(fetchCommitHistory.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(fetchCommitHistory.pending, (state) => { state.loading = true; })
             .addCase(fetchCommitHistory.fulfilled, (state, action) => { 
                 state.loading = false; 
                 state.commitHistory = action.payload || { all: [], total: 0, page: 1, hasMore: false }; 
             })
             .addCase(fetchCommitHistory.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
-            .addCase(fetchUnpushedCommits.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(fetchUnpushedCommits.pending, (state) => { state.loading = true; })
             .addCase(fetchUnpushedCommits.fulfilled, (state, action) => { state.loading = false; state.unpushedCommits = action.payload || []; })
             .addCase(fetchUnpushedCommits.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
-            .addCase(fetchIncomingCommits.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(fetchIncomingCommits.pending, (state) => { state.loading = true; })
             .addCase(fetchIncomingCommits.fulfilled, (state, action) => { state.loading = false; state.incomingCommits = action.payload || []; })
             .addCase(fetchIncomingCommits.rejected, (state, action) => { state.loading = false; state.error = action.error.message; });
         
@@ -375,47 +383,67 @@ const gitSlice = createSlice({
             .addCase(fetchBlame.fulfilled, (state, action) => { state.blameData = action.payload || []; });
         
         builder
-            .addCase(initRepo.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(fetchRemotes.fulfilled, (state, action) => {
+                state.remotes = action.payload;
+            });
+
+        // ── User-initiated action thunks ──────────────────────
+        // These write to actionError on failure and clear it on next attempt.
+        builder
+            .addCase(initRepo.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
             .addCase(initRepo.fulfilled, (state) => { state.loading = false; })
-            .addCase(initRepo.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
-            .addCase(cloneRepo.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(initRepo.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(cloneRepo.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
             .addCase(cloneRepo.fulfilled, (state) => { state.loading = false; })
-            .addCase(cloneRepo.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
-            .addCase(addRemote.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(cloneRepo.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(addRemote.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
             .addCase(addRemote.fulfilled, (state) => { state.loading = false; })
-            .addCase(addRemote.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
-            .addCase(pushChanges.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(addRemote.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(pushChanges.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
             .addCase(pushChanges.fulfilled, (state) => { state.loading = false; })
-            .addCase(pushChanges.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
-            .addCase(pullChanges.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(pushChanges.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; })
+            .addCase(pullChanges.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
             .addCase(pullChanges.fulfilled, (state) => { state.loading = false; })
             .addCase(pullChanges.rejected, (state, action) => { 
                 state.loading = false; 
                 // If it's a merge conflict, don't show it as an error (it's expected)
                 if (action.payload?.code === 'MERGE_CONFLICT') {
-                    state.error = null; // Clear error - conflicts are shown in status
+                    state.actionError = null;
                 } else {
-                    state.error = action.error?.message || action.payload?.message || 'Pull failed'; 
+                    state.actionError = action.error?.message || action.payload?.message || 'Pull failed';
+                    state.actionErrorCode = action.error?.code || null;
                 }
             })
-            .addCase(fetchRemotes.fulfilled, (state, action) => {
-                state.remotes = action.payload;
-            });
+            .addCase(commitChanges.pending, (state) => { state.loading = true; state.actionError = null; state.actionErrorCode = null; })
+            .addCase(commitChanges.fulfilled, (state) => { state.loading = false; })
+            .addCase(commitChanges.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; state.actionErrorCode = action.error.code || null; });
         
+        // Staging/discard actions
+        builder
+            .addCase(stageFile.rejected, (state, action) => { state.actionError = action.error.message; })
+            .addCase(unstageFile.rejected, (state, action) => { state.actionError = action.error.message; })
+            .addCase(stageAll.rejected, (state, action) => { state.actionError = action.error.message; })
+            .addCase(unstageAll.rejected, (state, action) => { state.actionError = action.error.message; })
+            .addCase(discardChange.rejected, (state, action) => { state.actionError = action.error.message; })
+            .addCase(discardAll.rejected, (state, action) => { state.actionError = action.error.message; })
+            .addCase(stashPush.rejected, (state, action) => { state.actionError = action.error.message; })
+            .addCase(stashPop.rejected, (state, action) => { state.actionError = action.error.message; })
+            .addCase(stashDrop.rejected, (state, action) => { state.actionError = action.error.message; });
+
         // Merge conflict resolution handlers
         builder
-            .addCase(resolveConflictOurs.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(resolveConflictOurs.pending, (state) => { state.loading = true; state.actionError = null; })
             .addCase(resolveConflictOurs.fulfilled, (state) => { state.loading = false; })
-            .addCase(resolveConflictOurs.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
-            .addCase(resolveConflictTheirs.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(resolveConflictOurs.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; })
+            .addCase(resolveConflictTheirs.pending, (state) => { state.loading = true; state.actionError = null; })
             .addCase(resolveConflictTheirs.fulfilled, (state) => { state.loading = false; })
-            .addCase(resolveConflictTheirs.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
-            .addCase(markResolved.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(resolveConflictTheirs.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; })
+            .addCase(markResolved.pending, (state) => { state.loading = true; state.actionError = null; })
             .addCase(markResolved.fulfilled, (state) => { state.loading = false; })
-            .addCase(markResolved.rejected, (state, action) => { state.loading = false; state.error = action.error.message; })
-            .addCase(abortMerge.pending, (state) => { state.loading = true; state.error = null; })
+            .addCase(markResolved.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; })
+            .addCase(abortMerge.pending, (state) => { state.loading = true; state.actionError = null; })
             .addCase(abortMerge.fulfilled, (state) => { state.loading = false; })
-            .addCase(abortMerge.rejected, (state, action) => { state.loading = false; state.error = action.error.message; });
+            .addCase(abortMerge.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; });
     },
 });
 
