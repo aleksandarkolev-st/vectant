@@ -1100,6 +1100,8 @@ const EditorPanel = ({
                                 _lastCompletionCts = null;
                             }
 
+                            console.log(`[LSP] Sending textDocument/completion for ${backendLang} (gen=${myGeneration}, triggerKind=${lspTriggerKind}${_lastResultIncomplete ? ', re-trigger' : ''})`);
+
                             try {
                                 // Create a cancellation source that combines Monaco's
                                 // token with our own generation-based cancellation.
@@ -1366,9 +1368,16 @@ const EditorPanel = ({
                                 console.log(`[LSP] Direct completion for ${backendLang}: ${suggestions.length} items (incomplete=${!!isIncomplete})`, {
                                     pos: { line: position.lineNumber, col: position.column },
                                     word: word.word || '(empty)',
-                                    range: defaultRange,
+                                    defaultRange,
+                                    // Show range decision for first 3 items
+                                    itemRanges: suggestions.slice(0, 3).map(s => ({
+                                        label: typeof s.label === 'string' ? s.label : s.label?.label,
+                                        filterText: s.filterText,
+                                        usedServerRange: s.range !== defaultRange,
+                                        range: s.range,
+                                    })),
                                     firstItem: suggestions[0] ? {
-                                        label: suggestions[0].label,
+                                        label: typeof suggestions[0].label === 'string' ? suggestions[0].label : suggestions[0].label?.label,
                                         insertText: suggestions[0].insertText?.substring(0, 40),
                                         filterText: suggestions[0].filterText,
                                         kind: suggestions[0].kind,
