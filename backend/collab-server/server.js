@@ -56,6 +56,8 @@ const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
+const config = require('./config');
+const gitService = require('./gitService');
 let fetchFunc = null;
 if (typeof fetch === 'function') {
   fetchFunc = fetch;
@@ -67,7 +69,7 @@ if (typeof fetch === 'function') {
   }
 }
 
-const CODE_INTEL_URL = (process.env.CODE_INTEL_URL || 'http://localhost:8000').replace(/\/$/, '');
+const CODE_INTEL_URL = config.CODE_INTEL_URL;
 
 // LevelDB persistence is optional — some environments (or registries) may not
 // provide a compatible `y-leveldb` binary. Try to load it and fall back to
@@ -80,7 +82,7 @@ try {
   console.warn('[Collab] y-leveldb not available, using in-memory persistence fallback');
 }
 
-const PORT = process.env.COLLAB_PORT || 1234;
+const PORT = config.PORT;
 
 // Track file hashes to detect when actual files change outside of the editor
 const fileHashCache = new Map(); // docName -> { hash, timestamp }
@@ -119,7 +121,7 @@ function parseDocName(docName) {
  */
 async function getActualFileContent(slug, filePath) {
   try {
-    const repoPath = path.join(__dirname, 'repos', slug);
+    const repoPath = gitService.getRepoPath(slug);
     const fullPath = path.join(repoPath, filePath);
     const content = await fs.readFile(fullPath, 'utf8');
     return content;
@@ -150,7 +152,7 @@ function getYDocContent(ydoc) {
 // Use LevelDB persistence when available, otherwise use an in-memory fallback
 let basePersistence;
 if (LeveldbPersistence) {
-  basePersistence = new LeveldbPersistence('./data/collab-leveldb');
+  basePersistence = new LeveldbPersistence(config.LEVELDB_DIR);
 } else {
   // Simple in-memory persistence that encodes/decodes Yjs state updates
   class InMemoryPersistence {
@@ -197,7 +199,7 @@ class ValidatingPersistence {
     // Track Y.js document observers for auto-flush
     this.docObservers = new Map(); // docName -> { ydoc, observer, flushTimer }
     // Debounce interval for disk writes (ms)
-    this.FLUSH_DEBOUNCE_MS = 150;
+    this.FLUSH_DEBOUNCE_MS = config.FLUSH_DEBOUNCE_MS;
   }
 
   /**
@@ -227,7 +229,7 @@ class ValidatingPersistence {
       flushTimer = setTimeout(async () => {
         try {
           const content = targetText.toString();
-          const repoPath = path.join(__dirname, 'repos', slug);
+          const repoPath = gitService.getRepoPath(slug);
           const fullPath = path.join(repoPath, filePath);
           
           // Ensure directory exists
@@ -241,8 +243,7 @@ class ValidatingPersistence {
           fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
 
           // Optional: Sync to GCS for cloud-backed workspaces
-          const syncToGcs = String(process.env.GCS_SYNC_ON_FLUSH || 'true').toLowerCase() !== 'false';
-          if (syncToGcs && gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
+          if (config.GCS_SYNC_ON_FLUSH && gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
             try {
               await gcsSync.syncFileToGcs(slug, filePath, content);
             } catch (e) {
@@ -251,8 +252,7 @@ class ValidatingPersistence {
           }
 
           // Optional: Trigger incremental code-intel indexing
-          const shouldIndex = String(process.env.CODE_INTEL_AUTO_INDEX || 'true').toLowerCase() !== 'false';
-          if (shouldIndex && fetchFunc && CODE_INTEL_URL) {
+          if (config.CODE_INTEL_AUTO_INDEX && fetchFunc && CODE_INTEL_URL) {
             try {
               fetchFunc(`${CODE_INTEL_URL}/code-intel/index/file`, {
                 method: 'POST',
@@ -391,7 +391,6 @@ class ValidatingPersistence {
 // Wrap the base persistence with validation
 const persistence = new ValidatingPersistence(basePersistence);
 
-const gitService = require('./gitService');
 const workspaceManager = require('./workspaceManager');
 
 // ── Access y-websocket internal docs for invalidation ──
