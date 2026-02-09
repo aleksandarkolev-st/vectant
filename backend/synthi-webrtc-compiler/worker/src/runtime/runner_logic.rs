@@ -438,7 +438,6 @@ pub unsafe fn process_load_command(
             // ============================================================
             // This allows the module to write to KV during on_load
             // ============================================================
-            let _module_slot_compiler = to_compiler_slot(module_slot);
             let mut has_host_kv_support = false;
 
             if let Some(ref sid) = session_id {

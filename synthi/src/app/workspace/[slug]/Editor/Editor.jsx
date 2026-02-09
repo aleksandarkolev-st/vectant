@@ -48,7 +48,9 @@ import { useEditorEvents } from './events';
 import { takeLastChars, useCustomScrollbar } from './utils';
 import { SYNTHI_THEME } from './theme';
 import { ConflictBanner } from './ConflictBanner';
-import * as monaco from 'monaco-editor';
+import { initSynthiFileSystem, updateFile as updateVirtualFile, disposeSynthiFileSystem } from './SynthiFileSystemProvider';
+import { registerMonarchTokenizers } from './languageTokenizers';
+import * as monaco from '@codingame/monaco-vscode-editor-api';
 import { toast } from 'sonner';
 
 const CloseAction = {
@@ -60,6 +62,55 @@ const ErrorAction = {
     Continue: 1,
     Shutdown: 2,
 };
+
+// ── Language registration for @codingame/monaco-vscode-api ──────────
+// The vscode-api layer doesn't know about languages like Java, Go, Rust, etc.
+// unless a vscode extension is registered for them.  Without this, models
+// created from file URIs default to 'plaintext', breaking documentSelector
+// matching and LSP provider activation.
+const SUPPORTED_LANGUAGES = [
+    { id: 'java', extensions: ['.java'], aliases: ['Java'] },
+    { id: 'python', extensions: ['.py', '.pyw', '.pyx'], aliases: ['Python'] },
+    { id: 'go', extensions: ['.go'], aliases: ['Go'] },
+    { id: 'rust', extensions: ['.rs'], aliases: ['Rust'] },
+    { id: 'cpp', extensions: ['.cpp', '.cc', '.cxx', '.hpp'], aliases: ['C++'] },
+    { id: 'c', extensions: ['.c', '.h'], aliases: ['C'] },
+    { id: 'csharp', extensions: ['.cs'], aliases: ['C#'] },
+    { id: 'kotlin', extensions: ['.kt', '.kts'], aliases: ['Kotlin'] },
+    { id: 'dart', extensions: ['.dart'], aliases: ['Dart'] },
+    { id: 'zig', extensions: ['.zig'], aliases: ['Zig'] },
+    { id: 'lua', extensions: ['.lua'], aliases: ['Lua'] },
+    { id: 'elixir', extensions: ['.ex', '.exs'], aliases: ['Elixir'] },
+    { id: 'svelte', extensions: ['.svelte'], aliases: ['Svelte'] },
+    { id: 'swift', extensions: ['.swift'], aliases: ['Swift'] },
+    { id: 'scala', extensions: ['.scala', '.sc'], aliases: ['Scala'] },
+    { id: 'ruby', extensions: ['.rb'], aliases: ['Ruby'] },
+    { id: 'php', extensions: ['.php'], aliases: ['PHP'] },
+    { id: 'haskell', extensions: ['.hs'], aliases: ['Haskell'] },
+];
+
+// Build a reverse map: language id → glob patterns for documentSelector fallback
+const LANG_TO_GLOB = {};
+for (const lang of SUPPORTED_LANGUAGES) {
+    LANG_TO_GLOB[lang.id] = lang.extensions.map(ext => `**/*${ext}`);
+}
+// Also add built-in languages that Monaco already knows about
+LANG_TO_GLOB['javascript'] = ['**/*.js', '**/*.jsx', '**/*.mjs', '**/*.cjs'];
+LANG_TO_GLOB['typescript'] = ['**/*.ts', '**/*.tsx'];
+LANG_TO_GLOB['html'] = ['**/*.html', '**/*.htm'];
+LANG_TO_GLOB['css'] = ['**/*.css'];
+LANG_TO_GLOB['scss'] = ['**/*.scss', '**/*.sass'];
+LANG_TO_GLOB['less'] = ['**/*.less'];
+LANG_TO_GLOB['json'] = ['**/*.json'];
+
+/** Register all supported languages with Monaco/vscode-api */
+function registerSupportedLanguages() {
+    for (const lang of SUPPORTED_LANGUAGES) {
+        try { monaco.languages.register(lang); } catch (_) {}
+    }
+    console.log('[LSP] Registered', SUPPORTED_LANGUAGES.length, 'languages with Monaco');
+}
+
 import { toSocket, WebSocketMessageReader, WebSocketMessageWriter } from 'vscode-ws-jsonrpc';
 import { MonacoSocketAdapter } from '@/services/MonacoSocketAdapter';
 import collabClient from '@/services/collabClient';
@@ -174,6 +225,14 @@ const EditorPanel = ({
     const [lspStatus, setLspStatus] = useState('Idle');
     const [servicesReady, setServicesReady] = useState(false);
     const slug = useAppSelector(state => state.workspace.slug);
+
+    // Refs for file cache data — used during async service init to pre-populate
+    // the virtual filesystem BEFORE servicesReady is set, preventing the
+    // "Unable to read file" error from @codingame/monaco-vscode-api.
+    const fileCacheEntriesRef = useRef(fileCacheEntries);
+    const rawFilesRef = useRef(rawFiles);
+    fileCacheEntriesRef.current = fileCacheEntries;
+    rawFilesRef.current = rawFiles;
     const session = useSession();
     const collabBindingRef = useRef(null);
     const [collabConnected, setCollabConnected] = useState(false); // Track if collab is actively bound
@@ -233,6 +292,10 @@ const EditorPanel = ({
     const { client: compilerClient, status: compilerStatus } = useCompiler();
     const languageClientsRef = useRef(new Map());
     const lspInitPendingRef = useRef(new Set()); // Guard against concurrent init for same language
+    // Track the previously-opened file URI per language client so we can send didClose on file switch
+    const lspOpenedUrisRef = useRef(new Map()); // Map<backendLang, { uri, languageId }>
+    // Track textDocumentSync capability reported by each language server
+    const lspSyncCapRef = useRef(new Map()); // Map<backendLang, number> (1=Full, 2=Incremental)
 
     // Initialize Monaco Services ONCE — uses a module-level promise so that
     // concurrent callers (StrictMode double-fire, fast remounts) all wait for
@@ -244,26 +307,99 @@ const EditorPanel = ({
         }
 
         if (!servicesInitPromise) {
-            servicesInitPromise = import('monaco-languageclient/vscodeApiWrapper').then(
-                async ({ MonacoVscodeApiWrapper }) => {
+            servicesInitPromise = (async () => {
+                const { MonacoVscodeApiWrapper } = await import('monaco-languageclient/vscodeApiWrapper');
+
+                // Attempt to start the wrapper. On HMR reloads the underlying
+                // @codingame/monaco-vscode-api will throw "Services are already
+                // initialized" because its internal flag persists across module
+                // re-evaluations.  Catch that specific error and treat as success.
+                try {
+                    // Provide a real MarkdownRendererService implementation
+                    // via serviceOverrides so the @Unsupported stub from
+                    // missing-services.js is never used. This prevents the
+                    // "setDefaultCodeBlockRenderer is not supported" error
+                    // that fires when StandaloneCodeEditor's constructor
+                    // accesses the service.
+                    const { SyncDescriptor } = await import(
+                        '@codingame/monaco-vscode-api/vscode/vs/platform/instantiation/common/descriptors'
+                    );
+                    const { MarkdownRendererService } = await import(
+                        '@codingame/monaco-vscode-api/vscode/vs/platform/markdown/browser/markdownRenderer'
+                    );
+
                     const wrapper = new MonacoVscodeApiWrapper({
                         $type: 'classic',
                         viewsConfig: {
                             $type: 'EditorService'
                         },
-                        monacoWorkerFactory: configureClassicWorkerFactory
+                        monacoWorkerFactory: configureClassicWorkerFactory,
+                        serviceOverrides: {
+                            // Key must match createDecorator('markdownRendererService')
+                            markdownRendererService: new SyncDescriptor(MarkdownRendererService),
+                        },
                     });
                     await wrapper.start();
-                    servicesInitialized = true;
-                    console.log('[LSP] Monaco Services Initialized');
+                } catch (e) {
+                    if (e?.message?.includes('already initialized')) {
+                        console.warn('[LSP] Services already initialized (HMR), continuing…');
+                    } else {
+                        throw e;
+                    }
                 }
-            );
+
+                // Register all supported languages so the vscode-api layer
+                // correctly auto-detects language from file URIs (e.g. .java → java)
+                // and setModelLanguage() actually works.
+                registerSupportedLanguages();
+
+                // P0: Load Monarch tokenizers for all supported languages.
+                // @codingame/monaco-vscode-api disables Monaco's built-in
+                // contribution loading, so languages like Rust, Java, Go, etc.
+                // have no tokenizer unless we explicitly register one.
+                await registerMonarchTokenizers();
+
+                // P0: Pre-populate the virtual filesystem BEFORE marking services
+                // as ready.  @codingame/monaco-vscode-api's TextDocument service
+                // will try to read file:///synthi/ URIs as soon as it activates.
+                // If the overlay isn't registered yet, we get "Unable to read file"
+                // errors and the TextDocument is never created properly, which
+                // breaks completion provider document matching.
+                try {
+                    await initSynthiFileSystem(
+                        fileCacheEntriesRef.current,
+                        rawFilesRef.current
+                    );
+                    console.log('[SynthiFS] Virtual filesystem pre-initialized during service startup');
+                } catch (e) {
+                    console.warn('[SynthiFS] Pre-init failed (will retry later):', e?.message);
+                }
+
+                servicesInitialized = true;
+                console.log('[LSP] Monaco Services Initialized');
+            })();
         }
 
         servicesInitPromise
             .then(() => setServicesReady(true))
             .catch(e => console.error('Failed to initialize monaco-vscode-api', e));
+
+        return () => {
+            // Tear down virtual FS on full unmount
+            disposeSynthiFileSystem();
+        };
     }, []);
+
+    // ── Virtual filesystem overlay ──────────────────────────────
+    // Populate the in-memory file system that backs file:///synthi/ URIs.
+    // This allows Monaco's FileService (go-to-definition, workspace symbols,
+    // etc.) to resolve files that only exist on the remote worker.
+    useEffect(() => {
+        if (!servicesReady) return;
+        initSynthiFileSystem(fileCacheEntries, rawFiles).catch(e =>
+            console.warn('[SynthiFS] Failed to init virtual filesystem:', e)
+        );
+    }, [servicesReady, fileCacheEntries, rawFiles]);
 
     useEffect(() => {
         console.log('[LSP-EFFECT] Guard check:', {
@@ -287,61 +423,40 @@ const EditorPanel = ({
         }
 
         const lang = getMonacoLanguage(activeFile.name);
-        let backendLang = null;
-        let documentSelector = [];
 
-        if (['cpp', 'c'].includes(lang)) {
-            backendLang = 'cpp';
-            documentSelector = ['cpp', 'c'];
-        } else if (lang === 'rust') {
-            backendLang = 'rust';
-            documentSelector = ['rust'];
-        } else if (lang === 'python') {
-            backendLang = 'python';
-            documentSelector = ['python'];
-        } else if (['typescript', 'javascript'].includes(lang)) {
-            backendLang = 'typescript';
-            documentSelector = ['typescript', 'javascript'];
-        } else if (lang === 'java') {
-            backendLang = 'java';
-            documentSelector = ['java'];
-        } else if (lang === 'go') {
-            backendLang = 'go';
-            documentSelector = ['go'];
-        } else if (lang === 'csharp') {
-            backendLang = 'csharp';
-            documentSelector = ['csharp'];
-        } else if (lang === 'ruby') {
-            backendLang = 'ruby';
-            documentSelector = ['ruby'];
-        } else if (lang === 'php') {
-            backendLang = 'php';
-            documentSelector = ['php'];
-        } else if (lang === 'kotlin') {
-            backendLang = 'kotlin';
-            documentSelector = ['kotlin'];
-        } else if (lang === 'zig') {
-            backendLang = 'zig';
-            documentSelector = ['zig'];
-        } else if (lang === 'dart') {
-            backendLang = 'dart';
-            documentSelector = ['dart'];
-        } else if (lang === 'lua') {
-            backendLang = 'lua';
-            documentSelector = ['lua'];
-        } else if (lang === 'elixir') {
-            backendLang = 'elixir';
-            documentSelector = ['elixir'];
-        } else if (lang === 'svelte') {
-            backendLang = 'svelte';
-            documentSelector = ['svelte'];
-        } else if (['css', 'scss', 'less'].includes(lang)) {
-            backendLang = 'css';
-            documentSelector = ['css', 'scss', 'less'];
-        } else if (lang === 'html') {
-            backendLang = 'html';
-            documentSelector = ['html'];
-        }
+        // ── Language → LSP backend mapping table ──────────────────
+        // Single source of truth — replaces the old if-else chain.
+        // Each entry maps one or more Monaco language IDs to a backend
+        // key and the full set of languages handled by that server.
+        const LSP_LANG_TABLE = {
+            cpp:                { backend: 'cpp',        selector: ['cpp', 'c'] },
+            c:                  { backend: 'cpp',        selector: ['cpp', 'c'] },
+            rust:               { backend: 'rust',       selector: ['rust'] },
+            python:             { backend: 'python',     selector: ['python'] },
+            typescript:         { backend: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
+            javascript:         { backend: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
+            typescriptreact:    { backend: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
+            javascriptreact:    { backend: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
+            java:               { backend: 'java',       selector: ['java'] },
+            go:                 { backend: 'go',         selector: ['go'] },
+            csharp:             { backend: 'csharp',     selector: ['csharp'] },
+            ruby:               { backend: 'ruby',       selector: ['ruby'] },
+            php:                { backend: 'php',        selector: ['php'] },
+            kotlin:             { backend: 'kotlin',     selector: ['kotlin'] },
+            zig:                { backend: 'zig',        selector: ['zig'] },
+            dart:               { backend: 'dart',       selector: ['dart'] },
+            lua:                { backend: 'lua',        selector: ['lua'] },
+            elixir:             { backend: 'elixir',     selector: ['elixir'] },
+            svelte:             { backend: 'svelte',     selector: ['svelte'] },
+            css:                { backend: 'css',        selector: ['css', 'scss', 'less'] },
+            scss:               { backend: 'css',        selector: ['css', 'scss', 'less'] },
+            less:               { backend: 'css',        selector: ['css', 'scss', 'less'] },
+            html:               { backend: 'html',       selector: ['html'] },
+        };
+
+        const langEntry = LSP_LANG_TABLE[lang];
+        const backendLang = langEntry?.backend ?? null;
+        const documentSelector = langEntry?.selector ?? [];
 
         if (!backendLang) {
             setLspStatus('No LSP for this file');
@@ -352,17 +467,53 @@ const EditorPanel = ({
             const client = languageClientsRef.current.get(backendLang);
             if (client && client.isRunning()) {
                 setLspStatus(`Ready (${backendLang})`);
-                // Ensure we send didOpen for the new file even if client exists
+                console.log(`[LSP] Reusing existing ${backendLang} client`);
+
+                // P0: The editor remounted with a new model (key={activeFileIdentity}).
+                // @codingame/monaco-vscode-api creates the model with 'plaintext',
+                // so the documentSelector won't match and auto-didOpen won't fire.
+                // Fix the model language and manually send didOpen for the new file.
                 const model = editorInstance.getModel();
                 if (model) {
-                    const textDocument = {
-                        uri: model.uri.toString(),
-                        languageId: model.getLanguageId(),
-                        version: model.getVersionId(),
-                        text: model.getValue()
-                    };
-                    console.log('[LSP] Manually sending didOpen (reuse) for', textDocument.uri);
-                    client.sendNotification('textDocument/didOpen', { textDocument });
+                    // Correct model language
+                    if (lang && lang !== 'plaintext' && model.getLanguageId() !== lang) {
+                        console.log(`[LSP] Reuse: correcting model language: ${model.getLanguageId()} → ${lang}`);
+                        monacoInstance.editor.setModelLanguage(model, lang);
+                    }
+
+                    const fileUri = model.uri.toString();
+                    const prev = lspOpenedUrisRef.current.get(backendLang);
+
+                    // Only send didClose/didOpen if the file actually changed,
+                    // or if we never tracked an open URI for this language yet.
+                    if (!prev || prev.uri !== fileUri) {
+                        // Send didClose for the previously-opened file so the server
+                        // doesn't reject the new didOpen as a duplicate.
+                        if (prev) {
+                            try {
+                                client.sendNotification('textDocument/didClose', {
+                                    textDocument: { uri: prev.uri }
+                                });
+                                console.log(`[LSP] Reuse: sent didClose for previous file ${prev.uri}`);
+                            } catch (_) {}
+                        }
+
+                        // Send didOpen for the new file so the LSP knows about it
+                        try {
+                            client.sendNotification('textDocument/didOpen', {
+                                textDocument: {
+                                    uri: fileUri,
+                                    languageId: lang,
+                                    version: model.getVersionId?.() ?? 1,
+                                    text: model.getValue(),
+                                }
+                            });
+                            lspOpenedUrisRef.current.set(backendLang, { uri: fileUri, languageId: lang });
+                            console.log(`[LSP] Reuse: sent manual didOpen for ${fileUri}`);
+                        } catch (e) {
+                            console.warn(`[LSP] Reuse: manual didOpen failed:`, e.message);
+                        }
+                    }
                 }
                 return;
             }
@@ -404,9 +555,150 @@ const EditorPanel = ({
         // The adapter owns ALL dataChannel event handlers (onopen, onmessage,
         // onerror, onclose).  External code must NEVER overwrite them directly.
         adapter = new MonacoSocketAdapter(lspChannel);
-        const socket = toSocket(adapter);
+        const rawSocket = toSocket(adapter);
+
+        // ── Smart socket wrapper ──────────────────────────────────
+        // Track outgoing request IDs and incoming response IDs so we
+        // can suppress $/cancelRequest notifications for requests the
+        // server already completed.  Without this, the cancel/response
+        // race condition causes lsp4j to log "Unmatched cancel
+        // notification" and — in some servers like Eclipse JDT.LS —
+        // can corrupt internal request tracking, breaking all
+        // subsequent LSP features (completion, hover, diagnostics).
+        //
+        // KEY INSIGHT: Even with tracking, there's a network race —
+        // the response can be in-flight over WebRTC while the client
+        // sends the cancel.  We solve this by **debouncing** cancels:
+        // hold each $/cancelRequest for a short window (400ms).  If
+        // the response arrives in that window the cancel is dropped.
+        // If not, we send it normally so the server can stop work.
+        const _completedRequestIds = new Set();
+        const _pendingRequestIds = new Set();
+        const _pendingCancelTimers = new Map(); // cancelId → timerId
+        let _cancelFilterStats = { filtered: 0, passed: 0 };
+        const CANCEL_DEBOUNCE_MS = 400;
+
+        // ── In-flight request capping ────────────────────────────
+        // Drop the oldest pending completion request when we exceed
+        // this limit.  Prevents piling up expensive requests on
+        // slow servers when the user types quickly.
+        const MAX_IN_FLIGHT_COMPLETIONS = 3;
+        const _inFlightCompletionIds = new Set(); // track completion request IDs
+        const socket = {
+            send: (content) => {
+                try {
+                    const msg = JSON.parse(content);
+                    // Track outgoing requests (has both id AND method)
+                    if (msg.id !== undefined && msg.method && msg.method !== '$/cancelRequest') {
+                        _pendingRequestIds.add(msg.id);
+
+                        // Cap in-flight completion requests
+                        if (msg.method === 'textDocument/completion') {
+                            _inFlightCompletionIds.add(msg.id);
+                            if (_inFlightCompletionIds.size > MAX_IN_FLIGHT_COMPLETIONS) {
+                                // Cancel the oldest one
+                                const oldest = _inFlightCompletionIds.values().next().value;
+                                _inFlightCompletionIds.delete(oldest);
+                                _pendingRequestIds.delete(oldest);
+                                try {
+                                    rawSocket.send(JSON.stringify({
+                                        jsonrpc: '2.0',
+                                        method: '$/cancelRequest',
+                                        params: { id: oldest },
+                                    }));
+                                } catch (_) { /* best effort */ }
+                            }
+                        }
+                    }
+                    // Debounce $/cancelRequest — hold for CANCEL_DEBOUNCE_MS
+                    // to give in-flight responses time to arrive.
+                    if (msg.method === '$/cancelRequest' && msg.params?.id !== undefined) {
+                        const cancelId = msg.params.id;
+                        // Already completed — drop immediately
+                        if (_completedRequestIds.has(cancelId)) {
+                            _completedRequestIds.delete(cancelId);
+                            _pendingRequestIds.delete(cancelId);
+                            _cancelFilterStats.filtered++;
+                            return;
+                        }
+                        // Not yet completed — debounce: wait for response
+                        const timerId = setTimeout(() => {
+                            _pendingCancelTimers.delete(cancelId);
+                            // Re-check after the debounce window
+                            if (_completedRequestIds.has(cancelId) || !_pendingRequestIds.has(cancelId)) {
+                                // Response arrived during debounce, or request
+                                // was already cleaned up — drop the cancel.
+                                _completedRequestIds.delete(cancelId);
+                                _pendingRequestIds.delete(cancelId);
+                                _cancelFilterStats.filtered++;
+                            } else {
+                                // Response still hasn't arrived — send the cancel
+                                _pendingRequestIds.delete(cancelId);
+                                _cancelFilterStats.passed++;
+                                rawSocket.send(content);
+                            }
+                        }, CANCEL_DEBOUNCE_MS);
+                        _pendingCancelTimers.set(cancelId, timerId);
+                        return; // don't send yet
+                    }
+                } catch (_e) { /* not JSON, pass through */ }
+                rawSocket.send(content);
+            },
+            onMessage: (cb) => {
+                rawSocket.onMessage((data) => {
+                    try {
+                        const msg = JSON.parse(data);
+                        // Track incoming responses (has id but NO method)
+                        if (msg.id !== undefined && !msg.method) {
+                            _pendingRequestIds.delete(msg.id);
+                            _completedRequestIds.add(msg.id);
+                            _inFlightCompletionIds.delete(msg.id);
+                            // If a cancel for this ID is pending in debounce,
+                            // clear it — no need to send it anymore.
+                            const pendingTimer = _pendingCancelTimers.get(msg.id);
+                            if (pendingTimer !== undefined) {
+                                clearTimeout(pendingTimer);
+                                _pendingCancelTimers.delete(msg.id);
+                                _cancelFilterStats.filtered++;
+                            }
+                            // Bound memory — keep only the last 500 IDs
+                            if (_completedRequestIds.size > 500) {
+                                const iter = _completedRequestIds.values();
+                                for (let i = 0; i < 250; i++) {
+                                    _completedRequestIds.delete(iter.next().value);
+                                }
+                            }
+                        }
+                    } catch (_e) { /* not JSON, pass through */ }
+                    cb(data);
+                });
+            },
+            onError: rawSocket.onError.bind(rawSocket),
+            onClose: rawSocket.onClose.bind(rawSocket),
+            dispose: () => {
+                // Clean up any pending cancel timers
+                for (const timerId of _pendingCancelTimers.values()) {
+                    clearTimeout(timerId);
+                }
+                _pendingCancelTimers.clear();
+                rawSocket.dispose();
+            },
+        };
         const reader = new WebSocketMessageReader(socket);
         const writer = new WebSocketMessageWriter(socket);
+
+        // FIX: Monitor reader/writer errors so we know when the transport
+        // dies.  Without this, silent send failures create orphaned promises
+        // in vscode-jsonrpc that hang every LSP feature.
+        reader.onError((error) => {
+            console.error(`[LSP] Reader error for ${backendLang}:`, error);
+        });
+        writer.onError(([error]) => {
+            console.error(`[LSP] Writer error for ${backendLang}:`, error);
+        });
+        reader.onClose(() => {
+            console.warn(`[LSP] Reader closed for ${backendLang} — transport is dead`);
+        });
 
         Promise.all([
             import('monaco-languageclient'),
@@ -435,23 +727,102 @@ const EditorPanel = ({
                 }
             }
 
+            // Track whether auto-didOpen fired for the active file so we
+            // can send a manual fallback if @codingame/monaco-vscode-api's
+            // TextDocument wrapper cached a stale languageId.
+            const autoDidOpenUris = new Set();
+
+            // Build a robust documentSelector that matches BOTH by language
+            // AND by file pattern.  This is critical because @codingame/monaco-
+            // vscode-api may assign 'plaintext' to models whose language isn't
+            // registered — the pattern fallback ensures the LSP bridge still
+            // activates completion/hover/diagnostics for those files.
+            const fullDocumentSelector = [
+                ...documentSelector.map(l => ({ language: l, scheme: 'file' })),
+                ...documentSelector.flatMap(l =>
+                    (LANG_TO_GLOB[l] || []).map(pattern => ({ scheme: 'file', pattern }))
+                ),
+            ];
+
+            // rust-analyzer initializationOptions: disable heavy cargo
+            // features that require a full toolchain (cargo check, build scripts)
+            // to avoid "No such file or directory" errors in containers where
+            // cargo may not be fully configured.  RA still provides completions,
+            // hover, go-to-def, and diagnostics from source analysis alone.
+            const initializationOptions = backendLang === 'rust' ? {
+                cargo: {
+                    // Don't run `cargo check` on save — it fails without cargo
+                    buildScripts: { enable: false },
+                },
+                // Disable check-on-save (requires cargo)
+                checkOnSave: false,
+                // Disable proc-macro expansion (requires cargo)
+                procMacro: { enable: false },
+                // NOTE: Do NOT set linkedProjects: [] — leaving it absent lets
+                // rust-analyzer auto-discover Cargo.toml / rust-project.json
+                // from the workspace rootUri.  Explicitly setting [] can cause
+                // some RA versions to disable project discovery entirely.
+            } : undefined;
+
             const languageClient = new SynthiLanguageClient({
                 name: `Synthi Language Client (${backendLang})`,
                 clientOptions: {
-                    documentSelector: documentSelector.map(lang => ({ language: lang, scheme: 'file' })),
+                    documentSelector: fullDocumentSelector,
+                    ...(initializationOptions && { initializationOptions }),
                     middleware: {
-                        didOpen: (data, next) => {
-                            // Suppressed — we send didOpen manually
+                        // P0: Let monaco-languageclient handle the full document lifecycle
+                        // natively — didOpen, didChange, didClose, didSave are all passed
+                        // through to the server via next().  This enables hover, definition,
+                        // references, rename, code actions, and signature help.
+                        //
+                        // NOTE: The middleware receives a TextDocument object (with .uri),
+                        // NOT DidOpenTextDocumentParams (with .textDocument.uri).
+                        didOpen: (document, next) => {
+                            const uri = document.uri?.toString?.() ?? document.uri;
+                            console.log('[LSP] middleware didOpen', uri);
+                            autoDidOpenUris.add(uri);
+                            return next(document);
                         },
                         didChange: (data, next) => {
-                            // Suppressed — we send didChange manually (debounced)
+                            console.log('[LSP] middleware didChange →', typeof data);
+                            return next(data);
                         },
-                        provideCompletionItem: (document, position, context, token, next) => {
-                            // Suppressed — we use the manual bridge for completions
+                        didClose: (document, next) => {
+                            const uri = document.uri?.toString?.() ?? document.uri;
+                            console.log('[LSP] middleware didClose', uri);
+                            return next(document);
+                        },
+                        didSave: (document, next) => {
+                            const uri = document.uri?.toString?.() ?? document.uri;
+                            console.log('[LSP] middleware didSave', uri);
+                            return next(document);
+                        },
+                        // P0: Completions are handled by the direct Monaco
+                        // completion provider registered below, which sends
+                        // textDocument/completion straight to the server via
+                        // sendRequest().  We skip the built-in bridge here to
+                        // avoid duplicate requests — the bridge often fails
+                        // anyway because @codingame/monaco-vscode-api can't
+                        // resolve the TextDocument for the model URI.
+                        provideCompletionItem: async (document, position, context, token, next) => {
+                            // Return a proper empty CompletionList rather than
+                            // `undefined`.  With @codingame/monaco-vscode-api,
+                            // returning undefined can cause the VS-Code-based
+                            // suggest model to treat this provider's result as
+                            // "pending/unresolved" rather than "empty", which
+                            // blocks the widget from showing even when other
+                            // providers (our direct one) return real items.
                             return [];
                         },
-                        resolveCompletionItem: (item, token, next) => {
-                            return next(item, token);
+                        resolveCompletionItem: async (item, token, next) => {
+                            try {
+                                return await next(item, token);
+                            } catch (err) {
+                                // Return the unresolved item rather than failing —
+                                // the user still gets the completion, just without
+                                // extra documentation/detail.
+                                return item;
+                            }
                         }
                     },
                     errorHandler: {
@@ -479,6 +850,16 @@ const EditorPanel = ({
                 try { lspChannel.close(); } catch (_) {}
                 return;
             }
+
+            // P0: Ensure the model language matches the backendLang before the
+            // client starts.  When @codingame/monaco-vscode-api is active the
+            // model may have been created with 'plaintext' (see onMount fix).
+            // The MonacoLanguageClient's documentSelector needs the correct
+            // languageId to send didOpen and route diagnostics.
+            if (currentModel.getLanguageId() !== lang) {
+                console.log(`[LSP] Correcting model language before client start: ${currentModel.getLanguageId()} → ${lang}`);
+                monacoInstance.editor.setModelLanguage(currentModel, lang);
+            }
             console.log(`[LSP] Model Details - URI: ${currentModel.uri.toString()}, Scheme: ${currentModel.uri.scheme}, Language: ${currentModel.getLanguageId()}`);
 
             // Wait for the data channel to open (in-band SCTP negotiation).
@@ -497,218 +878,11 @@ const EditorPanel = ({
                 }
             }
             console.log(`[LSP] Channel ready for ${backendLang}`);
-            // Manual LSP Bridge: Force completion requests to the server
-            // This bypasses monaco-languageclient's document selector issues
-            // Register for every language in the selector so all file types get completions
-            const triggerCharsMap = {
-                cpp: ['.', '>', ':', '/', '"', '<'],
-                c: ['.', '>', ':', '/', '"', '<'],
-                rust: ['.', ':', '<'],
-                python: ['.', '/'],
-                typescript: ['.', '/', '"', "'", '`'],
-                javascript: ['.', '/', '"', "'", '`'],
-                java: ['.', '@'],
-                go: ['.'],
-                csharp: ['.', '<'],
-                ruby: ['.', ':'],
-                php: ['.', '>', ':', '$', '\\'],
-                kotlin: ['.', ':'],
-                zig: ['.', '@'],
-                dart: ['.'],
-                lua: ['.', ':'],
-                elixir: ['.', '%', '@'],
-                svelte: ['.', '/', '<', '"', "'"],
-                css: [':', ';', ' '],
-                scss: [':', ';', ' ', '$', '@'],
-                less: [':', ';', ' ', '@'],
-                html: ['<', '/', '"', "'", '='],
-            };
-            const defaultTriggers = ['.', '>', ':', '/', '"', '<'];
-            // Track the AbortController for the previous in-flight completion
-            // request so we can cancel it when a new one arrives — this stops
-            // stale requests from piling up and generating $/cancelRequest spam.
-            let _prevCompletionCancel = null;
-            const bridgeDisposables = documentSelector.map(langId => {
-                const triggers = triggerCharsMap[langId] || defaultTriggers;
-                return monacoInstance.languages.registerCompletionItemProvider(langId, {
-                    triggerCharacters: triggers,
-                provideCompletionItems: async (model, position, context, token) => {
-                    // Wait for client to be ready
-                    if (!languageClient.isRunning()) {
-                        return { suggestions: [] };
-                    }
-
-                    // Cancel any previous in-flight completion request
-                    if (_prevCompletionCancel) {
-                        _prevCompletionCancel.cancel();
-                        _prevCompletionCancel = null;
-                    }
-
-                    // Create a cancellation source for this request
-                    const cancellation = { cancelled: false, cancel() { this.cancelled = true; } };
-                    _prevCompletionCancel = cancellation;
-
-                    try {
-                        // P1: Flush only pending incremental changes before completion.
-                        // No full-document serialization — trust the incremental sync.
-                        if (_didChangeTimer) {
-                            clearTimeout(_didChangeTimer);
-                            _didChangeTimer = null;
-                        }
-                        if (_pendingChanges.length > 0) {
-                            languageClient.sendNotification('textDocument/didChange', {
-                                textDocument: { uri: model.uri.toString(), version: model.getVersionId() },
-                                contentChanges: _pendingChanges
-                            });
-                            _pendingChanges = [];
-                        }
-
-                        // Build LSP CompletionContext — servers use triggerKind
-                        // to decide between full vs filtered suggestions.
-                        // 1 = Invoked, 2 = TriggerCharacter, 3 = TriggerForIncompleteCompletions
-                        let triggerKind = 1; // Invoked (manual / typing)
-                        let triggerCharacter;
-                        if (context.triggerKind === monacoInstance.languages.CompletionTriggerKind.TriggerCharacter) {
-                            triggerKind = 2;
-                            triggerCharacter = context.triggerCharacter;
-                        }
-
-                        const params = {
-                            textDocument: { uri: model.uri.toString() },
-                            position: { line: position.lineNumber - 1, character: position.column - 1 },
-                            context: { triggerKind, ...(triggerCharacter ? { triggerCharacter } : {}) }
-                        };
-                        const result = await languageClient.sendRequest('textDocument/completion', params, token);
-
-                        // If a newer request superseded us, discard this result
-                        if (cancellation.cancelled) return { suggestions: [] };
-
-                        if (!result) return { suggestions: [] };
-
-                        const items = Array.isArray(result) ? result : (result.items || []);
-                        const isIncomplete = !Array.isArray(result) && !!result.isIncomplete;
-
-                        // Helper: convert an LSP Range to a Monaco IRange
-                        const toMonacoRange = (r) => ({
-                            startLineNumber: r.start.line + 1,
-                            startColumn: r.start.character + 1,
-                            endLineNumber: r.end.line + 1,
-                            endColumn: r.end.character + 1
-                        });
-
-                        // Helper: LSP CompletionItemKind (1-based) → Monaco CompletionItemKind (0-based)
-                        const mapKind = (k) => {
-                            if (k === undefined || k === null) return monacoInstance.languages.CompletionItemKind.Text;
-                            // LSP kinds 1..25 map to Monaco kinds 0..24
-                            const mapped = k - 1;
-                            return mapped >= 0 ? mapped : monacoInstance.languages.CompletionItemKind.Text;
-                        };
-
-                        // Helper: extract text from LSP MarkupContent | string
-                        const docToString = (doc) => {
-                            if (!doc) return undefined;
-                            if (typeof doc === 'string') return doc;
-                            if (doc.kind === 'markdown') return { value: doc.value };
-                            return doc.value || undefined;
-                        };
-
-                        // Map LSP items to Monaco items
-                        const suggestions = items.map((item, idx) => {
-                            // LSP 3.17+ label can be { label, detail, description }
-                            const labelText = typeof item.label === 'object' ? item.label.label : item.label;
-                            const labelDetail = typeof item.label === 'object' ? item.label.detail : undefined;
-                            const labelDescription = typeof item.label === 'object' ? item.label.description : undefined;
-
-                            let insertText = item.insertText || labelText;
-                            let insertTextRules = 0;
-                            if (item.insertTextFormat === 2) {
-                                insertTextRules = monacoInstance.languages.CompletionItemInsertTextRule.InsertAsSnippet;
-                            }
-
-                            let range = undefined;
-                            if (item.textEdit) {
-                                if (item.textEdit.range) {
-                                    insertText = item.textEdit.newText;
-                                    range = toMonacoRange(item.textEdit.range);
-                                } else if (item.textEdit.insert && item.textEdit.replace) {
-                                    insertText = item.textEdit.newText;
-                                    range = {
-                                        insert: toMonacoRange(item.textEdit.insert),
-                                        replace: toMonacoRange(item.textEdit.replace)
-                                    };
-                                }
-                            }
-
-                            // Build additionalTextEdits (auto-imports, etc.)
-                            let additionalTextEdits;
-                            if (item.additionalTextEdits?.length) {
-                                additionalTextEdits = item.additionalTextEdits.map(e => ({
-                                    range: toMonacoRange(e.range),
-                                    text: e.newText
-                                }));
-                            }
-
-                            const suggestion = {
-                                label: labelDetail
-                                    ? { label: labelText, detail: labelDetail, description: labelDescription || item.detail }
-                                    : labelText,
-                                kind: mapKind(item.kind),
-                                insertText,
-                                insertTextRules,
-                                range,
-                                detail: item.detail,
-                                documentation: docToString(item.documentation),
-                                sortText: item.sortText || String(idx).padStart(5, '0'),
-                                filterText: item.filterText || labelText,
-                                preselect: item.preselect,
-                                commitCharacters: item.commitCharacters,
-                                additionalTextEdits,
-                                // Stash the original LSP item for completionItem/resolve
-                                _lspItem: item
-                            };
-                            return suggestion;
-                        });
-
-                        return {
-                            suggestions,
-                            incomplete: isIncomplete,
-                        };
-                    } catch (e) {
-                        if (e?.code !== -32800) console.warn('[LSP-BRIDGE] Error:', e.message);
-                        return { suggestions: [] };
-                    }
-                },
-                resolveCompletionItem: async (item, token) => {
-                    // Ask the LSP for full details (documentation, additional edits, etc.)
-                    if (!languageClient.isRunning() || !item._lspItem) return item;
-                    try {
-                        const resolved = await languageClient.sendRequest(
-                            'completionItem/resolve', item._lspItem, token
-                        );
-                        if (!resolved) return item;
-                        if (resolved.documentation) {
-                            const doc = resolved.documentation;
-                            item.documentation = typeof doc === 'string'
-                                ? doc
-                                : (doc.kind === 'markdown' ? { value: doc.value } : (doc.value || undefined));
-                        }
-                        if (resolved.detail) item.detail = resolved.detail;
-                        if (resolved.additionalTextEdits?.length) {
-                            item.additionalTextEdits = resolved.additionalTextEdits.map(e => ({
-                                range: {
-                                    startLineNumber: e.range.start.line + 1,
-                                    startColumn: e.range.start.character + 1,
-                                    endLineNumber: e.range.end.line + 1,
-                                    endColumn: e.range.end.character + 1
-                                },
-                                text: e.newText
-                            }));
-                        }
-                    } catch (_) { /* resolve is best-effort */ }
-                    return item;
-                }
-                });
-            });
+            // Completions are handled entirely by monaco-languageclient's built-in
+            // provider (activated by the middleware passthrough).  No manual bridge
+            // needed — having both caused duplicate textDocument/completion requests
+            // and "Unmatched cancel notification" spam from the server.
+            const bridgeDisposables = [];
 
 
             // start() sends 'initialize' to the server and waits for a response.
@@ -729,6 +903,17 @@ const EditorPanel = ({
                     )
                 ]);
                 console.log(`[LSP] Client started for ${backendLang}`);
+                // Log server capabilities for debugging completion/trigger issues
+                try {
+                    const caps = languageClient.initializeResult?.capabilities;
+                    if (caps) {
+                        console.log(`[LSP] Server capabilities for ${backendLang}:`, {
+                            completionTriggerChars: caps.completionProvider?.triggerCharacters,
+                            signatureHelpTriggerChars: caps.signatureHelpProvider?.triggerCharacters,
+                            textDocumentSync: caps.textDocumentSync,
+                        });
+                    }
+                } catch (_) {}
             } catch (e) {
                 console.error(`[LSP] Client start failed for ${backendLang}:`, e.message || e);
                 lspInitPendingRef.current.delete(backendLang);
@@ -757,138 +942,493 @@ const EditorPanel = ({
                 }
             } catch (_) { /* language defaults may not exist */ }
 
-            // Manually trigger didOpen to ensure the server knows about the file immediately
-            setTimeout(() => {
-                if (!languageClient.isRunning()) return;
-                const m = editorInstance.getModel();
-                if (!m) return;
-                const textDocument = {
-                    uri: m.uri.toString(),
-                    languageId: m.getLanguageId(),
-                    version: m.getVersionId(),
-                    text: m.getValue()
-                };
-                console.log('[LSP] Manually sending didOpen for', textDocument.uri);
-                languageClient.sendNotification('textDocument/didOpen', { textDocument });
-            }, 500);
-
-            // ── Multi-file didOpen blast ──────────────────────────
-            // Send didOpen for ALL relevant workspace files so the LSP
-            // can index cross-file symbols, resolve imports, and provide
-            // Go-to-Definition across modules.
+            // ── Direct Monaco completion provider (PRIMARY) ─────────
+            // @codingame/monaco-vscode-api's extension host layer often
+            // fails to create its internal TextDocument for the model URI
+            // (e.g. "Unable to retrieve document from URI"), which silently
+            // prevents the vscode-languageclient's built-in completion
+            // provider from working.  This direct provider bypasses the
+            // vscode-api layer entirely and sends textDocument/completion
+            // straight to the LSP server over JSON-RPC.
             //
-            // Servers like gopls, rust-analyzer, and jdtls auto-index the
-            // workspace from disk, so they don't strictly need this.  But
-            // servers like typescript-language-server and pylsp rely on
-            // didOpen to know about files.  We send content from the file
-            // cache when available; for uncached files we read nothing here
-            // — the worker already wrote them to disk during download, and
-            // we send an empty string (servers that need content will fall
-            // back to their disk watcher / rootUri scan).
-            setTimeout(() => {
-                if (!languageClient.isRunning()) return;
-
-                // Build a fast lookup for cached content
-                const cacheMap = new Map(fileCacheEntries || []);
-
-                // Flatten the file tree into a list of file nodes
-                const allFiles = [];
-                const walk = (nodes) => {
-                    if (!nodes) return;
-                    for (const node of nodes) {
-                        if (node.isFolder) {
-                            // Skip heavy dependency / build directories
-                            const name = node.name?.toLowerCase();
-                            if (['node_modules', '.git', '__pycache__', 'target', 'build', 'dist',
-                                 '.gradle', '.idea', 'bin', 'obj', '.dart_tool', '_build', 'deps',
-                                 '.elixir_ls', '.jdtls-data', 'zig-cache', '.next', 'vendor',
-                                 'zig-out', '.zig-cache', 'coverage', '.nyc_output'].includes(name)) continue;
-                            walk(node.children);
-                        } else if (node.path) {
-                            allFiles.push(node);
-                        }
-                    }
+            // This is the PRIMARY completion source — the middleware bridge
+            // above is a bonus that may or may not work depending on
+            // @codingame/monaco-vscode-api's TextDocument resolution.
+            {
+                const serverTriggerChars = languageClient.initializeResult
+                    ?.capabilities?.completionProvider?.triggerCharacters || [];
+                const KNOWN_TRIGGERS = {
+                    rust: ['.', ':', '(', '<'],
+                    cpp: ['.', ':', '>', '(', '<'],
+                    python: ['.', '('],
+                    typescript: ['.', '(', "'", '"', '/', '<'],
+                    java: ['.', '(', '@'],
+                    go: ['.', '('],
+                    csharp: ['.', '('],
+                    ruby: ['.', ':'],
+                    php: ['.', '>', ':', '$', '\\'],
                 };
-                walk(rawFiles);
+                const langTriggers = KNOWN_TRIGGERS[backendLang] || ['.'];
+                const allTriggers = [...new Set([...serverTriggerChars, ...langTriggers])];
+                console.log(`[LSP] Registering direct completion provider for ${backendLang} with triggers: ${allTriggers.join(', ')}`);
 
-                // Filter to files whose language is in this client's documentSelector
-                const langSet = new Set(documentSelector);
-                const activeUri = editorInstance.getModel()?.uri?.toString();
-                // P2: Reduced blast — only open 20 most relevant files with 200ms delay
-                // to prevent DataChannel saturation on init
-                const MAX_BLAST_FILES = 20;
-                const BATCH_SIZE = 5;
-                const BATCH_DELAY_MS = 200;
+                // ── LSP ↔ Monaco position conversion ─────────────────
+                // LSP positions use UTF-16 code unit offsets (0-based).
+                // Monaco columns are 1-based and also UTF-16 (JS strings
+                // are UTF-16), but off-by-one bugs are rampant because
+                // of the +1 offset.  These helpers make the conversion
+                // explicit and handle surrogate pairs correctly.
 
-                // Collect eligible files first
-                const filesToOpen = [];
-                for (const file of allFiles) {
-                    if (filesToOpen.length >= MAX_BLAST_FILES) break;
-                    const fileLang = getMonacoLanguage(file.name);
-                    if (!langSet.has(fileLang)) continue;
-                    const fileUri = `file:///synthi/${file.path}`;
-                    if (fileUri === activeUri) continue;
-                    // Only send files that have cached content — the LSP can
-                    // discover files on disk itself; sending empty strings just
-                    // wastes bandwidth and triggers unnecessary disk writes.
-                    const content = cacheMap.get(file.path);
-                    if (!content) continue;
-                    filesToOpen.push({ uri: fileUri, lang: fileLang, content });
+                /** LSP character (0-based UTF-16 offset) → Monaco column (1-based) */
+                const lspCharToMonacoCol = (lspChar) => {
+                    const n = Number(lspChar);
+                    return Number.isFinite(n) && n >= 0 ? n + 1 : 1;
+                };
+
+                /** Monaco column (1-based) → LSP character (0-based UTF-16 offset) */
+                const monacoColToLspChar = (monacoCol) => {
+                    const n = Number(monacoCol);
+                    return Number.isFinite(n) && n >= 1 ? n - 1 : 0;
+                };
+
+                /**
+                 * Convert an LSP Range to a Monaco IRange.
+                 * Returns null if the range is malformed.
+                 */
+                const lspRangeToMonaco = (range) => {
+                    if (!range?.start || !range?.end) return null;
+                    const sl = Math.max(1, (range.start.line ?? 0) + 1);
+                    const el = Math.max(sl, (range.end.line ?? 0) + 1);
+                    const sc = lspCharToMonacoCol(range.start.character ?? 0);
+                    const ec = lspCharToMonacoCol(range.end.character ?? 0);
+                    return {
+                        startLineNumber: sl,
+                        startColumn:     sc,
+                        endLineNumber:   el,
+                        endColumn:       ec,
+                    };
+                };
+
+                const lspKindToMonaco = (kind) => {
+                    const m = monacoInstance.languages.CompletionItemKind;
+                    const map = {
+                        1: m.Text, 2: m.Method, 3: m.Function, 4: m.Constructor,
+                        5: m.Field, 6: m.Variable, 7: m.Class, 8: m.Interface,
+                        9: m.Module, 10: m.Property, 11: m.Unit, 12: m.Value,
+                        13: m.Enum, 14: m.Keyword, 15: m.Snippet, 16: m.Color,
+                        17: m.File, 18: m.Reference, 19: m.Folder, 20: m.EnumMember,
+                        21: m.Constant, 22: m.Struct, 23: m.Event, 24: m.Operator,
+                        25: m.TypeParameter,
+                    };
+                    return map[kind] ?? m.Text;
+                };
+
+                // ── Completion generation tracking ────────────────────
+                // Each completion request gets a monotonically-increasing
+                // generation number tied to the model version at request
+                // time.  When the response arrives, we check whether the
+                // generation still matches — if not, the result is stale
+                // (user kept typing) and we discard it instead of showing
+                // outdated suggestions.
+                let _completionGeneration = 0;
+                let _currentCompletionGen = 0; // the live "latest" gen
+
+                for (const langId of documentSelector) {
+                    const disp = monacoInstance.languages.registerCompletionItemProvider(langId, {
+                        triggerCharacters: allTriggers,
+                        provideCompletionItems: async (model, position, context, token) => {
+                            const lineText = model.getLineContent(position.lineNumber);
+                            const textBeforeCursor = lineText.substring(0, position.column - 1);
+                            console.log(`[LSP] provideCompletionItems CALLED for ${backendLang}`, {
+                                line: position.lineNumber,
+                                col: position.column,
+                                triggerKind: context.triggerKind,
+                                triggerChar: context.triggerCharacter || '(none)',
+                                textBefore: textBeforeCursor.slice(-20),
+                            });
+                            if (!languageClient.isRunning()) {
+                                console.log('[LSP] provideCompletionItems: client not running, returning empty');
+                                return { suggestions: [] };
+                            }
+
+                            // Determine the correct URI.  The model URI is
+                            // something like file:///synthi/src/main.rs — the
+                            // worker-side URI rewriter will translate this to
+                            // the real server workspace path.
+                            const uri = model.uri.toString();
+
+                            // Stamp this request with a generation number.
+                            // If the user types again before we get a response,
+                            // _currentCompletionGen will advance and we'll
+                            // discard the stale result.
+                            // Prevent overflow: reset counter well before
+                            // Number.MAX_SAFE_INTEGER so equality checks
+                            // stay reliable.
+                            if (_completionGeneration >= 0x40000000) {
+                                _completionGeneration = 0;
+                            }
+                            const myGeneration = ++_completionGeneration;
+                            _currentCompletionGen = myGeneration;
+
+                            // Build the LSP triggerKind:
+                            //  1 = Invoked (Ctrl+Space or quickSuggestions auto-trigger)
+                            //  2 = TriggerCharacter (typed a trigger char like . : etc.)
+                            //  3 = TriggerForIncompleteCompletions
+                            const isTriggerChar = context.triggerKind === monacoInstance.languages.CompletionTriggerKind.TriggerCharacter;
+                            const lspTriggerKind = isTriggerChar ? 2 : 1;
+
+                            // NOTE: We rely on monaco-languageclient's native
+                            // didChange sync (via the middleware passthrough) to
+                            // keep the server up-to-date.  Sending a full-document
+                            // didChange before every completion is expensive and
+                            // floods slow servers (TS, Java).  If completions are
+                            // stale, the root cause is ordering/versioning, not
+                            // missing content — fix that at the transport layer.
+                            if (token.isCancellationRequested) return { suggestions: [] };
+
+                            try {
+                                const result = await languageClient.sendRequest('textDocument/completion', {
+                                    textDocument: { uri },
+                                    position: {
+                                        line: position.lineNumber - 1,
+                                        character: position.column - 1,
+                                    },
+                                    context: {
+                                        triggerKind: lspTriggerKind,
+                                        triggerCharacter: isTriggerChar ? context.triggerCharacter : undefined,
+                                    },
+                                });
+
+                                if (!result || token.isCancellationRequested) {
+                                    console.log(`[LSP] provideCompletionItems: ${!result ? 'null result' : 'cancelled'} for ${backendLang}`);
+                                    return { suggestions: [] };
+                                }
+
+                                // ── Drop stale responses ──────────────────────
+                                // If a newer completion request was issued while
+                                // this one was in-flight, our generation is stale.
+                                // Returning these results would overwrite the
+                                // newer (correct) suggestions with outdated ones.
+                                if (myGeneration !== _currentCompletionGen) {
+                                    console.log(`[LSP] Dropping stale completion response for ${backendLang} (gen ${myGeneration} vs current ${_currentCompletionGen})`);
+                                    return { suggestions: [] };
+                                }
+
+                                let items = Array.isArray(result) ? result : (result.items || []);
+                                const isIncomplete = !Array.isArray(result) && result.isIncomplete;
+                                console.log(`[LSP] Server returned ${items.length} raw items for ${backendLang} (incomplete=${!!isIncomplete})`);
+
+                                if (items.length === 0) {
+                                    console.log(`[LSP] provideCompletionItems: 0 items after retry for ${backendLang}, returning empty`);
+                                    return { suggestions: [], incomplete: !!isIncomplete };
+                                }
+
+                                // ── Compute replacement range ──────────────────
+                                // Use a PLAIN IRange object for maximum compat with
+                                // @codingame/monaco-vscode-editor-api.
+                                //
+                                // Strategy: respect the server's textEdit range when
+                                // it is a simple same-line replacement that won't
+                                // break Monaco's prefix filtering.  Fall back to the
+                                // word-based range when the edit spans multiple lines
+                                // or when the server range start is AFTER the cursor
+                                // (InsertReplaceEdit edge-case).
+                                const word = model.getWordUntilPosition(position);
+                                const defaultRange = {
+                                    startLineNumber: position.lineNumber,
+                                    startColumn: word.word.length > 0 ? word.startColumn : position.column,
+                                    endLineNumber: position.lineNumber,
+                                    endColumn: position.column,
+                                };
+
+                                /**
+                                 * Try to extract a Monaco-safe range from the server's
+                                 * textEdit.  Returns null if the edit is unsuitable.
+                                 *
+                                 * Safety checks (all must pass):
+                                 *  1. Same-line edit only
+                                 *  2. Range start ≤ cursor (not after)
+                                 *  3. Range end doesn't extend unreasonably past cursor
+                                 *     when the word at cursor doesn't match the server's
+                                 *     range (filter misalignment)
+                                 *  4. Range start aligns with the word boundary Monaco
+                                 *     would compute, OR is before it (for dotted chains)
+                                 */
+                                const safeServerRange = (textEdit) => {
+                                    if (!textEdit) return null;
+                                    // textEdit may be TextEdit or InsertReplaceEdit
+                                    const range = textEdit.range
+                                        || textEdit.replace   // InsertReplaceEdit
+                                        || textEdit.insert;   // InsertReplaceEdit
+                                    if (!range?.start || !range?.end) return null;
+
+                                    // Use UTF-16 aware conversion
+                                    const startLine = range.start.line + 1;
+                                    const endLine   = range.end.line + 1;
+                                    const startCol  = lspCharToMonacoCol(range.start.character);
+                                    const endCol    = lspCharToMonacoCol(range.end.character);
+
+                                    // Rule 1: same-line only
+                                    if (startLine !== position.lineNumber) return null;
+                                    if (endLine   !== position.lineNumber) return null;
+
+                                    // Rule 2: range start must not be after cursor
+                                    if (startCol  >  position.column)      return null;
+
+                                    // Rule 3: reject ranges that extend far past the
+                                    // cursor when the current word doesn't cover that
+                                    // span.  A server might return endCol way past the
+                                    // cursor for replace-style edits; Monaco uses the
+                                    // range to compute the typed prefix for filtering,
+                                    // so a mismatch silently filters ALL items.
+                                    if (endCol > position.column) {
+                                        // How far past the cursor does the server range go?
+                                        const overreach = endCol - position.column;
+                                        // How far past the cursor does Monaco's word go?
+                                        const wordEnd = word.endColumn; // 1-based, end of word at cursor
+                                        const wordOverreach = Math.max(0, wordEnd - position.column);
+                                        // If the server extends further than the word, it's
+                                        // likely a replace-range that won't match filtering.
+                                        if (overreach > wordOverreach + 1) return null;
+                                    }
+
+                                    // Rule 4: if the server range starts well before
+                                    // the word boundary AND the text between range-start
+                                    // and word-start isn't just dots/colons/arrows,
+                                    // fall back (avoids mangling unrelated code).
+                                    if (startCol < word.startColumn && word.word.length > 0) {
+                                        const gapText = lineText.substring(startCol - 1, word.startColumn - 1);
+                                        // Allow common chain separators: `.` `::` `->`
+                                        if (!/^[.:\->]+$/.test(gapText)) return null;
+                                    }
+
+                                    return {
+                                        startLineNumber: startLine,
+                                        startColumn: startCol,
+                                        endLineNumber: endLine,
+                                        endColumn: endCol,
+                                    };
+                                };
+
+                                const suggestions = items.map((item, idx) => {
+                                    const label = typeof item.label === 'string'
+                                        ? item.label
+                                        : item.label?.label || '';
+
+                                    // Convert LSP documentation to Monaco format
+                                    let doc = item.documentation;
+                                    if (doc && typeof doc === 'object' && doc.value) {
+                                        doc = { value: doc.value };
+                                    }
+
+                                    // Determine insertText — prefer textEdit.newText
+                                    const insertText = item.textEdit?.newText
+                                        || item.insertText
+                                        || label;
+
+                                    // Snippet support: insertTextFormat 2 = Snippet
+                                    const isSnippet = item.insertTextFormat === 2;
+                                    const insertTextRules = isSnippet
+                                        ? monacoInstance.languages.CompletionItemInsertTextRule.InsertAsSnippet
+                                        : undefined;
+
+                                    // Prefer server textEdit range when it's safe
+                                    const serverRange = safeServerRange(item.textEdit);
+                                    const range = serverRange || defaultRange;
+
+                                    return {
+                                        label,
+                                        kind: lspKindToMonaco(item.kind),
+                                        detail: item.detail || '',
+                                        documentation: doc,
+                                        insertText,
+                                        insertTextRules,
+                                        range,
+                                        sortText: item.sortText || String(idx).padStart(5, '0'),
+                                        filterText: item.filterText || label,
+                                        preselect: item.preselect,
+                                        commitCharacters: item.commitCharacters,
+                                        // Attach original LSP item for resolveCompletionItem
+                                        data: item.data,
+                                        _lspItem: item,
+                                    };
+                                });
+
+                                // ── Final cancellation check ──────────────────
+                                // A new trigger-character keystroke may have fired
+                                // between our await and now.  If the token is
+                                // cancelled, Monaco will discard our result anyway,
+                                // so bail early to avoid confusing the suggest model.
+                                if (token.isCancellationRequested) {
+                                    console.log(`[LSP] Completion for ${backendLang} cancelled after mapping ${suggestions.length} items — discarding`);
+                                    return { suggestions: [] };
+                                }
+
+                                console.log(`[LSP] Direct completion for ${backendLang}: ${suggestions.length} items (incomplete=${!!isIncomplete})`, {
+                                    pos: { line: position.lineNumber, col: position.column },
+                                    word: word.word || '(empty)',
+                                    range: defaultRange,
+                                    firstItem: suggestions[0] ? {
+                                        label: suggestions[0].label,
+                                        insertText: suggestions[0].insertText?.substring(0, 40),
+                                        filterText: suggestions[0].filterText,
+                                        kind: suggestions[0].kind,
+                                    } : null,
+                                });
+                                return { suggestions, incomplete: !!isIncomplete };
+                            } catch (err) {
+                                const msg = err?.message || String(err);
+                                if (msg === 'Canceled' || msg === 'cancelled' || err?.code === -32800) {
+                                    return { suggestions: [] };
+                                }
+                                console.warn(`[LSP] Direct completion error for ${backendLang}:`, msg);
+                                return { suggestions: [] };
+                            }
+                        },
+                        resolveCompletionItem: async (item, token) => {
+                            // Ask the LSP server for full documentation/detail
+                            if (!languageClient.isRunning() || !item._lspItem) return item;
+                            try {
+                                const resolved = await languageClient.sendRequest(
+                                    'completionItem/resolve', item._lspItem
+                                );
+                                if (resolved && !token.isCancellationRequested) {
+                                    if (resolved.documentation) {
+                                        let doc = resolved.documentation;
+                                        if (doc && typeof doc === 'object' && doc.value) doc = { value: doc.value };
+                                        item.documentation = doc;
+                                    }
+                                    if (resolved.detail) item.detail = resolved.detail;
+                                    if (resolved.additionalTextEdits) {
+                                        item.additionalTextEdits = resolved.additionalTextEdits
+                                            .map(e => {
+                                                const r = lspRangeToMonaco(e.range);
+                                                if (!r) return null;
+                                                return { range: r, text: e.newText };
+                                            })
+                                            .filter(Boolean);
+                                    }
+                                }
+                            } catch (_) { /* resolve is best-effort */ }
+                            return item;
+                        },
+                    });
+                    bridgeDisposables.push(disp);
                 }
+            }
 
-                // Send in throttled batches to avoid overwhelming the LSP and
-                // the WebRTC data channel with hundreds of messages at once.
-                const sendBatch = (startIdx) => {
-                    if (!languageClient.isRunning()) return;
-                    const end = Math.min(startIdx + BATCH_SIZE, filesToOpen.length);
-                    for (let i = startIdx; i < end; i++) {
-                        const f = filesToOpen[i];
+            // ── Fallback didOpen for the active file ────────────────
+            // monaco-languageclient auto-sends didOpen for matching models
+            // after start().  However, when @codingame/monaco-vscode-api is
+            // active the internal TextDocument wrapper may have cached the
+            // old 'plaintext' languageId at model-creation time, causing the
+            // documentSelector to miss the file even after setModelLanguage.
+            // Detect this and send a manual didOpen as a safety net.
+            //
+            // Wait a tick for auto-didOpen to propagate through middleware
+            // before checking — start() can resolve before didOpen fires.
+            await new Promise(r => setTimeout(r, 200));
+            {
+                const activeUri = currentModel.uri.toString();
+                if (!autoDidOpenUris.has(activeUri)) {
+                    const content = currentModel.getValue();
+                    console.log(`[LSP] Auto-didOpen missed for active file, sending manual didOpen: ${activeUri} (lang: ${lang})`);
+                    try {
                         languageClient.sendNotification('textDocument/didOpen', {
-                            textDocument: { uri: f.uri, languageId: f.lang, version: 1, text: f.content }
+                            textDocument: {
+                                uri: activeUri,
+                                languageId: lang,
+                                version: currentModel.getVersionId?.() ?? 1,
+                                text: content,
+                            }
                         });
+                    } catch (e) {
+                        console.warn('[LSP] Manual didOpen failed:', e.message);
                     }
-                    if (end < filesToOpen.length) {
-                        setTimeout(() => sendBatch(end), BATCH_DELAY_MS);
-                    }
-                };
-                if (filesToOpen.length > 0) sendBatch(0);
-                console.log(`[LSP] Multi-file didOpen blast queued: ${filesToOpen.length} files for ${backendLang}`);
-            }, 1500); // Wait a bit longer than the active-file didOpen
-
-            // Manual Sync: Ensure server gets updates
-            // P1: Incremental sync — send only changed ranges from Monaco events
-            // instead of serializing the entire file with model.getValue().
-            // Debounced at 100ms to coalesce rapid edits without adding latency.
-            let _pendingChanges = [];
-            let _didChangeTimer = null;
-            const changeDisposable = editorInstance.onDidChangeModelContent((e) => {
-                if (!languageClient.isRunning()) return;
-                // Accumulate incremental changes from this event
-                for (const change of e.changes) {
-                    _pendingChanges.push({
-                        range: {
-                            start: { line: change.range.startLineNumber - 1, character: change.range.startColumn - 1 },
-                            end: { line: change.range.endLineNumber - 1, character: change.range.endColumn - 1 }
-                        },
-                        rangeLength: change.rangeLength,
-                        text: change.text
-                    });
                 }
-                if (_didChangeTimer) clearTimeout(_didChangeTimer);
-                _didChangeTimer = setTimeout(() => {
-                    _didChangeTimer = null;
-                    const currentModel = editorInstance.getModel();
-                    if (!currentModel || _pendingChanges.length === 0) return;
-                    languageClient.sendNotification('textDocument/didChange', {
-                        textDocument: {
-                            uri: currentModel.uri.toString(),
-                            version: currentModel.getVersionId()
-                        },
-                        contentChanges: _pendingChanges
-                    });
-                    _pendingChanges = [];
-                }, 100);
-            });
+                // Track the URI so the reuse path can send didClose on file switch
+                lspOpenedUrisRef.current.set(backendLang, { uri: activeUri, languageId: lang });
+            }
+
+            // ── Multi-file workspace priming ──────────────────────
+            // Most LSP servers auto-discover workspace files from the
+            // rootUri and their own file watchers (gopls, rust-analyzer,
+            // jdtls, clangd, etc.).  Sending didOpen for files not
+            // actively edited is non-standard — some servers treat
+            // didOpen as "actively edited" which wastes memory and can
+            // trigger expensive per-file analysis.
+            //
+            // Only servers that genuinely need priming (TS/JS, Python)
+            // get a limited didOpen blast.  All others rely on disk
+            // discovery via rootUri / workspaceFolders.
+            const SERVERS_NEEDING_PRIMING = new Set(['typescript', 'python']);
+
+            if (SERVERS_NEEDING_PRIMING.has(backendLang)) {
+                setTimeout(() => {
+                    if (!languageClient.isRunning()) return;
+
+                    const cacheMap = new Map(fileCacheEntries || []);
+                    const allFiles = [];
+                    const walk = (nodes) => {
+                        if (!nodes) return;
+                        for (const node of nodes) {
+                            if (node.isFolder) {
+                                const name = node.name?.toLowerCase();
+                                if (['node_modules', '.git', '__pycache__', 'target', 'build', 'dist',
+                                     '.gradle', '.idea', 'bin', 'obj', '.dart_tool', '_build', 'deps',
+                                     '.elixir_ls', '.jdtls-data', 'zig-cache', '.next', 'vendor',
+                                     'zig-out', '.zig-cache', 'coverage', '.nyc_output'].includes(name)) continue;
+                                walk(node.children);
+                            } else if (node.path) {
+                                allFiles.push(node);
+                            }
+                        }
+                    };
+                    walk(rawFiles);
+
+                    const langSet = new Set(documentSelector);
+                    const activeUri = editorInstance.getModel()?.uri?.toString();
+                    const MAX_BLAST_FILES = 15;
+                    const BATCH_SIZE = 3;
+                    const BATCH_DELAY_MS = 300;
+
+                    const filesToOpen = [];
+                    for (const file of allFiles) {
+                        if (filesToOpen.length >= MAX_BLAST_FILES) break;
+                        const fileLang = getMonacoLanguage(file.name);
+                        if (!langSet.has(fileLang)) continue;
+                        const fileUri = `file:///synthi/${file.path}`;
+                        if (fileUri === activeUri) continue;
+                        const content = cacheMap.get(file.path);
+                        if (!content) continue;
+                        filesToOpen.push({ uri: fileUri, lang: fileLang, content });
+                    }
+
+                    const sendBatch = (startIdx) => {
+                        if (!languageClient.isRunning()) return;
+                        const end = Math.min(startIdx + BATCH_SIZE, filesToOpen.length);
+                        for (let i = startIdx; i < end; i++) {
+                            const f = filesToOpen[i];
+                            languageClient.sendNotification('textDocument/didOpen', {
+                                textDocument: { uri: f.uri, languageId: f.lang, version: 1, text: f.content }
+                            });
+                        }
+                        if (end < filesToOpen.length) {
+                            setTimeout(() => sendBatch(end), BATCH_DELAY_MS);
+                        }
+                    };
+                    if (filesToOpen.length > 0) sendBatch(0);
+                    console.log(`[LSP] Priming blast queued: ${filesToOpen.length} files for ${backendLang}`);
+                }, 800);
+            } else {
+                console.log(`[LSP] Skipping didOpen blast for ${backendLang} — server auto-indexes via rootUri`);
+            }
+
+            // P1: Since middleware now passes didChange through to next(), monaco-languageclient
+            // handles sync natively and will respect the server's textDocumentSync capability.
+            // No manual onDidChangeModelContent handler needed — avoids double-sending.
+            // We keep a no-op disposable for the cleanup in the close handler.
+            const changeDisposable = { dispose: () => {} };
 
             languageClientsRef.current.set(backendLang, languageClient);
             lspInitPendingRef.current.delete(backendLang);
@@ -896,13 +1436,31 @@ const EditorPanel = ({
 
             // Use addEventListener instead of setting onclose directly so
             // we don't overwrite MonacoSocketAdapter's own close handler.
-            lspChannel.addEventListener('close', () => {
+            lspChannel.addEventListener('close', async () => {
                 console.log(`[LSP] Channel closed for ${backendLang}`);
                 bridgeDisposables.forEach(d => d.dispose());
                 changeDisposable.dispose();
+
+                // P2: Send shutdown→exit for a clean server shutdown
+                if (languageClient.isRunning()) {
+                    try {
+                        console.log(`[LSP] Sending shutdown request for ${backendLang}`);
+                        await Promise.race([
+                            languageClient.sendRequest('shutdown'),
+                            new Promise((_, rej) => setTimeout(() => rej(new Error('shutdown timeout')), 3000))
+                        ]);
+                        languageClient.sendNotification('exit');
+                        console.log(`[LSP] Sent exit notification for ${backendLang}`);
+                    } catch (e) {
+                        console.warn(`[LSP] Clean shutdown failed for ${backendLang}:`, e.message);
+                    }
+                }
+
                 languageClient.stop();
                 languageClientsRef.current.delete(backendLang);
                 lspInitPendingRef.current.delete(backendLang);
+                lspOpenedUrisRef.current.delete(backendLang);
+                lspSyncCapRef.current.delete(backendLang);
                 setLspStatus('Disconnected');
             });
         }).catch(e => {
@@ -1002,8 +1560,22 @@ const EditorPanel = ({
 
     useEffect(() => {
         return () => {
-            languageClientsRef.current.forEach(client => client.stop());
+            // P2: Send shutdown→exit for clean server shutdown before stopping
+            languageClientsRef.current.forEach(async (client, lang) => {
+                if (client.isRunning()) {
+                    try {
+                        await Promise.race([
+                            client.sendRequest('shutdown'),
+                            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2000))
+                        ]);
+                        client.sendNotification('exit');
+                    } catch (_) { /* best-effort */ }
+                }
+                client.stop();
+            });
             languageClientsRef.current.clear();
+            lspOpenedUrisRef.current.clear();
+            lspSyncCapRef.current.clear();
         };
     }, []);
 
@@ -1022,17 +1594,21 @@ const EditorPanel = ({
         };
         window.addEventListener('unhandledrejection', handler);
 
-        // Also patch console.error to suppress "Canceled" logs from libraries
+        // Patch console.error to suppress ONLY the known-harmless "Canceled"
+        // logs from Monaco/vscode-api internals.  The previous filter was too
+        // broad — it swallowed real LSP pipeline errors that happened to
+        // contain the word "Canceled", making transport failures invisible.
         const originalError = console.error;
         console.error = (...args) => {
             if (args.length > 0) {
                 const first = args[0];
-                if (first === 'Canceled' || (typeof first === 'string' && first.includes('Canceled'))) {
-                    return;
-                }
-                if (first?.message === 'Canceled' || first?.name === 'Canceled') {
-                    return;
-                }
+                // Suppress bare "Canceled" strings (Monaco dispose noise)
+                if (first === 'Canceled') return;
+                // Suppress CancellationError objects (vscode-api internals)
+                if (first?.name === 'CancellationError' || (first?.constructor?.name === 'CancellationError')) return;
+                // DO NOT suppress strings that merely *contain* "Canceled"
+                // — those often carry important diagnostic context like
+                // "Response handler 'textDocument/completion' failed: Canceled"
             }
             originalError.apply(console, args);
         };
@@ -1228,6 +1804,28 @@ const EditorPanel = ({
             try {
                 compilerClient.syncFile(activeFile.path, latestCodeRef.current ?? code);
             } catch (_) { /* best-effort */ }
+        }
+        // Also update the in-memory virtual filesystem so Monaco's FileService
+        // can resolve the latest content for cross-file features.
+        if (activeFile?.path) {
+            updateVirtualFile(activeFile.path, latestCodeRef.current ?? code).catch(() => {});
+        }
+        // P1: Send textDocument/didSave to LSP servers so they re-index
+        if (activeFile?.path) {
+            const safePath = activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path;
+            const fileUri = `file:///synthi/${safePath}`;
+            languageClientsRef.current.forEach((client, lang) => {
+                if (client && client.isRunning()) {
+                    try {
+                        client.sendNotification('textDocument/didSave', {
+                            textDocument: { uri: fileUri },
+                            // Some servers (e.g. gopls) want the text on save
+                            text: latestCodeRef.current ?? code
+                        });
+                        console.log(`[LSP] Sent didSave for ${fileUri} to ${lang}`);
+                    } catch (_) { /* best-effort */ }
+                }
+            });
         }
         // Trigger HMR/Compilation on save
         if (onSave) onSave();
@@ -2090,7 +2688,11 @@ const EditorPanel = ({
                             <ContextMenu>
                                 <ContextMenuTrigger asChild>
                                     <div className="h-full w-full">
-                                        {diffMode ? (
+                                        {!servicesReady ? (
+                                            <div className="flex items-center justify-center h-full w-full" style={{ background: TAB_TOKENS.activeBg }}>
+                                                <Loader2 className="animate-spin" style={{ color: TAB_TOKENS.textSecondary }} size={24} />
+                                            </div>
+                                        ) : diffMode ? (
                                             <DiffEditor
                                                 height="100%"
                                                 original={originalContent}
@@ -2110,7 +2712,7 @@ const EditorPanel = ({
                                             <Editor
                                                 key={activeFileIdentity}
                                                 height="100%"
-                                                path={activeFile ? `/synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}` : undefined}
+                                                path={activeFile ? `file:///synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}` : undefined}
                                                 // Use defaultValue for initial content to prevent cursor jumping issues during typing.
                                                 // The key={activeFileIdentity} ensures component remounts on file switch.
                                                 defaultValue={code ?? ''}
@@ -2130,47 +2732,38 @@ const EditorPanel = ({
                                                         console.warn('[Editor] onMount called but model is undefined, skipping');
                                                         return;
                                                     }
+
+                                                    // P0: Force-set the model language to match our file-extension
+                                                    // detection.  When @codingame/monaco-vscode-api is active it
+                                                    // overrides Monaco's built-in language detection and defaults
+                                                    // to 'plaintext' for languages that have no registered vscode
+                                                    // extension (Java, Go, Rust, etc.).  Without this, the
+                                                    // MonacoLanguageClient's documentSelector won't match and the
+                                                    // LSP will never send textDocument/didOpen for the file.
+                                                    if (activeLanguage && activeLanguage !== 'plaintext' && model.getLanguageId() !== activeLanguage) {
+                                                        console.log(`[Editor] Correcting model language: ${model.getLanguageId()} → ${activeLanguage}`);
+                                                        monaco.editor.setModelLanguage(model, activeLanguage);
+                                                    }
+
                                                     setEditorInstance(editor);
                                                     setMonacoInstance(monaco);
                                                     if (onEditorMount) onEditorMount(editor);
 
-                                                    // Hard reset: clear any pre-existing markers on initial mount.
-                                                    // Some language services may publish diagnostics immediately.
+                                                    // Hard reset: clear only SYNTHI-owned markers on initial mount.
+                                                    // P0: Do NOT clear all markers — LSP-published diagnostics must survive.
                                                     try {
                                                         const model = editor.getModel?.();
                                                         if (model) {
-                                                            const existing = monaco.editor.getModelMarkers({ resource: model.uri }) || [];
-                                                            const owners = new Set(existing.map(m => m?.owner).filter(Boolean));
-                                                            owners.add('synthi-analysis');
-                                                            owners.add('synthi-proactive');
-                                                            owners.add('synthi-ai');
-                                                            owners.add('extension');
-                                                            owners.forEach((owner) => {
+                                                            const synthiOwners = new Set([
+                                                                'synthi-analysis', 'synthi-proactive', 'synthi-ai', 'extension',
+                                                            ]);
+                                                            const tracked = monaco.__synthiMarkerOwners;
+                                                            if (tracked && typeof tracked.forEach === 'function') {
+                                                                tracked.forEach((o) => synthiOwners.add(o));
+                                                            }
+                                                            synthiOwners.forEach((owner) => {
                                                                 try { monaco.editor.setModelMarkers(model, owner, []); } catch (_) {}
                                                             });
-
-                                                            // Catch late marker publishers (e.g. extension host) right after mount.
-                                                            const clearLate = () => {
-                                                                try {
-                                                                    const late = monaco.editor.getModelMarkers({ resource: model.uri }) || [];
-                                                                    const lateOwners = new Set(late.map(m => m?.owner).filter(Boolean));
-                                                                    lateOwners.add('synthi-analysis');
-                                                                    lateOwners.add('synthi-proactive');
-                                                                    lateOwners.add('synthi-ai');
-                                                                    lateOwners.add('extension');
-
-                                                                    const tracked = monaco.__synthiMarkerOwners;
-                                                                    if (tracked && typeof tracked.forEach === 'function') {
-                                                                        tracked.forEach((o) => lateOwners.add(o));
-                                                                    }
-
-                                                                    lateOwners.forEach((owner) => {
-                                                                        try { monaco.editor.setModelMarkers(model, owner, []); } catch (_) {}
-                                                                    });
-                                                                } catch (_) {}
-                                                            };
-                                                            setTimeout(clearLate, 0);
-                                                            setTimeout(clearLate, 200);
                                                         }
                                                     } catch (_) {}
                                                     editor.onDidChangeCursorPosition(e => {
@@ -2193,24 +2786,25 @@ const EditorPanel = ({
                                                     // No model.getValue() on every keystroke — only when flushing.
                                                     editor.onDidChangeModelContent(() => {
                                                         // (a) P0: Debounce marker clearing — NOT synchronous.
-                                                        // Markers are for stale diagnostic snapshots; 200ms delay is fine.
+                                                        // Only clear SYNTHI-owned markers. LSP-published diagnostics
+                                                        // (from the language server) are left intact so red/yellow
+                                                        // squiggles actually appear.
                                                         if (!markerClearTimerRef.current) {
                                                             markerClearTimerRef.current = requestAnimationFrame(() => {
                                                                 markerClearTimerRef.current = null;
                                                                 try {
                                                                     const model = editor.getModel?.();
                                                                     if (model) {
-                                                                        const owners = new Set([
+                                                                        const synthiOwners = new Set([
                                                                             'synthi-analysis',
                                                                             'synthi-proactive',
                                                                             'synthi-ai',
-                                                                            'extension',
                                                                         ]);
                                                                         const tracked = monaco.__synthiMarkerOwners;
                                                                         if (tracked && typeof tracked.forEach === 'function') {
-                                                                            tracked.forEach((o) => owners.add(o));
+                                                                            tracked.forEach((o) => synthiOwners.add(o));
                                                                         }
-                                                                        owners.forEach((owner) => {
+                                                                        synthiOwners.forEach((owner) => {
                                                                             try { monaco.editor.setModelMarkers(model, owner, []); } catch (_) {}
                                                                         });
                                                                     }

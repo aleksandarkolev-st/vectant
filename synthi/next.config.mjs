@@ -5,15 +5,33 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Turbopack-specific configuration (used by `next dev --turbopack`)
+  turbopack: {
+    resolveAlias: {
+      // Ensure a single Monaco instance: monaco-languageclient uses
+      // @codingame/monaco-vscode-editor-api internally; the editor must
+      // use the same instance for LSP features to work.
+      'monaco-editor': '@codingame/monaco-vscode-editor-api',
+      // Yjs dedup
+      'yjs': './node_modules/yjs/dist/yjs.mjs',
+    },
+  },
+  // Webpack fallback (used by `next build` without turbopack)
   webpack: (config, { isServer }) => {
-    // Fix "Yjs was already imported" error by ensuring a single instance of yjs
-    // This happens when both 'yjs' and 'y-websocket' (which depends on yjs) are bundled
-    // See: https://github.com/yjs/yjs/issues/438
     if (!isServer) {
       config.resolve.alias = {
         ...config.resolve.alias,
         // Force all yjs imports to use the same instance
+        // See: https://github.com/yjs/yjs/issues/438
         'yjs': path.resolve(__dirname, 'node_modules/yjs/dist/yjs.mjs'),
+        // CRITICAL: Ensure a single Monaco instance across the app.
+        // monaco-languageclient uses @codingame/monaco-vscode-editor-api internally;
+        // the editor must use the same instance for LSP features (completions,
+        // hover, go-to-definition, etc.) to work.
+        // The '$' suffix means EXACT match only — sub-path imports like
+        // 'monaco-editor/esm/vs/language/...' (used for Web Workers) still
+        // resolve to the original monaco-editor package.
+        'monaco-editor$': path.resolve(__dirname, 'node_modules/@codingame/monaco-vscode-editor-api'),
       };
     }
     return config;

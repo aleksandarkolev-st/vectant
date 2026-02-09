@@ -1,8 +1,13 @@
 // use serde::Deserialize;
 
+use std::collections::HashMap;
+
 pub struct LspSessionState {
     pub client_root_uri: Option<String>,
     pub server_root_uri: String,
+    /// Track the last-seen document version per URI to reject out-of-order
+    /// didChange notifications.  Key = server-side URI after rewrite.
+    pub doc_versions: HashMap<String, i64>,
 }
 
 pub fn rewrite_uris(val: &mut serde_json::Value, state: &LspSessionState, to_server: bool) {

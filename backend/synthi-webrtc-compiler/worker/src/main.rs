@@ -1618,7 +1618,32 @@ async fn wire_peer_channels(
                             c.arg("--query-driver=*");
                             c
                         },
-                        "rust" => system_command("rust-analyzer"),
+                        "rust" => {
+                            let mut c = system_command("rust-analyzer");
+                            // Ensure rust-analyzer can find cargo/rustc.
+                            // In containers, rustup installs to /root/.cargo and /root/.rustup.
+                            // If CARGO_HOME / RUSTUP_HOME aren't set, try common locations.
+                            let cargo_home = std::env::var("CARGO_HOME")
+                                .unwrap_or_else(|_| "/root/.cargo".to_string());
+                            let rustup_home = std::env::var("RUSTUP_HOME")
+                                .unwrap_or_else(|_| "/root/.rustup".to_string());
+                            c.env("CARGO_HOME", &cargo_home);
+                            c.env("RUSTUP_HOME", &rustup_home);
+                            // Clear RUSTUP_TOOLCHAIN — if the container has a bare
+                            // system rustc at /usr, RA auto-detects sysroot as /usr
+                            // and sets RUSTUP_TOOLCHAIN="/usr" which breaks cargo.
+                            c.env_remove("RUSTUP_TOOLCHAIN");
+                            // Prepend cargo/rustup bin dirs to PATH so rust-analyzer
+                            // can invoke `cargo metadata`, `rustc`, etc.
+                            // Cargo binaries (cargo, rustc, rustup) live in $CARGO_HOME/bin.
+                            let current_path = std::env::var("PATH").unwrap_or_default();
+                            let new_path = format!(
+                                "{}/bin:{}",
+                                cargo_home, current_path
+                            );
+                            c.env("PATH", new_path);
+                            c
+                        },
                         "python" | "py" => system_command("pylsp"),
                         "typescript" | "ts" | "javascript" | "js" => {
                              let mut c = system_command("typescript-language-server");
@@ -1692,14 +1717,14 @@ async fn wire_peer_channels(
                             c
                         },
                         "css" | "scss" | "less" => {
-                            // VSCode CSS/SCSS/LESS language server
-                            let mut c = system_command("css-languageserver");
+                            // VSCode CSS/SCSS/LESS language server (vscode-langservers-extracted)
+                            let mut c = system_command("vscode-css-language-server");
                             c.arg("--stdio");
                             c
                         },
                         "html" => {
-                            // VSCode HTML language server
-                            let mut c = system_command("html-languageserver");
+                            // VSCode HTML language server (vscode-langservers-extracted)
+                            let mut c = system_command("vscode-html-language-server");
                             c.arg("--stdio");
                             c
                         },
@@ -1752,6 +1777,7 @@ async fn wire_peer_channels(
                             let state = Arc::new(Mutex::new(LspSessionState {
                                 client_root_uri: None,
                                 server_root_uri: server_root_uri.clone(),
+                                doc_versions: std::collections::HashMap::new(),
                             }));
 
                             // Process incoming messages (buffered + new)
@@ -1776,6 +1802,15 @@ async fn wire_peer_channels(
 
                                     // Try to parse and process
                                     let mut processed = false;
+                                    // Deferred version update: store (uri, version) AFTER
+                                    // forwarding so we don't record a version the server
+                                    // never received.
+                                    let mut deferred_version_update: Option<(String, i64)> = None;
+                                    // When an out-of-order didChange is detected, we skip
+                                    // forwarding the stale message and instead send a
+                                    // full-text resync from disk.
+                                    let mut skip_forward = false;
+                                    let mut deferred_resync: Option<(Vec<u8>, String, i64)> = None;
 
                                     if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(json_bytes) {
                                         let mut guard = state.lock().await;
@@ -1817,6 +1852,16 @@ async fn wire_peer_channels(
                                         if json_val.get("method").and_then(|m| m.as_str()) == Some("textDocument/didOpen") {
                                             if let Some(params) = json_val.get("params") {
                                                 if let Some(doc) = params.get("textDocument") {
+                                                    // Initialize version tracking from didOpen.
+                                                    // This seeds the monotonic version for this URI
+                                                    // so subsequent didChange can be ordered correctly.
+                                                    if let Some(uri) = doc.get("uri").and_then(|s| s.as_str()) {
+                                                        let open_version = doc.get("version")
+                                                            .and_then(|v| v.as_i64())
+                                                            .unwrap_or(0); // default to 0 if null/missing
+                                                        guard.doc_versions.insert(uri.to_string(), open_version);
+                                                    }
+
                                                     if let (Some(uri), Some(text)) = (doc.get("uri").and_then(|s| s.as_str()), doc.get("text").and_then(|s| s.as_str())) {
                                                         if !text.is_empty() {
                                                             if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
@@ -1836,91 +1881,164 @@ async fn wire_peer_channels(
                                         }
 
                                         // 4. Handle didChange file writing (full sync AND incremental)
+                                        // Track document versions to reject out-of-order changes.
                                         if json_val.get("method").and_then(|m| m.as_str()) == Some("textDocument/didChange") {
                                             if let Some(params) = json_val.get("params") {
                                                 if let Some(changes) = params.get("contentChanges").and_then(|c| c.as_array()) {
                                                     if let Some(doc) = params.get("textDocument") {
                                                         if let Some(uri) = doc.get("uri").and_then(|s| s.as_str()) {
-                                                            if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
-                                                                let rel = rel.trim_start_matches('/');
-                                                                let file_path = workspace_path.join(rel);
-
-                                                                if changes.len() == 1 && changes[0].get("range").is_none() {
-                                                                    // Full sync: single change without range = entire file content
-                                                                    if let Some(text) = changes[0].get("text").and_then(|s| s.as_str()) {
-                                                                        if let Err(e) = tokio::fs::write(&file_path, text).await {
-                                                                            eprintln!("Failed to update file {}: {}", file_path.display(), e);
-                                                                        }
-                                                                    }
-                                                                } else {
-                                                                    // Incremental sync: changes have range fields.
-                                                                    // Read current file, apply each change, write back.
-                                                                    let current = tokio::fs::read_to_string(&file_path).await.unwrap_or_default();
-                                                                    let mut lines: Vec<String> = current.split('\n').map(|s| s.to_string()).collect();
-
-                                                                    // Apply changes in reverse order so earlier positions stay valid
-                                                                    let mut sorted_changes = changes.clone();
-                                                                    sorted_changes.sort_by(|a, b| {
-                                                                        let a_start = a.get("range").and_then(|r| r.get("start"));
-                                                                        let b_start = b.get("range").and_then(|r| r.get("start"));
-                                                                        let a_line = a_start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
-                                                                        let b_line = b_start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
-                                                                        let a_char = a_start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0);
-                                                                        let b_char = b_start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0);
-                                                                        b_line.cmp(&a_line).then(b_char.cmp(&a_char))
-                                                                    });
-
-                                                                    for change in &sorted_changes {
-                                                                        if let (Some(range), Some(text)) = (change.get("range"), change.get("text").and_then(|t| t.as_str())) {
-                                                                            let start_line = range.get("start").and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize;
-                                                                            let start_char = range.get("start").and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize;
-                                                                            let end_line = range.get("end").and_then(|e| e.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize;
-                                                                            let end_char = range.get("end").and_then(|e| e.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize;
-
-                                                                            // Clamp to valid line range
-                                                                            let sl = start_line.min(lines.len().saturating_sub(1));
-                                                                            let el = end_line.min(lines.len().saturating_sub(1));
-
-                                                                            // Build the prefix (before the edit) and suffix (after the edit)
-                                                                            let prefix = if sl < lines.len() {
-                                                                                let line_content = &lines[sl];
-                                                                                let sc = start_char.min(line_content.len());
-                                                                                line_content[..sc].to_string()
-                                                                            } else {
-                                                                                String::new()
-                                                                            };
-                                                                            let suffix = if el < lines.len() {
-                                                                                let line_content = &lines[el];
-                                                                                let ec = end_char.min(line_content.len());
-                                                                                line_content[ec..].to_string()
-                                                                            } else {
-                                                                                String::new()
-                                                                            };
-
-                                                                            // Split the replacement text into lines
-                                                                            let new_text_lines: Vec<&str> = text.split('\n').collect();
-
-                                                                            // Build replacement lines
-                                                                            let mut replacement = Vec::new();
-                                                                            if new_text_lines.len() == 1 {
-                                                                                replacement.push(format!("{}{}{}", prefix, new_text_lines[0], suffix));
-                                                                            } else {
-                                                                                replacement.push(format!("{}{}", prefix, new_text_lines[0]));
-                                                                                for mid in &new_text_lines[1..new_text_lines.len()-1] {
-                                                                                    replacement.push(mid.to_string());
-                                                                                }
-                                                                                replacement.push(format!("{}{}", new_text_lines[new_text_lines.len()-1], suffix));
+                                                            // Version check: reject out-of-order didChange.
+                                                            // Handle null/missing version gracefully — treat as 0
+                                                            // (some clients may omit it).
+                                                            let incoming_version = doc.get("version")
+                                                                .and_then(|v| if v.is_null() { None } else { v.as_i64() })
+                                                                .unwrap_or(0);
+                                                            let last_version = guard.doc_versions.get(uri).copied();
+                                                            // Out-of-order check:
+                                                            // - If no prior version tracked (None), always accept.
+                                                            // - If prior version exists, incoming must be strictly greater.
+                                                            let is_out_of_order = match last_version {
+                                                                Some(last) => incoming_version <= last,
+                                                                None => false, // first change for this URI, always accept
+                                                            };
+                                                            if is_out_of_order {
+                                                                eprintln!("[LSP] Rejecting out-of-order didChange for {} (version {} <= {:?}), triggering full resync from disk", uri, incoming_version, last_version);
+                                                                // Do NOT forward stale message. Read current disk
+                                                                // content and send a synthetic full-text didChange
+                                                                // so the server re-syncs to the true file state.
+                                                                skip_forward = true;
+                                                                if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
+                                                                    let rel = rel.trim_start_matches('/');
+                                                                    let file_path = workspace_path.join(rel);
+                                                                    if let Ok(disk_content) = tokio::fs::read_to_string(&file_path).await {
+                                                                        let resync_version = last_version.unwrap_or(0) + 1;
+                                                                        let resync_msg = serde_json::json!({
+                                                                            "jsonrpc": "2.0",
+                                                                            "method": "textDocument/didChange",
+                                                                            "params": {
+                                                                                "textDocument": {
+                                                                                    "uri": uri,
+                                                                                    "version": resync_version
+                                                                                },
+                                                                                "contentChanges": [{ "text": disk_content }]
                                                                             }
-
-                                                                            // Splice the lines array
-                                                                            let remove_end = (el + 1).min(lines.len());
-                                                                            lines.splice(sl..remove_end, replacement);
+                                                                        });
+                                                                        if let Ok(content) = serde_json::to_vec(&resync_msg) {
+                                                                            let header = format!("Content-Length: {}\r\n\r\n", content.len());
+                                                                            let mut msg_bytes = Vec::with_capacity(header.len() + content.len());
+                                                                            msg_bytes.extend_from_slice(header.as_bytes());
+                                                                            msg_bytes.extend_from_slice(&content);
+                                                                            deferred_resync = Some((msg_bytes, uri.to_string(), resync_version));
                                                                         }
+                                                                    } else {
+                                                                        eprintln!("[LSP] Resync failed: could not read {} from disk", file_path.display());
                                                                     }
+                                                                }
+                                                            } else {
+                                                                // Defer version update until after forward to LSP stdin
+                                                                deferred_version_update = Some((uri.to_string(), incoming_version));
 
-                                                                    let new_content = lines.join("\n");
-                                                                    if let Err(e) = tokio::fs::write(&file_path, &new_content).await {
-                                                                        eprintln!("Failed to update file {}: {}", file_path.display(), e);
+                                                                if let Some(rel) = uri.strip_prefix(&guard.server_root_uri) {
+                                                                    let rel = rel.trim_start_matches('/');
+                                                                    let file_path = workspace_path.join(rel);
+
+                                                                    if changes.len() == 1 && changes[0].get("range").is_none() {
+                                                                        // Full sync: single change without range = entire file content
+                                                                        // Use atomic write: write to temp file, then rename
+                                                                        if let Some(text) = changes[0].get("text").and_then(|s| s.as_str()) {
+                                                                            let tmp_path = file_path.with_extension("lsp_tmp");
+                                                                            if let Some(parent) = tmp_path.parent() {
+                                                                                let _ = tokio::fs::create_dir_all(parent).await;
+                                                                            }
+                                                                            match tokio::fs::write(&tmp_path, text).await {
+                                                                                Ok(_) => {
+                                                                                    if let Err(e) = tokio::fs::rename(&tmp_path, &file_path).await {
+                                                                                        eprintln!("Failed to rename temp file {}: {}", file_path.display(), e);
+                                                                                        // Fallback: direct write
+                                                                                        let _ = tokio::fs::write(&file_path, text).await;
+                                                                                    }
+                                                                                }
+                                                                                Err(e) => eprintln!("Failed to write temp file {}: {}", tmp_path.display(), e),
+                                                                            }
+                                                                        }
+                                                                    } else {
+                                                                        // Incremental sync: changes have range fields.
+                                                                        // Read current file, apply each change, write back atomically.
+                                                                        let current = tokio::fs::read_to_string(&file_path).await.unwrap_or_default();
+                                                                        let mut lines: Vec<String> = current.split('\n').map(|s| s.to_string()).collect();
+
+                                                                        // Apply changes in reverse order so earlier positions stay valid
+                                                                        let mut sorted_changes = changes.clone();
+                                                                        sorted_changes.sort_by(|a, b| {
+                                                                            let a_start = a.get("range").and_then(|r| r.get("start"));
+                                                                            let b_start = b.get("range").and_then(|r| r.get("start"));
+                                                                            let a_line = a_start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
+                                                                            let b_line = b_start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
+                                                                            let a_char = a_start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0);
+                                                                            let b_char = b_start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0);
+                                                                            b_line.cmp(&a_line).then(b_char.cmp(&a_char))
+                                                                        });
+
+                                                                        for change in &sorted_changes {
+                                                                            if let (Some(range), Some(text)) = (change.get("range"), change.get("text").and_then(|t| t.as_str())) {
+                                                                                let start_line = range.get("start").and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize;
+                                                                                let start_char = range.get("start").and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize;
+                                                                                let end_line = range.get("end").and_then(|e| e.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize;
+                                                                                let end_char = range.get("end").and_then(|e| e.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize;
+
+                                                                                // Clamp to valid line range
+                                                                                let sl = start_line.min(lines.len().saturating_sub(1));
+                                                                                let el = end_line.min(lines.len().saturating_sub(1));
+
+                                                                                // Build the prefix (before the edit) and suffix (after the edit)
+                                                                                let prefix = if sl < lines.len() {
+                                                                                    let line_content = &lines[sl];
+                                                                                    let sc = start_char.min(line_content.len());
+                                                                                    line_content[..sc].to_string()
+                                                                                } else {
+                                                                                    String::new()
+                                                                                };
+                                                                                let suffix = if el < lines.len() {
+                                                                                    let line_content = &lines[el];
+                                                                                    let ec = end_char.min(line_content.len());
+                                                                                    line_content[ec..].to_string()
+                                                                                } else {
+                                                                                    String::new()
+                                                                                };
+
+                                                                                // Split the replacement text into lines
+                                                                                let new_text_lines: Vec<&str> = text.split('\n').collect();
+
+                                                                                // Build replacement lines
+                                                                                let mut replacement = Vec::new();
+                                                                                if new_text_lines.len() == 1 {
+                                                                                    replacement.push(format!("{}{}{}", prefix, new_text_lines[0], suffix));
+                                                                                } else {
+                                                                                    replacement.push(format!("{}{}", prefix, new_text_lines[0]));
+                                                                                    for mid in &new_text_lines[1..new_text_lines.len()-1] {
+                                                                                        replacement.push(mid.to_string());
+                                                                                    }
+                                                                                    replacement.push(format!("{}{}", new_text_lines[new_text_lines.len()-1], suffix));
+                                                                                }
+
+                                                                                // Splice the lines array
+                                                                                let remove_end = (el + 1).min(lines.len());
+                                                                                lines.splice(sl..remove_end, replacement);
+                                                                            }
+                                                                        }
+
+                                                                        let new_content = lines.join("\n");
+                                                                        // Atomic write: temp file + rename
+                                                                        let tmp_path = file_path.with_extension("lsp_tmp");
+                                                                        match tokio::fs::write(&tmp_path, &new_content).await {
+                                                                            Ok(_) => {
+                                                                                if let Err(e) = tokio::fs::rename(&tmp_path, &file_path).await {
+                                                                                    eprintln!("Failed to rename temp file {}: {}", file_path.display(), e);
+                                                                                    let _ = tokio::fs::write(&file_path, &new_content).await;
+                                                                                }
+                                                                            }
+                                                                            Err(e) => eprintln!("Failed to write temp file {}: {}", tmp_path.display(), e),
+                                                                        }
                                                                     }
                                                                 }
                                                             }
@@ -1953,7 +2071,25 @@ async fn wire_peer_channels(
                                         data = new_msg;
                                     }
 
-                                    let _ = tx.send(data);
+                                    // Forward message (or resync) to LSP server stdin.
+                                    if skip_forward {
+                                        // Out-of-order detected: send resync instead of stale msg
+                                        if let Some((resync_bytes, uri, version)) = deferred_resync {
+                                            let _ = tx.send(resync_bytes);
+                                            let mut guard = state.lock().await;
+                                            guard.doc_versions.insert(uri, version);
+                                        }
+                                        // else: resync could not be built, message is simply dropped
+                                    } else {
+                                        let _ = tx.send(data);
+
+                                        // Apply deferred version update now that the message
+                                        // has been queued for forwarding to the LSP server.
+                                        if let Some((uri, version)) = deferred_version_update {
+                                            let mut guard = state.lock().await;
+                                            guard.doc_versions.insert(uri, version);
+                                        }
+                                    }
                                 }
                             });
 
@@ -4353,30 +4489,163 @@ fn ensure_lsp_config(workspace: &std::path::Path, lang: &str) {
             }
         }
         "rust" => {
-            // rust-analyzer needs a Cargo.toml to index the project.
-            let cargo_toml = workspace.join("Cargo.toml");
-            if !cargo_toml.exists() {
-                // Find the main .rs file name for the binary target
-                let bin_name = std::fs::read_dir(workspace)
-                    .ok()
-                    .and_then(|entries| {
-                        entries.flatten()
-                            .find(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
-                            .map(|e| e.file_name().to_string_lossy().trim_end_matches(".rs").to_string())
-                    })
-                    .unwrap_or_else(|| "main".to_string());
+            // rust-analyzer needs a project manifest to index the workspace.
+            // If cargo is available, use Cargo.toml.  Otherwise, create a
+            // rust-project.json so RA can work in "detached files" mode
+            // without needing cargo (which may not be installed in the container).
+            let has_cargo = std::process::Command::new("cargo")
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
 
-                if let Ok(mut f) = std::fs::File::create(&cargo_toml) {
-                    let _ = write!(f, r#"[package]
+            if has_cargo {
+                let cargo_toml = workspace.join("Cargo.toml");
+                if !cargo_toml.exists() {
+                    // Collect ALL .rs files so rust-analyzer indexes everything
+                    let mut rs_files: Vec<String> = std::fs::read_dir(workspace)
+                        .ok()
+                        .map(|entries| {
+                            entries.flatten()
+                                .filter(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
+                                .map(|e| e.file_name().to_string_lossy().to_string())
+                                .collect()
+                        })
+                        .unwrap_or_else(|| vec!["main.rs".to_string()]);
+
+                    if rs_files.is_empty() {
+                        rs_files.push("main.rs".to_string());
+                    }
+
+                    // Sort so main.rs comes first (if present)
+                    rs_files.sort_by(|a, b| {
+                        if a == "main.rs" { std::cmp::Ordering::Less }
+                        else if b == "main.rs" { std::cmp::Ordering::Greater }
+                        else { a.cmp(b) }
+                    });
+
+                    if let Ok(mut f) = std::fs::File::create(&cargo_toml) {
+                        let _ = write!(f, r#"[package]
 name = "synthi-workspace"
 version = "0.1.0"
 edition = "2021"
-
+"#);
+                        for rs_file in &rs_files {
+                            let bin_name = rs_file.trim_end_matches(".rs");
+                            let _ = write!(f, r#"
 [[bin]]
 name = "{}"
-path = "{}.rs"
-"#, bin_name, bin_name);
-                    println!("[LSP-CONFIG] Created Cargo.toml for standalone Rust workspace");
+path = "{}"
+"#, bin_name, rs_file);
+                        }
+                        println!("[LSP-CONFIG] Created Cargo.toml with {} bin targets for standalone Rust workspace", rs_files.len());
+                    }
+                }
+            } else {
+                // No cargo — create rust-project.json for RA's non-cargo mode.
+                // This lets RA provide completions, hover, go-to-def without cargo.
+                let rp_json = workspace.join("rust-project.json");
+                if !rp_json.exists() {
+                    // Try to install rust-src via rustup first — this is needed
+                    // for rust-analyzer to resolve stdlib types (Vec, String, etc.).
+                    // If rustup isn't available or rust-src is already installed,
+                    // this is a harmless no-op.
+                    let _ = std::process::Command::new("rustup")
+                        .args(["component", "add", "rust-src"])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+
+                    // Try to find sysroot_src from rustc.
+                    // Check multiple known locations — system rustc (apt) installs
+                    // rust-src to different paths than rustup.
+                    let sysroot_src = {
+                        // 1. Ask rustc for its sysroot
+                        let sysroot = std::process::Command::new("rustc")
+                            .args(["--print", "sysroot"])
+                            .output()
+                            .ok()
+                            .and_then(|o| {
+                                if o.status.success() {
+                                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| "/usr".to_string());
+
+                        // 2. Check common library source locations
+                        let candidates = [
+                            format!("{}/lib/rustlib/src/rust/library", sysroot),
+                            // Debian/Ubuntu system rust-src package
+                            "/usr/src/rustc-*/library".to_string(),
+                            format!("{}/lib/rustlib/src/rust", sysroot),
+                        ];
+
+                        let mut found: Option<String> = None;
+                        for candidate in &candidates {
+                            if candidate.contains('*') {
+                                // Glob expansion for system packages
+                                if let Ok(mut entries) = std::fs::read_dir("/usr/src") {
+                                    if let Some(entry) = entries.flatten().find(|e| {
+                                        let name = e.file_name();
+                                        let n = name.to_string_lossy();
+                                        n.starts_with("rustc-") && e.path().join("library").exists()
+                                    }) {
+                                        found = Some(entry.path().join("library").to_string_lossy().to_string());
+                                        break;
+                                    }
+                                }
+                            } else {
+                                let p = std::path::PathBuf::from(candidate);
+                                if p.exists() {
+                                    found = Some(p.to_string_lossy().to_string());
+                                    break;
+                                }
+                            }
+                        }
+
+                        if found.is_none() {
+                            println!("[LSP-CONFIG] rust-src not found at any known location, RA will have no stdlib completions");
+                            println!("[LSP-CONFIG] Searched: {:?}", candidates);
+                        }
+                        found
+                    };
+
+                    // Collect all .rs files as crate root modules
+                    let rs_files: Vec<String> = std::fs::read_dir(workspace)
+                        .ok()
+                        .map(|entries| {
+                            entries.flatten()
+                                .filter(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
+                                .map(|e| e.file_name().to_string_lossy().to_string())
+                                .collect()
+                        })
+                        .unwrap_or_else(|| vec!["main.rs".to_string()]);
+
+                    let sysroot_line = match &sysroot_src {
+                        Some(path) => format!(r#"  "sysroot_src": "{}""#, path),
+                        None => r#"  "sysroot_src": null"#.to_string(),
+                    };
+
+                    let crates: Vec<String> = rs_files.iter().map(|f| {
+                        format!(
+                            r#"    {{
+      "root_module": "{}",
+      "edition": "2021",
+      "deps": []
+    }}"#,
+                            f
+                        )
+                    }).collect();
+
+                    if let Ok(mut f) = std::fs::File::create(&rp_json) {
+                        let _ = write!(f, "{{\n{},\n  \"crates\": [\n{}\n  ]\n}}\n",
+                            sysroot_line, crates.join(",\n"));
+                        println!("[LSP-CONFIG] Created rust-project.json for standalone Rust workspace (no cargo)");
+                    }
                 }
             }
         }
