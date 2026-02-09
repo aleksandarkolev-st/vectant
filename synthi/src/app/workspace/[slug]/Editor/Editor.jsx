@@ -1087,6 +1087,17 @@ const EditorPanel = ({
                                     console.log(`[LSP] provideCompletionItems: ${!result ? 'null result' : 'cancelled'} for ${backendLang}`);
                                     return { suggestions: [] };
                                 }
+
+                                // ── Drop stale responses ──────────────────────
+                                // If a newer completion request was issued while
+                                // this one was in-flight, our generation is stale.
+                                // Returning these results would overwrite the
+                                // newer (correct) suggestions with outdated ones.
+                                if (myGeneration !== _currentCompletionGen) {
+                                    console.log(`[LSP] Dropping stale completion response for ${backendLang} (gen ${myGeneration} vs current ${_currentCompletionGen})`);
+                                    return { suggestions: [] };
+                                }
+
                                 let items = Array.isArray(result) ? result : (result.items || []);
                                 const isIncomplete = !Array.isArray(result) && result.isIncomplete;
                                 console.log(`[LSP] Server returned ${items.length} raw items for ${backendLang} (incomplete=${!!isIncomplete})`);
