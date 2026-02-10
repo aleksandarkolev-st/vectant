@@ -685,6 +685,11 @@ class HardenedExtensionHost {
       const wrappedCode = `var global = self;
 var globalThis = self;
 var window = self;
+var process = arguments[4];
+var Buffer = arguments[5];
+var require = arguments[3];
+var __dirname = arguments[6];
+var __filename = arguments[7];
 var setImmediate = function(cb) { return setTimeout(cb, 0); };
 var clearImmediate = function(id) { return clearTimeout(id); };
 ` + code;
