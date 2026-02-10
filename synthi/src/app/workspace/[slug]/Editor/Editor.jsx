@@ -994,6 +994,63 @@ const EditorPanel = ({
         };
     }, [editorInstance, monacoInstance, activeFile, slug, session, presenceGranularity, isPrivateMode, conflictedFiles]);
 
+    // ── Ghost-revert fix ─────────────────────────────────────────────────
+    // Listen for server-side 'file-reverted' events (emitted after discard).
+    // When the active file was reverted:
+    //   1. Tear down the Yjs binding so stale dirty content can't re-flush
+    //   2. Re-fetch the clean content via selectFileThunk (which reads disk)
+    //   3. Reset the Monaco model to the clean content
+    // The collab binding effect above will re-run automatically because
+    // selectFileThunk updates `activeFile` in Redux, triggering the
+    // dependency array.
+    useEffect(() => {
+        const handler = async (ev) => {
+            const { slug: evSlug, filePaths } = ev.detail || {};
+            if (evSlug !== slug) return;
+
+            // filePaths=[] means all files were reverted
+            const affectsActive = !filePaths || filePaths.length === 0
+                || (activeFile && filePaths.includes(activeFile.path));
+
+            if (!affectsActive || !activeFile) return;
+
+            console.log('[Editor] file-reverted received for', activeFile.path, '— resetting editor');
+
+            // 1. Cancel any pending Redux sync timer (prevent stale content from being dispatched)
+            if (reduxSyncTimerRef.current) {
+                clearTimeout(reduxSyncTimerRef.current);
+                reduxSyncTimerRef.current = null;
+            }
+
+            // 2. Tear down Yjs binding — this prevents the dirty editor from
+            //    writing stale content back into the freshly recreated Yjs doc
+            try { collabBindingRef.current?._awarenessUnsub?.(); } catch (_) {}
+            try { collabBindingRef.current?.dispose(); } catch (_) {}
+            collabBindingRef.current = null;
+            try { collabClient.destroyDocument(slug, activeFile.path); } catch (_) {}
+
+            // 3. Re-select the file — this fetches clean content from the
+            //    server and updates Redux (savedContent, currentContent).
+            //    It also triggers the collab binding effect to re-run, which
+            //    will create a fresh Yjs provider seeded from disk content.
+            await dispatch(selectFileThunk(activeFile));
+
+            // 4. Force-set the Monaco model to the clean content so the editor
+            //    doesn't flash stale text before the binding kicks in.
+            try {
+                const model = editorInstance?.getModel?.();
+                if (model) {
+                    const cleanContent = model.getValue();
+                    // Sync latestCodeRef so any flush-on-unmount uses clean content
+                    latestCodeRef.current = cleanContent;
+                }
+            } catch (_) {}
+        };
+
+        window.addEventListener('synthi:file-reverted', handler);
+        return () => window.removeEventListener('synthi:file-reverted', handler);
+    }, [slug, activeFile, editorInstance, dispatch]);
+
     // Sync local unsaved state to awareness
     useEffect(() => {
         if (collabBindingRef.current) {
