@@ -177,7 +177,7 @@ function TokenSecurityAlert({ remotes, onDismiss }) {
 
 export function GitStatus({ slug }) {
   const dispatch = useDispatch();
-  const { status, loading, error, actionError, remotes, stashList } = useSelector(s => s.git);
+  const { status, loading, error, actionError, actionErrorCode, remotes, stashList } = useSelector(s => s.git);
   const { commitHistory, unpushedCommits, incomingCommits } = useSelector(s => s.git);
   const [message, setMessage] = useState('');
   const [commitBody, setCommitBody] = useState('');
@@ -437,7 +437,8 @@ export function GitStatus({ slug }) {
   }, [unpushedCommits, incomingCommits]);
 
   // The error to display (prefer actionError since it persists)
-  const displayError = actionError || error;
+  // Suppress generic banner for UNCOMMITTED_CHANGES — it has its own dedicated UI
+  const displayError = actionErrorCode === 'UNCOMMITTED_CHANGES' ? null : (actionError || error);
 
   // ── CSS custom properties for graph colours ────
   const graphStyle = {
@@ -578,6 +579,24 @@ export function GitStatus({ slug }) {
 
         {/* Security alert for tokens in remotes */}
         {!securityDismissed && <TokenSecurityAlert remotes={remotes} onDismiss={() => setSecurityDismissed(true)} />}
+
+        {/* ── Uncommitted Changes Warning (not a merge conflict) ── */}
+        {actionErrorCode === 'UNCOMMITTED_CHANGES' && (
+          <div className="mb-3 p-2 bg-amber-900/20 border border-amber-600/40 rounded text-xs text-amber-300 break-words">
+            <div className="flex items-start gap-1.5">
+              <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 text-amber-400" />
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold">Cannot pull: uncommitted changes</p>
+                <p className="text-amber-200/70 mt-0.5 leading-relaxed">
+                  Your local changes would be overwritten by merge. Commit or stash them first.
+                </p>
+              </div>
+              <button onClick={() => dispatch(clearError())} className="flex-shrink-0 hover:text-amber-200 p-0.5 rounded" title="Dismiss">
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* ── Merge Conflicts ─────────────────────── */}
         {hasConflicts && (
