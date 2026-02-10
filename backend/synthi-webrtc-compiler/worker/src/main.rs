@@ -4806,26 +4806,37 @@ fn ensure_lsp_config(workspace: &std::path::Path, lang: &str) {
 
     match lang {
         "javascript" | "js" => {
-            // typescript-language-server needs a jsconfig.json to treat the
-            // workspace as a JS project and resolve node_modules imports.
-            let config_path = workspace.join("jsconfig.json");
-            if !config_path.exists() && !workspace.join("tsconfig.json").exists() {
+            // Biome uses biome.json for project configuration.
+            // Create a sensible default so the LSP provides diagnostics
+            // and formatting out of the box for standalone JS files.
+            let config_path = workspace.join("biome.json");
+            if !config_path.exists() {
                 if let Ok(mut f) = std::fs::File::create(&config_path) {
                     let _ = f.write_all(br#"{
-  "compilerOptions": {
-    "checkJs": true,
-    "module": "commonjs",
-    "target": "es2020",
-    "moduleResolution": "node",
-    "esModuleInterop": true,
-    "resolveJsonModule": true,
-    "baseUrl": "."
+  "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
+  "organizeImports": {
+    "enabled": true
   },
-  "include": ["**/*.js", "**/*.jsx"],
-  "exclude": ["node_modules"]
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true
+    }
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "semicolons": "always"
+    }
+  }
 }
 "#);
-                    println!("[LSP-CONFIG] Created jsconfig.json for standalone JS workspace");
+                    println!("[LSP-CONFIG] Created biome.json for standalone JS workspace");
                 }
             }
         }
