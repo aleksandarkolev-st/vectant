@@ -201,7 +201,12 @@ export class MainThreadBridge {
    */
   async registerExtension(extensionId, manifest, code) {
     if (this.extensions.has(extensionId)) {
-      throw new Error(`Extension ${extensionId} already registered`);
+      // Already registered — unregister the old version first
+      console.log(`[MainThreadBridge] Re-registering ${extensionId} (already loaded)`);
+      try {
+        await this.deactivateExtension(extensionId);
+      } catch (_) { /* may not be active */ }
+      this.extensions.delete(extensionId);
     }
 
     // Store extension info
