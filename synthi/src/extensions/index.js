@@ -16,15 +16,15 @@
  * - Memory: 64MB per extension, 256MB total
  */
 
-// Host components (worker-side)
-export { ExtensionHostWorker } from './host/ExtensionHostWorker.js';
+// Host components (worker-side — ExtensionHostWorker is a worker entry point, not importable)
+// export { ExtensionHostWorker } from './host/ExtensionHostWorker.js';
 export { ExtensionHostMain } from './host/ExtensionHostMain.js';
 export { ExtensionRegistry } from './host/ExtensionRegistry.js';
 export { ActivationManager } from './host/ActivationManager.js';
-export { ExtensionContext, createExtensionContext } from './host/ExtensionContext.js';
+export { createExtensionContext } from './host/ExtensionContext.js';
 
 // Bridge components (main thread)
-export { MessageProtocol, createMessageId, createRequest, createResponse, createEvent, isValidMessage, MainToWorkerMethods, WorkerToMainMethods } from './bridge/MessageProtocol.js';
+export { createMessageId, createRequest, createResponse, createEvent, isValidMessage, MainToWorkerMethods, WorkerToMainMethods } from './bridge/MessageProtocol.js';
 export { WorkerProxy, createWorkerProxy, getWorkerProxy } from './bridge/WorkerProxy.js';
 export { MainThreadBridge, createMainThreadBridge, getMainThreadBridge } from './bridge/MainThreadBridge.js';
 export { MonacoBridge } from './bridge/MonacoBridge.js';
@@ -37,6 +37,22 @@ export { WebviewManager, getWebviewManager } from './webview/WebviewManager.js';
 
 // Storage
 export { StorageService, getStorageService } from './services/StorageService.js';
+
+// Loader pipeline
+export {
+  parseManifest,
+  getContributedCommands,
+  getActivationEvents,
+  activatesOnLanguage,
+  activatesOnCommand,
+  saveExtension,
+  getExtension as getInstalledExtension,
+  getAllExtensions as getAllInstalledExtensions,
+  removeExtension as removeInstalledExtension,
+  setExtensionEnabled,
+  clearAllExtensions,
+  parseVSIX,
+} from './loader/index.js';
 
 // Scheduler
 export {
@@ -109,18 +125,13 @@ export async function initializeExtensionSystem(options) {
   // Connect Monaco bridge (only if editor provided)
   let monacoBridge = null;
   if (editor) {
-    monacoBridge = new MonacoBridge(editor, (uri, changes, version) => {
-      bridge.notifyDocumentChange(uri, changes, version);
-    });
-    
-    // Set up handlers for extension -> editor communication
-    bridge.onApplyEdit = (uri, edits) => {
-      monacoBridge.applyEdits(uri, edits);
-    };
-    
-    bridge.onSetDiagnostics = (uri, diagnostics, source) => {
-      monacoBridge.setDiagnostics(uri, diagnostics);
-    };
+    monacoBridge = new MonacoBridge(bridge);
+    // MonacoBridge.init() needs the monaco namespace and the editor instance.
+    // The caller may provide a bare editor; grab the global monaco if available.
+    const monacoNs = (typeof window !== 'undefined' && window.monaco) ? window.monaco : null;
+    if (monacoNs) {
+      monacoBridge.init(monacoNs, editor);
+    }
   }
 
   // Set up message handler
@@ -129,6 +140,49 @@ export async function initializeExtensionSystem(options) {
     else if (type === 'warning') console.warn(`[Extension] ${message}`);
     else console.log(`[Extension] ${message}`);
   };
+
+  // Wire webview creation to the webview manager
+  bridge.onCreateWebview = (viewId, viewType, title, opts) => {
+    console.log(`[Extension] Creating webview: ${viewId} (${viewType})`);
+    try {
+      webviews.create(viewId, viewType, title, opts || {});
+    } catch (err) {
+      console.error(`[Extension] Failed to create webview ${viewId}:`, err);
+    }
+  };
+
+  // Contribution event callbacks — set later by the hook/consumer
+  // These are exposed on the returned system object for wiring.
+  let onContribution = null;
+
+  // Listen for tree view registrations and data updates
+  const proxy = bridge.workerProxy;
+  if (proxy) {
+    proxy.on('registerTreeView', (viewId, extensionId) => {
+      console.log(`[Extension] Tree view registered: ${viewId} by ${extensionId}`);
+      onContribution?.('registerTreeView', { viewId, extensionId });
+    });
+    proxy.on('treeData', (viewId, data) => {
+      console.log(`[Extension] Tree data received for: ${viewId} (${data?.length || 0} items)`);
+      onContribution?.('treeData', { viewId, data });
+    });
+    proxy.on('createWebview', (viewId, viewType, title, opts) => {
+      onContribution?.('createWebview', { viewId, viewType, title, opts });
+    });
+    proxy.on('disposeWebview', (viewId) => {
+      webviews.dispose(viewId);
+      onContribution?.('disposeWebview', { viewId });
+    });
+    proxy.on('updateWebview', (viewId, update) => {
+      const instance = webviews.webviews.get(viewId);
+      if (instance && update?.html) {
+        instance.html = update.html;
+      }
+    });
+    proxy.on('setStatusBar', (text, timeout) => {
+      onContribution?.('setStatusBar', { text, timeout });
+    });
+  }
 
   // Wire up visibility manager to scheduler
   visibility.onPause = (extensionId) => {
@@ -146,6 +200,13 @@ export async function initializeExtensionSystem(options) {
   // Return public API
   return {
     bridge,
+    webviews,
+
+    /** Set a callback to receive contribution events from extensions.
+     *  callback(type, payload) where type is 'registerTreeView', 'treeData',
+     *  'createWebview', 'disposeWebview', 'setStatusBar' */
+    set onContribution(cb) { onContribution = cb; },
+    get onContribution() { return onContribution; },
     
     // Register and load an extension
     registerExtension: async (extensionId, manifest, code) => {
@@ -207,7 +268,7 @@ export async function initializeExtensionSystem(options) {
       scheduler.stop();
       memory.stop();
       latencyMonitor.stop();
-      webviews.clear();
+      webviews.disposeAll();
     }
   };
 }
