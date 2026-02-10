@@ -591,7 +591,7 @@ pub async fn handle_flutter_emulator_job(
         extra_args: vec![],
         env: HashMap::new(),
         skip_pub_get: false,
-        clean_first: false,
+        clean_first: true,
     };
 
     // Rolling buffer for recent output

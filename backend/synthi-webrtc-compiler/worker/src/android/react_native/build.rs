@@ -75,9 +75,15 @@ pub async fn build_apk_for_emulator(
 
     // Install npm dependencies if needed
     let node_modules = config.project_root.join("node_modules");
-    if !node_modules.exists() {
+
+    // CRITICAL FIX: The logic previously only checked `if !node_modules.exists()` which
+    // failed to account for corrupted node_modules or package.json updates.
+    // By forcing `npm install` (which uses cache and is fast when up-to-date),
+    // we ensure the dependencies are actually correct.
+    // if !node_modules.exists() {
+    {
         if let Some(ref callback) = log_callback {
-            callback("Installing npm dependencies...".to_string());
+            callback("Ensuring npm dependencies are installed...".to_string());
         }
         let npm_result = run_npm_install(&config.project_root, log_callback.as_ref()).await?;
         if !npm_result {

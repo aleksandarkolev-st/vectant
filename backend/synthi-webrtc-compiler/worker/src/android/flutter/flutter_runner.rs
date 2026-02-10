@@ -138,6 +138,29 @@ pub async fn run_flutter_build_apk(
     log_callback: Option<&LogCallback>,
     timeout_secs: Option<u64>,
 ) -> Result<FlutterRunResult> {
+    // AGGRESSIVE CLEAN: Manually remove build artifacts to prevent stale cache issues
+    if let Some(cb) = log_callback {
+        cb("Performing aggressive workspace cleanup...".to_string());
+    }
+    
+    // Debug: Print main.dart content to logs to verify sync status
+    let main_dart = project_root.join("lib/main.dart");
+    if main_dart.exists() {
+        if let Ok(content) = tokio::fs::read_to_string(&main_dart).await {
+            if let Some(cb) = log_callback {
+                cb(format!("[debug] lib/main.dart content preview (FULL):\n{}", content));
+            }
+        }
+    }
+
+    let dirs_to_clean = ["build", ".dart_tool", "android/.gradle", "android/app/build"];
+    for dir in dirs_to_clean {
+        let p = project_root.join(dir);
+        if p.exists() {
+             let _ = tokio::fs::remove_dir_all(&p).await;
+        }
+    }
+
     let mut args = vec!["build", "apk"];
     
     if release {
@@ -146,8 +169,8 @@ pub async fn run_flutter_build_apk(
         args.push("--debug");
     }
     
-    // Add verbose output for better logging
-    args.push("--verbose");
+    // REMOVED --verbose to reduce log noise
+    // args.push("--verbose");
     
     // Add any extra arguments
     for arg in extra_args {
@@ -246,8 +269,17 @@ pub async fn run_flutter_command(
                             stderr_collected.push_str(&line);
                             stderr_collected.push('\n');
                             if let Some(cb) = log_callback {
-                                // Prefix stderr lines for visibility
-                                cb(format!("[stderr] {}", line));
+                                // Filter out noisy Gradle/Java stack traces
+                                let is_stack_trace = line.contains("org.gradle.") 
+                                    || line.contains("java.base/") 
+                                    || line.contains("java.util.concurrent.")
+                                    || line.contains('\t') && line.contains("at ")
+                                    || line.trim().starts_with("at ");
+                                
+                                if !is_stack_trace {
+                                    // Prefix stderr lines for visibility
+                                    cb(format!("[stderr] {}", line));
+                                }
                             }
                         }
                         Ok(None) => {}
