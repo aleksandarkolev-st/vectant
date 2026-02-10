@@ -1772,7 +1772,7 @@ const EditorPanel = ({
             // Only servers that genuinely need priming (TS/JS, Python)
             // get a limited didOpen blast.  All others rely on disk
             // discovery via rootUri / workspaceFolders.
-            const SERVERS_NEEDING_PRIMING = new Set(['typescript', 'python']);
+            const SERVERS_NEEDING_PRIMING = new Set(['typescript', 'javascript', 'python']);
 
             if (SERVERS_NEEDING_PRIMING.has(backendLang)) {
                 setTimeout(() => {
