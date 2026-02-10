@@ -897,6 +897,11 @@ class CollabClient {
               handlers.onFileTreeChanged();
             }
           }
+          if (msg.type === 'file-reverted' && msg.slug === slug) {
+            if (typeof handlers.onFileReverted === 'function') {
+              handlers.onFileReverted(msg.filePaths || []);
+            }
+          }
         } catch (_) {
           // Not JSON — ignore
         }
