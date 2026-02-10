@@ -428,36 +428,43 @@ const EditorPanel = ({
 
         // ── Language → LSP backend mapping table ──────────────────
         // Single source of truth — replaces the old if-else chain.
-        // Each entry maps one or more Monaco language IDs to a backend
-        // key and the full set of languages handled by that server.
+        // Each entry maps one or more Monaco language IDs to:
+        //   backend    – language string sent to the worker (controls
+        //                which server is spawned and which config is
+        //                generated, e.g. jsconfig.json vs tsconfig.json)
+        //   clientKey  – dedup key for the frontend client map.  Languages
+        //                that share the same LSP server use the same key
+        //                so only ONE WebRTC channel + client is created.
+        //   selector   – Monaco language IDs the client provides features for.
         const LSP_LANG_TABLE = {
-            cpp:                { backend: 'cpp',        selector: ['cpp', 'c'] },
-            c:                  { backend: 'cpp',        selector: ['cpp', 'c'] },
-            rust:               { backend: 'rust',       selector: ['rust'] },
-            python:             { backend: 'python',     selector: ['python'] },
-            typescript:         { backend: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
-            javascript:         { backend: 'javascript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
-            typescriptreact:    { backend: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
-            javascriptreact:    { backend: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
-            java:               { backend: 'java',       selector: ['java'] },
-            go:                 { backend: 'go',         selector: ['go'] },
-            csharp:             { backend: 'csharp',     selector: ['csharp'] },
-            ruby:               { backend: 'ruby',       selector: ['ruby'] },
-            php:                { backend: 'php',        selector: ['php'] },
-            kotlin:             { backend: 'kotlin',     selector: ['kotlin'] },
-            zig:                { backend: 'zig',        selector: ['zig'] },
-            dart:               { backend: 'dart',       selector: ['dart'] },
-            lua:                { backend: 'lua',        selector: ['lua'] },
-            elixir:             { backend: 'elixir',     selector: ['elixir'] },
-            svelte:             { backend: 'svelte',     selector: ['svelte'] },
-            css:                { backend: 'css',        selector: ['css', 'scss', 'less'] },
-            scss:               { backend: 'css',        selector: ['css', 'scss', 'less'] },
-            less:               { backend: 'css',        selector: ['css', 'scss', 'less'] },
-            html:               { backend: 'html',       selector: ['html'] },
+            cpp:                { backend: 'cpp',        clientKey: 'cpp',        selector: ['cpp', 'c'] },
+            c:                  { backend: 'c',          clientKey: 'cpp',        selector: ['cpp', 'c'] },
+            rust:               { backend: 'rust',       clientKey: 'rust',       selector: ['rust'] },
+            python:             { backend: 'python',     clientKey: 'python',     selector: ['python'] },
+            typescript:         { backend: 'typescript', clientKey: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
+            javascript:         { backend: 'javascript', clientKey: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
+            typescriptreact:    { backend: 'typescript', clientKey: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
+            javascriptreact:    { backend: 'javascript', clientKey: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
+            java:               { backend: 'java',       clientKey: 'java',       selector: ['java'] },
+            go:                 { backend: 'go',         clientKey: 'go',         selector: ['go'] },
+            csharp:             { backend: 'csharp',     clientKey: 'csharp',     selector: ['csharp'] },
+            ruby:               { backend: 'ruby',       clientKey: 'ruby',       selector: ['ruby'] },
+            php:                { backend: 'php',        clientKey: 'php',        selector: ['php'] },
+            kotlin:             { backend: 'kotlin',     clientKey: 'kotlin',     selector: ['kotlin'] },
+            zig:                { backend: 'zig',        clientKey: 'zig',        selector: ['zig'] },
+            dart:               { backend: 'dart',       clientKey: 'dart',       selector: ['dart'] },
+            lua:                { backend: 'lua',        clientKey: 'lua',        selector: ['lua'] },
+            elixir:             { backend: 'elixir',     clientKey: 'elixir',     selector: ['elixir'] },
+            svelte:             { backend: 'svelte',     clientKey: 'svelte',     selector: ['svelte'] },
+            css:                { backend: 'css',        clientKey: 'css',        selector: ['css', 'scss', 'less'] },
+            scss:               { backend: 'scss',       clientKey: 'css',        selector: ['css', 'scss', 'less'] },
+            less:               { backend: 'less',       clientKey: 'css',        selector: ['css', 'scss', 'less'] },
+            html:               { backend: 'html',       clientKey: 'html',       selector: ['html'] },
         };
 
         const langEntry = LSP_LANG_TABLE[lang];
         const backendLang = langEntry?.backend ?? null;
+        const clientKey = langEntry?.clientKey ?? backendLang;
         const documentSelector = langEntry?.selector ?? [];
 
         if (!backendLang) {
@@ -465,11 +472,11 @@ const EditorPanel = ({
             return;
         }
 
-        if (languageClientsRef.current.has(backendLang)) {
-            const client = languageClientsRef.current.get(backendLang);
+        if (languageClientsRef.current.has(clientKey)) {
+            const client = languageClientsRef.current.get(clientKey);
             if (client && client.isRunning()) {
                 setLspStatus(`Ready (${backendLang})`);
-                console.log(`[LSP] Reusing existing ${backendLang} client`);
+                console.log(`[LSP] Reusing existing ${clientKey} client for ${backendLang}`);
 
                 // P0: The editor remounted with a new model (key={activeFileIdentity}).
                 // @codingame/monaco-vscode-api creates the model with 'plaintext',
@@ -484,7 +491,7 @@ const EditorPanel = ({
                     }
 
                     const fileUri = model.uri.toString();
-                    const prev = lspOpenedUrisRef.current.get(backendLang);
+                    const prev = lspOpenedUrisRef.current.get(clientKey);
 
                     // Only send didClose/didOpen if the file actually changed,
                     // or if we never tracked an open URI for this language yet.
@@ -510,7 +517,7 @@ const EditorPanel = ({
                                     text: model.getValue(),
                                 }
                             });
-                            lspOpenedUrisRef.current.set(backendLang, { uri: fileUri, languageId: lang });
+                            lspOpenedUrisRef.current.set(clientKey, { uri: fileUri, languageId: lang });
                             console.log(`[LSP] Reuse: sent manual didOpen for ${fileUri}`);
                         } catch (e) {
                             console.warn(`[LSP] Reuse: manual didOpen failed:`, e.message);
@@ -521,13 +528,13 @@ const EditorPanel = ({
             }
             // Client exists but is no longer running (channel closed, crashed, etc.)
             // Remove the stale entry so we re-initialize below.
-            console.warn(`[LSP] Stale client for ${backendLang} — removing and re-initializing`);
-            languageClientsRef.current.delete(backendLang);
+            console.warn(`[LSP] Stale client for ${clientKey} — removing and re-initializing`);
+            languageClientsRef.current.delete(clientKey);
         }
 
         // Prevent concurrent initialization for the same language
         // (effect can re-fire while the async .then() is still in flight)
-        if (lspInitPendingRef.current.has(backendLang)) {
+        if (lspInitPendingRef.current.has(clientKey)) {
             return;
         }
 
@@ -541,7 +548,7 @@ const EditorPanel = ({
 
         console.log(`[LSP] Initializing for ${backendLang}...`);
         setLspStatus(`Initializing ${backendLang}...`);
-        lspInitPendingRef.current.add(backendLang);
+        lspInitPendingRef.current.add(clientKey);
 
         let lspChannel;
         let adapter;
@@ -707,15 +714,15 @@ const EditorPanel = ({
             import('monaco-languageclient/vscodeApiWrapper'),
             import('vscode-languageclient/lib/common/completion'),
         ]).then(async ([{ MonacoLanguageClient }, { MonacoVscodeApiWrapper }, { CompletionItemFeature }]) => {
-            if (languageClientsRef.current.has(backendLang)) {
-                lspInitPendingRef.current.delete(backendLang);
+            if (languageClientsRef.current.has(clientKey)) {
+                lspInitPendingRef.current.delete(clientKey);
                 return;
             }
 
             // Services should be initialized by the other useEffect, but double check
             if (!servicesInitialized) {
                 console.warn('[LSP] Services not initialized yet, waiting...');
-                lspInitPendingRef.current.delete(backendLang);
+                lspInitPendingRef.current.delete(clientKey);
                 return;
             }
 
@@ -858,7 +865,7 @@ const EditorPanel = ({
             const currentModel = editorInstance.getModel();
             if (!currentModel) {
                 console.warn('[LSP] Editor model disappeared during async init, aborting');
-                lspInitPendingRef.current.delete(backendLang);
+                lspInitPendingRef.current.delete(clientKey);
                 try { lspChannel.close(); } catch (_) {}
                 return;
             }
@@ -883,7 +890,7 @@ const EditorPanel = ({
                     await adapter.waitUntilOpen(15000);
                 } catch (e) {
                     console.error(`[LSP] ${e.message} for ${backendLang}`);
-                    lspInitPendingRef.current.delete(backendLang);
+                    lspInitPendingRef.current.delete(clientKey);
                     try { lspChannel.close(); } catch (_) {}
                     setLspStatus('Channel Timeout');
                     return;
@@ -926,7 +933,7 @@ const EditorPanel = ({
                 } catch (_) {}
             } catch (e) {
                 console.error(`[LSP] Client start failed for ${backendLang}:`, e.message || e);
-                lspInitPendingRef.current.delete(backendLang);
+                lspInitPendingRef.current.delete(clientKey);
                 try { languageClient.stop(); } catch (_) {}
                 try { lspChannel.close(); } catch (_) {}
                 setLspStatus(`${backendLang} server unavailable`);
@@ -965,11 +972,13 @@ const EditorPanel = ({
                     cpp: ['.', ':', '>', '(', '<'],
                     python: ['.', '('],
                     typescript: ['.', '(', "'", '"', '/', '<'],
+                    javascript: ['.', '(', "'", '"', '/', '<'],
                     java: ['.', '(', '@'],
                     go: ['.', '('],
                     csharp: ['.', '('],
                     ruby: ['.', ':'],
                     php: ['.', '>', ':', '$', '\\'],
+                    dart: ['.', '('],
                 };
                 const langTriggers = KNOWN_TRIGGERS[backendLang] || ['.'];
                 const allTriggers = [...new Set([...serverTriggerChars, ...langTriggers])];
@@ -1749,7 +1758,7 @@ const EditorPanel = ({
                     }
                 }
                 // Track the URI so the reuse path can send didClose on file switch
-                lspOpenedUrisRef.current.set(backendLang, { uri: activeUri, languageId: lang });
+                lspOpenedUrisRef.current.set(clientKey, { uri: activeUri, languageId: lang });
             }
 
             // ── Multi-file workspace priming ──────────────────────
@@ -1832,8 +1841,8 @@ const EditorPanel = ({
             // We keep a no-op disposable for the cleanup in the close handler.
             const changeDisposable = { dispose: () => {} };
 
-            languageClientsRef.current.set(backendLang, languageClient);
-            lspInitPendingRef.current.delete(backendLang);
+            languageClientsRef.current.set(clientKey, languageClient);
+            lspInitPendingRef.current.delete(clientKey);
             setLspStatus(`Ready (${backendLang})`);
 
             // Use addEventListener instead of setting onclose directly so
@@ -1869,15 +1878,15 @@ const EditorPanel = ({
                 }
 
                 languageClient.stop();
-                languageClientsRef.current.delete(backendLang);
-                lspInitPendingRef.current.delete(backendLang);
-                lspOpenedUrisRef.current.delete(backendLang);
-                lspSyncCapRef.current.delete(backendLang);
+                languageClientsRef.current.delete(clientKey);
+                lspInitPendingRef.current.delete(clientKey);
+                lspOpenedUrisRef.current.delete(clientKey);
+                lspSyncCapRef.current.delete(clientKey);
                 setLspStatus('Disconnected');
             });
         }).catch(e => {
             console.error(`[LSP] Init failed for ${backendLang}:`, e);
-            lspInitPendingRef.current.delete(backendLang);
+            lspInitPendingRef.current.delete(clientKey);
             try { lspChannel.close(); } catch (_) {}
         });
 
