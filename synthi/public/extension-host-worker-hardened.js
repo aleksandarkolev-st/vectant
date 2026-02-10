@@ -16,7 +16,7 @@
 // Load real Node.js browser polyfills (Buffer, path, events, stream, etc.)
 // Built by: node scripts/build-node-polyfills.js → public/node-polyfills.js
 try {
-  importScripts('./node-polyfills.js');
+  importScripts('/node-polyfills.js');
 } catch (e) {
   console.warn('[ExtensionHost] node-polyfills.js not found, extensions may fail:', e.message);
 }
