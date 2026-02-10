@@ -233,6 +233,32 @@ class GitService {
         return simpleGit(repoPath);
     }
 
+    /**
+     * Ensure internal artifacts are listed in .git/info/exclude so they
+     * never appear in git status, even if a bug places them in the working tree.
+     * Safe to call multiple times — only appends if the pattern is missing.
+     */
+    _ensureLocalExcludes(repoPath) {
+        try {
+            const excludePath = path.join(repoPath, '.git', 'info', 'exclude');
+            const infoDir = path.dirname(excludePath);
+            if (!fs.existsSync(infoDir)) fs.mkdirSync(infoDir, { recursive: true });
+
+            const existing = fs.existsSync(excludePath)
+                ? fs.readFileSync(excludePath, 'utf8')
+                : '';
+
+            const patterns = ['.git-archive.tar.gz'];
+            const toAppend = patterns.filter(p => !existing.includes(p));
+            if (toAppend.length > 0) {
+                const suffix = existing.endsWith('\n') || existing === '' ? '' : '\n';
+                fs.appendFileSync(excludePath, suffix + toAppend.join('\n') + '\n');
+            }
+        } catch (e) {
+            console.warn('[GitService] Failed to update .git/info/exclude:', e.message);
+        }
+    }
+
     async initRepo(slug, remoteUrl) {
         return this.withLock(slug, async () => {
             // repoCache.acquire (inside withLock) already materialised files
@@ -250,6 +276,8 @@ class GitService {
                     await git.addRemote('origin', remoteUrl);
                 }
             }
+            // Defense-in-depth: hide internal artifacts from git status
+            this._ensureLocalExcludes(repoPath);
             return { success: true, path: repoPath };
         });
     }
@@ -300,6 +328,8 @@ class GitService {
 
             // Archive .git to GCS for fast re-hydration after eviction
             this._archiveGitAsync(slug);
+            // Defense-in-depth: hide internal artifacts from git status
+            this._ensureLocalExcludes(repoPath);
             
             return { success: true, path: repoPath };
         });
