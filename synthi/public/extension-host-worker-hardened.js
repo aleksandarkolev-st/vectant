@@ -725,13 +725,25 @@ class HardenedExtensionHost {
       const shimRequire = (id) => {
         if (id === 'vscode') return vscode;
         // Check real polyfills first (includes node: prefixed aliases)
-        if (polyfills[id]) return polyfills[id];
+        if (polyfills[id]) {
+          // Wrap known polyfills in a safety Proxy: if the extension accesses
+          // a property that doesn't exist on the real polyfill (e.g. events.SomeThing),
+          // fall back to an auto-stub instead of returning undefined.
+          // This prevents "Class extends value undefined" crashes.
+          const real = polyfills[id];
+          if (typeof real !== 'object' && typeof real !== 'function') return real;
+          return new Proxy(real, {
+            get(target, prop, receiver) {
+              // Check if the property actually exists on the real module
+              if (prop in target || typeof prop === 'symbol') {
+                return Reflect.get(target, prop, receiver);
+              }
+              // Missing property → auto-stub so `extends X.Missing` works
+              return self.__createDeepStub(id + '.' + String(prop));
+            }
+          });
+        }
         // For anything unknown, return a deep auto-stub Proxy.
-        // This handles:
-        //   - `extends unknownModule.SomeClass` → returns a constructable class
-        //   - `unknownModule.someMethod()` → returns a chainable no-op
-        //   - `unknownModule.SOME_CONST` → returns a proxy that keeps working
-        //   - `new unknownModule.Thing()` → returns an instance-like proxy
         console.warn(`[ExtensionHost] require('${id}') auto-stubbed for ${extensionId}`);
         return self.__createDeepStub(id);
       };
