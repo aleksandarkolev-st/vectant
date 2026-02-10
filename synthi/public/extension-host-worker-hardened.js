@@ -46,14 +46,16 @@ self.__createDeepStub = function(moduleName) {
     const proxy = new Proxy(StubFn, {
       get(target, prop) {
         // Primitives and common JS protocol methods
-        if (prop === Symbol.toPrimitive) return () => '';
+        // Return '0.0.0' instead of '' so that semver.parse/gte/etc. get a
+        // valid version string instead of crashing with "Invalid Version: ".
+        if (prop === Symbol.toPrimitive) return (hint) => hint === 'number' ? 0 : '0.0.0';
         if (prop === Symbol.iterator) return undefined;
         if (prop === Symbol.toStringTag) return moduleName || 'Stub';
         if (prop === 'then') return undefined;  // prevent Promise-like behavior
         if (prop === 'catch') return undefined;
         if (prop === 'toJSON') return () => ({});
         if (prop === 'valueOf') return () => 0;
-        if (prop === 'toString') return () => `[stub: ${path}]`;
+        if (prop === 'toString') return () => '0.0.0';
         if (prop === 'constructor') return StubFn;
         if (prop === 'prototype') return StubFn.prototype;
         if (prop === 'length') return 0;
