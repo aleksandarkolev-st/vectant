@@ -48,6 +48,8 @@ import {
   removeExtension as dbRemove,
   setExtensionEnabled as dbSetEnabled,
 } from '@/extensions/loader/ExtensionInstaller';
+import { registerExtensionGrammars } from '@/extensions/loader/GrammarRegistrar';
+import { initLspRegistry, registerLspForExtension, unregisterLspForExtension } from '@/services/lspRegistry';
 
 /**
  * Worker URL — served from public folder.
@@ -68,6 +70,9 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
 
   // Tree data from extensions (viewId → items[])
   const [treeDataMap, setTreeDataMap] = useState({});
+
+  // Initialise the global LSP registry once
+  useEffect(() => { initLspRegistry(); }, []);
 
   // Refs to hold the live extension system + MonacoBridge
   const systemRef = useRef(null);
@@ -192,10 +197,36 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
           if (manifest.contributes) {
             dispatch(parseContributions({ extensionId: ext.id, contributes: manifest.contributes }));
           }
+          // Register grammars/languages with Monaco
+          try {
+            await registerExtensionGrammars(manifest);
+          } catch (_) {}
+          // Register LSP mappings for extensions that have known language servers
+          try {
+            registerLspForExtension(ext.id, manifest);
+          } catch (_) {}
           dispatch(setExtensionState({ id: ext.id, extensionState: 'loaded' }));
 
+          // Detect stale Node-only bundles cached before the browser-entry fix.
+          // If the manifest has "main" but no "browser" field and the cached code
+          // isn't already our declarative stub, replace it to avoid crashes.
+          let codeToLoad = ext.code;
+          if (manifest.main && !manifest.browser && ext.code && !ext.code.includes('declarative mode')) {
+            console.warn(`[useExtensions] ${ext.id}: cached Node.js bundle detected, using declarative stub`);
+            const extName = (manifest.displayName || manifest.name || '').replace(/'/g, "\\'");
+            codeToLoad = `
+function activate(context) {
+  console.log('[${ext.id}] Activated (declarative mode: syntax highlighting, language config, views)');
+}
+function deactivate() {}
+module.exports = { activate, deactivate };
+`;
+            // Update the cache so this doesn't happen again
+            try { await dbSave({ id: ext.id, manifest, code: codeToLoad, enabled: true }); } catch (_) {}
+          }
+
           // Load into worker
-          await systemRef.current.registerExtension(ext.id, manifest, ext.code);
+          await systemRef.current.registerExtension(ext.id, manifest, codeToLoad);
           dispatch(setExtensionState({ id: ext.id, extensionState: 'activating' }));
 
           // Activate
@@ -286,6 +317,16 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
     if (parsed.contributes) {
       dispatch(parseContributions({ extensionId: id, contributes: parsed.contributes }));
     }
+    // Register grammars/languages with Monaco (works even for Node-only extensions)
+    try {
+      await registerExtensionGrammars(parsed);
+    } catch (grammarErr) {
+      console.warn(`[useExtensions] Grammar registration failed for ${id}:`, grammarErr.message);
+    }
+    // Register LSP mappings for extensions with known language servers
+    try {
+      registerLspForExtension(id, parsed);
+    } catch (_) {}
     dispatch(setExtensionState({ id, extensionState: 'loaded' }));
 
     // Load into worker
@@ -402,6 +443,8 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       try { await system.bridge?.deactivateExtension(extensionId); } catch (_) {}
     }
     await dbRemove(extensionId);
+    // Unregister LSP mappings so the Editor stops trying to connect
+    try { unregisterLspForExtension(extensionId); } catch (_) {}
     dispatch(removeExtRedux(extensionId));
   }, [dispatch]);
 

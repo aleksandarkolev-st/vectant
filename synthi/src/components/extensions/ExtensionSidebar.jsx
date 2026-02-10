@@ -374,6 +374,11 @@ export default function ExtensionSidebar({
         if (extracted.manifest?.contributes && !realManifest) {
           manifest.contributes = extracted.manifest.contributes;
         }
+        // Carry over extracted metadata
+        if (extracted.manifest?._grammars) manifest._grammars = extracted.manifest._grammars;
+        if (extracted.manifest?._langConfigs) manifest._langConfigs = extracted.manifest._langConfigs;
+        if (extracted.manifest?._nodeOnly) manifest._nodeOnly = extracted.manifest._nodeOnly;
+        if (extracted.manifest?._isWebBundle) manifest._isWebBundle = extracted.manifest._isWebBundle;
       }
     } catch (e) {
       console.warn(`[Marketplace] VSIX download/extract failed for ${extId}:`, e.message);

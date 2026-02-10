@@ -493,52 +493,39 @@ export class CompilerClient {
             };
 
             console.log('CompilerClient connecting to', this.url);
-            this.ws = new WebSocket(this.url);
+            const ws = new WebSocket(this.url);
+            this.ws = ws;
 
-            this.ws.onerror = (err) => {
+            ws.onerror = (err) => {
                 console.error('CompilerClient ws error', err);
                 this.readyPromise = null;
                 this._setStatus(CompilerStatus.ERROR);
                 reject(err);
             };
 
-            this.ws.onclose = () => {
+            ws.onclose = () => {
                 console.warn('CompilerClient ws closed');
-                this.readyPromise = null;
-                this.compileChannel = null;
-                this.buildLogChannel = null;
-                this.pc = null;
-                this.ws = null;
-                this.emulatorInputChannel = null;
-                this._setStatus(CompilerStatus.DISCONNECTED);
+                // Only clean up if this is still the active socket
+                if (this.ws === ws) {
+                    this.readyPromise = null;
+                    this.compileChannel = null;
+                    this.buildLogChannel = null;
+                    this.pc = null;
+                    this.ws = null;
+                    this.emulatorInputChannel = null;
+                    this._setStatus(CompilerStatus.DISCONNECTED);
+                }
             };
 
-            this.ws.onmessage = async (event) => {
+            ws.onmessage = async (event) => {
+                // Ignore messages from a stale socket
+                if (this.ws !== ws) return;
                 let msg;
                 try { msg = JSON.parse(event.data); } catch (_) { return; }
                 if (msg.type === 'answer' && msg.sdp) {
-                    await this.pc.setRemoteDescription(new RTCSessionDescription({ type: msg.sdp_type || 'answer', sdp: msg.sdp }));
-                } else if (msg.type === 'offer' && msg.sdp) {
-                    // Worker-initiated renegotiation (e.g. new tracks added after initial connection)
-                    console.log('[CompilerClient] Received renegotiation offer from worker');
-                    await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: msg.sdp }));
-                    const answer = await this.pc.createAnswer();
-                    await this.pc.setLocalDescription(answer);
-                    this.ws.send(JSON.stringify({ type: 'offer', sdp: answer.sdp, sdp_type: answer.type }));
-                    // Emit negotiated codecs to build log stream.
-                    try {
-                        const sdp = String(msg.sdp || '');
-                        const hasVp8 = /a=rtpmap:\\d+\\s+VP8\\//i.test(sdp);
-                        const hasH264 = /a=rtpmap:\\d+\\s+H264\\//i.test(sdp);
-                        const hasVp9 = /a=rtpmap:\\d+\\s+VP9\\//i.test(sdp);
-                        const hasAv1 = /a=rtpmap:\\d+\\s+AV1\\//i.test(sdp);
-                        const line = `[webrtc] answer: hasVp8=${hasVp8} hasH264=${hasH264} hasVp9=${hasVp9} hasAv1=${hasAv1} sdpLen=${sdp.length}`;
-                        this._emitWebrtcDiag(line);
-                    } catch (_) {
-                        // ignore
-                    }
-                    // Only set remote description if we're waiting for an answer (have-local-offer state)
-                    // This prevents "Called in wrong state: stable" errors from stale/duplicate answers
+                    // Only apply the answer if we're waiting for one (have-local-offer).
+                    // Stale / duplicate answers (e.g. from the offer-retry loop) can arrive
+                    // after the PC is already stable — silently ignore them.
                     const signalingState = this.pc?.signalingState;
                     if (signalingState === 'have-local-offer') {
                         try {
@@ -565,13 +552,42 @@ export class CompilerClient {
                         console.warn(`[CompilerClient] Ignoring answer in signalingState=${signalingState} (expected have-local-offer)`);
                         this._emitWebrtcDiag(`[webrtc] ignored answer signalingState=${signalingState}`);
                     }
+                } else if (msg.type === 'offer' && msg.sdp) {
+                    // Worker-initiated renegotiation (e.g. new tracks added after initial connection)
+                    console.log('[CompilerClient] Received renegotiation offer from worker');
+                    await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: msg.sdp }));
+                    const answer = await this.pc.createAnswer();
+                    await this.pc.setLocalDescription(answer);
+                    this.ws.send(JSON.stringify({ type: 'offer', sdp: answer.sdp, sdp_type: answer.type }));
+                    // Emit negotiated codecs to build log stream.
+                    try {
+                        const sdp = String(msg.sdp || '');
+                        const hasVp8 = /a=rtpmap:\\d+\\s+VP8\\//i.test(sdp);
+                        const hasH264 = /a=rtpmap:\\d+\\s+H264\\//i.test(sdp);
+                        const hasVp9 = /a=rtpmap:\\d+\\s+VP9\\//i.test(sdp);
+                        const hasAv1 = /a=rtpmap:\\d+\\s+AV1\\//i.test(sdp);
+                        const line = `[webrtc] renegotiation: hasVp8=${hasVp8} hasH264=${hasH264} hasVp9=${hasVp9} hasAv1=${hasAv1} sdpLen=${sdp.length}`;
+                        this._emitWebrtcDiag(line);
+                    } catch (_) {
+                        // ignore
+                    }
                 } else if (msg.type === 'candidate' && msg.candidate) {
                     try { await this.pc.addIceCandidate(msg.candidate); } catch (_) {}
                 }
             };
 
-            this.ws.onopen = async () => {
-                this.ws.send(JSON.stringify({ type: 'register', role: 'browser' }));
+            ws.onopen = async () => {
+                // Guard: if connect() was called again, this socket is stale
+                if (this.ws !== ws) {
+                    console.warn('[CompilerClient] onopen fired on stale socket, ignoring');
+                    try { ws.close(); } catch (_) {}
+                    return;
+                }
+                if (ws.readyState !== WebSocket.OPEN) {
+                    console.warn('[CompilerClient] onopen but readyState is not OPEN:', ws.readyState);
+                    return;
+                }
+                ws.send(JSON.stringify({ type: 'register', role: 'browser' }));
                 this.compileChannel = this.pc.createDataChannel('compile', { ordered: true });
                 // Terminal channel for stdin forwarding
                 this.terminalChannel = this.pc.createDataChannel('terminal', { ordered: true });
@@ -615,7 +631,7 @@ export class CompilerClient {
                 } catch (_) {}
                 
                 const offerPayload = JSON.stringify({ type: 'offer', sdp: offer.sdp, sdp_type: offer.type });
-                this.ws.send(offerPayload);
+                ws.send(offerPayload);
 
                 // Retry sending the offer periodically until we receive an Answer.
                 // This prevents the connection from hanging if the Worker process is restarting 
@@ -623,11 +639,11 @@ export class CompilerClient {
                 if (this._offerRetryInterval) clearInterval(this._offerRetryInterval);
                 this._offerRetryInterval = setInterval(() => {
                     const isWaiting = this.pc && this.pc.signalingState === 'have-local-offer';
-                    const isOpen = this.ws && this.ws.readyState === WebSocket.OPEN;
+                    const isOpen = ws === this.ws && ws.readyState === WebSocket.OPEN;
                     
                     if (isWaiting && isOpen) {
                         console.log('[CompilerClient] Retrying offer transmission (worker might not be ready)...');
-                        this.ws.send(offerPayload);
+                        ws.send(offerPayload);
                     } else {
                         if (this._offerRetryInterval) {
                             clearInterval(this._offerRetryInterval);

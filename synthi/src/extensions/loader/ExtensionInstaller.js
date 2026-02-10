@@ -203,15 +203,135 @@ export async function parseVSIX(vsixBuffer) {
     const manifestText = await manifestFile.async('text');
     const manifest = JSON.parse(manifestText);
 
-    // Find main entry point
-    const mainPath = `extension/${manifest.main || './extension.js'}`.replace(/^extension\/\.\//, 'extension/');
-    const mainFile = zip.file(mainPath);
-    if (!mainFile) {
-      throw new Error(`VSIX archive does not contain entry file: ${mainPath}`);
+    // ── Extract TextMate grammars from the VSIX ────────────────────────
+    // These are JSON/plist files referenced in contributes.grammars.
+    // They provide syntax highlighting and work without running any JS.
+    const grammars = {};
+    if (Array.isArray(manifest.contributes?.grammars)) {
+      for (const g of manifest.contributes.grammars) {
+        if (!g.path) continue;
+        const grammarPath = `extension/${g.path}`.replace(/^extension\/\.\//, 'extension/');
+        const grammarFile = zip.file(grammarPath);
+        if (grammarFile) {
+          try {
+            const grammarText = await grammarFile.async('text');
+            grammars[g.scopeName || g.language] = {
+              content: JSON.parse(grammarText),
+              language: g.language,
+              scopeName: g.scopeName,
+              path: g.path,
+            };
+          } catch (_) {
+            // plist or malformed JSON — skip
+          }
+        }
+      }
     }
-    const code = await mainFile.async('text');
 
-    return { manifest, code };
+    // ── Extract language configuration files ───────────────────────────
+    const langConfigs = {};
+    if (Array.isArray(manifest.contributes?.languages)) {
+      for (const lang of manifest.contributes.languages) {
+        if (!lang.configuration) continue;
+        const confPath = `extension/${lang.configuration}`.replace(/^extension\/\.\//, 'extension/');
+        const confFile = zip.file(confPath);
+        if (confFile) {
+          try {
+            const confText = await confFile.async('text');
+            // Language config JSON may have comments — strip them
+            const cleaned = confText.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+            langConfigs[lang.id] = JSON.parse(cleaned);
+          } catch (_) {
+            // skip malformed
+          }
+        }
+      }
+    }
+
+    // Store extracted assets on the manifest for downstream use
+    if (Object.keys(grammars).length > 0) manifest._grammars = grammars;
+    if (Object.keys(langConfigs).length > 0) manifest._langConfigs = langConfigs;
+
+    // ── Resolve the JS entry point ─────────────────────────────────────
+    // Prefer the browser entry point — we run in a web worker, so the
+    // Node.js bundle (main) will crash on process.binding, fs, etc.
+    const hasBrowserEntry = !!manifest.browser;
+    const entryField = manifest.browser || manifest.main || './extension.js';
+    const entryPath = `extension/${entryField}`.replace(/^extension\/\.\//, 'extension/');
+
+    let entryFile = zip.file(entryPath);
+    let usedBrowserBundle = hasBrowserEntry && !!entryFile;
+
+    // The manifest entry path may omit the file extension (e.g. "./dist/browser/extension").
+    // Try common JS extensions before giving up.
+    if (!entryFile) {
+      for (const ext of ['.js', '.cjs', '.mjs']) {
+        entryFile = zip.file(entryPath + ext);
+        if (entryFile) {
+          usedBrowserBundle = hasBrowserEntry;
+          break;
+        }
+      }
+    }
+
+    // Fall back to main if browser file is still missing from the archive
+    if (!entryFile && hasBrowserEntry && manifest.main) {
+      const mainField = manifest.main;
+      const fallbackPath = `extension/${mainField}`.replace(/^extension\/\.\//, 'extension/');
+      console.warn(`[parseVSIX] Browser entry "${entryPath}" not found, falling back to main: "${fallbackPath}"`);
+      entryFile = zip.file(fallbackPath);
+      // Also try with extensions on the main fallback
+      if (!entryFile) {
+        for (const ext of ['.js', '.cjs', '.mjs']) {
+          entryFile = zip.file(fallbackPath + ext);
+          if (entryFile) break;
+        }
+      }
+      usedBrowserBundle = false;
+    }
+
+    let code;
+    const extName = (manifest.displayName || manifest.name || '').replace(/'/g, "\\'");
+
+    if (!hasBrowserEntry && entryFile) {
+      // ── Node-only extension: don't load the Node bundle ──────────────
+      // The JS code uses Node.js APIs (process.binding, fs, child_process)
+      // that cannot work in a web worker. Instead, provide stub code that
+      // activates cleanly. Declarative contributions (syntax highlighting,
+      // language definitions, views, etc.) still work from the manifest.
+      console.warn(
+        `[parseVSIX] ${manifest.publisher}.${manifest.name}: Node-only extension ` +
+        `(has "main" but no "browser" field). Loading declarative contributions only.`
+      );
+      const grammarCount = Object.keys(grammars).length;
+      const langCount = manifest.contributes?.languages?.length || 0;
+      code = `
+// ${extName} v${manifest.version}
+// Node-only extension — declarative contributions loaded from manifest.
+// ${grammarCount} grammar(s) and ${langCount} language definition(s) extracted.
+// Full functionality requires a Node.js extension host (not available in web).
+function activate(context) {
+  console.log('[${manifest.publisher}.${manifest.name}] Activated (declarative mode: syntax highlighting, language config, views)');
+}
+function deactivate() {}
+module.exports = { activate, deactivate };
+`;
+      manifest._nodeOnly = true;
+    } else if (entryFile) {
+      code = await entryFile.async('text');
+    } else {
+      // No entry file at all — provide minimal stub
+      code = `
+function activate() { console.log('[${manifest.publisher}.${manifest.name}] No entry point found'); }
+function deactivate() {}
+module.exports = { activate, deactivate };
+`;
+    }
+
+    manifest._resolvedEntry = entryFile?.name || null;
+    manifest._isWebBundle = usedBrowserBundle;
+
+    return { manifest, code, grammars, langConfigs };
   } catch (e) {
     if (e.message?.includes('jszip')) {
       throw new Error(

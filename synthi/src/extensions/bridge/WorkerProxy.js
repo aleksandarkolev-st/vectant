@@ -327,7 +327,9 @@ export class WorkerProxy {
    * @returns {Promise<void>}
    */
   loadExtension(extensionId, code, manifest) {
-    return this.request(MainToWorkerMethods.LOAD_EXTENSION, [extensionId, code, manifest]);
+    // Large extensions (e.g. GitHub Pull Requests) can take a while to eval.
+    // Use a generous 30s timeout instead of the default 5s.
+    return this.request(MainToWorkerMethods.LOAD_EXTENSION, [extensionId, code, manifest], 30000);
   }
 
   /**

@@ -80,8 +80,30 @@ export async function GET(request) {
         );
       }
       const detail = await detailRes.json();
+      // Prefer the web target platform download if available — it contains
+      // the browser-compatible bundle and won't need Node.js APIs.
       const downloadUrl = detail.files?.download;
-      if (!downloadUrl) {
+      // Open VSX may list target-specific downloads under allVersions or
+      // via a targetPlatform query.  Try ?targetPlatform=web first.
+      let vsixDownloadUrl = downloadUrl;
+      if (downloadUrl && !downloadUrl.includes('targetPlatform=web')) {
+        try {
+          const webDetailUrl = `${detailUrl}?targetPlatform=web`;
+          const webRes = await fetch(webDetailUrl, {
+            headers: { 'Accept': 'application/json' },
+            signal: controller.signal,
+          });
+          if (webRes.ok) {
+            const webDetail = await webRes.json();
+            if (webDetail.files?.download) {
+              vsixDownloadUrl = webDetail.files.download;
+            }
+          }
+        } catch (_) {
+          // Fall back to default download URL
+        }
+      }
+      if (!vsixDownloadUrl) {
         clearTimeout(timeout);
         return NextResponse.json(
           { error: 'No download URL found for this extension' },
@@ -89,7 +111,7 @@ export async function GET(request) {
         );
       }
       // Download the actual VSIX binary
-      const vsixRes = await fetch(downloadUrl, { signal: controller.signal });
+      const vsixRes = await fetch(vsixDownloadUrl, { signal: controller.signal });
       clearTimeout(timeout);
       if (!vsixRes.ok) {
         return NextResponse.json(

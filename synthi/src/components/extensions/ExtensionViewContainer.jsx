@@ -153,7 +153,11 @@ export default function ExtensionViewContainer({
   webviewManager = null,
   extensions = {},
 }) {
-  const extInfo = extensions[container?.extensionId];
+  // extensions may be an array (from selectExtensionList) or an object map.
+  // Normalise to find the extension info by its ID.
+  const extInfo = Array.isArray(extensions)
+    ? extensions.find(e => e.id === container?.extensionId)
+    : extensions[container?.extensionId];
   const isActive = extInfo?.state === 'active';
 
   return (

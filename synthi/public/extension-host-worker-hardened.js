@@ -368,6 +368,52 @@ function createVSCodeAPI(extensionId, host) {
         host.emit('createWebview', viewId, viewType, title, options);
         return panel;
       },
+      registerWebviewViewProvider(viewId, provider, options) {
+        // Resolve the webview view immediately so the extension can set HTML.
+        const wvViewId = `${extensionId}.webviewView.${viewId}`;
+        const onDidChangeVisibilityEmitter = new EventEmitter();
+        const onDidDisposeEmitter = new EventEmitter();
+        const webviewView = {
+          viewType: viewId,
+          visible: true,
+          onDidChangeVisibility: onDidChangeVisibilityEmitter.event,
+          onDidDispose: onDidDisposeEmitter.event,
+          show(preserveFocus) { /* no-op for now */ },
+          webview: {
+            _html: '',
+            options: options || {},
+            get html() { return this._html; },
+            set html(value) {
+              this._html = value;
+              host.emit('updateWebview', wvViewId, { html: value });
+            },
+            onDidReceiveMessage: new EventEmitter().event,
+            postMessage: (msg) => {
+              host.emit('postWebviewMessage', wvViewId, msg);
+              return Promise.resolve(true);
+            },
+            asWebviewUri: (uri) => uri,
+            cspSource: '',
+          },
+        };
+        // Notify main thread to create the webview container
+        host.emit('createWebview', wvViewId, viewId, viewId, options || {});
+        // Let the extension resolve content into the view
+        try {
+          const result = provider.resolveWebviewView(webviewView, {}, { isCancellationRequested: false, onCancellationRequested: new EventEmitter().event });
+          if (result && typeof result.then === 'function') {
+            result.catch(e => console.error(`[registerWebviewViewProvider] resolveWebviewView failed for ${viewId}:`, e));
+          }
+        } catch (e) {
+          console.error(`[registerWebviewViewProvider] resolveWebviewView threw for ${viewId}:`, e);
+        }
+        return {
+          dispose() {
+            onDidDisposeEmitter.fire();
+            host.emit('disposeWebview', wvViewId);
+          }
+        };
+      },
       createTreeView(viewId, options) {
         const treeView = {
           _viewId: viewId,
@@ -724,7 +770,34 @@ class HardenedExtensionHost {
       // The polyfill bundle sets self.__nodePolyfills, self.__nodeBuffer, self.__nodeProcess.
       const polyfills = self.__nodePolyfills || {};
       const BufferImpl = self.__nodeBuffer || (typeof Buffer !== 'undefined' ? Buffer : { from: () => new Uint8Array(), alloc: () => new Uint8Array(), allocUnsafe: () => new Uint8Array(), isBuffer: () => false, concat: () => new Uint8Array(), byteLength: () => 0 });
-      const processImpl = self.__nodeProcess || { env: {}, platform: 'web', cwd: () => '/', version: 'v18.0.0', versions: { node: '18.0.0' }, nextTick: (cb) => setTimeout(cb, 0), stdout: { write: () => {} }, stderr: { write: () => {} } };
+      const processImpl = self.__nodeProcess || { env: {}, platform: 'web', cwd: () => '/', version: '18.0.0', versions: { node: '18.0.0' }, nextTick: (cb) => setTimeout(cb, 0), stdout: { write: () => {} }, stderr: { write: () => {} } };
+
+      // CRITICAL FIX: The browser process polyfill (process/browser.js) sets
+      // process.version = "" and process.versions = {}.  Semver libraries crash
+      // when they try to parse an empty string.  Patch them to valid semver.
+      if (!processImpl.version || !/^\d/.test(processImpl.version.replace(/^v/, ''))) {
+        processImpl.version = '18.0.0';
+      }
+      if (!processImpl.versions || typeof processImpl.versions !== 'object') {
+        processImpl.versions = {};
+      }
+      if (!processImpl.versions.node) processImpl.versions.node = '18.0.0';
+      if (!processImpl.versions.v8)   processImpl.versions.v8   = '10.2.154.26';
+      if (!processImpl.versions.modules) processImpl.versions.modules = '108';
+
+      // FIX: The browser process polyfill throws on process.binding().
+      // Some extensions (Prisma) call it for native bindings (buffer, util, fs…).
+      // Return a minimal stub object so the extension can continue.
+      const origBinding = processImpl.binding;
+      processImpl.binding = function(name) {
+        try { if (origBinding) return origBinding.call(processImpl, name); } catch (_) {}
+        return {};
+      };
+      if (typeof processImpl.dlopen !== 'function') {
+        processImpl.dlopen = function() {
+          console.warn('[ExtensionHost] process.dlopen() stubbed');
+        };
+      }
 
       const shimRequire = (id) => {
         if (id === 'vscode') return vscode;
@@ -770,6 +843,35 @@ class HardenedExtensionHost {
         }
       );
 
+      // ---------- Semver "Invalid Version" safety patching ----------
+      // Bundled semver libraries throw `new TypeError("Invalid Version: " + v)` when
+      // given empty strings or non-semver values. Since we can't control every version
+      // string that flows through webpack-internal modules, we patch the bundled code
+      // to coerce invalid versions to "0.0.0" instead of throwing.
+      // Typical minified patterns:
+      //   throw new TypeError("Invalid Version: "+e)
+      //   throw new TypeError(`Invalid Version: ${e}`)
+      code = code.replace(
+        /throw\s+new\s+TypeError\s*\(\s*["'`]Invalid Version:\s*["'`]\s*\+\s*(\w+)\s*\)/g,
+        '($1 = (typeof $1 === "string" && /^\\d/.test($1)) ? $1 : "0.0.0", void 0)'
+      );
+      // Also catch template literal form: throw new TypeError(`Invalid Version: ${e}`)
+      code = code.replace(
+        /throw\s+new\s+TypeError\s*\(\s*`Invalid Version:\s*\$\{(\w+)\}`\s*\)/g,
+        '($1 = (typeof $1 === "string" && /^\\d/.test($1)) ? $1 : "0.0.0", void 0)'
+      );
+
+      // ---------- Semver null-match safety patching (Layer 1) ----------
+      // When the "Invalid Version" throw is tree-shaken by the minifier, the
+      // SemVer constructor directly accesses match(regex)[1] on a null result.
+      // The standard semver library preprocesses with .trim().replace(/^[v=]+/, '')
+      // before matching, but some minified bundles strip this step. We re-inject
+      // the prefix-stripping so strings like "v18.0.0" match strict semver regexes.
+      code = code.replace(
+        /\.trim\(\)\s*\.match\s*\(/g,
+        '.trim().replace(/^[v=\\s]+/,"").match('
+      );
+
       // Wrap extension code to inject Node.js globals.
       // Many webpack/esbuild bundles reference `global`, `Buffer`, `process` etc. at top level.
       const wrappedCode = `var global = self;
@@ -784,6 +886,42 @@ var setImmediate = function(cb) { return setTimeout(cb, 0); };
 var clearImmediate = function(id) { return clearTimeout(id); };
 var __SafeBase = (function(){ function S(){} return S; })();
 var __x = function(v){ if(v===void 0) return __SafeBase; if(v===null) return null; if(typeof v==='function') return v; return __SafeBase; };
+var __origSPM = String.prototype.match;
+String.prototype.match = function(re) {
+  var r = __origSPM.call(this, re);
+  if (r !== null) return r;
+  if (!(re instanceof RegExp) || re.source.length < 12 || !/\\(/.test(re.source)) return r;
+  var s = (typeof this === 'string' ? this : String(this)).trim();
+  if (/^[v= \\t]*\\d+\\.\\d+\\.\\d+/.test(s)) {
+    var c = s.replace(/^[v=\\s]+/, '');
+    var m = __origSPM.call(c, /^(\\d+)\\.(\\d+)\\.(\\d+)(?:-([\\w.+-]+))?(?:\\+([\\w.+-]+))?$/);
+    if (m) return m;
+  }
+  if (re.source.length > 30 && re.source.indexOf('\\\\d') >= 0 && re.source.indexOf('\\\\.') >= 0) {
+    var fb = __origSPM.call('0.0.0', re);
+    if (fb) return fb;
+    return ['0.0.0','0','0','0',undefined,undefined];
+  }
+  return r;
+};
+var __origExec = RegExp.prototype.exec;
+RegExp.prototype.exec = function(str) {
+  var r = __origExec.call(this, str);
+  if (r !== null) return r;
+  if (this.source.length < 12 || !/\\(/.test(this.source)) return r;
+  var s = (typeof str === 'string' ? str : String(str)).trim();
+  if (/^[v= \\t]*\\d+\\.\\d+\\.\\d+/.test(s)) {
+    var c = s.replace(/^[v=\\s]+/, '');
+    var m = __origExec.call(/^(\\d+)\\.(\\d+)\\.(\\d+)(?:-([\\w.+-]+))?(?:\\+([\\w.+-]+))?$/, c);
+    if (m) return m;
+  }
+  if (this.source.length > 30 && this.source.indexOf('\\\\d') >= 0 && this.source.indexOf('\\\\.') >= 0) {
+    var fb = __origExec.call(this, '0.0.0');
+    if (fb) return fb;
+    return ['0.0.0','0','0','0',undefined,undefined];
+  }
+  return r;
+};
 ` + code;
 
       // Evaluate extension code with polyfill-backed shims

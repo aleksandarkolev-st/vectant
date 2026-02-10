@@ -1658,7 +1658,7 @@ export default function EditorPage({ params }) {
         }
     }, [activeFile, currentContent, rawFiles, slug, compile]);
 
-    const handleEditorMount = (editorInstance) => {
+    const handleEditorMount = useCallback((editorInstance) => {
         setEditor(editorInstance);
         // Wait until file is loaded, then capture snapshot
         if (activeFile && !hasInitialSnapshot) {
@@ -1666,7 +1666,7 @@ export default function EditorPage({ params }) {
             setInitialContent(currentValue);
             setHasInitialSnapshot(true);
         }
-    };
+    }, [activeFile, hasInitialSnapshot]);
 
     const handleToggleChat = useCallback(() => {
         setChatVisible((v) => !v);

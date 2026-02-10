@@ -16,6 +16,22 @@ const ACTIVATION_EVENT_PATTERNS = [
   'onCustomEditor:',
   'onAuthenticationRequest:',
   'onStartupFinished',
+  'onNotebook:',
+  'onRenderer:',
+  'onTerminalProfile:',
+  'onWalkthrough:',
+  'onEditSession:',
+  'onSearch:',
+  'onChatContextProvider:',
+  'onChatParticipant:',
+  'onIssueReporterOpened',
+  'onDebug',
+  'onDebugAdapterProtocolTracker:',
+  'onDebugDynamicConfigurations:',
+  'onDebugInitialConfigurations',
+  'onDebugResolve:',
+  'onTaskType:',
+  'onOpenExternalUri:',
   '*',
 ];
 
@@ -27,6 +43,7 @@ const ACTIVATION_EVENT_PATTERNS = [
  */
 export function parseManifest(raw, extensionId) {
   const errors = [];
+  const warnings = [];
   let manifest;
 
   // Parse JSON string if needed
@@ -64,19 +81,22 @@ export function parseManifest(raw, extensionId) {
     errors.push('"engines" must be an object');
   }
 
-  // Validate activationEvents if present
+  // Validate activationEvents if present — unknown events are warnings, not
+  // errors.  VS Code adds new event types regularly and we activate eagerly
+  // anyway, so blocking install over an unrecognised event is unnecessary.
   if (manifest.activationEvents) {
     if (!Array.isArray(manifest.activationEvents)) {
       errors.push('"activationEvents" must be an array');
     } else {
       for (const event of manifest.activationEvents) {
         if (typeof event !== 'string') {
-          errors.push(`Invalid activation event: ${JSON.stringify(event)}`);
+          warnings.push(`Non-string activation event ignored: ${JSON.stringify(event)}`);
           continue;
         }
         const validPattern = ACTIVATION_EVENT_PATTERNS.some(p => event === p || event.startsWith(p));
         if (!validPattern) {
-          errors.push(`Unknown activation event pattern: "${event}"`);
+          // Warn but don't block — the extension can still load with eager activation.
+          warnings.push(`Unknown activation event pattern: "${event}" (will use eager activation)`);
         }
       }
     }
@@ -98,8 +118,12 @@ export function parseManifest(raw, extensionId) {
     }
   }
 
+  if (warnings.length > 0) {
+    console.warn('[ManifestParser] Warnings:', warnings.join('; '));
+  }
+
   if (errors.length > 0) {
-    return { valid: false, manifest, errors };
+    return { valid: false, manifest, errors, warnings };
   }
 
   // Normalize the manifest
@@ -121,7 +145,7 @@ export function parseManifest(raw, extensionId) {
   // Compute extension ID
   normalized.__extensionId = extensionId || `${normalized.publisher}.${normalized.name}`;
 
-  return { valid: true, manifest: normalized, errors: [] };
+  return { valid: true, manifest: normalized, errors: [], warnings };
 }
 
 /**

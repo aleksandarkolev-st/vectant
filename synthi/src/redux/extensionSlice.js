@@ -1,5 +1,5 @@
 // src/redux/extensionSlice.js
-import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
+import { createSlice, createAsyncThunk, createSelector } from '@reduxjs/toolkit';
 
 /**
  * Extension Redux Slice
@@ -324,7 +324,10 @@ export const {
 export const selectHostStatus = (state) => state.extensions.hostStatus;
 export const selectHostError = (state) => state.extensions.hostError;
 export const selectExtensions = (state) => state.extensions.extensions;
-export const selectExtensionList = (state) => Object.values(state.extensions.extensions);
+export const selectExtensionList = createSelector(
+  [selectExtensions],
+  (extensions) => Object.values(extensions)
+);
 export const selectExtension = (id) => (state) => state.extensions.extensions[id];
 export const selectCommands = (state) => state.extensions.commands;
 export const selectExtensionErrors = (state) => state.extensions.errors;

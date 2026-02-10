@@ -192,6 +192,32 @@ pub async fn ensure_lsp_installed(lang: &str, workspace: &Path) -> Result<&'stat
         "html" => ("vscode-html-language-server", vec![
             "npm install -g vscode-langservers-extracted 2>/dev/null || true",
         ]),
+        "prisma" => ("prisma-language-server", vec![
+            "npm install -g @prisma/language-server 2>/dev/null || true",
+        ]),
+        "tailwindcss" => ("tailwindcss-language-server", vec![
+            "npm install -g @tailwindcss/language-server 2>/dev/null || true",
+        ]),
+        "eslint" => ("vscode-eslint-language-server", vec![
+            "npm install -g vscode-langservers-extracted 2>/dev/null || true",
+        ]),
+        "yaml" => ("yaml-language-server", vec![
+            "npm install -g yaml-language-server 2>/dev/null || true",
+        ]),
+        "toml" => ("taplo", vec![
+            "cargo install taplo-cli --features lsp 2>/dev/null || \
+             curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-full-linux-x86_64.gz | \
+             gunzip > /usr/local/bin/taplo && chmod +x /usr/local/bin/taplo || true",
+        ]),
+        "json" | "jsonc" => ("vscode-json-language-server", vec![
+            "npm install -g vscode-langservers-extracted 2>/dev/null || true",
+        ]),
+        "graphql" => ("graphql-lsp", vec![
+            "npm install -g graphql-language-service-cli 2>/dev/null || true",
+        ]),
+        "dockerfile" => ("docker-langserver", vec![
+            "npm install -g dockerfile-language-server-nodejs 2>/dev/null || true",
+        ]),
         _ => return Err(format!("No installer for language: {}", lang)),
     };
 

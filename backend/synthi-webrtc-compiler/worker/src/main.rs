@@ -1852,6 +1852,63 @@ async fn wire_peer_channels(
                             c.arg("--stdio");
                             c
                         },
+                        "prisma" => {
+                            // Prisma Language Server (Node.js based)
+                            // Installed via: npm i -g @prisma/language-server
+                            let mut c = system_command("prisma-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "tailwindcss" => {
+                            // Tailwind CSS Language Server
+                            // Installed via: npm i -g @tailwindcss/language-server
+                            let mut c = system_command("tailwindcss-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "eslint" => {
+                            // ESLint Language Server (vscode-langservers-extracted)
+                            let mut c = system_command("vscode-eslint-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "yaml" => {
+                            // YAML Language Server
+                            // Installed via: npm i -g yaml-language-server
+                            let mut c = system_command("yaml-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "toml" => {
+                            // Taplo TOML Language Server
+                            // Installed via: cargo install taplo-cli --features lsp
+                            let mut c = system_command("taplo");
+                            c.arg("lsp");
+                            c.arg("stdio");
+                            c
+                        },
+                        "json" | "jsonc" => {
+                            // VSCode JSON language server (vscode-langservers-extracted)
+                            let mut c = system_command("vscode-json-language-server");
+                            c.arg("--stdio");
+                            c
+                        },
+                        "graphql" => {
+                            // GraphQL Language Server
+                            // Installed via: npm i -g graphql-language-service-cli
+                            let mut c = system_command("graphql-lsp");
+                            c.arg("server");
+                            c.arg("-m");
+                            c.arg("stream");
+                            c
+                        },
+                        "dockerfile" => {
+                            // Dockerfile Language Server
+                            // Installed via: npm i -g dockerfile-language-server-nodejs
+                            let mut c = system_command("docker-langserver");
+                            c.arg("--stdio");
+                            c
+                        },
                         _ => {
                             println!("Unsupported language for LSP: {}", lang);
                             return;
@@ -5265,9 +5322,32 @@ path = "{}"
                 }
             }
         }
+        "prisma" => {
+            // Prisma Language Server works with .prisma files directly.
+            // No extra config needed — it reads schema.prisma from the workspace.
+            let schema = workspace.join("prisma/schema.prisma");
+            if !schema.exists() {
+                // Check root level too
+                let root_schema = workspace.join("schema.prisma");
+                if root_schema.exists() {
+                    println!("[LSP-CONFIG] Prisma schema found at root level");
+                }
+            } else {
+                println!("[LSP-CONFIG] Prisma schema found at prisma/schema.prisma");
+            }
+        }
+        "json" | "jsonc" => {
+            // vscode-json-language-server works out of the box.
+            // Optionally, we could provide schema associations.
+        }
+        "yaml" => {
+            // yaml-language-server works out of the box.
+            // Could provide schema associations via settings.
+        }
         // Python: pylsp/pyright works well for standalone files without extra config.
         // C/C++: compile_flags.txt is created in the cmd match arm below.
         // Java: jdtls creates .jdtls-data itself.
+        // TOML, GraphQL, Dockerfile, Tailwind, ESLint: work without extra config.
         _ => {}
     }
 }

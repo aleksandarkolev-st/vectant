@@ -91,6 +91,11 @@ const SUPPORTED_LANGUAGES = [
     { id: 'ruby', extensions: ['.rb'], aliases: ['Ruby'] },
     { id: 'php', extensions: ['.php'], aliases: ['PHP'] },
     { id: 'haskell', extensions: ['.hs'], aliases: ['Haskell'] },
+    { id: 'prisma', extensions: ['.prisma'], aliases: ['Prisma'] },
+    { id: 'graphql', extensions: ['.graphql', '.gql'], aliases: ['GraphQL'] },
+    { id: 'yaml', extensions: ['.yaml', '.yml'], aliases: ['YAML'] },
+    { id: 'toml', extensions: ['.toml'], aliases: ['TOML'] },
+    { id: 'dockerfile', extensions: [], aliases: ['Dockerfile'] },
 ];
 
 // Build a reverse map: language id → glob patterns for documentSelector fallback
@@ -462,7 +467,47 @@ const EditorPanel = ({
             scss:               { backend: 'scss',       clientKey: 'css',        selector: ['css', 'scss', 'less'] },
             less:               { backend: 'less',       clientKey: 'css',        selector: ['css', 'scss', 'less'] },
             html:               { backend: 'html',       clientKey: 'html',       selector: ['html'] },
+            prisma:             { backend: 'prisma',     clientKey: 'prisma',     selector: ['prisma'] },
+            yaml:               { backend: 'yaml',       clientKey: 'yaml',       selector: ['yaml'] },
+            toml:               { backend: 'toml',       clientKey: 'toml',       selector: ['toml'] },
+            json:               { backend: 'json',       clientKey: 'json',       selector: ['json', 'jsonc'] },
+            jsonc:              { backend: 'json',       clientKey: 'json',       selector: ['json', 'jsonc'] },
+            graphql:            { backend: 'graphql',    clientKey: 'graphql',    selector: ['graphql'] },
+            dockerfile:         { backend: 'dockerfile', clientKey: 'dockerfile', selector: ['dockerfile'] },
         };
+
+        // ── Supplementary (augmentation) LSP servers ──────────────
+        // These are language servers that don't own a file type but
+        // provide additional intelligence (linting, utility classes)
+        // for files that already have a primary language server.
+        // Each entry maps primary language IDs → supplementary LSP backends.
+        const SUPPLEMENTARY_SERVERS = {
+            eslint: {
+                backend: 'eslint',
+                clientKey: 'eslint',
+                selector: ['javascript', 'typescript', 'javascriptreact', 'typescriptreact'],
+                // Which primary languages trigger this supplementary server
+                activatesOn: ['javascript', 'typescript', 'javascriptreact', 'typescriptreact'],
+            },
+            tailwindcss: {
+                backend: 'tailwindcss',
+                clientKey: 'tailwindcss',
+                selector: ['css', 'scss', 'less', 'html', 'javascript', 'typescript', 'javascriptreact', 'typescriptreact', 'svelte'],
+                activatesOn: ['css', 'scss', 'less', 'html', 'javascript', 'typescript', 'javascriptreact', 'typescriptreact', 'svelte'],
+            },
+        };
+
+        // ── Merge dynamic LSP entries from extension registry ─────
+        // Extensions can register additional language→LSP mappings at
+        // install time. These are stored in window.__synthiLspRegistry
+        // and merged here so they participate in LSP startup.
+        if (typeof window !== 'undefined' && window.__synthiLspRegistry) {
+            for (const [langId, entry] of Object.entries(window.__synthiLspRegistry)) {
+                if (!LSP_LANG_TABLE[langId]) {
+                    LSP_LANG_TABLE[langId] = entry;
+                }
+            }
+        }
 
         const langEntry = LSP_LANG_TABLE[lang];
         const backendLang = langEntry?.backend ?? null;
@@ -1852,6 +1897,143 @@ const EditorPanel = ({
             languageClientsRef.current.set(clientKey, languageClient);
             lspInitPendingRef.current.delete(clientKey);
             setLspStatus(`Ready (${backendLang})`);
+
+            // ── Start supplementary (augmentation) LSP servers ────────
+            // After the primary LSP client is ready, check if any
+            // supplementary servers should also be started for this
+            // language (e.g. ESLint for JS/TS, Tailwind for CSS/HTML).
+            // These run as separate WebRTC channels and provide
+            // additional diagnostics/completions alongside the primary
+            // server.
+            for (const [suppKey, suppConfig] of Object.entries(SUPPLEMENTARY_SERVERS)) {
+                if (!suppConfig.activatesOn.includes(lang)) continue;
+                if (languageClientsRef.current.has(suppConfig.clientKey)) continue;
+                if (lspInitPendingRef.current.has(suppConfig.clientKey)) continue;
+
+                // Check if this supplementary server is enabled via lspRegistry
+                // (i.e. the user has the corresponding extension installed)
+                const registry = (typeof window !== 'undefined' && window.__synthiLspRegistry) || {};
+                const isRegistered = registry[suppKey] || suppConfig.activatesOn.some(l => {
+                    const entry = registry[l];
+                    return entry && entry.backend === suppConfig.backend;
+                });
+                // Also check if the server is explicitly in LSP_LANG_TABLE
+                // (it was moved out to SUPPLEMENTARY_SERVERS but the backend
+                // route still exists on the worker)
+                if (!isRegistered && !LSP_LANG_TABLE[suppKey]) {
+                    // Server not registered — user hasn't installed the extension.
+                    // Still start it if the backend is known (the worker has it).
+                    // This allows supplementary servers to work out-of-the-box.
+                }
+
+                console.log(`[LSP] Starting supplementary server: ${suppConfig.backend} for primary language ${lang}`);
+                lspInitPendingRef.current.add(suppConfig.clientKey);
+
+                // Fire-and-forget: start the supplementary server asynchronously
+                // so it doesn't block the primary server's completion provider.
+                (async () => {
+                    try {
+                        const suppChannel = compilerClient.createLspChannel(suppConfig.backend);
+                        const suppAdapter = new MonacoSocketAdapter(suppChannel);
+                        const suppRawSocket = toSocket(suppAdapter);
+                        const suppReader = new WebSocketMessageReader(suppRawSocket);
+                        const suppWriter = new WebSocketMessageWriter(suppRawSocket);
+
+                        const { MonacoLanguageClient } = await import('monaco-languageclient');
+
+                        const suppDocSelector = [
+                            ...suppConfig.selector.map(l => ({ language: l, scheme: 'file' })),
+                            ...suppConfig.selector.flatMap(l =>
+                                (LANG_TO_GLOB[l] || []).map(pattern => ({ scheme: 'file', pattern }))
+                            ),
+                        ];
+
+                        // ESLint server requires specific initializationOptions
+                        const suppInitOpts = suppConfig.backend === 'eslint' ? {
+                            run: 'onType',
+                            validate: 'on',
+                            experimental: { useFlatConfig: false },
+                        } : suppConfig.backend === 'tailwindcss' ? {
+                            // Tailwind needs to know about the user's config
+                            userLanguages: Object.fromEntries(
+                                suppConfig.selector.map(l => [l, l === 'javascript' || l === 'typescript' ? 'html' : l])
+                            ),
+                        } : undefined;
+
+                        class SupplementaryClient extends MonacoLanguageClient {
+                            fillInitializeParams(params) {
+                                super.fillInitializeParams(params);
+                                params.rootUri = "file:///synthi/";
+                                params.workspaceFolders = [{
+                                    uri: "file:///synthi/",
+                                    name: "synthi"
+                                }];
+                            }
+                        }
+
+                        const suppClient = new SupplementaryClient({
+                            name: `Synthi Supplementary LSP (${suppConfig.backend})`,
+                            clientOptions: {
+                                documentSelector: suppDocSelector,
+                                ...(suppInitOpts && { initializationOptions: suppInitOpts }),
+                                middleware: {
+                                    didOpen: (doc, next) => next(doc),
+                                    didChange: (data, next) => next(data),
+                                    didClose: (doc, next) => next(doc),
+                                    didSave: (doc, next) => next(doc),
+                                },
+                                errorHandler: {
+                                    error: () => ({ action: ErrorAction.Continue }),
+                                    closed: () => ({ action: CloseAction.DoNotRestart }),
+                                },
+                                workspaceFolder: {
+                                    uri: monacoInstance.Uri.parse('file:///synthi/'),
+                                    name: 'synthi',
+                                    index: 0
+                                }
+                            },
+                            messageTransports: { reader: suppReader, writer: suppWriter }
+                        });
+
+                        // Wait for channel to open
+                        if (suppAdapter.readyState !== 1) {
+                            await suppAdapter.waitUntilOpen(15000);
+                        }
+
+                        // Start with timeout
+                        await Promise.race([
+                            suppClient.start(),
+                            new Promise((_, reject) =>
+                                setTimeout(() => reject(new Error(`${suppConfig.backend} server timeout`)), 30000)
+                            )
+                        ]);
+
+                        languageClientsRef.current.set(suppConfig.clientKey, suppClient);
+                        lspInitPendingRef.current.delete(suppConfig.clientKey);
+                        console.log(`[LSP] Supplementary server ${suppConfig.backend} ready`);
+
+                        // Clean up on channel close
+                        suppChannel.addEventListener('close', async () => {
+                            console.log(`[LSP] Supplementary channel closed: ${suppConfig.backend}`);
+                            if (suppClient.isRunning()) {
+                                try {
+                                    await Promise.race([
+                                        suppClient.sendRequest('shutdown'),
+                                        new Promise((_, rej) => setTimeout(() => rej(), 3000))
+                                    ]);
+                                    suppClient.sendNotification('exit');
+                                } catch (_) {}
+                            }
+                            suppClient.stop();
+                            languageClientsRef.current.delete(suppConfig.clientKey);
+                            lspInitPendingRef.current.delete(suppConfig.clientKey);
+                        });
+                    } catch (e) {
+                        console.warn(`[LSP] Supplementary server ${suppConfig.backend} failed:`, e.message);
+                        lspInitPendingRef.current.delete(suppConfig.clientKey);
+                    }
+                })();
+            }
 
             // Use addEventListener instead of setting onclose directly so
             // we don't overwrite MonacoSocketAdapter's own close handler.

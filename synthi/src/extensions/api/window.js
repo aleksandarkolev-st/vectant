@@ -360,9 +360,86 @@ export function createWindowAPI(extensionId, host) {
      * @returns {{ dispose(): void }}
      */
     registerWebviewViewProvider(viewId, provider, options) {
-      // Would need main thread support
-      console.warn('[window.registerWebviewViewProvider] Not fully implemented');
-      return { dispose() {} };
+      const wvViewId = `${extensionId}.webviewView.${viewId}`;
+      let webviewHtml = '';
+      const messageListeners = [];
+      const disposeListeners = [];
+      const visibilityListeners = [];
+
+      const webviewView = {
+        viewType: viewId,
+        visible: true,
+        onDidChangeVisibility: (listener, thisArgs, disposables) => {
+          const bound = thisArgs ? listener.bind(thisArgs) : listener;
+          visibilityListeners.push(bound);
+          const d = { dispose() { const i = visibilityListeners.indexOf(bound); if (i !== -1) visibilityListeners.splice(i, 1); } };
+          if (disposables) disposables.push(d);
+          return d;
+        },
+        onDidDispose: (listener, thisArgs, disposables) => {
+          const bound = thisArgs ? listener.bind(thisArgs) : listener;
+          disposeListeners.push(bound);
+          const d = { dispose() { const i = disposeListeners.indexOf(bound); if (i !== -1) disposeListeners.splice(i, 1); } };
+          if (disposables) disposables.push(d);
+          return d;
+        },
+        show(preserveFocus) { /* no-op */ },
+        webview: {
+          options: options || {},
+          get html() { return webviewHtml; },
+          set html(value) {
+            webviewHtml = value;
+            host.emit(WorkerToMainMethods.UPDATE_WEBVIEW, wvViewId, { html: value });
+          },
+          onDidReceiveMessage: (listener, thisArgs, disposables) => {
+            const bound = thisArgs ? listener.bind(thisArgs) : listener;
+            messageListeners.push(bound);
+            const d = { dispose() { const i = messageListeners.indexOf(bound); if (i !== -1) messageListeners.splice(i, 1); } };
+            if (disposables) disposables.push(d);
+            return d;
+          },
+          postMessage(message) {
+            host.emit(WorkerToMainMethods.POST_WEBVIEW_MESSAGE, wvViewId, message);
+            return Promise.resolve(true);
+          },
+          asWebviewUri(localResource) {
+            return {
+              scheme: 'https',
+              authority: 'file+.vscode-resource.vscode-cdn.net',
+              path: localResource.path,
+              fsPath: localResource.fsPath,
+              toString() { return `https://file+.vscode-resource.vscode-cdn.net${localResource.path}`; }
+            };
+          },
+          get cspSource() { return "'self' https:"; },
+          // Internal: receive message from main thread
+          _receiveMessage(message) { messageListeners.forEach(l => l(message)); },
+        },
+      };
+
+      // Notify main thread to create the webview
+      host.emit(WorkerToMainMethods.CREATE_WEBVIEW, wvViewId, viewId, viewId, options || {});
+
+      // Resolve the view — the provider will set .webview.html
+      try {
+        const result = provider.resolveWebviewView(
+          webviewView,
+          { state: undefined },
+          { isCancellationRequested: false, onCancellationRequested: { dispose() {} } }
+        );
+        if (result && typeof result.then === 'function') {
+          result.catch(e => console.error(`[registerWebviewViewProvider] resolveWebviewView failed for ${viewId}:`, e));
+        }
+      } catch (e) {
+        console.error(`[registerWebviewViewProvider] resolveWebviewView threw for ${viewId}:`, e);
+      }
+
+      return {
+        dispose() {
+          disposeListeners.forEach(l => l());
+          host.emit(WorkerToMainMethods.DISPOSE_WEBVIEW, wvViewId);
+        }
+      };
     },
 
     /**
