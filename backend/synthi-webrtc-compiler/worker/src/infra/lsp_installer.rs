@@ -242,10 +242,31 @@ pub async fn ensure_lsp_installed(lang: &str, workspace: &Path) -> Result<&'stat
         // Only write marker on SUCCESS — failed installs should be retried
         let _ = std::fs::write(&marker, "installed");
         println!("[LSP-INSTALL] ✓ {} installed successfully", binary);
+        // For dart, ensure the SDK bin is symlinked to /usr/local/bin so
+        // subsequent is_on_path checks work without extended PATH.
+        if lang == "dart" {
+            for candidate in &["/opt/dart-sdk/bin/dart", "/usr/lib/dart/bin/dart"] {
+                if std::path::Path::new(candidate).exists()
+                    && !std::path::Path::new("/usr/local/bin/dart").exists()
+                {
+                    let _ = std::os::unix::fs::symlink(candidate, "/usr/local/bin/dart");
+                    println!("[LSP-INSTALL] Symlinked {} → /usr/local/bin/dart", candidate);
+                    break;
+                }
+            }
+        }
         Ok(binary)
     } else {
         // Write marker with timestamp so we can rate-limit retries
         let _ = std::fs::write(&marker, "failed");
+        eprintln!("[LSP-INSTALL] {} still not found after install attempt", binary);
+        // Log where we looked for debugging
+        if lang == "dart" {
+            for candidate in &["/opt/dart-sdk/bin/dart", "/usr/lib/dart/bin/dart", "/usr/local/bin/dart"] {
+                let exists = std::path::Path::new(candidate).exists();
+                eprintln!("[LSP-INSTALL]   {} {}", if exists { "✓" } else { "✗" }, candidate);
+            }
+        }
         Err(format!("{} still not found after install attempt", binary))
     }
 }
