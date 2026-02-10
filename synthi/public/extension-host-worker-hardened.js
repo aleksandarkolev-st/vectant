@@ -663,7 +663,7 @@ class HardenedExtensionHost {
             mkdir: function() { return Promise.resolve(); }
           }
         },
-        os: { homedir: function() { return '/'; }, tmpdir: function() { return '/tmp'; }, platform: function() { return 'web'; }, EOL: '\n' },
+        os: { homedir: function() { return '/'; }, tmpdir: function() { return '/tmp'; }, platform: function() { return 'web'; }, EOL: '\n', type: function() { return 'Web'; }, arch: function() { return 'wasm'; }, cpus: function() { return []; }, totalmem: function() { return 0; }, freemem: function() { return 0; }, constants: { signals: { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGCHLD: 17, SIGCONT: 18, SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22 }, errno: {} } },
         util: { promisify: function(fn) { return fn; }, TextDecoder: typeof TextDecoder !== 'undefined' ? TextDecoder : function() {}, TextEncoder: typeof TextEncoder !== 'undefined' ? TextEncoder : function() {} },
         events: { EventEmitter: function EventEmitter() { this.on = function() { return this; }; this.off = function() { return this; }; this.once = function() { return this; }; this.emit = function() { return false; }; this.addListener = function() { return this; }; this.removeListener = function() { return this; }; this.removeAllListeners = function() { return this; }; } },
         child_process: { exec: function() {}, execSync: function() { return ''; }, spawn: function() { return { on: function() {}, stdout: { on: function() {} }, stderr: { on: function() {} }, kill: function() {} }; } },
