@@ -1580,13 +1580,27 @@ async fn wire_peer_channels(
                     // Running them concurrently shaves seconds off first-load.
                     // Both are idempotent (marker-file cached) so subsequent
                     // connections for other languages are near-instant.
-                    let (_, lsp_result) = tokio::join!(
-                        infra::dep_installer::install_all_deps(&workspace_path, &lang, false),
-                        infra::lsp_installer::ensure_lsp_installed(&lang, &workspace_path),
-                    );
+                    //
+                    // EXCEPTION: For Dart, we sequence the installs because
+                    // dep_installer needs the `dart` binary to run `dart pub get`,
+                    // and the binary may only become available after lsp_installer
+                    // finishes installing the Dart SDK.
+                    let lsp_result = if lang == "dart" {
+                        // Sequential: install dart binary first, then run deps
+                        let result = infra::lsp_installer::ensure_lsp_installed(&lang, &workspace_path).await;
+                        infra::dep_installer::install_all_deps(&workspace_path, &lang, false).await;
+                        result
+                    } else {
+                        // Parallel: independent install steps
+                        let (_, lsp_res) = tokio::join!(
+                            infra::dep_installer::install_all_deps(&workspace_path, &lang, false),
+                            infra::lsp_installer::ensure_lsp_installed(&lang, &workspace_path),
+                        );
+                        lsp_res
+                    };
                     match lsp_result {
                         Ok(bin) => println!("[LSP] Server binary ready: {}", bin),
-                        Err(e) => eprintln!("[LSP] Server install warning: {}", e),
+                        Err(ref e) => eprintln!("[LSP] Server install warning: {}", e),
                     }
 
                     // ── Generate minimal LSP config for standalone files ─────
@@ -1595,6 +1609,26 @@ async fn wire_peer_channels(
                     // useful intellisense (completions, go-to-def, etc.)
                     // even for a single file without a project manifest.
                     ensure_lsp_config(&workspace_path, &lang);
+
+                    // Detect rust-src path BEFORE constructing the RA command.
+                    // This path is:
+                    //  1. Set as RUST_SRC_PATH env on the RA process (belt-and-suspenders)
+                    //  2. Injected into initializationOptions.cargo.sysrootSrc
+                    // Both tell RA where to find stdlib source (Vec::new, etc.)
+                    // even if RA's own sysroot auto-detection points elsewhere.
+                    let (rust_sysroot_src, rust_sysroot): (Option<String>, Option<String>) = if lang == "rust" {
+                        let (src, root) = find_rust_sysroot_info();
+                        match &src {
+                            Some(p) => println!("[LSP] Detected rust sysroot_src for injection: {}", p),
+                            None => println!("[LSP] WARNING: rust-src not found — Vec:: completions may not work"),
+                        }
+                        if let Some(ref r) = root {
+                            println!("[LSP] Detected rust sysroot root: {}", r);
+                        }
+                        (src, root)
+                    } else {
+                        (None, None)
+                    };
 
                     println!("Starting LSP for language: {}", lang);
                     let mut cmd = match lang.as_str() {
@@ -1619,36 +1653,73 @@ async fn wire_peer_channels(
                             c
                         },
                         "rust" => {
-                            let mut c = system_command("rust-analyzer");
-                            // Ensure rust-analyzer can find cargo/rustc.
-                            // In containers, rustup installs to /root/.cargo and /root/.rustup.
-                            // If CARGO_HOME / RUSTUP_HOME aren't set, try common locations.
-                            let cargo_home = std::env::var("CARGO_HOME")
-                                .unwrap_or_else(|_| "/root/.cargo".to_string());
-                            let rustup_home = std::env::var("RUSTUP_HOME")
-                                .unwrap_or_else(|_| "/root/.rustup".to_string());
-                            c.env("CARGO_HOME", &cargo_home);
-                            c.env("RUSTUP_HOME", &rustup_home);
-                            // Clear RUSTUP_TOOLCHAIN — if the container has a bare
-                            // system rustc at /usr, RA auto-detects sysroot as /usr
-                            // and sets RUSTUP_TOOLCHAIN="/usr" which breaks cargo.
-                            c.env_remove("RUSTUP_TOOLCHAIN");
-                            // Prepend cargo/rustup bin dirs to PATH so rust-analyzer
-                            // can invoke `cargo metadata`, `rustc`, etc.
-                            // Cargo binaries (cargo, rustc, rustup) live in $CARGO_HOME/bin.
-                            let current_path = std::env::var("PATH").unwrap_or_default();
-                            let new_path = format!(
-                                "{}/bin:{}",
-                                cargo_home, current_path
-                            );
-                            c.env("PATH", new_path);
-                            c
+                            if cfg!(target_os = "windows") {
+                                // On Windows, system_command wraps in `wsl`. But env vars
+                                // set via .env() only affect wsl.exe, NOT the Linux process
+                                // inside WSL.  Instead, launch RA through bash with explicit
+                                // env so CARGO_HOME/RUSTUP_HOME/PATH propagate correctly.
+                                //
+                                // Also inject RUST_SRC_PATH if we detected it, so RA can
+                                // find stdlib source even if its sysroot auto-detection fails.
+                                let src_env = rust_sysroot_src.as_ref()
+                                    .map(|p| format!("export RUST_SRC_PATH='{}'; ", p))
+                                    .unwrap_or_default();
+                                let script = format!(
+                                    "export CARGO_HOME=\"${{CARGO_HOME:-$HOME/.cargo}}\"; \
+                                     export RUSTUP_HOME=\"${{RUSTUP_HOME:-$HOME/.rustup}}\"; \
+                                     unset RUSTUP_TOOLCHAIN; \
+                                     export PATH=\"$CARGO_HOME/bin:$PATH\"; \
+                                     {}exec rust-analyzer",
+                                    src_env
+                                );
+                                let mut c = Command::new("wsl");
+                                c.arg("bash").arg("-lc").arg(&script);
+                                c
+                            } else {
+                                let mut c = system_command("rust-analyzer");
+                                // Ensure rust-analyzer can find cargo/rustc.
+                                // In containers, rustup installs to /root/.cargo and /root/.rustup.
+                                // If CARGO_HOME / RUSTUP_HOME aren't set, try common locations.
+                                let cargo_home = std::env::var("CARGO_HOME")
+                                    .unwrap_or_else(|_| "/root/.cargo".to_string());
+                                let rustup_home = std::env::var("RUSTUP_HOME")
+                                    .unwrap_or_else(|_| "/root/.rustup".to_string());
+                                c.env("CARGO_HOME", &cargo_home);
+                                c.env("RUSTUP_HOME", &rustup_home);
+                                // Clear RUSTUP_TOOLCHAIN — if the container has a bare
+                                // system rustc at /usr, RA auto-detects sysroot as /usr
+                                // and sets RUSTUP_TOOLCHAIN="/usr" which breaks cargo.
+                                c.env_remove("RUSTUP_TOOLCHAIN");
+                                // Prepend cargo/rustup bin dirs to PATH so rust-analyzer
+                                // can invoke `cargo metadata`, `rustc`, etc.
+                                let current_path = std::env::var("PATH").unwrap_or_default();
+                                let new_path = format!(
+                                    "{}/bin:{}",
+                                    cargo_home, current_path
+                                );
+                                c.env("PATH", new_path);
+                                // Set RUST_SRC_PATH as a belt-and-suspenders fallback
+                                // so RA can find stdlib source even if its sysroot
+                                // auto-detection points to a toolchain without rust-src.
+                                if let Some(ref src_path) = rust_sysroot_src {
+                                    c.env("RUST_SRC_PATH", src_path);
+                                }
+                                c
+                            }
                         },
                         "python" | "py" => system_command("pylsp"),
-                        "typescript" | "ts" | "javascript" | "js" => {
+                        "typescript" | "ts" => {
                              let mut c = system_command("typescript-language-server");
                              c.arg("--stdio");
                              c
+                        },
+                        "javascript" | "js" => {
+                            // Use typescript-language-server for JavaScript — provides
+                            // full IntelliSense (completions, go-to-def, hover, references)
+                            // via the TypeScript language service, which natively supports JS.
+                            let mut c = system_command("typescript-language-server");
+                            c.arg("--stdio");
+                            c
                         },
                         "java" => {
                             // Eclipse JDT Language Server
@@ -1695,9 +1766,49 @@ async fn wire_peer_channels(
                         },
                         "dart" => {
                             // Dart SDK language server
-                            let mut c = system_command("dart");
-                            c.arg("language-server");
-                            c.arg("--protocol=lsp");
+                            // The Dart SDK may be installed to /opt/dart-sdk/bin or
+                            // /usr/lib/dart/bin which are not on the default PATH.
+                            // Prepend these well-known locations so the spawn succeeds.
+                            let current_path = std::env::var("PATH").unwrap_or_default();
+                            let dart_path = format!(
+                                "/opt/dart-sdk/bin:/usr/lib/dart/bin:{}",
+                                current_path
+                            );
+                            let mut c = if cfg!(target_os = "windows") {
+                                let mut cmd = Command::new("wsl");
+                                cmd.arg("bash").arg("-lc").arg(
+                                    "export PATH=\"/opt/dart-sdk/bin:/usr/lib/dart/bin:$PATH\"; exec dart language-server --protocol=lsp"
+                                );
+                                cmd
+                            } else {
+                                let mut cmd = Command::new("dart");
+                                cmd.arg("language-server");
+                                cmd.arg("--protocol=lsp");
+                                cmd.env("PATH", &dart_path);
+                                cmd
+                            };
+                            // If dart is not on default PATH, try the well-known locations directly
+                            if !cfg!(target_os = "windows") {
+                                let dart_on_path = std::process::Command::new("which")
+                                    .arg("dart")
+                                    .stdout(Stdio::null())
+                                    .stderr(Stdio::null())
+                                    .status()
+                                    .map(|s| s.success())
+                                    .unwrap_or(false);
+                                if !dart_on_path {
+                                    for candidate in &["/opt/dart-sdk/bin/dart", "/usr/lib/dart/bin/dart", "/usr/local/bin/dart"] {
+                                        if std::path::Path::new(candidate).exists() {
+                                            c = Command::new(candidate);
+                                            c.arg("language-server");
+                                            c.arg("--protocol=lsp");
+                                            c.env("PATH", &dart_path);
+                                            println!("[LSP] Using dart binary at: {}", candidate);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
                             c
                         },
                         "lua" => {
@@ -1784,6 +1895,8 @@ async fn wire_peer_channels(
                             let state_for_incoming = state.clone();
                             let workspace_path_for_incoming = workspace_path.clone();
                             let stdin_tx_clone = stdin_tx.clone();
+                            let rust_sysroot_src_for_incoming = rust_sysroot_src.clone();
+                            let rust_sysroot_for_incoming = rust_sysroot.clone();
 
                             tokio::spawn(async move {
                                 while let Some(msg) = incoming_rx.recv().await {
@@ -1842,6 +1955,145 @@ async fn wire_peer_channels(
                                             if guard.client_root_uri.is_none() {
                                                 println!("Client root URI not found in initialize, defaulting to file:///");
                                                 guard.client_root_uri = Some("file:///".to_string());
+                                            }
+
+                                            // Inject rust-analyzer configuration for stdlib resolution.
+                                            //
+                                            // Three mechanisms (belt-and-suspenders):
+                                            //  1. cargo.sysrootSrc — tells RA where stdlib source is
+                                            //  2. cargo.sysroot — explicit sysroot path (avoids "discover" running cargo)
+                                            //  3. linkedProjects — inline project definition that bypasses
+                                            //     `cargo metadata` entirely, giving RA a complete crate graph
+                                            //     with sysroot.  Without this, RA can autocomplete type *names*
+                                            //     (Vec, String) but NOT associated items (Vec::new, Vec::push).
+                                            if let Some(ref src_path) = rust_sysroot_src_for_incoming {
+                                                if let Some(params) = json_val.get_mut("params") {
+                                                    let init_opts = params
+                                                        .as_object_mut()
+                                                        .and_then(|p| p.entry("initializationOptions")
+                                                            .or_insert_with(|| serde_json::json!({}))
+                                                            .as_object_mut());
+                                                    if let Some(opts) = init_opts {
+                                                        // Derive sysroot root from the sysroot_for_incoming
+                                                        // or from the sysroot_src path.
+                                                        let sysroot_root = rust_sysroot_for_incoming.clone()
+                                                            .or_else(|| {
+                                                                // Derive from sysroot_src: strip /lib/rustlib/src/rust/library
+                                                                src_path.strip_suffix("/lib/rustlib/src/rust/library")
+                                                                    .or_else(|| src_path.strip_suffix("/lib/rustlib/src/rust"))
+                                                                    .map(|s| s.to_string())
+                                                            });
+
+                                                        // 1. Configure cargo settings
+                                                        {
+                                                            let cargo = opts
+                                                                .entry("cargo")
+                                                                .or_insert_with(|| serde_json::json!({}));
+                                                            if let Some(cargo_obj) = cargo.as_object_mut() {
+                                                                cargo_obj.insert(
+                                                                    "sysrootSrc".to_string(),
+                                                                    serde_json::Value::String(src_path.clone()),
+                                                                );
+                                                                // Override "discover" with explicit sysroot path.
+                                                                // "discover" causes RA to run `cargo metadata` for
+                                                                // sysroot resolution, which fails without cargo.
+                                                                if let Some(ref root) = sysroot_root {
+                                                                    cargo_obj.insert(
+                                                                        "sysroot".to_string(),
+                                                                        serde_json::Value::String(root.clone()),
+                                                                    );
+                                                                }
+                                                            }
+                                                        }
+                                                        println!("[LSP] Injected cargo.sysrootSrc={}, cargo.sysroot={:?}", src_path, sysroot_root);
+
+                                                        // 2. Inject linkedProjects with inline project.
+                                                        //    Skip when Cargo.toml has real [dependencies].
+                                                        let cargo_toml = workspace_path.join("Cargo.toml");
+                                                        let has_real_deps = cargo_toml.exists()
+                                                            && std::fs::read_to_string(&cargo_toml)
+                                                                .map(|c| {
+                                                                    if let Some(idx) = c.find("[dependencies]") {
+                                                                        let after = &c[idx + "[dependencies]".len()..];
+                                                                        for line in after.lines() {
+                                                                            let trimmed = line.trim();
+                                                                            if trimmed.is_empty() || trimmed.starts_with('#') {
+                                                                                continue;
+                                                                            }
+                                                                            if trimmed.starts_with('[') {
+                                                                                break;
+                                                                            }
+                                                                            return true;
+                                                                        }
+                                                                    }
+                                                                    false
+                                                                })
+                                                                .unwrap_or(false);
+
+                                                        if has_real_deps {
+                                                            println!("[LSP] Cargo.toml has [dependencies] — using cargo discovery, skipping linkedProjects");
+                                                        } else {
+                                                            let mut rs_crates: Vec<serde_json::Value> = Vec::new();
+                                                            if let Ok(entries) = std::fs::read_dir(&workspace_path) {
+                                                                for entry in entries.flatten() {
+                                                                    let p = entry.path();
+                                                                    if p.extension().map_or(false, |e| e == "rs") {
+                                                                        let p_str = if cfg!(target_os = "windows") {
+                                                                            let s = p.to_string_lossy().replace("\\", "/");
+                                                                            if let Some(ci) = s.find(':') {
+                                                                                let drive = s[..ci].to_lowercase();
+                                                                                let rest = &s[ci+1..];
+                                                                                format!("/mnt/{}{}", drive, rest)
+                                                                            } else {
+                                                                                s.to_string()
+                                                                            }
+                                                                        } else {
+                                                                            p.to_string_lossy().to_string()
+                                                                        };
+                                                                        rs_crates.push(serde_json::json!({
+                                                                            "root_module": p_str,
+                                                                            "edition": "2021",
+                                                                            "deps": []
+                                                                        }));
+                                                                    }
+                                                                }
+                                                            }
+                                                            if rs_crates.is_empty() {
+                                                                let fallback = workspace_path.join("main.rs");
+                                                                let fb_str = fallback.to_string_lossy().to_string();
+                                                                rs_crates.push(serde_json::json!({
+                                                                    "root_module": fb_str,
+                                                                    "edition": "2021",
+                                                                    "deps": []
+                                                                }));
+                                                            }
+                                                            let num_crates = rs_crates.len();
+                                                            // Build the project JSON with both sysroot and sysroot_src.
+                                                            // sysroot = root path (e.g., /usr) — needed for compiled libs
+                                                            // sysroot_src = source path (e.g., /usr/lib/rustlib/src/rust/library)
+                                                            let mut project_json = serde_json::json!({
+                                                                "sysroot_src": src_path,
+                                                                "crates": rs_crates,
+                                                            });
+                                                            if let Some(ref root) = sysroot_root {
+                                                                project_json.as_object_mut().unwrap().insert(
+                                                                    "sysroot".to_string(),
+                                                                    serde_json::Value::String(root.clone()),
+                                                                );
+                                                            }
+                                                            opts.insert(
+                                                                "linkedProjects".to_string(),
+                                                                serde_json::json!([project_json]),
+                                                            );
+                                                            println!("[LSP] Injected linkedProjects with {} crate(s), sysroot_src={}, sysroot={:?}", num_crates, src_path, sysroot_root);
+                                                        }
+
+                                                        // Log the full initializationOptions for debugging
+                                                        if let Ok(opts_json) = serde_json::to_string_pretty(&serde_json::Value::Object(opts.clone())) {
+                                                            println!("[LSP] Full initializationOptions for RA:\n{}", opts_json);
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
 
@@ -2195,6 +2447,9 @@ async fn wire_peer_channels(
                                     match reader.read_line(&mut line).await {
                                         Ok(0) => break,
                                         Ok(_) => {
+                                            // Always print RA stderr to worker logs for diagnostics
+                                            // (sysroot errors, cargo metadata failures, etc.)
+                                            eprint!("[LSP-ERR/{}] {}", lang, line);
                                             let log_dc = { log_store_clone.lock().await.clone() };
                                             if let Some(ldc) = log_dc {
                                                 let payload = serde_json::json!({
@@ -2203,8 +2458,6 @@ async fn wire_peer_channels(
                                                     "line": line
                                                 });
                                                 let _ = ldc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
-                                            } else {
-                                                print!("[LSP-ERR] {}", line);
                                             }
                                         }
                                         Err(_) => break,
@@ -2215,7 +2468,25 @@ async fn wire_peer_channels(
                             let _ = child.wait().await;
                         }
                         Err(e) => {
+                            // Build helpful diagnostic info for the error message
+                            let path_info = std::env::var("PATH").unwrap_or_else(|_| "<unavailable>".to_string());
+                            let binary_hint = match lang.as_str() {
+                                "dart" => {
+                                    let paths = ["/opt/dart-sdk/bin/dart", "/usr/lib/dart/bin/dart", "/usr/local/bin/dart"];
+                                    let found: Vec<&str> = paths.iter().filter(|p| std::path::Path::new(p).exists()).copied().collect();
+                                    if found.is_empty() {
+                                        "Dart SDK not found in any well-known location. Install via: apt-get install dart or download from dart.dev".to_string()
+                                    } else {
+                                        format!("Dart binary found at: {} — but not on PATH", found.join(", "))
+                                    }
+                                }
+                                _ => String::new(),
+                            };
                             eprintln!("Failed to spawn LSP for {}: {}", lang, e);
+                            if !binary_hint.is_empty() {
+                                eprintln!("[LSP] Hint: {}", binary_hint);
+                            }
+                            eprintln!("[LSP] Current PATH: {}", path_info);
                             // Send an LSP-shaped error response back so the frontend
                             // doesn't hang forever waiting for `initialize` to respond.
                             let error_response = serde_json::json!({
@@ -4420,6 +4691,110 @@ fn system_command(program: &str) -> Command {
     }
 }
 
+/// Find the Rust sysroot and standard library source paths.
+///
+/// Uses the **same PATH** that rust-analyzer will use (with `$CARGO_HOME/bin`
+/// prepended) so the sysroot matches what RA actually detects at runtime.
+/// Falls back to system locations if the primary sysroot check fails.
+///
+/// Returns `(sysroot_src, sysroot)` — either or both may be None.
+fn find_rust_sysroot_info() -> (Option<String>, Option<String>) {
+    if cfg!(target_os = "windows") {
+        // On Windows, RA runs inside WSL — query WSL for the sysroot
+        let wsl_sysroot = std::process::Command::new("wsl")
+            .args(["bash", "-lc", "rustc --print sysroot 2>/dev/null || echo /usr"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty());
+        let check_script = r#"
+            SYSROOT=$(rustc --print sysroot 2>/dev/null || echo /usr);
+            for d in \
+                "$SYSROOT/lib/rustlib/src/rust/library" \
+                "/usr/lib/rustlib/src/rust/library" \
+                "$SYSROOT/lib/rustlib/src/rust"; do
+                [ -d "$d" ] && echo "$d" && exit 0;
+            done;
+            # Try Debian-style /usr/src/rustc-*/library
+            for d in /usr/src/rustc-*/library; do
+                [ -d "$d" ] && echo "$d" && exit 0;
+            done
+        "#;
+        let src = std::process::Command::new("wsl")
+            .args(["bash", "-lc", check_script])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty());
+        return (src, wsl_sysroot);
+    }
+
+    // Linux: build the same PATH that rust-analyzer will use
+    let cargo_home = std::env::var("CARGO_HOME")
+        .unwrap_or_else(|_| "/root/.cargo".to_string());
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let ra_path = format!("{}/bin:{}", cargo_home, current_path);
+
+    // Ask rustc (with RA's PATH) for its sysroot
+    let sysroot = std::process::Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .env("PATH", &ra_path)
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "/usr".to_string());
+
+    // Also check what the DEFAULT rustc (without RA PATH) reports —
+    // helps diagnose sysroot mismatches between system and rustup.
+    let system_sysroot = std::process::Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    println!("[LSP] RA sysroot (with CARGO_HOME/bin in PATH): {}", sysroot);
+    if !system_sysroot.is_empty() && system_sysroot != sysroot {
+        println!("[LSP] System sysroot (default PATH): {} — MISMATCH! This is likely the cause of missing Vec:: completions", system_sysroot);
+    }
+
+    // Check candidate locations in priority order
+    let candidates = [
+        format!("{}/lib/rustlib/src/rust/library", sysroot),
+        // System rustc sysroot (may differ from rustup)
+        "/usr/lib/rustlib/src/rust/library".to_string(),
+        format!("{}/lib/rustlib/src/rust", sysroot),
+    ];
+
+    for candidate in &candidates {
+        if std::path::Path::new(candidate).exists() {
+            return (Some(candidate.clone()), Some(sysroot));
+        }
+    }
+
+    // Debian/Ubuntu system packages: /usr/src/rustc-*/library
+    if let Ok(entries) = std::fs::read_dir("/usr/src") {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let n = name.to_string_lossy();
+            if n.starts_with("rustc-") && entry.path().join("library").exists() {
+                return (Some(entry.path().join("library").to_string_lossy().to_string()), Some(sysroot));
+            }
+        }
+    }
+
+    (None, Some(sysroot))
+}
+
 /// Generate minimal LSP configuration files for standalone workspaces.
 ///
 /// When a user has a single `main.py` or `index.js` without a project
@@ -4432,19 +4807,21 @@ fn ensure_lsp_config(workspace: &std::path::Path, lang: &str) {
 
     match lang {
         "javascript" | "js" => {
-            // typescript-language-server needs a jsconfig.json to treat the
-            // workspace as a JS project and resolve node_modules imports.
+            // typescript-language-server uses jsconfig.json for JavaScript projects.
+            // Create a sensible default so the LSP provides IntelliSense
+            // (completions, go-to-def, hover) for standalone JS files.
             let config_path = workspace.join("jsconfig.json");
             if !config_path.exists() && !workspace.join("tsconfig.json").exists() {
                 if let Ok(mut f) = std::fs::File::create(&config_path) {
                     let _ = f.write_all(br#"{
   "compilerOptions": {
-    "checkJs": true,
-    "module": "commonjs",
     "target": "es2020",
+    "module": "commonjs",
     "moduleResolution": "node",
+    "checkJs": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
+    "skipLibCheck": true,
     "baseUrl": "."
   },
   "include": ["**/*.js", "**/*.jsx"],
@@ -4493,17 +4870,63 @@ fn ensure_lsp_config(workspace: &std::path::Path, lang: &str) {
             // If cargo is available, use Cargo.toml.  Otherwise, create a
             // rust-project.json so RA can work in "detached files" mode
             // without needing cargo (which may not be installed in the container).
-            let has_cargo = std::process::Command::new("cargo")
-                .arg("--version")
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
+            //
+            // IMPORTANT: On Windows, rust-analyzer runs inside WSL (via
+            // system_command), so we must check for cargo/rustup in WSL,
+            // not on the Windows host.  The old code ran these checks on
+            // Windows, found cargo there, installed rust-src on Windows,
+            // and ran cargo metadata on Windows — but RA in WSL couldn't
+            // use any of that.
+            let has_cargo = if cfg!(target_os = "windows") {
+                std::process::Command::new("wsl")
+                    .args(["bash", "-lc", "command -v cargo"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+            } else {
+                std::process::Command::new("cargo")
+                    .arg("--version")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+            };
 
             if has_cargo {
+                // Ensure rust-src is installed — needed for RA to resolve
+                // stdlib types like Vec, String, HashMap, etc.
+                // Without rust-src, RA can complete type *names* from the
+                // prelude but cannot index their impl blocks (Vec::new,
+                // Vec::push, etc.).
+                //
+                // IMPORTANT: Use the same PATH that RA will use ($CARGO_HOME/bin
+                // prepended) so rust-src gets installed for the correct toolchain.
+                // On Windows, install in WSL since that's where RA runs.
+                if cfg!(target_os = "windows") {
+                    let _ = std::process::Command::new("wsl")
+                        .args(["bash", "-lc",
+                            ". \"$HOME/.cargo/env\" 2>/dev/null; rustup component add rust-src 2>/dev/null || true"])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                } else {
+                    let cargo_home_cfg = std::env::var("CARGO_HOME")
+                        .unwrap_or_else(|_| "/root/.cargo".to_string());
+                    let current_path_cfg = std::env::var("PATH").unwrap_or_default();
+                    let ra_path_cfg = format!("{}/bin:{}", cargo_home_cfg, current_path_cfg);
+                    let _ = std::process::Command::new("bash")
+                        .args(["-lc", ". \"$HOME/.cargo/env\" 2>/dev/null; rustup component add rust-src 2>/dev/null || true"])
+                        .env("PATH", &ra_path_cfg)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                }
+
                 let cargo_toml = workspace.join("Cargo.toml");
-                if !cargo_toml.exists() {
+                let created_toml = if !cargo_toml.exists() {
                     // Collect ALL .rs files so rust-analyzer indexes everything
                     let mut rs_files: Vec<String> = std::fs::read_dir(workspace)
                         .ok()
@@ -4542,30 +4965,108 @@ path = "{}"
                         }
                         println!("[LSP-CONFIG] Created Cargo.toml with {} bin targets for standalone Rust workspace", rs_files.len());
                     }
+                    true
+                } else {
+                    false
+                };
+
+                // Run `cargo metadata` to generate Cargo.lock and warm the
+                // metadata cache.  rust-analyzer calls `cargo metadata` on
+                // startup to discover the project structure, sysroot, and
+                // crate graph.  If we pre-warm this, RA starts with a hot
+                // cache and can resolve stdlib immediately (Vec::new etc.).
+                // Only run if we created the Cargo.toml or there's no Cargo.lock.
+                let cargo_lock = workspace.join("Cargo.lock");
+                if created_toml || !cargo_lock.exists() {
+                    println!("[LSP-CONFIG] Running cargo metadata to warm RA cache...");
+
+                    if cfg!(target_os = "windows") {
+                        // Run inside WSL where rust-analyzer lives.
+                        // Convert Windows path to WSL /mnt/ path.
+                        let ws_str = workspace.to_string_lossy().replace("\\", "/");
+                        let wsl_ws = if let Some(colon_idx) = ws_str.find(':') {
+                            let drive = ws_str[..colon_idx].to_lowercase();
+                            let rest = &ws_str[colon_idx+1..];
+                            format!("/mnt/{}{}", drive, rest)
+                        } else {
+                            ws_str.to_string()
+                        };
+                        let script = format!(
+                            ". \"$HOME/.cargo/env\" 2>/dev/null; cd '{}' && cargo metadata --format-version=1 --no-deps 2>&1",
+                            wsl_ws
+                        );
+                        let meta_status = std::process::Command::new("wsl")
+                            .args(["bash", "-lc", &script])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::piped())
+                            .status();
+                        match meta_status {
+                            Ok(s) if s.success() => println!("[LSP-CONFIG] cargo metadata (WSL) succeeded — Cargo.lock ready"),
+                            Ok(s) => eprintln!("[LSP-CONFIG] cargo metadata (WSL) exited with {}", s),
+                            Err(e) => eprintln!("[LSP-CONFIG] cargo metadata (WSL) failed: {}", e),
+                        }
+                    } else {
+                        // Resolve CARGO_HOME/RUSTUP_HOME so cargo finds the
+                        // right toolchain (mirrors the env set on the RA process).
+                        let cargo_home = std::env::var("CARGO_HOME")
+                            .unwrap_or_else(|_| "/root/.cargo".to_string());
+                        let current_path = std::env::var("PATH").unwrap_or_default();
+                        let cargo_path = format!("{}/bin:{}", cargo_home, current_path);
+
+                        let meta_status = std::process::Command::new("cargo")
+                            .args(["metadata", "--format-version=1", "--no-deps"])
+                            .current_dir(workspace)
+                            .env("PATH", &cargo_path)
+                            .env("CARGO_HOME", &cargo_home)
+                            .env_remove("RUSTUP_TOOLCHAIN")
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::piped())
+                            .status();
+                        match meta_status {
+                            Ok(s) if s.success() => println!("[LSP-CONFIG] cargo metadata succeeded — Cargo.lock ready"),
+                            Ok(s) => eprintln!("[LSP-CONFIG] cargo metadata exited with {}", s),
+                            Err(e) => eprintln!("[LSP-CONFIG] cargo metadata failed: {}", e),
+                        }
+                    }
                 }
             } else {
                 // No cargo — create rust-project.json for RA's non-cargo mode.
                 // This lets RA provide completions, hover, go-to-def without cargo.
                 let rp_json = workspace.join("rust-project.json");
                 if !rp_json.exists() {
-                    // Try to install rust-src via rustup first — this is needed
-                    // for rust-analyzer to resolve stdlib types (Vec, String, etc.).
-                    // If rustup isn't available or rust-src is already installed,
-                    // this is a harmless no-op.
-                    let _ = std::process::Command::new("rustup")
-                        .args(["component", "add", "rust-src"])
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .status();
+                    // Try to install rust-src — on Windows run in WSL since
+                    // that's where rust-analyzer runs.
+                    if cfg!(target_os = "windows") {
+                        let _ = std::process::Command::new("wsl")
+                            .args(["bash", "-lc",
+                                ". \"$HOME/.cargo/env\" 2>/dev/null; rustup component add rust-src 2>/dev/null || true"])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status();
+                    } else {
+                        let _ = std::process::Command::new("rustup")
+                            .args(["component", "add", "rust-src"])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status();
+                    }
 
                     // Try to find sysroot_src from rustc.
+                    // On Windows, query WSL's rustc since RA runs there.
                     // Check multiple known locations — system rustc (apt) installs
                     // rust-src to different paths than rustup.
                     let sysroot_src = {
                         // 1. Ask rustc for its sysroot
-                        let sysroot = std::process::Command::new("rustc")
-                            .args(["--print", "sysroot"])
-                            .output()
+                        let sysroot_output = if cfg!(target_os = "windows") {
+                            std::process::Command::new("wsl")
+                                .args(["bash", "-lc", ". \"$HOME/.cargo/env\" 2>/dev/null; rustc --print sysroot"])
+                                .output()
+                        } else {
+                            std::process::Command::new("rustc")
+                                .args(["--print", "sysroot"])
+                                .output()
+                        };
+                        let sysroot = sysroot_output
                             .ok()
                             .and_then(|o| {
                                 if o.status.success() {
@@ -4576,40 +5077,73 @@ path = "{}"
                             })
                             .unwrap_or_else(|| "/usr".to_string());
 
-                        // 2. Check common library source locations
-                        let candidates = [
-                            format!("{}/lib/rustlib/src/rust/library", sysroot),
-                            // Debian/Ubuntu system rust-src package
-                            "/usr/src/rustc-*/library".to_string(),
-                            format!("{}/lib/rustlib/src/rust", sysroot),
-                        ];
-
+                        // 2. Check common library source locations.
+                        // On Windows, filesystem checks must go through WSL
+                        // since the sysroot paths are Linux paths.
                         let mut found: Option<String> = None;
-                        for candidate in &candidates {
-                            if candidate.contains('*') {
-                                // Glob expansion for system packages
-                                if let Ok(mut entries) = std::fs::read_dir("/usr/src") {
-                                    if let Some(entry) = entries.flatten().find(|e| {
-                                        let name = e.file_name();
-                                        let n = name.to_string_lossy();
-                                        n.starts_with("rustc-") && e.path().join("library").exists()
-                                    }) {
-                                        found = Some(entry.path().join("library").to_string_lossy().to_string());
+
+                        if cfg!(target_os = "windows") {
+                            // Check inside WSL using a single shell command
+                            let check_script = format!(
+                                "if [ -d '{sysroot}/lib/rustlib/src/rust/library' ]; then \
+                                   echo '{sysroot}/lib/rustlib/src/rust/library'; \
+                                 elif ls -d /usr/src/rustc-*/library 2>/dev/null | head -1 | grep -q .; then \
+                                   ls -d /usr/src/rustc-*/library 2>/dev/null | head -1; \
+                                 elif [ -d '{sysroot}/lib/rustlib/src/rust' ]; then \
+                                   echo '{sysroot}/lib/rustlib/src/rust'; \
+                                 fi",
+                                sysroot = sysroot
+                            );
+                            if let Ok(output) = std::process::Command::new("wsl")
+                                .args(["bash", "-lc", &check_script])
+                                .output()
+                            {
+                                if output.status.success() {
+                                    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                                    if !path.is_empty() {
+                                        found = Some(path);
+                                    }
+                                }
+                            }
+                        } else {
+                            let candidates = [
+                                format!("{}/lib/rustlib/src/rust/library", sysroot),
+                                // Debian/Ubuntu system rust-src package
+                                "/usr/src/rustc-*/library".to_string(),
+                                format!("{}/lib/rustlib/src/rust", sysroot),
+                            ];
+
+                            for candidate in &candidates {
+                                if candidate.contains('*') {
+                                    // Glob expansion for system packages
+                                    if let Ok(mut entries) = std::fs::read_dir("/usr/src") {
+                                        if let Some(entry) = entries.flatten().find(|e| {
+                                            let name = e.file_name();
+                                            let n = name.to_string_lossy();
+                                            n.starts_with("rustc-") && e.path().join("library").exists()
+                                        }) {
+                                            found = Some(entry.path().join("library").to_string_lossy().to_string());
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    let p = std::path::PathBuf::from(candidate);
+                                    if p.exists() {
+                                        found = Some(p.to_string_lossy().to_string());
                                         break;
                                     }
                                 }
-                            } else {
-                                let p = std::path::PathBuf::from(candidate);
-                                if p.exists() {
-                                    found = Some(p.to_string_lossy().to_string());
-                                    break;
-                                }
                             }
-                        }
 
-                        if found.is_none() {
-                            println!("[LSP-CONFIG] rust-src not found at any known location, RA will have no stdlib completions");
-                            println!("[LSP-CONFIG] Searched: {:?}", candidates);
+                            if found.is_none() {
+                                println!("[LSP-CONFIG] rust-src not found at any known location, RA will have no stdlib completions");
+                                let candidates_display = [
+                                    format!("{}/lib/rustlib/src/rust/library", sysroot),
+                                    "/usr/src/rustc-*/library".to_string(),
+                                    format!("{}/lib/rustlib/src/rust", sysroot),
+                                ];
+                                println!("[LSP-CONFIG] Searched: {:?}", candidates_display);
+                            }
                         }
                         found
                     };
@@ -4655,6 +5189,38 @@ path = "{}"
                 if let Ok(mut f) = std::fs::File::create(&pubspec) {
                     let _ = f.write_all(b"name: synthi_workspace\nenvironment:\n  sdk: '>=3.0.0 <4.0.0'\n");
                     println!("[LSP-CONFIG] Created pubspec.yaml for standalone Dart workspace");
+
+                    // Run 'dart pub get' so the Dart analysis server can resolve packages.
+                    // Use the extended PATH that includes well-known Dart SDK locations.
+                    let current_path = std::env::var("PATH").unwrap_or_default();
+                    let dart_path = format!("/opt/dart-sdk/bin:/usr/lib/dart/bin:{}", current_path);
+                    let pub_result = std::process::Command::new("dart")
+                        .args(["pub", "get"])
+                        .current_dir(workspace)
+                        .env("PATH", &dart_path)
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .status();
+                    match pub_result {
+                        Ok(s) if s.success() => println!("[LSP-CONFIG] dart pub get succeeded"),
+                        Ok(s) => eprintln!("[LSP-CONFIG] dart pub get exited with code {:?}", s.code()),
+                        Err(e) => {
+                            // Try well-known paths if dart is not on PATH
+                            for candidate in &["/opt/dart-sdk/bin/dart", "/usr/lib/dart/bin/dart"] {
+                                if std::path::Path::new(candidate).exists() {
+                                    let _ = std::process::Command::new(candidate)
+                                        .args(["pub", "get"])
+                                        .current_dir(workspace)
+                                        .stdout(std::process::Stdio::piped())
+                                        .stderr(std::process::Stdio::piped())
+                                        .status();
+                                    println!("[LSP-CONFIG] Ran dart pub get via {}", candidate);
+                                    break;
+                                }
+                            }
+                            eprintln!("[LSP-CONFIG] dart pub get failed: {}", e);
+                        }
+                    }
                 }
             }
         }

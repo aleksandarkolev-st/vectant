@@ -69,6 +69,10 @@ const ErrorAction = {
 // created from file URIs default to 'plaintext', breaking documentSelector
 // matching and LSP provider activation.
 const SUPPORTED_LANGUAGES = [
+    // JavaScript/TypeScript must be registered explicitly so @codingame/monaco-vscode-api
+    // maps file URIs (.js, .ts, etc.) to the correct languageId instead of 'plaintext'.
+    { id: 'javascript', extensions: ['.js', '.jsx', '.mjs', '.cjs'], aliases: ['JavaScript', 'JS'] },
+    { id: 'typescript', extensions: ['.ts', '.tsx'], aliases: ['TypeScript', 'TS'] },
     { id: 'java', extensions: ['.java'], aliases: ['Java'] },
     { id: 'python', extensions: ['.py', '.pyw', '.pyx'], aliases: ['Python'] },
     { id: 'go', extensions: ['.go'], aliases: ['Go'] },
@@ -94,9 +98,7 @@ const LANG_TO_GLOB = {};
 for (const lang of SUPPORTED_LANGUAGES) {
     LANG_TO_GLOB[lang.id] = lang.extensions.map(ext => `**/*${ext}`);
 }
-// Also add built-in languages that Monaco already knows about
-LANG_TO_GLOB['javascript'] = ['**/*.js', '**/*.jsx', '**/*.mjs', '**/*.cjs'];
-LANG_TO_GLOB['typescript'] = ['**/*.ts', '**/*.tsx'];
+// Also add built-in languages with additional extension patterns
 LANG_TO_GLOB['html'] = ['**/*.html', '**/*.htm'];
 LANG_TO_GLOB['css'] = ['**/*.css'];
 LANG_TO_GLOB['scss'] = ['**/*.scss', '**/*.sass'];
@@ -293,9 +295,9 @@ const EditorPanel = ({
     const languageClientsRef = useRef(new Map());
     const lspInitPendingRef = useRef(new Set()); // Guard against concurrent init for same language
     // Track the previously-opened file URI per language client so we can send didClose on file switch
-    const lspOpenedUrisRef = useRef(new Map()); // Map<backendLang, { uri, languageId }>
+    const lspOpenedUrisRef = useRef(new Map()); // Map<clientKey, { uri, languageId }>
     // Track textDocumentSync capability reported by each language server
-    const lspSyncCapRef = useRef(new Map()); // Map<backendLang, number> (1=Full, 2=Incremental)
+    const lspSyncCapRef = useRef(new Map()); // Map<clientKey, number> (1=Full, 2=Incremental)
 
     // Initialize Monaco Services ONCE — uses a module-level promise so that
     // concurrent callers (StrictMode double-fire, fast remounts) all wait for
@@ -413,11 +415,13 @@ const EditorPanel = ({
         if (!monacoInstance || !compilerClient || compilerStatus !== CompilerStatus.CONNECTED || !activeFile || !servicesReady || !editorInstance) {
             if (compilerStatus !== CompilerStatus.CONNECTED) {
                 setLspStatus('Compiler Disconnected');
-                // Cleanup existing clients if disconnected
-                languageClientsRef.current.forEach(client => {
-                    try { client.stop(); } catch (e) { }
-                });
-                languageClientsRef.current.clear();
+                // Do NOT tear down running LSP clients here.
+                // The data channel's own 'close' event handler (registered
+                // when the LSP was initialized) will clean up each client
+                // when the underlying transport actually dies.
+                // Immediately destroying clients on a transient WebRTC
+                // 'disconnected' state kills LSP even when the connection
+                // self-recovers seconds later.
             }
             return;
         }
@@ -426,36 +430,43 @@ const EditorPanel = ({
 
         // ── Language → LSP backend mapping table ──────────────────
         // Single source of truth — replaces the old if-else chain.
-        // Each entry maps one or more Monaco language IDs to a backend
-        // key and the full set of languages handled by that server.
+        // Each entry maps one or more Monaco language IDs to:
+        //   backend    – language string sent to the worker (controls
+        //                which server is spawned and which config is
+        //                generated, e.g. jsconfig.json vs tsconfig.json)
+        //   clientKey  – dedup key for the frontend client map.  Languages
+        //                that share the same LSP server use the same key
+        //                so only ONE WebRTC channel + client is created.
+        //   selector   – Monaco language IDs the client provides features for.
         const LSP_LANG_TABLE = {
-            cpp:                { backend: 'cpp',        selector: ['cpp', 'c'] },
-            c:                  { backend: 'cpp',        selector: ['cpp', 'c'] },
-            rust:               { backend: 'rust',       selector: ['rust'] },
-            python:             { backend: 'python',     selector: ['python'] },
-            typescript:         { backend: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
-            javascript:         { backend: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
-            typescriptreact:    { backend: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
-            javascriptreact:    { backend: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
-            java:               { backend: 'java',       selector: ['java'] },
-            go:                 { backend: 'go',         selector: ['go'] },
-            csharp:             { backend: 'csharp',     selector: ['csharp'] },
-            ruby:               { backend: 'ruby',       selector: ['ruby'] },
-            php:                { backend: 'php',        selector: ['php'] },
-            kotlin:             { backend: 'kotlin',     selector: ['kotlin'] },
-            zig:                { backend: 'zig',        selector: ['zig'] },
-            dart:               { backend: 'dart',       selector: ['dart'] },
-            lua:                { backend: 'lua',        selector: ['lua'] },
-            elixir:             { backend: 'elixir',     selector: ['elixir'] },
-            svelte:             { backend: 'svelte',     selector: ['svelte'] },
-            css:                { backend: 'css',        selector: ['css', 'scss', 'less'] },
-            scss:               { backend: 'css',        selector: ['css', 'scss', 'less'] },
-            less:               { backend: 'css',        selector: ['css', 'scss', 'less'] },
-            html:               { backend: 'html',       selector: ['html'] },
+            cpp:                { backend: 'cpp',        clientKey: 'cpp',        selector: ['cpp', 'c'] },
+            c:                  { backend: 'c',          clientKey: 'cpp',        selector: ['cpp', 'c'] },
+            rust:               { backend: 'rust',       clientKey: 'rust',       selector: ['rust'] },
+            python:             { backend: 'python',     clientKey: 'python',     selector: ['python'] },
+            typescript:         { backend: 'typescript', clientKey: 'typescript', selector: ['typescript', 'typescriptreact'] },
+            typescriptreact:    { backend: 'typescript', clientKey: 'typescript', selector: ['typescript', 'typescriptreact'] },
+            javascript:         { backend: 'javascript', clientKey: 'javascript', selector: ['javascript', 'javascriptreact'] },
+            javascriptreact:    { backend: 'javascript', clientKey: 'javascript', selector: ['javascript', 'javascriptreact'] },
+            java:               { backend: 'java',       clientKey: 'java',       selector: ['java'] },
+            go:                 { backend: 'go',         clientKey: 'go',         selector: ['go'] },
+            csharp:             { backend: 'csharp',     clientKey: 'csharp',     selector: ['csharp'] },
+            ruby:               { backend: 'ruby',       clientKey: 'ruby',       selector: ['ruby'] },
+            php:                { backend: 'php',        clientKey: 'php',        selector: ['php'] },
+            kotlin:             { backend: 'kotlin',     clientKey: 'kotlin',     selector: ['kotlin'] },
+            zig:                { backend: 'zig',        clientKey: 'zig',        selector: ['zig'] },
+            dart:               { backend: 'dart',       clientKey: 'dart',       selector: ['dart'] },
+            lua:                { backend: 'lua',        clientKey: 'lua',        selector: ['lua'] },
+            elixir:             { backend: 'elixir',     clientKey: 'elixir',     selector: ['elixir'] },
+            svelte:             { backend: 'svelte',     clientKey: 'svelte',     selector: ['svelte'] },
+            css:                { backend: 'css',        clientKey: 'css',        selector: ['css', 'scss', 'less'] },
+            scss:               { backend: 'scss',       clientKey: 'css',        selector: ['css', 'scss', 'less'] },
+            less:               { backend: 'less',       clientKey: 'css',        selector: ['css', 'scss', 'less'] },
+            html:               { backend: 'html',       clientKey: 'html',       selector: ['html'] },
         };
 
         const langEntry = LSP_LANG_TABLE[lang];
         const backendLang = langEntry?.backend ?? null;
+        const clientKey = langEntry?.clientKey ?? backendLang;
         const documentSelector = langEntry?.selector ?? [];
 
         if (!backendLang) {
@@ -463,11 +474,11 @@ const EditorPanel = ({
             return;
         }
 
-        if (languageClientsRef.current.has(backendLang)) {
-            const client = languageClientsRef.current.get(backendLang);
+        if (languageClientsRef.current.has(clientKey)) {
+            const client = languageClientsRef.current.get(clientKey);
             if (client && client.isRunning()) {
                 setLspStatus(`Ready (${backendLang})`);
-                console.log(`[LSP] Reusing existing ${backendLang} client`);
+                console.log(`[LSP] Reusing existing ${clientKey} client for ${backendLang}`);
 
                 // P0: The editor remounted with a new model (key={activeFileIdentity}).
                 // @codingame/monaco-vscode-api creates the model with 'plaintext',
@@ -482,7 +493,7 @@ const EditorPanel = ({
                     }
 
                     const fileUri = model.uri.toString();
-                    const prev = lspOpenedUrisRef.current.get(backendLang);
+                    const prev = lspOpenedUrisRef.current.get(clientKey);
 
                     // Only send didClose/didOpen if the file actually changed,
                     // or if we never tracked an open URI for this language yet.
@@ -508,7 +519,7 @@ const EditorPanel = ({
                                     text: model.getValue(),
                                 }
                             });
-                            lspOpenedUrisRef.current.set(backendLang, { uri: fileUri, languageId: lang });
+                            lspOpenedUrisRef.current.set(clientKey, { uri: fileUri, languageId: lang });
                             console.log(`[LSP] Reuse: sent manual didOpen for ${fileUri}`);
                         } catch (e) {
                             console.warn(`[LSP] Reuse: manual didOpen failed:`, e.message);
@@ -519,13 +530,13 @@ const EditorPanel = ({
             }
             // Client exists but is no longer running (channel closed, crashed, etc.)
             // Remove the stale entry so we re-initialize below.
-            console.warn(`[LSP] Stale client for ${backendLang} — removing and re-initializing`);
-            languageClientsRef.current.delete(backendLang);
+            console.warn(`[LSP] Stale client for ${clientKey} — removing and re-initializing`);
+            languageClientsRef.current.delete(clientKey);
         }
 
         // Prevent concurrent initialization for the same language
         // (effect can re-fire while the async .then() is still in flight)
-        if (lspInitPendingRef.current.has(backendLang)) {
+        if (lspInitPendingRef.current.has(clientKey)) {
             return;
         }
 
@@ -539,7 +550,7 @@ const EditorPanel = ({
 
         console.log(`[LSP] Initializing for ${backendLang}...`);
         setLspStatus(`Initializing ${backendLang}...`);
-        lspInitPendingRef.current.add(backendLang);
+        lspInitPendingRef.current.add(clientKey);
 
         let lspChannel;
         let adapter;
@@ -705,15 +716,15 @@ const EditorPanel = ({
             import('monaco-languageclient/vscodeApiWrapper'),
             import('vscode-languageclient/lib/common/completion'),
         ]).then(async ([{ MonacoLanguageClient }, { MonacoVscodeApiWrapper }, { CompletionItemFeature }]) => {
-            if (languageClientsRef.current.has(backendLang)) {
-                lspInitPendingRef.current.delete(backendLang);
+            if (languageClientsRef.current.has(clientKey)) {
+                lspInitPendingRef.current.delete(clientKey);
                 return;
             }
 
             // Services should be initialized by the other useEffect, but double check
             if (!servicesInitialized) {
                 console.warn('[LSP] Services not initialized yet, waiting...');
-                lspInitPendingRef.current.delete(backendLang);
+                lspInitPendingRef.current.delete(clientKey);
                 return;
             }
 
@@ -734,7 +745,13 @@ const EditorPanel = ({
                 // causes VS Code's suggest model to dismiss the widget
                 // before our async provider's 34 items arrive.
                 registerFeature(feature) {
-                    if (feature instanceof CompletionItemFeature) {
+                    // Use multiple checks — instanceof can fail when
+                    // bundlers duplicate the vscode-languageclient module.
+                    const isCompletionFeature =
+                        feature instanceof CompletionItemFeature ||
+                        feature?.constructor?.name === 'CompletionItemFeature' ||
+                        feature?.registrationType?.method === 'textDocument/completion';
+                    if (isCompletionFeature) {
                         console.log('[LSP] Skipping built-in CompletionItemFeature — using direct provider');
                         return;
                     }
@@ -768,6 +785,11 @@ const EditorPanel = ({
                 cargo: {
                     // Don't run `cargo check` on save — it fails without cargo
                     buildScripts: { enable: false },
+                    // Let RA auto-discover sysroot from cargo/rustc so it can
+                    // index stdlib source (Vec::new, HashMap::insert, etc.)
+                    // Setting sysroot to "discover" is the default but being
+                    // explicit ensures it's not accidentally turned off.
+                    sysroot: 'discover',
                 },
                 // Disable check-on-save (requires cargo)
                 checkOnSave: false,
@@ -805,14 +827,6 @@ const EditorPanel = ({
                             return next(document);
                         },
                         didChange: (data, next) => {
-                            // The middleware receives a TextDocumentChangeEvent:
-                            //   { document: TextDocument, contentChanges: [...] }
-                            // TextDocument has .uri, .version, .languageId, etc.
-                            const doc = data?.document ?? data;
-                            const ver = doc?.version ?? data?.textDocument?.version ?? '?';
-                            const uri = doc?.uri?.toString?.() ?? data?.textDocument?.uri ?? '';
-                            const shortUri = typeof uri === 'string' ? uri.split('/').pop() : '?';
-                            console.log(`[LSP] middleware didChange → ${shortUri} v${ver}`);
                             _lastDidChangeTs = performance.now();
                             return next(data);
                         },
@@ -853,7 +867,7 @@ const EditorPanel = ({
             const currentModel = editorInstance.getModel();
             if (!currentModel) {
                 console.warn('[LSP] Editor model disappeared during async init, aborting');
-                lspInitPendingRef.current.delete(backendLang);
+                lspInitPendingRef.current.delete(clientKey);
                 try { lspChannel.close(); } catch (_) {}
                 return;
             }
@@ -878,7 +892,7 @@ const EditorPanel = ({
                     await adapter.waitUntilOpen(15000);
                 } catch (e) {
                     console.error(`[LSP] ${e.message} for ${backendLang}`);
-                    lspInitPendingRef.current.delete(backendLang);
+                    lspInitPendingRef.current.delete(clientKey);
                     try { lspChannel.close(); } catch (_) {}
                     setLspStatus('Channel Timeout');
                     return;
@@ -921,7 +935,7 @@ const EditorPanel = ({
                 } catch (_) {}
             } catch (e) {
                 console.error(`[LSP] Client start failed for ${backendLang}:`, e.message || e);
-                lspInitPendingRef.current.delete(backendLang);
+                lspInitPendingRef.current.delete(clientKey);
                 try { languageClient.stop(); } catch (_) {}
                 try { lspChannel.close(); } catch (_) {}
                 setLspStatus(`${backendLang} server unavailable`);
@@ -931,10 +945,13 @@ const EditorPanel = ({
             // Disable Monaco's built-in validation for languages where we have an LSP,
             // to avoid double diagnostics and double work on every keystroke.
             try {
-                if (['typescript', 'javascript'].includes(backendLang)) {
+                if (backendLang === 'typescript') {
                     monacoInstance.languages.typescript?.typescriptDefaults?.setDiagnosticsOptions({
                         noSemanticValidation: true, noSyntaxValidation: true, noSuggestionDiagnostics: true
                     });
+                } else if (backendLang === 'javascript') {
+                    // JS now uses typescript-language-server — disable Monaco's
+                    // built-in JS IntelliSense to avoid double completions/diagnostics.
                     monacoInstance.languages.typescript?.javascriptDefaults?.setDiagnosticsOptions({
                         noSemanticValidation: true, noSyntaxValidation: true, noSuggestionDiagnostics: true
                     });
@@ -960,11 +977,13 @@ const EditorPanel = ({
                     cpp: ['.', ':', '>', '(', '<'],
                     python: ['.', '('],
                     typescript: ['.', '(', "'", '"', '/', '<'],
+                    javascript: ['.', '(', "'", '"', '/', '<'],
                     java: ['.', '(', '@'],
                     go: ['.', '('],
                     csharp: ['.', '('],
                     ruby: ['.', ':'],
                     php: ['.', '>', ':', '$', '\\'],
+                    dart: ['.', '('],
                 };
                 const langTriggers = KNOWN_TRIGGERS[backendLang] || ['.'];
                 const allTriggers = [...new Set([...serverTriggerChars, ...langTriggers])];
@@ -1040,7 +1059,19 @@ const EditorPanel = ({
                 // (e.g. `Vec:` instead of `Vec::`) and the second request
                 // may arrive before didChange propagates.
                 let _triggerDebounceTimer = null;
-                const TRIGGER_DEBOUNCE_MS = 100;
+                const TRIGGER_DEBOUNCE_MS = 120;
+                // Debounce timer for regular (Invoked / quickSuggestions)
+                // completions.  Without this, every keystroke fires a
+                // separate textDocument/completion request, hammering the
+                // server (especially heavy ones like rust-analyzer).
+                let _typingDebounceTimer = null;
+                const TYPING_DEBOUNCE_MS = 180;
+                // Deferred re-trigger: when all inline retries fail but the
+                // server said incomplete=true, schedule a delayed re-invoke
+                // of the suggest widget.  Limited to avoid infinite loops.
+                let _deferredRetriggerCount = 0;
+                let _pendingDeferredRetrigger = null;
+                const MAX_DEFERRED_RETRIGGERS = 2;
                 // Minimum gap (ms) between the last didChange notification
                 // and sending a completion request.  Ensures the server has
                 // time to ingest the change before we ask for completions.
@@ -1063,13 +1094,6 @@ const EditorPanel = ({
                         provideCompletionItems: async (model, position, context, token) => {
                             const lineText = model.getLineContent(position.lineNumber);
                             const textBeforeCursor = lineText.substring(0, position.column - 1);
-                            console.log(`[LSP] provideCompletionItems CALLED for ${backendLang}`, {
-                                line: position.lineNumber,
-                                col: position.column,
-                                triggerKind: context.triggerKind,
-                                triggerChar: context.triggerCharacter || '(none)',
-                                textBefore: textBeforeCursor.slice(-20),
-                            });
                             const providerT0 = performance.now();
                             if (!languageClient.isRunning()) {
                                 console.log('[LSP] provideCompletionItems: client not running, returning empty');
@@ -1098,13 +1122,21 @@ const EditorPanel = ({
                             // Build the LSP triggerKind:
                             //  1 = Invoked (Ctrl+Space or quickSuggestions auto-trigger)
                             //  2 = TriggerCharacter (typed a trigger char like . : etc.)
+                            //  3 = TriggerForIncompleteCompletions (re-query after incomplete)
                             const isTriggerChar = context.triggerKind === monacoInstance.languages.CompletionTriggerKind.TriggerCharacter;
+                            const isIncompleteRetrigger = context.triggerKind === monacoInstance.languages.CompletionTriggerKind.TriggerForIncompleteCompletions;
 
                             // ── Debounce trigger-character completions ────────
                             // Multi-char triggers (::, ->, ..) fire two events
                             // in quick succession.  Wait a short interval to
                             // coalesce them and let didChange propagate.
                             if (isTriggerChar) {
+                                // New user input — reset deferred retrigger state
+                                _deferredRetriggerCount = 0;
+                                if (_pendingDeferredRetrigger) {
+                                    clearTimeout(_pendingDeferredRetrigger);
+                                    _pendingDeferredRetrigger = null;
+                                }
                                 // Cancel any pending debounce timer
                                 if (_triggerDebounceTimer) {
                                     clearTimeout(_triggerDebounceTimer);
@@ -1125,6 +1157,27 @@ const EditorPanel = ({
                                 }
                             }
 
+                            // ── Debounce regular typing completions ───────────
+                            // quickSuggestions fires triggerKind=1 on every
+                            // keystroke.  Debounce so we only send one request
+                            // after the user pauses typing.
+                            if (!isTriggerChar && !isIncompleteRetrigger) {
+                                if (_typingDebounceTimer) {
+                                    clearTimeout(_typingDebounceTimer);
+                                    _typingDebounceTimer = null;
+                                }
+                                await new Promise((resolve) => {
+                                    _typingDebounceTimer = setTimeout(() => {
+                                        _typingDebounceTimer = null;
+                                        resolve();
+                                    }, TYPING_DEBOUNCE_MS);
+                                    token.onCancellationRequested(() => resolve());
+                                });
+                                if (myGeneration !== _currentCompletionGen || token.isCancellationRequested) {
+                                    return { suggestions: [] };
+                                }
+                            }
+
                             // ── Skip known-invalid trigger contexts ───────────
                             // After the debounce we re-read the text before the
                             // cursor.  Some single-char triggers are only valid
@@ -1140,7 +1193,7 @@ const EditorPanel = ({
                             // with ':' for :: path completions — sending as
                             // Invoked causes it to skip the trigger-char path
                             // resolution and return fewer or no results.
-                            let effectiveTriggerKind = isTriggerChar ? 2 : 1;
+                            let effectiveTriggerKind = isTriggerChar ? 2 : (isIncompleteRetrigger ? 3 : 1);
                             let effectiveTriggerChar = isTriggerChar ? context.triggerCharacter : undefined;
 
                             if (isTriggerChar) {
@@ -1158,13 +1211,7 @@ const EditorPanel = ({
                                     return { suggestions: [] };
                                 }
 
-                                // Log multi-char trigger detection for diagnostics
-                                const isMultiCharTrigger =
-                                    (ch === ':' && prev === ':') ||
-                                    (ch === '>' && prev === '-');
-                                if (isMultiCharTrigger) {
-                                    console.log(`[LSP] Multi-char trigger '${prev}${ch}' — keeping triggerKind=2 with char='${ch}'`);
-                                }
+
                             }
 
                             // We rely on the middleware passthrough for didChange
@@ -1181,15 +1228,6 @@ const EditorPanel = ({
                                 _lastCompletionCts = null;
                             }
 
-                            console.log(`[LSP] Sending textDocument/completion for ${backendLang} (gen=${myGeneration}, L${position.lineNumber}:${position.column}, triggerKind=${effectiveTriggerKind}${effectiveTriggerChar ? ', char=' + effectiveTriggerChar : ''})`, {
-                                modelContent: model.getLineContent(position.lineNumber).substring(
-                                    Math.max(0, position.column - 21), position.column - 1
-                                ) + '|' + model.getLineContent(position.lineNumber).substring(
-                                    position.column - 1, position.column + 9
-                                ),
-                                sinceLastChange: `${(performance.now() - _lastDidChangeTs).toFixed(0)}ms`,
-                            });
-
                             try {
                                 // Yield at least MIN_CHANGE_GAP_MS after the
                                 // last didChange so the server has time to
@@ -1199,11 +1237,9 @@ const EditorPanel = ({
                                     ? performance.now() - _lastDidChangeTs
                                     : Infinity; // No didChange yet — don't delay
                                 const yieldMs = Math.max(10, MIN_CHANGE_GAP_MS - sinceLast);
-                                await new Promise((r) => setTimeout(r, yieldMs));
-                                const actualGap = _lastDidChangeTs > 0
-                                    ? (performance.now() - _lastDidChangeTs).toFixed(0)
-                                    : 'n/a';
-                                console.log(`[LSP] Post-yield: ${actualGap}ms since last didChange (yielded ${yieldMs}ms) for gen=${myGeneration}`);
+                                if (yieldMs > 10) {
+                                    await new Promise((r) => setTimeout(r, yieldMs));
+                                }
                                 if (token.isCancellationRequested || myGeneration !== _currentCompletionGen) {
                                     return { suggestions: [] };
                                 }
@@ -1259,7 +1295,6 @@ const EditorPanel = ({
 
                                 let items = Array.isArray(result) ? result : (result.items || []);
                                 let isIncomplete = !Array.isArray(result) && result.isIncomplete;
-                                console.log(`[LSP] Server returned ${items.length} raw items for ${backendLang} in ${elapsed}ms (incomplete=${!!isIncomplete})`);
 
                                 // ── Retry on 0-item incomplete ────────────────
                                 // Servers (especially rust-analyzer) may return
@@ -1279,11 +1314,11 @@ const EditorPanel = ({
                                     // initial delay.
                                     const instantResponse = parseFloat(elapsed) < 5;
                                     const retryDelays = (backendLang === 'rust')
-                                        ? (instantResponse ? [500, 1000, 2000] : [400, 800, 1500])
-                                        : (instantResponse ? [400, 800] : [300, 600]);
+                                        ? (instantResponse ? [400, 800] : [250, 500])
+                                        : (instantResponse ? [250, 500] : [200, 400]);
                                     for (let attempt = 0; attempt < retryDelays.length; attempt++) {
                                         const delay = retryDelays[attempt];
-                                        console.log(`[LSP] 0 items + incomplete — retry ${attempt + 1} in ${delay}ms for ${backendLang} (gen=${myGeneration})`);
+                                        console.log(`[LSP] 0 items + incomplete — retry ${attempt + 1}/${retryDelays.length} in ${delay}ms for ${backendLang} (gen=${myGeneration})`);
                                         await new Promise((r) => setTimeout(r, delay));
 
                                         if (myGeneration !== _currentCompletionGen || token.isCancellationRequested) {
@@ -1294,12 +1329,11 @@ const EditorPanel = ({
                                         _lastCompletionCts = cts2;
                                         const monacoDisp2 = token.onCancellationRequested(() => cts2.cancel());
 
-                                        // Alternate between trigger contexts on retries:
-                                        // even attempts: same as original (TriggerChar if trigger, else Invoked)
-                                        // odd attempts: Invoked (gives server a fresh context lookup)
-                                        const retryContext = (attempt % 2 === 1)
-                                            ? { triggerKind: 1 }
-                                            : { triggerKind: effectiveTriggerKind, triggerCharacter: effectiveTriggerChar };
+                                        // Use triggerKind=3 (TriggerForIncompleteCompletions)
+                                        // which is the LSP-standard way to re-query after
+                                        // an incomplete result.  This tells the server we're
+                                        // continuing from a previous incomplete response.
+                                        const retryContext = { triggerKind: 3 };
 
                                         const t1 = performance.now();
                                         const retryResult = await languageClient.sendRequest('textDocument/completion', {
@@ -1332,6 +1366,26 @@ const EditorPanel = ({
 
                                 if (items.length === 0) {
                                     console.log(`[LSP] provideCompletionItems: server returned 0 items for ${backendLang} (gen=${myGeneration}, ${elapsed}ms, incomplete=${!!isIncomplete})`);
+
+                                    // If the server is still incomplete (e.g. rust-analyzer
+                                    // still indexing stdlib), schedule a deferred re-trigger
+                                    // of the suggest widget after a longer delay.  This gives
+                                    // heavy servers time to finish analysis without blocking
+                                    // the completion provider for too long.
+                                    if (isIncomplete && _deferredRetriggerCount < MAX_DEFERRED_RETRIGGERS
+                                        && myGeneration === _currentCompletionGen && !token.isCancellationRequested) {
+                                        _deferredRetriggerCount++;
+                                        const retriggerDelay = backendLang === 'rust' ? 4000 : 2000;
+                                        console.log(`[LSP] Scheduling deferred suggest re-trigger ${_deferredRetriggerCount}/${MAX_DEFERRED_RETRIGGERS} in ${retriggerDelay}ms for ${backendLang}`);
+                                        if (_pendingDeferredRetrigger) clearTimeout(_pendingDeferredRetrigger);
+                                        _pendingDeferredRetrigger = setTimeout(() => {
+                                            _pendingDeferredRetrigger = null;
+                                            if (myGeneration === _currentCompletionGen && editorInstance) {
+                                                editorInstance.trigger('lsp-deferred', 'editor.action.triggerSuggest', {});
+                                            }
+                                        }, retriggerDelay);
+                                    }
+
                                     return { suggestions: [], incomplete: !!isIncomplete };
                                 }
 
@@ -1550,25 +1604,15 @@ const EditorPanel = ({
                                     return { suggestions: [] };
                                 }
 
+                                // Successful completion — reset deferred retrigger state
+                                _deferredRetriggerCount = 0;
+                                if (_pendingDeferredRetrigger) {
+                                    clearTimeout(_pendingDeferredRetrigger);
+                                    _pendingDeferredRetrigger = null;
+                                }
+
                                 const totalMs = (performance.now() - providerT0).toFixed(0);
-                                console.log(`[LSP] Direct completion for ${backendLang}: ${suggestions.length} items in ${elapsed}ms (total=${totalMs}ms, gen=${myGeneration}, incomplete=${!!isIncomplete})`, {
-                                    pos: { line: position.lineNumber, col: position.column },
-                                    word: word.word || '(empty)',
-                                    defaultRange,
-                                    // Show range decision for first 3 items
-                                    itemRanges: suggestions.slice(0, 3).map(s => ({
-                                        label: typeof s.label === 'string' ? s.label : s.label?.label,
-                                        filterText: s.filterText,
-                                        usedServerRange: s.range !== defaultRange,
-                                        range: s.range,
-                                    })),
-                                    firstItem: suggestions[0] ? {
-                                        label: typeof suggestions[0].label === 'string' ? suggestions[0].label : suggestions[0].label?.label,
-                                        insertText: suggestions[0].insertText?.substring(0, 40),
-                                        filterText: suggestions[0].filterText,
-                                        kind: suggestions[0].kind,
-                                    } : null,
-                                });
+                                console.log(`[LSP] completion ${backendLang}: ${suggestions.length} items, ${elapsed}ms server / ${totalMs}ms total`);
                                 return { suggestions, incomplete: !!isIncomplete };
                             } catch (err) {
                                 // Ensure the CTS is cleaned up on error too,
@@ -1719,7 +1763,7 @@ const EditorPanel = ({
                     }
                 }
                 // Track the URI so the reuse path can send didClose on file switch
-                lspOpenedUrisRef.current.set(backendLang, { uri: activeUri, languageId: lang });
+                lspOpenedUrisRef.current.set(clientKey, { uri: activeUri, languageId: lang });
             }
 
             // ── Multi-file workspace priming ──────────────────────
@@ -1733,9 +1777,12 @@ const EditorPanel = ({
             // Only servers that genuinely need priming (TS/JS, Python)
             // get a limited didOpen blast.  All others rely on disk
             // discovery via rootUri / workspaceFolders.
-            const SERVERS_NEEDING_PRIMING = new Set(['typescript', 'python']);
+            // Check both backendLang and clientKey so languages that share
+            // a server (e.g. JS shares with TS via clientKey='typescript')
+            // still get primed even if only one variant is listed.
+            const SERVERS_NEEDING_PRIMING = new Set(['typescript', 'javascript', 'python']);
 
-            if (SERVERS_NEEDING_PRIMING.has(backendLang)) {
+            if (SERVERS_NEEDING_PRIMING.has(backendLang) || SERVERS_NEEDING_PRIMING.has(clientKey)) {
                 setTimeout(() => {
                     if (!languageClient.isRunning()) return;
 
@@ -1802,8 +1849,8 @@ const EditorPanel = ({
             // We keep a no-op disposable for the cleanup in the close handler.
             const changeDisposable = { dispose: () => {} };
 
-            languageClientsRef.current.set(backendLang, languageClient);
-            lspInitPendingRef.current.delete(backendLang);
+            languageClientsRef.current.set(clientKey, languageClient);
+            lspInitPendingRef.current.delete(clientKey);
             setLspStatus(`Ready (${backendLang})`);
 
             // Use addEventListener instead of setting onclose directly so
@@ -1839,15 +1886,15 @@ const EditorPanel = ({
                 }
 
                 languageClient.stop();
-                languageClientsRef.current.delete(backendLang);
-                lspInitPendingRef.current.delete(backendLang);
-                lspOpenedUrisRef.current.delete(backendLang);
-                lspSyncCapRef.current.delete(backendLang);
+                languageClientsRef.current.delete(clientKey);
+                lspInitPendingRef.current.delete(clientKey);
+                lspOpenedUrisRef.current.delete(clientKey);
+                lspSyncCapRef.current.delete(clientKey);
                 setLspStatus('Disconnected');
             });
         }).catch(e => {
             console.error(`[LSP] Init failed for ${backendLang}:`, e);
-            lspInitPendingRef.current.delete(backendLang);
+            lspInitPendingRef.current.delete(clientKey);
             try { lspChannel.close(); } catch (_) {}
         });
 

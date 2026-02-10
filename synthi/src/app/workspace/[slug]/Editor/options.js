@@ -15,6 +15,9 @@ export const EDITOR_OPTIONS = {
     wordWrap: 'off',
     scrollBeyondLastLine: true,
     automaticLayout: true,
+    // Render suggest/hover/parameter-hints widgets in a fixed overlay
+    // so they are not clipped by overflow:hidden on the editor container.
+    fixedOverflowWidgets: true,
     // Smooth cursor animation with stronger visual anchor
     cursorBlinking: "smooth", // Smooth fading cursor
     cursorSmoothCaretAnimation: "off", // Cursor glides smoothly
@@ -52,11 +55,12 @@ export const EDITOR_OPTIONS = {
         delay: 300,
     },
     quickSuggestions: {
-        other: true,
+        other: 'on',
         comments: false,
         strings: false
     },
-    wordBasedSuggestions: 'currentDocument', // Fallback: suggest words from current file
+    quickSuggestionsDelay: 150, // Avoid firing on every keystroke
+    wordBasedSuggestions: 'off', // LSP handles completions — no need for word-based
     suggestOnTriggerCharacters: true, // Ensure :: . ( etc. trigger completions
     acceptSuggestionOnCommitCharacter: true, // Accept suggestion on . ( etc.
     suggest: {

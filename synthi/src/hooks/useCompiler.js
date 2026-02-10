@@ -9,6 +9,12 @@ export function useCompiler() {
     const [isCompiling, setIsCompiling] = useState(false);
     const [mediaStream, setMediaStream] = useState(null);
 
+    // Auto-reconnect timer ref — persists across status changes
+    const reconnectTimerRef = useRef(null);
+    const reconnectAttemptsRef = useRef(0);
+    const MAX_RECONNECT_ATTEMPTS = 5;
+    const RECONNECT_BASE_DELAY = 3000;
+
     useEffect(() => {
         if (typeof window === 'undefined') return;
 
@@ -22,7 +28,38 @@ export function useCompiler() {
             client.connect().catch(e => console.error("Auto-connect failed", e));
         }
 
-        const unsubscribeStatus = client.onStatusChange(setStatus);
+        const unsubscribeStatus = client.onStatusChange((newStatus) => {
+            setStatus(newStatus);
+
+            // Auto-reconnect on disconnect
+            if (newStatus === CompilerStatus.DISCONNECTED) {
+                if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+                if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+                    const delay = RECONNECT_BASE_DELAY * Math.pow(1.5, reconnectAttemptsRef.current);
+                    console.log(`[useCompiler] Auto-reconnect attempt ${reconnectAttemptsRef.current + 1}/${MAX_RECONNECT_ATTEMPTS} in ${Math.round(delay)}ms`);
+                    reconnectTimerRef.current = setTimeout(async () => {
+                        reconnectTimerRef.current = null;
+                        reconnectAttemptsRef.current++;
+                        try {
+                            await client.reconnect();
+                            console.log('[useCompiler] Auto-reconnect succeeded');
+                            reconnectAttemptsRef.current = 0;
+                        } catch (e) {
+                            console.error('[useCompiler] Auto-reconnect failed:', e.message);
+                        }
+                    }, delay);
+                } else {
+                    console.warn(`[useCompiler] Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached`);
+                }
+            } else if (newStatus === CompilerStatus.CONNECTED) {
+                // Connection restored — reset reconnect counter
+                reconnectAttemptsRef.current = 0;
+                if (reconnectTimerRef.current) {
+                    clearTimeout(reconnectTimerRef.current);
+                    reconnectTimerRef.current = null;
+                }
+            }
+        });
 
         const handleTrack = (e) => {
             const { streams, track } = e.detail || {};
@@ -69,6 +106,10 @@ export function useCompiler() {
         return () => {
             unsubscribeStatus();
             window.removeEventListener('synthi:media-track', handleTrack);
+            if (reconnectTimerRef.current) {
+                clearTimeout(reconnectTimerRef.current);
+                reconnectTimerRef.current = null;
+            }
             // Do not dispose singleton
             clientRef.current = null;
         };
