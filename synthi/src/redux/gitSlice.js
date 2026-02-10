@@ -369,6 +369,10 @@ const gitSlice = createSlice({
         actionErrorCode: null,
         error: null,
         errorCode: null, // For structured error handling
+        // The file path currently open in the Merge Conflict Editor.
+        // When set, the main editor area renders MergeConflictEditor
+        // instead of the standard Monaco editor.
+        conflictResolverFile: null,
     },
     reducers: {
         clearError: (state) => {
@@ -376,7 +380,13 @@ const gitSlice = createSlice({
             state.errorCode = null;
             state.actionError = null;
             state.actionErrorCode = null;
-        }
+        },
+        openConflictResolver: (state, action) => {
+            state.conflictResolverFile = action.payload; // filePath string
+        },
+        closeConflictResolver: (state) => {
+            state.conflictResolverFile = null;
+        },
     },
     extraReducers: (builder) => {
         // ── Background refresh thunks ─────────────────────────
@@ -394,6 +404,11 @@ const gitSlice = createSlice({
                 state.branches = action.payload.branches || { local: [], all: [] };
                 if (action.payload.status) {
                     state.currentBranch = action.payload.status.current;
+                    // Auto-close conflict resolver if conflicts are gone
+                    const stillConflicted = action.payload.status.conflictedFiles ?? [];
+                    if (state.conflictResolverFile && !stillConflicted.includes(state.conflictResolverFile)) {
+                        state.conflictResolverFile = null;
+                    }
                 }
             })
             .addCase(fetchGitStatus.rejected, (state, action) => {
@@ -485,10 +500,10 @@ const gitSlice = createSlice({
             .addCase(markResolved.fulfilled, (state) => { state.loading = false; })
             .addCase(markResolved.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; })
             .addCase(abortMerge.pending, (state) => { state.loading = true; state.actionError = null; })
-            .addCase(abortMerge.fulfilled, (state) => { state.loading = false; })
+            .addCase(abortMerge.fulfilled, (state) => { state.loading = false; state.conflictResolverFile = null; })
             .addCase(abortMerge.rejected, (state, action) => { state.loading = false; state.actionError = action.error.message; });
     },
 });
 
-export const { clearError } = gitSlice.actions;
+export const { clearError, openConflictResolver, closeConflictResolver } = gitSlice.actions;
 export default gitSlice.reducer;
