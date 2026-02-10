@@ -56,6 +56,8 @@ const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
+const { createTerminalWSS, activeSessions: terminalSessions, broadcastToAll: terminalBroadcast } = require('./terminalService');
+const proxyService = require('./proxyService');
 let fetchFunc = null;
 if (typeof fetch === 'function') {
   fetchFunc = fetch;
@@ -395,6 +397,17 @@ class ValidatingPersistence {
 // Wrap the base persistence with validation
 const persistence = new ValidatingPersistence(basePersistence);
 
+// CRITICAL: y-websocket uses a module-level persistence variable, NOT the
+// options passed to setupWSConnection. We must call setPersistence() so
+// that getYDoc() → bindState() → auto-flush actually fires.
+try {
+  const { setPersistence } = require('y-websocket/bin/utils');
+  setPersistence(persistence);
+  console.log('[Collab] Persistence registered via setPersistence()');
+} catch (e) {
+  console.warn('[Collab] Could not call setPersistence:', e.message);
+}
+
 const gitService = require('./gitService');
 const workspaceManager = require('./workspaceManager');
 
@@ -430,7 +443,22 @@ const server = http.createServer(async (req, res) => {
     res.end();
     return;
   }
-  
+
+  // ========================================================================
+  // REVERSE PROXY — /port/<N>/... → http://127.0.0.1:<N>/...
+  // Enables in-IDE preview of running dev servers (Next.js, Vite, etc.)
+  // ========================================================================
+  if (req.url.startsWith('/port/')) {
+    proxyService.proxyHttpRequest(req, res);
+    return;
+  }
+
+  // GET /ports — list active dev-server ports
+  if (req.url === '/ports' && req.method === 'GET') {
+    proxyService.handlePortsStatus(req, res);
+    return;
+  }
+
   // Debug endpoint to check collab server state
   if (req.url === '/debug/status' && req.method === 'GET') {
     const status = {
@@ -944,11 +972,30 @@ wss.on('connection', (ws, req) => {
   });
 });
 
+// ─── Terminal PTY WebSocket Server ──────────────────────────────────────────
+const terminalWSS = createTerminalWSS();
+
 server.on('upgrade', (request, socket, head) => {
-  const roomName = request.url ? request.url.slice(1).split('?')[0] : 'unknown';
+  const pathname = (request.url || '').split('?')[0];
+
+  // Route /terminal upgrades to the PTY terminal service
+  if (pathname === '/terminal') {
+    console.log(`[Terminal] Upgrade request for PTY terminal`);
+    terminalWSS.handleUpgrade(request, socket, head);
+    return;
+  }
+
+  // Route /port/<N>/... WS upgrades to the reverse proxy (HMR, hot-reload)
+  if (pathname.startsWith('/port/')) {
+    const handled = proxyService.proxyWsUpgrade(request, socket, head);
+    if (handled) return;
+    // If the port isn't active, fall through (socket already destroyed by proxyWsUpgrade)
+    return;
+  }
+
+  // Everything else → Yjs room (collab)
+  const roomName = pathname.slice(1) || 'unknown';
   console.log(`[Collab DEBUG] Upgrade request for room: ${roomName}`);
-  
-  // We accept all WebSocket connections at any path (room name encoded in path)
   wss.handleUpgrade(request, socket, head, (ws) => {
     wss.emit('connection', ws, request);
   });
@@ -957,4 +1004,12 @@ server.on('upgrade', (request, socket, head) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Collaboration server (y-websocket) listening on port ${PORT}`);
   console.log(`[Collab DEBUG] Server started with persistence: ${LeveldbPersistence ? 'LevelDB' : 'In-Memory'}`);
+
+  // Start the port scanner so /port/<N> proxy routes work
+  proxyService.startScanner(Number(PORT));
+
+  // Notify terminal clients when dev-server ports open/close
+  proxyService.onPortsChanged((ports) => {
+    terminalBroadcast({ type: 'ports', ports });
+  });
 });

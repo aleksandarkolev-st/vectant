@@ -1,15 +1,36 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { SplitSquareHorizontal, Plus, X, TerminalSquare } from 'lucide-react';
+import { useDispatch } from 'react-redux';
+import { fetchFilesThunk } from '@/redux/workspaceSlice';
 
 const TerminalPane = dynamic(() => import('./TerminalPane.jsx'), { ssr: false });
 
-export default function TerminalManager({ visible, onCloseAll }) {
+export default function TerminalManager({ visible, onCloseAll, workspaceSlug = '' }) {
   const [terminals, setTerminals] = useState([{ id: 'term-1', label: 'Terminal 1', split: false }]);
   const [activeId, setActiveId] = useState('term-1');
   const dragRef = useRef(null);
+  const dispatch = useDispatch();
+  const fsRefreshTimer = useRef(null);
+
+  // ── Debounced file tree refresh on filesystem changes ────────────────
+  const handleFsChange = useCallback(() => {
+    if (!workspaceSlug) return;
+    // Debounce: wait 300ms after last fs-change before dispatching
+    if (fsRefreshTimer.current) clearTimeout(fsRefreshTimer.current);
+    fsRefreshTimer.current = setTimeout(() => {
+      dispatch(fetchFilesThunk(workspaceSlug));
+    }, 300);
+  }, [workspaceSlug, dispatch]);
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (fsRefreshTimer.current) clearTimeout(fsRefreshTimer.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (!visible) return;
@@ -136,9 +157,9 @@ export default function TerminalManager({ visible, onCloseAll }) {
               }}
             >
               <div className={`h-full w-full ${t.split ? 'grid grid-cols-2 gap-0' : ''}`}>
-                <TerminalPane key={`${t.id}-main`} terminalId={t.id} paneSide="main" />
+                <TerminalPane key={`${t.id}-main`} terminalId={t.id} paneSide="main" workspaceSlug={workspaceSlug} onFsChange={handleFsChange} />
                 {t.split && (
-                  <TerminalPane key={`${t.id}-split`} terminalId={t.id} paneSide="split" />
+                  <TerminalPane key={`${t.id}-split`} terminalId={t.id} paneSide="split" workspaceSlug={workspaceSlug} onFsChange={handleFsChange} />
                 )}
               </div>
             </div>

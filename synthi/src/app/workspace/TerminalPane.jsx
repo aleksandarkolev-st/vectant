@@ -1,342 +1,384 @@
 'use client';
-import React, { useEffect, useRef, useState } from 'react';
-import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap } from 'lucide-react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { WifiOff, RefreshCw, Terminal, Zap } from 'lucide-react';
 
-export default function TerminalPane() {
+/**
+ * TerminalPane — Renders a single interactive terminal backed by a real PTY
+ * on the collab-server via WebSocket.
+ *
+ * Props:
+ *   terminalId  - Unique identifier for this terminal tab
+ *   paneSide    - 'main' | 'split' (used to key the PTY session)
+ *   workspaceSlug - Workspace slug for CWD binding
+ *
+ * Protocol:
+ *   The collab-server exposes ws://<host>:1234/terminal?sessionId=X&workspace=slug
+ *   - Binary frames  = raw PTY output (server→client) / raw keystrokes (client→server)
+ *   - Text frames    = JSON control messages (resize, ready, exit, etc.)
+ */
+
+// ─── Constants ──────────────────────────────────────────────────────────────
+
+const TERMINAL_SERVER_URL =
+  typeof window !== 'undefined' &&
+  typeof process !== 'undefined' &&
+  process?.env?.NEXT_PUBLIC_TERMINAL_URL
+    ? process.env.NEXT_PUBLIC_TERMINAL_URL
+    : (typeof window !== 'undefined' &&
+       typeof process !== 'undefined' &&
+       process?.env?.NEXT_PUBLIC_COLLAB_SERVER_URL
+         ? process.env.NEXT_PUBLIC_COLLAB_SERVER_URL.replace(/^http/, 'ws')
+         : 'ws://localhost:1234');
+
+const RECONNECT_DELAYS = [1000, 2000, 4000, 8000]; // Exponential backoff
+const MAX_RECONNECT_ATTEMPTS = 4;
+
+// ─── Synthi Dark Theme ──────────────────────────────────────────────────────
+
+const SYNTHI_THEME = {
+  background: '#0a0b10',
+  foreground: '#f0f2f5',
+  cursor: '#327464',
+  cursorAccent: '#0a0b10',
+  selectionBackground: 'rgba(50, 116, 100, 0.3)',
+  selectionForeground: '#ffffff',
+  selectionInactiveBackground: 'rgba(50, 116, 100, 0.15)',
+  black: '#0a0b10',
+  red: '#ff6b6b',
+  green: '#a8e6cf',
+  yellow: '#ffd93d',
+  blue: '#88c0fc',
+  magenta: '#c4b5fd',
+  cyan: '#327464',
+  white: '#f0f2f5',
+  brightBlack: '#6b7089',
+  brightRed: '#ff8a8a',
+  brightGreen: '#b8f0db',
+  brightYellow: '#ffe566',
+  brightBlue: '#a8d4ff',
+  brightMagenta: '#d8c9fe',
+  brightCyan: '#3d8b78',
+  brightWhite: '#ffffff',
+};
+
+export default function TerminalPane({ terminalId = 'default', paneSide = 'main', workspaceSlug = '', onFsChange }) {
   const containerRef = useRef(null);
-  const termRef = useRef(null);
+  const terminalRef = useRef(null);   // { term, fitAddon, dispose() }
   const wsRef = useRef(null);
-  const currentSessionIdRef = useRef(null);
-  const inputBufferRef = useRef('');
-  const initializedRef = useRef(false);
-  const [connectionState, setConnectionState] = useState('connecting'); // 'connecting' | 'connected' | 'error' | 'closed'
-  const [errorMessage, setErrorMessage] = useState('');
-  const reconnectAttemptsRef = useRef(0);
-  // Use the same SIGNAL URL as compilerClient when available, fallback to localhost
-  const MACHINE_WS = typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_COMPILE_SIGNAL_URL
-    ? process.env.NEXT_PUBLIC_COMPILE_SIGNAL_URL
-    : 'https://lumpish-undevoutly-sonja.ngrok-free.dev/';
+  const sessionIdRef = useRef(null);
+  const reconnectTimerRef = useRef(null);
+  const reconnectCountRef = useRef(0);
+  const mountedRef = useRef(true);
 
+  const [state, setState] = useState('connecting'); // connecting | connected | error | closed
+  const [shellInfo, setShellInfo] = useState('');
 
+  // Stable session key: survives re-renders, unique per terminal tab + pane side
+  const sessionKey = `${terminalId}-${paneSide}`;
+
+  // ─── Cleanup helper ───────────────────────────────────────────────────
+  const cleanup = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    if (wsRef.current) {
+      try { wsRef.current.close(1000); } catch (_) {}
+      wsRef.current = null;
+    }
+    if (terminalRef.current?.term) {
+      try { terminalRef.current.term.dispose(); } catch (_) {}
+    }
+    terminalRef.current = null;
+    sessionIdRef.current = null;
+  }, []);
+
+  // ─── Send resize to server ───────────────────────────────────────────
+  const sendResize = useCallback((cols, rows) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+    }
+  }, []);
+
+  // ─── Main effect: initialise xterm + WebSocket ────────────────────────
   useEffect(() => {
-    // Prevent multiple initializations
-    if (initializedRef.current) return;
-    initializedRef.current = true;
-
-    let term;
-    let fitAddon;
-    let ws;
+    mountedRef.current = true;
+    let disposed = false;
 
     const init = async () => {
-      const { Terminal } = await import('xterm');
-      const { FitAddon } = await import('xterm-addon-fit');
+      // Dynamic import to avoid SSR issues
+      const [{ Terminal }, { FitAddon }, { WebLinksAddon }] = await Promise.all([
+        import('xterm'),
+        import('xterm-addon-fit'),
+        import('xterm-addon-web-links'),
+      ]);
 
-      term = new Terminal({
-        convertEol: true,
+      if (disposed || !containerRef.current) return;
+
+      // ── Create xterm instance ───────────────────────────────────────
+      const term = new Terminal({
         fontFamily: 'ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Monaco, Consolas, monospace',
         fontSize: 13,
-        lineHeight: 1.5,
-        theme: { 
-          // Synthi dark blue-gray theme with teal accent
-          background: '#0a0b10',
-          foreground: '#f0f2f5',
-          cursor: '#327464',
-          cursorAccent: '#0a0b10',
-          selectionBackground: 'rgba(50, 116, 100, 0.3)',
-          black: '#0a0b10',
-          red: '#ff6b6b',
-          green: '#a8e6cf',
-          yellow: '#ffd93d',
-          blue: '#88c0fc',
-          magenta: '#c4b5fd',
-          cyan: '#327464',
-          white: '#f0f2f5',
-          brightBlack: '#6b7089',
-          brightRed: '#ff8a8a',
-          brightGreen: '#b8f0db',
-          brightYellow: '#ffe566',
-          brightBlue: '#a8d4ff',
-          brightMagenta: '#d8c9fe',
-          brightCyan: '#3d8b78',
-          brightWhite: '#ffffff'
-        },
+        lineHeight: 1.4,
+        theme: SYNTHI_THEME,
         cursorBlink: true,
+        cursorStyle: 'bar',
+        scrollback: 5000,
         allowTransparency: false,
-        cols: 80,
-        rows: 24,
+        convertEol: true,   // Required on Windows — ConPTY can emit bare \n
       });
 
-      fitAddon = new FitAddon();
+      const fitAddon = new FitAddon();
+      const linksAddon = new WebLinksAddon();
       term.loadAddon(fitAddon);
-      
-      if (!containerRef.current) {
-        console.warn('TerminalPane: containerRef is null, aborting open');
+      term.loadAddon(linksAddon);
+      term.open(containerRef.current);
+
+      // Initial fit
+      try { fitAddon.fit(); } catch (_) {}
+
+      terminalRef.current = { term, fitAddon };
+
+      // ── Connect WebSocket ─────────────────────────────────────────
+      connectWS(term, fitAddon);
+
+      // ── Resize handling ───────────────────────────────────────────
+      let resizeRaf = null;
+      const doFit = () => {
+        if (disposed || !terminalRef.current) return;
+        try {
+          fitAddon.fit();
+          sendResize(term.cols, term.rows);
+        } catch (_) {}
+      };
+
+      const scheduleResize = () => {
+        if (resizeRaf) cancelAnimationFrame(resizeRaf);
+        resizeRaf = requestAnimationFrame(doFit);
+      };
+
+      const resizeObserver = new ResizeObserver(scheduleResize);
+      if (containerRef.current) resizeObserver.observe(containerRef.current);
+      window.addEventListener('resize', scheduleResize);
+
+      // Store teardown
+      terminalRef.current.dispose = () => {
+        resizeObserver.disconnect();
+        window.removeEventListener('resize', scheduleResize);
+        if (resizeRaf) cancelAnimationFrame(resizeRaf);
+        linksAddon.dispose();
+        fitAddon.dispose();
+        term.dispose();
+      };
+    };
+
+    // ── WebSocket connection logic (also used for reconnect) ──────────
+    function connectWS(term, fitAddon) {
+      if (disposed) return;
+
+      const sid = sessionKey + '-' + Date.now().toString(36);
+      sessionIdRef.current = sid;
+
+      const { cols, rows } = term;
+      const params = new URLSearchParams({
+        sessionId: sid,
+        workspace: workspaceSlug,
+        cols: String(cols),
+        rows: String(rows),
+      });
+
+      const wsUrl = `${TERMINAL_SERVER_URL}/terminal?${params}`;
+      let ws;
+      try {
+        ws = new WebSocket(wsUrl);
+      } catch (err) {
+        if (mountedRef.current) {
+          setState('error');
+        }
+        scheduleReconnect(term, fitAddon);
         return;
       }
-      term.open(containerRef.current);
-      fitAddon.fit();
 
-      try {
-        console.debug('TerminalPane connecting to', MACHINE_WS);
-        ws = new WebSocket(MACHINE_WS);
-      } catch (e) {
-        console.error('Failed to construct WebSocket with', MACHINE_WS, e);
-        ws = null;
-      }
+      ws.binaryType = 'arraybuffer';
       wsRef.current = ws;
-      if (ws) {
-        try { ws.binaryType = 'arraybuffer'; } catch (e) { /* ignore */ }
-        ws.onopen = () => {
-          console.log('WebSocket connected');
-          setConnectionState('connected');
-          setErrorMessage('');
-          reconnectAttemptsRef.current = 0;
-          try {
-            const { cols, rows } = term;
-            console.log(`Terminal size: ${cols}x${rows}`);
-          } catch (_) {}
-        };
-        ws.onmessage = (event) => {
-          try {
-            if (event.data instanceof ArrayBuffer) {
-              const decoder = new TextDecoder();
-              const text = decoder.decode(new Uint8Array(event.data));
-              term.write(text);
-            } else if (typeof event.data === 'string') {
-              term.write(event.data);
-            } else {
-              term.write(String(event.data));
-            }
-          } catch (e) {
-            console.error('Error handling ws message in TerminalPane', e);
-          }
-        };
-        ws.onerror = (error) => {
-          setConnectionState('error');
-          setErrorMessage('Connection failed. The terminal server may be unavailable.');
-          console.error('WebSocket error:', error);
-        };
-        ws.onclose = (event) => {
-          console.log('WebSocket closed', event.code, event.reason, event.wasClean);
-          setConnectionState('closed');
-        };
-      } else {
-        setConnectionState('error');
-        setErrorMessage(`Failed to connect to ${MACHINE_WS}`);
-      }
-      
-      let isResizing = false;
-      let resizeTimeout = null;
 
-      // Send user input to backend and forward to WebRTC path.
-      // Also provide a local-echo fallback when no backend is connected so
-      // the user sees their keystrokes while offline/disconnected.
-      term.onData((data) => {
-        if (isResizing) return;
-        const wsLocal = wsRef.current;
+      ws.onopen = () => {
+        if (disposed) return;
+        reconnectCountRef.current = 0;
+        setState('connected');
+      };
 
-        // Dispatch `synthi:terminal-input` for the WebRTC/compile path.
-        // Include current session id when available so the handler can
-        // associate input with the right run session.
-        try {
-          const detail = { data, sessionId: currentSessionIdRef.current };
-          window.dispatchEvent(new CustomEvent('synthi:terminal-input', { detail }));
-        } catch (e) {
-          // ignore dispatch errors
+      ws.onmessage = (event) => {
+        if (disposed) return;
+
+        // Binary frame → raw PTY output
+        if (event.data instanceof ArrayBuffer) {
+          const text = new TextDecoder().decode(new Uint8Array(event.data));
+          term.write(text);
+          return;
         }
 
-        // If the pane WebSocket is open, send raw bytes there as well.
-        if (wsLocal && wsLocal.readyState === WebSocket.OPEN) {
+        // Text frame → JSON control message
+        if (typeof event.data === 'string') {
           try {
-            const encoder = new TextEncoder();
-            wsLocal.send(encoder.encode(data));
-          } catch (e) { /* ignore send errors */ }
+            const msg = JSON.parse(event.data);
+            switch (msg.type) {
+              case 'ready':
+                setShellInfo(`${msg.shell} (pid ${msg.pid})`);
+                // Sync actual terminal size now that the PTY is alive
+                try {
+                  fitAddon.fit();
+                  sendResize(term.cols, term.rows);
+                } catch (_) {}
+                break;
+              case 'exit':
+                term.write(`\r\n\x1b[90m[Process exited with code ${msg.code}]\x1b[0m\r\n`);
+                setState('closed');
+                break;
+              case 'error':
+                term.write(`\r\n\x1b[31m[Error: ${msg.message}]\x1b[0m\r\n`);
+                break;
+              case 'pong':
+                // Keepalive acknowledged
+                break;
+              case 'fs-change':
+                // Filesystem changed (terminal created/modified/deleted files)
+                if (onFsChange) onFsChange(msg);
+                break;
+              default:
+                break;
+            }
+          } catch (_) {
+            // Not JSON — treat as plain text output
+            term.write(event.data);
+          }
+        }
+      };
+
+      ws.onerror = () => {
+        if (disposed) return;
+        setState('error');
+      };
+
+      ws.onclose = (ev) => {
+        if (disposed) return;
+        wsRef.current = null;
+        // Only reconnect on abnormal closure
+        if (ev.code !== 1000) {
+          setState('error');
+          scheduleReconnect(term, fitAddon);
         } else {
-          // Local echo fallback so user can see typed characters when no
-          // backend is connected (prevents 'cannot type' appearance).
-          try { term.write(data); } catch (_) { /* ignore */ }
+          setState('closed');
+        }
+      };
+
+      // ── xterm → WebSocket (keystroke hot path) ────────────────────
+      term.onData((data) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          // Send raw binary for minimum latency
+          ws.send(new TextEncoder().encode(data));
         }
       });
 
-      // Debounced resize handler
-      const handleResize = () => {
-        if (resizeTimeout) clearTimeout(resizeTimeout);
-        resizeTimeout = setTimeout(() => {
-          if (fitAddon && term && containerRef.current) {
-            try {
-              fitAddon.fit();
-              const { cols, rows } = term;
-              console.log(`Terminal resized: ${cols}x${rows}`);
-            } catch (e) {
-              console.error('Resize error:', e);
-            }
-          }
-        }, 100); // 100ms debounce
-      };
-
-      const resizeObserver = new ResizeObserver(() => {
-        // Use requestAnimationFrame to batch resize events
-        requestAnimationFrame(() => {
-          handleResize();
-        });
-      });
-      if (containerRef.current) {
-        resizeObserver.observe(containerRef.current);
-      }
-
-      window.addEventListener('resize', handleResize);
-      
-      // Listen for resize events to disable input only while dragging
-      const handleResizeStart = () => {
-        isResizing = true;
-      };
-      const handleResizeEnd = () => {
-        isResizing = false;
-      };
-
-      document.addEventListener('pointerdown', (e) => {
-        if (e.target?.closest('[data-resizable-handle]')) {
-          handleResizeStart();
+      // Also forward binary (paste, etc.)
+      term.onBinary((data) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          const buffer = new Uint8Array(data.length);
+          for (let i = 0; i < data.length; i++) buffer[i] = data.charCodeAt(i);
+          ws.send(buffer);
         }
       });
-      document.addEventListener('pointerup', handleResizeEnd);
-      document.addEventListener('pointercancel', handleResizeEnd);
+    }
 
-      // Initial fit after a short delay to ensure DOM is ready
-      setTimeout(() => handleResize(), 100);
+    function scheduleReconnect(term, fitAddon) {
+      if (disposed) return;
+      const attempt = reconnectCountRef.current;
+      if (attempt >= MAX_RECONNECT_ATTEMPTS) return;
 
-      // Store for cleanup (include buildLogListener reference)
-      termRef.current = { term, fitAddon, handleResize, resizeObserver };
+      const delay = RECONNECT_DELAYS[Math.min(attempt, RECONNECT_DELAYS.length - 1)];
+      reconnectCountRef.current = attempt + 1;
 
-      // Listen for build log events from compilerClient and write to terminal
-      const buildLogListener = (ev) => {
-        try {
-          const data = ev?.detail;
-          if (!data) return;
-
-          // If `data` is a string, try to parse JSON from it; otherwise treat
-          // it as an object. We support two shapes from the worker:
-          // 1) { sessionId, type, line }  -- streaming chunks
-          // 2) { sessionId, status: 'done', stage, success, code, start_time, end_time, elapsed }
-          let obj = null;
-          if (typeof data === 'string') {
-            // try parse JSON, otherwise write raw string
-            try { obj = JSON.parse(data); } catch (_) { term.write(data); return; }
-          } else if (typeof data === 'object') {
-            obj = data;
-          } else {
-            term.write(String(data));
-            return;
-          }
-
-          if (obj.sessionId) currentSessionIdRef.current = obj.sessionId;
-
-          // Streaming chunk
-          if (obj.line !== undefined) {
-            const chunk = String(obj.line);
-            const t = obj.type || '';
-            if (t === 'stderr' || t === 'run-stderr') {
-              term.write('\x1b[31m' + chunk + '\x1b[0m');
-            } else if (t !== 'lsp-err' && t !== 'lsp-out' && t.includes('lsp') === false) {
-              term.write(chunk);
-            }
-            return;
-          }
-
-          // Final status
-          if (obj.status !== undefined) {
-            const stage = obj.stage || 'unknown';
-            const success = !!obj.success;
-            const start = obj.start_time;
-            const end = obj.end_time;
-            const elapsed = obj.elapsed;
-            if (success) {
-              term.write('\r\n\x1b[32m[done] ' + stage + ' (success)\x1b[0m');
-            } else {
-              const code = obj.code !== undefined ? String(obj.code) : 'unknown';
-              term.write('\r\n\x1b[31m[done] ' + stage + ' (failure, code=' + code + ')\x1b[0m');
-            }
-            if (start) term.write(' \x1b[36m(start: ' + String(start) + ')\x1b[0m');
-            if (end) term.write(' \x1b[36m(end: ' + String(end) + ')\x1b[0m');
-            if (elapsed) term.write(' \x1b[33m(elapsed: ' + String(elapsed) + ')\x1b[0m');
-            term.write('\r\n');
-            return;
-          }
-
-          // run-start
-          if (obj.type === 'run-start' || obj.start_time) {
-            const st = obj.start_time || '';
-            term.write('\r\n\x1b[36m[run] started at ' + String(st) + '\x1b[0m\r\n');
-            return;
-          }
-
-          // fallback
-          term.write(JSON.stringify(obj) + '\r\n');
-        } catch (e) {
-          console.error('Error writing build log to terminal', e);
+      reconnectTimerRef.current = setTimeout(() => {
+        if (!disposed && mountedRef.current) {
+          setState('connecting');
+          connectWS(term, fitAddon);
         }
-      };
-      window.addEventListener('synthi:build-log', buildLogListener);
-      termRef.current.buildLogListener = buildLogListener;
-    };
+      }, delay);
+    }
 
     init();
 
     return () => {
-      if (termRef.current) {
-        const { term, handleResize, resizeObserver } = termRef.current;
-        window.removeEventListener('resize', handleResize);
-        if (resizeObserver) resizeObserver.disconnect();
-        if (term) term.dispose();
-      }
+      disposed = true;
+      mountedRef.current = false;
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       if (wsRef.current) {
-        wsRef.current.close();
+        try { wsRef.current.close(1000); } catch (_) {}
+        wsRef.current = null;
       }
-      try {
-        const listener = termRef.current?.buildLogListener;
-        if (listener) window.removeEventListener('synthi:build-log', listener);
-      } catch (e) {}
+      if (terminalRef.current?.dispose) {
+        try { terminalRef.current.dispose(); } catch (_) {}
+      }
     };
-  }, []);
+  }, [sessionKey, workspaceSlug]); // Re-connect if terminal tab or workspace changes
 
-  const handleReconnect = () => {
-    setConnectionState('connecting');
-    setErrorMessage('');
-    reconnectAttemptsRef.current += 1;
-    
-    // Close existing connection
-    if (wsRef.current) {
-      try { wsRef.current.close(); } catch (e) {}
-    }
-    
-    // Re-initialize
-    initializedRef.current = false;
-    
-    // Force re-mount by triggering useEffect
-    setTimeout(() => {
-      window.location.reload();
-    }, 100);
-  };
+  // ─── Reconnect button handler ─────────────────────────────────────────
+  const handleReconnect = useCallback(() => {
+    // Full teardown and re-init by forcing a re-mount
+    cleanup();
+    reconnectCountRef.current = 0;
+    setState('connecting');
+    // The useEffect will re-run because cleanup clears terminalRef
+    // Force re-mount by key change isn't needed — we just need to re-run init
+    // So we trigger a micro state change
+    window.location.reload();
+  }, [cleanup]);
 
+  // ─── Render ───────────────────────────────────────────────────────────
   return (
     <div className="h-full w-full bg-[#0a0b10] overflow-hidden relative">
-      <div ref={containerRef} className="h-full w-full" />
-      
-      {/* Synthi Branded Error Overlay */}
-      {(connectionState === 'error' || connectionState === 'closed') && (
-        <div className="absolute inset-0 bg-[#0a0b10]/98 backdrop-blur-md flex items-center justify-center z-10">
-          <div className="flex flex-col items-center gap-4 p-8 max-w-md text-center">
-            {/* Title with gradient */}
-            <h3 className="text-xl font-bold bg-gradient-to-r from-[#f0f2f5] to-[#a8adc0] bg-clip-text text-transparent">
-              Terminal Disconnected
+      {/* xterm container */}
+      <div
+        ref={containerRef}
+        className="h-full w-full"
+      />
+
+      {/* Connection status overlay */}
+      {(state === 'error' || state === 'closed') && (
+        <div className="absolute inset-0 bg-[#0a0b10]/95 backdrop-blur-sm flex items-center justify-center z-10">
+          <div className="flex flex-col items-center gap-4 p-8 max-w-sm text-center">
+            <div className="w-12 h-12 rounded-full bg-[#1a1b24] flex items-center justify-center">
+              <WifiOff className="w-5 h-5 text-[#6b7089]" />
+            </div>
+
+            <h3 className="text-base font-semibold text-[#f0f2f5]">
+              {state === 'closed' ? 'Session Ended' : 'Terminal Disconnected'}
             </h3>
-            
-            {/* Message */}
-            <p className="text-sm text-[#6b7089] leading-relaxed">
-              {errorMessage || 'The connection to the Synthi terminal server was lost. This may be due to network issues or server maintenance.'}
+
+            <p className="text-xs text-[#6b7089] leading-relaxed">
+              {state === 'closed'
+                ? 'The shell process has exited.'
+                : 'Unable to reach the terminal server. Make sure the collab-server is running.'}
             </p>
-          
+
+            <button
+              onClick={handleReconnect}
+              className="flex items-center gap-2 px-4 py-2 rounded-md text-xs font-medium
+                         bg-[#327464] text-white hover:bg-[#3d8b78] transition-colors"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              {state === 'closed' ? 'New Session' : 'Reconnect'}
+            </button>
           </div>
+        </div>
+      )}
+
+      {/* Connecting indicator */}
+      {state === 'connecting' && (
+        <div className="absolute bottom-2 right-3 flex items-center gap-1.5 text-[10px] text-[#6b7089] z-10">
+          <Zap className="w-3 h-3 animate-pulse text-[#327464]" />
+          <span>Connecting…</span>
         </div>
       )}
     </div>
