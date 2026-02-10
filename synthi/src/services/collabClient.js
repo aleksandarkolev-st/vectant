@@ -45,8 +45,10 @@ class MonacoTextBinding {
           if (this.editor.getModel() !== this.model) return;
 
           try {
-            // Mark guard so local change handler skips this update
+            // Mark guard so local change handler (MonacoTextBinding._modelListener)
+            // skips this update — prevents Yjs → Monaco → Yjs feedback loop.
             this._applyingRemote = true;
+            console.debug('[Collab] _applyingRemote = true (applying remote edit)');
 
             // Apply the full replacement via editor.executeEdits which is
             // safer for Monaco's edit flow than manipulating model directly
@@ -56,10 +58,13 @@ class MonacoTextBinding {
           } catch (e) {
             console.warn('[Collab] failed to apply remote diff to Monaco model', e?.message || e);
           } finally {
-            // Reset flag synchronously but use requestAnimationFrame to ensure
-            // Monaco's synchronous onDidChangeContent handlers have completed.
-            // The nested setTimeout(0) was too aggressive and could race.
-            requestAnimationFrame(() => { this._applyingRemote = false; });
+            // Reset flag synchronously. Monaco's onDidChangeContent fires
+            // synchronously during executeEdits above, so it already saw
+            // the flag as true. Resetting synchronously here avoids the
+            // previous requestAnimationFrame delay which left a window
+            // where user keystrokes were silently swallowed.
+            this._applyingRemote = false;
+            console.debug('[Collab] _applyingRemote = false (reset in finally)');
           }
         }, 0);
 

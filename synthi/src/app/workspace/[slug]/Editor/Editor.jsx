@@ -1170,35 +1170,45 @@ const EditorPanel = ({
     }, [dispatch]);
 
     const handleCodeChange = useCallback((newCode) => {
+        console.debug('[Editor] handleCodeChange called, length:', newCode?.length);
+
         // CRITICAL: Only process changes if we're bound to the correct file
         // This prevents stale onChange handlers from writing content to the wrong file
         // during file transitions.
         if (activeFile && boundFilePathRef.current && boundFilePathRef.current !== activeFile.path) {
+            console.debug('[Editor] Skipping — boundFilePathRef mismatch:', boundFilePathRef.current, '!==', activeFile.path);
             return;
         }
         
-        // Skip Redux update if collab is applying remote changes to prevent feedback loop
-        // This is critical: when remote Yjs changes come in, collabClient applies them via
-        // executeEdits which triggers onChange. If we push to Redux, it would cause the 
-        // value prop to change, triggering another setValue, conflicting with LSP versioning.
-        if (collabBindingRef.current?.isApplyingRemote?.()) {
-            latestCodeRef.current = newCode;
-            return;
-        }
-
-        cancelActiveCompletion({ resetSuggestion: true, reason: 'edit' });
+        // Always track latest content for flush-on-unmount and save
         latestCodeRef.current = newCode;
 
-        // P0: Debounce Redux sync — only dispatch to Redux after 150ms pause.
-        // Monaco holds the source of truth; Redux only needs eventual consistency
-        // for save, tab bar, file explorer, etc.
-        // 150ms matches the server's Yjs auto-flush debounce so the unsaved
-        // indicator appears at roughly the same time content reaches disk.
+        // Check if collab is applying remote changes
+        const remoteApplying = !!collabBindingRef.current?.isApplyingRemote?.();
+        if (remoteApplying) {
+            console.debug('[Editor] isApplyingRemote=true — scheduling Redux sync but skipping AI/cancel');
+        }
+
+        // P0: ALWAYS dispatch to Redux regardless of isApplyingRemote.
+        // The unsaved indicator, save flow, and tab dot all depend on Redux
+        // currentContent being up-to-date.  The value prop → setValue feedback
+        // loop that isApplyingRemote was guarding against is NOT triggered by
+        // Redux updates — the Editor does NOT call editor.setValue() from
+        // currentContent.  The only feedback path was Yjs → executeEdits →
+        // onChange → Yjs, which is already guarded by _applyingRemote inside
+        // MonacoTextBinding._modelListener.
         if (reduxSyncTimerRef.current) clearTimeout(reduxSyncTimerRef.current);
         reduxSyncTimerRef.current = setTimeout(() => {
             reduxSyncTimerRef.current = null;
+            console.debug('[Editor] Dispatching updateContent to Redux, length:', latestCodeRef.current?.length);
             dispatch(updateContent(latestCodeRef.current));
         }, 150);
+
+        // Skip AI auto-complete and active completion cancel for remote changes
+        // — these should only fire on local user edits
+        if (remoteApplying) return;
+
+        cancelActiveCompletion({ resetSuggestion: true, reason: 'edit' });
 
         // Debounce AI Auto-Complete (The "Cursor" experience)
         if (aiDebounceTimerRef.current) clearTimeout(aiDebounceTimerRef.current);
@@ -2252,6 +2262,7 @@ const EditorPanel = ({
                                                     //  (d) Triggers AI debounce via handleCodeChangeRef
                                                     // No model.getValue() on every keystroke — only when flushing.
                                                     editor.onDidChangeModelContent(() => {
+                                                        console.debug('[Editor] onDidChangeModelContent fired');
                                                         // (a) P0: Debounce marker clearing — NOT synchronous.
                                                         // Markers are for stale diagnostic snapshots; 200ms delay is fine.
                                                         if (!markerClearTimerRef.current) {
