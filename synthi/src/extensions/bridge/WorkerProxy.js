@@ -67,13 +67,13 @@ export class WorkerProxy {
 
     this.ready = false;
     this.state = 'initializing';
-    this.generation += 1;
-    const currentGeneration = this.generation;
     this.workerUrl = workerUrl;
 
     return new Promise((resolve, reject) => {
       try {
-        this.worker = new Worker(workerUrl, { type: 'module' });
+        // Workers in /public/ are plain scripts (not ES modules).
+        // Using { type: 'module' } would cause them to fail silently.
+        this.worker = new Worker(workerUrl);
         
         this.worker.onmessage = (event) => {
           this._handleMessage(event.data);
@@ -94,10 +94,7 @@ export class WorkerProxy {
 
         this.readyCallbacks.push(() => {
           clearTimeout(readyTimeout);
-          if (this.generation === currentGeneration) {
-            this.state = 'running';
-            this.ready = true;
-          }
+          // State is already set to 'running' by _handleMessage workerReady handler
           resolve();
         });
       } catch (err) {
@@ -111,13 +108,28 @@ export class WorkerProxy {
    * @param {any} data
    */
   _handleMessage(data) {
-    if (typeof data?.generation === 'number' && data.generation !== this.generation) {
-      // Drop stale replies from older worker generations
+    if (!isValidMessage(data)) {
+      console.warn('[WorkerProxy] Invalid message received:', data);
       return;
     }
 
-    if (!isValidMessage(data)) {
-      console.warn('[WorkerProxy] Invalid message received:', data);
+    // Handle workerReady BEFORE generation fencing.
+    // The worker starts with its own generation counter (typically 0).
+    // We sync our generation to match so subsequent messages pass the fence.
+    if (data.type === 'event' && data.method === 'workerReady') {
+      if (typeof data.generation === 'number') {
+        this.generation = data.generation;
+      }
+      this.ready = true;
+      this.state = 'running';
+      this.readyCallbacks.forEach(cb => cb());
+      this.readyCallbacks = [];
+      this._emit(data.method, ...(data.args || []));
+      return;
+    }
+
+    if (typeof data?.generation === 'number' && data.generation !== this.generation) {
+      // Drop stale replies from older worker generations
       return;
     }
 
@@ -139,14 +151,6 @@ export class WorkerProxy {
         }
       }
     } else if (data.type === 'event') {
-      // Handle worker ready signal
-      if (data.method === 'workerReady') {
-        this.ready = true;
-        this.state = 'running';
-        this.readyCallbacks.forEach(cb => cb());
-        this.readyCallbacks = [];
-      }
-      
       this._emit(data.method, ...(data.args || []));
     }
   }
@@ -296,7 +300,7 @@ export class WorkerProxy {
    * @returns {Promise<{ success: boolean, activationTime: number, error?: string }>}
    */
   activateExtension(extensionId) {
-    return this.request(MainToWorkerMethods.ACTIVATE_EXTENSION, [extensionId], 2000)
+    return this.request(MainToWorkerMethods.ACTIVATE_EXTENSION, [extensionId], 8000)
       .catch(err => {
         if (err.message && err.message.startsWith('Request timeout')) {
           err.code = 'ACTIVATION_TIMEOUT';
