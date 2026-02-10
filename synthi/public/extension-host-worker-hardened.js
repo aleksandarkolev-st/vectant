@@ -24,7 +24,7 @@ const CONFIG = {
   MESSAGE_RATE_WINDOW: 1000, // 1 second window
   
   // Activation limits
-  ACTIVATION_TIMEOUT: 2000, // 2 seconds hard limit
+  ACTIVATION_TIMEOUT: 5000, // 5 seconds hard limit
   COMMAND_TIMEOUT: 5000, // 5 seconds per command
   
   // Memory limits
@@ -248,6 +248,9 @@ function createVSCodeAPI(extensionId, host) {
       },
       createWebviewPanel(viewType, title, showOptions, options) {
         const viewId = `${extensionId}.webview.${Date.now()}`;
+        const onDidReceiveMessageEmitter = new EventEmitter();
+        const onDidDisposeEmitter = new EventEmitter();
+        const onDidChangeViewStateEmitter = new EventEmitter();
         const panel = {
           viewType,
           title,
@@ -261,19 +264,71 @@ function createVSCodeAPI(extensionId, host) {
               this._html = value;
               host.emit('updateWebview', viewId, { html: value });
             },
-            onDidReceiveMessage: () => ({ dispose: () => {} }),
+            options: options || {},
+            onDidReceiveMessage: onDidReceiveMessageEmitter.event,
             postMessage: (msg) => {
               host.emit('postWebviewMessage', viewId, msg);
               return Promise.resolve(true);
-            }
+            },
+            asWebviewUri: (uri) => uri,
+            cspSource: '',
           },
-          reveal() {},
-          dispose() { host.emit('disposeWebview', viewId); },
-          onDidDispose: () => ({ dispose: () => {} }),
-          onDidChangeViewState: () => ({ dispose: () => {} })
+          reveal(viewColumn, preserveFocus) {
+            host.emit('revealWebview', viewId, viewColumn, preserveFocus);
+          },
+          dispose() {
+            host.emit('disposeWebview', viewId);
+            onDidDisposeEmitter.fire();
+          },
+          onDidDispose: onDidDisposeEmitter.event,
+          onDidChangeViewState: onDidChangeViewStateEmitter.event,
         };
         host.emit('createWebview', viewId, viewType, title, options);
         return panel;
+      },
+      createTreeView(viewId, options) {
+        const treeView = {
+          _viewId: viewId,
+          _provider: options.treeDataProvider || null,
+          _onDidExpandElement: new EventEmitter(),
+          _onDidCollapseElement: new EventEmitter(),
+          _onDidChangeSelection: new EventEmitter(),
+          _onDidChangeVisibility: new EventEmitter(),
+          title: undefined,
+          description: undefined,
+          message: undefined,
+          badge: undefined,
+          visible: true,
+          selection: [],
+          onDidExpandElement: null,
+          onDidCollapseElement: null,
+          onDidChangeSelection: null,
+          onDidChangeVisibility: null,
+          reveal() { return Promise.resolve(); },
+          dispose() {
+            host.emit('disposeTreeView', viewId);
+          }
+        };
+        treeView.onDidExpandElement = treeView._onDidExpandElement.event;
+        treeView.onDidCollapseElement = treeView._onDidCollapseElement.event;
+        treeView.onDidChangeSelection = treeView._onDidChangeSelection.event;
+        treeView.onDidChangeVisibility = treeView._onDidChangeVisibility.event;
+
+        // Resolve initial data and notify the main thread
+        if (treeView._provider) {
+          host._treeDataProviders.set(viewId, treeView._provider);
+          // Emit the tree data asynchronously
+          _resolveTreeDataAndEmit(viewId, treeView._provider, host);
+        }
+
+        host.emit('registerTreeView', viewId, extensionId);
+        return treeView;
+      },
+      registerTreeDataProvider(viewId, provider) {
+        host._treeDataProviders.set(viewId, provider);
+        _resolveTreeDataAndEmit(viewId, provider, host);
+        host.emit('registerTreeView', viewId, extensionId);
+        return { dispose: () => { host._treeDataProviders.delete(viewId); } };
       },
       createOutputChannel(name) {
         return {
@@ -369,6 +424,61 @@ function createVSCodeAPI(extensionId, host) {
 }
 
 // ============================================================================
+// Tree Data Helper
+// ============================================================================
+
+/**
+ * Resolve tree data from a TreeDataProvider and emit it to the main thread.
+ * Walks up to 3 levels deep to avoid excessive recursion.
+ */
+async function _resolveTreeDataAndEmit(viewId, provider, host, maxDepth = 3) {
+  try {
+    const resolve = async (element, depth) => {
+      const items = [];
+      let children;
+      try {
+        children = await Promise.resolve(provider.getChildren(element));
+      } catch (e) {
+        console.warn(`[TreeData] getChildren failed for ${viewId}:`, e);
+        return items;
+      }
+      if (!children || !Array.isArray(children)) return items;
+
+      for (const child of children.slice(0, 200)) { // cap at 200 items per level
+        let treeItem;
+        try {
+          treeItem = await Promise.resolve(provider.getTreeItem(child));
+        } catch (e) {
+          continue;
+        }
+        const item = {
+          id: treeItem.id || (typeof child === 'string' ? child : String(Math.random())),
+          label: typeof treeItem.label === 'string' ? treeItem.label : treeItem.label?.label || String(child),
+          description: treeItem.description || undefined,
+          tooltip: treeItem.tooltip || undefined,
+          iconPath: treeItem.iconPath ? String(treeItem.iconPath) : undefined,
+          collapsibleState: treeItem.collapsibleState || 0,
+          contextValue: treeItem.contextValue || undefined,
+          children: [],
+        };
+
+        // Recurse if collapsible and we haven't gone too deep
+        if (item.collapsibleState && item.collapsibleState > 0 && depth < maxDepth) {
+          item.children = await resolve(child, depth + 1);
+        }
+        items.push(item);
+      }
+      return items;
+    };
+
+    const data = await resolve(undefined, 0);
+    host.emit('treeData', viewId, data);
+  } catch (err) {
+    console.error(`[TreeData] Failed to resolve tree data for ${viewId}:`, err);
+  }
+}
+
+// ============================================================================
 // Extension Host - Hardened
 // ============================================================================
 
@@ -391,6 +501,9 @@ class HardenedExtensionHost {
     
     /** @type {Set<string>} Extensions marked as suspended */
     this.suspended = new Set();
+
+    /** @type {Map<string, object>} Tree data providers registered by extensions */
+    this._treeDataProviders = new Map();
     
     /** @type {boolean} Is the host accepting new work */
     this.accepting = true;
@@ -499,11 +612,16 @@ class HardenedExtensionHost {
     }
 
     if (this.loadedExtensions.has(extensionId)) {
-      throw new Error(`Extension ${extensionId} already loaded`);
+      // Already loaded — clean up the old version so we can re-load
+      console.log(`[ExtensionHost] Re-loading: ${extensionId}`);
+      try { await this._deactivateExtension(extensionId); } catch (_) {}
+      this.loadedExtensions.delete(extensionId);
+      this.metrics.delete(extensionId);
+      this.suspended.delete(extensionId);
     }
 
     // Validate code size
-    if (typeof code !== 'string' || code.length > 5 * 1024 * 1024) { // 5MB max
+    if (typeof code !== 'string' || code.length > 20 * 1024 * 1024) { // 20MB max
       throw new Error('Extension code too large or invalid');
     }
 
@@ -514,10 +632,56 @@ class HardenedExtensionHost {
     try {
       const exports = {};
       const module = { exports };
+
+      // Shim require() for bundled Node.js extensions.
+      // Many marketplace extensions are webpack/esbuild bundles that call
+      // require('vscode'), require('path'), require('fs'), etc.
+      const BUILTIN_STUBS = {
+        path: {
+          join: function() { return Array.prototype.slice.call(arguments).join('/'); },
+          resolve: function() { return Array.prototype.slice.call(arguments).join('/'); },
+          dirname: function(p) { return p.replace(/[/\\][^/\\]*$/, ''); },
+          basename: function(p) { return p.split(/[/\\]/).pop(); },
+          extname: function(p) { var m = p.match(/\.[^.]+$/); return m ? m[0] : ''; },
+          sep: '/',
+          posix: { join: function() { return Array.prototype.slice.call(arguments).join('/'); } }
+        },
+        fs: {
+          readFileSync: function() { return ''; },
+          writeFileSync: function() {},
+          existsSync: function() { return false; },
+          mkdirSync: function() {},
+          readdirSync: function() { return []; },
+          statSync: function() { return { isFile: function() { return false; }, isDirectory: function() { return false; } }; },
+          promises: {
+            readFile: function() { return Promise.resolve(''); },
+            writeFile: function() { return Promise.resolve(); },
+            readdir: function() { return Promise.resolve([]); },
+            stat: function() { return Promise.resolve({ isFile: function() { return false; }, isDirectory: function() { return false; } }); },
+            mkdir: function() { return Promise.resolve(); }
+          }
+        },
+        os: { homedir: function() { return '/'; }, tmpdir: function() { return '/tmp'; }, platform: function() { return 'web'; }, EOL: '\n' },
+        util: { promisify: function(fn) { return fn; }, TextDecoder: typeof TextDecoder !== 'undefined' ? TextDecoder : function() {}, TextEncoder: typeof TextEncoder !== 'undefined' ? TextEncoder : function() {} },
+        events: { EventEmitter: function EventEmitter() { this.on = function() { return this; }; this.off = function() { return this; }; this.once = function() { return this; }; this.emit = function() { return false; }; this.addListener = function() { return this; }; this.removeListener = function() { return this; }; this.removeAllListeners = function() { return this; }; } },
+        child_process: { exec: function() {}, execSync: function() { return ''; }, spawn: function() { return { on: function() {}, stdout: { on: function() {} }, stderr: { on: function() {} }, kill: function() {} }; } },
+        net: {},
+        url: { URL: typeof URL !== 'undefined' ? URL : function() {} },
+        crypto: { randomUUID: function() { return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) { var r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16); }); } },
+      };
+      const shimRequire = (id) => {
+        if (id === 'vscode') return vscode;
+        if (BUILTIN_STUBS[id]) return BUILTIN_STUBS[id];
+        // For anything else, return an empty module to avoid hard crash
+        console.warn(`[ExtensionHost] require('${id}') shimmed as empty for ${extensionId}`);
+        return {};
+      };
       
-      // Evaluate extension code
-      const factory = new Function('vscode', 'exports', 'module', code);
-      factory(vscode, exports, module);
+      // Evaluate extension code with require shim
+      const factory = new Function('vscode', 'exports', 'module', 'require', 'process', 'Buffer', '__dirname', '__filename', code);
+      const processShim = { env: {}, platform: 'web', cwd: () => '/', version: 'v18.0.0', versions: { node: '18.0.0' }, nextTick: (cb) => setTimeout(cb, 0) };
+      const BufferShim = typeof Buffer !== 'undefined' ? Buffer : { from: () => new Uint8Array(), alloc: () => new Uint8Array(), isBuffer: () => false };
+      factory(vscode, exports, module, shimRequire, processShim, BufferShim, '/', '/extension.js');
       
       const extensionModule = module.exports || exports;
 
