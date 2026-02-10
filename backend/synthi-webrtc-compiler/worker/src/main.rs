@@ -5147,6 +5147,38 @@ path = "{}"
                 if let Ok(mut f) = std::fs::File::create(&pubspec) {
                     let _ = f.write_all(b"name: synthi_workspace\nenvironment:\n  sdk: '>=3.0.0 <4.0.0'\n");
                     println!("[LSP-CONFIG] Created pubspec.yaml for standalone Dart workspace");
+
+                    // Run 'dart pub get' so the Dart analysis server can resolve packages.
+                    // Use the extended PATH that includes well-known Dart SDK locations.
+                    let current_path = std::env::var("PATH").unwrap_or_default();
+                    let dart_path = format!("/opt/dart-sdk/bin:/usr/lib/dart/bin:{}", current_path);
+                    let pub_result = std::process::Command::new("dart")
+                        .args(["pub", "get"])
+                        .current_dir(workspace)
+                        .env("PATH", &dart_path)
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .status();
+                    match pub_result {
+                        Ok(s) if s.success() => println!("[LSP-CONFIG] dart pub get succeeded"),
+                        Ok(s) => eprintln!("[LSP-CONFIG] dart pub get exited with code {:?}", s.code()),
+                        Err(e) => {
+                            // Try well-known paths if dart is not on PATH
+                            for candidate in &["/opt/dart-sdk/bin/dart", "/usr/lib/dart/bin/dart"] {
+                                if std::path::Path::new(candidate).exists() {
+                                    let _ = std::process::Command::new(candidate)
+                                        .args(["pub", "get"])
+                                        .current_dir(workspace)
+                                        .stdout(std::process::Stdio::piped())
+                                        .stderr(std::process::Stdio::piped())
+                                        .status();
+                                    println!("[LSP-CONFIG] Ran dart pub get via {}", candidate);
+                                    break;
+                                }
+                            }
+                            eprintln!("[LSP-CONFIG] dart pub get failed: {}", e);
+                        }
+                    }
                 }
             }
         }
