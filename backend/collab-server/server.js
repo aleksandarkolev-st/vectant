@@ -240,10 +240,9 @@ class ValidatingPersistence {
             }
           }
 
-          // ── 2. Disk write (ephemeral cache — only if working tree exists) ──
-          const repoCache = require('./repoCache');
-          if (repoCache.has(slug)) {
-            const repoPath = gitService.getRepoPath(slug);
+          // ── 2. Disk write (ephemeral cache — write if working tree exists on disk) ──
+          const repoPath = gitService.getRepoPath(slug);
+          if (fs.existsSync(repoPath)) {
             const fullPath = path.join(repoPath, filePath);
             const dirPath = path.dirname(fullPath);
             await fsPromises.mkdir(dirPath, { recursive: true });
