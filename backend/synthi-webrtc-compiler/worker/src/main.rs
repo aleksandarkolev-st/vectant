@@ -1708,10 +1708,17 @@ async fn wire_peer_channels(
                             }
                         },
                         "python" | "py" => system_command("pylsp"),
-                        "typescript" | "ts" | "javascript" | "js" => {
+                        "typescript" | "ts" => {
                              let mut c = system_command("typescript-language-server");
                              c.arg("--stdio");
                              c
+                        },
+                        "javascript" | "js" => {
+                            // Biome — fast, purpose-built JavaScript/JSX linter + formatter
+                            // with native LSP support.  Does NOT use TypeScript tooling.
+                            let mut c = system_command("biome");
+                            c.arg("lsp-proxy");
+                            c
                         },
                         "java" => {
                             // Eclipse JDT Language Server
