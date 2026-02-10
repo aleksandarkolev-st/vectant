@@ -2446,7 +2446,25 @@ async fn wire_peer_channels(
                             let _ = child.wait().await;
                         }
                         Err(e) => {
+                            // Build helpful diagnostic info for the error message
+                            let path_info = std::env::var("PATH").unwrap_or_else(|_| "<unavailable>".to_string());
+                            let binary_hint = match lang.as_str() {
+                                "dart" => {
+                                    let paths = ["/opt/dart-sdk/bin/dart", "/usr/lib/dart/bin/dart", "/usr/local/bin/dart"];
+                                    let found: Vec<&str> = paths.iter().filter(|p| std::path::Path::new(p).exists()).copied().collect();
+                                    if found.is_empty() {
+                                        "Dart SDK not found in any well-known location. Install via: apt-get install dart or download from dart.dev".to_string()
+                                    } else {
+                                        format!("Dart binary found at: {} — but not on PATH", found.join(", "))
+                                    }
+                                }
+                                _ => String::new(),
+                            };
                             eprintln!("Failed to spawn LSP for {}: {}", lang, e);
+                            if !binary_hint.is_empty() {
+                                eprintln!("[LSP] Hint: {}", binary_hint);
+                            }
+                            eprintln!("[LSP] Current PATH: {}", path_info);
                             // Send an LSP-shaped error response back so the frontend
                             // doesn't hang forever waiting for `initialize` to respond.
                             let error_response = serde_json::json!({
