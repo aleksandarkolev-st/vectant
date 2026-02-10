@@ -1744,9 +1744,49 @@ async fn wire_peer_channels(
                         },
                         "dart" => {
                             // Dart SDK language server
-                            let mut c = system_command("dart");
-                            c.arg("language-server");
-                            c.arg("--protocol=lsp");
+                            // The Dart SDK may be installed to /opt/dart-sdk/bin or
+                            // /usr/lib/dart/bin which are not on the default PATH.
+                            // Prepend these well-known locations so the spawn succeeds.
+                            let current_path = std::env::var("PATH").unwrap_or_default();
+                            let dart_path = format!(
+                                "/opt/dart-sdk/bin:/usr/lib/dart/bin:{}",
+                                current_path
+                            );
+                            let mut c = if cfg!(target_os = "windows") {
+                                let mut cmd = Command::new("wsl");
+                                cmd.arg("bash").arg("-lc").arg(
+                                    "export PATH=\"/opt/dart-sdk/bin:/usr/lib/dart/bin:$PATH\"; exec dart language-server --protocol=lsp"
+                                );
+                                cmd
+                            } else {
+                                let mut cmd = Command::new("dart");
+                                cmd.arg("language-server");
+                                cmd.arg("--protocol=lsp");
+                                cmd.env("PATH", &dart_path);
+                                cmd
+                            };
+                            // If dart is not on default PATH, try the well-known locations directly
+                            if !cfg!(target_os = "windows") {
+                                let dart_on_path = std::process::Command::new("which")
+                                    .arg("dart")
+                                    .stdout(Stdio::null())
+                                    .stderr(Stdio::null())
+                                    .status()
+                                    .map(|s| s.success())
+                                    .unwrap_or(false);
+                                if !dart_on_path {
+                                    for candidate in &["/opt/dart-sdk/bin/dart", "/usr/lib/dart/bin/dart", "/usr/local/bin/dart"] {
+                                        if std::path::Path::new(candidate).exists() {
+                                            c = Command::new(candidate);
+                                            c.arg("language-server");
+                                            c.arg("--protocol=lsp");
+                                            c.env("PATH", &dart_path);
+                                            println!("[LSP] Using dart binary at: {}", candidate);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
                             c
                         },
                         "lua" => {
