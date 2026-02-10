@@ -181,7 +181,17 @@ export const pullChanges = createAsyncThunk(
             
             return result;
         } catch (error) {
-            // Check if this is a merge conflict error
+            // ── Pre-condition failure: uncommitted changes block the pull ──
+            // MUST be checked BEFORE MERGE_CONFLICT because the legacy server
+            // mapped both to HTTP 409.  error.code is authoritative.
+            if (error.code === 'UNCOMMITTED_CHANGES') {
+                return rejectWithValue({
+                    code: 'UNCOMMITTED_CHANGES',
+                    message: error.message || 'You have uncommitted changes that would be overwritten. Please commit or stash them first.',
+                });
+            }
+
+            // ── Real merge conflict ──
             if (error.code === 'MERGE_CONFLICT' || error.statusCode === 409) {
                 // Server sends conflictedFiles in details
                 const conflictedFiles = error.details?.conflictedFiles || error.details?.conflicted || [];
@@ -211,14 +221,6 @@ export const pullChanges = createAsyncThunk(
                     code: 'MERGE_CONFLICT',
                     message: error.message,
                     conflicted: conflictedFiles
-                });
-            }
-
-            // Pre-condition failure: uncommitted changes block the pull
-            if (error.code === 'UNCOMMITTED_CHANGES') {
-                return rejectWithValue({
-                    code: 'UNCOMMITTED_CHANGES',
-                    message: error.message || 'You have uncommitted changes that would be overwritten. Please commit or stash them first.',
                 });
             }
 
