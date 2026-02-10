@@ -132,7 +132,25 @@ pub async fn ensure_lsp_installed(lang: &str, workspace: &Path) -> Result<&'stat
             // ZLS requires matching zig version; skip for now
         ]),
         "dart" => ("dart", vec![
-            // Dart SDK is usually installed with Flutter; skip for now
+            // Try apt first (official dart repo), then fallback to manual SDK download
+            "command -v dart >/dev/null 2>&1 || \
+             (apt-get update -qq && apt-get install -y -qq apt-transport-https gnupg2 2>/dev/null; \
+              curl -fsSL https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/dart-archive-keyring.gpg 2>/dev/null; \
+              echo 'deb [signed-by=/usr/share/keyrings/dart-archive-keyring.gpg arch=amd64] https://storage.googleapis.com/dart-archive/channels/stable/release/latest/linux-packages stable main' > /etc/apt/sources.list.d/dart_stable.list; \
+              apt-get update -qq && apt-get install -y -qq dart 2>/dev/null && \
+              ln -sf /usr/lib/dart/bin/dart /usr/local/bin/dart 2>/dev/null) || true",
+            // Fallback: direct SDK download (ensure unzip is available first)
+            "command -v dart >/dev/null 2>&1 || \
+             (apt-get install -y -qq unzip 2>/dev/null || true; \
+              curl -fsSL https://storage.googleapis.com/dart-archive/channels/stable/release/latest/sdk/dartsdk-linux-x64-release.zip -o /tmp/dart-sdk.zip && \
+              unzip -qo /tmp/dart-sdk.zip -d /opt && rm -f /tmp/dart-sdk.zip && \
+              ln -sf /opt/dart-sdk/bin/dart /usr/local/bin/dart && \
+              export PATH=\"/opt/dart-sdk/bin:$PATH\") || true",
+            // Ensure dart is on PATH by adding symlinks for common install locations
+            "command -v dart >/dev/null 2>&1 || \
+             (for d in /opt/dart-sdk/bin/dart /usr/lib/dart/bin/dart; do \
+                [ -x \"$d\" ] && ln -sf \"$d\" /usr/local/bin/dart && break; \
+              done) || true",
         ]),
         "lua" => ("lua-language-server", vec![
             // LuaLS requires manual download
