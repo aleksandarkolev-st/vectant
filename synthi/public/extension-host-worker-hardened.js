@@ -22,6 +22,76 @@ try {
 }
 
 // ============================================================================
+// Deep Auto-Stub: a Proxy that handles ANY property access, function call,
+// or class extension without crashing. Unknown require() calls return this
+// instead of {} so `extends unknown.Class` or `unknown.method()` just works.
+// ============================================================================
+self.__createDeepStub = function(moduleName) {
+  const cache = new Map();
+  
+  function makeStub(path) {
+    if (cache.has(path)) return cache.get(path);
+    
+    // A function that is also a constructor (works with `new` and `extends`)
+    function StubFn() {
+      // When used as a constructor, return a proxy instance too
+      return makeStub(path + '.instance');
+    }
+    // Allow `class X extends StubFn` — needs a prototype with constructor
+    StubFn.prototype = Object.create(null);
+    StubFn.prototype.constructor = StubFn;
+    // Make it work with Symbol.hasInstance (instanceof checks)
+    Object.defineProperty(StubFn, Symbol.hasInstance, { value: () => false });
+    
+    const proxy = new Proxy(StubFn, {
+      get(target, prop) {
+        // Primitives and common JS protocol methods
+        if (prop === Symbol.toPrimitive) return () => '';
+        if (prop === Symbol.iterator) return undefined;
+        if (prop === Symbol.toStringTag) return moduleName || 'Stub';
+        if (prop === 'then') return undefined;  // prevent Promise-like behavior
+        if (prop === 'catch') return undefined;
+        if (prop === 'toJSON') return () => ({});
+        if (prop === 'valueOf') return () => 0;
+        if (prop === 'toString') return () => `[stub: ${path}]`;
+        if (prop === 'constructor') return StubFn;
+        if (prop === 'prototype') return StubFn.prototype;
+        if (prop === 'length') return 0;
+        if (prop === 'name') return path.split('.').pop();
+        if (prop === '__esModule') return true;
+        if (prop === 'default') return proxy;  // ES module default export
+        // Return a nested stub for anything else
+        return makeStub(path + '.' + String(prop));
+      },
+      set(target, prop, value) {
+        // Allow setting properties (some modules set config on imported objects)
+        target[prop] = value;
+        return true;
+      },
+      has(target, prop) {
+        return true;  // pretend we have everything
+      },
+      apply(target, thisArg, args) {
+        // When called as a function, return a stub (chainable)
+        return makeStub(path + '()');
+      },
+      construct(target, args) {
+        // When used with `new`, return a stub instance
+        return makeStub(path + '.new');
+      },
+      getPrototypeOf() {
+        return StubFn.prototype;
+      }
+    });
+    
+    cache.set(path, proxy);
+    return proxy;
+  }
+  
+  return makeStub(moduleName || 'unknown');
+};
+
+// ============================================================================
 // Configuration Constants
 // ============================================================================
 
@@ -656,9 +726,14 @@ class HardenedExtensionHost {
         if (id === 'vscode') return vscode;
         // Check real polyfills first (includes node: prefixed aliases)
         if (polyfills[id]) return polyfills[id];
-        // For anything else, return an empty module to avoid hard crash
-        console.warn(`[ExtensionHost] require('${id}') shimmed as empty for ${extensionId}`);
-        return {};
+        // For anything unknown, return a deep auto-stub Proxy.
+        // This handles:
+        //   - `extends unknownModule.SomeClass` → returns a constructable class
+        //   - `unknownModule.someMethod()` → returns a chainable no-op
+        //   - `unknownModule.SOME_CONST` → returns a proxy that keeps working
+        //   - `new unknownModule.Thing()` → returns an instance-like proxy
+        console.warn(`[ExtensionHost] require('${id}') auto-stubbed for ${extensionId}`);
+        return self.__createDeepStub(id);
       };
       // Expose for module.createRequire
       self.__nodeRequire = shimRequire;
