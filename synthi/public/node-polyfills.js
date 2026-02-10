@@ -16292,7 +16292,68 @@
     "node:http2": http2Shim,
     "node:readline": readlineShim,
     "node:vm": vmShim,
-    "node:cluster": clusterShim
+    "node:cluster": clusterShim,
+    // Subpath imports (e.g. require('fs/promises'))
+    "fs/promises": fsShim.promises,
+    "node:fs/promises": fsShim.promises,
+    "stream/promises": {
+      pipeline: (...args) => {
+        const cb = args[args.length - 1];
+        if (typeof cb === "function") cb();
+        return Promise.resolve();
+      },
+      finished: () => Promise.resolve()
+    },
+    "node:stream/promises": {
+      pipeline: (...args) => {
+        const cb = args[args.length - 1];
+        if (typeof cb === "function") cb();
+        return Promise.resolve();
+      },
+      finished: () => Promise.resolve()
+    },
+    "readline/promises": readlineShim,
+    "node:readline/promises": readlineShim,
+    "dns/promises": {
+      lookup: () => Promise.resolve({ address: "127.0.0.1", family: 4 }),
+      resolve: () => Promise.resolve([]),
+      resolve4: () => Promise.resolve([]),
+      resolve6: () => Promise.resolve([])
+    },
+    "node:dns/promises": {
+      lookup: () => Promise.resolve({ address: "127.0.0.1", family: 4 }),
+      resolve: () => Promise.resolve([]),
+      resolve4: () => Promise.resolve([]),
+      resolve6: () => Promise.resolve([])
+    },
+    "timers/promises": {
+      setTimeout: (ms) => new Promise((r) => globalThis.setTimeout(r, ms)),
+      setInterval: () => (async function* () {
+      })(),
+      setImmediate: () => new Promise((r) => globalThis.setTimeout(r, 0))
+    },
+    "node:timers/promises": {
+      setTimeout: (ms) => new Promise((r) => globalThis.setTimeout(r, ms)),
+      setInterval: () => (async function* () {
+      })(),
+      setImmediate: () => new Promise((r) => globalThis.setTimeout(r, 0))
+    },
+    "timers": {
+      setTimeout: globalThis.setTimeout.bind(globalThis),
+      clearTimeout: globalThis.clearTimeout.bind(globalThis),
+      setInterval: globalThis.setInterval.bind(globalThis),
+      clearInterval: globalThis.clearInterval.bind(globalThis),
+      setImmediate: (cb) => globalThis.setTimeout(cb, 0),
+      clearImmediate: (id) => globalThis.clearTimeout(id)
+    },
+    "node:timers": {
+      setTimeout: globalThis.setTimeout.bind(globalThis),
+      clearTimeout: globalThis.clearTimeout.bind(globalThis),
+      setInterval: globalThis.setInterval.bind(globalThis),
+      clearInterval: globalThis.clearInterval.bind(globalThis),
+      setImmediate: (cb) => globalThis.setTimeout(cb, 0),
+      clearImmediate: (id) => globalThis.clearTimeout(id)
+    }
   };
   self.__nodePolyfills = MODULE_REGISTRY;
   self.__nodeBuffer = import_buffer.Buffer;

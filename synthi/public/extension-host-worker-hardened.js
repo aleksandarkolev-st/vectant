@@ -294,6 +294,8 @@ class EventEmitter {
 
 function createVSCodeAPI(extensionId, host) {
   return {
+    // Expose a realistic VS Code engine version so semver checks pass
+    version: '1.85.0',
     commands: {
       registerCommand(command, callback, thisArg) {
         const handler = thisArg ? callback.bind(thisArg) : callback;
