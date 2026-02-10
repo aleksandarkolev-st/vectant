@@ -13,6 +13,14 @@
  * - Protocol violations = immediate termination signal
  */
 
+// Load real Node.js browser polyfills (Buffer, path, events, stream, etc.)
+// Built by: node scripts/build-node-polyfills.js → public/node-polyfills.js
+try {
+  importScripts('./node-polyfills.js');
+} catch (e) {
+  console.warn('[ExtensionHost] node-polyfills.js not found, extensions may fail:', e.message);
+}
+
 // ============================================================================
 // Configuration Constants
 // ============================================================================
@@ -638,257 +646,25 @@ class HardenedExtensionHost {
       // Shim require() for bundled Node.js extensions.
       // Many marketplace extensions are webpack/esbuild bundles that call
       // require('vscode'), require('path'), require('fs'), etc.
+      // Real polyfills are loaded from node-polyfills.js (bundled by esbuild).
+      // The polyfill bundle sets self.__nodePolyfills, self.__nodeBuffer, self.__nodeProcess.
+      const polyfills = self.__nodePolyfills || {};
+      const BufferImpl = self.__nodeBuffer || (typeof Buffer !== 'undefined' ? Buffer : { from: () => new Uint8Array(), alloc: () => new Uint8Array(), allocUnsafe: () => new Uint8Array(), isBuffer: () => false, concat: () => new Uint8Array(), byteLength: () => 0 });
+      const processImpl = self.__nodeProcess || { env: {}, platform: 'web', cwd: () => '/', version: 'v18.0.0', versions: { node: '18.0.0' }, nextTick: (cb) => setTimeout(cb, 0), stdout: { write: () => {} }, stderr: { write: () => {} } };
 
-      // --- Reusable helpers ---
-      function noop() {}
-      function noopReturn(v) { return function() { return v; }; }
-      function noopPromise(v) { return function() { return Promise.resolve(v); }; }
-      function chainable() { var obj = {}; var handler = { get: function(_, prop) { if (prop === 'then' || prop === 'catch') return undefined; return function() { return new Proxy(obj, handler); }; } }; return new Proxy(obj, handler); }
-
-      // --- EventEmitter (proper constructor for `new` and inherits) ---
-      function EventEmitterCtor() {
-        this._events = {};
-      }
-      EventEmitterCtor.prototype.on = function(e, fn) { (this._events[e] = this._events[e] || []).push(fn); return this; };
-      EventEmitterCtor.prototype.addListener = EventEmitterCtor.prototype.on;
-      EventEmitterCtor.prototype.off = function(e, fn) { var l = this._events[e]; if (l) this._events[e] = l.filter(function(f) { return f !== fn; }); return this; };
-      EventEmitterCtor.prototype.removeListener = EventEmitterCtor.prototype.off;
-      EventEmitterCtor.prototype.removeAllListeners = function(e) { if (e) delete this._events[e]; else this._events = {}; return this; };
-      EventEmitterCtor.prototype.once = function(e, fn) { var self = this; function wrap() { self.off(e, wrap); fn.apply(this, arguments); } this.on(e, wrap); return this; };
-      EventEmitterCtor.prototype.emit = function(e) { var args = Array.prototype.slice.call(arguments, 1); var l = this._events[e]; if (!l) return false; l.forEach(function(fn) { fn.apply(null, args); }); return true; };
-      EventEmitterCtor.prototype.listenerCount = function(e) { return (this._events[e] || []).length; };
-      EventEmitterCtor.prototype.listeners = function(e) { return (this._events[e] || []).slice(); };
-      EventEmitterCtor.prototype.setMaxListeners = function() { return this; };
-      EventEmitterCtor.prototype.getMaxListeners = function() { return 10; };
-      EventEmitterCtor.prototype.prependListener = EventEmitterCtor.prototype.on;
-      EventEmitterCtor.prototype.prependOnceListener = EventEmitterCtor.prototype.once;
-      EventEmitterCtor.prototype.eventNames = function() { return Object.keys(this._events); };
-
-      // --- Stream stubs ---
-      function StreamCtor() { EventEmitterCtor.call(this); }
-      StreamCtor.prototype = Object.create(EventEmitterCtor.prototype);
-      StreamCtor.prototype.pipe = function(dest) { return dest; };
-      StreamCtor.prototype.read = noopReturn(null);
-      StreamCtor.prototype.write = noopReturn(true);
-      StreamCtor.prototype.end = noop;
-      StreamCtor.prototype.destroy = noop;
-      StreamCtor.prototype.setEncoding = function() { return this; };
-
-      function ReadableCtor() { StreamCtor.call(this); this.readable = true; }
-      ReadableCtor.prototype = Object.create(StreamCtor.prototype);
-      function WritableCtor() { StreamCtor.call(this); this.writable = true; }
-      WritableCtor.prototype = Object.create(StreamCtor.prototype);
-      function DuplexCtor() { StreamCtor.call(this); this.readable = true; this.writable = true; }
-      DuplexCtor.prototype = Object.create(StreamCtor.prototype);
-      function TransformCtor() { DuplexCtor.call(this); }
-      TransformCtor.prototype = Object.create(DuplexCtor.prototype);
-      function PassThroughCtor() { TransformCtor.call(this); }
-      PassThroughCtor.prototype = Object.create(TransformCtor.prototype);
-
-      var statObj = { isFile: noopReturn(false), isDirectory: noopReturn(false), isSymbolicLink: noopReturn(false), isBlockDevice: noopReturn(false), isCharacterDevice: noopReturn(false), isFIFO: noopReturn(false), isSocket: noopReturn(false), size: 0, mtime: new Date(0), atime: new Date(0), ctime: new Date(0), birthtime: new Date(0), mode: 0 };
-
-      const BUILTIN_STUBS = {
-        path: {
-          join: function() { return Array.prototype.slice.call(arguments).filter(Boolean).join('/').replace(/\/+/g, '/'); },
-          resolve: function() { var p = Array.prototype.slice.call(arguments).filter(Boolean).join('/'); return p.charAt(0) === '/' ? p : '/' + p; },
-          dirname: function(p) { return p ? p.replace(/[/\\][^/\\]*$/, '') || '/' : '.'; },
-          basename: function(p, ext) { var b = (p || '').split(/[/\\]/).pop() || ''; return ext && b.endsWith(ext) ? b.slice(0, -ext.length) : b; },
-          extname: function(p) { var m = (p || '').match(/\.[^./\\]+$/); return m ? m[0] : ''; },
-          normalize: function(p) { return (p || '').replace(/[/\\]+/g, '/'); },
-          isAbsolute: function(p) { return (p || '').charAt(0) === '/'; },
-          relative: function(from, to) { return to || ''; },
-          parse: function(p) { p = p || ''; var ext = (p.match(/\.[^./\\]+$/) || [''])[0]; var base = p.split(/[/\\]/).pop() || ''; return { root: p.charAt(0) === '/' ? '/' : '', dir: p.replace(/[/\\][^/\\]*$/, '') || '', base: base, ext: ext, name: base.slice(0, base.length - ext.length) }; },
-          format: function(o) { o = o || {}; return (o.dir || o.root || '') + '/' + (o.base || (o.name || '') + (o.ext || '')); },
-          sep: '/',
-          delimiter: ':',
-          posix: null, // assigned below
-          win32: null
-        },
-        fs: {
-          readFileSync: noopReturn(''),
-          writeFileSync: noop,
-          existsSync: noopReturn(false),
-          mkdirSync: noop,
-          readdirSync: noopReturn([]),
-          statSync: noopReturn(statObj),
-          lstatSync: noopReturn(statObj),
-          unlinkSync: noop,
-          rmdirSync: noop,
-          renameSync: noop,
-          copyFileSync: noop,
-          chmodSync: noop,
-          accessSync: function() { throw new Error('ENOENT: no such file (web shim)'); },
-          readlinkSync: noopReturn(''),
-          realpathSync: function(p) { return p; },
-          createReadStream: function() { return new ReadableCtor(); },
-          createWriteStream: function() { return new WritableCtor(); },
-          watch: function() { return new EventEmitterCtor(); },
-          watchFile: noop,
-          unwatchFile: noop,
-          constants: { F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1, COPYFILE_EXCL: 1 },
-          promises: {
-            readFile: noopPromise(''),
-            writeFile: noopPromise(undefined),
-            readdir: noopPromise([]),
-            stat: noopPromise(statObj),
-            lstat: noopPromise(statObj),
-            mkdir: noopPromise(undefined),
-            rmdir: noopPromise(undefined),
-            unlink: noopPromise(undefined),
-            rename: noopPromise(undefined),
-            access: function() { return Promise.reject(new Error('ENOENT: no such file (web shim)')); },
-            realpath: function(p) { return Promise.resolve(p); },
-            copyFile: noopPromise(undefined),
-            chmod: noopPromise(undefined)
-          }
-        },
-        os: {
-          homedir: noopReturn('/'),
-          tmpdir: noopReturn('/tmp'),
-          platform: noopReturn('web'),
-          EOL: '\n',
-          type: noopReturn('Web'),
-          arch: noopReturn('wasm'),
-          cpus: noopReturn([]),
-          totalmem: noopReturn(8 * 1024 * 1024 * 1024),
-          freemem: noopReturn(4 * 1024 * 1024 * 1024),
-          hostname: noopReturn('localhost'),
-          release: noopReturn('0.0.0'),
-          uptime: noopReturn(0),
-          userInfo: noopReturn({ username: 'web', homedir: '/', shell: '/bin/sh', uid: 1000, gid: 1000 }),
-          networkInterfaces: noopReturn({}),
-          endianness: noopReturn('LE'),
-          constants: {
-            signals: { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGCHLD: 17, SIGCONT: 18, SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22 },
-            errno: { EACCES: -13, ENOENT: -2, EEXIST: -17, EISDIR: -21, ENOTDIR: -20, ENOTEMPTY: -39, EPERM: -1, EBADF: -9 },
-            priority: { PRIORITY_LOW: 19, PRIORITY_BELOW_NORMAL: 10, PRIORITY_NORMAL: 0, PRIORITY_ABOVE_NORMAL: -7, PRIORITY_HIGH: -14, PRIORITY_HIGHEST: -20 }
-          }
-        },
-        util: {
-          promisify: function(fn) { return fn; },
-          inherits: function(ctor, superCtor) { if (superCtor) { ctor.super_ = superCtor; ctor.prototype = Object.create(superCtor.prototype, { constructor: { value: ctor } }); } },
-          deprecate: function(fn) { return fn; },
-          inspect: function(obj) { try { return JSON.stringify(obj, null, 2); } catch(e) { return String(obj); } },
-          format: function() { return Array.prototype.slice.call(arguments).map(String).join(' '); },
-          types: { isProxy: noopReturn(false), isDate: function(v) { return v instanceof Date; }, isRegExp: function(v) { return v instanceof RegExp; }, isNativeError: function(v) { return v instanceof Error; } },
-          TextDecoder: typeof TextDecoder !== 'undefined' ? TextDecoder : function() {},
-          TextEncoder: typeof TextEncoder !== 'undefined' ? TextEncoder : function() {},
-          callbackify: function(fn) { return function() { var args = Array.prototype.slice.call(arguments); var cb = args.pop(); fn.apply(null, args).then(function(r) { cb(null, r); }, cb); }; }
-        },
-        events: { EventEmitter: EventEmitterCtor, once: function(emitter, evt) { return new Promise(function(resolve) { emitter.once(evt, function() { resolve(Array.prototype.slice.call(arguments)); }); }); } },
-        stream: { Stream: StreamCtor, Readable: ReadableCtor, Writable: WritableCtor, Duplex: DuplexCtor, Transform: TransformCtor, PassThrough: PassThroughCtor, pipeline: function() { var cb = arguments[arguments.length - 1]; if (typeof cb === 'function') cb(null); }, finished: function(s, cb) { if (typeof cb === 'function') cb(null); } },
-        child_process: {
-          exec: function(cmd, opts, cb) { cb = cb || opts; if (typeof cb === 'function') setTimeout(function() { cb(new Error('child_process not available in web worker'), '', ''); }, 0); },
-          execSync: function() { throw new Error('child_process not available in web worker'); },
-          execFile: function(file, args, opts, cb) { cb = cb || opts || args; if (typeof cb === 'function') setTimeout(function() { cb(new Error('child_process not available in web worker'), '', ''); }, 0); },
-          fork: function() { throw new Error('child_process.fork not available in web worker'); },
-          spawn: function() { var proc = new EventEmitterCtor(); proc.stdin = new WritableCtor(); proc.stdout = new ReadableCtor(); proc.stderr = new ReadableCtor(); proc.pid = 0; proc.kill = noop; proc.ref = noop; proc.unref = noop; setTimeout(function() { proc.emit('error', new Error('child_process not available in web worker')); proc.emit('close', 1); }, 0); return proc; }
-        },
-        net: {
-          Socket: function NetSocket() { DuplexCtor.call(this); this.connect = function() { return this; }; this.setTimeout = noop; this.setNoDelay = noop; this.setKeepAlive = noop; this.address = noopReturn({}); this.destroy = noop; this.ref = noop; this.unref = noop; },
-          Server: function NetServer() { EventEmitterCtor.call(this); this.listen = function() { return this; }; this.close = noop; this.address = noopReturn(null); this.ref = noop; this.unref = noop; },
-          createServer: function() { return new BUILTIN_STUBS.net.Server(); },
-          createConnection: function() { return new BUILTIN_STUBS.net.Socket(); },
-          connect: function() { return new BUILTIN_STUBS.net.Socket(); },
-          isIP: function(s) { return 0; },
-          isIPv4: noopReturn(false),
-          isIPv6: noopReturn(false)
-        },
-        url: {
-          URL: typeof URL !== 'undefined' ? URL : function() {},
-          URLSearchParams: typeof URLSearchParams !== 'undefined' ? URLSearchParams : function() {},
-          parse: function(u) { try { var o = new URL(u); return { protocol: o.protocol, hostname: o.hostname, port: o.port, pathname: o.pathname, search: o.search, hash: o.hash, host: o.host, href: o.href }; } catch(e) { return { href: u }; } },
-          format: function(o) { return o && o.href ? o.href : ''; },
-          resolve: function(from, to) { try { return new URL(to, from).href; } catch(e) { return to; } }
-        },
-        crypto: {
-          randomUUID: function() { return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) { var r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16); }); },
-          randomBytes: function(n) { var buf = new Uint8Array(n); if (typeof crypto !== 'undefined' && crypto.getRandomValues) crypto.getRandomValues(buf); return buf; },
-          createHash: function() { return { update: function() { return this; }, digest: function(enc) { return enc === 'hex' ? '0'.repeat(64) : new Uint8Array(32); } }; },
-          createHmac: function() { return { update: function() { return this; }, digest: function(enc) { return enc === 'hex' ? '0'.repeat(64) : new Uint8Array(32); } }; }
-        },
-        querystring: {
-          parse: function(s) { var o = {}; (s || '').replace(/^\?/, '').split('&').forEach(function(p) { var kv = p.split('='); if (kv[0]) o[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1] || ''); }); return o; },
-          stringify: function(o) { return Object.keys(o || {}).map(function(k) { return encodeURIComponent(k) + '=' + encodeURIComponent(o[k]); }).join('&'); },
-          encode: function(o) { return BUILTIN_STUBS.querystring.stringify(o); },
-          decode: function(s) { return BUILTIN_STUBS.querystring.parse(s); }
-        },
-        string_decoder: {
-          StringDecoder: function StringDecoder() { this.write = function(buf) { return typeof buf === 'string' ? buf : new TextDecoder().decode(buf); }; this.end = function(buf) { return buf ? this.write(buf) : ''; }; }
-        },
-        http: {
-          request: function(opts, cb) { var req = new EventEmitterCtor(); req.write = noop; req.end = function() { setTimeout(function() { req.emit('error', new Error('http not available in web worker')); }, 0); }; req.setTimeout = noop; req.destroy = noop; return req; },
-          get: function(opts, cb) { return BUILTIN_STUBS.http.request(opts, cb); },
-          createServer: function() { return new EventEmitterCtor(); },
-          Agent: function HttpAgent() {},
-          STATUS_CODES: { 200: 'OK', 201: 'Created', 204: 'No Content', 301: 'Moved Permanently', 302: 'Found', 304: 'Not Modified', 400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 500: 'Internal Server Error' }
-        },
-        https: {
-          request: function(opts, cb) { return BUILTIN_STUBS.http.request(opts, cb); },
-          get: function(opts, cb) { return BUILTIN_STUBS.http.request(opts, cb); },
-          createServer: function() { return new EventEmitterCtor(); },
-          Agent: function HttpsAgent() {}
-        },
-        zlib: {
-          createGzip: function() { return new TransformCtor(); },
-          createGunzip: function() { return new TransformCtor(); },
-          createDeflate: function() { return new TransformCtor(); },
-          createInflate: function() { return new TransformCtor(); },
-          gzip: function(buf, cb) { cb(null, buf); },
-          gunzip: function(buf, cb) { cb(null, buf); },
-          deflate: function(buf, cb) { cb(null, buf); },
-          inflate: function(buf, cb) { cb(null, buf); },
-          gzipSync: function(buf) { return buf; },
-          gunzipSync: function(buf) { return buf; },
-          deflateSync: function(buf) { return buf; },
-          inflateSync: function(buf) { return buf; },
-          constants: { Z_NO_FLUSH: 0, Z_SYNC_FLUSH: 2, Z_FULL_FLUSH: 3, Z_FINISH: 4 }
-        },
-        tty: {
-          isatty: noopReturn(false),
-          ReadStream: ReadableCtor,
-          WriteStream: WritableCtor
-        },
-        assert: {
-          ok: function(v, msg) { if (!v) throw new Error(msg || 'Assertion failed'); },
-          equal: function(a, b, msg) { if (a != b) throw new Error(msg || a + ' != ' + b); },
-          strictEqual: function(a, b, msg) { if (a !== b) throw new Error(msg || a + ' !== ' + b); },
-          notEqual: function(a, b, msg) { if (a == b) throw new Error(msg || a + ' == ' + b); },
-          notStrictEqual: function(a, b, msg) { if (a === b) throw new Error(msg || a + ' === ' + b); },
-          deepEqual: function() {},
-          deepStrictEqual: function() {},
-          throws: function(fn, msg) { try { fn(); throw new Error(msg || 'Missing expected exception'); } catch(e) {} },
-          fail: function(msg) { throw new Error(msg || 'Assert.fail'); }
-        },
-        module: {
-          createRequire: function() { return shimRequire; },
-          builtinModules: ['path', 'fs', 'os', 'util', 'events', 'stream', 'child_process', 'net', 'url', 'crypto', 'http', 'https', 'zlib', 'tty', 'assert', 'querystring', 'string_decoder', 'module']
-        },
-        perf_hooks: {
-          performance: typeof performance !== 'undefined' ? performance : { now: function() { return Date.now(); } },
-          PerformanceObserver: function() { this.observe = noop; this.disconnect = noop; }
-        },
-        worker_threads: {
-          isMainThread: true,
-          parentPort: null,
-          workerData: null,
-          Worker: function() { throw new Error('worker_threads not available in web worker'); }
-        }
-      };
-      // path.posix self-reference
-      BUILTIN_STUBS.path.posix = BUILTIN_STUBS.path;
-      BUILTIN_STUBS.path.win32 = BUILTIN_STUBS.path;
       const shimRequire = (id) => {
         if (id === 'vscode') return vscode;
-        if (BUILTIN_STUBS[id]) return BUILTIN_STUBS[id];
+        // Check real polyfills first (includes node: prefixed aliases)
+        if (polyfills[id]) return polyfills[id];
         // For anything else, return an empty module to avoid hard crash
         console.warn(`[ExtensionHost] require('${id}') shimmed as empty for ${extensionId}`);
         return {};
       };
+      // Expose for module.createRequire
+      self.__nodeRequire = shimRequire;
       
-      // Wrap extension code to inject Node.js globals (global, globalThis, window)
-      // Many webpack/esbuild bundles reference `global` at the top level which
-      // does not exist in Web Workers — alias it to `self`.
+      // Wrap extension code to inject Node.js globals.
+      // Many webpack/esbuild bundles reference `global`, `Buffer`, `process` etc. at top level.
       const wrappedCode = `var global = self;
 var globalThis = self;
 var window = self;
@@ -901,11 +677,9 @@ var setImmediate = function(cb) { return setTimeout(cb, 0); };
 var clearImmediate = function(id) { return clearTimeout(id); };
 ` + code;
 
-      // Evaluate extension code with require shim
+      // Evaluate extension code with polyfill-backed shims
       const factory = new Function('vscode', 'exports', 'module', 'require', 'process', 'Buffer', '__dirname', '__filename', wrappedCode);
-      const processShim = { env: {}, platform: 'web', cwd: () => '/', version: 'v18.0.0', versions: { node: '18.0.0' }, nextTick: (cb) => setTimeout(cb, 0), stdout: { write: () => {} }, stderr: { write: () => {} } };
-      const BufferShim = typeof Buffer !== 'undefined' ? Buffer : { from: () => new Uint8Array(), alloc: () => new Uint8Array(), isBuffer: () => false, concat: () => new Uint8Array() };
-      factory(vscode, exports, module, shimRequire, processShim, BufferShim, '/', '/extension.js');
+      factory(vscode, exports, module, shimRequire, processImpl, BufferImpl, '/', '/extension.js');
       
       const extensionModule = module.exports || exports;
 
