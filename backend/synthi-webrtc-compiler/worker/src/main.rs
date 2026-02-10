@@ -1714,10 +1714,11 @@ async fn wire_peer_channels(
                              c
                         },
                         "javascript" | "js" => {
-                            // Biome — fast, purpose-built JavaScript/JSX linter + formatter
-                            // with native LSP support.  Does NOT use TypeScript tooling.
-                            let mut c = system_command("biome");
-                            c.arg("lsp-proxy");
+                            // Use typescript-language-server for JavaScript — provides
+                            // full IntelliSense (completions, go-to-def, hover, references)
+                            // via the TypeScript language service, which natively supports JS.
+                            let mut c = system_command("typescript-language-server");
+                            c.arg("--stdio");
                             c
                         },
                         "java" => {
@@ -4806,37 +4807,28 @@ fn ensure_lsp_config(workspace: &std::path::Path, lang: &str) {
 
     match lang {
         "javascript" | "js" => {
-            // Biome uses biome.json for project configuration.
-            // Create a sensible default so the LSP provides diagnostics
-            // and formatting out of the box for standalone JS files.
-            let config_path = workspace.join("biome.json");
-            if !config_path.exists() {
+            // typescript-language-server uses jsconfig.json for JavaScript projects.
+            // Create a sensible default so the LSP provides IntelliSense
+            // (completions, go-to-def, hover) for standalone JS files.
+            let config_path = workspace.join("jsconfig.json");
+            if !config_path.exists() && !workspace.join("tsconfig.json").exists() {
                 if let Ok(mut f) = std::fs::File::create(&config_path) {
                     let _ = f.write_all(br#"{
-  "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
-  "organizeImports": {
-    "enabled": true
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "checkJs": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "baseUrl": "."
   },
-  "linter": {
-    "enabled": true,
-    "rules": {
-      "recommended": true
-    }
-  },
-  "formatter": {
-    "enabled": true,
-    "indentStyle": "space",
-    "indentWidth": 2
-  },
-  "javascript": {
-    "formatter": {
-      "quoteStyle": "single",
-      "semicolons": "always"
-    }
-  }
+  "include": ["**/*.js", "**/*.jsx"],
+  "exclude": ["node_modules"]
 }
 "#);
-                    println!("[LSP-CONFIG] Created biome.json for standalone JS workspace");
+                    println!("[LSP-CONFIG] Created jsconfig.json for standalone JS workspace");
                 }
             }
         }

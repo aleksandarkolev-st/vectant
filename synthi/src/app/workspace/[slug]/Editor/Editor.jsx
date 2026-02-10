@@ -69,6 +69,10 @@ const ErrorAction = {
 // created from file URIs default to 'plaintext', breaking documentSelector
 // matching and LSP provider activation.
 const SUPPORTED_LANGUAGES = [
+    // JavaScript/TypeScript must be registered explicitly so @codingame/monaco-vscode-api
+    // maps file URIs (.js, .ts, etc.) to the correct languageId instead of 'plaintext'.
+    { id: 'javascript', extensions: ['.js', '.jsx', '.mjs', '.cjs'], aliases: ['JavaScript', 'JS'] },
+    { id: 'typescript', extensions: ['.ts', '.tsx'], aliases: ['TypeScript', 'TS'] },
     { id: 'java', extensions: ['.java'], aliases: ['Java'] },
     { id: 'python', extensions: ['.py', '.pyw', '.pyx'], aliases: ['Python'] },
     { id: 'go', extensions: ['.go'], aliases: ['Go'] },
@@ -94,9 +98,7 @@ const LANG_TO_GLOB = {};
 for (const lang of SUPPORTED_LANGUAGES) {
     LANG_TO_GLOB[lang.id] = lang.extensions.map(ext => `**/*${ext}`);
 }
-// Also add built-in languages that Monaco already knows about
-LANG_TO_GLOB['javascript'] = ['**/*.js', '**/*.jsx', '**/*.mjs', '**/*.cjs'];
-LANG_TO_GLOB['typescript'] = ['**/*.ts', '**/*.tsx'];
+// Also add built-in languages with additional extension patterns
 LANG_TO_GLOB['html'] = ['**/*.html', '**/*.htm'];
 LANG_TO_GLOB['css'] = ['**/*.css'];
 LANG_TO_GLOB['scss'] = ['**/*.scss', '**/*.sass'];
@@ -942,12 +944,15 @@ const EditorPanel = ({
 
             // Disable Monaco's built-in validation for languages where we have an LSP,
             // to avoid double diagnostics and double work on every keystroke.
-            // NOTE: JavaScript is NOT disabled here — JS uses Biome for linting
-            // but relies on Monaco's built-in JS IntelliSense for completions,
-            // hover, and go-to-definition (since Biome doesn't provide those).
             try {
                 if (backendLang === 'typescript') {
                     monacoInstance.languages.typescript?.typescriptDefaults?.setDiagnosticsOptions({
+                        noSemanticValidation: true, noSyntaxValidation: true, noSuggestionDiagnostics: true
+                    });
+                } else if (backendLang === 'javascript') {
+                    // JS now uses typescript-language-server — disable Monaco's
+                    // built-in JS IntelliSense to avoid double completions/diagnostics.
+                    monacoInstance.languages.typescript?.javascriptDefaults?.setDiagnosticsOptions({
                         noSemanticValidation: true, noSyntaxValidation: true, noSuggestionDiagnostics: true
                     });
                 } else if (backendLang === 'css') {
@@ -972,7 +977,7 @@ const EditorPanel = ({
                     cpp: ['.', ':', '>', '(', '<'],
                     python: ['.', '('],
                     typescript: ['.', '(', "'", '"', '/', '<'],
-                    javascript: ['.'],
+                    javascript: ['.', '(', "'", '"', '/', '<'],
                     java: ['.', '(', '@'],
                     go: ['.', '('],
                     csharp: ['.', '('],
@@ -1775,7 +1780,7 @@ const EditorPanel = ({
             // Check both backendLang and clientKey so languages that share
             // a server (e.g. JS shares with TS via clientKey='typescript')
             // still get primed even if only one variant is listed.
-            const SERVERS_NEEDING_PRIMING = new Set(['typescript', 'python']);
+            const SERVERS_NEEDING_PRIMING = new Set(['typescript', 'javascript', 'python']);
 
             if (SERVERS_NEEDING_PRIMING.has(backendLang) || SERVERS_NEEDING_PRIMING.has(clientKey)) {
                 setTimeout(() => {

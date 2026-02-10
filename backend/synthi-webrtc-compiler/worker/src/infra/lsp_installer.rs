@@ -111,13 +111,10 @@ pub async fn ensure_lsp_installed(lang: &str, workspace: &Path) -> Result<&'stat
         "typescript" | "ts" => ("typescript-language-server", vec![
             "npm install -g typescript-language-server typescript 2>/dev/null || true",
         ]),
-        "javascript" | "js" => ("biome", vec![
-            // Install Biome — the JS-native language server
-            "npm install -g @biomejs/biome 2>/dev/null || true",
-            // Fallback: direct binary download if npm isn't available
-            "command -v biome >/dev/null 2>&1 || \
-             (curl -fsSL https://github.com/biomejs/biome/releases/latest/download/biome-linux-x64 -o /usr/local/bin/biome && \
-              chmod +x /usr/local/bin/biome) || true",
+        "javascript" | "js" => ("typescript-language-server", vec![
+            // Use typescript-language-server for JavaScript — same as TypeScript.
+            // The TS language service natively handles JS files with full IntelliSense.
+            "npm install -g typescript-language-server typescript 2>/dev/null || true",
         ]),
         "java" => ("jdtls", vec![
             // Step 1: ensure JDK 17+ is available
