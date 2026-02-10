@@ -818,14 +818,6 @@ const EditorPanel = ({
                             return next(document);
                         },
                         didChange: (data, next) => {
-                            // The middleware receives a TextDocumentChangeEvent:
-                            //   { document: TextDocument, contentChanges: [...] }
-                            // TextDocument has .uri, .version, .languageId, etc.
-                            const doc = data?.document ?? data;
-                            const ver = doc?.version ?? data?.textDocument?.version ?? '?';
-                            const uri = doc?.uri?.toString?.() ?? data?.textDocument?.uri ?? '';
-                            const shortUri = typeof uri === 'string' ? uri.split('/').pop() : '?';
-                            console.log(`[LSP] middleware didChange → ${shortUri} v${ver}`);
                             _lastDidChangeTs = performance.now();
                             return next(data);
                         },
@@ -1053,7 +1045,13 @@ const EditorPanel = ({
                 // (e.g. `Vec:` instead of `Vec::`) and the second request
                 // may arrive before didChange propagates.
                 let _triggerDebounceTimer = null;
-                const TRIGGER_DEBOUNCE_MS = 100;
+                const TRIGGER_DEBOUNCE_MS = 120;
+                // Debounce timer for regular (Invoked / quickSuggestions)
+                // completions.  Without this, every keystroke fires a
+                // separate textDocument/completion request, hammering the
+                // server (especially heavy ones like rust-analyzer).
+                let _typingDebounceTimer = null;
+                const TYPING_DEBOUNCE_MS = 180;
                 // Deferred re-trigger: when all inline retries fail but the
                 // server said incomplete=true, schedule a delayed re-invoke
                 // of the suggest widget.  Limited to avoid infinite loops.
@@ -1082,13 +1080,6 @@ const EditorPanel = ({
                         provideCompletionItems: async (model, position, context, token) => {
                             const lineText = model.getLineContent(position.lineNumber);
                             const textBeforeCursor = lineText.substring(0, position.column - 1);
-                            console.log(`[LSP] provideCompletionItems CALLED for ${backendLang}`, {
-                                line: position.lineNumber,
-                                col: position.column,
-                                triggerKind: context.triggerKind,
-                                triggerChar: context.triggerCharacter || '(none)',
-                                textBefore: textBeforeCursor.slice(-20),
-                            });
                             const providerT0 = performance.now();
                             if (!languageClient.isRunning()) {
                                 console.log('[LSP] provideCompletionItems: client not running, returning empty');
@@ -1152,6 +1143,27 @@ const EditorPanel = ({
                                 }
                             }
 
+                            // ── Debounce regular typing completions ───────────
+                            // quickSuggestions fires triggerKind=1 on every
+                            // keystroke.  Debounce so we only send one request
+                            // after the user pauses typing.
+                            if (!isTriggerChar && !isIncompleteRetrigger) {
+                                if (_typingDebounceTimer) {
+                                    clearTimeout(_typingDebounceTimer);
+                                    _typingDebounceTimer = null;
+                                }
+                                await new Promise((resolve) => {
+                                    _typingDebounceTimer = setTimeout(() => {
+                                        _typingDebounceTimer = null;
+                                        resolve();
+                                    }, TYPING_DEBOUNCE_MS);
+                                    token.onCancellationRequested(() => resolve());
+                                });
+                                if (myGeneration !== _currentCompletionGen || token.isCancellationRequested) {
+                                    return { suggestions: [] };
+                                }
+                            }
+
                             // ── Skip known-invalid trigger contexts ───────────
                             // After the debounce we re-read the text before the
                             // cursor.  Some single-char triggers are only valid
@@ -1185,13 +1197,7 @@ const EditorPanel = ({
                                     return { suggestions: [] };
                                 }
 
-                                // Log multi-char trigger detection for diagnostics
-                                const isMultiCharTrigger =
-                                    (ch === ':' && prev === ':') ||
-                                    (ch === '>' && prev === '-');
-                                if (isMultiCharTrigger) {
-                                    console.log(`[LSP] Multi-char trigger '${prev}${ch}' — keeping triggerKind=2 with char='${ch}'`);
-                                }
+
                             }
 
                             // We rely on the middleware passthrough for didChange
@@ -1208,15 +1214,6 @@ const EditorPanel = ({
                                 _lastCompletionCts = null;
                             }
 
-                            console.log(`[LSP] Sending textDocument/completion for ${backendLang} (gen=${myGeneration}, L${position.lineNumber}:${position.column}, triggerKind=${effectiveTriggerKind}${effectiveTriggerChar ? ', char=' + effectiveTriggerChar : ''})`, {
-                                modelContent: model.getLineContent(position.lineNumber).substring(
-                                    Math.max(0, position.column - 21), position.column - 1
-                                ) + '|' + model.getLineContent(position.lineNumber).substring(
-                                    position.column - 1, position.column + 9
-                                ),
-                                sinceLastChange: `${(performance.now() - _lastDidChangeTs).toFixed(0)}ms`,
-                            });
-
                             try {
                                 // Yield at least MIN_CHANGE_GAP_MS after the
                                 // last didChange so the server has time to
@@ -1226,11 +1223,9 @@ const EditorPanel = ({
                                     ? performance.now() - _lastDidChangeTs
                                     : Infinity; // No didChange yet — don't delay
                                 const yieldMs = Math.max(10, MIN_CHANGE_GAP_MS - sinceLast);
-                                await new Promise((r) => setTimeout(r, yieldMs));
-                                const actualGap = _lastDidChangeTs > 0
-                                    ? (performance.now() - _lastDidChangeTs).toFixed(0)
-                                    : 'n/a';
-                                console.log(`[LSP] Post-yield: ${actualGap}ms since last didChange (yielded ${yieldMs}ms) for gen=${myGeneration}`);
+                                if (yieldMs > 10) {
+                                    await new Promise((r) => setTimeout(r, yieldMs));
+                                }
                                 if (token.isCancellationRequested || myGeneration !== _currentCompletionGen) {
                                     return { suggestions: [] };
                                 }
@@ -1286,7 +1281,6 @@ const EditorPanel = ({
 
                                 let items = Array.isArray(result) ? result : (result.items || []);
                                 let isIncomplete = !Array.isArray(result) && result.isIncomplete;
-                                console.log(`[LSP] Server returned ${items.length} raw items for ${backendLang} in ${elapsed}ms (incomplete=${!!isIncomplete})`);
 
                                 // ── Retry on 0-item incomplete ────────────────
                                 // Servers (especially rust-analyzer) may return
@@ -1306,8 +1300,8 @@ const EditorPanel = ({
                                     // initial delay.
                                     const instantResponse = parseFloat(elapsed) < 5;
                                     const retryDelays = (backendLang === 'rust')
-                                        ? (instantResponse ? [500, 1000, 2000, 3500] : [400, 800, 1500, 3000])
-                                        : (instantResponse ? [400, 800] : [300, 600]);
+                                        ? (instantResponse ? [400, 800] : [250, 500])
+                                        : (instantResponse ? [250, 500] : [200, 400]);
                                     for (let attempt = 0; attempt < retryDelays.length; attempt++) {
                                         const delay = retryDelays[attempt];
                                         console.log(`[LSP] 0 items + incomplete — retry ${attempt + 1}/${retryDelays.length} in ${delay}ms for ${backendLang} (gen=${myGeneration})`);
@@ -1604,24 +1598,7 @@ const EditorPanel = ({
                                 }
 
                                 const totalMs = (performance.now() - providerT0).toFixed(0);
-                                console.log(`[LSP] Direct completion for ${backendLang}: ${suggestions.length} items in ${elapsed}ms (total=${totalMs}ms, gen=${myGeneration}, incomplete=${!!isIncomplete})`, {
-                                    pos: { line: position.lineNumber, col: position.column },
-                                    word: word.word || '(empty)',
-                                    defaultRange,
-                                    // Show range decision for first 3 items
-                                    itemRanges: suggestions.slice(0, 3).map(s => ({
-                                        label: typeof s.label === 'string' ? s.label : s.label?.label,
-                                        filterText: s.filterText,
-                                        usedServerRange: s.range !== defaultRange,
-                                        range: s.range,
-                                    })),
-                                    firstItem: suggestions[0] ? {
-                                        label: typeof suggestions[0].label === 'string' ? suggestions[0].label : suggestions[0].label?.label,
-                                        insertText: suggestions[0].insertText?.substring(0, 40),
-                                        filterText: suggestions[0].filterText,
-                                        kind: suggestions[0].kind,
-                                    } : null,
-                                });
+                                console.log(`[LSP] completion ${backendLang}: ${suggestions.length} items, ${elapsed}ms server / ${totalMs}ms total`);
                                 return { suggestions, incomplete: !!isIncomplete };
                             } catch (err) {
                                 // Ensure the CTS is cleaned up on error too,

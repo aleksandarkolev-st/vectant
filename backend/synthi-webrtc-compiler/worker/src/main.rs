@@ -1602,15 +1602,18 @@ async fn wire_peer_channels(
                     //  2. Injected into initializationOptions.cargo.sysrootSrc
                     // Both tell RA where to find stdlib source (Vec::new, etc.)
                     // even if RA's own sysroot auto-detection points elsewhere.
-                    let rust_sysroot_src: Option<String> = if lang == "rust" {
-                        let found = find_rust_sysroot_src();
-                        match &found {
+                    let (rust_sysroot_src, rust_sysroot): (Option<String>, Option<String>) = if lang == "rust" {
+                        let (src, root) = find_rust_sysroot_info();
+                        match &src {
                             Some(p) => println!("[LSP] Detected rust sysroot_src for injection: {}", p),
                             None => println!("[LSP] WARNING: rust-src not found — Vec:: completions may not work"),
                         }
-                        found
+                        if let Some(ref r) = root {
+                            println!("[LSP] Detected rust sysroot root: {}", r);
+                        }
+                        (src, root)
                     } else {
-                        None
+                        (None, None)
                     };
 
                     println!("Starting LSP for language: {}", lang);
@@ -1831,6 +1834,7 @@ async fn wire_peer_channels(
                             let workspace_path_for_incoming = workspace_path.clone();
                             let stdin_tx_clone = stdin_tx.clone();
                             let rust_sysroot_src_for_incoming = rust_sysroot_src.clone();
+                            let rust_sysroot_for_incoming = rust_sysroot.clone();
 
                             tokio::spawn(async move {
                                 while let Some(msg) = incoming_rx.recv().await {
@@ -1891,14 +1895,15 @@ async fn wire_peer_channels(
                                                 guard.client_root_uri = Some("file:///".to_string());
                                             }
 
-                                            // Inject cargo.sysrootSrc AND linkedProjects for rust-analyzer.
+                                            // Inject rust-analyzer configuration for stdlib resolution.
                                             //
-                                            // cargo.sysrootSrc tells RA where stdlib source is.
-                                            // linkedProjects gives RA a complete project definition
-                                            // that bypasses `cargo metadata` entirely — critical for
-                                            // containers where cargo may not be installed.  Without
-                                            // a crate graph, RA can autocomplete type *names* (Vec,
-                                            // String) but NOT associated items (Vec::new, Vec::push).
+                                            // Three mechanisms (belt-and-suspenders):
+                                            //  1. cargo.sysrootSrc — tells RA where stdlib source is
+                                            //  2. cargo.sysroot — explicit sysroot path (avoids "discover" running cargo)
+                                            //  3. linkedProjects — inline project definition that bypasses
+                                            //     `cargo metadata` entirely, giving RA a complete crate graph
+                                            //     with sysroot.  Without this, RA can autocomplete type *names*
+                                            //     (Vec, String) but NOT associated items (Vec::new, Vec::push).
                                             if let Some(ref src_path) = rust_sysroot_src_for_incoming {
                                                 if let Some(params) = json_val.get_mut("params") {
                                                     let init_opts = params
@@ -1907,7 +1912,17 @@ async fn wire_peer_channels(
                                                             .or_insert_with(|| serde_json::json!({}))
                                                             .as_object_mut());
                                                     if let Some(opts) = init_opts {
-                                                        // 1. Inject cargo.sysrootSrc (belt-and-suspenders)
+                                                        // Derive sysroot root from the sysroot_for_incoming
+                                                        // or from the sysroot_src path.
+                                                        let sysroot_root = rust_sysroot_for_incoming.clone()
+                                                            .or_else(|| {
+                                                                // Derive from sysroot_src: strip /lib/rustlib/src/rust/library
+                                                                src_path.strip_suffix("/lib/rustlib/src/rust/library")
+                                                                    .or_else(|| src_path.strip_suffix("/lib/rustlib/src/rust"))
+                                                                    .map(|s| s.to_string())
+                                                            });
+
+                                                        // 1. Configure cargo settings
                                                         {
                                                             let cargo = opts
                                                                 .entry("cargo")
@@ -1917,36 +1932,35 @@ async fn wire_peer_channels(
                                                                     "sysrootSrc".to_string(),
                                                                     serde_json::Value::String(src_path.clone()),
                                                                 );
+                                                                // Override "discover" with explicit sysroot path.
+                                                                // "discover" causes RA to run `cargo metadata` for
+                                                                // sysroot resolution, which fails without cargo.
+                                                                if let Some(ref root) = sysroot_root {
+                                                                    cargo_obj.insert(
+                                                                        "sysroot".to_string(),
+                                                                        serde_json::Value::String(root.clone()),
+                                                                    );
+                                                                }
                                                             }
                                                         }
-                                                        println!("[LSP] Injected cargo.sysrootSrc={} into initialize", src_path);
+                                                        println!("[LSP] Injected cargo.sysrootSrc={}, cargo.sysroot={:?}", src_path, sysroot_root);
 
                                                         // 2. Inject linkedProjects with inline project.
-                                                        //    This gives RA a direct project definition
-                                                        //    with sysroot_src so it can index stdlib
-                                                        //    without needing cargo metadata at all.
-                                                        //
-                                                        //    Skip injection when the Cargo.toml has real
-                                                        //    [dependencies] — those projects need cargo-
-                                                        //    based discovery for dep resolution.
+                                                        //    Skip when Cargo.toml has real [dependencies].
                                                         let cargo_toml = workspace_path.join("Cargo.toml");
                                                         let has_real_deps = cargo_toml.exists()
                                                             && std::fs::read_to_string(&cargo_toml)
                                                                 .map(|c| {
-                                                                    // Check if [dependencies] section has actual entries
-                                                                    // (not just an empty section or no section at all)
                                                                     if let Some(idx) = c.find("[dependencies]") {
                                                                         let after = &c[idx + "[dependencies]".len()..];
-                                                                        // Look at lines after [dependencies] until next section
                                                                         for line in after.lines() {
                                                                             let trimmed = line.trim();
                                                                             if trimmed.is_empty() || trimmed.starts_with('#') {
                                                                                 continue;
                                                                             }
                                                                             if trimmed.starts_with('[') {
-                                                                                break; // next section, no deps found
+                                                                                break;
                                                                             }
-                                                                            // Found a real dependency line
                                                                             return true;
                                                                         }
                                                                     }
@@ -1992,14 +2006,29 @@ async fn wire_peer_channels(
                                                                 }));
                                                             }
                                                             let num_crates = rs_crates.len();
+                                                            // Build the project JSON with both sysroot and sysroot_src.
+                                                            // sysroot = root path (e.g., /usr) — needed for compiled libs
+                                                            // sysroot_src = source path (e.g., /usr/lib/rustlib/src/rust/library)
+                                                            let mut project_json = serde_json::json!({
+                                                                "sysroot_src": src_path,
+                                                                "crates": rs_crates,
+                                                            });
+                                                            if let Some(ref root) = sysroot_root {
+                                                                project_json.as_object_mut().unwrap().insert(
+                                                                    "sysroot".to_string(),
+                                                                    serde_json::Value::String(root.clone()),
+                                                                );
+                                                            }
                                                             opts.insert(
                                                                 "linkedProjects".to_string(),
-                                                                serde_json::json!([{
-                                                                    "sysroot_src": src_path,
-                                                                    "crates": rs_crates,
-                                                                }]),
+                                                                serde_json::json!([project_json]),
                                                             );
-                                                            println!("[LSP] Injected linkedProjects with {} crate(s) and sysroot_src={}", num_crates, src_path);
+                                                            println!("[LSP] Injected linkedProjects with {} crate(s), sysroot_src={}, sysroot={:?}", num_crates, src_path, sysroot_root);
+                                                        }
+
+                                                        // Log the full initializationOptions for debugging
+                                                        if let Ok(opts_json) = serde_json::to_string_pretty(&serde_json::Value::Object(opts.clone())) {
+                                                            println!("[LSP] Full initializationOptions for RA:\n{}", opts_json);
                                                         }
                                                     }
                                                 }
@@ -4582,16 +4611,23 @@ fn system_command(program: &str) -> Command {
     }
 }
 
-/// Find the path to the Rust standard library source (`library/` directory).
+/// Find the Rust sysroot and standard library source paths.
 ///
 /// Uses the **same PATH** that rust-analyzer will use (with `$CARGO_HOME/bin`
 /// prepended) so the sysroot matches what RA actually detects at runtime.
 /// Falls back to system locations if the primary sysroot check fails.
 ///
-/// Returns `Some(path)` if found, `None` if rust-src is not installed anywhere.
-fn find_rust_sysroot_src() -> Option<String> {
+/// Returns `(sysroot_src, sysroot)` — either or both may be None.
+fn find_rust_sysroot_info() -> (Option<String>, Option<String>) {
     if cfg!(target_os = "windows") {
         // On Windows, RA runs inside WSL — query WSL for the sysroot
+        let wsl_sysroot = std::process::Command::new("wsl")
+            .args(["bash", "-lc", "rustc --print sysroot 2>/dev/null || echo /usr"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty());
         let check_script = r#"
             SYSROOT=$(rustc --print sysroot 2>/dev/null || echo /usr);
             for d in \
@@ -4605,13 +4641,14 @@ fn find_rust_sysroot_src() -> Option<String> {
                 [ -d "$d" ] && echo "$d" && exit 0;
             done
         "#;
-        return std::process::Command::new("wsl")
+        let src = std::process::Command::new("wsl")
             .args(["bash", "-lc", check_script])
             .output()
             .ok()
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .filter(|s| !s.is_empty());
+        return (src, wsl_sysroot);
     }
 
     // Linux: build the same PATH that rust-analyzer will use
@@ -4660,7 +4697,7 @@ fn find_rust_sysroot_src() -> Option<String> {
 
     for candidate in &candidates {
         if std::path::Path::new(candidate).exists() {
-            return Some(candidate.clone());
+            return (Some(candidate.clone()), Some(sysroot));
         }
     }
 
@@ -4670,12 +4707,12 @@ fn find_rust_sysroot_src() -> Option<String> {
             let name = entry.file_name();
             let n = name.to_string_lossy();
             if n.starts_with("rustc-") && entry.path().join("library").exists() {
-                return Some(entry.path().join("library").to_string_lossy().to_string());
+                return (Some(entry.path().join("library").to_string_lossy().to_string()), Some(sysroot));
             }
         }
     }
 
-    None
+    (None, Some(sysroot))
 }
 
 /// Generate minimal LSP configuration files for standalone workspaces.
