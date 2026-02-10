@@ -685,6 +685,8 @@ class HardenedExtensionHost {
       const wrappedCode = `var global = self;
 var globalThis = self;
 var window = self;
+var setImmediate = function(cb) { return setTimeout(cb, 0); };
+var clearImmediate = function(id) { return clearTimeout(id); };
 ` + code;
 
       // Evaluate extension code with require shim
