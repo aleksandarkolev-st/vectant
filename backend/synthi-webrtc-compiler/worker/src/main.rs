@@ -1580,13 +1580,27 @@ async fn wire_peer_channels(
                     // Running them concurrently shaves seconds off first-load.
                     // Both are idempotent (marker-file cached) so subsequent
                     // connections for other languages are near-instant.
-                    let (_, lsp_result) = tokio::join!(
-                        infra::dep_installer::install_all_deps(&workspace_path, &lang, false),
-                        infra::lsp_installer::ensure_lsp_installed(&lang, &workspace_path),
-                    );
+                    //
+                    // EXCEPTION: For Dart, we sequence the installs because
+                    // dep_installer needs the `dart` binary to run `dart pub get`,
+                    // and the binary may only become available after lsp_installer
+                    // finishes installing the Dart SDK.
+                    let lsp_result = if lang == "dart" {
+                        // Sequential: install dart binary first, then run deps
+                        let result = infra::lsp_installer::ensure_lsp_installed(&lang, &workspace_path).await;
+                        infra::dep_installer::install_all_deps(&workspace_path, &lang, false).await;
+                        result
+                    } else {
+                        // Parallel: independent install steps
+                        let (_, lsp_res) = tokio::join!(
+                            infra::dep_installer::install_all_deps(&workspace_path, &lang, false),
+                            infra::lsp_installer::ensure_lsp_installed(&lang, &workspace_path),
+                        );
+                        lsp_res
+                    };
                     match lsp_result {
                         Ok(bin) => println!("[LSP] Server binary ready: {}", bin),
-                        Err(e) => eprintln!("[LSP] Server install warning: {}", e),
+                        Err(ref e) => eprintln!("[LSP] Server install warning: {}", e),
                     }
 
                     // ── Generate minimal LSP config for standalone files ─────
