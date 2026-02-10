@@ -679,8 +679,16 @@ class HardenedExtensionHost {
         return {};
       };
       
+      // Wrap extension code to inject Node.js globals (global, globalThis, window)
+      // Many webpack/esbuild bundles reference `global` at the top level which
+      // does not exist in Web Workers — alias it to `self`.
+      const wrappedCode = `var global = self;
+var globalThis = self;
+var window = self;
+` + code;
+
       // Evaluate extension code with require shim
-      const factory = new Function('vscode', 'exports', 'module', 'require', 'process', 'Buffer', '__dirname', '__filename', code);
+      const factory = new Function('vscode', 'exports', 'module', 'require', 'process', 'Buffer', '__dirname', '__filename', wrappedCode);
       const processShim = { env: {}, platform: 'web', cwd: () => '/', version: 'v18.0.0', versions: { node: '18.0.0' }, nextTick: (cb) => setTimeout(cb, 0), stdout: { write: () => {} }, stderr: { write: () => {} } };
       const BufferShim = typeof Buffer !== 'undefined' ? Buffer : { from: () => new Uint8Array(), alloc: () => new Uint8Array(), isBuffer: () => false, concat: () => new Uint8Array() };
       factory(vscode, exports, module, shimRequire, processShim, BufferShim, '/', '/extension.js');
