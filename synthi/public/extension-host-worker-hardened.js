@@ -19,7 +19,7 @@
 
 const CONFIG = {
   // Message limits
-  MAX_MESSAGE_SIZE: 1024 * 1024, // 1MB max message size
+  MAX_MESSAGE_SIZE: 25 * 1024 * 1024, // 25MB max message size (must exceed code size limit)
   MAX_MESSAGE_RATE: 100, // messages per second
   MESSAGE_RATE_WINDOW: 1000, // 1 second window
   
@@ -523,12 +523,14 @@ class HardenedExtensionHost {
       return;
     }
 
-    // Check message size
-    const size = estimateMessageSize(msg);
-    if (size > CONFIG.MAX_MESSAGE_SIZE) {
-      console.error('[ExtensionHost] Message too large:', size);
-      self.postMessage(createResponse(msg.id, null, new Error('Message too large')));
-      return;
+    // Check message size (exempt loadExtension — it carries full source code)
+    if (msg.method !== 'loadExtension') {
+      const size = estimateMessageSize(msg);
+      if (size > CONFIG.MAX_MESSAGE_SIZE) {
+        console.error('[ExtensionHost] Message too large:', size);
+        self.postMessage(createResponse(msg.id, null, new Error('Message too large')));
+        return;
+      }
     }
 
     if (msg.type === 'request') {
