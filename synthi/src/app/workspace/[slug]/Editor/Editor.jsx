@@ -20,7 +20,7 @@ import {
     reorderOpenFiles
 } from '@/redux/workspaceSlice';
 import { selectAutoSaveEnabled, selectAutoCompletionEnabled, toggleAutoCompletion, selectShowAnonymousPresence, selectPresenceGranularity, toggleShowAnonymousPresence, setPresenceGranularity, startCreate, setCursorPosition } from '@/redux/uiSlice';
-import { fetchGitStatus, syncFileToGit } from '@/redux/gitSlice';
+import { fetchGitStatus, syncFileToGit, closeConflictResolver } from '@/redux/gitSlice';
 import { Circle, Save, Sparkles, EyeOff, Loader2 } from 'lucide-react'; // Added Sparkles, EyeOff
 import { getFileIcon } from '@/utils/fileIcons';
 import {
@@ -49,6 +49,7 @@ import { useEditorEvents } from './events';
 import { takeLastChars, useCustomScrollbar } from './utils';
 import { SYNTHI_THEME } from './theme';
 import { ConflictBanner } from './ConflictBanner';
+import MergeConflictEditor from '@/components/git/MergeConflictEditor';
 import * as monaco from 'monaco-editor';
 import { toast } from 'sonner';
 
@@ -157,6 +158,7 @@ const EditorPanel = ({
     // Git status for conflict detection
     const gitStatus = useAppSelector(state => state.git?.status);
     const conflictedFiles = gitStatus?.conflictedFiles || [];
+    const conflictResolverFile = useAppSelector(state => state.git?.conflictResolverFile);
 
     // Local state
     const [position, setPosition] = useState({ lineNumber: 1, column: 1 });
@@ -2193,6 +2195,22 @@ const EditorPanel = ({
                             </div>
                         )}
 
+                        {/* Merge Conflict Resolver — replaces editor when active */}
+                        {conflictResolverFile ? (
+                            <div className="flex-1 overflow-hidden relative">
+                                <MergeConflictEditor
+                                    slug={slug}
+                                    filePath={conflictResolverFile}
+                                    onClose={() => dispatch(closeConflictResolver())}
+                                    onResolved={() => {
+                                        dispatch(closeConflictResolver());
+                                        dispatch(fetchGitStatus(slug));
+                                        toast.success('Conflict resolved');
+                                    }}
+                                />
+                            </div>
+                        ) : (
+                        <>
                         {/* Merge Conflict Banner */}
                         {activeFile && (
                             <ConflictBanner
@@ -2383,6 +2401,8 @@ const EditorPanel = ({
                                 </ContextMenuContent>
                             </ContextMenu>
                         </div>
+                        </>
+                        )}
                     </div>
                 </ResizablePanel>
 
