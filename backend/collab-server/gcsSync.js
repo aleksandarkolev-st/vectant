@@ -219,10 +219,17 @@ async function downloadGcsToRepo(slug, repoPath, options = {}) {
     // List all files in GCS
     const files = await listFiles(gcsPrefix);
     
-    // Filter out folder markers and the prefix itself
+    // Filter out folder markers, the prefix itself, and internal artifacts
+    // that should never appear in the working tree
+    const INTERNAL_ARTIFACTS = new Set(['.git-archive.tar.gz']);
     const filesToDownload = files.filter(f => {
         const relativePath = f.name.substring(gcsPrefix.length);
-        return relativePath && !relativePath.endsWith('/') && f.size > 0;
+        if (!relativePath || relativePath.endsWith('/') || f.size === 0) return false;
+        // Skip internal GCS-only blobs that are not user files
+        if (INTERNAL_ARTIFACTS.has(relativePath)) return false;
+        // Skip anything inside .git/ — restored separately via restoreGitFromGcs
+        if (relativePath === '.git' || relativePath.startsWith('.git/')) return false;
+        return true;
     });
     
     console.log(`[GCS] Downloading ${filesToDownload.length} files from GCS for slug: ${slug}`);
