@@ -726,19 +726,20 @@ class HardenedExtensionHost {
         if (id === 'vscode') return vscode;
         // Check real polyfills first (includes node: prefixed aliases)
         if (polyfills[id]) {
-          // Wrap known polyfills in a safety Proxy: if the extension accesses
-          // a property that doesn't exist on the real polyfill (e.g. events.SomeThing),
-          // fall back to an auto-stub instead of returning undefined.
-          // This prevents "Class extends value undefined" crashes.
+          // Wrap known polyfills in a safety Proxy: any property access that
+          // resolves to undefined/null gets auto-stubbed, preventing
+          // "Class extends value undefined" crashes.
           const real = polyfills[id];
           if (typeof real !== 'object' && typeof real !== 'function') return real;
           return new Proxy(real, {
             get(target, prop, receiver) {
-              // Check if the property actually exists on the real module
-              if (prop in target || typeof prop === 'symbol') {
-                return Reflect.get(target, prop, receiver);
-              }
-              // Missing property → auto-stub so `extends X.Missing` works
+              if (typeof prop === 'symbol') return Reflect.get(target, prop, receiver);
+              const value = Reflect.get(target, prop, receiver);
+              // If the real value exists and is usable, return it
+              if (value !== undefined && value !== null) return value;
+              // Value is undefined/null → return auto-stub instead of crashing
+              // This catches: properties that exist but are undefined, AND
+              // properties that don't exist at all on the polyfill
               return self.__createDeepStub(id + '.' + String(prop));
             }
           });
@@ -749,7 +750,22 @@ class HardenedExtensionHost {
       };
       // Expose for module.createRequire
       self.__nodeRequire = shimRequire;
-      
+
+      // ---------- Class extends safety rewriting ----------
+      // Webpack/esbuild bundles have their own internal __webpack_require__ that bypasses
+      // our shimRequire Proxy. When an internally-resolved module is undefined, code like
+      //   class Foo extends someUndefinedValue { ... }
+      // crashes with "Class extends value undefined is not a constructor or null".
+      // The JS engine throws this BEFORE Object.create is called, so we can't patch it
+      // at runtime. Instead, we pre-process the code string to wrap every extends expression
+      // in a safety function __x() that replaces undefined/non-function values with a stub class.
+      code = code.replace(
+        /(\bclass\b[^{]*?\bextends\s+)([^{]+)\{/g,
+        function(_match, before, expr) {
+          return before + '__x(' + expr.trim() + '){';
+        }
+      );
+
       // Wrap extension code to inject Node.js globals.
       // Many webpack/esbuild bundles reference `global`, `Buffer`, `process` etc. at top level.
       const wrappedCode = `var global = self;
@@ -762,6 +778,8 @@ var __dirname = arguments[6];
 var __filename = arguments[7];
 var setImmediate = function(cb) { return setTimeout(cb, 0); };
 var clearImmediate = function(id) { return clearTimeout(id); };
+var __SafeBase = (function(){ function S(){} return S; })();
+var __x = function(v){ if(v===void 0) return __SafeBase; if(v===null) return null; if(typeof v==='function') return v; return __SafeBase; };
 ` + code;
 
       // Evaluate extension code with polyfill-backed shims
