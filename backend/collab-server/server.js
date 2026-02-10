@@ -485,6 +485,24 @@ function broadcastFileTreeChanged(slug) {
 }
 
 /**
+ * Broadcast a file-reverted event to all notification clients for a slug.
+ * Clients should reset their Monaco editor model for the given file(s)
+ * to prevent stale dirty content from being re-flushed into the Yjs doc.
+ *
+ * @param {string} slug - workspace slug
+ * @param {string[]} filePaths - file paths that were reverted (empty = all files)
+ */
+function broadcastFileReverted(slug, filePaths = []) {
+  const message = JSON.stringify({ type: 'file-reverted', slug, filePaths });
+  notifyWss.clients.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN && ws._slug === slug) {
+      try { ws.send(message); } catch (_) {}
+    }
+  });
+  console.log(`[Collab] Broadcast file-reverted for slug ${slug}, files:`, filePaths.length ? filePaths : '*');
+}
+
+/**
  * Clear Yjs persistence for a document (used when merge conflicts need fresh file content).
  * @param {string} docName - The document name (room key), e.g., "workspace:slug:filepath"
  */
@@ -823,12 +841,16 @@ const server = http.createServer(async (req, res) => {
                     if (data.filePath) {
                       await invalidateDocsForSlug(slug, [data.filePath]);
                     }
+                    // Notify clients to reset their editor models for the reverted file
+                    broadcastFileReverted(slug, data.filePath ? [data.filePath] : []);
                     broadcastFileTreeChanged(slug);
                     break;
                 case 'discard-all':
                     result = await gitService.discardAll(slug);
                     // All files reverted — invalidate all Yjs docs
                     await invalidateDocsForSlug(slug);
+                    // Notify clients to reset ALL editor models
+                    broadcastFileReverted(slug, []);
                     broadcastFileTreeChanged(slug);
                     break;
                 // Merge conflict resolution
