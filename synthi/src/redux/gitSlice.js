@@ -174,7 +174,9 @@ export const pullChanges = createAsyncThunk(
             
             // If pull resulted in conflicts (shouldn't normally happen here since server throws)
             if (result && (result.hasConflicts || result.conflicted?.length > 0)) {
-                dispatch({ type: 'git/conflictsDetected', payload: result.conflicted || [] });
+                // fetchGitStatus (dispatched above) will populate status.conflictedFiles
+                // from the server, which the UI reads for the conflict list.
+                console.log('[Git] Pull returned conflict state — refreshing status');
             }
             
             return result;
@@ -196,8 +198,8 @@ export const pullChanges = createAsyncThunk(
                     }
                 }
                 
-                // Dispatch conflict detection action to invalidate caches
-                dispatch({ type: 'git/conflictsDetected', payload: conflictedFiles });
+                // fetchGitStatus (dispatched below) will populate status.conflictedFiles
+                // from the server's getStatus(), which the UI reads for the conflict list.
                 
                 // Still refresh git status to show the conflicts in UI
                 dispatch(fetchGitStatus(slug));
