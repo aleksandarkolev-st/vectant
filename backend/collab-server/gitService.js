@@ -174,7 +174,12 @@ class GitService {
         if (msg.includes('authentication failed') || msg.includes('user cancelled') || msg.includes('could not read username')) {
             return new AuthenticationError('Authentication failed. Please configure credentials or use an access token.');
         }
-        if (msg.includes('conflict') || msg.includes('merge conflict')) {
+        // NOTE: merge conflict detection should be handled explicitly by the
+        // caller (e.g. pull()) using git status, NOT here.  mapGitError is a
+        // generic fallback and doesn't have enough context to enumerate the
+        // conflicted files.  Only match if the message is clearly a merge
+        // conflict that somehow escaped the caller's handling.
+        if (msg.includes('merge conflict') && !msg.includes('would be overwritten')) {
             return new MergeConflictError();
         }
         if (msg.includes('not initialized')) {
