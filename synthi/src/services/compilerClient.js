@@ -69,6 +69,12 @@ export class CompilerClient {
         // Timer for retrying initial connection offer
         this._offerRetryInterval = null;
 
+        // Grace period timer for transient 'disconnected' ICE state.
+        // WebRTC can flicker to 'disconnected' and self-recover within
+        // seconds — we only set DISCONNECTED after this grace period.
+        this._disconnectGraceTimer = null;
+        this._DISCONNECT_GRACE_MS = 5000;
+
         
         this._handleTerminalInput = this._handleTerminalInput.bind(this);
         this._handleGuiInput = this._handleGuiInput.bind(this);
@@ -366,9 +372,35 @@ export class CompilerClient {
             this.pc.onconnectionstatechange = () => {
                 try { console.debug('CompilerClient connection state:', this.pc.connectionState); } catch (e) {}
                 if (this.pc.connectionState === 'connected') {
+                    // Connection recovered — cancel any pending grace timer
+                    if (this._disconnectGraceTimer) {
+                        clearTimeout(this._disconnectGraceTimer);
+                        this._disconnectGraceTimer = null;
+                        console.log('[CompilerClient] Connection recovered from transient disconnect');
+                    }
                     this._setStatus(CompilerStatus.CONNECTED);
-                } else if (this.pc.connectionState === 'disconnected' || this.pc.connectionState === 'failed') {
+                } else if (this.pc.connectionState === 'failed') {
+                    // 'failed' is permanent — set DISCONNECTED immediately
+                    if (this._disconnectGraceTimer) {
+                        clearTimeout(this._disconnectGraceTimer);
+                        this._disconnectGraceTimer = null;
+                    }
                     this._setStatus(CompilerStatus.DISCONNECTED);
+                } else if (this.pc.connectionState === 'disconnected') {
+                    // 'disconnected' is transient — start a grace period.
+                    // ICE can self-recover within seconds. Only set
+                    // DISCONNECTED if it doesn't recover in time.
+                    if (!this._disconnectGraceTimer) {
+                        console.log(`[CompilerClient] Transient disconnect detected, grace period ${this._DISCONNECT_GRACE_MS}ms...`);
+                        this._disconnectGraceTimer = setTimeout(() => {
+                            this._disconnectGraceTimer = null;
+                            // Re-check state — it may have recovered during the timer
+                            if (this.pc && this.pc.connectionState !== 'connected') {
+                                console.warn('[CompilerClient] Grace period expired, connection did not recover');
+                                this._setStatus(CompilerStatus.DISCONNECTED);
+                            }
+                        }, this._DISCONNECT_GRACE_MS);
+                    }
                 }
             };
 
@@ -846,6 +878,12 @@ export class CompilerClient {
 
     async reconnect() {
         console.log('[CompilerClient] Forcing reconnection to clear WebRTC state...');
+
+        // Cancel any pending disconnect grace timer
+        if (this._disconnectGraceTimer) {
+            clearTimeout(this._disconnectGraceTimer);
+            this._disconnectGraceTimer = null;
+        }
         
         // Try to signal the worker to reset/exit before we close the socket.
         // This ensures the worker restarts and gives us a fresh PeerConnection,

@@ -3,10 +3,13 @@
    Synthi Brand Theme Editor Overrides
    ============================================ */
 
-/* Editor container with rounded top corners */
-.monaco-editor {
-    overflow: hidden;
-}
+/* Editor container with rounded top corners.
+ * NOTE: overflow:hidden was REMOVED here — it clipped the suggest
+ * widget (autocomplete popup).  fixedOverflowWidgets:true in editor
+ * options renders overlays outside this container instead.
+ * If rounded-corner bleed returns, add overflow:hidden to the outer
+ * editor wrapper div rather than .monaco-editor itself.
+ */
 
 /* Monaco link hover styling with Synthi teal accent */
 .monaco-link-hover {

@@ -15,6 +15,9 @@ export const EDITOR_OPTIONS = {
     wordWrap: 'off',
     scrollBeyondLastLine: true,
     automaticLayout: true,
+    // Render suggest/hover/parameter-hints widgets in a fixed overlay
+    // so they are not clipped by overflow:hidden on the editor container.
+    fixedOverflowWidgets: true,
     // Smooth cursor animation with stronger visual anchor
     cursorBlinking: "smooth", // Smooth fading cursor
     cursorSmoothCaretAnimation: "off", // Cursor glides smoothly

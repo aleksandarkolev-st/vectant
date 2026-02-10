@@ -413,11 +413,13 @@ const EditorPanel = ({
         if (!monacoInstance || !compilerClient || compilerStatus !== CompilerStatus.CONNECTED || !activeFile || !servicesReady || !editorInstance) {
             if (compilerStatus !== CompilerStatus.CONNECTED) {
                 setLspStatus('Compiler Disconnected');
-                // Cleanup existing clients if disconnected
-                languageClientsRef.current.forEach(client => {
-                    try { client.stop(); } catch (e) { }
-                });
-                languageClientsRef.current.clear();
+                // Do NOT tear down running LSP clients here.
+                // The data channel's own 'close' event handler (registered
+                // when the LSP was initialized) will clean up each client
+                // when the underlying transport actually dies.
+                // Immediately destroying clients on a transient WebRTC
+                // 'disconnected' state kills LSP even when the connection
+                // self-recovers seconds later.
             }
             return;
         }
@@ -434,7 +436,7 @@ const EditorPanel = ({
             rust:               { backend: 'rust',       selector: ['rust'] },
             python:             { backend: 'python',     selector: ['python'] },
             typescript:         { backend: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
-            javascript:         { backend: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
+            javascript:         { backend: 'javascript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
             typescriptreact:    { backend: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
             javascriptreact:    { backend: 'typescript', selector: ['typescript', 'javascript', 'typescriptreact', 'javascriptreact'] },
             java:               { backend: 'java',       selector: ['java'] },
@@ -734,7 +736,13 @@ const EditorPanel = ({
                 // causes VS Code's suggest model to dismiss the widget
                 // before our async provider's 34 items arrive.
                 registerFeature(feature) {
-                    if (feature instanceof CompletionItemFeature) {
+                    // Use multiple checks — instanceof can fail when
+                    // bundlers duplicate the vscode-languageclient module.
+                    const isCompletionFeature =
+                        feature instanceof CompletionItemFeature ||
+                        feature?.constructor?.name === 'CompletionItemFeature' ||
+                        feature?.registrationType?.method === 'textDocument/completion';
+                    if (isCompletionFeature) {
                         console.log('[LSP] Skipping built-in CompletionItemFeature — using direct provider');
                         return;
                     }
@@ -768,6 +776,11 @@ const EditorPanel = ({
                 cargo: {
                     // Don't run `cargo check` on save — it fails without cargo
                     buildScripts: { enable: false },
+                    // Let RA auto-discover sysroot from cargo/rustc so it can
+                    // index stdlib source (Vec::new, HashMap::insert, etc.)
+                    // Setting sysroot to "discover" is the default but being
+                    // explicit ensures it's not accidentally turned off.
+                    sysroot: 'discover',
                 },
                 // Disable check-on-save (requires cargo)
                 checkOnSave: false,
@@ -1041,6 +1054,12 @@ const EditorPanel = ({
                 // may arrive before didChange propagates.
                 let _triggerDebounceTimer = null;
                 const TRIGGER_DEBOUNCE_MS = 100;
+                // Deferred re-trigger: when all inline retries fail but the
+                // server said incomplete=true, schedule a delayed re-invoke
+                // of the suggest widget.  Limited to avoid infinite loops.
+                let _deferredRetriggerCount = 0;
+                let _pendingDeferredRetrigger = null;
+                const MAX_DEFERRED_RETRIGGERS = 2;
                 // Minimum gap (ms) between the last didChange notification
                 // and sending a completion request.  Ensures the server has
                 // time to ingest the change before we ask for completions.
@@ -1098,13 +1117,21 @@ const EditorPanel = ({
                             // Build the LSP triggerKind:
                             //  1 = Invoked (Ctrl+Space or quickSuggestions auto-trigger)
                             //  2 = TriggerCharacter (typed a trigger char like . : etc.)
+                            //  3 = TriggerForIncompleteCompletions (re-query after incomplete)
                             const isTriggerChar = context.triggerKind === monacoInstance.languages.CompletionTriggerKind.TriggerCharacter;
+                            const isIncompleteRetrigger = context.triggerKind === monacoInstance.languages.CompletionTriggerKind.TriggerForIncompleteCompletions;
 
                             // ── Debounce trigger-character completions ────────
                             // Multi-char triggers (::, ->, ..) fire two events
                             // in quick succession.  Wait a short interval to
                             // coalesce them and let didChange propagate.
                             if (isTriggerChar) {
+                                // New user input — reset deferred retrigger state
+                                _deferredRetriggerCount = 0;
+                                if (_pendingDeferredRetrigger) {
+                                    clearTimeout(_pendingDeferredRetrigger);
+                                    _pendingDeferredRetrigger = null;
+                                }
                                 // Cancel any pending debounce timer
                                 if (_triggerDebounceTimer) {
                                     clearTimeout(_triggerDebounceTimer);
@@ -1140,7 +1167,7 @@ const EditorPanel = ({
                             // with ':' for :: path completions — sending as
                             // Invoked causes it to skip the trigger-char path
                             // resolution and return fewer or no results.
-                            let effectiveTriggerKind = isTriggerChar ? 2 : 1;
+                            let effectiveTriggerKind = isTriggerChar ? 2 : (isIncompleteRetrigger ? 3 : 1);
                             let effectiveTriggerChar = isTriggerChar ? context.triggerCharacter : undefined;
 
                             if (isTriggerChar) {
@@ -1279,11 +1306,11 @@ const EditorPanel = ({
                                     // initial delay.
                                     const instantResponse = parseFloat(elapsed) < 5;
                                     const retryDelays = (backendLang === 'rust')
-                                        ? (instantResponse ? [500, 1000, 2000] : [400, 800, 1500])
+                                        ? (instantResponse ? [500, 1000, 2000, 3500] : [400, 800, 1500, 3000])
                                         : (instantResponse ? [400, 800] : [300, 600]);
                                     for (let attempt = 0; attempt < retryDelays.length; attempt++) {
                                         const delay = retryDelays[attempt];
-                                        console.log(`[LSP] 0 items + incomplete — retry ${attempt + 1} in ${delay}ms for ${backendLang} (gen=${myGeneration})`);
+                                        console.log(`[LSP] 0 items + incomplete — retry ${attempt + 1}/${retryDelays.length} in ${delay}ms for ${backendLang} (gen=${myGeneration})`);
                                         await new Promise((r) => setTimeout(r, delay));
 
                                         if (myGeneration !== _currentCompletionGen || token.isCancellationRequested) {
@@ -1294,12 +1321,11 @@ const EditorPanel = ({
                                         _lastCompletionCts = cts2;
                                         const monacoDisp2 = token.onCancellationRequested(() => cts2.cancel());
 
-                                        // Alternate between trigger contexts on retries:
-                                        // even attempts: same as original (TriggerChar if trigger, else Invoked)
-                                        // odd attempts: Invoked (gives server a fresh context lookup)
-                                        const retryContext = (attempt % 2 === 1)
-                                            ? { triggerKind: 1 }
-                                            : { triggerKind: effectiveTriggerKind, triggerCharacter: effectiveTriggerChar };
+                                        // Use triggerKind=3 (TriggerForIncompleteCompletions)
+                                        // which is the LSP-standard way to re-query after
+                                        // an incomplete result.  This tells the server we're
+                                        // continuing from a previous incomplete response.
+                                        const retryContext = { triggerKind: 3 };
 
                                         const t1 = performance.now();
                                         const retryResult = await languageClient.sendRequest('textDocument/completion', {
@@ -1332,6 +1358,26 @@ const EditorPanel = ({
 
                                 if (items.length === 0) {
                                     console.log(`[LSP] provideCompletionItems: server returned 0 items for ${backendLang} (gen=${myGeneration}, ${elapsed}ms, incomplete=${!!isIncomplete})`);
+
+                                    // If the server is still incomplete (e.g. rust-analyzer
+                                    // still indexing stdlib), schedule a deferred re-trigger
+                                    // of the suggest widget after a longer delay.  This gives
+                                    // heavy servers time to finish analysis without blocking
+                                    // the completion provider for too long.
+                                    if (isIncomplete && _deferredRetriggerCount < MAX_DEFERRED_RETRIGGERS
+                                        && myGeneration === _currentCompletionGen && !token.isCancellationRequested) {
+                                        _deferredRetriggerCount++;
+                                        const retriggerDelay = backendLang === 'rust' ? 4000 : 2000;
+                                        console.log(`[LSP] Scheduling deferred suggest re-trigger ${_deferredRetriggerCount}/${MAX_DEFERRED_RETRIGGERS} in ${retriggerDelay}ms for ${backendLang}`);
+                                        if (_pendingDeferredRetrigger) clearTimeout(_pendingDeferredRetrigger);
+                                        _pendingDeferredRetrigger = setTimeout(() => {
+                                            _pendingDeferredRetrigger = null;
+                                            if (myGeneration === _currentCompletionGen && editorInstance) {
+                                                editorInstance.trigger('lsp-deferred', 'editor.action.triggerSuggest', {});
+                                            }
+                                        }, retriggerDelay);
+                                    }
+
                                     return { suggestions: [], incomplete: !!isIncomplete };
                                 }
 
@@ -1548,6 +1594,13 @@ const EditorPanel = ({
                                 if (token.isCancellationRequested) {
                                     console.log(`[LSP] Completion for ${backendLang} cancelled after mapping ${suggestions.length} items — discarding`);
                                     return { suggestions: [] };
+                                }
+
+                                // Successful completion — reset deferred retrigger state
+                                _deferredRetriggerCount = 0;
+                                if (_pendingDeferredRetrigger) {
+                                    clearTimeout(_pendingDeferredRetrigger);
+                                    _pendingDeferredRetrigger = null;
                                 }
 
                                 const totalMs = (performance.now() - providerT0).toFixed(0);
