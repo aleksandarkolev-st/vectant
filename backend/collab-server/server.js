@@ -1020,7 +1020,8 @@ const server = http.createServer(async (req, res) => {
             if (e.code && e.toJSON) {
                 const statusCode = e.code === 'REPO_NOT_FOUND' || e.code === 'REPO_NOT_INITIALIZED' ? 404 : 
                                    e.code === 'AUTH_FAILED' || e.code === 'NO_REMOTE' ? 400 :
-                                   e.code === 'MERGE_CONFLICT' ? 409 : 400;
+                                   e.code === 'MERGE_CONFLICT' ? 409 :
+                                   e.code === 'UNCOMMITTED_CHANGES' ? 409 : 400;
                 console.debug('[Collab] Git error:', e.code, e.message);
                 res.writeHead(statusCode, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify(e.toJSON()));

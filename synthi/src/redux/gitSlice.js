@@ -211,6 +211,15 @@ export const pullChanges = createAsyncThunk(
                     conflicted: conflictedFiles
                 });
             }
+
+            // Pre-condition failure: uncommitted changes block the pull
+            if (error.code === 'UNCOMMITTED_CHANGES') {
+                return rejectWithValue({
+                    code: 'UNCOMMITTED_CHANGES',
+                    message: error.message || 'You have uncommitted changes that would be overwritten. Please commit or stash them first.',
+                });
+            }
+
             throw error;
         }
     }
@@ -436,6 +445,9 @@ const gitSlice = createSlice({
                     const files = action.payload.conflicted || [];
                     state.actionError = `Merge conflict: ${files.length} file${files.length !== 1 ? 's' : ''} need resolution`;
                     state.actionErrorCode = 'MERGE_CONFLICT';
+                } else if (action.payload?.code === 'UNCOMMITTED_CHANGES' || action.meta?.rejectedWithValue && action.payload?.code === 'UNCOMMITTED_CHANGES') {
+                    state.actionError = action.payload?.message || 'You have uncommitted changes that would be overwritten. Please commit or stash them first.';
+                    state.actionErrorCode = 'UNCOMMITTED_CHANGES';
                 } else {
                     state.actionError = action.error?.message || action.payload?.message || 'Pull failed';
                     state.actionErrorCode = action.error?.code || null;
