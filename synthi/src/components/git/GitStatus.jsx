@@ -263,6 +263,8 @@ export function GitStatus({ slug }) {
           `Merge conflict — ${count} file${count !== 1 ? 's' : ''} need resolution`,
           { duration: 6000 }
         );
+      } else if (result.payload?.code === 'UNCOMMITTED_CHANGES') {
+        toast.error('Uncommitted changes would be overwritten. Commit or stash first.', { duration: 5000 });
       } else {
         toast.error(result.payload?.message || result.error?.message || 'Pull failed');
       }
