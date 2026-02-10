@@ -942,12 +942,12 @@ const EditorPanel = ({
 
             // Disable Monaco's built-in validation for languages where we have an LSP,
             // to avoid double diagnostics and double work on every keystroke.
+            // NOTE: JavaScript is NOT disabled here — JS uses Biome for linting
+            // but relies on Monaco's built-in JS IntelliSense for completions,
+            // hover, and go-to-definition (since Biome doesn't provide those).
             try {
-                if (['typescript', 'javascript'].includes(backendLang)) {
+                if (backendLang === 'typescript') {
                     monacoInstance.languages.typescript?.typescriptDefaults?.setDiagnosticsOptions({
-                        noSemanticValidation: true, noSyntaxValidation: true, noSuggestionDiagnostics: true
-                    });
-                    monacoInstance.languages.typescript?.javascriptDefaults?.setDiagnosticsOptions({
                         noSemanticValidation: true, noSyntaxValidation: true, noSuggestionDiagnostics: true
                     });
                 } else if (backendLang === 'css') {
@@ -972,7 +972,7 @@ const EditorPanel = ({
                     cpp: ['.', ':', '>', '(', '<'],
                     python: ['.', '('],
                     typescript: ['.', '(', "'", '"', '/', '<'],
-                    javascript: ['.', '(', "'", '"', '/', '<'],
+                    javascript: ['.'],
                     java: ['.', '(', '@'],
                     go: ['.', '('],
                     csharp: ['.', '('],
@@ -1775,7 +1775,7 @@ const EditorPanel = ({
             // Check both backendLang and clientKey so languages that share
             // a server (e.g. JS shares with TS via clientKey='typescript')
             // still get primed even if only one variant is listed.
-            const SERVERS_NEEDING_PRIMING = new Set(['typescript', 'javascript', 'python']);
+            const SERVERS_NEEDING_PRIMING = new Set(['typescript', 'python']);
 
             if (SERVERS_NEEDING_PRIMING.has(backendLang) || SERVERS_NEEDING_PRIMING.has(clientKey)) {
                 setTimeout(() => {
