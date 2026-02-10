@@ -650,22 +650,39 @@ class GitService {
                 this._archiveGitAsync(slug);
                 if (e instanceof MergeConflictError) throw e;
                 
-                // Check if pull failed due to merge conflict
                 const msg = (e.message || '').toLowerCase();
-                if (msg.includes('conflict') || msg.includes('merge failed') || msg.includes('automatic merge failed')
-                    || msg.includes('would be overwritten') || msg.includes('please commit your changes or stash')) {
-                    // Always attempt to enumerate the conflicted files from git status
+
+                // ── Pre-condition failure: local uncommitted changes ──
+                // This is NOT a merge conflict — the pull was rejected before
+                // merging. Tell the user to commit/stash first.
+                if (msg.includes('would be overwritten') || msg.includes('please commit your changes or stash')) {
+                    throw new GitError(
+                        'You have uncommitted changes that would be overwritten by merge. Please commit or stash them first.',
+                        'UNCOMMITTED_CHANGES'
+                    );
+                }
+
+                // ── Real merge conflict ──
+                // The pull started a merge that ended with conflicts.
+                // Use git.status() as the authoritative source for the file list
+                // because stderr output format varies across Git versions.
+                if (msg.includes('conflict') || msg.includes('merge failed') || msg.includes('automatic merge failed')) {
                     let conflictedFiles = [];
                     try {
-                        const status = await this.getStatus(slug);
-                        conflictedFiles = status?.conflictedFiles ?? [];
+                        const status = await git.status();
+                        conflictedFiles = (status.conflicted || []).slice();
                     } catch (statusErr) {
-                        if (statusErr instanceof MergeConflictError) throw statusErr;
-                        // If status itself fails, parse file paths from the original error
-                        const fileMatch = e.message.match(/error: Your local changes to the following files would be overwritten[\s\S]*?:\n([\s\S]*?)(?:Please|Aborting)/i);
-                        if (fileMatch) {
-                            conflictedFiles = fileMatch[1].split('\n').map(l => l.trim()).filter(Boolean);
-                        }
+                        console.warn('[GitService] git status failed after merge conflict:', statusErr.message);
+                        // Last resort: try raw porcelain output
+                        try {
+                            const raw = await git.raw(['status', '--porcelain']);
+                            conflictedFiles = (raw || '').split('\n')
+                                .filter(line => line.startsWith('UU ') || line.startsWith('AA ') || line.startsWith('DD ')
+                                             || line.startsWith('AU ') || line.startsWith('UA ')
+                                             || line.startsWith('DU ') || line.startsWith('UD '))
+                                .map(line => line.slice(3).trim())
+                                .filter(Boolean);
+                        } catch (_) { /* give up — throw with empty list */ }
                     }
                     throw new MergeConflictError(conflictedFiles);
                 }
