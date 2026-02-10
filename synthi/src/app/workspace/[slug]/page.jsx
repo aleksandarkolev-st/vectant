@@ -54,6 +54,9 @@ import { ProblemsPanel } from '@/components/analysis';
 import { DockablePanel, DockablePanelProvider, PANEL_STATE, DOCK_POSITION } from '@/components/docking';
 import { AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useExtensions } from '@/hooks/useExtensions';
+import ExtensionSidebar from '@/components/extensions/ExtensionSidebar';
+import ExtensionViewContainer from '@/components/extensions/ExtensionViewContainer';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -74,6 +77,27 @@ export default function EditorPage({ params }) {
     const { analyzeCode, analyzeProactive, analyzeContainer, analyzeUnified, lastResult, isAnalyzing: isAnalyzingGateway, connectionMeta } = useAnalyzerGateway();
     const { client, compile, mediaStream, cancelMobileJob, isCompiling, status: compilerStatus } = useCompiler();
     useHMR();
+
+    // ─── Extension system ──────────────────────────────────
+    const {
+        ready: extensionsReady,
+        hostStatus: extensionHostStatus,
+        extensions: installedExtensions,
+        errors: extensionErrors,
+        install: installExtension,
+        enable: enableExtension,
+        disable: disableExtension,
+        uninstall: uninstallExtension,
+        restart: restartExtension,
+        executeCommand: executeExtensionCommand,
+        dismissError: dismissExtensionError,
+        contributedContainers,
+        contributedViews,
+        webviewPanels: extensionWebviewPanels,
+        treeDataMap: extensionTreeDataMap,
+        webviewManager: extensionWebviewManager,
+        statusBarItems: extensionStatusBarItems,
+    } = useExtensions({ editor, workspaceId: slug });
     
     // Code Intelligence - auto-index workspace for AI context retrieval
     const { 
@@ -1692,13 +1716,38 @@ export default function EditorPage({ params }) {
             <div className="flex h-full min-w-0">
                 <ActivityBar
                     active={sidebarView}
-                    onSelect={(id) => setSidebarView(id === 'search' ? 'search' : 'explorer')}
+                    onSelect={(id) => setSidebarView(id === sidebarView ? 'explorer' : id)}
+                    extensionContainers={contributedContainers}
                 />
                 <div className="flex-1 min-w-0">
                     <ResizablePanelGroup direction="vertical">
                         <ResizablePanel defaultSize={65} minSize={20}>
                             {sidebarView === 'search' ? (
                                 <SearchView slug={slug} onToggleOrientation={toggleTreeOrientation} />
+                            ) : sidebarView === 'extensions' ? (
+                                <ExtensionSidebar
+                                    extensions={installedExtensions}
+                                    errors={extensionErrors}
+                                    ready={extensionsReady}
+                                    hostStatus={extensionHostStatus}
+                                    onInstall={installExtension}
+                                    onEnable={enableExtension}
+                                    onDisable={disableExtension}
+                                    onUninstall={uninstallExtension}
+                                    onRestart={restartExtension}
+                                    onDismissError={dismissExtensionError}
+                                    onExecuteCommand={executeExtensionCommand}
+                                />
+                            ) : sidebarView.startsWith('ext:') ? (
+                                <ExtensionViewContainer
+                                    containerId={sidebarView.replace('ext:', '')}
+                                    container={contributedContainers.find(c => c.id === sidebarView.replace('ext:', ''))}
+                                    views={contributedViews[sidebarView.replace('ext:', '')] || []}
+                                    treeDataMap={extensionTreeDataMap}
+                                    webviewPanels={extensionWebviewPanels}
+                                    webviewManager={extensionWebviewManager}
+                                    extensions={installedExtensions}
+                                />
                             ) : (
                                 <FileTreeView onToggleOrientation={toggleTreeOrientation} />
                             )}
@@ -1956,6 +2005,7 @@ export default function EditorPage({ params }) {
             diagnosticSummary={diagnosticSummary}
             isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
             onProblemsClick={() => setShowProblemsPanel(prev => !prev)}
+            extensionStatusBarItems={extensionStatusBarItems}
         />
 
         {/* Error Overlay */}
