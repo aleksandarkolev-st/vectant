@@ -1772,9 +1772,12 @@ const EditorPanel = ({
             // Only servers that genuinely need priming (TS/JS, Python)
             // get a limited didOpen blast.  All others rely on disk
             // discovery via rootUri / workspaceFolders.
+            // Check both backendLang and clientKey so languages that share
+            // a server (e.g. JS shares with TS via clientKey='typescript')
+            // still get primed even if only one variant is listed.
             const SERVERS_NEEDING_PRIMING = new Set(['typescript', 'javascript', 'python']);
 
-            if (SERVERS_NEEDING_PRIMING.has(backendLang)) {
+            if (SERVERS_NEEDING_PRIMING.has(backendLang) || SERVERS_NEEDING_PRIMING.has(clientKey)) {
                 setTimeout(() => {
                     if (!languageClient.isRunning()) return;
 
