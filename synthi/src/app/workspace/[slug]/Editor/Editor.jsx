@@ -293,9 +293,9 @@ const EditorPanel = ({
     const languageClientsRef = useRef(new Map());
     const lspInitPendingRef = useRef(new Set()); // Guard against concurrent init for same language
     // Track the previously-opened file URI per language client so we can send didClose on file switch
-    const lspOpenedUrisRef = useRef(new Map()); // Map<backendLang, { uri, languageId }>
+    const lspOpenedUrisRef = useRef(new Map()); // Map<clientKey, { uri, languageId }>
     // Track textDocumentSync capability reported by each language server
-    const lspSyncCapRef = useRef(new Map()); // Map<backendLang, number> (1=Full, 2=Incremental)
+    const lspSyncCapRef = useRef(new Map()); // Map<clientKey, number> (1=Full, 2=Incremental)
 
     // Initialize Monaco Services ONCE — uses a module-level promise so that
     // concurrent callers (StrictMode double-fire, fast remounts) all wait for
