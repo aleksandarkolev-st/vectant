@@ -15714,20 +15714,74 @@
       }
     }
   };
+  var HttpAgent = class {
+    constructor(opts) {
+      this.options = opts || {};
+      this.requests = {};
+      this.sockets = {};
+      this.freeSockets = {};
+      this.maxSockets = 256;
+    }
+    destroy() {
+    }
+    getName() {
+      return "localhost::";
+    }
+  };
+  var HttpIncomingMessage = class extends import_stream_browserify.default.Readable {
+    constructor() {
+      super();
+      this.headers = {};
+      this.statusCode = 0;
+      this.statusMessage = "";
+      this.method = "";
+      this.url = "";
+      this.httpVersion = "1.1";
+    }
+    _read() {
+      this.push(null);
+    }
+    setTimeout() {
+      return this;
+    }
+  };
+  var HttpServerResponse = class extends import_stream_browserify.default.Writable {
+    constructor() {
+      super();
+      this.statusCode = 200;
+      this.headersSent = false;
+    }
+    _write(chunk, enc, cb) {
+      cb();
+    }
+    setHeader() {
+      return this;
+    }
+    getHeader() {
+      return void 0;
+    }
+    removeHeader() {
+    }
+    writeHead() {
+      return this;
+    }
+    end() {
+      super.end();
+    }
+  };
   function makeHttpModule() {
     return {
       request(opts, cb) {
-        const req = new import_events.EventEmitter();
-        req.write = () => {
-        };
-        req.end = () => {
-          setTimeout(() => req.emit("error", new Error("http not available in web worker")), 0);
-        };
-        req.setTimeout = () => {
-        };
-        req.destroy = () => {
-        };
+        const req = new import_stream_browserify.default.Writable({ write(c, e, cb2) {
+          cb2();
+        } });
+        Object.assign(req, import_events.EventEmitter.prototype);
+        import_events.EventEmitter.call(req);
         req.abort = () => {
+        };
+        req.setTimeout = () => req;
+        req.end = function(data) {
+          setTimeout(() => req.emit("error", new Error("http not available in web worker")), 0);
         };
         return req;
       },
@@ -15735,12 +15789,14 @@
         return this.request(opts, cb);
       },
       createServer() {
-        return new import_events.EventEmitter();
+        return new NetServer();
       },
-      Agent: function HttpAgent(opts) {
-      },
-      globalAgent: {},
-      STATUS_CODES: { 200: "OK", 201: "Created", 204: "No Content", 301: "Moved Permanently", 302: "Found", 304: "Not Modified", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 500: "Internal Server Error" }
+      Agent: HttpAgent,
+      globalAgent: new HttpAgent(),
+      IncomingMessage: HttpIncomingMessage,
+      ServerResponse: HttpServerResponse,
+      STATUS_CODES: { 200: "OK", 201: "Created", 204: "No Content", 301: "Moved Permanently", 302: "Found", 304: "Not Modified", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 500: "Internal Server Error" },
+      METHODS: ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
     };
   }
   var httpShim = makeHttpModule();
@@ -15839,41 +15895,312 @@
       return proc;
     }
   };
+  var NetSocket = class extends import_stream_browserify.default.Duplex {
+    constructor(opts) {
+      super(opts);
+      this.connecting = false;
+      this.destroyed = false;
+      this.remoteAddress = "";
+      this.remotePort = 0;
+      this.localAddress = "127.0.0.1";
+      this.localPort = 0;
+      this.bytesRead = 0;
+      this.bytesWritten = 0;
+    }
+    _read() {
+      this.push(null);
+    }
+    _write(chunk, enc, cb) {
+      cb();
+    }
+    connect() {
+      return this;
+    }
+    setTimeout() {
+      return this;
+    }
+    setNoDelay() {
+      return this;
+    }
+    setKeepAlive() {
+      return this;
+    }
+    address() {
+      return {};
+    }
+    ref() {
+      return this;
+    }
+    unref() {
+      return this;
+    }
+  };
+  var NetServer = class extends import_events.EventEmitter {
+    constructor() {
+      super();
+    }
+    listen() {
+      return this;
+    }
+    close(cb) {
+      if (cb) cb();
+      return this;
+    }
+    address() {
+      return null;
+    }
+    ref() {
+      return this;
+    }
+    unref() {
+      return this;
+    }
+    getConnections(cb) {
+      if (cb) cb(null, 0);
+    }
+  };
   var netShim = {
-    Socket: function NetSocket() {
-      import_stream_browserify.default.Duplex.call(this);
-      this.connect = () => this;
-      this.setTimeout = () => {
-      };
-      this.setNoDelay = () => {
-      };
-      this.setKeepAlive = () => {
-      };
-      this.address = () => ({});
-      this.destroy = () => {
-      };
-      this.ref = () => {
-      };
-      this.unref = () => {
-      };
-    },
-    Server: function NetServer() {
-      import_events.EventEmitter.call(this);
-      this.listen = () => this;
-      this.close = () => {
-      };
-      this.address = () => null;
-      this.ref = () => {
-      };
-      this.unref = () => {
-      };
-    },
-    createServer: () => new netShim.Server(),
-    createConnection: () => new netShim.Socket(),
-    connect: () => new netShim.Socket(),
+    Socket: NetSocket,
+    Server: NetServer,
+    createServer: () => new NetServer(),
+    createConnection: (opts) => new NetSocket(opts),
+    connect: (opts) => new NetSocket(opts),
     isIP: () => 0,
     isIPv4: () => false,
     isIPv6: () => false
+  };
+  var TLSSocket = class extends NetSocket {
+    constructor(socket, opts) {
+      super(opts);
+      this.encrypted = true;
+      this.authorized = true;
+      this.authorizationError = null;
+      this.alpnProtocol = null;
+    }
+    getPeerCertificate() {
+      return {};
+    }
+    getCipher() {
+      return { name: "", version: "" };
+    }
+    getProtocol() {
+      return "TLSv1.3";
+    }
+    renegotiate() {
+    }
+  };
+  var TLSServer = class extends NetServer {
+    constructor() {
+      super();
+    }
+    addContext() {
+    }
+  };
+  var tlsShim = {
+    TLSSocket,
+    Server: TLSServer,
+    connect: (opts) => new TLSSocket(null, opts),
+    createServer: () => new TLSServer(),
+    createSecureContext: () => ({}),
+    DEFAULT_MIN_VERSION: "TLSv1.2",
+    DEFAULT_MAX_VERSION: "TLSv1.3"
+  };
+  var dnsShim = {
+    lookup: (hostname, opts, cb) => {
+      cb = cb || opts;
+      if (typeof cb === "function") setTimeout(() => cb(null, "127.0.0.1", 4), 0);
+    },
+    resolve: (hostname, rrtype, cb) => {
+      cb = cb || rrtype;
+      if (typeof cb === "function") setTimeout(() => cb(null, ["127.0.0.1"]), 0);
+    },
+    resolve4: (hostname, cb) => {
+      if (typeof cb === "function") setTimeout(() => cb(null, ["127.0.0.1"]), 0);
+    },
+    resolve6: (hostname, cb) => {
+      if (typeof cb === "function") setTimeout(() => cb(null, ["::1"]), 0);
+    },
+    promises: {
+      lookup: () => Promise.resolve({ address: "127.0.0.1", family: 4 }),
+      resolve: () => Promise.resolve(["127.0.0.1"]),
+      resolve4: () => Promise.resolve(["127.0.0.1"]),
+      resolve6: () => Promise.resolve(["::1"])
+    },
+    Resolver: class Resolver {
+      resolve(hostname, cb) {
+        if (typeof cb === "function") setTimeout(() => cb(null, ["127.0.0.1"]), 0);
+      }
+      resolve4(hostname, cb) {
+        if (typeof cb === "function") setTimeout(() => cb(null, ["127.0.0.1"]), 0);
+      }
+      setServers() {
+      }
+      getServers() {
+        return [];
+      }
+      cancel() {
+      }
+    }
+  };
+  var DgramSocket = class extends import_events.EventEmitter {
+    constructor() {
+      super();
+    }
+    bind() {
+      return this;
+    }
+    close(cb) {
+      if (cb) cb();
+    }
+    send(msg, offset, length, port, addr, cb) {
+      if (typeof cb === "function") cb(new Error("dgram not available in web worker"));
+    }
+    address() {
+      return { address: "0.0.0.0", family: "IPv4", port: 0 };
+    }
+    setBroadcast() {
+    }
+    setMulticastTTL() {
+    }
+    addMembership() {
+    }
+    dropMembership() {
+    }
+    ref() {
+      return this;
+    }
+    unref() {
+      return this;
+    }
+  };
+  var dgramShim = {
+    createSocket: () => new DgramSocket(),
+    Socket: DgramSocket
+  };
+  var Http2Session = class extends import_events.EventEmitter {
+    constructor() {
+      super();
+      this.destroyed = false;
+      this.closed = false;
+    }
+    close(cb) {
+      this.closed = true;
+      if (cb) cb();
+    }
+    destroy() {
+      this.destroyed = true;
+    }
+    ping(cb) {
+      if (typeof cb === "function") cb(null, 0, import_buffer.Buffer.alloc(8));
+    }
+    settings() {
+    }
+    ref() {
+      return this;
+    }
+    unref() {
+      return this;
+    }
+  };
+  var Http2Stream = class extends import_stream_browserify.default.Duplex {
+    constructor() {
+      super();
+    }
+    _read() {
+      this.push(null);
+    }
+    _write(chunk, enc, cb) {
+      cb();
+    }
+    close() {
+    }
+  };
+  var http2Shim = {
+    connect: () => new Http2Session(),
+    createServer: () => new import_events.EventEmitter(),
+    createSecureServer: () => new import_events.EventEmitter(),
+    constants: { NGHTTP2_SESSION_SERVER: 0, NGHTTP2_SESSION_CLIENT: 1 },
+    Http2Session,
+    Http2Stream,
+    getDefaultSettings: () => ({})
+  };
+  var ReadlineInterface = class extends import_events.EventEmitter {
+    constructor() {
+      super();
+    }
+    close() {
+      this.emit("close");
+    }
+    pause() {
+      return this;
+    }
+    resume() {
+      return this;
+    }
+    write() {
+    }
+    question(q, cb) {
+      if (typeof cb === "function") cb("");
+    }
+    prompt() {
+    }
+    setPrompt() {
+    }
+  };
+  var readlineShim = {
+    createInterface: () => new ReadlineInterface(),
+    Interface: ReadlineInterface
+  };
+  var vmShim = {
+    createContext: (sandbox) => sandbox || {},
+    runInContext: (code, ctx) => {
+      try {
+        return new Function("return " + code)();
+      } catch (e) {
+        return void 0;
+      }
+    },
+    runInNewContext: (code) => {
+      try {
+        return new Function("return " + code)();
+      } catch (e) {
+        return void 0;
+      }
+    },
+    runInThisContext: (code) => {
+      try {
+        return new Function("return " + code)();
+      } catch (e) {
+        return void 0;
+      }
+    },
+    Script: class Script {
+      constructor(code) {
+        this.code = code;
+      }
+      runInContext() {
+        try {
+          return new Function("return " + this.code)();
+        } catch (e) {
+          return void 0;
+        }
+      }
+      runInNewContext() {
+        return this.runInContext();
+      }
+      runInThisContext() {
+        return this.runInContext();
+      }
+    }
+  };
+  var clusterShim = {
+    isMaster: true,
+    isPrimary: true,
+    isWorker: false,
+    workers: {},
+    fork: () => {
+      throw new Error("cluster not available in web worker");
+    }
   };
   var workerThreadsShim = {
     isMainThread: true,
@@ -15920,6 +16247,13 @@
     fs: fsShim,
     child_process: childProcessShim,
     net: netShim,
+    tls: tlsShim,
+    dns: dnsShim,
+    dgram: dgramShim,
+    http2: http2Shim,
+    readline: readlineShim,
+    vm: vmShim,
+    cluster: clusterShim,
     worker_threads: workerThreadsShim,
     perf_hooks: perfHooksShim,
     module: {
@@ -15951,7 +16285,14 @@
     "node:constants": constants_exports,
     "node:worker_threads": workerThreadsShim,
     "node:perf_hooks": perfHooksShim,
-    "node:module": { createRequire: () => self.__nodeRequire || (() => ({})) }
+    "node:module": { createRequire: () => self.__nodeRequire || (() => ({})) },
+    "node:tls": tlsShim,
+    "node:dns": dnsShim,
+    "node:dgram": dgramShim,
+    "node:http2": http2Shim,
+    "node:readline": readlineShim,
+    "node:vm": vmShim,
+    "node:cluster": clusterShim
   };
   self.__nodePolyfills = MODULE_REGISTRY;
   self.__nodeBuffer = import_buffer.Buffer;
