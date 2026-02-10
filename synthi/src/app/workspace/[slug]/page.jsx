@@ -327,6 +327,14 @@ export default function EditorPage({ params }) {
             onFileTreeChanged: () => {
                 dispatch(fetchFilesThunk(slug));
             },
+            onFileReverted: (filePaths) => {
+                // Dispatch a DOM custom event so the Editor can react without
+                // prop-drilling. The Editor listens for 'synthi:file-reverted'
+                // and resets its Monaco model + Yjs binding for the affected files.
+                window.dispatchEvent(new CustomEvent('synthi:file-reverted', {
+                    detail: { slug, filePaths },
+                }));
+            },
         });
         return teardown;
     }, [slug, dispatch]);
