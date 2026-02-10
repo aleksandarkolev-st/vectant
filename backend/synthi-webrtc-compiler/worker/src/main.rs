@@ -1635,11 +1635,24 @@ async fn wire_peer_channels(
                         "cpp" | "c" => {
                             // Create compile_flags.txt to enforce C++17
                             let flags_path = workspace_path.join("compile_flags.txt");
-                            if let Ok(mut file) = std::fs::File::create(flags_path) {
+                            if let Ok(mut file) = std::fs::File::create(&flags_path) {
                                 use std::io::Write;
                                 let _ = writeln!(file, "-std=c++17");
                                 // Force C++ mode to ensure headers are treated correctly
                                 let _ = writeln!(file, "-xc++");
+                            }
+
+                            // Create .clang-tidy to disable the include-cleaner check.
+                            // clang-tidy's misc-include-cleaner aggressively flags newly
+                            // added includes as "unused" before the TU is fully re-indexed,
+                            // which is confusing in an interactive editor.
+                            let clang_tidy_path = workspace_path.join(".clang-tidy");
+                            if !clang_tidy_path.exists() {
+                                if let Ok(mut f) = std::fs::File::create(&clang_tidy_path) {
+                                    use std::io::Write;
+                                    let _ = f.write_all(b"Checks: '-misc-include-cleaner'\n");
+                                    println!("[LSP-CONFIG] Created .clang-tidy (disabled include-cleaner)");
+                                }
                             }
 
                             let mut c = system_command("clangd");
@@ -2386,15 +2399,27 @@ async fn wire_peer_channels(
                                             Ok(_) => {
                                                 if let Ok(mut json_val) = serde_json::from_slice::<serde_json::Value>(&buf) {
                                                     // Log initialize response capabilities (for debugging)
-                                                    // NOTE: We no longer force textDocumentSync to Full(1).
-                                                    // The worker's didChange handler now supports both full
-                                                    // and incremental sync modes, applying range-based edits
-                                                    // to the file on disk when ranges are present.
-                                                    if let Some(result) = json_val.get("result") {
-                                                        if let Some(caps) = result.get("capabilities") {
+                                                    // Force textDocumentSync to Full(1) so the client always
+                                                    // sends the entire file content on every change.  This
+                                                    // avoids the incremental-sync disk-write codepath which
+                                                    // has UTF-16-vs-byte-offset bugs that cause the worker's
+                                                    // on-disk copy to diverge from the LSP server's in-memory
+                                                    // state, leading to stale diagnostics (e.g. "header not
+                                                    // used" right after adding an #include).
+                                                    if let Some(result) = json_val.get_mut("result") {
+                                                        if let Some(caps) = result.get_mut("capabilities") {
                                                             if let Some(sync) = caps.get("textDocumentSync") {
-                                                                println!("[LSP] Server textDocumentSync capability: {}", sync);
+                                                                println!("[LSP] Server textDocumentSync capability (original): {}", sync);
                                                             }
+                                                            // Override to Full(1)
+                                                            caps.as_object_mut().map(|m| {
+                                                                m.insert("textDocumentSync".to_string(), serde_json::json!({
+                                                                    "openClose": true,
+                                                                    "change": 1,
+                                                                    "save": { "includeText": true }
+                                                                }));
+                                                            });
+                                                            println!("[LSP] Forced textDocumentSync to Full(1)");
                                                         }
                                                     }
 
