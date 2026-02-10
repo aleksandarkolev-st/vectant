@@ -18,6 +18,7 @@ export default function StatusBar({
   diagnosticSummary = { errors: 0, warnings: 0, total: 0 },
   isAnalyzing = false,
   onProblemsClick,
+  extensionStatusBarItems = [],
 }) {
   const currentBranch = useSelector(state => state.git?.currentBranch);
   const position = useSelector(selectCursorPosition);
@@ -123,6 +124,20 @@ export default function StatusBar({
       
       {/* Right Section - Better grouped */}
       <div className="flex items-center gap-3 mr-1">
+        {/* Extension-contributed status bar items */}
+        {extensionStatusBarItems.filter(i => i.text).map((item) => (
+          <div
+            key={item.id}
+            className="flex items-center gap-1 px-2 py-0.5 rounded-md cursor-default hover:bg-[#101118] transition-colors"
+            title={item.tooltip || item.text}
+          >
+            <span className="text-[#9ba2b8] font-medium text-[11px]">{item.text}</span>
+          </div>
+        ))}
+        {extensionStatusBarItems.length > 0 && (
+          <div className="w-px h-4 bg-[#1a1b24]"></div>
+        )}
+
         {/* Line/Column - Clearer */}
         <div className="flex items-center gap-1 px-2 py-0.5 rounded-md cursor-pointer hover:bg-[#101118] transition-colors">
           <span className="text-[#9ba2b8] font-medium">Ln {position.lineNumber}</span>
