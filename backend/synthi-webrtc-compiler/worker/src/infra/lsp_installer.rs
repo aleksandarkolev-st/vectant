@@ -11,6 +11,7 @@ use tokio::process::Command;
 use std::process::Stdio;
 
 /// Check whether `program` is available on PATH (or reachable via WSL on Windows).
+/// Also checks well-known SDK install locations for certain programs (e.g. Dart).
 async fn is_on_path(program: &str) -> bool {
     let res = if cfg!(target_os = "windows") {
         Command::new("wsl")
@@ -27,7 +28,26 @@ async fn is_on_path(program: &str) -> bool {
             .status()
             .await
     };
-    matches!(res, Ok(s) if s.success())
+    if matches!(res, Ok(s) if s.success()) {
+        return true;
+    }
+
+    // Fallback: check well-known SDK install locations for binaries that
+    // may not be on the default PATH (e.g. Dart SDK installs to /opt or /usr/lib).
+    let extra_paths: &[&str] = match program {
+        "dart" => &[
+            "/opt/dart-sdk/bin/dart",
+            "/usr/lib/dart/bin/dart",
+            "/usr/local/bin/dart",
+        ],
+        _ => &[],
+    };
+    for path in extra_paths {
+        if std::path::Path::new(path).exists() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Run a shell command (or via WSL on Windows).  Returns Ok(()) on success.
