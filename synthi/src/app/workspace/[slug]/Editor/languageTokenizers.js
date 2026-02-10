@@ -4,13 +4,9 @@
  * @codingame/monaco-vscode-api overrides Monaco's built-in language
  * contribution loading, so the Monarch tokenizers that ship with
  * `monaco-editor` are NOT automatically registered.  This module
- * explicitly loads and registers them for all supported non-builtin
- * languages, providing full syntax highlighting without requiring
- * TextMate grammars or bundled vscode extensions.
- *
- * Built-in languages that Monaco always tokenizes (JS, TS, HTML, CSS,
- * JSON, etc.) are unaffected — their tokenizers are loaded via the
- * worker factory in Editor.jsx.
+ * explicitly loads and registers them for ALL languages (including
+ * JavaScript and TypeScript), providing full syntax highlighting
+ * without requiring TextMate grammars or bundled vscode extensions.
  */
 
 import * as monaco from 'monaco-editor';
@@ -22,6 +18,8 @@ import * as monaco from 'monaco-editor';
  * NOTE: `c` reuses the C++ tokenizer (same grammar covers both).
  */
 const MONARCH_LOADERS = [
+    { id: 'javascript', load: () => import('monaco-editor/esm/vs/basic-languages/javascript/javascript.js') },
+    { id: 'typescript', load: () => import('monaco-editor/esm/vs/basic-languages/typescript/typescript.js') },
     { id: 'rust',    load: () => import('monaco-editor/esm/vs/basic-languages/rust/rust.js') },
     { id: 'java',    load: () => import('monaco-editor/esm/vs/basic-languages/java/java.js') },
     { id: 'python',  load: () => import('monaco-editor/esm/vs/basic-languages/python/python.js') },
