@@ -3285,7 +3285,7 @@ const EditorPanel = ({
                     <>
                         <ResizableHandle className="bg-[#1a1a1e] h-px hover:bg-[#327464]" />
                         <ResizablePanel defaultSize={30} minSize={15}>
-                            <TerminalManagerDyn visible={true} onCloseAll={onToggleTerminal} />
+                            <TerminalManagerDyn visible={true} onCloseAll={onToggleTerminal} workspaceSlug={slug} />
                         </ResizablePanel>
                     </>
                 )}
