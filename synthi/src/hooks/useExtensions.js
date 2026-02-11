@@ -47,9 +47,48 @@ import {
   getAllExtensions as dbGetAll,
   removeExtension as dbRemove,
   setExtensionEnabled as dbSetEnabled,
+  resolveNLS,
 } from '@/extensions/loader/ExtensionInstaller';
 import { registerExtensionGrammars } from '@/extensions/loader/GrammarRegistrar';
 import { initLspRegistry, registerLspForExtension, unregisterLspForExtension } from '@/services/lspRegistry';
+import { getCompilerClient } from '@/services/compilerClient';
+
+/**
+ * Best-effort NLS stripping for cached manifests that were persisted
+ * before NLS resolution was implemented. Walks the object tree and replaces
+ * any remaining %some.key.name% strings with a human-readable form derived
+ * from the last segment of the key ("name" → "Name").
+ */
+function stripUnresolvedNLS(obj) {
+  if (!obj || typeof obj !== 'object') return;
+  for (const key of Object.keys(obj)) {
+    const val = obj[key];
+    if (typeof val === 'string') {
+      const m = val.match(/^%([\w.]+)%$/);
+      if (m) {
+        // Take the last dot-segment and title-case it
+        const segments = m[1].split('.');
+        const last = segments[segments.length - 1] || m[1];
+        obj[key] = last.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase()).trim();
+      }
+    } else if (Array.isArray(val)) {
+      for (let i = 0; i < val.length; i++) {
+        if (typeof val[i] === 'string') {
+          const am = val[i].match(/^%([\w.]+)%$/);
+          if (am) {
+            const segs = am[1].split('.');
+            const last = segs[segs.length - 1] || am[1];
+            val[i] = last.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase()).trim();
+          }
+        } else if (typeof val[i] === 'object' && val[i]) {
+          stripUnresolvedNLS(val[i]);
+        }
+      }
+    } else {
+      stripUnresolvedNLS(val);
+    }
+  }
+}
 
 /**
  * Worker URL — served from public folder.
@@ -83,9 +122,22 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
   // Track whether we've restored persisted extensions
   const restoredRef = useRef(false);
 
+  // Track remote extension host connection
+  const remoteHostConnectedRef = useRef(false);
+  // Mutex: prevent overlapping connectRemoteHost attempts
+  const connectingRemoteRef = useRef(false);
+
   // ─── Initialize the extension host worker ────────────────────
   const initSystem = useCallback(async () => {
-    if (systemRef.current || initPromiseRef.current || disposedRef.current) return;
+    if (systemRef.current) return;
+    // If a previous init is still in flight (e.g. React StrictMode re-mount),
+    // wait for it instead of returning early. This prevents the .then() chain
+    // from firing before the system is ready.
+    if (initPromiseRef.current) {
+      try { await initPromiseRef.current; } catch (_) {}
+      return;
+    }
+    if (disposedRef.current) return;
 
     dispatch(setHostStatus('initializing'));
 
@@ -115,6 +167,11 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
         system.bridge.workerProxy?.on('registerCommand', (data) => {
           if (data?.commandId) dispatch(addCommand(data.commandId));
         });
+
+        // Remote host → Redux state sync (for _rehydrateNodeOnlyExtensions)
+        system.bridge.onExtensionStateChanged = (id, state, reason) => {
+          dispatch(setExtensionState({ id, extensionState: state, reason }));
+        };
 
         // Show message events → push as info/warning/error
         const origShowMessage = system.bridge.onShowMessage;
@@ -149,6 +206,11 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
             case 'disposeWebview':
               dispatch(removeWebviewPanel(payload.viewId));
               break;
+            case 'updateWebview':
+              // HTML content is set directly on the WebviewManager iframe (DOM).
+              // No Redux dispatch needed — the WebviewPanelEmbed component
+              // mounts the wrapper element and the iframe updates via srcdoc.
+              break;
             case 'setStatusBar':
               dispatch(setStatusBarItem({
                 extensionId: 'system',
@@ -175,6 +237,93 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
     }
   }, [workspaceId, editor, dispatch]);
 
+  // ─── Connect remote extension host via WebRTC ────────────────
+  const connectRemoteHost = useCallback(async () => {
+    console.log('[useExtensions] connectRemoteHost called', {
+      alreadyConnected: remoteHostConnectedRef.current,
+      connecting: connectingRemoteRef.current,
+      hasBridge: !!systemRef.current?.bridge,
+      hasSystem: !!systemRef.current,
+      proxyState: systemRef.current?.bridge?.remoteProxy?.state,
+      proxyReady: systemRef.current?.bridge?.remoteProxy?.ready,
+    });
+
+    // If we think we're connected but the proxy is actually dead, reset
+    if (remoteHostConnectedRef.current) {
+      const proxy = systemRef.current?.bridge?.remoteProxy;
+      if (!proxy || proxy.state === 'terminated' || !proxy.ready) {
+        console.warn('[useExtensions] connectRemoteHost: proxy is dead/missing, resetting for reconnect');
+        remoteHostConnectedRef.current = false;
+      } else {
+        console.log('[useExtensions] connectRemoteHost: already connected and proxy alive, skipping');
+        return;
+      }
+    }
+    // Mutex — only one connection attempt at a time
+    if (connectingRemoteRef.current) {
+      console.log('[useExtensions] connectRemoteHost: another attempt in progress, skipping');
+      return;
+    }
+    if (!systemRef.current?.bridge) {
+      console.warn('[useExtensions] connectRemoteHost: no bridge yet, skipping');
+      return;
+    }
+
+    connectingRemoteRef.current = true;
+    try {
+      const client = getCompilerClient();
+      console.log('[useExtensions] connectRemoteHost: compilerClient', {
+        hasClient: !!client,
+        hasPc: !!client?.pc,
+        connectionState: client?.pc?.connectionState,
+      });
+      if (!client?.pc || client.pc.connectionState !== 'connected') {
+        // WebRTC not ready yet — will be called again when it connects
+        console.warn('[useExtensions] connectRemoteHost: WebRTC not connected yet, will retry on event');
+        return;
+      }
+
+      console.log('[useExtensions] connectRemoteHost: creating ext-host DataChannel...');
+      const channel = client.createExtHostChannel();
+      console.log('[useExtensions] connectRemoteHost: DataChannel created, label:', channel.label, 'readyState:', channel.readyState);
+
+      // Wire a disconnect callback so we can reset the ref when the DC dies
+      systemRef.current.bridge.onRemoteDisconnected = () => {
+        console.warn('[useExtensions] Remote extension host disconnected (DC closed), resetting flag for reconnect');
+        remoteHostConnectedRef.current = false;
+        connectingRemoteRef.current = false;
+        // Release the ext-host lock in case it's still held
+        try { client.releaseExtHostLock(); } catch (_) {}
+        // The next synthi:webrtc-connected event will trigger a new connectRemoteHost()
+      };
+
+      // Acquire ext-host lock: prevents reconnect() from tearing down the
+      // SCTP transport while we're loading extensions over the DataChannel.
+      client.acquireExtHostLock();
+      try {
+        await systemRef.current.bridge.connectRemoteHost(channel);
+
+        // Verify the proxy is still alive after connectRemoteHost returns
+        // (the DC may have died during _rehydrateNodeOnlyExtensions)
+        const proxy = systemRef.current?.bridge?.remoteProxy;
+        if (proxy && proxy.ready && proxy.state !== 'terminated') {
+          remoteHostConnectedRef.current = true;
+          console.log('[useExtensions] ✓ Remote extension host connected successfully');
+        } else {
+          console.warn('[useExtensions] Remote host connected but proxy is no longer alive, will retry');
+          remoteHostConnectedRef.current = false;
+        }
+      } finally {
+        client.releaseExtHostLock();
+      }
+    } catch (err) {
+      console.warn('[useExtensions] Remote extension host connection failed:', err.message, err.stack);
+      // Non-fatal — extensions will fall back to local worker stubs
+    } finally {
+      connectingRemoteRef.current = false;
+    }
+  }, []);
+
   // ─── Restore persisted extensions from IndexedDB ─────────────
   const restorePersistedExtensions = useCallback(async () => {
     if (restoredRef.current || !systemRef.current) return;
@@ -191,6 +340,17 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
             continue;
           }
 
+          // Best-effort NLS cleanup for cached manifests that were saved
+          // before NLS resolution was implemented. Strips %key% wrappers and
+          // humanises the last segment (e.g. %view.github.pr.name% → "Name").
+          // Also detect if the manifest has unresolved placeholders and persist
+          // the cleaned version so this doesn't repeat.
+          const hadNlsPlaceholders = JSON.stringify(manifest).includes('"%');
+          stripUnresolvedNLS(manifest);
+          if (hadNlsPlaceholders) {
+            try { await dbSave({ id: ext.id, manifest, code: ext.code, nodeCode: ext.nodeCode || null, enabled: true }); } catch (_) {}
+          }
+
           // Register into Redux
           dispatch(registerExtRedux({ id: ext.id, manifest }));
           // Parse contribution points from manifest
@@ -205,28 +365,54 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
           try {
             registerLspForExtension(ext.id, manifest);
           } catch (_) {}
-          dispatch(setExtensionState({ id: ext.id, extensionState: 'loaded' }));
+          // Node-only extensions: skip the local worker entirely.
+          // They'll be loaded on the remote Node.js host when WebRTC connects.
+          // Also skip extensions whose browser bundle is too large for the web
+          // worker — they'll hang during eval. Route to remote host instead.
+          const isNodeOnly = manifest.main && !manifest.browser;
+          const isTooLargeForWorker = ext.code && ext.code.length > 500_000 && (ext.nodeCode || manifest.main);
 
-          // Detect stale Node-only bundles cached before the browser-entry fix.
-          // If the manifest has "main" but no "browser" field and the cached code
-          // isn't already our declarative stub, replace it to avoid crashes.
-          let codeToLoad = ext.code;
-          if (manifest.main && !manifest.browser && ext.code && !ext.code.includes('declarative mode')) {
-            console.warn(`[useExtensions] ${ext.id}: cached Node.js bundle detected, using declarative stub`);
-            const extName = (manifest.displayName || manifest.name || '').replace(/'/g, "\\'");
-            codeToLoad = `
-function activate(context) {
-  console.log('[${ext.id}] Activated (declarative mode: syntax highlighting, language config, views)');
-}
-function deactivate() {}
-module.exports = { activate, deactivate };
-`;
-            // Update the cache so this doesn't happen again
-            try { await dbSave({ id: ext.id, manifest, code: codeToLoad, enabled: true }); } catch (_) {}
+          if (isNodeOnly || isTooLargeForWorker) {
+            if (isTooLargeForWorker && !isNodeOnly) {
+              console.log(`[useExtensions] ${ext.id}: browser bundle too large (${ext.code.length} chars), routing to remote host`);
+            }
+            // Stash nodeCode so MainThreadBridge can send it to the remote host
+            if (ext.nodeCode) manifest._nodeCode = ext.nodeCode;
+
+            // Register in MainThreadBridge (stores info, but won't load into worker)
+            systemRef.current.bridge.extensions.set(ext.id, {
+              id: ext.id,
+              name: manifest.name,
+              displayName: manifest.displayName || manifest.name,
+              version: manifest.version,
+              isActive: false,
+              failed: false,
+              failedReason: null,
+              activationEvents: manifest.activationEvents || [],
+              violationCount: 0,
+              manifest,
+              code: ext.code,
+              remote: false,
+            });
+            dispatch(setExtensionState({ id: ext.id, extensionState: 'pending-remote' }));
+            console.log(`[useExtensions] ${ext.id}: Node-only, waiting for remote host`);
+
+            // If the remote host is already connected, rehydrate immediately
+            if (systemRef.current.bridge.remoteProxy?.isReady?.()) {
+              console.log(`[useExtensions] ${ext.id}: remote host already connected, rehydrating now`);
+              try {
+                await systemRef.current.bridge._rehydrateNodeOnlyExtensions();
+              } catch (rehydrateErr) {
+                console.warn(`[useExtensions] ${ext.id}: rehydration failed:`, rehydrateErr.message);
+              }
+            }
+            continue;
           }
 
-          // Load into worker
-          await systemRef.current.registerExtension(ext.id, manifest, codeToLoad);
+          dispatch(setExtensionState({ id: ext.id, extensionState: 'loaded' }));
+
+          // Load browser extension into worker
+          await systemRef.current.registerExtension(ext.id, manifest, ext.code);
           dispatch(setExtensionState({ id: ext.id, extensionState: 'activating' }));
 
           // Activate
@@ -248,16 +434,72 @@ module.exports = { activate, deactivate };
     } catch (err) {
       console.warn('[useExtensions] Failed to load persisted extensions:', err);
     }
+
+    // ── Post-restore rehydration ──────────────────────────────
+    // If the remote host connected before or during restore, the initial
+    // _rehydrateNodeOnlyExtensions call found zero extensions.  Now that
+    // restore is done and pending-remote extensions are in bridge.extensions,
+    // trigger rehydration again.
+    try {
+      if (systemRef.current?.bridge?.remoteProxy?.isReady?.()) {
+        console.log('[useExtensions] Remote host is already connected, triggering post-restore rehydration');
+        await systemRef.current.bridge._rehydrateNodeOnlyExtensions();
+      }
+    } catch (rehydrateErr) {
+      console.warn('[useExtensions] Post-restore rehydration failed:', rehydrateErr.message);
+    }
   }, [dispatch]);
 
   // ─── Auto-init on mount ──────────────────────────────────────
   useEffect(() => {
+    // Reset disposed flag on (re-)mount so React StrictMode's
+    // unmount→remount cycle doesn't permanently block init.
+    disposedRef.current = false;
+
     initSystem().then(() => {
+      console.log('[useExtensions] initSystem resolved');
+      // Fire both in parallel — restorePersistedExtensions will trigger
+      // rehydration itself if the remote host is already connected.
+      connectRemoteHost().catch(() => {});
       restorePersistedExtensions();
     });
 
+    // Listen for WebRTC connection to establish remote host
+    const handleWebRTCConnect = () => {
+      console.log('[useExtensions] synthi:webrtc-connected event received, connecting remote host');
+      // The ext-host DC is pre-created as part of the SDP offer (no DCEP delay needed)
+      connectRemoteHost().catch(() => {});
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('synthi:webrtc-connected', handleWebRTCConnect);
+    }
+
+    // ── Polling fallback: if both the event and the initSystem-based
+    //    attempt missed each other (classic race), retry periodically
+    //    until the remote host connects or we give up.
+    let retryCount = 0;
+    const MAX_RETRIES = 20; // ~20 × 3s = 60s
+    const retryInterval = setInterval(() => {
+      if (remoteHostConnectedRef.current || retryCount >= MAX_RETRIES) {
+        clearInterval(retryInterval);
+        if (!remoteHostConnectedRef.current && retryCount >= MAX_RETRIES) {
+          console.warn('[useExtensions] Gave up trying to connect remote extension host after', MAX_RETRIES, 'retries');
+        }
+        return;
+      }
+      retryCount++;
+      console.log(`[useExtensions] Polling retry #${retryCount} for remote extension host...`);
+      connectRemoteHost().catch(() => {});
+    }, 3000);
+
     return () => {
       disposedRef.current = true;
+      remoteHostConnectedRef.current = false; // Reset so StrictMode re-mount reconnects
+      connectingRemoteRef.current = false;
+      clearInterval(retryInterval);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('synthi:webrtc-connected', handleWebRTCConnect);
+      }
       if (systemRef.current) {
         systemRef.current.dispose();
         systemRef.current = null;
@@ -308,8 +550,11 @@ module.exports = { activate, deactivate };
 
     const id = parsed.__extensionId || extensionId;
 
-    // Persist to IndexedDB
-    await dbSave({ id, manifest: parsed, code, enabled: true });
+    // Extract nodeCode for the remote extension host (stashed on manifest by ExtensionSidebar)
+    const nodeCode = parsed._nodeCode || null;
+
+    // Persist to IndexedDB (include nodeCode for remote host)
+    await dbSave({ id, manifest: parsed, code, nodeCode, enabled: true });
 
     // Register in Redux
     dispatch(registerExtRedux({ id, manifest: parsed }));
@@ -327,12 +572,65 @@ module.exports = { activate, deactivate };
     try {
       registerLspForExtension(id, parsed);
     } catch (_) {}
+    // Node-only extensions: skip the worker, wait for remote host.
+    // Also skip extensions whose browser bundle is too large for the web
+    // worker (>500KB) — they hang during eval.
+    const isNodeOnly = parsed.main && !parsed.browser;
+    const isTooLargeForWorker = code && code.length > 500_000 && (nodeCode || parsed.main);
+    if (isNodeOnly || isTooLargeForWorker) {
+      if (isTooLargeForWorker && !isNodeOnly) {
+        console.log(`[useExtensions] ${id}: browser bundle too large (${code.length} chars), routing to remote host`);
+      }
+      // Store in bridge so _rehydrateNodeOnlyExtensions can find it
+      system.bridge.extensions.set(id, {
+        id,
+        name: parsed.name,
+        displayName: parsed.displayName || parsed.name,
+        version: parsed.version,
+        isActive: false,
+        failed: false,
+        failedReason: null,
+        activationEvents: parsed.activationEvents || [],
+        violationCount: 0,
+        manifest: parsed,
+        code,
+        remote: false,
+      });
+      dispatch(setExtensionState({ id, extensionState: 'pending-remote' }));
+      console.log(`[useExtensions] ${id}: Node-only, waiting for remote host`);
+
+      // If remote host is already connected, route immediately
+      if (system.bridge.remoteProxy?.isReady?.()) {
+        const client = getCompilerClient();
+        try {
+          client?.acquireExtHostLock?.();
+          await system.bridge._rehydrateNodeOnlyExtensions();
+        } catch (_) {
+        } finally {
+          client?.releaseExtHostLock?.();
+        }
+      }
+      return { success: true, pendingRemote: true };
+    }
+
     dispatch(setExtensionState({ id, extensionState: 'loaded' }));
 
-    // Load into worker
+    // Load browser extension into worker
     try {
       await system.registerExtension(id, parsed, code);
     } catch (loadErr) {
+      // If this is a WebRTC transport error (DC closed during send), the
+      // extension itself is fine — mark it pending-remote so it can retry
+      // on the next remote host connection instead of showing as crashed.
+      const msg = String(loadErr.message || '').toLowerCase();
+      const isTransport = msg.includes('datachannel') || msg.includes('channel closed') ||
+        msg.includes('disconnected') || msg.includes('failure to send') ||
+        msg.includes('sctp') || msg.includes('transport');
+      if (isTransport) {
+        console.warn(`[useExtensions] registerExtension transport error for ${id}:`, loadErr.message);
+        dispatch(setExtensionState({ id, extensionState: 'pending-remote' }));
+        return { success: true, pendingRemote: true };
+      }
       console.warn(`[useExtensions] registerExtension failed for ${id}:`, loadErr.message);
       dispatch(setExtensionState({ id, extensionState: 'crashed', reason: loadErr.message }));
       dispatch(pushError({
@@ -341,7 +639,6 @@ module.exports = { activate, deactivate };
         message: loadErr.message,
         severity: 'error',
       }));
-      // Still return a result so the UI knows what happened
       return { success: false, error: loadErr.message };
     }
 
@@ -417,7 +714,15 @@ module.exports = { activate, deactivate };
           extensionState: result.success ? 'active' : 'crashed',
         }));
       } catch (err) {
-        dispatch(setExtensionState({ id: extensionId, extensionState: 'crashed', reason: err.message }));
+        const msg = String(err.message || '').toLowerCase();
+        const isTransport = msg.includes('datachannel') || msg.includes('channel closed') ||
+          msg.includes('disconnected') || msg.includes('failure to send') ||
+          msg.includes('sctp') || msg.includes('transport');
+        dispatch(setExtensionState({
+          id: extensionId,
+          extensionState: isTransport ? 'pending-remote' : 'crashed',
+          reason: isTransport ? undefined : err.message,
+        }));
       }
     }
   }, [dispatch]);

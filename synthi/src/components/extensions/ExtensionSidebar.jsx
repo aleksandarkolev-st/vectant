@@ -370,15 +370,27 @@ export default function ExtensionSidebar({
         const { parseVSIX } = await import('@/extensions/loader/ExtensionInstaller');
         const extracted = await parseVSIX(vsixBuffer);
         code = extracted.code;
-        // If parseVSIX returned a more complete manifest, merge contributes
-        if (extracted.manifest?.contributes && !realManifest) {
-          manifest.contributes = extracted.manifest.contributes;
+        // The VSIX-extracted manifest has NLS %key% placeholders resolved.
+        // Prefer it over the raw API manifest for any fields it contains,
+        // especially contributes.views where view names would be unreadable.
+        if (extracted.manifest) {
+          // Merge NLS-resolved fields into manifest (overwrites %key% placeholders)
+          if (extracted.manifest.contributes) {
+            manifest.contributes = extracted.manifest.contributes;
+          }
+          if (extracted.manifest.displayName) manifest.displayName = extracted.manifest.displayName;
+          if (extracted.manifest.description) manifest.description = extracted.manifest.description;
+          // Copy browser/main fields so downstream code knows the entry type
+          if (extracted.manifest.browser) manifest.browser = extracted.manifest.browser;
+          if (extracted.manifest.main && !manifest.main) manifest.main = extracted.manifest.main;
         }
         // Carry over extracted metadata
         if (extracted.manifest?._grammars) manifest._grammars = extracted.manifest._grammars;
         if (extracted.manifest?._langConfigs) manifest._langConfigs = extracted.manifest._langConfigs;
         if (extracted.manifest?._nodeOnly) manifest._nodeOnly = extracted.manifest._nodeOnly;
         if (extracted.manifest?._isWebBundle) manifest._isWebBundle = extracted.manifest._isWebBundle;
+        // Carry the real Node.js bundle for the remote extension host
+        if (extracted.nodeCode) manifest._nodeCode = extracted.nodeCode;
       }
     } catch (e) {
       console.warn(`[Marketplace] VSIX download/extract failed for ${extId}:`, e.message);
@@ -437,7 +449,8 @@ module.exports = { activate, deactivate };
     try {
       const { parseVSIX } = await import('@/extensions/loader/ExtensionInstaller');
       const buffer = await file.arrayBuffer();
-      const { manifest, code } = await parseVSIX(buffer);
+      const { manifest, code, nodeCode } = await parseVSIX(buffer);
+      if (nodeCode) manifest._nodeCode = nodeCode;
       const extId = `${manifest.publisher || 'unknown'}.${manifest.name}`;
       await onInstall(extId, manifest, code);
       setShowInstall(false);

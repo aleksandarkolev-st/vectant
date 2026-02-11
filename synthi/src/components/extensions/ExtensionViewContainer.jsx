@@ -159,6 +159,7 @@ export default function ExtensionViewContainer({
     ? extensions.find(e => e.id === container?.extensionId)
     : extensions[container?.extensionId];
   const isActive = extInfo?.state === 'active';
+  const isPendingRemote = extInfo?.state === 'pending-remote' || extInfo?.state === 'activating';
 
   return (
     <div className="h-full flex flex-col bg-[#09090b] text-[#e8eaed]">
@@ -175,8 +176,8 @@ export default function ExtensionViewContainer({
           </span>
         </div>
         <div className="flex items-center gap-2 text-[10px] text-[#6b7280]">
-          <span className={isActive ? 'text-emerald-400' : 'text-yellow-400'}>
-            {isActive ? '● Active' : '◌ Inactive'}
+          <span className={isActive ? 'text-emerald-400' : isPendingRemote ? 'text-blue-400' : 'text-yellow-400'}>
+            {isActive ? '● Active' : isPendingRemote ? '◌ Connecting…' : '◌ Inactive'}
           </span>
           {extInfo && (
             <span className="truncate">
@@ -188,7 +189,16 @@ export default function ExtensionViewContainer({
 
       {/* Views list */}
       <div className="flex-1 overflow-y-auto">
-        {!isActive ? (
+        {isPendingRemote ? (
+          <div className="flex flex-col items-center justify-center h-full text-center px-4">
+            <Loader2 className="w-5 h-5 text-blue-400 mb-2 animate-spin" />
+            <div className="text-[12px] text-[#9ba2b8] mb-1">Connecting to remote host…</div>
+            <div className="text-[11px] text-[#4a5060]">
+              This extension requires Node.js and will run on
+              the remote extension host once connected.
+            </div>
+          </div>
+        ) : !isActive ? (
           <div className="flex flex-col items-center justify-center h-full text-center px-4">
             <AlertTriangle className="w-6 h-6 text-[#4a5060] mb-2" />
             <div className="text-[12px] text-[#6b7280] mb-1">Extension not active</div>

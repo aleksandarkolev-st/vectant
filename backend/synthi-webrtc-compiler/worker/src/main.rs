@@ -360,6 +360,13 @@ async fn main() -> Result<()> {
     let compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
+    // Ext-host deduplication: holds a sender that, when sent, kills the
+    // previous Node.js extension host process, plus the Instant it was
+    // spawned at.  If a new ext-host DC arrives within a short window,
+    // it's likely a duplicate from a re-applied SDP offer and is ignored.
+    let ext_host_kill_tx: Arc<Mutex<Option<(mpsc::UnboundedSender<()>, tokio::time::Instant)>>> =
+        Arc::new(Mutex::new(None));
+
     // Content-addressable incremental compilation cache (persists across sessions)
     // Uses /dev/shm on Linux for fast RAM-based caching
     let cache_dir = if cfg!(target_os = "linux") {
@@ -583,6 +590,7 @@ async fn main() -> Result<()> {
         metrics_aggregator.clone(),
         restart_controller.clone(),
         ipc_config.clone(),
+        ext_host_kill_tx.clone(),
     ).await?;
 
     let mut current_remote_fingerprint: Option<String> = None;
@@ -642,6 +650,7 @@ async fn main() -> Result<()> {
                                     metrics_aggregator.clone(),
                                     restart_controller.clone(),
                                     ipc_config.clone(),
+                                    ext_host_kill_tx.clone(),
                                 )
                                 .await?;
                                 pc = new_pc;
@@ -718,6 +727,14 @@ async fn main() -> Result<()> {
                      let mut guard = sdl_input_store.lock().await;
                      guard.clear();
                 }
+                // Kill any running ext-host process
+                {
+                    let mut guard = ext_host_kill_tx.lock().await;
+                    if let Some((tx, _)) = guard.take() {
+                        eprintln!("[WebRTC-signal] Killing ext-host process during reset...");
+                        let _ = tx.send(());
+                    }
+                }
 
                 // 4. Create a fresh PeerConnection
                 match create_peer(signal_tx.clone()).await {
@@ -738,6 +755,7 @@ async fn main() -> Result<()> {
                              metrics_aggregator.clone(),
                              restart_controller.clone(),
                              ipc_config.clone(),
+                             ext_host_kill_tx.clone(),
                          ).await?;
                          pc = new_pc;
                          eprintln!("[WebRTC-signal] Soft reset complete. New PeerConnection ready.");
@@ -989,6 +1007,7 @@ async fn wire_peer_channels(
     metrics_aggregator: Arc<tokio::sync::Mutex<MetricsAggregator>>,
     restart_controller: Arc<tokio::sync::Mutex<RestartController>>,
     ipc_config: Arc<IpcConfig>,
+    ext_host_kill_tx: Arc<Mutex<Option<(mpsc::UnboundedSender<()>, tokio::time::Instant)>>>,
 ) -> Result<()> {
     let pc = pc.clone();
     let build_log_dc = pc
@@ -1022,6 +1041,7 @@ async fn wire_peer_channels(
     let restart_controller_for_callback = restart_controller.clone();
     let ipc_config_for_callback = ipc_config.clone();
     let sdl_input_store_for_callback = sdl_input_store.clone();
+    let ext_host_kill_tx_for_callback = ext_host_kill_tx.clone();
     pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
         let store = compile_store.clone();
         let term_store = term_store.clone();
@@ -1039,6 +1059,7 @@ async fn wire_peer_channels(
         let metrics_aggregator_outer = metrics_aggregator_for_callback.clone();
         let restart_controller_outer = restart_controller_for_callback.clone();
         let ipc_config_outer = ipc_config_for_callback.clone();
+        let ext_host_kill_tx_outer = ext_host_kill_tx_for_callback.clone();
         async move {
             let label = dc.label();
             eprintln!("[on_data_channel] Received data channel: label='{}', id={}", label, dc.id());
@@ -2731,6 +2752,262 @@ async fn wire_peer_channels(
                     }
                     .boxed()
                 }));
+            }
+            // ── Remote Extension Host ────────────────────────────────
+            // Spawns a Node.js extension host process on the server.
+            // Browser sends/receives newline-delimited JSON-RPC over
+            // this DataChannel.  Extensions run with full Node.js APIs.
+            else if label.starts_with("ext-host") {
+                let slug_opt = if let Some((_prefix, slug)) = label.split_once("?slug=") {
+                    Some(slug.to_string())
+                } else {
+                    None
+                };
+
+                let dc_clone = dc.clone();
+
+                // Deduplication: if the current ext-host process was spawned
+                // recently (< 10s), this DC is almost certainly from a
+                // re-applied SDP offer (offer retry / renegotiation) and NOT
+                // a legitimate new browser session.  Ignore it.
+                {
+                    let guard = ext_host_kill_tx_outer.lock().await;
+                    if let Some((_tx, spawned_at)) = guard.as_ref() {
+                        let age = spawned_at.elapsed();
+                        if age < std::time::Duration::from_secs(10) {
+                            println!(
+                                "[ext-host] Ignoring duplicate ext-host DC (current process only {}ms old)",
+                                age.as_millis()
+                            );
+                            // Just drop the new DC — the browser is using the original one
+                            drop(guard);
+                            return;
+                        }
+                    }
+                }
+
+                // Kill any previously running ext-host process before
+                // spawning a new one (legitimate reconnect).
+                {
+                    let mut guard = ext_host_kill_tx_outer.lock().await;
+                    if let Some((old_tx, _)) = guard.take() {
+                        println!("[ext-host] Killing previous ext-host process (new DC arrived)");
+                        let _ = old_tx.send(());
+                    }
+                }
+
+                // Create a kill channel for THIS process instance
+                let (kill_tx, mut kill_rx) = mpsc::unbounded_channel::<()>();
+                {
+                    let mut guard = ext_host_kill_tx_outer.lock().await;
+                    *guard = Some((kill_tx, tokio::time::Instant::now()));
+                }
+
+                // Buffer incoming messages immediately (same pattern as LSP)
+                let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<webrtc::data_channel::data_channel_message::DataChannelMessage>();
+
+                let incoming_tx_clone = incoming_tx.clone();
+                dc.on_message(Box::new(move |msg| {
+                    let tx = incoming_tx_clone.clone();
+                    async move {
+                        let _ = tx.send(msg);
+                    }
+                    .boxed()
+                }));
+
+                println!("[on_data_channel] ext-host branch matched, spawning Node.js extension host...");
+
+                // Signal when the DataChannel is open (in-band negotiated DCs
+                // aren't open yet when on_data_channel fires).
+                let (dc_open_tx, dc_open_rx) = tokio::sync::oneshot::channel::<()>();
+                let dc_open_tx = std::sync::Mutex::new(Some(dc_open_tx));
+                dc.on_open(Box::new(move || {
+                    println!("[ext-host] DataChannel is now open");
+                    if let Some(tx) = dc_open_tx.lock().unwrap().take() {
+                        let _ = tx.send(());
+                    }
+                    async {}.boxed()
+                }));
+
+                tokio::spawn(async move {
+                    // Determine the script path — it lives next to the Rust binary
+                    let ext_host_script = {
+                        let exe_dir = std::env::current_exe()
+                            .ok()
+                            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+                        let candidates = vec![
+                            exe_dir.as_ref().map(|d| d.join("remote-ext-host.js")),
+                            Some(std::path::PathBuf::from("remote-ext-host.js")),
+                            Some(std::path::PathBuf::from("../remote-ext-host.js")),
+                        ];
+                        let mut found = None;
+                        for c in candidates.into_iter().flatten() {
+                            if c.exists() {
+                                found = Some(c);
+                                break;
+                            }
+                        }
+                        match found {
+                            Some(p) => p,
+                            None => {
+                                eprintln!("[ext-host] remote-ext-host.js not found");
+                                let err = serde_json::json!({
+                                    "id": 0,
+                                    "type": "event",
+                                    "method": "error",
+                                    "args": ["remote-ext-host.js not found on worker"],
+                                    "generation": 0
+                                });
+                                let _ = dc_clone.send_text(serde_json::to_string(&err).unwrap_or_default()).await;
+                                return;
+                            }
+                        }
+                    };
+
+                    println!("[ext-host] Using script: {}", ext_host_script.display());
+
+                    let mut cmd = Command::new("node");
+                    cmd.arg(&ext_host_script);
+                    cmd.stdin(Stdio::piped());
+                    cmd.stdout(Stdio::piped());
+                    cmd.stderr(Stdio::piped());
+
+                    match cmd.spawn() {
+                        Ok(mut child) => {
+                            let mut stdin = child.stdin.take().expect("[ext-host] Failed to open stdin");
+                            let stdout = child.stdout.take().expect("[ext-host] Failed to open stdout");
+                            let stderr = child.stderr.take().expect("[ext-host] Failed to open stderr");
+
+                            // ── DC → Node.js stdin ───────────────────────
+                            // Forward DataChannel messages as newline-terminated JSON to stdin
+                            let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+
+                            let stdin_tx_clone = stdin_tx.clone();
+                            tokio::spawn(async move {
+                                while let Some(msg) = incoming_rx.recv().await {
+                                    let data = msg.data.to_vec();
+                                    // Each message from the DataChannel is one JSON line
+                                    // Ensure it ends with a newline for the readline parser
+                                    let mut line = data;
+                                    if !line.ends_with(b"\n") {
+                                        line.push(b'\n');
+                                    }
+                                    let _ = stdin_tx_clone.send(line);
+                                }
+                            });
+
+                            tokio::spawn(async move {
+                                while let Some(data) = stdin_rx.recv().await {
+                                    if let Err(_) = stdin.write_all(&data).await { break; }
+                                    if let Err(_) = stdin.flush().await { break; }
+                                }
+                            });
+
+                            // ── Node.js stdout → DC ──────────────────────
+                            // Wait for the DataChannel to be open before we
+                            // start forwarding.  Node.js emits workerReady
+                            // immediately on startup; without this gate the
+                            // first send fails with "DataChannel is not opened".
+                            let dc_out = dc_clone.clone();
+                            tokio::spawn(async move {
+                                // Wait up to 15s for DC open (oneshot from on_open)
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_secs(15),
+                                    dc_open_rx,
+                                ).await {
+                                    Err(_elapsed) => {
+                                        eprintln!("[ext-host] Timed out waiting for DataChannel to open");
+                                        return;
+                                    }
+                                    Ok(Err(_recv_err)) => {
+                                        eprintln!("[ext-host] DC open signal sender dropped (DC closed before opening?)");
+                                        return;
+                                    }
+                                    Ok(Ok(())) => {}
+                                }
+                                println!("[ext-host] DC open, starting stdout→DC forwarding");
+                                let mut reader = BufReader::new(stdout);
+                                let mut line = String::new();
+                                loop {
+                                    line.clear();
+                                    match reader.read_line(&mut line).await {
+                                        Ok(0) => break, // EOF
+                                        Ok(_) => {
+                                            let trimmed = line.trim();
+                                            if trimmed.is_empty() { continue; }
+
+                                            // Chunk large messages (>60KB) for WebRTC SCTP
+                                            let data_bytes = trimmed.as_bytes();
+                                            if data_bytes.len() > 60000 {
+                                                let msg_id = (std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .unwrap().as_nanos() % 0xFFFFFFFF) as u32;
+                                                let chunks = make_chunks(data_bytes, msg_id);
+                                                for chunk in chunks {
+                                                    let data = Bytes::from(chunk);
+                                                    if let Err(e) = dc_out.send(&data).await {
+                                                        eprintln!("[ext-host] chunk send error: {}", e);
+                                                        break;
+                                                    }
+                                                }
+                                            } else {
+                                                if let Err(e) = dc_out.send_text(trimmed.to_string()).await {
+                                                    eprintln!("[ext-host] send error: {}", e);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            eprintln!("[ext-host] stdout read error: {}", e);
+                                            break;
+                                        }
+                                    }
+                                }
+                                println!("[ext-host] stdout reader exited");
+                            });
+
+                            // ── Node.js stderr → logs ────────────────────
+                            tokio::spawn(async move {
+                                let mut reader = BufReader::new(stderr);
+                                let mut line = String::new();
+                                loop {
+                                    line.clear();
+                                    match reader.read_line(&mut line).await {
+                                        Ok(0) => break,
+                                        Ok(_) => {
+                                            eprint!("[ext-host] {}", line);
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                            });
+
+                            let _ = tokio::select! {
+                                status = child.wait() => {
+                                    println!("[ext-host] Node.js extension host process exited: {:?}", status);
+                                    status
+                                }
+                                _ = kill_rx.recv() => {
+                                    println!("[ext-host] Received kill signal, terminating ext-host process");
+                                    let _ = child.kill().await;
+                                    child.wait().await
+                                }
+                            };
+                            println!("[ext-host] Node.js extension host process cleanup complete");
+                        }
+                        Err(e) => {
+                            eprintln!("[ext-host] Failed to spawn Node.js: {}", e);
+                            let err = serde_json::json!({
+                                "id": 0,
+                                "type": "event",
+                                "method": "error",
+                                "args": [format!("Failed to spawn Node.js extension host: {}", e)],
+                                "generation": 0
+                            });
+                            let _ = dc_clone.send_text(serde_json::to_string(&err).unwrap_or_default()).await;
+                        }
+                    }
+                });
             }
         }
         .boxed()

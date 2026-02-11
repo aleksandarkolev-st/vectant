@@ -28,6 +28,7 @@ export { createMessageId, createRequest, createResponse, createEvent, isValidMes
 export { WorkerProxy, createWorkerProxy, getWorkerProxy } from './bridge/WorkerProxy.js';
 export { MainThreadBridge, createMainThreadBridge, getMainThreadBridge } from './bridge/MainThreadBridge.js';
 export { MonacoBridge } from './bridge/MonacoBridge.js';
+export { RemoteExtHostProxy } from './bridge/RemoteExtHostProxy.js';
 
 // VS Code API
 export * as vscode from './api/vscode.js';
@@ -167,7 +168,10 @@ export async function initializeExtensionSystem(options) {
       onContribution?.('treeData', { viewId, data });
     });
     proxy.on('createWebview', (viewId, viewType, title, opts) => {
-      onContribution?.('createWebview', { viewId, viewType, title, opts });
+      // Extract extensionId from the viewId format: "extensionId.webview[View].xxx"
+      const extIdMatch = viewId.match(/^(.+?)\.(webview|webviewView)\./);      
+      const extensionId = extIdMatch ? extIdMatch[1] : opts?.extensionId || undefined;
+      onContribution?.('createWebview', { viewId, viewType, title, opts, extensionId });
     });
     proxy.on('disposeWebview', (viewId) => {
       webviews.dispose(viewId);
@@ -178,11 +182,44 @@ export async function initializeExtensionSystem(options) {
       if (instance && update?.html) {
         instance.html = update.html;
       }
+      onContribution?.('updateWebview', { viewId, html: update?.html });
     });
     proxy.on('setStatusBar', (text, timeout) => {
       onContribution?.('setStatusBar', { text, timeout });
     });
   }
+
+  // Wire the remote extension host contribution events through the same callback
+  bridge._emitRemoteContribution = (type, payload) => {
+    switch (type) {
+      case 'treeData':
+        onContribution?.('treeData', payload);
+        break;
+      case 'registerTreeView':
+        onContribution?.('registerTreeView', payload);
+        break;
+      case 'createWebview':
+        onContribution?.('createWebview', payload);
+        break;
+      case 'disposeWebview':
+        webviews.dispose(payload.viewId);
+        onContribution?.('disposeWebview', payload);
+        break;
+      case 'updateWebview': {
+        const instance = webviews.webviews.get(payload.viewId);
+        if (instance && payload.html) {
+          instance.html = payload.html;
+        }
+        onContribution?.('updateWebview', payload);
+        break;
+      }
+      case 'setStatusBar':
+        onContribution?.('setStatusBar', payload);
+        break;
+      default:
+        onContribution?.(type, payload);
+    }
+  };
 
   // Wire up visibility manager to scheduler
   visibility.onPause = (extensionId) => {

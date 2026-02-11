@@ -130,6 +130,7 @@ export class WorkerProxy {
 
     if (typeof data?.generation === 'number' && data.generation !== this.generation) {
       // Drop stale replies from older worker generations
+      console.warn(`[WorkerProxy] Dropping message with generation ${data.generation} (expected ${this.generation}), type=${data.type}, method=${data.method || 'N/A'}`);
       return;
     }
 
@@ -149,6 +150,8 @@ export class WorkerProxy {
         } else {
           pending.resolve(data.result);
         }
+      } else {
+        console.warn(`[WorkerProxy] Response id=${data.id} has no pending request (already timed out?)`);
       }
     } else if (data.type === 'event') {
       this._emit(data.method, ...(data.args || []));
@@ -327,9 +330,13 @@ export class WorkerProxy {
    * @returns {Promise<void>}
    */
   loadExtension(extensionId, code, manifest) {
-    // Large extensions (e.g. GitHub Pull Requests) can take a while to eval.
-    // Use a generous 30s timeout instead of the default 5s.
-    return this.request(MainToWorkerMethods.LOAD_EXTENSION, [extensionId, code, manifest], 30000);
+    // Scale timeout with code size but cap at 30s — if eval hasn't finished
+    // by then the bundle is hung and we need to restart the worker.
+    // Stubs are tiny and should complete in <1s.
+    const codeLen = typeof code === 'string' ? code.length : 0;
+    const isStub = codeLen < 2000;
+    const timeout = isStub ? 5000 : Math.min(30000, 15000 + Math.ceil(codeLen / (1024 * 1024)) * 5000);
+    return this.request(MainToWorkerMethods.LOAD_EXTENSION, [extensionId, code, manifest], timeout);
   }
 
   /**

@@ -65,13 +65,18 @@ export async function saveExtension(extension) {
   const db = await openDB();
   const tx = db.transaction(STORE_NAME, 'readwrite');
   const store = tx.objectStore(STORE_NAME);
-  store.put({
+  const record = {
     id: extension.id,
     manifest: extension.manifest,
     code: extension.code,
     installedAt: Date.now(),
     enabled: extension.enabled !== false,
-  });
+  };
+  // Persist the real Node.js code for remote extension host if present
+  if (extension.nodeCode) {
+    record.nodeCode = extension.nodeCode;
+  }
+  store.put(record);
   await txPromise(tx);
   db.close();
 }
@@ -177,6 +182,50 @@ export async function clearAllExtensions() {
 }
 
 /**
+ * Fetch a VSIX from Open VSX and extract only the Node.js entry code.
+ * Used to back-fill nodeCode for extensions that were cached before nodeCode
+ * extraction was implemented. Saves the extracted nodeCode to IndexedDB.
+ *
+ * @param {string} extensionId - e.g. "GitHub.vscode-pull-request-github"
+ * @param {object} manifest - The extension's manifest (needs publisher + name + version)
+ * @returns {Promise<string|null>} The extracted Node.js code, or null if unavailable
+ */
+export async function fetchNodeCodeForExtension(extensionId, manifest) {
+  try {
+    const publisher = manifest.publisher || extensionId.split('.')[0];
+    const name = manifest.name || extensionId.split('.').slice(1).join('.');
+    const version = manifest.version;
+    if (!publisher || !name) return null;
+
+    const dlParams = new URLSearchParams({
+      action: 'download-vsix',
+      namespace: publisher,
+      extension: name,
+      ...(version ? { version } : {}),
+    });
+    const vsixRes = await fetch(`/api/extensions/search?${dlParams}`);
+    if (!vsixRes.ok) return null;
+
+    const vsixBuffer = await vsixRes.arrayBuffer();
+    const { nodeCode } = await parseVSIX(vsixBuffer);
+    if (!nodeCode) return null;
+
+    // Persist the nodeCode to IndexedDB for future restores
+    const existing = await getExtension(extensionId);
+    if (existing) {
+      existing.nodeCode = nodeCode;
+      await saveExtension(existing);
+    }
+
+    console.log(`[ExtensionInstaller] Fetched nodeCode for ${extensionId}: ${(nodeCode.length / 1024).toFixed(0)} KB`);
+    return nodeCode;
+  } catch (err) {
+    console.warn(`[ExtensionInstaller] Failed to fetch nodeCode for ${extensionId}:`, err.message);
+    return null;
+  }
+}
+
+/**
  * Parse a .vsix file (ZIP) and extract the manifest + extension code.
  * VSIX files are ZIP archives with:
  *   - extension/package.json  → manifest
@@ -189,6 +238,42 @@ export async function clearAllExtensions() {
  * @param {ArrayBuffer} vsixBuffer
  * @returns {Promise<{ manifest: object, code: string }>}
  */
+/**
+ * Recursively walk a manifest object and replace %key% NLS placeholders
+ * with their resolved values from the NLS strings map.
+ * Exported so that other modules (e.g. restore flow) can also resolve cached manifests.
+ * @param {any} obj - The object to walk (manifest or sub-object)
+ * @param {Record<string, string>} nlsStrings - Key→value localization map
+ */
+export function resolveNLS(obj, nlsStrings) {
+  if (!obj || typeof obj !== 'object') return;
+  for (const key of Object.keys(obj)) {
+    const val = obj[key];
+    if (typeof val === 'string') {
+      const match = val.match(/^%(.*?)%$/);
+      if (match) {
+        const nlsKey = match[1];
+        if (nlsStrings[nlsKey] !== undefined) {
+          obj[key] = nlsStrings[nlsKey];
+        }
+      }
+    } else if (Array.isArray(val)) {
+      for (let i = 0; i < val.length; i++) {
+        if (typeof val[i] === 'string') {
+          const m = val[i].match(/^%(.*?)%$/);
+          if (m && nlsStrings[m[1]] !== undefined) {
+            val[i] = nlsStrings[m[1]];
+          }
+        } else if (typeof val[i] === 'object' && val[i]) {
+          resolveNLS(val[i], nlsStrings);
+        }
+      }
+    } else if (typeof val === 'object') {
+      resolveNLS(val, nlsStrings);
+    }
+  }
+}
+
 export async function parseVSIX(vsixBuffer) {
   // We dynamically import JSZip if available; otherwise error gracefully
   try {
@@ -248,6 +333,23 @@ export async function parseVSIX(vsixBuffer) {
       }
     }
 
+    // ── Extract and apply NLS (localization) strings ───────────────────
+    // Many extensions use %key% placeholders in package.json that map to
+    // values in package.nls.json. We must resolve these before the manifest
+    // reaches Redux/UI, otherwise raw "%key%" strings appear as view names.
+    const nlsFile = zip.file('extension/package.nls.json');
+    let nlsStrings = {};
+    if (nlsFile) {
+      try {
+        nlsStrings = JSON.parse(await nlsFile.async('text'));
+      } catch (_) {
+        // Malformed NLS file — continue without localization
+      }
+    }
+    if (Object.keys(nlsStrings).length > 0) {
+      resolveNLS(manifest, nlsStrings);
+    }
+
     // Store extracted assets on the manifest for downstream use
     if (Object.keys(grammars).length > 0) manifest._grammars = grammars;
     if (Object.keys(langConfigs).length > 0) manifest._langConfigs = langConfigs;
@@ -291,25 +393,30 @@ export async function parseVSIX(vsixBuffer) {
     }
 
     let code;
+    let nodeCode = null; // Real Node.js bundle for remote extension host
     const extName = (manifest.displayName || manifest.name || '').replace(/'/g, "\\'");
 
     if (!hasBrowserEntry && entryFile) {
-      // ── Node-only extension: don't load the Node bundle ──────────────
+      // ── Node-only extension ──────────────────────────────────────────
       // The JS code uses Node.js APIs (process.binding, fs, child_process)
-      // that cannot work in a web worker. Instead, provide stub code that
-      // activates cleanly. Declarative contributions (syntax highlighting,
-      // language definitions, views, etc.) still work from the manifest.
+      // that cannot work in a web worker. Provide a lightweight stub for
+      // the local worker, but ALSO extract the real Node.js bundle so the
+      // remote extension host (server-side Node.js) can execute it.
       console.warn(
         `[parseVSIX] ${manifest.publisher}.${manifest.name}: Node-only extension ` +
-        `(has "main" but no "browser" field). Loading declarative contributions only.`
+        `(has "main" but no "browser" field). Extracting real code for remote host.`
       );
+
+      // Extract the real Node.js bundle for the remote host
+      nodeCode = await entryFile.async('text');
+
       const grammarCount = Object.keys(grammars).length;
       const langCount = manifest.contributes?.languages?.length || 0;
       code = `
 // ${extName} v${manifest.version}
 // Node-only extension — declarative contributions loaded from manifest.
 // ${grammarCount} grammar(s) and ${langCount} language definition(s) extracted.
-// Full functionality requires a Node.js extension host (not available in web).
+// Full functionality runs on the remote Node.js extension host.
 function activate(context) {
   console.log('[${manifest.publisher}.${manifest.name}] Activated (declarative mode: syntax highlighting, language config, views)');
 }
@@ -319,6 +426,28 @@ module.exports = { activate, deactivate };
       manifest._nodeOnly = true;
     } else if (entryFile) {
       code = await entryFile.async('text');
+
+      // For dual-entry extensions (both browser + main), also extract the
+      // Node.js bundle. If the browser bundle is too large for the web worker,
+      // the system can fall back to the remote Node.js host.
+      if (manifest.main && manifest.browser) {
+        const mainPath = `extension/${manifest.main}`.replace(/^\.?\//, '').replace(/^extension\/\.\//,'extension/');
+        const mainEntryPath = `extension/${manifest.main}`.replace(/^extension\/\.\//,'extension/');
+        let mainFile = zip.file(mainEntryPath);
+        if (!mainFile) {
+          for (const ext of ['.js', '.cjs', '.mjs']) {
+            mainFile = zip.file(mainEntryPath + ext);
+            if (mainFile) break;
+          }
+        }
+        if (mainFile) {
+          nodeCode = await mainFile.async('text');
+          console.log(
+            `[parseVSIX] ${manifest.publisher}.${manifest.name}: dual-entry extension, ` +
+            `extracted nodeCode (${nodeCode.length} chars) for remote host fallback.`
+          );
+        }
+      }
     } else {
       // No entry file at all — provide minimal stub
       code = `
@@ -331,7 +460,7 @@ module.exports = { activate, deactivate };
     manifest._resolvedEntry = entryFile?.name || null;
     manifest._isWebBundle = usedBrowserBundle;
 
-    return { manifest, code, grammars, langConfigs };
+    return { manifest, code, nodeCode, grammars, langConfigs };
   } catch (e) {
     if (e.message?.includes('jszip')) {
       throw new Error(

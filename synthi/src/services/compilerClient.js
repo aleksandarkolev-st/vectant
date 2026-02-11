@@ -35,6 +35,7 @@ export class CompilerClient {
         this.emulatorInputChannel = null;
         this.lspChannel = null;
         this.fileSyncChannel = null;
+        this.extHostChannel = null;
         this.readyPromise = null;
         this.currentStreams = [];
         this.logHandlers = new Set();
@@ -74,6 +75,10 @@ export class CompilerClient {
         // seconds — we only set DISCONNECTED after this grace period.
         this._disconnectGraceTimer = null;
         this._DISCONNECT_GRACE_MS = 5000;
+
+        // Ext-host operation lock: when > 0, reconnect() will defer
+        // PC teardown until the ext-host finishes (up to a timeout).
+        this._extHostBusyCount = 0;
 
         
         this._handleTerminalInput = this._handleTerminalInput.bind(this);
@@ -378,7 +383,21 @@ export class CompilerClient {
                         this._disconnectGraceTimer = null;
                         console.log('[CompilerClient] Connection recovered from transient disconnect');
                     }
+                    // Stop resending the SDP offer now that the PC is connected.
+                    // Without this, the retry fires before the answer arrives,
+                    // and webrtc-rs re-processes the duplicate offer, firing
+                    // on_data_channel again for the ext-host DC (kills the
+                    // working Node.js process).
+                    if (this._offerRetryInterval) {
+                        clearInterval(this._offerRetryInterval);
+                        this._offerRetryInterval = null;
+                    }
                     this._setStatus(CompilerStatus.CONNECTED);
+
+                    // Notify the extension system that WebRTC is ready
+                    try {
+                        window.dispatchEvent(new CustomEvent('synthi:webrtc-connected'));
+                    } catch (_) {}
                 } else if (this.pc.connectionState === 'failed') {
                     // 'failed' is permanent — set DISCONNECTED immediately
                     if (this._disconnectGraceTimer) {
@@ -507,11 +526,26 @@ export class CompilerClient {
                 console.warn('CompilerClient ws closed');
                 // Only clean up if this is still the active socket
                 if (this.ws === ws) {
+                    this.ws = null;
+
+                    // If the WebRTC PeerConnection is still connected, DON'T
+                    // tear everything down.  The signaling WS is only needed
+                    // for SDP exchange and ICE candidates — once the PC is
+                    // connected, DataChannels (LSP, ext-host, terminal, …)
+                    // work independently.  Tearing down a healthy PC would
+                    // kill the LSP, ext-host, etc. for no reason and trigger
+                    // an unnecessary reconnect cycle.
+                    if (this.pc && (this.pc.connectionState === 'connected' || this.pc.connectionState === 'connecting')) {
+                        console.log('[CompilerClient] Signaling WS closed but WebRTC PC still alive (' + this.pc.connectionState + '), keeping channels');
+                        return;
+                    }
+
+                    // PC is not connected — full teardown
                     this.readyPromise = null;
                     this.compileChannel = null;
                     this.buildLogChannel = null;
+                    this.extHostChannel = null;
                     this.pc = null;
-                    this.ws = null;
                     this.emulatorInputChannel = null;
                     this._setStatus(CompilerStatus.DISCONNECTED);
                 }
@@ -549,7 +583,14 @@ export class CompilerClient {
                             this._renegotiate(pending.reason, pending.sessionId, pending.onLog);
                         }
                     } else {
-                        console.warn(`[CompilerClient] Ignoring answer in signalingState=${signalingState} (expected have-local-offer)`);
+                        // Throttle this warning — stale answers are harmless but can flood the console
+                        if (!this._lastStaleAnswerWarn || Date.now() - this._lastStaleAnswerWarn > 5000) {
+                            console.warn(`[CompilerClient] Ignoring answer in signalingState=${signalingState} (expected have-local-offer)`);
+                            this._lastStaleAnswerWarn = Date.now();
+                            this._staleAnswerCount = 1;
+                        } else {
+                            this._staleAnswerCount = (this._staleAnswerCount || 0) + 1;
+                        }
                         this._emitWebrtcDiag(`[webrtc] ignored answer signalingState=${signalingState}`);
                     }
                 } else if (msg.type === 'offer' && msg.sdp) {
@@ -558,7 +599,9 @@ export class CompilerClient {
                     await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: msg.sdp }));
                     const answer = await this.pc.createAnswer();
                     await this.pc.setLocalDescription(answer);
-                    this.ws.send(JSON.stringify({ type: 'offer', sdp: answer.sdp, sdp_type: answer.type }));
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'offer', sdp: answer.sdp, sdp_type: answer.type }));
+                    }
                     // Emit negotiated codecs to build log stream.
                     try {
                         const sdp = String(msg.sdp || '');
@@ -595,6 +638,22 @@ export class CompilerClient {
                 this.emulatorInputChannel = this.pc.createDataChannel('emulator-input', { ordered: true });
                 // File-sync channel: pushes file create/edit/delete/rename to worker disk
                 this.fileSyncChannel = this.pc.createDataChannel('file-sync', { ordered: true });
+                // Remote extension host channel — created here (before the SDP offer)
+                // so it's part of the initial negotiation, avoiding unreliable DCEP
+                // in-band renegotiation that webrtc-rs doesn't handle well.
+                this.extHostChannel = this.pc.createDataChannel(`ext-host?slug=${this.slug || ''}`, { ordered: true });
+                this.extHostChannel.binaryType = 'arraybuffer';
+
+                // Buffer messages arriving before RemoteExtHostProxy attaches
+                // its own onmessage handler.  Without this, workerReady
+                // (sent by Node.js immediately on startup) can be silently
+                // dropped because no handler is registered yet.
+                this.extHostChannel._earlyMessages = [];
+                this.extHostChannel.onmessage = (evt) => {
+                    if (this.extHostChannel._earlyMessages) {
+                        this.extHostChannel._earlyMessages.push(evt.data);
+                    }
+                };
                 
                 this.compileChannel.onclose = () => {};
 
@@ -816,6 +875,44 @@ export class CompilerClient {
         return channel;
     }
 
+    /**
+     * Create a DataChannel for the remote Node.js extension host.
+     * The Rust worker will spawn `node remote-ext-host.js` and pipe
+     * newline-delimited JSON over the channel.
+     *
+     * @returns {RTCDataChannel}
+     */
+    createExtHostChannel() {
+        // Return the channel that was pre-created during connect() (part of SDP).
+        // This avoids DCEP in-band negotiation which webrtc-rs doesn't handle reliably.
+        if (this.extHostChannel && this.extHostChannel.readyState !== 'closed') {
+            return this.extHostChannel;
+        }
+        // Fallback: create on-demand (e.g. if connect flow changed)
+        if (!this.pc || this.pc.connectionState !== 'connected') {
+            throw new Error('CompilerClient not connected');
+        }
+        const label = `ext-host?slug=${this.slug || ''}`;
+        this.extHostChannel = this.pc.createDataChannel(label, { ordered: true });
+        this.extHostChannel.binaryType = 'arraybuffer';
+        return this.extHostChannel;
+    }
+
+    /**
+     * Acquire ext-host busy lock. While held, reconnect() will wait
+     * (up to a timeout) before tearing down the PeerConnection.
+     */
+    acquireExtHostLock() {
+        this._extHostBusyCount++;
+    }
+
+    /**
+     * Release ext-host busy lock.
+     */
+    releaseExtHostLock() {
+        this._extHostBusyCount = Math.max(0, this._extHostBusyCount - 1);
+    }
+
     // ── File-sync helpers ──────────────────────────────────────────
     // These methods push file mutations from the browser to the worker's disk
     // so the LSP server sees newly created/edited/renamed/deleted files.
@@ -895,6 +992,22 @@ export class CompilerClient {
     async reconnect() {
         console.log('[CompilerClient] Forcing reconnection to clear WebRTC state...');
 
+        // If the ext-host is in the middle of an operation (e.g. loading a
+        // large extension), wait briefly for it to finish before yanking the
+        // SCTP transport.  This prevents OperationError: Failure to send data.
+        if (this._extHostBusyCount > 0) {
+            console.log(`[CompilerClient] Waiting for ext-host operation to finish (busy=${this._extHostBusyCount})...`);
+            const waitStart = Date.now();
+            const EXT_HOST_WAIT_MS = 10000; // max 10s
+            while (this._extHostBusyCount > 0 && Date.now() - waitStart < EXT_HOST_WAIT_MS) {
+                await new Promise(r => setTimeout(r, 200));
+            }
+            if (this._extHostBusyCount > 0) {
+                console.warn('[CompilerClient] Ext-host operation did not finish in time, proceeding with reconnect');
+                this._extHostBusyCount = 0; // force-release
+            }
+        }
+
         // Cancel any pending disconnect grace timer
         if (this._disconnectGraceTimer) {
             clearTimeout(this._disconnectGraceTimer);
@@ -937,6 +1050,7 @@ export class CompilerClient {
         this.emulatorInputChannel = null;
         this.lspChannel = null;
         this.fileSyncChannel = null;
+        this.extHostChannel = null;
         this.readyPromise = null;
         this._setStatus(CompilerStatus.IDLE);
         
@@ -1416,6 +1530,7 @@ export class CompilerClient {
         this.compileChannel = null;
         this.buildLogChannel = null;
         this.terminalChannel = null;
+        this.extHostChannel = null;
         this.readyPromise = null;
         this.logHandlers.clear();
         this.statusListeners.clear();

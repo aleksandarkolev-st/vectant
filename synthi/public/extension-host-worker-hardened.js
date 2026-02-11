@@ -50,9 +50,13 @@ self.__createDeepStub = function(moduleName) {
         // valid version string instead of crashing with "Invalid Version: ".
         if (prop === Symbol.toPrimitive) return (hint) => hint === 'number' ? 0 : '0.0.0';
         if (prop === Symbol.iterator) return undefined;
+        if (prop === Symbol.asyncIterator) return undefined;
         if (prop === Symbol.toStringTag) return moduleName || 'Stub';
+        if (prop === Symbol.species) return undefined;
+        if (prop === Symbol.isConcatSpreadable) return false;
         if (prop === 'then') return undefined;  // prevent Promise-like behavior
         if (prop === 'catch') return undefined;
+        if (prop === 'finally') return undefined;
         if (prop === 'toJSON') return () => ({});
         if (prop === 'valueOf') return () => 0;
         if (prop === 'toString') return () => '0.0.0';
@@ -62,6 +66,20 @@ self.__createDeepStub = function(moduleName) {
         if (prop === 'name') return path.split('.').pop();
         if (prop === '__esModule') return true;
         if (prop === 'default') return proxy;  // ES module default export
+        // Prevent stubs from being iterable/enumerable (avoids infinite loops
+        // when code does Object.keys/for...in on a stubbed module)
+        if (prop === 'keys' || prop === 'values' || prop === 'entries') return () => [];
+        if (prop === 'forEach') return () => {};
+        if (prop === 'map' || prop === 'filter' || prop === 'reduce') return () => [];
+        if (prop === 'size') return 0;
+        if (prop === 'has') return () => false;
+        // Node.js EventEmitter-like methods (prevent extensions from waiting on events)
+        if (prop === 'on' || prop === 'once' || prop === 'addListener' || prop === 'removeListener') {
+          return function() { return proxy; }; // chainable no-op
+        }
+        if (prop === 'emit' || prop === 'removeAllListeners') return () => false;
+        if (prop === 'listeners' || prop === 'rawListeners') return () => [];
+        if (prop === 'listenerCount') return () => 0;
         // Return a nested stub for anything else
         return makeStub(path + '.' + String(prop));
       },
@@ -71,7 +89,22 @@ self.__createDeepStub = function(moduleName) {
         return true;
       },
       has(target, prop) {
-        return true;  // pretend we have everything
+        // Only claim to have properties the target actually has.
+        // Returning true for everything can cause infinite for..in loops.
+        if (typeof prop === 'symbol') return prop in target;
+        return true;
+      },
+      ownKeys(target) {
+        // Return a finite, fixed set of keys to prevent infinite enumeration
+        return ['default', '__esModule', 'prototype', 'length', 'name'];
+      },
+      getOwnPropertyDescriptor(target, prop) {
+        // Must return descriptors for keys reported by ownKeys
+        const fixedKeys = ['default', '__esModule', 'prototype', 'length', 'name'];
+        if (fixedKeys.includes(prop)) {
+          return { configurable: true, enumerable: true, writable: true, value: proxy[prop] };
+        }
+        return undefined;
       },
       apply(target, thisArg, args) {
         // When called as a function, return a stub (chainable)
@@ -755,7 +788,12 @@ class HardenedExtensionHost {
       throw new Error('Extension code too large or invalid');
     }
 
-    console.log(`[ExtensionHost] Loading: ${extensionId}`);
+    console.log(`[ExtensionHost] Loading: ${extensionId} (code length: ${typeof code === 'string' ? code.length : 'N/A'})`);
+    const _loadStart = performance.now();
+
+    // Fast path for tiny stub extensions (declarative mode).
+    // These don't need heavyweight regex preprocessing or prototype patches.
+    const isStubCode = typeof code === 'string' && code.length < 1000 && code.includes('declarative mode');
 
     const vscode = createVSCodeAPI(extensionId, this);
 
@@ -828,6 +866,10 @@ class HardenedExtensionHost {
       // Expose for module.createRequire
       self.__nodeRequire = shimRequire;
 
+      console.log(`[ExtensionHost] ${extensionId}: shimRequire ready in ${(performance.now() - _loadStart).toFixed(0)}ms, preprocessing code...`);
+
+      // Skip heavyweight regex preprocessing for tiny stub extensions
+      if (!isStubCode) {
       // ---------- Class extends safety rewriting ----------
       // Webpack/esbuild bundles have their own internal __webpack_require__ that bypasses
       // our shimRequire Proxy. When an internally-resolved module is undefined, code like
@@ -871,9 +913,13 @@ class HardenedExtensionHost {
         /\.trim\(\)\s*\.match\s*\(/g,
         '.trim().replace(/^[v=\\s]+/,"").match('
       );
+      } // end !isStubCode preprocessing
 
       // Wrap extension code to inject Node.js globals.
       // Many webpack/esbuild bundles reference `global`, `Buffer`, `process` etc. at top level.
+      // NOTE: String.prototype.match / RegExp.prototype.exec semver safety patches are
+      // applied ONCE at worker startup (see bottom of file) to avoid stacking wrappers
+      // on every extension load.
       const wrappedCode = `var global = self;
 var globalThis = self;
 var window = self;
@@ -886,47 +932,19 @@ var setImmediate = function(cb) { return setTimeout(cb, 0); };
 var clearImmediate = function(id) { return clearTimeout(id); };
 var __SafeBase = (function(){ function S(){} return S; })();
 var __x = function(v){ if(v===void 0) return __SafeBase; if(v===null) return null; if(typeof v==='function') return v; return __SafeBase; };
-var __origSPM = String.prototype.match;
-String.prototype.match = function(re) {
-  var r = __origSPM.call(this, re);
-  if (r !== null) return r;
-  if (!(re instanceof RegExp) || re.source.length < 12 || !/\\(/.test(re.source)) return r;
-  var s = (typeof this === 'string' ? this : String(this)).trim();
-  if (/^[v= \\t]*\\d+\\.\\d+\\.\\d+/.test(s)) {
-    var c = s.replace(/^[v=\\s]+/, '');
-    var m = __origSPM.call(c, /^(\\d+)\\.(\\d+)\\.(\\d+)(?:-([\\w.+-]+))?(?:\\+([\\w.+-]+))?$/);
-    if (m) return m;
-  }
-  if (re.source.length > 30 && re.source.indexOf('\\\\d') >= 0 && re.source.indexOf('\\\\.') >= 0) {
-    var fb = __origSPM.call('0.0.0', re);
-    if (fb) return fb;
-    return ['0.0.0','0','0','0',undefined,undefined];
-  }
-  return r;
-};
-var __origExec = RegExp.prototype.exec;
-RegExp.prototype.exec = function(str) {
-  var r = __origExec.call(this, str);
-  if (r !== null) return r;
-  if (this.source.length < 12 || !/\\(/.test(this.source)) return r;
-  var s = (typeof str === 'string' ? str : String(str)).trim();
-  if (/^[v= \\t]*\\d+\\.\\d+\\.\\d+/.test(s)) {
-    var c = s.replace(/^[v=\\s]+/, '');
-    var m = __origExec.call(/^(\\d+)\\.(\\d+)\\.(\\d+)(?:-([\\w.+-]+))?(?:\\+([\\w.+-]+))?$/, c);
-    if (m) return m;
-  }
-  if (this.source.length > 30 && this.source.indexOf('\\\\d') >= 0 && this.source.indexOf('\\\\.') >= 0) {
-    var fb = __origExec.call(this, '0.0.0');
-    if (fb) return fb;
-    return ['0.0.0','0','0','0',undefined,undefined];
-  }
-  return r;
-};
 ` + code;
 
       // Evaluate extension code with polyfill-backed shims
+      console.log(`[ExtensionHost] ${extensionId}: code preprocessed in ${(performance.now() - _loadStart).toFixed(0)}ms, compiling Function...`);
       const factory = new Function('vscode', 'exports', 'module', 'require', 'process', 'Buffer', '__dirname', '__filename', wrappedCode);
-      factory(vscode, exports, module, shimRequire, processImpl, BufferImpl, '/', '/extension.js');
+      console.log(`[ExtensionHost] ${extensionId}: Function compiled in ${(performance.now() - _loadStart).toFixed(0)}ms, evaluating...`);
+      try {
+        factory(vscode, exports, module, shimRequire, processImpl, BufferImpl, '/', '/extension.js');
+      } catch (evalErr) {
+        console.error(`[ExtensionHost] ${extensionId}: eval crashed:`, evalErr.message);
+        throw evalErr;
+      }
+      console.log(`[ExtensionHost] ${extensionId}: eval complete in ${(performance.now() - _loadStart).toFixed(0)}ms`);
       
       const extensionModule = module.exports || exports;
 
@@ -1185,6 +1203,52 @@ RegExp.prototype.exec = function(str) {
 // ============================================================================
 
 const host = new HardenedExtensionHost();
+
+// ── Global semver safety patches (applied ONCE, not per-extension) ──────────
+// Extensions bundled with semver call String.prototype.match / RegExp.prototype.exec
+// with strict semver regexes on empty/invalid version strings.  We patch the
+// native methods globally so ALL code in this worker gets the safety net without
+// stacking wrappers every time an extension loads.
+(function() {
+  const nativeMatch = String.prototype.match;
+  const nativeExec  = RegExp.prototype.exec;
+
+  String.prototype.match = function(re) {
+    var r = nativeMatch.call(this, re);
+    if (r !== null) return r;
+    if (!(re instanceof RegExp) || re.source.length < 12 || !/\(/.test(re.source)) return r;
+    var s = (typeof this === 'string' ? this : String(this)).trim();
+    if (/^[v= \t]*\d+\.\d+\.\d+/.test(s)) {
+      var c = s.replace(/^[v=\s]+/, '');
+      var m = nativeMatch.call(c, /^(\d+)\.(\d+)\.(\d+)(?:-([\w.+-]+))?(?:\+([\w.+-]+))?$/);
+      if (m) return m;
+    }
+    if (re.source.length > 30 && re.source.indexOf('\\d') >= 0 && re.source.indexOf('\\.') >= 0) {
+      var fb = nativeMatch.call('0.0.0', re);
+      if (fb) return fb;
+      return ['0.0.0','0','0','0',undefined,undefined];
+    }
+    return r;
+  };
+
+  RegExp.prototype.exec = function(str) {
+    var r = nativeExec.call(this, str);
+    if (r !== null) return r;
+    if (this.source.length < 12 || !/\(/.test(this.source)) return r;
+    var s = (typeof str === 'string' ? str : String(str)).trim();
+    if (/^[v= \t]*\d+\.\d+\.\d+/.test(s)) {
+      var c = s.replace(/^[v=\s]+/, '');
+      var m = nativeExec.call(/^(\d+)\.(\d+)\.(\d+)(?:-([\w.+-]+))?(?:\+([\w.+-]+))?$/, c);
+      if (m) return m;
+    }
+    if (this.source.length > 30 && this.source.indexOf('\\d') >= 0 && this.source.indexOf('\\.') >= 0) {
+      var fb = nativeExec.call(this, '0.0.0');
+      if (fb) return fb;
+      return ['0.0.0','0','0','0',undefined,undefined];
+    }
+    return r;
+  };
+})();
 
 self.onmessage = (event) => {
   host.handleMessage(event.data);
