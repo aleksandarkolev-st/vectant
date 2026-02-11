@@ -36,7 +36,7 @@ const SCAN_PORTS = [
   4000, 4001, 4200,          // Angular / NestJS
   5000, 5001,                // Flask / .NET
   5173, 5174,                // Vite
-  8000, 8001,                // Django / FastAPI
+  8000,                      // Django / FastAPI (8001 excluded — used by WebRTC worker WS)
   8080, 8081, 8888,          // misc / Jupyter
 ];
 
