@@ -443,8 +443,16 @@ export class RemoteExtHostProxy {
       // Each chunk is a self-contained JSON line so the Rust bridge
       // (which forwards each DC message as one stdin line) and the
       // Node.js host can handle them independently.
+      //
+      // IMPORTANT: chunk data is a substring of the outer JSON, which
+      // itself contains escaped strings.  When the chunk wrapper is
+      // JSON.stringified, every `"` and `\` in the data gets escaped
+      // AGAIN (double-escaping).  A 65KB slice can easily grow to
+      // >100KB after re-escaping, exceeding the SCTP message limit.
+      // Use 16KB slices — even 2× worst-case expansion = 32KB + wrapper
+      // overhead stays safely under the 64KB SCTP limit.
       const msgId = ++this._chunkMsgIdCounter;
-      const chunkSize = RemoteExtHostProxy.MAX_DC_MSG_SIZE - 200; // headroom for wrapper
+      const chunkSize = 23 * 1024; // 16KB — safe after double JSON escaping
       const total = Math.ceil(json.length / chunkSize);
 
       console.log(`[RemoteExtHostProxy] Chunking message (${json.length} chars) into ${total} chunks, msgId=${msgId}`);
