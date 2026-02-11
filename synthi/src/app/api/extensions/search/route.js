@@ -12,7 +12,8 @@ import { NextResponse } from 'next/server';
 
 const OPEN_VSX_BASE = 'https://open-vsx.org/api';
 const OPEN_VSX_ORIGIN = 'https://open-vsx.org';
-const REQUEST_TIMEOUT = 30000;  // 30s for large VSIX downloads
+const REQUEST_TIMEOUT = 15000;   // 15s for JSON API calls
+const VSIX_DL_TIMEOUT = 120000;  // 120s for large VSIX binary downloads
 
 export async function GET(request) {
   try {
@@ -63,36 +64,45 @@ export async function GET(request) {
           { status: 400 }
         );
       }
-      // First get the detail to find the download URL
+
+      // --- Stage 1: Fetch extension detail to find the download URL ---
       const versionPath = version ? `/${version}` : '';
       const detailUrl = `${OPEN_VSX_BASE}/${namespace}/${extension}${versionPath}`;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
-      const detailRes = await fetch(detailUrl, {
-        headers: { 'Accept': 'application/json' },
-        signal: controller.signal,
-      });
-      if (!detailRes.ok) {
-        clearTimeout(timeout);
-        return NextResponse.json(
-          { error: `Detail fetch failed: ${detailRes.status}` },
-          { status: detailRes.status }
-        );
+      const detailCtrl = new AbortController();
+      const detailTimer = setTimeout(() => detailCtrl.abort(), REQUEST_TIMEOUT);
+      let detail;
+      try {
+        const detailRes = await fetch(detailUrl, {
+          headers: { 'Accept': 'application/json' },
+          signal: detailCtrl.signal,
+        });
+        clearTimeout(detailTimer);
+        if (!detailRes.ok) {
+          return NextResponse.json(
+            { error: `Detail fetch failed: ${detailRes.status}` },
+            { status: detailRes.status }
+          );
+        }
+        detail = await detailRes.json();
+      } catch (e) {
+        clearTimeout(detailTimer);
+        console.error(`[Open VSX Proxy] Detail fetch error for ${namespace}/${extension}:`, e.message);
+        const status = e.name === 'AbortError' ? 504 : 502;
+        return NextResponse.json({ error: `Detail fetch failed: ${e.message}` }, { status });
       }
-      const detail = await detailRes.json();
-      // Prefer the web target platform download if available — it contains
-      // the browser-compatible bundle and won't need Node.js APIs.
-      const downloadUrl = detail.files?.download;
-      // Open VSX may list target-specific downloads under allVersions or
-      // via a targetPlatform query.  Try ?targetPlatform=web first.
-      let vsixDownloadUrl = downloadUrl;
-      if (downloadUrl && !downloadUrl.includes('targetPlatform=web')) {
+
+      // Prefer the web target platform download if available
+      let vsixDownloadUrl = detail.files?.download;
+      if (vsixDownloadUrl && !vsixDownloadUrl.includes('targetPlatform=web')) {
         try {
           const webDetailUrl = `${detailUrl}?targetPlatform=web`;
+          const webCtrl = new AbortController();
+          const webTimer = setTimeout(() => webCtrl.abort(), REQUEST_TIMEOUT);
           const webRes = await fetch(webDetailUrl, {
             headers: { 'Accept': 'application/json' },
-            signal: controller.signal,
+            signal: webCtrl.signal,
           });
+          clearTimeout(webTimer);
           if (webRes.ok) {
             const webDetail = await webRes.json();
             if (webDetail.files?.download) {
@@ -104,26 +114,39 @@ export async function GET(request) {
         }
       }
       if (!vsixDownloadUrl) {
-        clearTimeout(timeout);
         return NextResponse.json(
           { error: 'No download URL found for this extension' },
           { status: 404 }
         );
       }
-      // Download the actual VSIX binary
-      const vsixRes = await fetch(vsixDownloadUrl, { signal: controller.signal });
-      clearTimeout(timeout);
+
+      // --- Stage 2: Download the actual VSIX binary (may be 10-20MB) ---
+      const dlCtrl = new AbortController();
+      const dlTimer = setTimeout(() => dlCtrl.abort(), VSIX_DL_TIMEOUT);
+      let vsixRes;
+      try {
+        vsixRes = await fetch(vsixDownloadUrl, { signal: dlCtrl.signal });
+        clearTimeout(dlTimer);
+      } catch (e) {
+        clearTimeout(dlTimer);
+        console.error(`[Open VSX Proxy] VSIX download error for ${namespace}/${extension}:`, e.message);
+        const status = e.name === 'AbortError' ? 504 : 502;
+        return NextResponse.json({ error: `VSIX download failed: ${e.message}` }, { status });
+      }
       if (!vsixRes.ok) {
         return NextResponse.json(
           { error: `VSIX download failed: ${vsixRes.status}` },
           { status: vsixRes.status }
         );
       }
-      const buffer = await vsixRes.arrayBuffer();
-      return new Response(buffer, {
+
+      // Stream the binary body through instead of buffering the entire
+      // VSIX in memory — avoids OOM / timeout for large extensions.
+      return new Response(vsixRes.body, {
         headers: {
           'Content-Type': 'application/octet-stream',
           'Content-Disposition': `attachment; filename="${namespace}.${extension}.vsix"`,
+          'Content-Length': vsixRes.headers.get('content-length') || '',
           'Cache-Control': 'public, s-maxage=3600',
         },
       });
