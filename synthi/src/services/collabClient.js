@@ -566,11 +566,27 @@ class CollabClient {
     if (!entry._seeded) {
       entry._seeded = false;
     }
-    
+
+    // ── Seed Strategy ────────────────────────────────────────────────
+    // The server's bindState is the sole authority for initial seeding
+    // of existing files (it reads from disk).  Because y-websocket
+    // fires bindState WITHOUT awaiting it, the initial sync may
+    // complete before the server has inserted content.  If we insert
+    // independently here the CRDT merge would duplicate the text.
+    //
+    // Strategy:
+    //   1. If ytext already has content → use it (server or peer seeded)
+    //   2. Otherwise set Monaco model for display only and WAIT for
+    //      server content to arrive via Y.js observer.
+    //   3. Only if ytext is STILL empty after a generous timeout
+    //      (file doesn't exist on disk) → client seeds.
+    // ─────────────────────────────────────────────────────────────────
+    const SEED_WAIT_MS = 1500; // allow server bindState to complete
+
     const doSeed = () => {
       // Only seed once per doc lifecycle
       if (entry._seeded) return;
-      
+
       const currentYtext = entry.ytext.toString();
       if (currentYtext.length > 0) {
         // Ytext has content now (from server), use it
@@ -578,23 +594,60 @@ class CollabClient {
           model.setValue(currentYtext);
         }
         entry._seeded = true;
-      } else if (hasProvidedContent) {
-        // Ytext is truly empty after sync, seed with provided content
-        entry.doc.transact(() => {
-          if (entry.ytext.length > 0) {
-            entry.ytext.delete(0, entry.ytext.length);
+        return;
+      }
+
+      // Ytext is still empty — wait for server to seed via bindState.
+      // Set up a Y.Text observer + timeout so we react as soon as
+      // server content arrives, or fall back to client-seeding for
+      // truly new (no file on disk) documents.
+      if (!hasProvidedContent) return;
+
+      let settled = false;
+      let seedTimer = null;
+      let seedObserver = null;
+
+      const commit = () => {
+        if (settled || entry._seeded) return;
+        settled = true;
+        if (seedTimer) clearTimeout(seedTimer);
+        if (seedObserver) {
+          try { entry.ytext.unobserve(seedObserver); } catch (_) {}
+        }
+
+        const content = entry.ytext.toString();
+        if (content.length > 0) {
+          // Server seeded while we waited — use it
+          if (model.getValue() !== content) {
+            model.setValue(content);
           }
-          entry.ytext.insert(0, providedContent);
-        });
-        if (model.getValue() !== providedContent) {
-          model.setValue(providedContent);
+        } else {
+          // Timeout: file likely doesn't exist on server — client seeds
+          entry.doc.transact(() => {
+            if (entry.ytext.length > 0) {
+              entry.ytext.delete(0, entry.ytext.length);
+            }
+            entry.ytext.insert(0, providedContent);
+          });
+          if (model.getValue() !== providedContent) {
+            model.setValue(providedContent);
+          }
         }
         entry._seeded = true;
-      }
+      };
+
+      // React immediately when server content arrives
+      seedObserver = () => {
+        if (entry.ytext.length > 0) commit();
+      };
+      entry.ytext.observe(seedObserver);
+
+      // Fallback timeout for truly new documents
+      seedTimer = setTimeout(commit, SEED_WAIT_MS);
     };
-    
+
     if (isSynced) {
-      // Provider already synced, safe to seed now
+      // Provider already synced, safe to check now
       if (ytextHasContent) {
         // Ytext is authoritative - sync model to ytext content
         if (model.getValue() !== ytextContent) {
@@ -602,16 +655,20 @@ class CollabClient {
         }
         entry._seeded = true;
       } else if (hasProvidedContent && !entry._seeded) {
+        // Set model for display first, then wait for server
+        if (model.getValue() !== providedContent) {
+          model.setValue(providedContent);
+        }
         doSeed();
       }
     } else {
-      // Wait for sync before seeding to avoid racing with server content
+      // Wait for sync before checking
       const syncHandler = () => {
         entry.provider.off('sync', syncHandler);
         doSeed();
       };
       entry.provider.on('sync', syncHandler);
-      
+
       // Set model content optimistically so user sees something
       // but don't write to ytext yet
       if (model.getValue() !== providedContent && hasProvidedContent) {
@@ -766,7 +823,25 @@ class CollabClient {
     
     // Only seed if truly empty and not already seeded
     if (entry._seeded) return;
-    if (entry.ytext.length === 0 && typeof initialContent === 'string' && initialContent.length > 0) {
+    if (entry.ytext.length > 0) {
+      // Server already seeded via bindState
+      entry._seeded = true;
+      return;
+    }
+
+    // Ytext is empty after sync — wait a bit longer for the server's
+    // bindState to complete (it runs async and may not have finished
+    // by the time the initial WebSocket sync fires).
+    await new Promise(resolve => setTimeout(resolve, 1500));
+
+    if (entry._seeded) return;
+    if (entry.ytext.length > 0) {
+      entry._seeded = true;
+      return;
+    }
+
+    // Still empty — file likely doesn't exist on disk, client seeds
+    if (typeof initialContent === 'string' && initialContent.length > 0) {
       entry.doc.transact(() => {
         // Double-check length inside transaction
         if (entry.ytext.length === 0) {

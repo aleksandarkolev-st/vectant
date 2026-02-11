@@ -231,9 +231,57 @@ class ValidatingPersistence {
       
       flushTimer = setTimeout(async () => {
         try {
-          const content = targetText.toString();
+          let content = targetText.toString();
           const repoPath = path.join(__dirname, 'repos', slug);
           const fullPath = path.join(repoPath, filePath);
+          
+          // ── CRDT Duplicate Detection ──────────────────────────────────
+          // When both server (bindState) and client independently insert
+          // the same content into an empty Y.Text, the CRDT merge produces
+          // duplicated text. Detect this before writing to disk.
+          const cached = fileHashCache.get(docName);
+          if (content.length > 0 && content.length % 2 === 0) {
+            const half = content.length / 2;
+            const firstHalf = content.substring(0, half);
+            const secondHalf = content.substring(half);
+            if (firstHalf === secondHalf) {
+              // Content is exactly doubled — check against disk to confirm
+              // this is a CRDT merge artifact and not intentional.
+              try {
+                const diskContent = await getActualFileContent(slug, filePath);
+                if (diskContent !== null && (firstHalf === diskContent || secondHalf === diskContent)) {
+                  console.warn(`[Collab AutoFlush] CRDT duplicate detected for ${filePath} (${content.length} chars → ${firstHalf.length}). Fixing Y.Doc...`);
+                  ydoc.transact(() => {
+                    targetText.delete(0, targetText.length);
+                    targetText.insert(0, diskContent);
+                  }, 'autoflush-dedup');
+                  // Observer will re-fire with corrected content; skip this write
+                  return;
+                }
+              } catch (_) { /* ignore read errors, proceed with write */ }
+            }
+          }
+          // Also detect content that is N× repeated (from recursive doubling
+          // across multiple reconnect cycles: 2× → 4× → 8× …)
+          if (content.length > 0 && cached) {
+            try {
+              const diskContent = await getActualFileContent(slug, filePath);
+              if (diskContent && diskContent.length > 0
+                  && content.length > diskContent.length
+                  && content.length % diskContent.length === 0) {
+                const repeats = content.length / diskContent.length;
+                if (repeats >= 2 && content === diskContent.repeat(repeats)) {
+                  console.warn(`[Collab AutoFlush] CRDT ${repeats}× duplicate detected for ${filePath}. Fixing Y.Doc...`);
+                  ydoc.transact(() => {
+                    targetText.delete(0, targetText.length);
+                    targetText.insert(0, diskContent);
+                  }, 'autoflush-dedup');
+                  return;
+                }
+              }
+            } catch (_) {}
+          }
+          // ─────────────────────────────────────────────────────────────────
           
           // Ensure directory exists
           const dirPath = path.dirname(fullPath);
@@ -352,7 +400,7 @@ class ValidatingPersistence {
           ydoc.transact(() => {
             text.delete(0, text.length);
             text.insert(0, actualContent);
-          });
+          }, 'bindState-reset');
           break;
         }
       }
@@ -362,6 +410,37 @@ class ValidatingPersistence {
     } else {
       fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
     }
+
+    // ── Post-reset duplicate guard ─────────────────────────────────────
+    // Because y-websocket fires bindState *without* awaiting it, a client
+    // may have already synced its own content into the Y.Doc while we were
+    // performing async I/O above.  If the Y.Doc content is now the file
+    // content repeated (CRDT merge of two independent inserts), fix it.
+    const postContent = getYDocContent(ydoc);
+    if (postContent.length > 0 && actualContent && actualContent.length > 0
+        && postContent.length > actualContent.length
+        && postContent !== actualContent) {
+      // Check if it's an exact N× repetition of the correct content
+      if (postContent.length % actualContent.length === 0) {
+        const repeats = postContent.length / actualContent.length;
+        if (repeats >= 2 && postContent === actualContent.repeat(repeats)) {
+          console.warn(`[Collab] CRDT duplicate detected after bindState for ${filePath} (${repeats}× repeat). Fixing...`);
+          const textTypes2 = ['monaco', 'content', 'text', 'codemirror'];
+          for (const name of textTypes2) {
+            const text = ydoc.getText(name);
+            if (text && text.length > 0) {
+              ydoc.transact(() => {
+                text.delete(0, text.length);
+                text.insert(0, actualContent);
+              }, 'bindState-dedup');
+              break;
+            }
+          }
+          fileHashCache.set(docName, { hash: actualHash, timestamp: Date.now() });
+        }
+      }
+    }
+    // ───────────────────────────────────────────────────────────────────
     
     // Set up auto-flush so all future Y.js changes are written to disk
     // This is critical for Container-First architecture
