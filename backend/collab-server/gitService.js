@@ -1474,6 +1474,50 @@ class GitService {
         }
     }
 
+    // ── Lazy Migration: Detection Helpers ───────────────────────────────────
+
+    /**
+     * Detect whether a repo at `repos/<slug>/` is a "legacy" flat working tree.
+     *
+     * Legacy layout:
+     *   repos/<slug>/.git/   ← regular (non-bare) git directory
+     *   repos/<slug>/src/
+     *   repos/<slug>/...
+     *
+     * Returns `true` if the repo exists AND is a standard non-bare repo
+     * WITHOUT the `.synthi-migrated` marker.
+     */
+    isLegacyRepo(slug) {
+        const repoPath = this.getRepoPath(slug);
+        const gitDir = path.join(repoPath, '.git');
+        const marker = path.join(repoPath, '.synthi-migrated');
+
+        // Must exist and have a .git directory (not a file — files indicate worktrees)
+        if (!fs.existsSync(gitDir)) return false;
+        try {
+            const stat = fs.statSync(gitDir);
+            if (!stat.isDirectory()) return false; // .git file = worktree, not legacy
+        } catch (_) {
+            return false;
+        }
+
+        // If already marked as migrated, it's not legacy
+        if (fs.existsSync(marker)) return false;
+
+        // Check it's NOT bare (bare repos have no working tree)
+        try {
+            const configPath = path.join(gitDir, 'config');
+            if (fs.existsSync(configPath)) {
+                const content = fs.readFileSync(configPath, 'utf8');
+                if (content.includes('bare = true')) return false;
+            }
+        } catch (_) {
+            // If we can't read config, assume non-bare
+        }
+
+        return true;
+    }
+
     // ── Worktree Factory (Session-based isolation) ────────────────────────
 
     /**
