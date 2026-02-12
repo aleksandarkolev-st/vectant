@@ -8,7 +8,8 @@ import {
   createResponse,
   createEvent,
   isValidMessage,
-  MainToWorkerMethods
+  MainToWorkerMethods,
+  WorkerToMainMethods
 } from './MessageProtocol.js';
 
 /**
@@ -53,6 +54,9 @@ export class WorkerProxy {
     
     /** @type {number} */
     this.lastMessageTime = 0;
+
+    /** @type {Map<string, Function>} Handlers for worker→main requests (method → async handler) */
+    this.requestHandlers = new Map();
   }
 
   /**
@@ -155,6 +159,10 @@ export class WorkerProxy {
       }
     } else if (data.type === 'event') {
       this._emit(data.method, ...(data.args || []));
+    } else if (data.type === 'request') {
+      // Worker is sending us a request (e.g. showQuickPick, fs/readFile)
+      // We need to process it and send a response back
+      this._handleWorkerRequest(data);
     }
   }
 
@@ -229,6 +237,47 @@ export class WorkerProxy {
         if (idx !== -1) listeners.splice(idx, 1);
       }
     };
+  }
+
+  /**
+   * Register a handler for worker→main requests.
+   * The handler receives (method, args) and should return a result (or throw).
+   * @param {string} method
+   * @param {Function} handler - async (args) => result
+   */
+  onRequest(method, handler) {
+    this.requestHandlers.set(method, handler);
+  }
+
+  /**
+   * Handle an incoming request from the worker.
+   * Looks up a registered handler, calls it, and sends the response back.
+   * @param {object} msg - { id, type: 'request', method, args }
+   */
+  async _handleWorkerRequest(msg) {
+    const { id, method, args = [] } = msg;
+
+    const handler = this.requestHandlers.get(method);
+    if (!handler) {
+      // Also emit as an event for backwards compatibility
+      this._emit(method, ...(args || []));
+      // No handler registered — send error response
+      const errMsg = createResponse(id, null, { message: `No handler for worker request: ${method}` });
+      errMsg.generation = this.generation;
+      if (this.worker) this.worker.postMessage(errMsg);
+      return;
+    }
+
+    try {
+      const result = await handler(args);
+      const response = createResponse(id, result, null);
+      response.generation = this.generation;
+      if (this.worker) this.worker.postMessage(response);
+    } catch (err) {
+      const response = createResponse(id, null, { message: err.message, stack: err.stack });
+      response.generation = this.generation;
+      if (this.worker) this.worker.postMessage(response);
+    }
   }
 
   /**
