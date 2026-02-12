@@ -1088,6 +1088,54 @@ function proxyHttpRequest(reqData) {
 }
 
 // ============================================================================
+// Sidebar-Only CSS (injected when sidebarOnly=true)
+// ============================================================================
+
+/**
+ * Returns a <style> block that hides everything except the sidebar panel.
+ * Used when embedding code-server in a scoped iframe for extension views.
+ */
+function getSidebarOnlyCSS() {
+  return `
+<style id="synthi-sidebar-only">
+  .part.editor,
+  .part.panel,
+  .part.statusbar,
+  .part.titlebar,
+  .part.auxiliarybar,
+  .part.activitybar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    overflow: hidden !important;
+  }
+  .part.sidebar {
+    position: fixed !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    max-width: 100vw !important;
+    z-index: 99999 !important;
+  }
+  .split-view-container,
+  .composite.viewlet,
+  .composite.viewlet > .content,
+  .pane-body,
+  .monaco-scrollable-element {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+  .composite.title {
+    display: none !important;
+  }
+  body, .monaco-workbench {
+    background: transparent !important;
+  }
+</style>`;
+}
+
+// ============================================================================
 // WebSocket Shim (injected into code-server HTML)
 // ============================================================================
 
@@ -1350,7 +1398,16 @@ rl.on('line', async (line) => {
           if (ct.includes('text/html') && proxyResult.body) {
             const html = Buffer.from(proxyResult.body, 'base64').toString('utf8');
             const shimScript = getWsShimScript();
-            const injectedHtml = html.replace('<head>', `<head><script>${shimScript}</script>`);
+            let injections = `<script>${shimScript}</script>`;
+
+            // Sidebar-only mode: inject CSS to hide editor/terminal/statusbar
+            // and make the sidebar fill the viewport
+            const reqPath = reqData.path || '';
+            if (reqPath.includes('sidebarOnly=true')) {
+              injections += getSidebarOnlyCSS();
+            }
+
+            const injectedHtml = html.replace('<head>', `<head>${injections}`);
             proxyResult.body = Buffer.from(injectedHtml, 'utf8').toString('base64');
           }
 

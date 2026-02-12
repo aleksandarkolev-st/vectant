@@ -168,8 +168,15 @@ class VSCodeTunnelService {
         try {
           const html = atob(result.body);
           if (!html.includes('__synthiWsShim') && html.includes('<head')) {
-            const shimScript = '<script>' + VSCodeTunnelService._wsShimCode() + '</script>';
-            const injected = html.replace(/<head([^>]*)>/i, `<head$1>${shimScript}`);
+            let injections = '<script>' + VSCodeTunnelService._wsShimCode() + '</script>';
+
+            // Sidebar-only mode: inject CSS + JS to hide everything except
+            // the sidebar panel so we can embed extension views inline.
+            if (path && path.includes('sidebarOnly=true')) {
+              injections += VSCodeTunnelService._sidebarOnlyCode(path);
+            }
+
+            const injected = html.replace(/<head([^>]*)>/i, `<head$1>${injections}`);
             result.body = btoa(injected);
             console.log('[VSCodeTunnel] Injected WS shim into HTML response');
           } else {
@@ -365,6 +372,100 @@ class VSCodeTunnelService {
   console.log('[synthi-ws-shim] WebSocket shim installed');
 })();
 `;
+  }
+
+  /**
+   * Returns CSS + JS to inject into code-server HTML when sidebarOnly=true.
+   * Hides everything except the sidebar panel so the extension's contributed
+   * views (tree views, webview panels) are shown inline within our UI.
+   *
+   * @param {string} path — the request path; may contain focusView= param
+   */
+  static _sidebarOnlyCode(path) {
+    // Extract the focusView parameter (e.g. "github-pull-requests")
+    let focusView = '';
+    try {
+      const match = path.match(/[?&]focusView=([^&]+)/);
+      if (match) focusView = decodeURIComponent(match[1]);
+    } catch (_) {}
+
+    return `
+<style id="synthi-sidebar-only">
+  /* ── Hide everything except the sidebar content ────────────── */
+  .part.editor,
+  .part.panel,
+  .part.statusbar,
+  .part.titlebar,
+  .part.auxiliarybar,
+  .part.activitybar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    overflow: hidden !important;
+  }
+  /* Make sidebar fill the entire viewport */
+  .part.sidebar {
+    position: fixed !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    max-width: 100vw !important;
+    z-index: 99999 !important;
+  }
+  /* Ensure sidebar content layers are fully visible */
+  .split-view-container,
+  .composite.viewlet,
+  .composite.viewlet > .content,
+  .pane-body,
+  .monaco-scrollable-element {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+  /* Hide the sidebar title bar (we show our own header) */
+  .composite.title {
+    display: none !important;
+  }
+  /* Transparent background to blend with parent */
+  body, .monaco-workbench {
+    background: transparent !important;
+  }
+</style>
+<script>
+(function(){
+  var focusId = ${JSON.stringify(focusView)};
+  if (!focusId) return;
+  // After VS Code loads, try to focus the extension's sidebar panel
+  var attempts = 0;
+  var timer = setInterval(function() {
+    attempts++;
+    if (attempts > 60) { clearInterval(timer); return; }
+    // Try the standard VS Code command API if available
+    try {
+      if (typeof acquireVsCodeApi === 'function') {
+        // running inside a webview, won't work here
+      }
+      // Use the workbench command palette approach:
+      // VS Code exposes commands on the window for code-server
+      var cmds = window._commandService || (window.vscode && window.vscode.commands);
+      if (cmds && cmds.executeCommand) {
+        cmds.executeCommand('workbench.view.extension.' + focusId);
+        clearInterval(timer);
+        return;
+      }
+      // Alternative: try accessing the layout service
+      var wb = document.querySelector('.monaco-workbench');
+      if (wb && wb.__view_container_id !== focusId) {
+        // Click the matching activity bar icon if visible
+        var icons = document.querySelectorAll('.action-item .codicon');
+        if (icons.length > 0) {
+          // Sidebar is rendering, wait a bit more for commands
+        }
+      }
+    } catch(e) {}
+  }, 500);
+})();
+</script>`;
   }
 }
 

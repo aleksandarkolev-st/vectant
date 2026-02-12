@@ -19,6 +19,8 @@ const PROXY_PREFIX = '/__vscode-proxy__';
 export default function CodeServerPanel({
   tunnelService,
   workspacePath = '/workspace',
+  sidebarOnly = false,
+  focusViewId = null,
   className = '',
   style = {},
 }) {
@@ -27,9 +29,15 @@ export default function CodeServerPanel({
   const [errorMsg, setErrorMsg] = useState(null);
 
   const getIframeSrc = useCallback(() => {
-    const query = workspacePath ? `?folder=${encodeURIComponent(workspacePath)}` : '';
-    return `${PROXY_PREFIX}/${query}`;
-  }, [workspacePath]);
+    const params = new URLSearchParams();
+    if (workspacePath) params.set('folder', workspacePath);
+    if (sidebarOnly) {
+      params.set('sidebarOnly', 'true');
+      if (focusViewId) params.set('focusView', focusViewId);
+    }
+    const query = params.toString();
+    return `${PROXY_PREFIX}/${query ? '?' + query : ''}`;
+  }, [workspacePath, sidebarOnly, focusViewId]);
 
   // Initialize: ensure SW is registered and proxy is attached
   useEffect(() => {

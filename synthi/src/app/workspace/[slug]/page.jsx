@@ -1746,12 +1746,6 @@ export default function EditorPage({ params }) {
                                 const containerId = sidebarView.replace('ext:', '');
                                 const container = contributedContainers.find(c => c.id === containerId);
 
-                                // Always render via ExtensionViewContainer — both
-                                // browser-only and remote (VS Code Server) extensions
-                                // contribute views/webviews that are forwarded through
-                                // the same Redux/contribution pipeline.  Code-server
-                                // runs as the extension host in the background; its
-                                // UI should NOT be embedded here.
                                 return (
                                     <ExtensionViewContainer
                                         containerId={containerId}
@@ -1761,6 +1755,9 @@ export default function EditorPage({ params }) {
                                         webviewPanels={extensionWebviewPanels}
                                         webviewManager={extensionWebviewManager}
                                         extensions={installedExtensions}
+                                        tunnelService={extensionTunnelService}
+                                        workspacePath={vscodeServerWorkspaceDir || '/workspace'}
+                                        vscodeServerState={vscodeServerState}
                                     />
                                 );
                             })() : (
