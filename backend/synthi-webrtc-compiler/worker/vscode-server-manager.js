@@ -1908,6 +1908,59 @@ rl.on('line', async (line) => {
         break;
       }
 
+      case 'refreshTreeData': {
+        // Request the preload bridge to re-resolve tree data for a specific view
+        const [viewId] = args;
+        if (viewId) {
+          sendToPreloadClients({ action: 'refreshTreeData', viewId });
+        } else {
+          sendToPreloadClients({ action: 'refreshAllTrees' });
+        }
+        sendResponse(id, { success: true });
+        break;
+      }
+
+      case 'getCachedTreeData': {
+        // Return cached tree data from preload bridge (no round-trip needed)
+        const [viewId] = args;
+        if (viewId) {
+          const data = preloadTreeCache.get(viewId) || null;
+          sendResponse(id, { viewId, data });
+        } else {
+          // Return all cached trees
+          const all = {};
+          for (const [k, v] of preloadTreeCache) {
+            all[k] = v;
+          }
+          sendResponse(id, all);
+        }
+        break;
+      }
+
+      case 'executeExtensionCommand': {
+        // Execute a command registered by an extension via the preload bridge
+        const [commandId, ...commandArgs] = args;
+        if (!commandId) {
+          sendResponse(id, null, new Error('commandId is required'));
+          break;
+        }
+        sendToPreloadClients({
+          action: 'executeCommand',
+          commandId,
+          args: commandArgs,
+        });
+        // Commands are fire-and-forget through the preload bridge
+        sendResponse(id, { success: true, commandId });
+        break;
+      }
+
+      case 'listPreloadProviders': {
+        // Request the preload bridge to enumerate all registered providers
+        sendToPreloadClients({ action: 'listProviders' });
+        sendResponse(id, { success: true });
+        break;
+      }
+
       case 'proxyHttp': {
         const [reqData] = args;
         if (!serverPort || serverState !== 'running') {

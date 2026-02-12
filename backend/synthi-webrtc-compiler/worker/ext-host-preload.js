@@ -227,6 +227,9 @@ const originalLoad = Module._load;
 /** @type {boolean} Whether we've already wrapped the vscode module */
 let vsCodeWrapped = false;
 
+/** @type {object|null} Reference to the real vscode API for command execution */
+let realVscodeApi = null;
+
 /**
  * Intercept Module._load to wrap the `vscode` module when it's first loaded.
  * All other modules pass through untouched.
@@ -241,6 +244,7 @@ Module._load = function (request, parent, isMain) {
   // Only intercept the 'vscode' module, and only once
   if (request === 'vscode' && !vsCodeWrapped && result && typeof result === 'object') {
     vsCodeWrapped = true;
+    realVscodeApi = result;
     try {
       log('Intercepted vscode module — wrapping API surfaces');
       wrapVSCodeAPI(result);
@@ -777,6 +781,27 @@ function _handleBridgeRequest(msg) {
         treeViews,
         webviews,
       });
+      break;
+    }
+
+    case 'executeCommand': {
+      // Execute a command via the real vscode.commands.executeCommand API
+      const { commandId, args: cmdArgs } = msg;
+      if (!realVscodeApi?.commands?.executeCommand) {
+        logError('Cannot execute command: vscode API not available yet');
+        break;
+      }
+      log(`Bridge requested command execution: ${commandId}`);
+      try {
+        realVscodeApi.commands.executeCommand(commandId, ...(cmdArgs || []))
+          .then(() => {
+            log(`Command ${commandId} executed successfully`);
+          }, (err) => {
+            logError(`Command ${commandId} failed: ${err.message}`);
+          });
+      } catch (e) {
+        logError(`Command ${commandId} execution error: ${e.message}`);
+      }
       break;
     }
 
