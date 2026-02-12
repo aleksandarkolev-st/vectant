@@ -57,7 +57,6 @@ import { cn } from '@/lib/utils';
 import { useExtensions } from '@/hooks/useExtensions';
 import ExtensionSidebar from '@/components/extensions/ExtensionSidebar';
 import ExtensionViewContainer from '@/components/extensions/ExtensionViewContainer';
-import CodeServerPanel from '@/components/extensions/CodeServerPanel';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -1746,20 +1745,13 @@ export default function EditorPage({ params }) {
                             ) : sidebarView.startsWith('ext:') ? (() => {
                                 const containerId = sidebarView.replace('ext:', '');
                                 const container = contributedContainers.find(c => c.id === containerId);
-                                const extInfo = installedExtensions.find(e => e.id === container?.extensionId);
-                                const isVSCodeServerExt = extInfo?.remote === true;
 
-                                // If extension runs on VS Code Server, embed code-server UI
-                                if (isVSCodeServerExt && vscodeServerState === 'running' && extensionTunnelService) {
-                                    return (
-                                        <CodeServerPanel
-                                            tunnelService={extensionTunnelService}
-                                            workspacePath={vscodeServerWorkspaceDir || '/workspace'}
-                                            className="h-full"
-                                        />
-                                    );
-                                }
-
+                                // Always render via ExtensionViewContainer — both
+                                // browser-only and remote (VS Code Server) extensions
+                                // contribute views/webviews that are forwarded through
+                                // the same Redux/contribution pipeline.  Code-server
+                                // runs as the extension host in the background; its
+                                // UI should NOT be embedded here.
                                 return (
                                     <ExtensionViewContainer
                                         containerId={containerId}
