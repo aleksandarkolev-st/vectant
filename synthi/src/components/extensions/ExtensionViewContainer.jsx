@@ -12,7 +12,6 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { ChevronRight, ChevronDown, Box, Loader2, AlertTriangle, Globe } from 'lucide-react';
-import CodeServerPanel from './CodeServerPanel';
 
 // ─── Tree view placeholder (until extension provides data) ───
 function TreeViewSection({ view, treeData, onRequestData }) {
@@ -144,9 +143,6 @@ function WebviewPanelEmbed({ viewId, webviewManager }) {
  * @param {Array} props.webviewPanels - Active webview panels
  * @param {Object} props.webviewManager - WebviewManager instance
  * @param {Object} props.extensions - Map of extensionId → extension info
- * @param {Object} [props.tunnelService] - VS Code tunnel service (for remote extensions)
- * @param {string} [props.workspacePath] - Workspace path on the remote server
- * @param {string} [props.vscodeServerState] - VS Code Server state
  */
 export default function ExtensionViewContainer({
   containerId,
@@ -156,9 +152,6 @@ export default function ExtensionViewContainer({
   webviewPanels = [],
   webviewManager = null,
   extensions = {},
-  tunnelService = null,
-  workspacePath = '/workspace',
-  vscodeServerState = null,
 }) {
   // extensions may be an array (from selectExtensionList) or an object map.
   // Normalise to find the extension info by its ID.
@@ -167,12 +160,6 @@ export default function ExtensionViewContainer({
     : extensions[container?.extensionId];
   const isActive = extInfo?.state === 'active';
   const isPendingRemote = extInfo?.state === 'pending-remote' || extInfo?.state === 'activating';
-  const isRemote = extInfo?.remote === true;
-
-  // Remote extensions running on code-server: embed the sidebar from
-  // code-server directly instead of showing empty local stubs.  The iframe
-  // is configured with sidebarOnly=true so only the panel content is visible.
-  const showCodeServerSidebar = isRemote && isActive && tunnelService && vscodeServerState === 'running';
 
   return (
     <div className="h-full flex flex-col bg-[#09090b] text-[#e8eaed]">
@@ -211,15 +198,6 @@ export default function ExtensionViewContainer({
               the remote extension host once connected.
             </div>
           </div>
-        ) : showCodeServerSidebar ? (
-          /* Remote extension: embed code-server sidebar panel inline */
-          <CodeServerPanel
-            tunnelService={tunnelService}
-            workspacePath={workspacePath}
-            sidebarOnly={true}
-            focusViewId={containerId}
-            className="h-full"
-          />
         ) : !isActive ? (
           <div className="flex flex-col items-center justify-center h-full text-center px-4">
             <AlertTriangle className="w-6 h-6 text-[#4a5060] mb-2" />

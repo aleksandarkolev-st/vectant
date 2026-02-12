@@ -421,16 +421,19 @@ export class MainThreadBridge {
             extensionId,
           });
 
-          // Set a placeholder HTML indicating the extension runs on the server
+          // Set a placeholder HTML — the view runs on code-server's
+          // Extension Host but we don't yet have a protocol bridge to
+          // forward its rendered HTML.  Show contextual guidance instead.
+          const displayName = manifest.displayName || extensionId;
           const placeholderHtml = `
             <html>
-            <body style="font-family: system-ui, sans-serif; color: #ccc; padding: 16px; text-align: center;">
-              <p style="font-size: 13px; margin-top: 40px;">
-                This view is provided by <strong>${manifest.displayName || extensionId}</strong>
-                running on the VS Code Server.
+            <body style="font-family: system-ui, sans-serif; color: #9ba2b8; padding: 20px 16px; text-align: center; background: transparent;">
+              <p style="font-size: 12px; margin-top: 24px; color: #e8eaed;">
+                <strong>${displayName}</strong>
               </p>
-              <p style="font-size: 11px; color: #888;">
-                Extension Host bridge integration pending.
+              <p style="font-size: 11px; color: #6b7280; margin-top: 8px;">
+                This view is running on the remote extension host.
+                Use the tree views above to interact with the extension.
               </p>
             </body>
             </html>`;
