@@ -266,7 +266,24 @@ class GitService {
      */
     _ensureLocalExcludes(repoPath) {
         try {
-            const excludePath = path.join(repoPath, '.git', 'info', 'exclude');
+            // Resolve the actual git directory — handles both standard (.git dir)
+            // and worktree (.git file pointing to gitdir)
+            let gitDirPath = path.join(repoPath, '.git');
+            try {
+                const stat = fs.statSync(gitDirPath);
+                if (stat.isFile()) {
+                    // Worktree: .git file contains "gitdir: /path/to/actual/gitdir"
+                    const content = fs.readFileSync(gitDirPath, 'utf8').trim();
+                    const match = content.match(/^gitdir:\s*(.+)$/m);
+                    if (match) {
+                        gitDirPath = path.resolve(repoPath, match[1].trim());
+                    }
+                }
+            } catch (_) {
+                // Fall through — use the default .git path
+            }
+
+            const excludePath = path.join(gitDirPath, 'info', 'exclude');
             const infoDir = path.dirname(excludePath);
             if (!fs.existsSync(infoDir)) fs.mkdirSync(infoDir, { recursive: true });
 
@@ -274,7 +291,7 @@ class GitService {
                 ? fs.readFileSync(excludePath, 'utf8')
                 : '';
 
-            const patterns = ['.git-archive.tar.gz'];
+            const patterns = ['.git-archive.tar.gz', '.synthi-migrated', '_upstream.git', 'sessions/'];
             const toAppend = patterns.filter(p => !existing.includes(p));
             if (toAppend.length > 0) {
                 const suffix = existing.endsWith('\n') || existing === '' ? '' : '\n';
