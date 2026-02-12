@@ -245,10 +245,15 @@ class GitService {
             throw new RepoNotFoundError(slug);
         }
         
-        // Check for .git directory to prevent traversing up to parent repository
+        // Check for .git (directory for standard repos, file for worktrees)
         const gitDir = path.join(repoPath, '.git');
-        if (!fs.existsSync(gitDir) || !fs.statSync(gitDir).isDirectory()) {
-             throw new RepoNotInitializedError(slug);
+        if (!fs.existsSync(gitDir)) {
+            throw new RepoNotInitializedError(slug);
+        }
+
+        const stat = fs.statSync(gitDir);
+        if (!stat.isDirectory() && !stat.isFile()) {
+            throw new RepoNotInitializedError(slug);
         }
 
         return simpleGit(repoPath);
