@@ -761,6 +761,27 @@ async function startServer(slug, options = {}) {
     // Append workspace directory
     args.push(workspaceDir);
 
+    // ── Start the preload bridge BEFORE spawning code-server ──
+    // The bridge TCP server must be listening before the Extension Host
+    // process starts, so ext-host-preload.js can connect immediately.
+    let bridgePort = 0;
+    try {
+      bridgePort = await startPreloadBridge();
+      process.stderr.write(`[vscode-server-manager] Preload bridge ready on port ${bridgePort}\n`);
+    } catch (bridgeErr) {
+      process.stderr.write(`[vscode-server-manager] Preload bridge start failed (non-fatal): ${bridgeErr.message}\n`);
+    }
+
+    // Build NODE_OPTIONS to inject ext-host-preload.js into the Extension Host.
+    // The preload script uses SYNTHI_EXT_BRIDGE_PORT to connect back to us.
+    // It checks for VSCODE_IPC_HOOK_EXTHOST to ensure it only activates
+    // inside the Extension Host process, not code-server's main process.
+    const preloadPath = path.join(__dirname, 'ext-host-preload.js');
+    const existingNodeOptions = process.env.NODE_OPTIONS || '';
+    const nodeOptions = bridgePort
+      ? `${existingNodeOptions} --require "${preloadPath}"`.trim()
+      : existingNodeOptions;
+
     process.stderr.write(`[vscode-server-manager] Starting: ${binary} ${args.join(' ')}\n`);
 
     serverProcess = spawn(binary, args, {
@@ -771,6 +792,11 @@ async function startServer(slug, options = {}) {
         VSCODE_SERVER_TOKEN: token,
         // Disable GPU (headless server)
         VSCODE_CLI_DISABLE_GPU: '1',
+        // Inject ext-host-preload.js into all Node child processes.
+        // The preload script self-guards to only activate in the Extension Host.
+        ...(nodeOptions ? { NODE_OPTIONS: nodeOptions } : {}),
+        // Tell the preload script where our TCP bridge is listening
+        ...(bridgePort ? { SYNTHI_EXT_BRIDGE_PORT: String(bridgePort) } : {}),
       },
     });
 
@@ -888,7 +914,10 @@ function stopServer() {
 
     process.stderr.write('[vscode-server-manager] Stopping server...\n');
 
-    // Also stop the Extension Host Bridge
+    // Stop the preload bridge (TCP server for ext-host-preload.js)
+    stopPreloadBridge();
+
+    // Also stop the Extension Host Bridge (legacy remote-ext-host.js)
     stopExtHostBridge();
 
     const killTimer = setTimeout(() => {
