@@ -438,6 +438,21 @@ export class MainThreadBridge {
       this._emitRemoteContribution?.('setStatusBar', { text, timeout });
     });
 
+    // When we receive a provider list, auto-resolve any webview views.
+    // Code-server runs headless, so resolveWebviewView is never called
+    // naturally — we explicitly trigger it for each registered provider.
+    this.vscodeServerProxy.on('providerList', (treeViews, webviews) => {
+      console.log(`[MainThreadBridge/vscode-server] providerList: ${treeViews?.length || 0} trees, ${webviews?.length || 0} webviews`);
+      if (webviews && webviews.length > 0) {
+        for (const viewType of webviews) {
+          console.log(`[MainThreadBridge/vscode-server] Auto-resolving webview view: ${viewType}`);
+          this.vscodeServerProxy.request('resolveWebviewView', [viewType]).catch(err => {
+            console.warn(`[MainThreadBridge] resolveWebviewView failed for ${viewType}:`, err.message);
+          });
+        }
+      }
+    });
+
     console.log('[MainThreadBridge] VS Code Server event handlers wired');
   }
 

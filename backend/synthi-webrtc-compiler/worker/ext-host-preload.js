@@ -656,17 +656,23 @@ function wrapWebviewProviders(vscode) {
     vscode.window.registerWebviewViewProvider = function wrappedRegisterWebviewViewProvider(viewType, provider, options) {
       log(`registerWebviewViewProvider intercepted: ${viewType}`);
 
+      // Notify bridge immediately at registration time (not deferred to
+      // resolveWebviewView) so the browser knows this view exists even
+      // when code-server runs headless and never opens the sidebar.
+      const extensionId = _inferExtensionId();
+      bridgeSend({ type: 'webviewProvider', viewType, extensionId });
+
+      // Track the provider at registration time so we can call
+      // resolveWebviewView on demand from the bridge
+      trackedWebviewProviders.set(viewType, { provider, webviewView: null, extensionId });
+
       // Wrap the provider's resolveWebviewView to intercept the webview object
       const wrappedProvider = Object.create(provider);
       wrappedProvider.resolveWebviewView = function (webviewView, context, token) {
         // Intercept the webview's html property setter
         _interceptWebviewHtml(webviewView.webview, viewType);
 
-        // Notify bridge
-        const extensionId = _inferExtensionId();
-        bridgeSend({ type: 'webviewProvider', viewType, extensionId });
-
-        // Track
+        // Update tracking with the resolved webviewView
         trackedWebviewProviders.set(viewType, { provider, webviewView, extensionId });
 
         // Call original resolveWebviewView
@@ -716,6 +722,46 @@ function wrapWebviewProviders(vscode) {
     };
     log('createWebviewPanel wrapped');
   }
+}
+
+/**
+ * Create a mock Webview object that mimics VS Code's Webview interface.
+ * Used for headless resolution of webview view providers.
+ *
+ * @param {string} viewType - The view identifier
+ * @returns {object} A mock webview with html property, messaging, etc.
+ */
+function _createMockWebview(viewType) {
+  const _onDidReceiveMessage = { event: () => ({ dispose() {} }), fire: () => {} };
+  const _onDidDispose = { event: () => ({ dispose() {} }), fire: () => {} };
+
+  const webview = {
+    _html: '',
+    options: {},
+    cspSource: '',
+    onDidReceiveMessage: _onDidReceiveMessage.event,
+    onDidDispose: _onDidDispose.event,
+    asWebviewUri(uri) {
+      // code-server rewrites URIs anyway, return as-is
+      return uri;
+    },
+    postMessage(message) {
+      // Extensions call this to send messages to the webview.
+      // In headless mode we can bridge this later if needed.
+      log(`Mock webview postMessage for ${viewType}: ${JSON.stringify(message).slice(0, 200)}`);
+      return Promise.resolve(true);
+    },
+  };
+
+  // Define html as a simple getter/setter so _interceptWebviewHtml can wrap it
+  Object.defineProperty(webview, 'html', {
+    get() { return webview._html; },
+    set(value) { webview._html = value; },
+    configurable: true,
+    enumerable: true,
+  });
+
+  return webview;
 }
 
 /**
@@ -847,6 +893,71 @@ function _handleBridgeRequest(msg) {
         treeViews,
         webviews,
       });
+      break;
+    }
+
+    case 'resolveWebviewView': {
+      // Resolve a webview view on demand.  Code-server runs headless so
+      // resolveWebviewView is never called naturally.  We create a mock
+      // WebviewView and call the provider ourselves.
+      const { viewType } = msg;
+      const entry = trackedWebviewProviders.get(viewType);
+      if (!entry || !entry.provider) {
+        logError(`No tracked webview provider for: ${viewType}`);
+        break;
+      }
+
+      // If already resolved (has a webviewView), just re-send the current HTML
+      if (entry.webviewView && entry.webviewView.webview) {
+        const html = entry.webviewView.webview.html;
+        if (html) {
+          log(`Re-sending existing HTML for ${viewType} (${html.length} chars)`);
+          bridgeSend({ type: 'webviewHtml', viewType, html });
+        }
+        break;
+      }
+
+      log(`Resolving webview view on demand: ${viewType}`);
+
+      try {
+        // Create a mock WebviewView object that mimics VS Code's interface.
+        // The extension will set webview.html which we intercept.
+        const mockWebview = _createMockWebview(viewType);
+        const mockWebviewView = {
+          webview: mockWebview,
+          viewType,
+          visible: true,
+          onDidChangeVisibility: { event: () => ({ dispose() {} }) },
+          onDidDispose: { event: () => ({ dispose() {} }) },
+          show: () => {},
+          title: undefined,
+          description: undefined,
+          badge: undefined,
+        };
+
+        // Intercept HTML before calling resolve
+        _interceptWebviewHtml(mockWebview, viewType);
+
+        // Update tracking
+        trackedWebviewProviders.set(viewType, { ...entry, webviewView: mockWebviewView });
+
+        // Call the provider's resolveWebviewView
+        const result = entry.provider.resolveWebviewView(mockWebviewView, {}, { isCancellationRequested: false, onCancellationRequested: { event: () => ({ dispose() {} }) } });
+
+        // Handle async providers
+        if (result && typeof result.then === 'function') {
+          result.then(() => {
+            log(`Webview view ${viewType} resolved (async)`);
+            // HTML should have been sent via the interceptor
+          }).catch((err) => {
+            logError(`resolveWebviewView failed for ${viewType}: ${err.message}`);
+          });
+        } else {
+          log(`Webview view ${viewType} resolved (sync)`);
+        }
+      } catch (e) {
+        logError(`resolveWebviewView error for ${viewType}: ${e.message}`);
+      }
       break;
     }
 

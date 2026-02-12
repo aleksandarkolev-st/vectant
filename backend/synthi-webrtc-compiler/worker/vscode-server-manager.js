@@ -377,6 +377,13 @@ function _handlePreloadMessage(msg) {
       // A webview view provider was registered
       process.stderr.write(`[preload-bridge] Webview provider registered: ${msg.viewType} (ext: ${msg.extensionId})\n`);
       sendEvent('createWebview', msg.viewType, msg.viewType, msg.viewType, { extensionId: msg.extensionId });
+      // Auto-resolve: code-server is headless so the sidebar never opens,
+      // meaning resolveWebviewView is never called naturally.  We trigger
+      // it ourselves so the extension generates its HTML content.
+      setTimeout(() => {
+        process.stderr.write(`[preload-bridge] Auto-resolving webview view: ${msg.viewType}\n`);
+        sendToPreloadClients({ action: 'resolveWebviewView', viewType: msg.viewType });
+      }, 500);
       break;
     }
 
@@ -1975,6 +1982,21 @@ rl.on('line', async (line) => {
         // Request the preload bridge to enumerate all registered providers
         sendToPreloadClients({ action: 'listProviders' });
         sendResponse(id, { success: true });
+        break;
+      }
+
+      case 'resolveWebviewView': {
+        // Ask the preload bridge to resolve a specific webview view on demand.
+        // Code-server runs headless, so resolveWebviewView is never called
+        // naturally — we trigger it ourselves so the extension generates HTML.
+        const [viewType] = args;
+        if (!viewType) {
+          sendResponse(id, null, new Error('viewType is required'));
+          break;
+        }
+        log(`Requesting preload to resolve webview view: ${viewType}`);
+        sendToPreloadClients({ action: 'resolveWebviewView', viewType });
+        sendResponse(id, { success: true, viewType });
         break;
       }
 
