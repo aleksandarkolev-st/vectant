@@ -146,6 +146,9 @@ let serverToken = null;
 /** @type {string|null} */
 let currentSlug = null;
 
+/** @type {string|null} */
+let currentWorkspaceDir = null;
+
 /** @type {'stopped'|'starting'|'running'|'error'} */
 let serverState = 'stopped';
 
@@ -423,6 +426,7 @@ async function startServer(slug, options = {}) {
     const workspaceDir = options.workspaceDir
       || path.join(os.tmpdir(), 'synthi-workspaces', slug);
     fs.mkdirSync(workspaceDir, { recursive: true });
+    currentWorkspaceDir = workspaceDir;
 
     // User data directory (settings, state)
     const userDataDir = path.join(VSCODE_SERVER_DIR, 'user-data', slug);
@@ -513,7 +517,7 @@ async function startServer(slug, options = {}) {
     startHealthChecks(port);
 
     process.stderr.write(`[vscode-server-manager] Server ready on port ${port}\n`);
-    return { port, token };
+    return { port, token, workspaceDir };
 
   } catch (err) {
     serverState = 'error';
@@ -589,6 +593,7 @@ function stopServer() {
       serverState = 'stopped';
       serverPort = null;
       serverToken = null;
+      currentWorkspaceDir = null;
       resolve();
     });
 
@@ -1276,6 +1281,7 @@ rl.on('line', async (line) => {
           port: serverPort,
           token: serverToken,
           slug: currentSlug,
+          workspaceDir: currentWorkspaceDir,
           extensions: listInstalledExtensions(),
         });
         break;
@@ -1375,8 +1381,10 @@ rl.on('line', async (line) => {
         const [tunnelId, data, isBinary] = args;
         try {
           wsSend(tunnelId, data, isBinary);
-          sendResponse(id, { success: true });
+          // Fire-and-forget: skip response to reduce DataChannel traffic.
+          // The browser side sends wsSend without awaiting a response.
         } catch (err) {
+          // Only respond on error so the browser can log it
           sendResponse(id, null, err);
         }
         break;

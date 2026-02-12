@@ -151,6 +151,14 @@ export class VSCodeServerProxy {
     /** @type {ChunkReassembler} */
     this._reassembler = new ChunkReassembler();
 
+    // ── Backpressure / send queue ──────────────────────────────
+    /** @type {string[]} */
+    this._sendQueue = [];
+    this._draining = false;
+    // DataChannel bufferedAmount threshold (128 KB).  When the buffer
+    // exceeds this, new sends are queued until it drains.
+    this._highWaterMark = 128 * 1024;
+
     this._wireChannel();
   }
 
@@ -294,13 +302,101 @@ export class VSCodeServerProxy {
       this.pendingRequests.set(msg.id, { resolve, reject, timeout });
 
       try {
-        this.channel.send(JSON.stringify(msg));
+        this._send(JSON.stringify(msg));
       } catch (err) {
         this.pendingRequests.delete(msg.id);
         clearTimeout(timeout);
         reject(err);
       }
     });
+  }
+
+  // =========================================================================
+  // Backpressure-aware send
+  // =========================================================================
+
+  /**
+   * Queue-aware send.  If the DataChannel buffer is already above the
+   * high-water mark, the payload is queued and flushed once the buffer
+   * drains below `_highWaterMark` via `bufferedamountlow`.
+   *
+   * @param {string} data - serialized JSON to send
+   */
+  _send(data) {
+    if (this.channel.readyState !== 'open') {
+      throw new Error(`DataChannel not open (state: ${this.channel.readyState})`);
+    }
+
+    if (this.channel.bufferedAmount > this._highWaterMark) {
+      this._sendQueue.push(data);
+      this._ensureDrain();
+      return;
+    }
+
+    try {
+      this.channel.send(data);
+    } catch (err) {
+      // If send fails (buffer full), queue the data for retry
+      this._sendQueue.push(data);
+      this._ensureDrain();
+    }
+  }
+
+  /**
+   * Fire-and-forget send (no request/response tracking).
+   * Used for wsSend where the backend doesn't respond on success.
+   *
+   * @param {string} method
+   * @param {any[]} [args]
+   */
+  _fireAndForget(method, args = []) {
+    if (this.state === 'terminated' || this.channel.readyState !== 'open') return;
+    const msg = createRequest(method, args);
+    try {
+      this._send(JSON.stringify(msg));
+    } catch (_) {
+      // Silently drop — fire-and-forget
+    }
+  }
+
+  /**
+   * Set up the `bufferedamountlow` listener to drain the send queue.
+   */
+  _ensureDrain() {
+    if (this._draining) return;
+    this._draining = true;
+    this.channel.bufferedAmountLowThreshold = this._highWaterMark / 2;
+    this.channel.onbufferedamountlow = () => {
+      this._drainQueue();
+    };
+  }
+
+  /**
+   * Flush queued messages while the buffer is below the high-water mark.
+   */
+  _drainQueue() {
+    while (this._sendQueue.length > 0) {
+      if (this.channel.readyState !== 'open') {
+        this._sendQueue.length = 0;
+        break;
+      }
+      if (this.channel.bufferedAmount > this._highWaterMark) {
+        return; // wait for next bufferedamountlow event
+      }
+      const data = this._sendQueue.shift();
+      try {
+        this.channel.send(data);
+      } catch (_) {
+        // channel failed, discard remaining
+        this._sendQueue.length = 0;
+        break;
+      }
+    }
+    // All drained — remove listener
+    if (this._sendQueue.length === 0) {
+      this._draining = false;
+      this.channel.onbufferedamountlow = null;
+    }
   }
 
   // =========================================================================
@@ -403,6 +499,7 @@ export class VSCodeServerProxy {
       this.serverPort = result.port;
       this.serverToken = result.token;
       this.serverState = 'running';
+      this.workspaceDir = result.workspaceDir || null;
     }
     return result;
   }
@@ -509,12 +606,16 @@ export class VSCodeServerProxy {
 
   /**
    * Send data through an open WebSocket tunnel.
+   * Fire-and-forget — the backend does not send a response on success,
+   * only on error.  This dramatically reduces DataChannel traffic since
+   * code-server can send dozens of WS messages per second.
+   *
    * @param {number} tunnelId
    * @param {string} data - text or base64-encoded binary
    * @param {boolean} [isBinary=false]
    */
   async wsSend(tunnelId, data, isBinary = false) {
-    return this.request('wsSend', [tunnelId, data, isBinary], 10000);
+    this._fireAndForget('wsSend', [tunnelId, data, isBinary]);
   }
 
   /**
@@ -590,6 +691,8 @@ export class VSCodeServerProxy {
       clearInterval(this._heartbeatInterval);
       this._heartbeatInterval = null;
     }
+    this._sendQueue.length = 0;
+    this._draining = false;
     this._rejectAllPending('Proxy disposed');
     this._rejectReady('Proxy disposed');
     this.state = 'terminated';
