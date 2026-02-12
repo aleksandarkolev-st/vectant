@@ -366,13 +366,8 @@ export class MainThreadBridge {
         if (result.success) {
           info.isActive = true;
           this.onExtensionStateChanged?.(info.id, 'active');
-          console.log(`[MainThreadBridge] ✓ ${info.id} installed on VS Code Server (uiBridged=${result.uiBridged})`);
-
-          // Only emit synthetic placeholder events if the Extension Host Bridge
-          // did NOT load this extension for live UI event forwarding.
-          if (!result.uiBridged) {
-            this._emitSyntheticWebviewEvents(info.id, info.manifest);
-          }
+          console.log(`[MainThreadBridge] ✓ ${info.id} installed on VS Code Server`);
+          // Preload bridge handles UI events automatically — no synthetic events needed
         } else {
           this.onExtensionStateChanged?.(info.id, 'pending-remote');
           console.warn(`[MainThreadBridge] ${info.id}: VS Code Server install returned unsuccessful`);
@@ -445,6 +440,15 @@ export class MainThreadBridge {
    * synthetic webview events for any webview-type views defined in the
    * extension's manifest. This makes the UI show the webview panel (even if
    * we can't populate it with real HTML from code-server's Extension Host yet).
+   *
+  /**
+   * @deprecated With the preload-based bridge, extensions get the real vscode API
+   * and UI events are forwarded automatically. This method is retained only as a
+   * fallback for edge cases where the preload bridge isn't connected yet.
+   *
+   * After installing a Node-only extension on the VS Code Server, emit
+   * synthetic webview events for any webview-type views defined in the
+   * extension's manifest.
    *
    * @param {string} extensionId
    * @param {object} manifest
