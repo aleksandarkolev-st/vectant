@@ -161,7 +161,37 @@ const VALID_REQUEST_METHODS = new Set([
   'killExtension',
   'getMetrics',
   'getExtensionStates',
-  'ping'
+  'ping',
+  // Language provider invocations (Main → Worker)
+  'lang/provideCompletion',
+  'lang/provideHover',
+  'lang/provideDefinition',
+  'lang/provideTypeDefinition',
+  'lang/provideImplementation',
+  'lang/provideReferences',
+  'lang/provideDocumentHighlights',
+  'lang/provideDocumentSymbols',
+  'lang/provideCodeActions',
+  'lang/provideCodeLenses',
+  'lang/resolveCodeLens',
+  'lang/provideFormatting',
+  'lang/provideRangeFormatting',
+  'lang/provideOnTypeFormatting',
+  'lang/provideSignatureHelp',
+  'lang/provideRename',
+  'lang/prepareRename',
+  'lang/provideDocumentLinks',
+  'lang/provideColors',
+  'lang/provideColorPresentations',
+  'lang/provideFoldingRanges',
+  'lang/provideSelectionRanges',
+  'lang/provideInlayHints',
+  'lang/provideInlineCompletions',
+  'lang/provideSemanticTokens',
+  'lang/resolveCompletionItem',
+  // Tree view
+  'treeView/getChildren',
+  'treeView/getTreeItem'
 ]);
 
 let messageIdCounter = 0;
@@ -665,6 +695,27 @@ class HardenedExtensionHost {
 
     /** @type {Map<string, object>} Tree data providers registered by extensions */
     this._treeDataProviders = new Map();
+
+    /** @type {Map<string, object>} Language providers registered by extensions */
+    this._languageProviders = new Map();
+
+    /** @type {Map<number, {resolve: Function, reject: Function}>} Pending round-trip requests */
+    this._pendingRequests = new Map();
+
+    /** @type {number} Request ID counter */
+    this._requestIdCounter = 0;
+
+    /** @type {object|null} Active text editor state */
+    this._activeTextEditor = null;
+
+    /** @type {Map<string, object>} File watchers */
+    this._fileWatchers = new Map();
+
+    /** @type {Map<string, object>} Terminals */
+    this._terminals = new Map();
+
+    /** @type {Map<string, object>} Open text documents synced from main thread */
+    this._documents = new Map();
     
     /** @type {boolean} Is the host accepting new work */
     this.accepting = true;
@@ -696,6 +747,19 @@ class HardenedExtensionHost {
 
     if (msg.type === 'request') {
       this._handleRequest(msg);
+    } else if (msg.type === 'response') {
+      // Handle responses to requests we sent to the main thread (round-trip RPC)
+      const pending = this._pendingRequests?.get(msg.id);
+      if (pending) {
+        this._pendingRequests.delete(msg.id);
+        if (msg.error) {
+          pending.reject(new Error(msg.error.message));
+        } else {
+          pending.resolve(msg.result);
+        }
+      }
+    } else if (msg.type === 'event') {
+      this._handleEvent?.(msg);
     }
   }
 
@@ -748,6 +812,37 @@ class HardenedExtensionHost {
         case 'getExtensionStates':
           result = this._getExtensionStates();
           break;
+
+        // ─── Language Provider Invocations ───────────────────────────
+        case 'lang/provideCompletion':
+        case 'lang/provideHover':
+        case 'lang/provideDefinition':
+        case 'lang/provideTypeDefinition':
+        case 'lang/provideImplementation':
+        case 'lang/provideReferences':
+        case 'lang/provideDocumentHighlights':
+        case 'lang/provideDocumentSymbols':
+        case 'lang/provideCodeActions':
+        case 'lang/provideCodeLenses':
+        case 'lang/resolveCodeLens':
+        case 'lang/provideFormatting':
+        case 'lang/provideRangeFormatting':
+        case 'lang/provideOnTypeFormatting':
+        case 'lang/provideSignatureHelp':
+        case 'lang/provideRename':
+        case 'lang/prepareRename':
+        case 'lang/provideDocumentLinks':
+        case 'lang/provideColors':
+        case 'lang/provideColorPresentations':
+        case 'lang/provideFoldingRanges':
+        case 'lang/provideSelectionRanges':
+        case 'lang/provideInlayHints':
+        case 'lang/provideInlineCompletions':
+        case 'lang/provideSemanticTokens':
+        case 'lang/resolveCompletionItem':
+          result = await this._invokeLanguageProvider(method, args);
+          break;
+
         default:
           // Should never happen due to validation
           throw new Error(`Unknown method: ${method}`);
@@ -767,6 +862,89 @@ class HardenedExtensionHost {
       return;
     }
     self.postMessage(createEvent(method, args));
+  }
+
+  /**
+   * Send a request to the main thread and wait for a response (round-trip RPC).
+   */
+  request(method, args = [], timeout = 30000) {
+    const id = createMessageId();
+    const msg = { id, type: 'request', method, args };
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._pendingRequests.delete(id);
+        reject(new Error(`Request timeout: ${method}`));
+      }, timeout);
+
+      this._pendingRequests.set(id, {
+        resolve: (result) => { clearTimeout(timer); resolve(result); },
+        reject: (err) => { clearTimeout(timer); reject(err); }
+      });
+
+      self.postMessage(msg);
+    });
+  }
+
+  /**
+   * Handle event messages from main thread (no response expected).
+   */
+  _handleEvent(msg) {
+    const { method, args = [] } = msg;
+    switch (method) {
+      case 'textDocument/open':
+        if (args[0]) {
+          this._documents.set(args[0].uri, {
+            uri: args[0].uri,
+            fileName: args[0].fileName,
+            languageId: args[0].languageId,
+            version: args[0].version,
+            lineCount: args[0].lineCount,
+            content: args[0].content
+          });
+        }
+        break;
+      case 'textDocument/close':
+        this._documents.delete(args[0]);
+        break;
+      case 'textDocument/change': {
+        const doc = this._documents.get(args[0]);
+        if (doc) {
+          doc.version = args[2];
+          // Apply incremental changes to content
+          if (doc.content !== undefined && Array.isArray(args[1])) {
+            let content = doc.content;
+            const sorted = [...args[1]].sort((a, b) => {
+              const aOff = this._offsetInContent(content, a.range?.end);
+              const bOff = this._offsetInContent(content, b.range?.end);
+              return bOff - aOff;
+            });
+            for (const change of sorted) {
+              if (change.range) {
+                const s = this._offsetInContent(content, change.range.start);
+                const e = this._offsetInContent(content, change.range.end);
+                content = content.substring(0, s) + (change.text || '') + content.substring(e);
+              }
+            }
+            doc.content = content;
+            doc.lineCount = content.split('\n').length;
+          }
+        }
+        break;
+      }
+      case 'editor/activeChanged':
+        this._activeTextEditor = args[0] || null;
+        break;
+      case 'fs/watcherEvent': {
+        const watcher = this._fileWatchers.get(args[0]);
+        if (watcher) {
+          const cb = args[1] === 'created' ? watcher._onDidCreate
+            : args[1] === 'changed' ? watcher._onDidChange
+            : args[1] === 'deleted' ? watcher._onDidDelete : null;
+          cb?.forEach(fn => { try { fn({ toString: () => args[2], fsPath: args[2] }); } catch {} });
+        }
+        break;
+      }
+    }
   }
 
   async _loadExtension(extensionId, code, manifest) {
@@ -1187,6 +1365,196 @@ var __x = function(v){ if(v===void 0) return __SafeBase; if(v===null) return nul
     this.metrics.delete(extensionId);
     messageRateLimiter.reset(extensionId);
     return { success: true };
+  }
+
+  /**
+   * Compute byte offset from a {line, character} position in content.
+   */
+  _offsetInContent(content, pos) {
+    if (!pos) return 0;
+    const lines = content.split('\n');
+    let offset = 0;
+    for (let i = 0; i < (pos.line ?? 0) && i < lines.length; i++) offset += lines[i].length + 1;
+    return offset + (pos.character ?? 0);
+  }
+
+  /**
+   * Invoke a language provider registered by an extension.
+   * Called when Monaco (via LanguageProviderBridge) needs completions, hover, etc.
+   * @param {string} rpcMethod - e.g. 'lang/provideCompletion'
+   * @param {any[]} args - [providerId, uri, position, context, ...]
+   */
+  async _invokeLanguageProvider(rpcMethod, args) {
+    if (!args || args.length < 1) return null;
+
+    const providerId = args[0];
+    const reg = this._languageProviders.get(providerId);
+    if (!reg) throw new Error(`Provider not found: ${providerId}`);
+
+    const { provider } = reg;
+
+    // Map RPC method → provider method name
+    const methodMap = {
+      'lang/provideCompletion': 'provideCompletionItems',
+      'lang/provideHover': 'provideHover',
+      'lang/provideDefinition': 'provideDefinition',
+      'lang/provideTypeDefinition': 'provideTypeDefinition',
+      'lang/provideImplementation': 'provideImplementation',
+      'lang/provideReferences': 'provideReferences',
+      'lang/provideDocumentHighlights': 'provideDocumentHighlights',
+      'lang/provideDocumentSymbols': 'provideDocumentSymbols',
+      'lang/provideCodeActions': 'provideCodeActions',
+      'lang/provideCodeLenses': 'provideCodeLenses',
+      'lang/resolveCodeLens': 'resolveCodeLens',
+      'lang/provideFormatting': 'provideDocumentFormattingEdits',
+      'lang/provideRangeFormatting': 'provideDocumentRangeFormattingEdits',
+      'lang/provideOnTypeFormatting': 'provideOnTypeFormattingEdits',
+      'lang/provideSignatureHelp': 'provideSignatureHelp',
+      'lang/provideRename': 'provideRenameEdits',
+      'lang/prepareRename': 'prepareRename',
+      'lang/provideDocumentLinks': 'provideDocumentLinks',
+      'lang/provideColors': 'provideDocumentColors',
+      'lang/provideColorPresentations': 'provideColorPresentations',
+      'lang/provideFoldingRanges': 'provideFoldingRanges',
+      'lang/provideSelectionRanges': 'provideSelectionRanges',
+      'lang/provideInlayHints': 'provideInlayHints',
+      'lang/provideInlineCompletions': 'provideInlineCompletions',
+      'lang/provideSemanticTokens': 'provideDocumentSemanticTokens',
+      'lang/resolveCompletionItem': 'resolveCompletionItem',
+    };
+
+    const providerMethod = methodMap[rpcMethod];
+    if (!providerMethod || typeof provider[providerMethod] !== 'function') return null;
+
+    // Build document from synced state
+    // args layout: [providerId, uri, position?, context?, ...]
+    const uri = args[1];
+    const doc = this._buildDocumentForProvider(uri);
+    const token = { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) };
+
+    // Call the provider
+    let callArgs;
+    switch (providerMethod) {
+      case 'provideCompletionItems':
+        callArgs = [doc, args[2], args[3] || {}, token];
+        break;
+      case 'provideHover':
+      case 'provideDefinition':
+      case 'provideTypeDefinition':
+      case 'provideImplementation':
+      case 'provideDocumentHighlights':
+        callArgs = [doc, args[2], token];
+        break;
+      case 'provideReferences':
+        callArgs = [doc, args[2], args[3] || {}, token];
+        break;
+      case 'provideDocumentSymbols':
+      case 'provideCodeLenses':
+      case 'provideDocumentLinks':
+      case 'provideDocumentColors':
+      case 'provideDocumentSemanticTokens':
+        callArgs = [doc, token];
+        break;
+      case 'provideCodeActions':
+        callArgs = [doc, args[2], args[3] || {}, token];
+        break;
+      case 'provideDocumentFormattingEdits':
+        callArgs = [doc, args[2] || {}, token];
+        break;
+      case 'provideDocumentRangeFormattingEdits':
+        callArgs = [doc, args[2], args[3] || {}, token];
+        break;
+      case 'provideOnTypeFormattingEdits':
+        callArgs = [doc, args[2], args[3], args[4] || {}, token];
+        break;
+      case 'provideSignatureHelp':
+        callArgs = [doc, args[2], token, args[3] || {}];
+        break;
+      case 'provideRenameEdits':
+        callArgs = [doc, args[2], args[3], token];
+        break;
+      case 'prepareRename':
+        callArgs = [doc, args[2], token];
+        break;
+      case 'provideColorPresentations':
+        callArgs = [args[2], { document: doc, range: args[3] }, token];
+        break;
+      case 'provideFoldingRanges':
+        callArgs = [doc, {}, token];
+        break;
+      case 'provideSelectionRanges':
+      case 'provideInlayHints':
+        callArgs = [doc, args[2], token];
+        break;
+      case 'provideInlineCompletions':
+        callArgs = [doc, args[2], args[3] || {}, token];
+        break;
+      default:
+        callArgs = [doc, ...args.slice(2), token];
+    }
+
+    try {
+      const result = await Promise.resolve(provider[providerMethod](...callArgs));
+      // Serialize for transport
+      return this._serializeResult(result);
+    } catch (err) {
+      console.error(`[ExtensionHost] Provider ${providerId}.${providerMethod} error:`, err);
+      return null;
+    }
+  }
+
+  /**
+   * Build a document-like object from synced document state.
+   */
+  _buildDocumentForProvider(uri) {
+    // Documents are stored by the non-hardened flow (we need to track them too)
+    // For now, create a minimal stub. The main ExtensionHostMain already has
+    // a full implementation — this hardened version should mirror it.
+    const raw = this._documents?.get(uri);
+    const content = raw?.content || '';
+    const lines = content.split('\n');
+    return {
+      uri: { toString: () => uri, fsPath: uri, scheme: 'file', path: uri },
+      fileName: raw?.fileName || uri,
+      languageId: raw?.languageId || 'plaintext',
+      version: raw?.version || 1,
+      lineCount: lines.length,
+      getText(range) {
+        if (!range) return content;
+        const sl = range.start?.line ?? 0, sc = range.start?.character ?? 0;
+        const el = range.end?.line ?? lines.length - 1, ec = range.end?.character ?? (lines[el]?.length ?? 0);
+        if (sl === el) return (lines[sl] || '').substring(sc, ec);
+        const r = [(lines[sl] || '').substring(sc)];
+        for (let i = sl + 1; i < el; i++) r.push(lines[i] || '');
+        r.push((lines[el] || '').substring(0, ec));
+        return r.join('\n');
+      },
+      lineAt(lp) {
+        const ln = typeof lp === 'number' ? lp : (lp?.line ?? 0);
+        const t = lines[ln] || '';
+        return { lineNumber: ln, text: t, range: { start: { line: ln, character: 0 }, end: { line: ln, character: t.length } }, firstNonWhitespaceCharacterIndex: t.search(/\S/), isEmptyOrWhitespace: t.trim().length === 0 };
+      },
+      offsetAt(pos) { let o = 0; for (let i = 0; i < (pos.line ?? 0); i++) o += (lines[i]?.length ?? 0) + 1; return o + (pos.character ?? 0); },
+      positionAt(offset) { let r = offset; for (let i = 0; i < lines.length; i++) { if (r <= lines[i].length) return { line: i, character: r }; r -= lines[i].length + 1; } return { line: lines.length - 1, character: lines[lines.length - 1]?.length ?? 0 }; },
+      getWordRangeAtPosition(pos, regex) { const t = lines[pos.line] || ''; const re = new RegExp((regex || /\w+/g).source, 'g'); let m; while ((m = re.exec(t)) !== null) { if (pos.character >= m.index && pos.character <= m.index + m[0].length) return { start: { line: pos.line, character: m.index }, end: { line: pos.line, character: m.index + m[0].length } }; } return undefined; },
+      validateRange(r) { return r; },
+      validatePosition(p) { return p; }
+    };
+  }
+
+  /**
+   * Serialize a provider result for JSON transport.
+   */
+  _serializeResult(result) {
+    if (result === null || result === undefined) return null;
+    try {
+      return JSON.parse(JSON.stringify(result, (key, value) => {
+        if (typeof value === 'function') return undefined;
+        if (value instanceof RegExp) return value.source;
+        if (value?.uri && typeof value.uri.toString === 'function') return { ...value, uri: value.uri.toString() };
+        return value;
+      }));
+    } catch { return null; }
   }
 
   /**
