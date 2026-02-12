@@ -245,6 +245,12 @@ export class VSCodeServerProxy {
 
     // Handle events
     if (msg.type === 'event') {
+      // Reassemble streamed WS tunnel data events
+      if (msg.method === 'ws:data:start' || msg.method === 'ws:data:chunk' || msg.method === 'ws:data:end') {
+        this._handleWsDataStream(msg);
+        return;
+      }
+
       this._emit(msg.method, ...(msg.args || []));
 
       // Track server state from events
@@ -328,6 +334,54 @@ export class VSCodeServerProxy {
         this.pendingRequests.delete(msg.id);
         clearTimeout(pending.timeout);
         pending.resolve(result);
+      }
+    }
+  }
+
+  // =========================================================================
+  // Streamed WS tunnel data reassembly
+  // =========================================================================
+
+  /**
+   * Handle streamed WS tunnel data events.  Large WS frames from code-server
+   * are split into: ws:data:start → ws:data:chunk ×N → ws:data:end
+   * We reassemble the payload and emit a single ws:data event.
+   */
+  _handleWsDataStream(msg) {
+    if (!this._pendingWsStreams) this._pendingWsStreams = new Map();
+    const [tunnelId, ...rest] = msg.args || [];
+
+    if (msg.method === 'ws:data:start') {
+      const [totalSize, isBinary] = rest;
+      this._pendingWsStreams.set(tunnelId, {
+        chunks: [],
+        totalSize,
+        isBinary,
+      });
+      return;
+    }
+
+    if (msg.method === 'ws:data:chunk') {
+      const stream = this._pendingWsStreams.get(tunnelId);
+      if (stream) {
+        stream.chunks.push(rest[0]);
+      }
+      return;
+    }
+
+    if (msg.method === 'ws:data:end') {
+      const stream = this._pendingWsStreams.get(tunnelId);
+      this._pendingWsStreams.delete(tunnelId);
+      if (!stream) return;
+
+      const payload = stream.chunks.join('');
+      console.log(`[VSCodeServerProxy] Reassembled WS stream for tunnel ${tunnelId}: ${payload.length} chars`);
+
+      // Emit as a regular ws:data event
+      if (stream.isBinary) {
+        this._emit('ws:data', tunnelId, payload, 'binary');
+      } else {
+        this._emit('ws:data', tunnelId, payload);
       }
     }
   }

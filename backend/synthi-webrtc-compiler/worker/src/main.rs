@@ -3180,6 +3180,7 @@ async fn wire_peer_channels(
                                             let trimmed = line.trim();
                                             if trimmed.is_empty() { continue; }
 
+
                                             // Chunk large messages (>60KB) for WebRTC SCTP
                                             let data_bytes = trimmed.as_bytes();
                                             if data_bytes.len() > 60000 {
@@ -3194,6 +3195,11 @@ async fn wire_peer_channels(
                                                         eprintln!("[vscode-server] chunk send error: {}", e);
                                                         break;
                                                     }
+                                                    // Pace chunk sends to prevent SCTP buffer overflow.
+                                                    // Without this, rapid bursts of large WS frames
+                                                    // (350KB × many during initial connection) saturate
+                                                    // the DataChannel and cause OperationError.
+                                                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                                                 }
                                             } else {
                                                 if let Err(e) = dc_out.send_text(trimmed.to_string()).await {

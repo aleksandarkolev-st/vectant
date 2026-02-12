@@ -98,13 +98,56 @@ function createMessageId() {
   return ++messageIdCounter;
 }
 
+// ── Paced write queue ────────────────────────────────────────────────
+// stdout feeds the Rust worker which forwards to the DataChannel.
+// Writing too fast causes SCTP buffer overflow → OperationError.
+// This queue paces writes so the Rust stdout-reader and DC sender
+// can keep up.  Large payloads (WS tunnel data) are especially bursty.
+
+/** @type {{data: string, resolve?: Function}[]} */
+const _writeQueue = [];
+let _writing = false;
+const WRITE_PACE_MS = 2;  // small delay between queued writes
+
 function send(obj) {
   try {
     const json = JSON.stringify(obj);
-    process.stdout.write(json + '\n');
+    _enqueueWrite(json + '\n');
   } catch (e) {
     process.stderr.write(`[vscode-server-manager] send error: ${e.message}\n`);
   }
+}
+
+/**
+ * Enqueue a string for paced writing to stdout.
+ * Returns a Promise that resolves when the data is actually written.
+ */
+function _enqueueWrite(data) {
+  return new Promise((resolve) => {
+    _writeQueue.push({ data, resolve });
+    if (!_writing) _drainWriteQueue();
+  });
+}
+
+async function _drainWriteQueue() {
+  if (_writing) return;
+  _writing = true;
+  while (_writeQueue.length > 0) {
+    const { data, resolve } = _writeQueue.shift();
+    const ok = process.stdout.write(data);
+    if (resolve) resolve();
+    if (!ok) {
+      // stdout buffer full — wait for drain before continuing
+      await new Promise(r => process.stdout.once('drain', r));
+    }
+    // Small yield to let the Rust reader consume lines and send DC messages
+    // before we enqueue more.  This prevents bursty WS events from
+    // saturating the SCTP buffer.
+    if (_writeQueue.length > 0) {
+      await new Promise(r => setTimeout(r, WRITE_PACE_MS));
+    }
+  }
+  _writing = false;
 }
 
 /**
@@ -136,18 +179,50 @@ async function sendResponseStreamed(id, result) {
   const total = Math.ceil(body.length / CHUNK);
   for (let i = 0; i < body.length; i += CHUNK) {
     const chunk = body.slice(i, i + CHUNK);
-    process.stdout.write(JSON.stringify({
+    // Use the paced write queue instead of writing directly to stdout.
+    // This ensures large streamed responses don't bypass the queue and
+    // compete with other messages for the DataChannel buffer.
+    await _enqueueWrite(JSON.stringify({
       id, type: 'response', stream: 'data', chunk, generation: GENERATION,
     }) + '\n');
-    // Pace: yield every chunk so the Rust worker can drain its DC send buffer.
-    // ~10ms delay ≈ 4.8 MB/s throughput → 17MB loads in ~3.5s (first time only;
-    // Service Worker caches assets for instant subsequent loads).
-    await new Promise(r => setTimeout(r, 10));
   }
 
   // End
   send({ id, type: 'response', stream: 'end', generation: GENERATION });
   process.stderr.write(`[vscode-server-manager] Streamed response ${id}: ${body.length} bytes in ${total} chunks\n`);
+}
+
+/**
+ * Stream a large WS tunnel event in paced chunks.
+ * Works like sendResponseStreamed but for ws:data events.
+ *
+ * Protocol:
+ *   {type:'event', method:'ws:data:start', args:[tunnelId, totalSize, isBinary]}
+ *   {type:'event', method:'ws:data:chunk', args:[tunnelId, chunkData]}  ×N
+ *   {type:'event', method:'ws:data:end',   args:[tunnelId]}
+ *
+ * @param {number} tunnelId
+ * @param {string} payload  Text or base64-encoded binary data
+ * @param {boolean} isBinary
+ */
+async function _sendWsEventStreamed(tunnelId, payload, isBinary) {
+  sendEvent('ws:data:start', tunnelId, payload.length, isBinary);
+
+  const CHUNK = 48000;
+  const total = Math.ceil(payload.length / CHUNK);
+  for (let i = 0; i < payload.length; i += CHUNK) {
+    const chunk = payload.slice(i, i + CHUNK);
+    await _enqueueWrite(JSON.stringify({
+      id: createMessageId(),
+      type: 'event',
+      method: 'ws:data:chunk',
+      args: [tunnelId, chunk],
+      generation: GENERATION,
+    }) + '\n');
+  }
+
+  sendEvent('ws:data:end', tunnelId);
+  process.stderr.write(`[vscode-server-manager] Streamed WS event tunnel ${tunnelId}: ${payload.length} chars in ${total} chunks\n`);
 }
 
 function sendResponse(id, result, error = null) {
@@ -897,27 +972,48 @@ function wsConnect(tunnelId, urlPath) {
       }
 
       // Incoming data from code-server → parse WS frames → send as events
+      // Flow control: pause the socket while we're draining large frames
+      // to prevent overloading the DataChannel's SCTP buffer.
       let frameBuf = Buffer.alloc(0);
-      socket.on('data', (chunk) => {
-        frameBuf = Buffer.concat([frameBuf, chunk]);
-        // Parse all complete frames in the buffer
+      let processingFrames = false;
+
+      const processFrames = async () => {
+        if (processingFrames) return;
+        processingFrames = true;
+
         while (true) {
           const result = parseWsFrame(frameBuf);
           if (!result) break;
           frameBuf = result.rest;
 
           if (result.opcode === 0x01) {
-            // Text frame
-            sendEvent('ws:data', tunnelId, result.payload.toString('utf8'));
+            // Text frame — stream if large
+            const payload = result.payload.toString('utf8');
+            if (payload.length > 100000) {
+              // Pause the socket while we pace-write a large frame
+              socket.pause();
+              await _sendWsEventStreamed(tunnelId, payload, false);
+              socket.resume();
+            } else {
+              sendEvent('ws:data', tunnelId, payload);
+            }
           } else if (result.opcode === 0x02) {
-            // Binary frame — base64 encode
-            sendEvent('ws:data', tunnelId, result.payload.toString('base64'), 'binary');
+            // Binary frame — base64 encode, stream if large
+            const payload = result.payload.toString('base64');
+            if (payload.length > 100000) {
+              socket.pause();
+              await _sendWsEventStreamed(tunnelId, payload, true);
+              socket.resume();
+            } else {
+              sendEvent('ws:data', tunnelId, payload, 'binary');
+            }
           } else if (result.opcode === 0x08) {
             // Close frame
             const code = result.payload.length >= 2 ? result.payload.readUInt16BE(0) : 1000;
             sendEvent('ws:close', tunnelId, code);
             socket.end();
             wsTunnels.delete(tunnelId);
+            processingFrames = false;
             return;
           } else if (result.opcode === 0x09) {
             // Ping → respond with pong
@@ -926,6 +1022,12 @@ function wsConnect(tunnelId, urlPath) {
           }
           // 0x0A pong — ignore
         }
+        processingFrames = false;
+      };
+
+      socket.on('data', (chunk) => {
+        frameBuf = Buffer.concat([frameBuf, chunk]);
+        processFrames();
       });
 
       socket.on('close', () => {
