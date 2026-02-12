@@ -1518,6 +1518,23 @@ class GitService {
         return true;
     }
 
+    /**
+     * Detect whether a repo has already been migrated to session-aware structure.
+     * Checks for the `.synthi-migrated` marker file.
+     */
+    isMigratedRepo(slug) {
+        const repoPath = this.getRepoPath(slug);
+        return fs.existsSync(path.join(repoPath, '.synthi-migrated'));
+    }
+
+    /**
+     * Get the path to the upstream bare repository for a slug.
+     * After migration: repos/<slug>/_upstream.git
+     */
+    getBarePath(slug) {
+        return path.join(this.baseDir, slug, '_upstream.git');
+    }
+
     // ── Worktree Factory (Session-based isolation) ────────────────────────
 
     /**
