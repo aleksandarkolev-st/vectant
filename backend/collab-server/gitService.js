@@ -228,7 +228,15 @@ class GitService {
     isRepoInitialized(slug) {
         const repoPath = this.getRepoPath(slug);
         const gitDir = path.join(repoPath, '.git');
-        return fs.existsSync(gitDir) && fs.statSync(gitDir).isDirectory();
+        if (!fs.existsSync(gitDir)) return false;
+
+        const stat = fs.statSync(gitDir);
+        // Standard repo: .git is a directory
+        if (stat.isDirectory()) return true;
+        // Migrated worktree: .git is a file pointing to the bare repo
+        if (stat.isFile()) return true;
+
+        return false;
     }
 
     getGit(slug) {
