@@ -1465,6 +1465,144 @@ class GitService {
             }
         }
     }
+
+    // ── Worktree Factory (Session-based isolation) ────────────────────────
+
+    /**
+     * Get the sessions directory for a workspace slug.
+     *
+     * Structure:
+     *   repos/<slug>/              ← main working tree (shared / upstream)
+     *   repos/<slug>/sessions/     ← per-user worktrees
+     *   repos/<slug>/sessions/<userId>/
+     */
+    getSessionsDir(slug) {
+        return path.join(this.baseDir, slug, 'sessions');
+    }
+
+    /**
+     * Get the worktree path for a specific user's session.
+     */
+    getSessionWorktreePath(slug, userId) {
+        return path.join(this.getSessionsDir(slug), userId);
+    }
+
+    /**
+     * Ensure a private worktree exists for a user (Host).
+     * Uses `git worktree add` to create an isolated copy that shares the
+     * same .git object database as the main repo.
+     *
+     * If the worktree already exists, this is a no-op and returns the path.
+     *
+     * @param {string} slug   — Workspace slug
+     * @param {string} userId — The host user's id
+     * @param {string} [branch] — Branch to check out (defaults to current branch)
+     * @returns {Promise<{ path: string, created: boolean }>}
+     */
+    async ensureSessionWorktree(slug, userId, branch = null) {
+        return this.withLock(slug, async () => {
+            const worktreePath = this.getSessionWorktreePath(slug, userId);
+
+            // If worktree already exists, just return it
+            if (fs.existsSync(worktreePath) && fs.existsSync(path.join(worktreePath, '.git'))) {
+                console.log(`[GitService] Session worktree already exists: ${worktreePath}`);
+                return { path: worktreePath, created: false };
+            }
+
+            // Ensure the main repo is initialized
+            const mainRepoPath = this.getRepoPath(slug);
+            if (!fs.existsSync(path.join(mainRepoPath, '.git'))) {
+                throw new GitError(`Main repo for ${slug} not initialized`, 'REPO_NOT_INITIALIZED');
+            }
+
+            const sessionsDir = this.getSessionsDir(slug);
+            if (!fs.existsSync(sessionsDir)) {
+                fs.mkdirSync(sessionsDir, { recursive: true });
+            }
+
+            // Exclude sessions directory from git tracking
+            this._ensureLocalExcludes(mainRepoPath);
+
+            const git = simpleGit(mainRepoPath);
+
+            // Determine branch to use
+            if (!branch) {
+                try {
+                    const status = await git.status();
+                    branch = status.current || 'main';
+                } catch (_) {
+                    branch = 'main';
+                }
+            }
+
+            try {
+                // Create a new worktree.  Use --detach to avoid the
+                // "branch already checked out" error when the same branch
+                // is active in the main working tree.
+                await git.raw(['worktree', 'add', '--detach', worktreePath]);
+                // Then check out the desired branch in the worktree
+                const wtGit = simpleGit(worktreePath);
+                await wtGit.checkout(branch).catch(() => {
+                    // If branch doesn't exist locally, try to create it
+                    return wtGit.checkoutLocalBranch(branch).catch(() => {});
+                });
+                console.log(`[GitService] Created session worktree: ${worktreePath} (branch: ${branch})`);
+            } catch (e) {
+                console.error(`[GitService] Failed to create worktree for ${slug}/${userId}:`, e.message);
+                throw new GitError(`Failed to create session worktree: ${e.message}`, 'WORKTREE_ERROR');
+            }
+
+            return { path: worktreePath, created: true };
+        });
+    }
+
+    /**
+     * Remove a user's session worktree.
+     */
+    async removeSessionWorktree(slug, userId) {
+        return this.withLock(slug, async () => {
+            const worktreePath = this.getSessionWorktreePath(slug, userId);
+
+            if (!fs.existsSync(worktreePath)) {
+                return { success: true, existed: false };
+            }
+
+            try {
+                const mainRepoPath = this.getRepoPath(slug);
+                const git = simpleGit(mainRepoPath);
+                await git.raw(['worktree', 'remove', '--force', worktreePath]);
+                console.log(`[GitService] Removed session worktree: ${worktreePath}`);
+            } catch (e) {
+                // Force cleanup if git worktree remove fails
+                console.warn(`[GitService] git worktree remove failed, force-deleting: ${e.message}`);
+                try {
+                    fs.rmSync(worktreePath, { recursive: true, force: true });
+                } catch (_) {}
+            }
+
+            return { success: true, existed: true };
+        });
+    }
+
+    /**
+     * List all active session worktrees for a slug.
+     */
+    async listSessionWorktrees(slug) {
+        const sessionsDir = this.getSessionsDir(slug);
+        if (!fs.existsSync(sessionsDir)) return [];
+
+        try {
+            const entries = fs.readdirSync(sessionsDir, { withFileTypes: true });
+            return entries
+                .filter(e => e.isDirectory())
+                .map(e => ({
+                    userId: e.name,
+                    path: path.join(sessionsDir, e.name),
+                }));
+        } catch (_) {
+            return [];
+        }
+    }
 }
 
 const { REPOS_DIR } = require('./config');
