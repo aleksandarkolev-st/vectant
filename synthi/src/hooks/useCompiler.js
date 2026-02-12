@@ -41,7 +41,11 @@ export function useCompiler() {
                         reconnectTimerRef.current = null;
                         reconnectAttemptsRef.current++;
                         try {
-                            await client.reconnect();
+                            // Use softReconnect to avoid killing vscode-server-manager
+                            // and ext-host on the worker. The worker processes are
+                            // independent of the WebRTC PeerConnection and will
+                            // reconnect their DataChannels automatically.
+                            await client.softReconnect();
                             console.log('[useCompiler] Auto-reconnect succeeded');
                             reconnectAttemptsRef.current = 0;
                         } catch (e) {

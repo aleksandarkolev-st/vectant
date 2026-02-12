@@ -1813,9 +1813,15 @@ export default function EditorPage({ params }) {
                 // Cancel the running mobile job on the worker
                 if (emulatorSessionId) {
                     cancelMobileJob(emulatorSessionId);
-                }
-                if (client?.reconnect) {
-                    client.reconnect();
+                    // Only hard-reset when an emulator was actually running;
+                    // this clears GStreamer/runner state on the worker.
+                    if (client?.reconnect) {
+                        client.reconnect();
+                    }
+                } else if (client?.softReconnect) {
+                    // No emulator session — soft reconnect preserves
+                    // vscode-server-manager and LSP processes.
+                    client.softReconnect();
                 }
                 dispatch(setEmulatorPreviewVisible(false));
                 setEmulatorSessionId(null);

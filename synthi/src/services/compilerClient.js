@@ -1006,6 +1006,50 @@ export class CompilerClient {
         }
     }
 
+    /**
+     * Lightweight reconnect: tears down the local PeerConnection and
+     * signaling WebSocket, then re-establishes a new connection,
+     * WITHOUT sending a "reset" to the worker.  This preserves the
+     * worker's vscode-server-manager and ext-host processes so LSP/
+     * extensions survive transient network blips.
+     *
+     * Use `reconnect()` (hard reset) only when the emulator/build
+     * state needs to be cleared on the worker side.
+     */
+    async softReconnect() {
+        console.log('[CompilerClient] Soft reconnect (no worker reset)...');
+
+        if (this._disconnectGraceTimer) {
+            clearTimeout(this._disconnectGraceTimer);
+            this._disconnectGraceTimer = null;
+        }
+
+        if (this._offerRetryInterval) {
+            clearInterval(this._offerRetryInterval);
+            this._offerRetryInterval = null;
+        }
+
+        if (this.ws) { this.ws.close(); }
+        if (this.pc) { this.pc.close(); }
+
+        await new Promise(r => setTimeout(r, 500));
+
+        this.ws = null;
+        this.pc = null;
+        this.compileChannel = null;
+        this.buildLogChannel = null;
+        this.terminalChannel = null;
+        this.emulatorInputChannel = null;
+        this.lspChannel = null;
+        this.fileSyncChannel = null;
+        this.extHostChannel = null;
+        this.readyPromise = null;
+        this._setStatus(CompilerStatus.IDLE);
+        this.currentStreams = [];
+
+        return this.connect();
+    }
+
     async reconnect() {
         console.log('[CompilerClient] Forcing reconnection to clear WebRTC state...');
 
