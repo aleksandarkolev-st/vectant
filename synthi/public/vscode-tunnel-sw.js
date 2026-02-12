@@ -13,10 +13,14 @@
  *   2. Requests whose Referer starts with /__vscode-proxy__ (iframe sub-resources)
  */
 
-const SW_VERSION = '2.0-broadcastchannel';
+const SW_VERSION = '3.0-streaming-cache';
 const PROXY_PREFIX = '/__vscode-proxy__';
+const CACHE_NAME = 'vscode-proxy-assets-v1';
 let requestIdCounter = 0;
 const pendingRequests = new Map();
+
+// Static asset extensions that are safe to cache (immutable bundles)
+const CACHEABLE_EXTENSIONS = /\.(js|css|woff|woff2|ttf|eot|svg|png|jpg|gif|ico|map)(\?|$)/i;
 
 // BroadcastChannel for communicating with the main page
 const channel = new BroadcastChannel('vscode-tunnel');
@@ -115,6 +119,33 @@ self.addEventListener('fetch', (event) => {
 // ---------------------------------------------------------------------------
 
 async function proxyFetch(request, targetPath) {
+  // ── Cache-first for static assets ──────────────────────────
+  // code-server's JS/CSS bundles are content-hashed and immutable.
+  // Serving from cache avoids the 3-5s DataChannel streaming cost.
+  if (request.method === 'GET' && CACHEABLE_EXTENSIONS.test(targetPath)) {
+    try {
+      const cache = await caches.open(CACHE_NAME);
+      const cacheKey = new Request(PROXY_PREFIX + targetPath);
+      const cached = await cache.match(cacheKey);
+      if (cached) {
+        console.log('[vscode-tunnel-sw] Cache hit:', targetPath);
+        return cached;
+      }
+      // Cache miss — fetch via tunnel and cache the response
+      const response = await proxyFetchUncached(request, targetPath);
+      if (response.ok) {
+        try { await cache.put(cacheKey, response.clone()); } catch (_) {}
+      }
+      return response;
+    } catch (err) {
+      console.warn('[vscode-tunnel-sw] Cache error, falling back:', err);
+    }
+  }
+
+  return proxyFetchUncached(request, targetPath);
+}
+
+async function proxyFetchUncached(request, targetPath) {
   const id = ++requestIdCounter;
 
   // Read request body
@@ -145,8 +176,8 @@ async function proxyFetch(request, targetPath) {
   const responsePromise = new Promise((resolve) => {
     const timer = setTimeout(() => {
       pendingRequests.delete(id);
-      resolve(new Response('Proxy request timeout (30s)', { status: 504 }));
-    }, 30000);
+      resolve(new Response('Proxy request timeout (60s)', { status: 504 }));
+    }, 60000);
 
     pendingRequests.set(id, {
       resolve: (resp) => {

@@ -107,6 +107,49 @@ function send(obj) {
   }
 }
 
+/**
+ * Stream a large response body in paced chunks to prevent DataChannel
+ * buffer overflow.  Each chunk is emitted as a separate JSON line on stdout
+ * so the Rust worker sends each as a separate (small) DC message.
+ *
+ * Protocol:
+ *   {id, type:'response', stream:'start', meta:{status,headers,...}, generation}
+ *   {id, type:'response', stream:'data', chunk:'base64…', generation}  ×N
+ *   {id, type:'response', stream:'end', generation}
+ *
+ * @param {number} id    Request ID
+ * @param {object} result  The proxyHttp result {status, statusText, headers, body}
+ */
+async function sendResponseStreamed(id, result) {
+  const body = result.body || '';
+  const meta = {
+    status: result.status,
+    statusText: result.statusText || '',
+    headers: result.headers || {},
+    bodySize: body.length,
+  };
+  // Start
+  send({ id, type: 'response', stream: 'start', meta, generation: GENERATION });
+
+  // Body chunks — 48KB each (~64KB after JSON wrapping)
+  const CHUNK = 48000;
+  const total = Math.ceil(body.length / CHUNK);
+  for (let i = 0; i < body.length; i += CHUNK) {
+    const chunk = body.slice(i, i + CHUNK);
+    process.stdout.write(JSON.stringify({
+      id, type: 'response', stream: 'data', chunk, generation: GENERATION,
+    }) + '\n');
+    // Pace: yield every chunk so the Rust worker can drain its DC send buffer.
+    // ~10ms delay ≈ 4.8 MB/s throughput → 17MB loads in ~3.5s (first time only;
+    // Service Worker caches assets for instant subsequent loads).
+    await new Promise(r => setTimeout(r, 10));
+  }
+
+  // End
+  send({ id, type: 'response', stream: 'end', generation: GENERATION });
+  process.stderr.write(`[vscode-server-manager] Streamed response ${id}: ${body.length} bytes in ${total} chunks\n`);
+}
+
 function sendResponse(id, result, error = null) {
   const msg = { id, type: 'response', generation: GENERATION };
   if (error) {
@@ -1411,7 +1454,14 @@ rl.on('line', async (line) => {
             proxyResult.body = Buffer.from(injectedHtml, 'utf8').toString('base64');
           }
 
-          sendResponse(id, proxyResult);
+          // Stream large responses to avoid DataChannel buffer overflow.
+          // Static JS/CSS bundles can be 1-17MB base64-encoded.
+          const bodyLen = proxyResult.body ? proxyResult.body.length : 0;
+          if (bodyLen > 200000) {
+            await sendResponseStreamed(id, proxyResult);
+          } else {
+            sendResponse(id, proxyResult);
+          }
         } catch (err) {
           sendResponse(id, null, err);
         }

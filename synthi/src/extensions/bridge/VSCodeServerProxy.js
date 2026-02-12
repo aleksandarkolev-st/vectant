@@ -259,6 +259,12 @@ export class VSCodeServerProxy {
       return;
     }
 
+    // Handle streamed responses (large proxyHttp payloads)
+    if (msg.type === 'response' && msg.stream) {
+      this._handleStreamChunk(msg);
+      return;
+    }
+
     // Handle responses
     if (msg.type === 'response' && this.pendingRequests.has(msg.id)) {
       const { resolve, reject, timeout } = this.pendingRequests.get(msg.id);
@@ -269,6 +275,59 @@ export class VSCodeServerProxy {
         reject(new Error(msg.error.message || 'Unknown error'));
       } else {
         resolve(msg.result);
+      }
+    }
+  }
+
+  // =========================================================================
+  // Streamed response reassembly
+  // =========================================================================
+
+  /**
+   * Handle a chunk of a streamed response.  Large proxyHttp responses are
+   * sent as:  stream:'start' → stream:'data' ×N → stream:'end'
+   * We reassemble the body and resolve the original request promise.
+   */
+  _handleStreamChunk(msg) {
+    if (!this._pendingStreams) this._pendingStreams = new Map();
+
+    if (msg.stream === 'start') {
+      this._pendingStreams.set(msg.id, {
+        meta: msg.meta,
+        chunks: [],
+      });
+      return;
+    }
+
+    if (msg.stream === 'data') {
+      const stream = this._pendingStreams.get(msg.id);
+      if (stream) {
+        stream.chunks.push(msg.chunk);
+      }
+      return;
+    }
+
+    if (msg.stream === 'end') {
+      const stream = this._pendingStreams.get(msg.id);
+      this._pendingStreams.delete(msg.id);
+      if (!stream) return;
+
+      // Reassemble the full response
+      const result = {
+        status: stream.meta.status,
+        statusText: stream.meta.statusText,
+        headers: stream.meta.headers,
+        body: stream.chunks.join(''),
+      };
+
+      console.log(`[VSCodeServerProxy] Streamed response ${msg.id} reassembled: ${result.body.length} chars`);
+
+      // Resolve the pending request promise
+      const pending = this.pendingRequests.get(msg.id);
+      if (pending) {
+        this.pendingRequests.delete(msg.id);
+        clearTimeout(pending.timeout);
+        pending.resolve(result);
       }
     }
   }
@@ -588,7 +647,9 @@ export class VSCodeServerProxy {
    *   body is base64-encoded.
    */
   async proxyHttp(reqData) {
-    return this.request('proxyHttp', [reqData], 30000);
+    // 60s timeout — large JS bundles are streamed in paced chunks which can
+    // take several seconds on the first load (SW caches for subsequent loads).
+    return this.request('proxyHttp', [reqData], 60000);
   }
 
   // =========================================================================
