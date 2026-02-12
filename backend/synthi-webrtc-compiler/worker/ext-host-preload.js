@@ -329,6 +329,164 @@ function wrapCreateTreeView(vscode) {
 }
 
 // ============================================================================
+// Wrap: window.registerWebviewViewProvider
+// ============================================================================
+
+/**
+ * Wrap vscode.window.registerWebviewViewProvider to observe webview
+ * registrations and intercept HTML content updates.
+ *
+ * @param {object} vscode
+ */
+function wrapWebviewProviders(vscode) {
+  // ── registerWebviewViewProvider (sidebar/panel webviews) ──
+  const origRegisterWVP = vscode.window.registerWebviewViewProvider;
+  if (origRegisterWVP) {
+    vscode.window.registerWebviewViewProvider = function wrappedRegisterWebviewViewProvider(viewType, provider, options) {
+      log(`registerWebviewViewProvider intercepted: ${viewType}`);
+
+      // Wrap the provider's resolveWebviewView to intercept the webview object
+      const wrappedProvider = Object.create(provider);
+      wrappedProvider.resolveWebviewView = function (webviewView, context, token) {
+        // Intercept the webview's html property setter
+        _interceptWebviewHtml(webviewView.webview, viewType);
+
+        // Notify bridge
+        bridgeSend({ type: 'webviewProvider', viewType });
+
+        // Track
+        trackedWebviewProviders.set(viewType, { provider, webviewView });
+
+        // Call original resolveWebviewView
+        return provider.resolveWebviewView.call(provider, webviewView, context, token);
+      };
+
+      // Call the real API with our wrapped provider
+      const disposable = origRegisterWVP.call(this, viewType, wrappedProvider, options);
+
+      // Chain disposal
+      const originalDispose = disposable.dispose.bind(disposable);
+      disposable.dispose = function () {
+        trackedWebviewProviders.delete(viewType);
+        bridgeSend({ type: 'webviewDisposed', viewType });
+        return originalDispose();
+      };
+
+      return disposable;
+    };
+    log('registerWebviewViewProvider wrapped');
+  }
+
+  // ── createWebviewPanel (editor/floating webview panels) ──
+  const origCreateWP = vscode.window.createWebviewPanel;
+  if (origCreateWP) {
+    vscode.window.createWebviewPanel = function wrappedCreateWebviewPanel(viewType, title, showOptions, options) {
+      log(`createWebviewPanel intercepted: ${viewType} "${title}"`);
+
+      // Call the real API
+      const panel = origCreateWP.call(this, viewType, title, showOptions, options);
+
+      const viewId = `panel-${viewType}-${Date.now()}`;
+
+      // Intercept webview HTML
+      _interceptWebviewHtml(panel.webview, viewId);
+
+      // Notify bridge
+      bridgeSend({ type: 'webviewPanel', viewId, viewType, title });
+
+      // Track disposal
+      panel.onDidDispose(() => {
+        bridgeSend({ type: 'webviewDisposed', viewId });
+      });
+
+      return panel;
+    };
+    log('createWebviewPanel wrapped');
+  }
+}
+
+/**
+ * Intercept a Webview object's `html` property setter to observe changes.
+ * VS Code's webview.html is already a getter/setter, so we need to work
+ * with the existing property descriptor.
+ *
+ * @param {object} webview - The vscode.Webview object
+ * @param {string} viewId - The view identifier for bridge messages
+ */
+function _interceptWebviewHtml(webview, viewId) {
+  try {
+    // Get the existing property descriptor (might be on prototype)
+    let descriptor = null;
+    let obj = webview;
+    while (obj && !descriptor) {
+      descriptor = Object.getOwnPropertyDescriptor(obj, 'html');
+      if (!descriptor) obj = Object.getPrototypeOf(obj);
+    }
+
+    if (descriptor && descriptor.set) {
+      // Property has a setter — wrap it
+      const originalSet = descriptor.set;
+      const originalGet = descriptor.get;
+
+      Object.defineProperty(webview, 'html', {
+        get: originalGet ? function () { return originalGet.call(this); } : function () { return this._synthiHtml || ''; },
+        set: function (value) {
+          originalSet.call(this, value);
+          // Send the HTML content to bridge
+          bridgeSend({ type: 'webviewHtml', viewType: viewId, html: value });
+        },
+        configurable: true,
+        enumerable: true,
+      });
+    } else {
+      // Simple property — use defineProperty with a backing store
+      let _html = webview.html || '';
+      Object.defineProperty(webview, 'html', {
+        get() { return _html; },
+        set(value) {
+          _html = value;
+          bridgeSend({ type: 'webviewHtml', viewType: viewId, html: value });
+        },
+        configurable: true,
+        enumerable: true,
+      });
+    }
+  } catch (e) {
+    logError(`Failed to intercept webview.html for ${viewId}: ${e.message}`);
+  }
+}
+
+// ============================================================================
+// Wrap: commands.registerCommand
+// ============================================================================
+
+/**
+ * Wrap vscode.commands.registerCommand to observe command registrations.
+ *
+ * @param {object} vscode
+ */
+function wrapCommands(vscode) {
+  if (!vscode.commands?.registerCommand) {
+    log('commands.registerCommand not found');
+    return;
+  }
+
+  const original = vscode.commands.registerCommand;
+
+  vscode.commands.registerCommand = function wrappedRegisterCommand(commandId, callback, thisArg) {
+    // Call the real API
+    const disposable = original.call(this, commandId, callback, thisArg);
+
+    // Notify bridge of command registration
+    bridgeSend({ type: 'command', commandId });
+
+    return disposable;
+  };
+
+  log('commands.registerCommand wrapped');
+}
+
+// ============================================================================
 // Cleanup
 // ============================================================================
 
