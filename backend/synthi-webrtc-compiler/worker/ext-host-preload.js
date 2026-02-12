@@ -175,7 +175,17 @@ Module._load = function (request, parent, isMain) {
 };
 
 // ============================================================================
-// API Wrapping (placeholder — will be implemented in subsequent commits)
+// State: tracked providers
+// ============================================================================
+
+/** @type {Map<string, {provider: object, extensionId?: string}>} */
+const trackedTreeProviders = new Map();
+
+/** @type {Map<string, {provider: object, extensionId?: string}>} */
+const trackedWebviewProviders = new Map();
+
+// ============================================================================
+// API Wrapping
 // ============================================================================
 
 /**
@@ -186,11 +196,74 @@ Module._load = function (request, parent, isMain) {
  * @param {object} vscode - The real vscode module exports
  */
 function wrapVSCodeAPI(vscode) {
-  log('wrapVSCodeAPI called — will be implemented in subsequent commits');
-  // Commits 4-6 will implement:
-  //   - wrapRegisterTreeDataProvider(vscode)
-  //   - wrapCreateTreeView(vscode)
-  //   - wrapWebviewProviders(vscode)
+  if (!vscode.window) {
+    logError('vscode.window not found — cannot wrap');
+    return;
+  }
+
+  wrapRegisterTreeDataProvider(vscode);
+  wrapCreateTreeView(vscode);
+  wrapWebviewProviders(vscode);
+  wrapCommands(vscode);
+
+  log('All API wrappers installed successfully');
+}
+
+// ============================================================================
+// Wrap: window.registerTreeDataProvider
+// ============================================================================
+
+/**
+ * Wrap vscode.window.registerTreeDataProvider to observe tree registrations
+ * and forward data to the bridge.
+ *
+ * @param {object} vscode
+ */
+function wrapRegisterTreeDataProvider(vscode) {
+  const original = vscode.window.registerTreeDataProvider;
+  if (!original) {
+    log('registerTreeDataProvider not found (VS Code version too old?)');
+    return;
+  }
+
+  vscode.window.registerTreeDataProvider = function wrappedRegisterTreeDataProvider(viewId, provider) {
+    log(`registerTreeDataProvider intercepted: ${viewId}`);
+
+    // Call the real API — this is the genuine registration
+    const disposable = original.call(this, viewId, provider);
+
+    // Track the provider for data extraction
+    trackedTreeProviders.set(viewId, { provider });
+
+    // Notify bridge of the registration
+    bridgeSend({ type: 'treeProvider', viewId });
+
+    // Subscribe to provider's change events to re-resolve data
+    if (provider.onDidChangeTreeData) {
+      try {
+        const changeDisposable = provider.onDidChangeTreeData((element) => {
+          log(`Tree data changed for ${viewId}`);
+          resolveAndSendTreeData(viewId, provider);
+        });
+        // Chain disposal
+        const originalDispose = disposable.dispose.bind(disposable);
+        disposable.dispose = function () {
+          trackedTreeProviders.delete(viewId);
+          try { changeDisposable.dispose(); } catch (_) {}
+          return originalDispose();
+        };
+      } catch (e) {
+        logError(`Failed to subscribe to onDidChangeTreeData for ${viewId}: ${e.message}`);
+      }
+    }
+
+    // Initial data resolution after a tick (let extension finish init)
+    setTimeout(() => resolveAndSendTreeData(viewId, provider), 200);
+
+    return disposable;
+  };
+
+  log('registerTreeDataProvider wrapped');
 }
 
 // ============================================================================
