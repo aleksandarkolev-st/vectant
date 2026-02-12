@@ -320,7 +320,35 @@ class GitService {
     async cloneRepo(slug, repoUrl, token) {
         return this.withLock(slug, async () => {
             const repoPath = this.getRepoPath(slug);
+
+            // ── Handle existing repo gracefully ───────────────────────────
             if (fs.existsSync(repoPath)) {
+                // If it's a legacy repo, migrate it instead of throwing
+                if (this.isLegacyRepo(slug)) {
+                    console.log(`[GitService] cloneRepo: legacy repo exists for "${slug}", migrating instead of failing…`);
+                    await this._createMigrationBackup(slug);
+                    try {
+                        await this._migrateToSessionStructure(slug);
+                        const valid = await this._validateMigration(slug);
+                        if (!valid) {
+                            throw new MigrationError(slug, 'Post-migration validation failed', 'validation');
+                        }
+                        this._cleanupMigrationBackup(slug);
+                        console.log(`[GitService] cloneRepo: migration complete, returning existing repo`);
+                        return { success: true, path: repoPath, migrated: true };
+                    } catch (e) {
+                        console.error(`[GitService] cloneRepo: migration failed, rolling back:`, e.message);
+                        try { await this._restoreMigrationBackup(slug); } catch (_) {}
+                        // Fall through to existing-repo error
+                    }
+                }
+
+                // Already migrated or non-legacy — not an error for already-migrated repos
+                if (this.isMigratedRepo(slug)) {
+                    console.log(`[GitService] cloneRepo: repo "${slug}" already exists and is migrated`);
+                    return { success: true, path: repoPath, alreadyExists: true };
+                }
+
                 throw new GitError(`Repository for slug ${slug} already exists`, 'REPO_EXISTS');
             }
             
