@@ -440,14 +440,7 @@ async fn main() -> Result<()> {
     let compile_cache: Arc<Mutex<HashMap<String, (u64, String)>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
-    // Ext-host deduplication: holds a sender that, when sent, kills the
-    // previous Node.js extension host process, plus the Instant it was
-    // spawned at.  If a new ext-host DC arrives within a short window,
-    // it's likely a duplicate from a re-applied SDP offer and is ignored.
-    let ext_host_kill_tx: Arc<Mutex<Option<(mpsc::UnboundedSender<()>, tokio::time::Instant)>>> =
-        Arc::new(Mutex::new(None));
-
-    // VS Code Server Manager: same pattern as ext-host — holds kill sender
+    // VS Code Server Manager: holds kill sender
     // for the vscode-server-manager.js process.
     let vscode_server_kill_tx: Arc<Mutex<Option<(mpsc::UnboundedSender<()>, tokio::time::Instant)>>> =
         Arc::new(Mutex::new(None));
@@ -675,7 +668,6 @@ async fn main() -> Result<()> {
         metrics_aggregator.clone(),
         restart_controller.clone(),
         ipc_config.clone(),
-        ext_host_kill_tx.clone(),
         vscode_server_kill_tx.clone(),
     ).await?;
 
@@ -736,7 +728,6 @@ async fn main() -> Result<()> {
                                     metrics_aggregator.clone(),
                                     restart_controller.clone(),
                                     ipc_config.clone(),
-                                    ext_host_kill_tx.clone(),
                                     vscode_server_kill_tx.clone(),
                                 )
                                 .await?;
@@ -814,14 +805,6 @@ async fn main() -> Result<()> {
                      let mut guard = sdl_input_store.lock().await;
                      guard.clear();
                 }
-                // Kill any running ext-host process
-                {
-                    let mut guard = ext_host_kill_tx.lock().await;
-                    if let Some((tx, _)) = guard.take() {
-                        eprintln!("[WebRTC-signal] Killing ext-host process during reset...");
-                        let _ = tx.send(());
-                    }
-                }
                 // Kill any running VS Code Server manager process
                 {
                     let mut guard = vscode_server_kill_tx.lock().await;
@@ -850,7 +833,6 @@ async fn main() -> Result<()> {
                              metrics_aggregator.clone(),
                              restart_controller.clone(),
                              ipc_config.clone(),
-                             ext_host_kill_tx.clone(),
                              vscode_server_kill_tx.clone(),
                          ).await?;
                          pc = new_pc;
@@ -1103,7 +1085,6 @@ async fn wire_peer_channels(
     metrics_aggregator: Arc<tokio::sync::Mutex<MetricsAggregator>>,
     restart_controller: Arc<tokio::sync::Mutex<RestartController>>,
     ipc_config: Arc<IpcConfig>,
-    ext_host_kill_tx: Arc<Mutex<Option<(mpsc::UnboundedSender<()>, tokio::time::Instant)>>>,
     vscode_server_kill_tx: Arc<Mutex<Option<(mpsc::UnboundedSender<()>, tokio::time::Instant)>>>,
 ) -> Result<()> {
     let pc = pc.clone();
@@ -1138,7 +1119,6 @@ async fn wire_peer_channels(
     let restart_controller_for_callback = restart_controller.clone();
     let ipc_config_for_callback = ipc_config.clone();
     let sdl_input_store_for_callback = sdl_input_store.clone();
-    let ext_host_kill_tx_for_callback = ext_host_kill_tx.clone();
     let vscode_server_kill_tx_for_callback = vscode_server_kill_tx.clone();
     pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
         let store = compile_store.clone();
@@ -1157,7 +1137,6 @@ async fn wire_peer_channels(
         let metrics_aggregator_outer = metrics_aggregator_for_callback.clone();
         let restart_controller_outer = restart_controller_for_callback.clone();
         let ipc_config_outer = ipc_config_for_callback.clone();
-        let ext_host_kill_tx_outer = ext_host_kill_tx_for_callback.clone();
         let vscode_server_kill_tx_outer = vscode_server_kill_tx_for_callback.clone();
         async move {
             let label = dc.label();
