@@ -2099,4 +2099,15 @@ class GitService {
 
 const { REPOS_DIR } = require('./config');
 
-module.exports = new GitService(REPOS_DIR);
+const gitService = new GitService(REPOS_DIR);
+
+// Export the singleton instance as default, with error classes attached
+gitService.GitError = GitError;
+gitService.MigrationError = MigrationError;
+gitService.RepoNotFoundError = RepoNotFoundError;
+gitService.RepoNotInitializedError = RepoNotInitializedError;
+gitService.MergeConflictError = MergeConflictError;
+gitService.AuthenticationError = AuthenticationError;
+gitService.RemoteNotConfiguredError = RemoteNotConfiguredError;
+
+module.exports = gitService;
