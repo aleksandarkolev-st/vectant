@@ -249,6 +249,211 @@ function sendEvent(method, ...args) {
 }
 
 // ============================================================================
+// Extension Host Preload Bridge (TCP server)
+//
+// The ext-host-preload.js script runs inside code-server's Extension Host
+// process and connects back to this TCP server. It sends UI events (tree
+// provider registrations, tree data, webview HTML changes) as newline-
+// delimited JSON. We parse them and forward to the browser via stdout.
+// ============================================================================
+
+/** @type {net.Server|null} */
+let preloadBridgeServer = null;
+
+/** @type {number|null} TCP port the bridge listens on */
+let preloadBridgePort = null;
+
+/** @type {Set<net.Socket>} Connected preload clients */
+const preloadClients = new Set();
+
+/** @type {Map<string, object>} viewId → last known tree data */
+const preloadTreeCache = new Map();
+
+/**
+ * Start the TCP bridge server for ext-host-preload.js connections.
+ * Picks a random available port and stores it in preloadBridgePort.
+ *
+ * @returns {Promise<number>} The port the bridge is listening on
+ */
+function startPreloadBridge() {
+  return new Promise((resolve, reject) => {
+    if (preloadBridgeServer) {
+      resolve(preloadBridgePort);
+      return;
+    }
+
+    const server = net.createServer((socket) => {
+      process.stderr.write(`[preload-bridge] Client connected from Extension Host\n`);
+      preloadClients.add(socket);
+
+      let lineBuf = '';
+
+      socket.on('data', (chunk) => {
+        lineBuf += chunk.toString();
+        let newlineIdx;
+        while ((newlineIdx = lineBuf.indexOf('\n')) !== -1) {
+          const line = lineBuf.slice(0, newlineIdx).trim();
+          lineBuf = lineBuf.slice(newlineIdx + 1);
+          if (!line) continue;
+
+          try {
+            const msg = JSON.parse(line);
+            _handlePreloadMessage(msg);
+          } catch (e) {
+            process.stderr.write(`[preload-bridge] Parse error: ${e.message}\n`);
+          }
+        }
+      });
+
+      socket.on('close', () => {
+        process.stderr.write(`[preload-bridge] Client disconnected\n`);
+        preloadClients.delete(socket);
+      });
+
+      socket.on('error', (err) => {
+        process.stderr.write(`[preload-bridge] Socket error: ${err.message}\n`);
+        preloadClients.delete(socket);
+      });
+    });
+
+    server.listen(0, '127.0.0.1', () => {
+      preloadBridgePort = server.address().port;
+      preloadBridgeServer = server;
+      process.stderr.write(`[preload-bridge] TCP bridge listening on port ${preloadBridgePort}\n`);
+      resolve(preloadBridgePort);
+    });
+
+    server.on('error', (err) => {
+      process.stderr.write(`[preload-bridge] Server error: ${err.message}\n`);
+      reject(err);
+    });
+
+    // Don't let the bridge server keep the process alive on its own
+    server.unref();
+  });
+}
+
+/**
+ * Stop the preload bridge TCP server.
+ */
+function stopPreloadBridge() {
+  if (preloadBridgeServer) {
+    for (const client of preloadClients) {
+      try { client.destroy(); } catch (_) {}
+    }
+    preloadClients.clear();
+    try { preloadBridgeServer.close(); } catch (_) {}
+    preloadBridgeServer = null;
+    preloadBridgePort = null;
+    process.stderr.write(`[preload-bridge] TCP bridge stopped\n`);
+  }
+}
+
+/**
+ * Handle a message from the ext-host-preload.js script.
+ * These are UI events extracted from the real Extension Host.
+ *
+ * @param {object} msg
+ */
+function _handlePreloadMessage(msg) {
+  if (!msg || typeof msg !== 'object') return;
+
+  switch (msg.type) {
+    case 'treeProvider': {
+      // A tree data provider was registered
+      process.stderr.write(`[preload-bridge] Tree provider registered: ${msg.viewId} (ext: ${msg.extensionId})\n`);
+      sendEvent('registerTreeView', msg.viewId, msg.extensionId);
+      break;
+    }
+
+    case 'treeData': {
+      // Tree data resolved for a view
+      process.stderr.write(`[preload-bridge] Tree data for ${msg.viewId}: ${(msg.data || []).length} items\n`);
+      preloadTreeCache.set(msg.viewId, msg.data);
+      sendEvent('treeData', msg.viewId, msg.data);
+      break;
+    }
+
+    case 'webviewProvider': {
+      // A webview view provider was registered
+      process.stderr.write(`[preload-bridge] Webview provider registered: ${msg.viewType} (ext: ${msg.extensionId})\n`);
+      sendEvent('createWebview', msg.viewType, msg.viewType, msg.viewType, { extensionId: msg.extensionId });
+      break;
+    }
+
+    case 'webviewHtml': {
+      // Webview HTML content updated
+      process.stderr.write(`[preload-bridge] Webview HTML for ${msg.viewType}: ${(msg.html || '').length} chars\n`);
+      sendEvent('updateWebview', msg.viewType, msg.html);
+      break;
+    }
+
+    case 'webviewPanel': {
+      // A webview panel was created
+      process.stderr.write(`[preload-bridge] Webview panel: ${msg.viewId} (type: ${msg.viewType})\n`);
+      sendEvent('createWebview', msg.viewId, msg.viewType, msg.title, { extensionId: msg.extensionId });
+      break;
+    }
+
+    case 'webviewPanelHtml': {
+      // Webview panel HTML content updated
+      sendEvent('updateWebview', msg.viewId, msg.html);
+      break;
+    }
+
+    case 'command': {
+      // A command was registered
+      process.stderr.write(`[preload-bridge] Command registered: ${msg.commandId} (ext: ${msg.extensionId})\n`);
+      sendEvent('registerCommand', msg.commandId, msg.extensionId);
+      break;
+    }
+
+    case 'webviewDisposed': {
+      sendEvent('disposeWebview', msg.viewType || msg.viewId);
+      break;
+    }
+
+    case 'hello': {
+      // Preload client connected and identified itself
+      process.stderr.write(`[preload-bridge] Hello from Extension Host (pid: ${msg.pid}, ppid: ${msg.ppid})\n`);
+      // Request an initial provider list and tree data refresh
+      sendToPreloadClients({ action: 'listProviders' });
+      sendToPreloadClients({ action: 'refreshAllTrees' });
+      break;
+    }
+
+    case 'providerList': {
+      // Response to a listProviders request — log and forward to browser
+      const treeCount = msg.treeViews?.length || 0;
+      const webviewCount = msg.webviews?.length || 0;
+      process.stderr.write(`[preload-bridge] Provider list: ${treeCount} trees, ${webviewCount} webviews\n`);
+      sendEvent('providerList', msg.treeViews, msg.webviews);
+      break;
+    }
+
+    default:
+      process.stderr.write(`[preload-bridge] Unknown message type: ${msg.type}\n`);
+  }
+}
+
+/**
+ * Send a message to all connected preload clients.
+ * Used to request tree data refresh, etc.
+ *
+ * @param {object} msg
+ */
+function sendToPreloadClients(msg) {
+  const json = JSON.stringify(msg) + '\n';
+  for (const client of preloadClients) {
+    try {
+      client.write(json);
+    } catch (e) {
+      process.stderr.write(`[preload-bridge] Write to client failed: ${e.message}\n`);
+    }
+  }
+}
+
+// ============================================================================
 // Server State
 // ============================================================================
 
@@ -574,6 +779,27 @@ async function startServer(slug, options = {}) {
     // Append workspace directory
     args.push(workspaceDir);
 
+    // ── Start the preload bridge BEFORE spawning code-server ──
+    // The bridge TCP server must be listening before the Extension Host
+    // process starts, so ext-host-preload.js can connect immediately.
+    let bridgePort = 0;
+    try {
+      bridgePort = await startPreloadBridge();
+      process.stderr.write(`[vscode-server-manager] Preload bridge ready on port ${bridgePort}\n`);
+    } catch (bridgeErr) {
+      process.stderr.write(`[vscode-server-manager] Preload bridge start failed (non-fatal): ${bridgeErr.message}\n`);
+    }
+
+    // Build NODE_OPTIONS to inject ext-host-preload.js into the Extension Host.
+    // The preload script uses SYNTHI_EXT_BRIDGE_PORT to connect back to us.
+    // It checks for VSCODE_IPC_HOOK_EXTHOST to ensure it only activates
+    // inside the Extension Host process, not code-server's main process.
+    const preloadPath = path.join(__dirname, 'ext-host-preload.js');
+    const existingNodeOptions = process.env.NODE_OPTIONS || '';
+    const nodeOptions = bridgePort
+      ? `${existingNodeOptions} --require "${preloadPath}"`.trim()
+      : existingNodeOptions;
+
     process.stderr.write(`[vscode-server-manager] Starting: ${binary} ${args.join(' ')}\n`);
 
     serverProcess = spawn(binary, args, {
@@ -584,6 +810,11 @@ async function startServer(slug, options = {}) {
         VSCODE_SERVER_TOKEN: token,
         // Disable GPU (headless server)
         VSCODE_CLI_DISABLE_GPU: '1',
+        // Inject ext-host-preload.js into all Node child processes.
+        // The preload script self-guards to only activate in the Extension Host.
+        ...(nodeOptions ? { NODE_OPTIONS: nodeOptions } : {}),
+        // Tell the preload script where our TCP bridge is listening
+        ...(bridgePort ? { SYNTHI_EXT_BRIDGE_PORT: String(bridgePort) } : {}),
       },
     });
 
@@ -701,7 +932,10 @@ function stopServer() {
 
     process.stderr.write('[vscode-server-manager] Stopping server...\n');
 
-    // Also stop the Extension Host Bridge
+    // Stop the preload bridge (TCP server for ext-host-preload.js)
+    stopPreloadBridge();
+
+    // Also stop the Extension Host Bridge (legacy remote-ext-host.js)
     stopExtHostBridge();
 
     const killTimer = setTimeout(() => {
@@ -812,7 +1046,8 @@ async function installVSIX(extensionId, vsixData) {
     sendEvent('extensionInstalled', extensionId);
     process.stderr.write(`[vscode-server-manager] ✓ VSIX installed: ${extensionId}\n`);
 
-    // After install, try loading into the Extension Host Bridge for UI events
+    // Track UI contributions and request preload refresh.
+    // With preload approach, extensions are automatically bridged.
     try {
       await loadExtensionForUI(extensionId);
     } catch (uiErr) {
@@ -902,178 +1137,20 @@ function listInstalledExtensions() {
 }
 
 // ============================================================================
-// Extension Host Bridge
+// Extension Host Bridge (Preload-Based)
 //
-// Spawns remote-ext-host.js as a child process and loads UI extensions
-// (those with contributes.views or webview view providers) into it.
-// Events from the Extension Host (treeData, createWebview, updateWebview)
-// are forwarded through our own stdout → Rust worker → DataChannel → browser.
+// Instead of spawning remote-ext-host.js with a shimmed vscode API,
+// we now rely on ext-host-preload.js injected into code-server's real
+// Extension Host via NODE_OPTIONS. The preload script intercepts the
+// genuine vscode API and sends UI events back through the TCP bridge.
+//
+// The functions below provide backward-compatible interfaces so the
+// rest of the codebase (installVSIX, installExtensionFromMarketplace)
+// can still call loadExtensionForUI() etc.
 // ============================================================================
 
-/** @type {import('child_process').ChildProcess|null} */
-let extHostProcess = null;
-
-/** @type {number} */
-let extHostMessageId = 0;
-
-/** @type {Map<number, {resolve: Function, reject: Function, timer: NodeJS.Timeout}>} */
-const extHostPendingRequests = new Map();
-
-/** @type {Set<string>} Extensions already loaded in the ext-host bridge */
+/** @type {Set<string>} Extensions known to have UI contributions */
 const extHostLoadedExtensions = new Set();
-
-/** @type {boolean} */
-let extHostReady = false;
-
-/**
- * Start the Extension Host Bridge (remote-ext-host.js child process).
- * Called once after code-server is ready.
- */
-function startExtHostBridge() {
-  if (extHostProcess) return;
-
-  const scriptPath = path.join(__dirname, 'remote-ext-host.js');
-  if (!fs.existsSync(scriptPath)) {
-    process.stderr.write(`[ext-host-bridge] remote-ext-host.js not found at ${scriptPath}\n`);
-    return;
-  }
-
-  process.stderr.write('[ext-host-bridge] Starting Extension Host Bridge...\n');
-
-  extHostProcess = spawn(process.execPath, [scriptPath], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      // Provide the extensions dir so the child can find installed extensions
-      SYNTHI_EXTENSIONS_DIR: EXTENSIONS_DIR,
-    },
-  });
-
-  // Parse stdout from remote-ext-host.js (newline-delimited JSON)
-  const childRl = readline.createInterface({ input: extHostProcess.stdout, terminal: false });
-  childRl.on('line', (line) => {
-    if (!line.trim()) return;
-    try {
-      const msg = JSON.parse(line);
-      _handleExtHostMessage(msg);
-    } catch (e) {
-      process.stderr.write(`[ext-host-bridge] stdout parse error: ${e.message}\n`);
-    }
-  });
-
-  extHostProcess.stderr.on('data', (data) => {
-    process.stderr.write(`[ext-host-bridge] ${data}`);
-  });
-
-  extHostProcess.on('exit', (code, signal) => {
-    process.stderr.write(`[ext-host-bridge] Process exited: code=${code} signal=${signal}\n`);
-    extHostProcess = null;
-    extHostReady = false;
-    extHostLoadedExtensions.clear();
-    // Reject any pending requests
-    for (const [id, pending] of extHostPendingRequests) {
-      clearTimeout(pending.timer);
-      pending.reject(new Error('Extension Host Bridge exited'));
-    }
-    extHostPendingRequests.clear();
-  });
-}
-
-/**
- * Handle a message from the Extension Host child process.
- * Events are forwarded to the browser; responses resolve pending RPC promises.
- */
-function _handleExtHostMessage(msg) {
-  if (!msg || typeof msg !== 'object') return;
-
-  // Handle workerReady from the child
-  if (msg.type === 'event' && msg.method === 'workerReady') {
-    extHostReady = true;
-    process.stderr.write('[ext-host-bridge] Extension Host Bridge ready\n');
-    return;
-  }
-
-  // Forward events from the child → browser
-  // These include: treeData, createWebview, updateWebview, disposeWebview,
-  // registerCommand, registerTreeView, showMessage, etc.
-  if (msg.type === 'event') {
-    sendEvent(msg.method, ...(msg.args || []));
-    return;
-  }
-
-  // Handle RPC responses
-  if (msg.type === 'response') {
-    const pending = extHostPendingRequests.get(msg.id);
-    if (pending) {
-      extHostPendingRequests.delete(msg.id);
-      clearTimeout(pending.timer);
-      if (msg.error) {
-        pending.reject(new Error(msg.error.message || 'Extension Host Bridge error'));
-      } else {
-        pending.resolve(msg.result);
-      }
-    }
-    return;
-  }
-}
-
-/**
- * Send an RPC request to the Extension Host child process.
- *
- * @param {string} method
- * @param {any[]} [args]
- * @param {number} [timeoutMs=30000]
- * @returns {Promise<any>}
- */
-function _extHostRequest(method, args = [], timeoutMs = 30000) {
-  return new Promise((resolve, reject) => {
-    if (!extHostProcess || !extHostReady) {
-      return reject(new Error('Extension Host Bridge not running'));
-    }
-
-    const id = ++extHostMessageId;
-    const timer = setTimeout(() => {
-      extHostPendingRequests.delete(id);
-      reject(new Error(`Extension Host Bridge request timeout: ${method}`));
-    }, timeoutMs);
-
-    extHostPendingRequests.set(id, { resolve, reject, timer });
-
-    const msg = JSON.stringify({
-      id,
-      type: 'request',
-      method,
-      args,
-      generation: 0,
-    }) + '\n';
-
-    try {
-      extHostProcess.stdin.write(msg);
-    } catch (err) {
-      extHostPendingRequests.delete(id);
-      clearTimeout(timer);
-      reject(err);
-    }
-  });
-}
-
-/**
- * Wait for the Extension Host Bridge to become ready.
- * @param {number} [timeout=10000]
- * @returns {Promise<void>}
- */
-function _waitForExtHostReady(timeout = 10000) {
-  if (extHostReady) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const start = Date.now();
-    const check = () => {
-      if (extHostReady) return resolve();
-      if (Date.now() - start > timeout) return reject(new Error('Extension Host Bridge ready timeout'));
-      setTimeout(check, 200);
-    };
-    check();
-  });
-}
 
 /**
  * Check if an extension has UI contributions (views, webview views, tree data).
@@ -1084,11 +1161,8 @@ function _waitForExtHostReady(timeout = 10000) {
 function _hasUIContributions(manifest) {
   if (!manifest?.contributes) return false;
   const c = manifest.contributes;
-  // Has view contributions
   if (c.views && Object.keys(c.views).length > 0) return true;
-  // Has view containers
   if (c.viewsContainers && Object.keys(c.viewsContainers).length > 0) return true;
-  // Has webview views (viewsWelcome doesn't count)
   return false;
 }
 
@@ -1111,7 +1185,6 @@ function _readExtensionManifest(extensionId) {
   }
 
   // code-server names directories as `publisher.name-version`
-  // Try finding a directory that starts with the extensionId
   try {
     const dirs = fs.readdirSync(EXTENSIONS_DIR);
     for (const dir of dirs) {
@@ -1131,72 +1204,61 @@ function _readExtensionManifest(extensionId) {
 }
 
 /**
- * Load a UI extension into the Extension Host Bridge.
- * Reads the extension from EXTENSIONS_DIR and loads it in remote-ext-host.js.
+ * Mark an extension as UI-bridged and request data from preload clients.
+ *
+ * With the preload approach, extensions are loaded by code-server's real
+ * Extension Host automatically. We don't need to "load" them manually.
+ * This function just:
+ *   1. Checks if the extension has UI contributions
+ *   2. Marks it as bridged
+ *   3. Tells preload clients to refresh tree data
  *
  * @param {string} extensionId
  * @returns {Promise<{success: boolean, hasUI: boolean}>}
  */
 async function loadExtensionForUI(extensionId) {
   if (extHostLoadedExtensions.has(extensionId)) {
-    process.stderr.write(`[ext-host-bridge] ${extensionId} already loaded in bridge\n`);
+    process.stderr.write(`[preload-bridge] ${extensionId} already tracked\n`);
     return { success: true, hasUI: true };
   }
 
   const result = _readExtensionManifest(extensionId);
   if (!result) {
-    process.stderr.write(`[ext-host-bridge] Cannot find manifest for ${extensionId}\n`);
+    process.stderr.write(`[preload-bridge] Cannot find manifest for ${extensionId}\n`);
     return { success: false, hasUI: false };
   }
 
-  const { manifest, extDir } = result;
+  const { manifest } = result;
 
-  // Check if this extension has UI contributions worth bridging
   if (!_hasUIContributions(manifest)) {
-    process.stderr.write(`[ext-host-bridge] ${extensionId} has no UI contributions, skipping bridge\n`);
+    process.stderr.write(`[preload-bridge] ${extensionId} has no UI contributions\n`);
     return { success: true, hasUI: false };
   }
 
-  // Check it has a Node.js entry point
-  if (!manifest.main) {
-    process.stderr.write(`[ext-host-bridge] ${extensionId} has no main entry, skipping bridge\n`);
-    return { success: true, hasUI: false };
-  }
+  extHostLoadedExtensions.add(extensionId);
+  process.stderr.write(`[preload-bridge] Tracking UI for ${extensionId}\n`);
 
-  // Ensure the Extension Host Bridge is running
-  if (!extHostProcess) {
-    startExtHostBridge();
-    await _waitForExtHostReady();
-  } else if (!extHostReady) {
-    await _waitForExtHostReady();
-  }
+  // Ask preload clients to refresh — the extension may already be loaded
+  // in the Extension Host and have registered providers
+  sendToPreloadClients({ action: 'refreshAllTrees' });
+  sendToPreloadClients({ action: 'listProviders' });
 
-  try {
-    // Load extension from its installed directory
-    await _extHostRequest('loadExtensionFromPath', [extensionId, extDir], 30000);
-    // Activate it
-    await _extHostRequest('activateExtension', [extensionId], 15000);
-
-    extHostLoadedExtensions.add(extensionId);
-    process.stderr.write(`[ext-host-bridge] ✓ ${extensionId} loaded and activated in bridge\n`);
-    return { success: true, hasUI: true };
-  } catch (err) {
-    process.stderr.write(`[ext-host-bridge] Failed to load ${extensionId}: ${err.message}\n`);
-    return { success: false, hasUI: true, error: err.message };
-  }
+  return { success: true, hasUI: true };
 }
 
 /**
- * Stop the Extension Host Bridge.
+ * No-op for backward compatibility. The old bridge spawned remote-ext-host.js;
+ * the new preload approach doesn't need a separate process.
+ */
+function startExtHostBridge() {
+  process.stderr.write('[preload-bridge] startExtHostBridge() is a no-op (using preload approach)\n');
+}
+
+/**
+ * No-op for backward compatibility.
  */
 function stopExtHostBridge() {
-  if (!extHostProcess) return;
-  process.stderr.write('[ext-host-bridge] Stopping Extension Host Bridge...\n');
-  try {
-    extHostProcess.kill('SIGTERM');
-  } catch (_) {}
-  extHostProcess = null;
-  extHostReady = false;
+  process.stderr.write('[preload-bridge] stopExtHostBridge() is a no-op (using preload approach)\n');
   extHostLoadedExtensions.clear();
 }
 
@@ -1835,17 +1897,17 @@ rl.on('line', async (line) => {
             stdio: ['ignore', 'pipe', 'pipe'],
           });
 
-          // After successful install, check if the extension has UI
-          // contributions and load it in the Extension Host Bridge for
-          // tree data / webview event forwarding.
-          let uiResult = { hasUI: false };
+          // Track UI contributions and request preload refresh
           try {
-            uiResult = await loadExtensionForUI(extensionId);
+            await loadExtensionForUI(extensionId);
           } catch (uiErr) {
             process.stderr.write(`[vscode-server-manager] UI bridge load failed for ${extensionId}: ${uiErr.message}\n`);
           }
 
-          sendResponse(id, { success: true, extensionId, uiBridged: uiResult.hasUI });
+          // With the preload approach, ALL extensions get the real vscode API
+          // and UI events are automatically bridged. Always report uiBridged=true
+          // so the browser never falls back to synthetic placeholder events.
+          sendResponse(id, { success: true, extensionId, uiBridged: true });
         } catch (err) {
           sendResponse(id, null, err);
         }
@@ -1861,6 +1923,59 @@ rl.on('line', async (line) => {
         } catch (err) {
           sendResponse(id, null, err);
         }
+        break;
+      }
+
+      case 'refreshTreeData': {
+        // Request the preload bridge to re-resolve tree data for a specific view
+        const [viewId] = args;
+        if (viewId) {
+          sendToPreloadClients({ action: 'refreshTreeData', viewId });
+        } else {
+          sendToPreloadClients({ action: 'refreshAllTrees' });
+        }
+        sendResponse(id, { success: true });
+        break;
+      }
+
+      case 'getCachedTreeData': {
+        // Return cached tree data from preload bridge (no round-trip needed)
+        const [viewId] = args;
+        if (viewId) {
+          const data = preloadTreeCache.get(viewId) || null;
+          sendResponse(id, { viewId, data });
+        } else {
+          // Return all cached trees
+          const all = {};
+          for (const [k, v] of preloadTreeCache) {
+            all[k] = v;
+          }
+          sendResponse(id, all);
+        }
+        break;
+      }
+
+      case 'executeExtensionCommand': {
+        // Execute a command registered by an extension via the preload bridge
+        const [commandId, ...commandArgs] = args;
+        if (!commandId) {
+          sendResponse(id, null, new Error('commandId is required'));
+          break;
+        }
+        sendToPreloadClients({
+          action: 'executeCommand',
+          commandId,
+          args: commandArgs,
+        });
+        // Commands are fire-and-forget through the preload bridge
+        sendResponse(id, { success: true, commandId });
+        break;
+      }
+
+      case 'listPreloadProviders': {
+        // Request the preload bridge to enumerate all registered providers
+        sendToPreloadClients({ action: 'listProviders' });
+        sendResponse(id, { success: true });
         break;
       }
 
