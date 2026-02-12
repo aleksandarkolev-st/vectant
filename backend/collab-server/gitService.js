@@ -1566,6 +1566,65 @@ class GitService {
         }
     }
 
+    /**
+     * Create a backup of the legacy repo before migration.
+     * Copies `repos/<slug>/` → `repos/<slug>._migration_backup/`
+     *
+     * Returns the backup path. Caller is responsible for cleanup on success.
+     *
+     * @param {string} slug
+     * @returns {Promise<string>} Backup directory path
+     */
+    async _createMigrationBackup(slug) {
+        const repoPath = this.getRepoPath(slug);
+        const backupPath = `${repoPath}._migration_backup`;
+
+        // Clean up any stale backup from a previous failed migration
+        if (fs.existsSync(backupPath)) {
+            console.warn(`[Migration] Removing stale backup: ${backupPath}`);
+            fs.rmSync(backupPath, { recursive: true, force: true });
+        }
+
+        console.log(`[Migration] Creating backup: ${repoPath} → ${backupPath}`);
+        await fs.promises.cp(repoPath, backupPath, { recursive: true });
+        return backupPath;
+    }
+
+    /**
+     * Restore a repo from its migration backup (rollback).
+     * Replaces the current repo directory with the backup.
+     */
+    async _restoreMigrationBackup(slug) {
+        const repoPath = this.getRepoPath(slug);
+        const backupPath = `${repoPath}._migration_backup`;
+
+        if (!fs.existsSync(backupPath)) {
+            throw new MigrationError(slug, 'No backup found for rollback', 'rollback');
+        }
+
+        console.warn(`[Migration] Rolling back: ${backupPath} → ${repoPath}`);
+
+        // Remove the (partially) migrated repo
+        if (fs.existsSync(repoPath)) {
+            fs.rmSync(repoPath, { recursive: true, force: true });
+        }
+
+        // Restore from backup
+        await fs.promises.rename(backupPath, repoPath);
+        console.log(`[Migration] Rollback complete for ${slug}`);
+    }
+
+    /**
+     * Remove the migration backup after successful migration.
+     */
+    _cleanupMigrationBackup(slug) {
+        const backupPath = `${this.getRepoPath(slug)}._migration_backup`;
+        if (fs.existsSync(backupPath)) {
+            fs.rmSync(backupPath, { recursive: true, force: true });
+            console.log(`[Migration] Backup cleaned up for ${slug}`);
+        }
+    }
+
     // ── Worktree Factory (Session-based isolation) ────────────────────────
 
     /**
