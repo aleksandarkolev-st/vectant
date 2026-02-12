@@ -663,6 +663,44 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ========================================================================
+  // MIGRATION STATUS — Check/trigger lazy migration for a workspace
+  // ========================================================================
+  if (req.url.startsWith('/migration/') && (req.method === 'GET' || req.method === 'POST')) {
+    const urlParts = req.url.split('/');
+    const migAction = urlParts[2]; // 'status' or 'trigger'
+    const migSlug = urlParts[3];
+
+    if (!migSlug) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing slug' }));
+      return;
+    }
+
+    try {
+      if (migAction === 'status' && req.method === 'GET') {
+        const isLegacy = gitService.isLegacyRepo(migSlug);
+        const isMigrated = gitService.isMigratedRepo(migSlug);
+        const marker = gitService._readMigrationMarker(migSlug);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ slug: migSlug, isLegacy, isMigrated, marker }));
+      } else if (migAction === 'trigger' && req.method === 'POST') {
+        console.log(`[Server] Manual migration trigger for: ${migSlug}`);
+        const result = await gitService.ensureMigrated(migSlug);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ slug: migSlug, ...result }));
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unknown migration action' }));
+      }
+    } catch (e) {
+      console.error(`[Migration API] Error for ${migSlug}:`, e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message, code: e.code || 'MIGRATION_ERROR' }));
+    }
+    return;
+  }
+
+  // ========================================================================
   // SESSION API — Host/Guest "Remote Control" collaboration
   // ========================================================================
   if (req.url.startsWith('/session/') && (req.method === 'POST' || req.method === 'GET' || req.method === 'DELETE')) {
