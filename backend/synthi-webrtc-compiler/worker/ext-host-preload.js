@@ -185,6 +185,169 @@ const trackedTreeProviders = new Map();
 const trackedWebviewProviders = new Map();
 
 // ============================================================================
+// Tree Data Resolution
+//
+// Calls the real TreeDataProvider's getChildren() and getTreeItem() methods
+// to extract the tree structure, then sends it to the bridge as JSON.
+// ============================================================================
+
+/** Maximum depth to recurse when resolving tree data */
+const TREE_MAX_DEPTH = 4;
+
+/** Maximum items per level */
+const TREE_MAX_ITEMS_PER_LEVEL = 200;
+
+/** Debounce timer map to avoid hammering providers on rapid changes */
+const _treeResolveTimers = new Map();
+
+/**
+ * Resolve tree data from a provider and send it to the bridge.
+ * Debounced at 150ms per viewId to handle rapid onDidChangeTreeData bursts.
+ *
+ * @param {string} viewId
+ * @param {object} provider - A TreeDataProvider with getChildren/getTreeItem
+ */
+function resolveAndSendTreeData(viewId, provider) {
+  // Debounce
+  if (_treeResolveTimers.has(viewId)) {
+    clearTimeout(_treeResolveTimers.get(viewId));
+  }
+
+  _treeResolveTimers.set(viewId, setTimeout(async () => {
+    _treeResolveTimers.delete(viewId);
+
+    if (!provider || typeof provider.getChildren !== 'function') {
+      log(`No getChildren for ${viewId}, skipping resolve`);
+      return;
+    }
+
+    try {
+      const data = await _resolveTreeLevel(provider, undefined, 0);
+      log(`Resolved tree data for ${viewId}: ${data.length} root items`);
+      bridgeSend({ type: 'treeData', viewId, data });
+    } catch (err) {
+      logError(`Tree data resolve failed for ${viewId}: ${err.message}`);
+      // Send empty tree so the UI doesn't stay in loading state
+      bridgeSend({ type: 'treeData', viewId, data: [] });
+    }
+  }, 150));
+}
+
+/**
+ * Recursively resolve a level of the tree.
+ *
+ * @param {object} provider
+ * @param {*} element - The parent element (undefined for root)
+ * @param {number} depth
+ * @returns {Promise<object[]>}
+ */
+async function _resolveTreeLevel(provider, element, depth) {
+  const items = [];
+
+  let children;
+  try {
+    children = await provider.getChildren(element);
+  } catch (e) {
+    logError(`getChildren failed at depth ${depth}: ${e.message}`);
+    return items;
+  }
+
+  if (!children || !Array.isArray(children)) return items;
+
+  for (let i = 0; i < Math.min(children.length, TREE_MAX_ITEMS_PER_LEVEL); i++) {
+    const child = children[i];
+
+    let treeItem;
+    try {
+      // getTreeItem may return a TreeItem or a Thenable<TreeItem>
+      treeItem = await (typeof provider.getTreeItem === 'function'
+        ? provider.getTreeItem(child)
+        : child);
+    } catch (e) {
+      logError(`getTreeItem failed: ${e.message}`);
+      continue;
+    }
+
+    if (!treeItem) continue;
+
+    const item = _serializeTreeItem(treeItem, child);
+
+    // Recurse into collapsible items
+    if (item.collapsibleState > 0 && depth < TREE_MAX_DEPTH) {
+      try {
+        item.children = await _resolveTreeLevel(provider, child, depth + 1);
+      } catch (_) {
+        item.children = [];
+      }
+    }
+
+    items.push(item);
+  }
+
+  return items;
+}
+
+/**
+ * Serialize a VS Code TreeItem into a plain JSON-safe object.
+ *
+ * @param {object} treeItem - VS Code TreeItem
+ * @param {*} element - The raw element from getChildren
+ * @returns {object}
+ */
+function _serializeTreeItem(treeItem, element) {
+  let label;
+  if (typeof treeItem.label === 'string') {
+    label = treeItem.label;
+  } else if (treeItem.label && typeof treeItem.label === 'object') {
+    // TreeItemLabel: { label: string, highlights?: [number, number][] }
+    label = treeItem.label.label || '';
+  } else if (treeItem.resourceUri) {
+    // File-based items often use resourceUri instead of label
+    const uri = treeItem.resourceUri;
+    label = (uri.path || uri.fsPath || '').split('/').pop() || String(element);
+  } else {
+    label = String(element);
+  }
+
+  let iconPath;
+  if (treeItem.iconPath) {
+    if (typeof treeItem.iconPath === 'string') {
+      iconPath = treeItem.iconPath;
+    } else if (treeItem.iconPath.id) {
+      // ThemeIcon
+      iconPath = `codicon:${treeItem.iconPath.id}`;
+    } else if (treeItem.iconPath.dark || treeItem.iconPath.light) {
+      // { dark: Uri, light: Uri }
+      iconPath = String(treeItem.iconPath.dark || treeItem.iconPath.light);
+    }
+  }
+
+  let tooltip;
+  if (typeof treeItem.tooltip === 'string') {
+    tooltip = treeItem.tooltip;
+  } else if (treeItem.tooltip && typeof treeItem.tooltip === 'object' && treeItem.tooltip.value) {
+    // MarkdownString
+    tooltip = treeItem.tooltip.value;
+  }
+
+  return {
+    id: treeItem.id || (typeof element === 'string' ? element : `item-${Math.random().toString(36).slice(2)}`),
+    label,
+    description: treeItem.description || undefined,
+    tooltip,
+    iconPath,
+    collapsibleState: treeItem.collapsibleState || 0,
+    contextValue: treeItem.contextValue || undefined,
+    command: treeItem.command ? {
+      command: treeItem.command.command,
+      title: treeItem.command.title,
+      arguments: treeItem.command.arguments,
+    } : undefined,
+    children: [],
+  };
+}
+
+// ============================================================================
 // API Wrapping
 // ============================================================================
 
