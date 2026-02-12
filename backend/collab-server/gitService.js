@@ -282,6 +282,28 @@ class GitService {
                 fs.mkdirSync(repoPath, { recursive: true });
             }
 
+            // ── Lazy migration: upgrade legacy repos transparently ────────
+            // Must release the lock before calling ensureMigrated (it acquires its own)
+            // But we're already inside withLock, so we check directly without re-locking.
+            if (this.isLegacyRepo(slug)) {
+                console.log(`[GitService] initRepo: legacy repo detected for "${slug}", migrating…`);
+                // Perform inline migration (we already hold the lock)
+                await this._createMigrationBackup(slug);
+                try {
+                    await this._migrateToSessionStructure(slug);
+                    const valid = await this._validateMigration(slug);
+                    if (!valid) {
+                        throw new MigrationError(slug, 'Post-migration validation failed', 'validation');
+                    }
+                    this._cleanupMigrationBackup(slug);
+                    console.log(`[GitService] initRepo: migration complete for "${slug}"`);
+                } catch (e) {
+                    console.error(`[GitService] initRepo: migration failed, rolling back:`, e.message);
+                    try { await this._restoreMigrationBackup(slug); } catch (_) {}
+                    // Fall through to normal init logic — legacy repo is restored
+                }
+            }
+
             if (!fs.existsSync(path.join(repoPath, '.git'))) {
                 const git = simpleGit(repoPath);
                 await git.init();
