@@ -35,7 +35,6 @@ export class CompilerClient {
         this.emulatorInputChannel = null;
         this.lspChannel = null;
         this.fileSyncChannel = null;
-        this.extHostChannel = null;
         this.readyPromise = null;
         this.currentStreams = [];
         this.logHandlers = new Set();
@@ -544,7 +543,6 @@ export class CompilerClient {
                     this.readyPromise = null;
                     this.compileChannel = null;
                     this.buildLogChannel = null;
-                    this.extHostChannel = null;
                     this.pc = null;
                     this.emulatorInputChannel = null;
                     this._setStatus(CompilerStatus.DISCONNECTED);
@@ -871,29 +869,6 @@ export class CompilerClient {
     }
 
     /**
-     * Create a DataChannel for the remote Node.js extension host.
-     * The Rust worker will spawn `node remote-ext-host.js` and pipe
-     * newline-delimited JSON over the channel.
-     *
-     * @returns {RTCDataChannel}
-     */
-    createExtHostChannel() {
-        // Return the channel that was pre-created during connect() (part of SDP).
-        // This avoids DCEP in-band negotiation which webrtc-rs doesn't handle reliably.
-        if (this.extHostChannel && this.extHostChannel.readyState !== 'closed') {
-            return this.extHostChannel;
-        }
-        // Fallback: create on-demand (e.g. if connect flow changed)
-        if (!this.pc || this.pc.connectionState !== 'connected') {
-            throw new Error('CompilerClient not connected');
-        }
-        const label = `ext-host?slug=${this.slug || ''}`;
-        this.extHostChannel = this.pc.createDataChannel(label, { ordered: true });
-        this.extHostChannel.binaryType = 'arraybuffer';
-        return this.extHostChannel;
-    }
-
-    /**
      * Create a DataChannel for the VS Code Server Manager.
      * The Rust worker will spawn `node vscode-server-manager.js` and pipe
      * newline-delimited JSON over the channel.
@@ -1042,7 +1017,6 @@ export class CompilerClient {
         this.emulatorInputChannel = null;
         this.lspChannel = null;
         this.fileSyncChannel = null;
-        this.extHostChannel = null;
         this.readyPromise = null;
         this._setStatus(CompilerStatus.IDLE);
         this.currentStreams = [];
@@ -1111,7 +1085,6 @@ export class CompilerClient {
         this.emulatorInputChannel = null;
         this.lspChannel = null;
         this.fileSyncChannel = null;
-        this.extHostChannel = null;
         this.readyPromise = null;
         this._setStatus(CompilerStatus.IDLE);
         
@@ -1591,7 +1564,6 @@ export class CompilerClient {
         this.compileChannel = null;
         this.buildLogChannel = null;
         this.terminalChannel = null;
-        this.extHostChannel = null;
         this.readyPromise = null;
         this.logHandlers.clear();
         this.statusListeners.clear();
