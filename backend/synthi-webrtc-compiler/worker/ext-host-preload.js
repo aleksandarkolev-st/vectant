@@ -111,9 +111,35 @@ function connectBridge() {
       socket.write(msg + '\n');
     }
     pendingMessages = [];
+
+    // Announce ourselves with an initial handshake
+    bridgeSend({
+      type: 'hello',
+      pid: process.pid,
+      extHostEnv: !!process.env.VSCODE_IPC_HOOK_EXTHOST,
+    });
   });
 
   socket.setNoDelay(true);
+
+  // ── Handle incoming messages from the manager ──
+  let incomingBuf = '';
+  socket.on('data', (chunk) => {
+    incomingBuf += chunk.toString();
+    let newlineIdx;
+    while ((newlineIdx = incomingBuf.indexOf('\n')) !== -1) {
+      const line = incomingBuf.slice(0, newlineIdx).trim();
+      incomingBuf = incomingBuf.slice(newlineIdx + 1);
+      if (!line) continue;
+
+      try {
+        const msg = JSON.parse(line);
+        _handleBridgeRequest(msg);
+      } catch (e) {
+        logError(`Failed to parse bridge request: ${e.message}`);
+      }
+    }
+  });
 
   socket.on('error', (err) => {
     logError(`Bridge connection error: ${err.message}`);
@@ -647,6 +673,62 @@ function wrapCommands(vscode) {
   };
 
   log('commands.registerCommand wrapped');
+}
+
+// ============================================================================
+// Bridge Request Handler (incoming from vscode-server-manager)
+// ============================================================================
+
+/**
+ * Handle a request from the vscode-server-manager.
+ * Supports:
+ *   - refreshTreeData: re-resolve and send tree data for a viewId
+ *   - listProviders: list all tracked tree/webview providers
+ *   - refreshAllTrees: re-resolve all tracked tree providers
+ *
+ * @param {object} msg
+ */
+function _handleBridgeRequest(msg) {
+  if (!msg || typeof msg !== 'object') return;
+
+  switch (msg.action) {
+    case 'refreshTreeData': {
+      const { viewId } = msg;
+      const entry = trackedTreeProviders.get(viewId);
+      if (entry && entry.provider) {
+        log(`Bridge requested tree refresh for ${viewId}`);
+        resolveAndSendTreeData(viewId, entry.provider);
+      } else {
+        logError(`No tracked provider for tree refresh: ${viewId}`);
+      }
+      break;
+    }
+
+    case 'refreshAllTrees': {
+      log(`Bridge requested refresh of all ${trackedTreeProviders.size} tree providers`);
+      for (const [viewId, entry] of trackedTreeProviders) {
+        if (entry.provider) {
+          resolveAndSendTreeData(viewId, entry.provider);
+        }
+      }
+      break;
+    }
+
+    case 'listProviders': {
+      const treeViews = Array.from(trackedTreeProviders.keys());
+      const webviews = Array.from(trackedWebviewProviders.keys());
+      log(`Bridge requested provider list: ${treeViews.length} trees, ${webviews.length} webviews`);
+      bridgeSend({
+        type: 'providerList',
+        treeViews,
+        webviews,
+      });
+      break;
+    }
+
+    default:
+      log(`Unknown bridge request action: ${msg.action}`);
+  }
 }
 
 // ============================================================================
