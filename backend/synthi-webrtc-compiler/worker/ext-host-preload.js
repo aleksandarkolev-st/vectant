@@ -127,6 +127,7 @@ function connectBridge() {
     bridgeSend({
       type: 'hello',
       pid: process.pid,
+      ppid: process.ppid,
       extHostEnv: !!process.env.VSCODE_IPC_HOOK_EXTHOST,
     });
   });

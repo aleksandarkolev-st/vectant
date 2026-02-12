@@ -413,6 +413,24 @@ function _handlePreloadMessage(msg) {
       break;
     }
 
+    case 'hello': {
+      // Preload client connected and identified itself
+      process.stderr.write(`[preload-bridge] Hello from Extension Host (pid: ${msg.pid}, ppid: ${msg.ppid})\n`);
+      // Request an initial provider list and tree data refresh
+      sendToPreloadClients({ action: 'listProviders' });
+      sendToPreloadClients({ action: 'refreshAllTrees' });
+      break;
+    }
+
+    case 'providerList': {
+      // Response to a listProviders request — log and forward to browser
+      const treeCount = msg.treeViews?.length || 0;
+      const webviewCount = msg.webviews?.length || 0;
+      process.stderr.write(`[preload-bridge] Provider list: ${treeCount} trees, ${webviewCount} webviews\n`);
+      sendEvent('providerList', msg.treeViews, msg.webviews);
+      break;
+    }
+
     default:
       process.stderr.write(`[preload-bridge] Unknown message type: ${msg.type}\n`);
   }
