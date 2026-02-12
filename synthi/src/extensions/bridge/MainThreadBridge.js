@@ -496,9 +496,9 @@ export class MainThreadBridge {
   }
 
   /**
-   * Determine if an extension should run on a remote host (VS Code Server or
-   * legacy remote-ext-host).  Delegates to getExtensionHostTarget() so that
-   * routing logic is defined in exactly one place.
+   * Determine if an extension should run on a remote host (VS Code Server).
+   * Delegates to getExtensionHostTarget() so that routing logic is defined
+   * in exactly one place.
    */
   _shouldRunRemote(manifest) {
     const target = this.getExtensionHostTarget(manifest);

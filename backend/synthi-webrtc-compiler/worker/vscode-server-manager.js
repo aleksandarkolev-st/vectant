@@ -3,9 +3,9 @@
  * VS Code Server Manager
  *
  * Manages the lifecycle of a real VS Code Server (code-server / vscode-server)
- * on the backend. Instead of running extension code through a custom shimmed
- * Node.js host (`remote-ext-host.js`), this spawns a real VS Code Server
- * process that provides a **genuine Extension Host** with full `vscode.*` API.
+ * on the backend. Extensions run in the genuine Extension Host with full
+ * `vscode.*` API.  ext-host-preload.js is injected via NODE_OPTIONS to wrap
+ * the real API and relay UI events back through a TCP bridge.
  *
  * Responsibilities:
  *   1. Download / locate the VS Code Server binary
@@ -20,8 +20,7 @@
  *   Browser ←WebSocket (tunnelled over WebRTC)→ VS Code Server
  *
  * The manager communicates over newline-delimited JSON on stdin/stdout
- * (same pattern as remote-ext-host.js) so the Rust worker can spawn it
- * identically.
+ * so the Rust worker can spawn it via the vscode-server DataChannel.
  */
 
 'use strict';
@@ -88,7 +87,7 @@ process.on('uncaughtException', (err) => {
 });
 
 // ============================================================================
-// Protocol (stdin/stdout JSON, same as remote-ext-host.js)
+// Protocol (stdin/stdout JSON)
 // ============================================================================
 
 const GENERATION = 0;
@@ -935,7 +934,7 @@ function stopServer() {
     // Stop the preload bridge (TCP server for ext-host-preload.js)
     stopPreloadBridge();
 
-    // Also stop the Extension Host Bridge (legacy remote-ext-host.js)
+    // Stop the legacy Extension Host Bridge (no-op)
     stopExtHostBridge();
 
     const killTimer = setTimeout(() => {
@@ -1139,7 +1138,7 @@ function listInstalledExtensions() {
 // ============================================================================
 // Extension Host Bridge (Preload-Based)
 //
-// Instead of spawning remote-ext-host.js with a shimmed vscode API,
+// Instead of the deleted remote-ext-host.js (which used a shimmed vscode API),
 // we now rely on ext-host-preload.js injected into code-server's real
 // Extension Host via NODE_OPTIONS. The preload script intercepts the
 // genuine vscode API and sends UI events back through the TCP bridge.
@@ -1247,8 +1246,8 @@ async function loadExtensionForUI(extensionId) {
 }
 
 /**
- * No-op for backward compatibility. The old bridge spawned remote-ext-host.js;
- * the new preload approach doesn't need a separate process.
+ * No-op for backward compatibility. The preload approach doesn't need a
+ * separate extension host process.
  */
 function startExtHostBridge() {
   process.stderr.write('[preload-bridge] startExtHostBridge() is a no-op (using preload approach)\n');
