@@ -1535,6 +1535,37 @@ class GitService {
         return path.join(this.baseDir, slug, '_upstream.git');
     }
 
+    /**
+     * Write the `.synthi-migrated` marker file to indicate successful migration.
+     * Contains JSON metadata about when and how the migration was performed.
+     */
+    _writeMigrationMarker(slug) {
+        const repoPath = this.getRepoPath(slug);
+        const markerPath = path.join(repoPath, '.synthi-migrated');
+        const metadata = {
+            version: 1,
+            migratedAt: new Date().toISOString(),
+            barePath: this.getBarePath(slug),
+            structure: 'bare+worktree',
+        };
+        fs.writeFileSync(markerPath, JSON.stringify(metadata, null, 2), 'utf8');
+    }
+
+    /**
+     * Read migration metadata from the marker file (if it exists).
+     * Returns null if the repo hasn't been migrated.
+     */
+    _readMigrationMarker(slug) {
+        const repoPath = this.getRepoPath(slug);
+        const markerPath = path.join(repoPath, '.synthi-migrated');
+        if (!fs.existsSync(markerPath)) return null;
+        try {
+            return JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+        } catch (_) {
+            return null;
+        }
+    }
+
     // ── Worktree Factory (Session-based isolation) ────────────────────────
 
     /**
