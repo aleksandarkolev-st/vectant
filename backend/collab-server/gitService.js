@@ -214,7 +214,10 @@ class GitService {
      * Fire-and-forget — failures are logged but never thrown.
      */
     _archiveGitAsync(slug) {
-        const repoPath = this.getRepoPath(slug);
+        // For migrated repos, archive the bare repo directory.
+        // For legacy repos, archive the standard working tree.
+        const barePath = this.getBarePath(slug);
+        const repoPath = fs.existsSync(barePath) ? barePath : this.getRepoPath(slug);
         gcsSync.archiveGitToGcs(slug, repoPath).catch((e) => {
             console.warn(`[GitService] .git archive failed for ${slug}:`, e.message);
         });
