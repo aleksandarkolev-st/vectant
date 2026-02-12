@@ -28,8 +28,8 @@ export function createWindowAPI(extensionId, host) {
      * Active text editor (read-only)
      */
     get activeTextEditor() {
-      // Would need main thread state sync
-      return undefined;
+      // Synced from main thread via ACTIVE_EDITOR_CHANGED events
+      return host._activeTextEditor || undefined;
     },
 
     /**
@@ -92,10 +92,12 @@ export function createWindowAPI(extensionId, host) {
      */
     async showQuickPick(items, options, token) {
       const resolvedItems = await Promise.resolve(items);
-      
-      // For now, just return undefined - would need main thread UI
-      host.emit(WorkerToMainMethods.SHOW_QUICK_PICK, resolvedItems, options);
-      return undefined;
+      try {
+        const result = await host.request(WorkerToMainMethods.SHOW_QUICK_PICK, [resolvedItems, options]);
+        return result;
+      } catch {
+        return undefined;
+      }
     },
 
     /**
@@ -105,8 +107,12 @@ export function createWindowAPI(extensionId, host) {
      * @returns {Promise<string|undefined>}
      */
     async showInputBox(options, token) {
-      host.emit(WorkerToMainMethods.SHOW_INPUT_BOX, options);
-      return undefined;
+      try {
+        const result = await host.request(WorkerToMainMethods.SHOW_INPUT_BOX, [options]);
+        return result;
+      } catch {
+        return undefined;
+      }
     },
 
     /**
