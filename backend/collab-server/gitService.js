@@ -356,6 +356,8 @@ class GitService {
 
             // ── Handle existing repo gracefully ───────────────────────────
             if (fs.existsSync(repoPath)) {
+                const hasGit = fs.existsSync(path.join(repoPath, '.git'));
+
                 // If it's a legacy repo, migrate it instead of throwing
                 if (this.isLegacyRepo(slug)) {
                     console.log(`[GitService] cloneRepo: legacy repo exists for "${slug}", migrating instead of failing…`);
@@ -376,13 +378,22 @@ class GitService {
                     }
                 }
 
-                // Already migrated or non-legacy — not an error for already-migrated repos
+                // Already migrated — not an error
                 if (this.isMigratedRepo(slug)) {
                     console.log(`[GitService] cloneRepo: repo "${slug}" already exists and is migrated`);
                     return { success: true, path: repoPath, alreadyExists: true };
                 }
 
-                throw new GitError(`Repository for slug ${slug} already exists`, 'REPO_EXISTS');
+                // Directory exists but has no .git — this is an empty stub
+                // created by repoCache materialisation.  Remove it so `git clone`
+                // can use the path as its target directory.
+                if (!hasGit) {
+                    console.log(`[GitService] cloneRepo: removing empty stub directory for "${slug}"`);
+                    fs.rmSync(repoPath, { recursive: true, force: true });
+                } else {
+                    // Has a .git dir but isn't legacy and isn't migrated — genuinely exists
+                    throw new GitError(`Repository for slug ${slug} already exists`, 'REPO_EXISTS');
+                }
             }
             
             // Set up git with credential helper for secure token usage
