@@ -267,6 +267,68 @@ function wrapRegisterTreeDataProvider(vscode) {
 }
 
 // ============================================================================
+// Wrap: window.createTreeView
+// ============================================================================
+
+/**
+ * Wrap vscode.window.createTreeView to observe tree view creation.
+ * createTreeView is an alternative to registerTreeDataProvider that returns
+ * a TreeView object with additional control methods (reveal, etc.).
+ *
+ * @param {object} vscode
+ */
+function wrapCreateTreeView(vscode) {
+  const original = vscode.window.createTreeView;
+  if (!original) {
+    log('createTreeView not found (VS Code version too old?)');
+    return;
+  }
+
+  vscode.window.createTreeView = function wrappedCreateTreeView(viewId, options) {
+    log(`createTreeView intercepted: ${viewId}`);
+
+    // Call the real API
+    const treeView = original.call(this, viewId, options);
+
+    // Track the provider if one was given
+    const provider = options?.treeDataProvider;
+    if (provider) {
+      trackedTreeProviders.set(viewId, { provider });
+
+      // Notify bridge
+      bridgeSend({ type: 'treeProvider', viewId });
+
+      // Subscribe to provider's change events
+      if (provider.onDidChangeTreeData) {
+        try {
+          const changeDisposable = provider.onDidChangeTreeData((element) => {
+            log(`Tree data changed (createTreeView) for ${viewId}`);
+            resolveAndSendTreeData(viewId, provider);
+          });
+
+          // Chain disposal
+          const originalDispose = treeView.dispose.bind(treeView);
+          treeView.dispose = function () {
+            trackedTreeProviders.delete(viewId);
+            try { changeDisposable.dispose(); } catch (_) {}
+            return originalDispose();
+          };
+        } catch (e) {
+          logError(`Failed to subscribe to onDidChangeTreeData for ${viewId}: ${e.message}`);
+        }
+      }
+
+      // Initial data resolution
+      setTimeout(() => resolveAndSendTreeData(viewId, provider), 200);
+    }
+
+    return treeView;
+  };
+
+  log('createTreeView wrapped');
+}
+
+// ============================================================================
 // Cleanup
 // ============================================================================
 
