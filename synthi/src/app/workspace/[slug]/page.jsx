@@ -99,6 +99,7 @@ export default function EditorPage({ params }) {
         webviewManager: extensionWebviewManager,
         statusBarItems: extensionStatusBarItems,
         vscodeServerState,
+        vscodeServerWorkspaceDir,
         vscodeTunnelService: extensionTunnelService,
     } = useExtensions({ editor, workspaceId: slug });
     
@@ -1753,7 +1754,7 @@ export default function EditorPage({ params }) {
                                     return (
                                         <CodeServerPanel
                                             tunnelService={extensionTunnelService}
-                                            workspacePath="/workspace"
+                                            workspacePath={vscodeServerWorkspaceDir || '/workspace'}
                                             className="h-full"
                                         />
                                     );

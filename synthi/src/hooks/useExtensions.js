@@ -127,6 +127,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
   const vscodeServerConnectedRef = useRef(false);
   const connectingVSCodeServerRef = useRef(false);
   const [vscodeServerState, setVscodeServerState] = useState('disconnected');
+  const [vscodeServerWorkspaceDir, setVscodeServerWorkspaceDir] = useState(null);
 
   // ─── Initialize the extension host worker ────────────────────
   const initSystem = useCallback(async () => {
@@ -274,7 +275,10 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       console.log('[useExtensions] connectVSCodeServer: starting server for slug:', slug);
       const serverInfo = await systemRef.current.bridge.startVSCodeServer(slug);
       console.log('[useExtensions] ✓ VS Code Server started:', serverInfo);
-
+      // Track the workspace directory from the server response
+      if (serverInfo?.workspaceDir) {
+        setVscodeServerWorkspaceDir(serverInfo.workspaceDir);
+      }
       vscodeServerConnectedRef.current = true;
       setVscodeServerState('running');
 
@@ -880,6 +884,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
 
     // VS Code Server (Path A: real Extension Host)
     vscodeServerState,
+    vscodeServerWorkspaceDir,
     vscodeTunnelService,
     installOnVSCodeServer: async (extensionId) => {
       const system = systemRef.current;
