@@ -59,6 +59,8 @@ const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
 const config = require('./config');
 const gitService = require('./gitService');
+const sessionManager = require('./SessionManager');
+const { extractSessionContext, requireGitActionPermission, wsRequirePermission, wsDenyAction, wsAttachContext } = require('./permissionMiddleware');
 let fetchFunc = null;
 if (typeof fetch === 'function') {
   fetchFunc = fetch;
@@ -660,6 +662,152 @@ const server = http.createServer(async (req, res) => {
       return;
   }
 
+  // ========================================================================
+  // SESSION API — Host/Guest "Remote Control" collaboration
+  // ========================================================================
+  if (req.url.startsWith('/session/') && (req.method === 'POST' || req.method === 'GET' || req.method === 'DELETE')) {
+    const urlObj = new URL(req.url, `http://${req.headers.host}`);
+    const parts = urlObj.pathname.split('/');
+    // /session/:action[/:sessionId]
+    const action = parts[2];
+    const sessionIdParam = parts[3] || null;
+
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const data = body ? JSON.parse(body) : {};
+        let result;
+
+        switch (action) {
+          case 'create': {
+            // POST /session/create — Host creates a new collab session
+            const { hostId, hostName, hostAvatar, slug, defaultPerms } = data;
+            if (!hostId || !slug) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'hostId and slug are required' }));
+              return;
+            }
+            // Ensure a session worktree exists for the host
+            const wt = await gitService.ensureSessionWorktree(slug, hostId);
+            const session = sessionManager.createSession({
+              hostId, hostName: hostName || hostId, hostAvatar: hostAvatar || '',
+              slug, worktreePath: wt.path, defaultPerms,
+            });
+            result = {
+              sessionId: session.id,
+              inviteToken: session.inviteToken,
+              worktreePath: session.worktreePath,
+              inviteLink: `${process.env.SYNTHI_APP_URL || 'http://localhost:3000'}/collab/${session.id}?token=${session.inviteToken}`,
+            };
+            break;
+          }
+
+          case 'validate-token': {
+            // GET /session/validate-token?token=xyz
+            const token = urlObj.searchParams.get('token') || data.token;
+            result = sessionManager.validateToken(token);
+            if (!result) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Invalid or expired invite token' }));
+              return;
+            }
+            break;
+          }
+
+          case 'knock': {
+            // POST /session/knock/:sessionId
+            if (!sessionIdParam) { res.writeHead(400); res.end('Missing sessionId'); return; }
+            sessionManager.knock(sessionIdParam, data);
+            result = { success: true };
+            break;
+          }
+
+          case 'admit': {
+            // POST /session/admit/:sessionId — Host admits a guest
+            if (!sessionIdParam) { res.writeHead(400); res.end('Missing sessionId'); return; }
+            const guest = sessionManager.admitGuest(sessionIdParam, data);
+            result = { success: true, guest };
+            // Notify via the session notification channel
+            broadcastSessionEvent(sessionIdParam, 'guest:joined', { guest });
+            break;
+          }
+
+          case 'deny': {
+            // POST /session/deny/:sessionId
+            if (!sessionIdParam) { res.writeHead(400); res.end('Missing sessionId'); return; }
+            sessionManager.denyKnock(sessionIdParam, data.guestId);
+            result = { success: true };
+            break;
+          }
+
+          case 'permissions': {
+            // POST /session/permissions/:sessionId — Update guest perms
+            if (!sessionIdParam) { res.writeHead(400); res.end('Missing sessionId'); return; }
+            const perms = sessionManager.updatePermissions(sessionIdParam, data.guestId, data.permissions);
+            result = { success: true, permissions: perms };
+            broadcastSessionEvent(sessionIdParam, 'permissions:updated', { guestId: data.guestId, permissions: perms });
+            break;
+          }
+
+          case 'kick': {
+            // POST /session/kick/:sessionId
+            if (!sessionIdParam) { res.writeHead(400); res.end('Missing sessionId'); return; }
+            sessionManager.removeGuest(sessionIdParam, data.guestId, 'kicked');
+            result = { success: true };
+            broadcastSessionEvent(sessionIdParam, 'guest:kicked', { guestId: data.guestId });
+            break;
+          }
+
+          case 'terminate': {
+            // DELETE /session/terminate/:sessionId
+            if (!sessionIdParam) { res.writeHead(400); res.end('Missing sessionId'); return; }
+            broadcastSessionEvent(sessionIdParam, 'session:terminated', {});
+            sessionManager.terminateSession(sessionIdParam);
+            result = { success: true };
+            break;
+          }
+
+          case 'info': {
+            // GET /session/info/:sessionId
+            if (!sessionIdParam) { res.writeHead(400); res.end('Missing sessionId'); return; }
+            result = sessionManager.getSession(sessionIdParam);
+            if (!result) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Session not found' }));
+              return;
+            }
+            break;
+          }
+
+          case 'regenerate-token': {
+            // POST /session/regenerate-token/:sessionId
+            if (!sessionIdParam) { res.writeHead(400); res.end('Missing sessionId'); return; }
+            const newToken = sessionManager.regenerateToken(sessionIdParam);
+            result = {
+              inviteToken: newToken,
+              inviteLink: `${process.env.SYNTHI_APP_URL || 'http://localhost:3000'}/collab/${sessionIdParam}?token=${newToken}`,
+            };
+            break;
+          }
+
+          default:
+            res.writeHead(404);
+            res.end('Unknown session action');
+            return;
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        console.error('[Session API] Error:', e.message);
+        res.writeHead(e.message.includes('not found') ? 404 : 400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
   if (req.url.startsWith('/git/')) {
     // Parse URL: /git/:slug/:action
     const urlObj = new URL(req.url, `http://${req.headers.host}`);
@@ -703,6 +851,24 @@ const server = http.createServer(async (req, res) => {
             }
           }
         }
+
+            // ── Session permission enforcement ──────────────────────────
+            // Extract session context from headers/query and check permissions
+            const sessionId = req.headers['x-session-id'] || urlObj.searchParams.get('sessionId');
+            const userId    = req.headers['x-user-id']    || urlObj.searchParams.get('userId');
+
+            if (sessionId && userId) {
+              const permKey = require('./permissionMiddleware').GIT_ACTION_PERMISSIONS[action];
+              if (permKey && !sessionManager.checkPermission(sessionId, userId, permKey)) {
+                res.writeHead(403, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                  error: 'permission_denied',
+                  message: `Action "${action}" requires "${permKey}" permission. Ask the Host for access.`,
+                  required: permKey,
+                }));
+                return;
+              }
+            }
 
             let result;
 
@@ -1054,6 +1220,25 @@ const wss = new WebSocket.Server({ noServer: true });
 // (e.g., file-tree-changed). Clients connect to /notifications?slug=<slug>.
 const notifyWss = new WebSocket.Server({ noServer: true });
 
+// Session notification WebSocket server for collaboration events.
+// Clients connect to /session-events?sessionId=<id>&userId=<id>.
+const sessionWss = new WebSocket.Server({ noServer: true });
+
+/**
+ * Broadcast a session-level event to all participants (host + guests).
+ * @param {string} sessionId
+ * @param {string} eventType
+ * @param {object} payload
+ */
+function broadcastSessionEvent(sessionId, eventType, payload) {
+  const message = JSON.stringify({ type: eventType, sessionId, ...payload });
+  sessionWss.clients.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN && ws._sessionId === sessionId) {
+      try { ws.send(message); } catch (_) {}
+    }
+  });
+}
+
 // Track active documents and their content for debugging
 const activeDocuments = new Map(); // docName -> { ydoc, lastContent, clientCount }
 
@@ -1120,7 +1305,7 @@ function startHeartbeat(wsServer, label) {
 }
 
 // Mark clients alive on connect and pong
-for (const wsServer of [wss, notifyWss]) {
+for (const wsServer of [wss, notifyWss, sessionWss]) {
   wsServer.on('connection', (ws) => {
     ws._isAlive = true;
     ws.on('pong', () => { ws._isAlive = true; });
@@ -1129,9 +1314,10 @@ for (const wsServer of [wss, notifyWss]) {
 
 const hbYjs    = startHeartbeat(wss, 'Yjs');
 const hbNotify = startHeartbeat(notifyWss, 'Notify');
+const hbSession = startHeartbeat(sessionWss, 'Session');
 
 // Clean up heartbeat timers on server close
-server.on('close', () => { clearInterval(hbYjs); clearInterval(hbNotify); });
+server.on('close', () => { clearInterval(hbYjs); clearInterval(hbNotify); clearInterval(hbSession); });
 
 server.on('upgrade', (request, socket, head) => {
   const pathname = request.url ? request.url.split('?')[0] : '';
@@ -1146,6 +1332,19 @@ server.on('upgrade', (request, socket, head) => {
       console.log(`[Collab] Notification client connected for slug: ${ws._slug}`);
       ws.on('close', () => {
         console.log(`[Collab] Notification client disconnected for slug: ${ws._slug}`);
+      });
+    });
+  } else if (pathname === '/session-events') {
+    // Session collaboration channel — real-time events (knock, perms, kick)
+    sessionWss.handleUpgrade(request, socket, head, (ws) => {
+      const params = new URLSearchParams((request.url || '').split('?')[1] || '');
+      ws._sessionId = params.get('sessionId') || '';
+      ws._userId    = params.get('userId')    || '';
+      sessionWss.emit('connection', ws, request);
+      console.log(`[Session] Client connected: user=${ws._userId} session=${ws._sessionId}`);
+      ws.on('close', () => {
+        sessionManager.handleDisconnect(ws._userId);
+        console.log(`[Session] Client disconnected: user=${ws._userId}`);
       });
     });
   } else {
@@ -1166,6 +1365,25 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`[Config] CODE_INTEL = ${config.CODE_INTEL_URL}`);
   console.log(`[Config] GCS sync  = ${config.GCS_SYNC_ON_FLUSH ? 'ON' : 'OFF'}`);
 
+  // ── Forward SessionManager events to WebSocket clients ──
+  sessionManager.on('session:knock', ({ sessionId, guestId, displayName, avatarUrl }) => {
+    broadcastSessionEvent(sessionId, 'knock', { guestId, displayName, avatarUrl });
+  });
+  sessionManager.on('session:guestJoined', ({ sessionId, guest }) => {
+    broadcastSessionEvent(sessionId, 'guest:joined', { guest });
+  });
+  sessionManager.on('session:guestRemoved', ({ sessionId, guestId, reason }) => {
+    broadcastSessionEvent(sessionId, 'guest:removed', { guestId, reason });
+  });
+  sessionManager.on('session:permissionsUpdated', ({ sessionId, guestId, permissions }) => {
+    broadcastSessionEvent(sessionId, 'permissions:updated', { guestId, permissions });
+  });
+  sessionManager.on('session:terminated', ({ sessionId }) => {
+    broadcastSessionEvent(sessionId, 'session:terminated', {});
+  });
+  sessionManager.on('session:knockDenied', ({ sessionId, guestId }) => {
+    broadcastSessionEvent(sessionId, 'knock:denied', { guestId });
+  });
   // Warn about legacy workspaces.json if it still exists on disk
   const legacyWsFile = path.join(__dirname, 'workspaces.json');
   if (fs.existsSync(legacyWsFile)) {
