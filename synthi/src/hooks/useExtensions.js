@@ -52,6 +52,7 @@ import {
 import { registerExtensionGrammars } from '@/extensions/loader/GrammarRegistrar';
 import { initLspRegistry, registerLspForExtension, unregisterLspForExtension } from '@/services/lspRegistry';
 import { getCompilerClient } from '@/services/compilerClient';
+import vscodeTunnelService from '@/services/vscodeTunnelService';
 
 /**
  * Best-effort NLS stripping for cached manifests that were persisted
@@ -122,10 +123,10 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
   // Track whether we've restored persisted extensions
   const restoredRef = useRef(false);
 
-  // Track remote extension host connection
-  const remoteHostConnectedRef = useRef(false);
-  // Mutex: prevent overlapping connectRemoteHost attempts
-  const connectingRemoteRef = useRef(false);
+  // Track VS Code Server connection (Path A: real Extension Host)
+  const vscodeServerConnectedRef = useRef(false);
+  const connectingVSCodeServerRef = useRef(false);
+  const [vscodeServerState, setVscodeServerState] = useState('disconnected');
 
   // ─── Initialize the extension host worker ────────────────────
   const initSystem = useCallback(async () => {
@@ -171,6 +172,14 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
         // Remote host → Redux state sync (for _rehydrateNodeOnlyExtensions)
         system.bridge.onExtensionStateChanged = (id, state, reason) => {
           dispatch(setExtensionState({ id, extensionState: state, reason }));
+        };
+
+        // VS Code Server disconnect callback
+        system.bridge.onVSCodeServerDisconnected = () => {
+          console.warn('[useExtensions] VS Code Server disconnected, resetting flag');
+          vscodeServerConnectedRef.current = false;
+          connectingVSCodeServerRef.current = false;
+          setVscodeServerState('disconnected');
         };
 
         // Show message events → push as info/warning/error
@@ -237,92 +246,109 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
     }
   }, [workspaceId, editor, dispatch]);
 
-  // ─── Connect remote extension host via WebRTC ────────────────
-  const connectRemoteHost = useCallback(async () => {
-    console.log('[useExtensions] connectRemoteHost called', {
-      alreadyConnected: remoteHostConnectedRef.current,
-      connecting: connectingRemoteRef.current,
-      hasBridge: !!systemRef.current?.bridge,
-      hasSystem: !!systemRef.current,
-      proxyState: systemRef.current?.bridge?.remoteProxy?.state,
-      proxyReady: systemRef.current?.bridge?.remoteProxy?.ready,
-    });
+  // ─── Connect VS Code Server (Path A: real Extension Host) ────
+  const connectVSCodeServer = useCallback(async () => {
+    if (vscodeServerConnectedRef.current || connectingVSCodeServerRef.current) return;
+    if (!systemRef.current?.bridge) return;
 
-    // If we think we're connected but the proxy is actually dead, reset
-    if (remoteHostConnectedRef.current) {
-      const proxy = systemRef.current?.bridge?.remoteProxy;
-      if (!proxy || proxy.state === 'terminated' || !proxy.ready) {
-        console.warn('[useExtensions] connectRemoteHost: proxy is dead/missing, resetting for reconnect');
-        remoteHostConnectedRef.current = false;
-      } else {
-        console.log('[useExtensions] connectRemoteHost: already connected and proxy alive, skipping');
-        return;
-      }
-    }
-    // Mutex — only one connection attempt at a time
-    if (connectingRemoteRef.current) {
-      console.log('[useExtensions] connectRemoteHost: another attempt in progress, skipping');
-      return;
-    }
-    if (!systemRef.current?.bridge) {
-      console.warn('[useExtensions] connectRemoteHost: no bridge yet, skipping');
-      return;
-    }
+    connectingVSCodeServerRef.current = true;
+    setVscodeServerState('connecting');
 
-    connectingRemoteRef.current = true;
     try {
       const client = getCompilerClient();
-      console.log('[useExtensions] connectRemoteHost: compilerClient', {
-        hasClient: !!client,
-        hasPc: !!client?.pc,
-        connectionState: client?.pc?.connectionState,
-      });
       if (!client?.pc || client.pc.connectionState !== 'connected') {
-        // WebRTC not ready yet — will be called again when it connects
-        console.warn('[useExtensions] connectRemoteHost: WebRTC not connected yet, will retry on event');
+        console.warn('[useExtensions] connectVSCodeServer: WebRTC not connected yet');
         return;
       }
 
-      console.log('[useExtensions] connectRemoteHost: creating ext-host DataChannel...');
-      const channel = client.createExtHostChannel();
-      console.log('[useExtensions] connectRemoteHost: DataChannel created, label:', channel.label, 'readyState:', channel.readyState);
+      // Use the pre-created DataChannel for the VS Code Server Manager
+      // (created in SDP alongside ext-host to avoid DCEP issues)
+      const channel = client.createVSCodeServerChannel();
 
-      // Wire a disconnect callback so we can reset the ref when the DC dies
-      systemRef.current.bridge.onRemoteDisconnected = () => {
-        console.warn('[useExtensions] Remote extension host disconnected (DC closed), resetting flag for reconnect');
-        remoteHostConnectedRef.current = false;
-        connectingRemoteRef.current = false;
-        // Release the ext-host lock in case it's still held
-        try { client.releaseExtHostLock(); } catch (_) {}
-        // The next synthi:webrtc-connected event will trigger a new connectRemoteHost()
-      };
+      console.log('[useExtensions] connectVSCodeServer: DataChannel obtained, label:', channel.label);
 
-      // Acquire ext-host lock: prevents reconnect() from tearing down the
-      // SCTP transport while we're loading extensions over the DataChannel.
-      client.acquireExtHostLock();
-      try {
-        await systemRef.current.bridge.connectRemoteHost(channel);
+      await systemRef.current.bridge.connectVSCodeServer(channel);
 
-        // Verify the proxy is still alive after connectRemoteHost returns
-        // (the DC may have died during _rehydrateNodeOnlyExtensions)
-        const proxy = systemRef.current?.bridge?.remoteProxy;
-        if (proxy && proxy.ready && proxy.state !== 'terminated') {
-          remoteHostConnectedRef.current = true;
-          console.log('[useExtensions] ✓ Remote extension host connected successfully');
-        } else {
-          console.warn('[useExtensions] Remote host connected but proxy is no longer alive, will retry');
-          remoteHostConnectedRef.current = false;
-        }
-      } finally {
-        client.releaseExtHostLock();
+      // Start the VS Code Server for this workspace
+      const slug = client.slug || workspaceId || 'default';
+      console.log('[useExtensions] connectVSCodeServer: starting server for slug:', slug);
+      const serverInfo = await systemRef.current.bridge.startVSCodeServer(slug);
+      console.log('[useExtensions] ✓ VS Code Server started:', serverInfo);
+
+      vscodeServerConnectedRef.current = true;
+      setVscodeServerState('running');
+
+      // Attach the HTTP tunnel service so code-server UI can be embedded
+      if (systemRef.current?.bridge?.vscodeServerProxy) {
+        vscodeTunnelService.attach(systemRef.current.bridge.vscodeServerProxy);
+        vscodeTunnelService.register().then(ok => {
+          if (ok) console.log('[useExtensions] VS Code tunnel Service Worker ready');
+          else console.warn('[useExtensions] VS Code tunnel Service Worker registration failed');
+        });
       }
+
+      // Once server is running, re-route pending Node-only extensions
+      await _installPendingExtensionsOnServer();
+
     } catch (err) {
-      console.warn('[useExtensions] Remote extension host connection failed:', err.message, err.stack);
-      // Non-fatal — extensions will fall back to local worker stubs
+      console.warn('[useExtensions] VS Code Server connection failed:', err.message);
+      setVscodeServerState('error');
+      // Non-fatal — extensions remain pending until VS Code Server connects
     } finally {
-      connectingRemoteRef.current = false;
+      connectingVSCodeServerRef.current = false;
     }
   }, []);
+
+  /**
+   * Install any pending-remote Node-only extensions into the VS Code Server.
+   * Called when the server first becomes available.
+   */
+  const _installPendingExtensionsOnServer = useCallback(async () => {
+    if (!systemRef.current?.bridge?.vscodeServerProxy?.isReady()) {
+      console.log('[useExtensions] _installPendingExtensionsOnServer: proxy not ready, skipping');
+      return;
+    }
+    if (!systemRef.current.bridge.vscodeServerConnected) {
+      console.log('[useExtensions] _installPendingExtensionsOnServer: server not connected, skipping');
+      return;
+    }
+
+    const bridge = systemRef.current.bridge;
+    let found = 0;
+    for (const [id, info] of bridge.extensions) {
+      if (info.isActive) continue;
+      const isNodeOnly = info.manifest?.main && !info.manifest?.browser;
+      const isTooLarge = info.code?.length > 500_000 && info.manifest?.main;
+      if (!isNodeOnly && !isTooLarge) continue;
+
+      // Already installed on server?
+      if (bridge.vscodeServerExtensions.has(id)) continue;
+
+      found++;
+      console.log(`[useExtensions] _installPendingExtensions: installing ${id} on VS Code Server`);
+      try {
+        dispatch(setExtensionState({ id, extensionState: 'activating' }));
+
+        // Try marketplace install first (faster, no upload needed)
+        const result = await bridge.installMarketplaceExtensionOnServer(id);
+        if (result.success) {
+          dispatch(setExtensionState({ id, extensionState: 'active', remote: true }));
+          console.log(`[useExtensions] ✓ ${id} installed on VS Code Server via marketplace`);
+
+          // Emit synthetic webview events for the extension's webview views
+          bridge._emitSyntheticWebviewEvents(id, info.manifest);
+        } else {
+          dispatch(setExtensionState({ id, extensionState: 'crashed', reason: result.error }));
+        }
+      } catch (err) {
+        console.warn(`[useExtensions] Failed to install ${id} on VS Code Server:`, err.message);
+        dispatch(setExtensionState({ id, extensionState: 'pending-remote' }));
+      }
+    }
+    if (found === 0) {
+      console.log('[useExtensions] _installPendingExtensionsOnServer: no pending extensions found');
+    }
+  }, [dispatch]);
 
   // ─── Restore persisted extensions from IndexedDB ─────────────
   const restorePersistedExtensions = useCallback(async () => {
@@ -366,15 +392,15 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
             registerLspForExtension(ext.id, manifest);
           } catch (_) {}
           // Node-only extensions: skip the local worker entirely.
-          // They'll be loaded on the remote Node.js host when WebRTC connects.
+          // They'll be installed on the VS Code Server when it connects.
           // Also skip extensions whose browser bundle is too large for the web
-          // worker — they'll hang during eval. Route to remote host instead.
+          // worker — they'll hang during eval. Route to VS Code Server instead.
           const isNodeOnly = manifest.main && !manifest.browser;
           const isTooLargeForWorker = ext.code && ext.code.length > 500_000 && (ext.nodeCode || manifest.main);
 
           if (isNodeOnly || isTooLargeForWorker) {
             if (isTooLargeForWorker && !isNodeOnly) {
-              console.log(`[useExtensions] ${ext.id}: browser bundle too large (${ext.code.length} chars), routing to remote host`);
+              console.log(`[useExtensions] ${ext.id}: browser bundle too large (${ext.code.length} chars), routing to VS Code Server`);
             }
             // Stash nodeCode so MainThreadBridge can send it to the remote host
             if (ext.nodeCode) manifest._nodeCode = ext.nodeCode;
@@ -394,12 +420,15 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
               code: ext.code,
               remote: false,
             });
-            dispatch(setExtensionState({ id: ext.id, extensionState: 'pending-remote' }));
-            console.log(`[useExtensions] ${ext.id}: Node-only, waiting for remote host`);
+            dispatch(setExtensionState({ id: ext.id, extensionState: 'pending-remote', remote: true }));
+            console.log(`[useExtensions] ${ext.id}: Node-only, waiting for VS Code Server`);
 
-            // If the remote host is already connected, rehydrate immediately
-            if (systemRef.current.bridge.remoteProxy?.isReady?.()) {
-              console.log(`[useExtensions] ${ext.id}: remote host already connected, rehydrating now`);
+            // If the VS Code Server is already connected AND started, rehydrate immediately
+            const proxyReady = systemRef.current.bridge.vscodeServerProxy?.isReady?.();
+            const serverConnected = systemRef.current.bridge.vscodeServerConnected;
+            console.log(`[useExtensions] ${ext.id}: proxyReady=${proxyReady}, serverConnected=${serverConnected}`);
+            if (proxyReady && serverConnected) {
+              console.log(`[useExtensions] ${ext.id}: VS Code Server already connected, rehydrating now`);
               try {
                 await systemRef.current.bridge._rehydrateNodeOnlyExtensions();
               } catch (rehydrateErr) {
@@ -436,18 +465,34 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
     }
 
     // ── Post-restore rehydration ──────────────────────────────
-    // If the remote host connected before or during restore, the initial
+    // If the VS Code Server connected before or during restore, the initial
     // _rehydrateNodeOnlyExtensions call found zero extensions.  Now that
-    // restore is done and pending-remote extensions are in bridge.extensions,
+    // restore is done and pending extensions are in bridge.extensions,
     // trigger rehydration again.
-    try {
-      if (systemRef.current?.bridge?.remoteProxy?.isReady?.()) {
-        console.log('[useExtensions] Remote host is already connected, triggering post-restore rehydration');
-        await systemRef.current.bridge._rehydrateNodeOnlyExtensions();
+    const tryPostRestoreRehydration = async (attempt = 0) => {
+      if (!systemRef.current?.bridge) return;
+      const proxyReady = systemRef.current.bridge.vscodeServerProxy?.isReady?.();
+      const serverConnected = systemRef.current.bridge.vscodeServerConnected;
+
+      if (attempt === 0) {
+        console.log(`[useExtensions] Post-restore check: proxyReady=${proxyReady}, serverConnected=${serverConnected}`);
       }
-    } catch (rehydrateErr) {
-      console.warn('[useExtensions] Post-restore rehydration failed:', rehydrateErr.message);
-    }
+
+      if (proxyReady && serverConnected) {
+        console.log('[useExtensions] VS Code Server ready, triggering post-restore rehydration');
+        try {
+          await systemRef.current.bridge._rehydrateNodeOnlyExtensions();
+        } catch (err) {
+          console.warn('[useExtensions] Post-restore rehydration failed:', err.message);
+        }
+      } else if (attempt < 10) {
+        // Server may still be starting — retry after a short delay
+        setTimeout(() => tryPostRestoreRehydration(attempt + 1), 2000);
+      } else {
+        console.warn('[useExtensions] Post-restore: VS Code Server never became ready, extensions remain pending');
+      }
+    };
+    tryPostRestoreRehydration();
   }, [dispatch]);
 
   // ─── Auto-init on mount ──────────────────────────────────────
@@ -458,44 +503,40 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
 
     initSystem().then(() => {
       console.log('[useExtensions] initSystem resolved');
-      // Fire both in parallel — restorePersistedExtensions will trigger
-      // rehydration itself if the remote host is already connected.
-      connectRemoteHost().catch(() => {});
+      connectVSCodeServer().catch(() => {});
       restorePersistedExtensions();
     });
 
-    // Listen for WebRTC connection to establish remote host
+    // Listen for WebRTC connection to establish VS Code Server
     const handleWebRTCConnect = () => {
-      console.log('[useExtensions] synthi:webrtc-connected event received, connecting remote host');
-      // The ext-host DC is pre-created as part of the SDP offer (no DCEP delay needed)
-      connectRemoteHost().catch(() => {});
+      console.log('[useExtensions] synthi:webrtc-connected event received, connecting VS Code Server');
+      connectVSCodeServer().catch(() => {});
     };
     if (typeof window !== 'undefined') {
       window.addEventListener('synthi:webrtc-connected', handleWebRTCConnect);
     }
 
-    // ── Polling fallback: if both the event and the initSystem-based
-    //    attempt missed each other (classic race), retry periodically
-    //    until the remote host connects or we give up.
+    // ── Polling fallback: retry VS Code Server connection until it succeeds
     let retryCount = 0;
     const MAX_RETRIES = 20; // ~20 × 3s = 60s
     const retryInterval = setInterval(() => {
-      if (remoteHostConnectedRef.current || retryCount >= MAX_RETRIES) {
+      const serverOk = vscodeServerConnectedRef.current;
+      if (serverOk || retryCount >= MAX_RETRIES) {
         clearInterval(retryInterval);
-        if (!remoteHostConnectedRef.current && retryCount >= MAX_RETRIES) {
-          console.warn('[useExtensions] Gave up trying to connect remote extension host after', MAX_RETRIES, 'retries');
+        if (!serverOk && retryCount >= MAX_RETRIES) {
+          console.warn('[useExtensions] Gave up trying to connect VS Code Server after', MAX_RETRIES, 'retries');
         }
         return;
       }
       retryCount++;
-      console.log(`[useExtensions] Polling retry #${retryCount} for remote extension host...`);
-      connectRemoteHost().catch(() => {});
+      console.log(`[useExtensions] Polling retry #${retryCount} for VS Code Server...`);
+      connectVSCodeServer().catch(() => {});
     }, 3000);
 
     return () => {
       disposedRef.current = true;
-      remoteHostConnectedRef.current = false; // Reset so StrictMode re-mount reconnects
-      connectingRemoteRef.current = false;
+      vscodeServerConnectedRef.current = false;
+      connectingVSCodeServerRef.current = false;
       clearInterval(retryInterval);
       if (typeof window !== 'undefined') {
         window.removeEventListener('synthi:webrtc-connected', handleWebRTCConnect);
@@ -579,7 +620,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
     const isTooLargeForWorker = code && code.length > 500_000 && (nodeCode || parsed.main);
     if (isNodeOnly || isTooLargeForWorker) {
       if (isTooLargeForWorker && !isNodeOnly) {
-        console.log(`[useExtensions] ${id}: browser bundle too large (${code.length} chars), routing to remote host`);
+        console.log(`[useExtensions] ${id}: browser bundle too large (${code.length} chars), routing to VS Code Server`);
       }
       // Store in bridge so _rehydrateNodeOnlyExtensions can find it
       system.bridge.extensions.set(id, {
@@ -596,19 +637,35 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
         code,
         remote: false,
       });
-      dispatch(setExtensionState({ id, extensionState: 'pending-remote' }));
-      console.log(`[useExtensions] ${id}: Node-only, waiting for remote host`);
 
-      // If remote host is already connected, route immediately
-      if (system.bridge.remoteProxy?.isReady?.()) {
-        const client = getCompilerClient();
+      // ── Path A: Prefer VS Code Server (real Extension Host) ──
+      const hostTarget = system.bridge.getExtensionHostTarget(parsed);
+
+      if (hostTarget === 'vscode-server') {
+        dispatch(setExtensionState({ id, extensionState: 'activating', remote: true }));
         try {
-          client?.acquireExtHostLock?.();
-          await system.bridge._rehydrateNodeOnlyExtensions();
-        } catch (_) {
-        } finally {
-          client?.releaseExtHostLock?.();
+          const result = await system.bridge.installMarketplaceExtensionOnServer(id);
+          if (result.success) {
+            dispatch(setExtensionState({ id, extensionState: 'active', remote: true }));
+            console.log(`[useExtensions] ✓ ${id} installed on VS Code Server`);
+            // Emit synthetic webview events so webview-type views show content
+            system.bridge._emitSyntheticWebviewEvents(id, parsed);
+            return { success: true, vscodeServer: true };
+          }
+        } catch (serverErr) {
+          console.warn(`[useExtensions] VS Code Server install failed for ${id}, falling back:`, serverErr.message);
         }
+      }
+
+      // ── Fallback: pending for VS Code Server ──
+      dispatch(setExtensionState({ id, extensionState: 'pending-remote', remote: true }));
+      console.log(`[useExtensions] ${id}: Node-only, waiting for VS Code Server`);
+
+      // If VS Code Server is already available, install now
+      if (system.bridge.vscodeServerProxy?.isReady?.()) {
+        try {
+          await system.bridge._rehydrateNodeOnlyExtensions();
+        } catch (_) {}
       }
       return { success: true, pendingRemote: true };
     }
@@ -820,6 +877,22 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
     restart,
     getMetrics,
     dismissError: handleDismissError,
+
+    // VS Code Server (Path A: real Extension Host)
+    vscodeServerState,
+    vscodeTunnelService,
+    installOnVSCodeServer: async (extensionId) => {
+      const system = systemRef.current;
+      if (!system?.bridge?.vscodeServerProxy?.isReady()) {
+        throw new Error('VS Code Server not connected');
+      }
+      return system.bridge.installMarketplaceExtensionOnServer(extensionId);
+    },
+    getVSCodeServerInfo: async () => {
+      const system = systemRef.current;
+      if (!system?.bridge?.vscodeServerProxy?.isReady()) return null;
+      return system.bridge.getVSCodeServerConnectionInfo();
+    },
 
     // Raw system ref (for advanced use / debug panel)
     _systemRef: systemRef,

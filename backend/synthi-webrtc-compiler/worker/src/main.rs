@@ -367,6 +367,11 @@ async fn main() -> Result<()> {
     let ext_host_kill_tx: Arc<Mutex<Option<(mpsc::UnboundedSender<()>, tokio::time::Instant)>>> =
         Arc::new(Mutex::new(None));
 
+    // VS Code Server Manager: same pattern as ext-host — holds kill sender
+    // for the vscode-server-manager.js process.
+    let vscode_server_kill_tx: Arc<Mutex<Option<(mpsc::UnboundedSender<()>, tokio::time::Instant)>>> =
+        Arc::new(Mutex::new(None));
+
     // Content-addressable incremental compilation cache (persists across sessions)
     // Uses /dev/shm on Linux for fast RAM-based caching
     let cache_dir = if cfg!(target_os = "linux") {
@@ -591,6 +596,7 @@ async fn main() -> Result<()> {
         restart_controller.clone(),
         ipc_config.clone(),
         ext_host_kill_tx.clone(),
+        vscode_server_kill_tx.clone(),
     ).await?;
 
     let mut current_remote_fingerprint: Option<String> = None;
@@ -651,6 +657,7 @@ async fn main() -> Result<()> {
                                     restart_controller.clone(),
                                     ipc_config.clone(),
                                     ext_host_kill_tx.clone(),
+                                    vscode_server_kill_tx.clone(),
                                 )
                                 .await?;
                                 pc = new_pc;
@@ -735,6 +742,14 @@ async fn main() -> Result<()> {
                         let _ = tx.send(());
                     }
                 }
+                // Kill any running VS Code Server manager process
+                {
+                    let mut guard = vscode_server_kill_tx.lock().await;
+                    if let Some((tx, _)) = guard.take() {
+                        eprintln!("[WebRTC-signal] Killing vscode-server-manager process during reset...");
+                        let _ = tx.send(());
+                    }
+                }
 
                 // 4. Create a fresh PeerConnection
                 match create_peer(signal_tx.clone()).await {
@@ -756,6 +771,7 @@ async fn main() -> Result<()> {
                              restart_controller.clone(),
                              ipc_config.clone(),
                              ext_host_kill_tx.clone(),
+                             vscode_server_kill_tx.clone(),
                          ).await?;
                          pc = new_pc;
                          eprintln!("[WebRTC-signal] Soft reset complete. New PeerConnection ready.");
@@ -1008,6 +1024,7 @@ async fn wire_peer_channels(
     restart_controller: Arc<tokio::sync::Mutex<RestartController>>,
     ipc_config: Arc<IpcConfig>,
     ext_host_kill_tx: Arc<Mutex<Option<(mpsc::UnboundedSender<()>, tokio::time::Instant)>>>,
+    vscode_server_kill_tx: Arc<Mutex<Option<(mpsc::UnboundedSender<()>, tokio::time::Instant)>>>,
 ) -> Result<()> {
     let pc = pc.clone();
     let build_log_dc = pc
@@ -1042,6 +1059,7 @@ async fn wire_peer_channels(
     let ipc_config_for_callback = ipc_config.clone();
     let sdl_input_store_for_callback = sdl_input_store.clone();
     let ext_host_kill_tx_for_callback = ext_host_kill_tx.clone();
+    let vscode_server_kill_tx_for_callback = vscode_server_kill_tx.clone();
     pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
         let store = compile_store.clone();
         let term_store = term_store.clone();
@@ -1060,6 +1078,7 @@ async fn wire_peer_channels(
         let restart_controller_outer = restart_controller_for_callback.clone();
         let ipc_config_outer = ipc_config_for_callback.clone();
         let ext_host_kill_tx_outer = ext_host_kill_tx_for_callback.clone();
+        let vscode_server_kill_tx_outer = vscode_server_kill_tx_for_callback.clone();
         async move {
             let label = dc.label();
             eprintln!("[on_data_channel] Received data channel: label='{}', id={}", label, dc.id());
@@ -3007,6 +3026,322 @@ async fn wire_peer_channels(
                             let _ = dc_clone.send_text(serde_json::to_string(&err).unwrap_or_default()).await;
                         }
                     }
+                });
+            }
+            // ── VS Code Server Manager ───────────────────────────────
+            // Spawns vscode-server-manager.js which downloads/starts a
+            // real VS Code Server (code-server) with a genuine Extension
+            // Host.  Same stdin/stdout JSON-RPC pattern as ext-host.
+            else if label.starts_with("vscode-server") {
+                let slug_opt = if let Some((_prefix, slug)) = label.split_once("?slug=") {
+                    Some(slug.to_string())
+                } else {
+                    None
+                };
+
+                let dc_clone = dc.clone();
+
+                // Deduplication: ignore if spawned recently (< 10s)
+                {
+                    let guard = vscode_server_kill_tx_outer.lock().await;
+                    if let Some((_tx, spawned_at)) = guard.as_ref() {
+                        let age = spawned_at.elapsed();
+                        if age < std::time::Duration::from_secs(10) {
+                            println!(
+                                "[vscode-server] Ignoring duplicate DC (current process only {}ms old)",
+                                age.as_millis()
+                            );
+                            drop(guard);
+                            return;
+                        }
+                    }
+                }
+
+                // Kill any previously running vscode-server-manager process
+                {
+                    let mut guard = vscode_server_kill_tx_outer.lock().await;
+                    if let Some((old_tx, _)) = guard.take() {
+                        println!("[vscode-server] Killing previous vscode-server-manager process");
+                        let _ = old_tx.send(());
+                    }
+                }
+
+                // Create a kill channel for THIS instance
+                let (kill_tx, mut kill_rx) = mpsc::unbounded_channel::<()>();
+                {
+                    let mut guard = vscode_server_kill_tx_outer.lock().await;
+                    *guard = Some((kill_tx, tokio::time::Instant::now()));
+                }
+
+                // Buffer incoming messages
+                let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<webrtc::data_channel::data_channel_message::DataChannelMessage>();
+                let incoming_tx_clone = incoming_tx.clone();
+                dc.on_message(Box::new(move |msg| {
+                    let tx = incoming_tx_clone.clone();
+                    async move { let _ = tx.send(msg); }.boxed()
+                }));
+
+                println!("[on_data_channel] vscode-server branch matched, spawning vscode-server-manager.js...");
+
+                // Signal when DC opens
+                let (dc_open_tx, dc_open_rx) = tokio::sync::oneshot::channel::<()>();
+                let dc_open_tx = std::sync::Mutex::new(Some(dc_open_tx));
+                dc.on_open(Box::new(move || {
+                    println!("[vscode-server] DataChannel is now open");
+                    if let Some(tx) = dc_open_tx.lock().unwrap().take() {
+                        let _ = tx.send(());
+                    }
+                    async {}.boxed()
+                }));
+
+                tokio::spawn(async move {
+                    // Locate the script — same directory as the binary
+                    let manager_script = {
+                        let exe_dir = std::env::current_exe()
+                            .ok()
+                            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+                        let candidates = vec![
+                            exe_dir.as_ref().map(|d| d.join("vscode-server-manager.js")),
+                            Some(std::path::PathBuf::from("vscode-server-manager.js")),
+                            Some(std::path::PathBuf::from("../vscode-server-manager.js")),
+                        ];
+                        let mut found = None;
+                        for c in candidates.into_iter().flatten() {
+                            if c.exists() {
+                                found = Some(c);
+                                break;
+                            }
+                        }
+                        match found {
+                            Some(p) => p,
+                            None => {
+                                eprintln!("[vscode-server] vscode-server-manager.js not found");
+                                let err = serde_json::json!({
+                                    "id": 0, "type": "event", "method": "error",
+                                    "args": ["vscode-server-manager.js not found on worker"],
+                                    "generation": 0
+                                });
+                                let _ = dc_clone.send_text(serde_json::to_string(&err).unwrap_or_default()).await;
+                                return;
+                            }
+                        }
+                    };
+
+                    println!("[vscode-server] Using script: {}", manager_script.display());
+
+                    let mut cmd = Command::new("node");
+                    cmd.arg(&manager_script);
+                    cmd.stdin(Stdio::piped());
+                    cmd.stdout(Stdio::piped());
+                    cmd.stderr(Stdio::piped());
+
+                    match cmd.spawn() {
+                        Ok(mut child) => {
+                            let mut stdin = child.stdin.take().expect("[vscode-server] Failed to open stdin");
+                            let stdout = child.stdout.take().expect("[vscode-server] Failed to open stdout");
+                            let stderr = child.stderr.take().expect("[vscode-server] Failed to open stderr");
+
+                            // DC → stdin
+                            let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+                            let stdin_tx_clone = stdin_tx.clone();
+                            tokio::spawn(async move {
+                                while let Some(msg) = incoming_rx.recv().await {
+                                    let mut line = msg.data.to_vec();
+                                    if !line.ends_with(b"\n") { line.push(b'\n'); }
+                                    let _ = stdin_tx_clone.send(line);
+                                }
+                            });
+                            tokio::spawn(async move {
+                                while let Some(data) = stdin_rx.recv().await {
+                                    if stdin.write_all(&data).await.is_err() { break; }
+                                    if stdin.flush().await.is_err() { break; }
+                                }
+                            });
+
+                            // stdout → DC (wait for DC open first)
+                            let dc_out = dc_clone.clone();
+                            tokio::spawn(async move {
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_secs(15),
+                                    dc_open_rx,
+                                ).await {
+                                    Err(_) => { eprintln!("[vscode-server] Timed out waiting for DC open"); return; }
+                                    Ok(Err(_)) => { eprintln!("[vscode-server] DC open signal dropped"); return; }
+                                    Ok(Ok(())) => {}
+                                }
+                                println!("[vscode-server] DC open, starting stdout→DC forwarding");
+                                let mut reader = BufReader::new(stdout);
+                                let mut line = String::new();
+                                loop {
+                                    line.clear();
+                                    match reader.read_line(&mut line).await {
+                                        Ok(0) => break,
+                                        Ok(_) => {
+                                            let trimmed = line.trim();
+                                            if trimmed.is_empty() { continue; }
+
+                                            // Chunk large messages (>60KB) for WebRTC SCTP
+                                            let data_bytes = trimmed.as_bytes();
+                                            if data_bytes.len() > 60000 {
+                                                let msg_id = (std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .unwrap().as_nanos() % 0xFFFFFFFF) as u32;
+                                                let chunks = make_chunks(data_bytes, msg_id);
+                                                println!("[vscode-server] Chunking large message: {} bytes → {} chunks", data_bytes.len(), chunks.len());
+                                                for chunk in chunks {
+                                                    let data = Bytes::from(chunk);
+                                                    if let Err(e) = dc_out.send(&data).await {
+                                                        eprintln!("[vscode-server] chunk send error: {}", e);
+                                                        break;
+                                                    }
+                                                }
+                                            } else {
+                                                if let Err(e) = dc_out.send_text(trimmed.to_string()).await {
+                                                    eprintln!("[vscode-server] send error: {}", e);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        Err(e) => { eprintln!("[vscode-server] stdout read error: {}", e); break; }
+                                    }
+                                }
+                                println!("[vscode-server] stdout reader exited");
+                            });
+
+                            // stderr → logs
+                            tokio::spawn(async move {
+                                let mut reader = BufReader::new(stderr);
+                                let mut line = String::new();
+                                loop {
+                                    line.clear();
+                                    match reader.read_line(&mut line).await {
+                                        Ok(0) => break,
+                                        Ok(_) => { eprint!("[vscode-server] {}", line); }
+                                        Err(_) => break,
+                                    }
+                                }
+                            });
+
+                            let _ = tokio::select! {
+                                status = child.wait() => {
+                                    println!("[vscode-server] Manager process exited: {:?}", status);
+                                    status
+                                }
+                                _ = kill_rx.recv() => {
+                                    println!("[vscode-server] Received kill signal, terminating manager");
+                                    let _ = child.kill().await;
+                                    child.wait().await
+                                }
+                            };
+                            println!("[vscode-server] Manager process cleanup complete");
+                        }
+                        Err(e) => {
+                            eprintln!("[vscode-server] Failed to spawn Node.js: {}", e);
+                            let err = serde_json::json!({
+                                "id": 0, "type": "event", "method": "error",
+                                "args": [format!("Failed to spawn vscode-server-manager: {}", e)],
+                                "generation": 0
+                            });
+                            let _ = dc_clone.send_text(serde_json::to_string(&err).unwrap_or_default()).await;
+                        }
+                    }
+                });
+            }
+            // ── VS Code Server WebSocket Tunnel ──────────────────────
+            // Bridges a DataChannel to the VS Code Server's TCP port so
+            // the browser can establish a WebSocket connection to the real
+            // Extension Host through the WebRTC transport.
+            //
+            // Label format: "vscode-ws-tunnel?port=18000"
+            // Data flows bidirectionally: DC ↔ TCP (127.0.0.1:<port>)
+            else if label.starts_with("vscode-ws-tunnel") {
+                let port: u16 = label
+                    .split_once("?port=")
+                    .and_then(|(_, p)| p.parse().ok())
+                    .unwrap_or(18000);
+
+                let dc_clone = dc.clone();
+
+                // Buffer incoming DC messages
+                let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<webrtc::data_channel::data_channel_message::DataChannelMessage>();
+                let incoming_tx_clone = incoming_tx.clone();
+                dc.on_message(Box::new(move |msg| {
+                    let tx = incoming_tx_clone.clone();
+                    async move { let _ = tx.send(msg); }.boxed()
+                }));
+
+                // Wait for DC to open, then connect TCP
+                let (dc_open_tx, dc_open_rx) = tokio::sync::oneshot::channel::<()>();
+                let dc_open_tx = std::sync::Mutex::new(Some(dc_open_tx));
+                dc.on_open(Box::new(move || {
+                    println!("[vscode-ws-tunnel] DataChannel opened, port={}", port);
+                    if let Some(tx) = dc_open_tx.lock().unwrap().take() {
+                        let _ = tx.send(());
+                    }
+                    async {}.boxed()
+                }));
+
+                tokio::spawn(async move {
+                    // Wait for DC open
+                    if dc_open_rx.await.is_err() {
+                        eprintln!("[vscode-ws-tunnel] DC open signal dropped");
+                        return;
+                    }
+
+                    // Connect to the VS Code Server's TCP port
+                    let addr = format!("127.0.0.1:{}", port);
+                    let tcp_stream = match tokio::net::TcpStream::connect(&addr).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("[vscode-ws-tunnel] Failed to connect to {}: {}", addr, e);
+                            let err = serde_json::json!({
+                                "id": 0, "type": "event", "method": "error",
+                                "args": [format!("TCP connect failed: {}", e)],
+                                "generation": 0
+                            });
+                            let _ = dc_clone.send_text(serde_json::to_string(&err).unwrap_or_default()).await;
+                            return;
+                        }
+                    };
+                    println!("[vscode-ws-tunnel] TCP connected to {}", addr);
+
+                    let (tcp_read, mut tcp_write) = tcp_stream.into_split();
+
+                    // DC → TCP: forward DataChannel binary data to TCP socket
+                    let dc_to_tcp = tokio::spawn(async move {
+                        while let Some(msg) = incoming_rx.recv().await {
+                            if tcp_write.write_all(&msg.data).await.is_err() { break; }
+                        }
+                        println!("[vscode-ws-tunnel] DC→TCP forwarder exited");
+                    });
+
+                    // TCP → DC: forward TCP data back to DataChannel
+                    let dc_for_tcp = dc_clone.clone();
+                    let tcp_to_dc = tokio::spawn(async move {
+                        let mut reader = tokio::io::BufReader::new(tcp_read);
+                        let mut buf = vec![0u8; 64 * 1024];
+                        loop {
+                            match reader.read(&mut buf).await {
+                                Ok(0) => break, // EOF
+                                Ok(n) => {
+                                    let data = Bytes::copy_from_slice(&buf[..n]);
+                                    if dc_for_tcp.send(&data).await.is_err() { break; }
+                                }
+                                Err(e) => {
+                                    eprintln!("[vscode-ws-tunnel] TCP read error: {}", e);
+                                    break;
+                                }
+                            }
+                        }
+                        println!("[vscode-ws-tunnel] TCP→DC forwarder exited");
+                    });
+
+                    // Wait for either direction to finish
+                    tokio::select! {
+                        _ = dc_to_tcp => {}
+                        _ = tcp_to_dc => {}
+                    }
+                    println!("[vscode-ws-tunnel] Tunnel closed for port {}", port);
                 });
             }
         }

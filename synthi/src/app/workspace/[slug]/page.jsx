@@ -57,6 +57,7 @@ import { cn } from '@/lib/utils';
 import { useExtensions } from '@/hooks/useExtensions';
 import ExtensionSidebar from '@/components/extensions/ExtensionSidebar';
 import ExtensionViewContainer from '@/components/extensions/ExtensionViewContainer';
+import CodeServerPanel from '@/components/extensions/CodeServerPanel';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -97,6 +98,8 @@ export default function EditorPage({ params }) {
         treeDataMap: extensionTreeDataMap,
         webviewManager: extensionWebviewManager,
         statusBarItems: extensionStatusBarItems,
+        vscodeServerState,
+        vscodeTunnelService: extensionTunnelService,
     } = useExtensions({ editor, workspaceId: slug });
     
     // Code Intelligence - auto-index workspace for AI context retrieval
@@ -1730,6 +1733,7 @@ export default function EditorPage({ params }) {
                                     errors={extensionErrors}
                                     ready={extensionsReady}
                                     hostStatus={extensionHostStatus}
+                                    vscodeServerState={vscodeServerState}
                                     onInstall={installExtension}
                                     onEnable={enableExtension}
                                     onDisable={disableExtension}
@@ -1738,17 +1742,35 @@ export default function EditorPage({ params }) {
                                     onDismissError={dismissExtensionError}
                                     onExecuteCommand={executeExtensionCommand}
                                 />
-                            ) : sidebarView.startsWith('ext:') ? (
-                                <ExtensionViewContainer
-                                    containerId={sidebarView.replace('ext:', '')}
-                                    container={contributedContainers.find(c => c.id === sidebarView.replace('ext:', ''))}
-                                    views={contributedViews[sidebarView.replace('ext:', '')] || []}
-                                    treeDataMap={extensionTreeDataMap}
-                                    webviewPanels={extensionWebviewPanels}
-                                    webviewManager={extensionWebviewManager}
-                                    extensions={installedExtensions}
-                                />
-                            ) : (
+                            ) : sidebarView.startsWith('ext:') ? (() => {
+                                const containerId = sidebarView.replace('ext:', '');
+                                const container = contributedContainers.find(c => c.id === containerId);
+                                const extInfo = installedExtensions.find(e => e.id === container?.extensionId);
+                                const isVSCodeServerExt = extInfo?.remote === true;
+
+                                // If extension runs on VS Code Server, embed code-server UI
+                                if (isVSCodeServerExt && vscodeServerState === 'running' && extensionTunnelService) {
+                                    return (
+                                        <CodeServerPanel
+                                            tunnelService={extensionTunnelService}
+                                            workspacePath="/workspace"
+                                            className="h-full"
+                                        />
+                                    );
+                                }
+
+                                return (
+                                    <ExtensionViewContainer
+                                        containerId={containerId}
+                                        container={container}
+                                        views={contributedViews[containerId] || []}
+                                        treeDataMap={extensionTreeDataMap}
+                                        webviewPanels={extensionWebviewPanels}
+                                        webviewManager={extensionWebviewManager}
+                                        extensions={installedExtensions}
+                                    />
+                                );
+                            })() : (
                                 <FileTreeView onToggleOrientation={toggleTreeOrientation} />
                             )}
                         </ResizablePanel>
@@ -2006,6 +2028,7 @@ export default function EditorPage({ params }) {
             isAnalyzing={isAnalyzingProactive || isWorkspaceAnalyzing}
             onProblemsClick={() => setShowProblemsPanel(prev => !prev)}
             extensionStatusBarItems={extensionStatusBarItems}
+            vscodeServerState={vscodeServerState}
         />
 
         {/* Error Overlay */}

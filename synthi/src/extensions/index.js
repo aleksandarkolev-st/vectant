@@ -29,6 +29,7 @@ export { WorkerProxy, createWorkerProxy, getWorkerProxy } from './bridge/WorkerP
 export { MainThreadBridge, createMainThreadBridge, getMainThreadBridge } from './bridge/MainThreadBridge.js';
 export { MonacoBridge } from './bridge/MonacoBridge.js';
 export { RemoteExtHostProxy } from './bridge/RemoteExtHostProxy.js';
+export { VSCodeServerProxy } from './bridge/VSCodeServerProxy.js';
 
 // VS Code API
 export * as vscode from './api/vscode.js';
@@ -199,6 +200,12 @@ export async function initializeExtensionSystem(options) {
         onContribution?.('registerTreeView', payload);
         break;
       case 'createWebview':
+        // Create the actual webview DOM element (iframe) in the WebviewManager
+        try {
+          webviews.create(payload.viewId, payload.viewType, payload.title, payload.opts || {});
+        } catch (err) {
+          console.warn(`[Extension] Failed to create remote webview ${payload.viewId}:`, err.message);
+        }
         onContribution?.('createWebview', payload);
         break;
       case 'disposeWebview':

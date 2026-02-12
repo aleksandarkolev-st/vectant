@@ -21,6 +21,7 @@ const SAMPLE_EXTENSION = {
     engines: { vscode: '^1.80.0' },
     activationEvents: ['onCommand:helloWorld.sayHello'],
     main: './extension.js',
+    browser: './extension.js',
     contributes: {
       commands: [
         { command: 'helloWorld.sayHello', title: 'Hello World: Say Hello' },
@@ -223,6 +224,7 @@ export default function ExtensionSidebar({
   errors = [],
   ready = false,
   hostStatus = 'idle',
+  vscodeServerState = 'disconnected',
   onInstall,
   onEnable,
   onDisable,
@@ -538,6 +540,17 @@ module.exports = { activate, deactivate };
             <span className={hostStatus === 'ready' ? 'text-emerald-400' : hostStatus === 'error' ? 'text-red-400' : 'text-yellow-400'}>
               {hostStatus === 'ready' ? '● Ready' : hostStatus === 'initializing' ? '◌ Starting…' : hostStatus === 'error' ? '● Error' : '○ Idle'}
             </span>
+            {vscodeServerState !== 'disconnected' && (
+              <span className={
+                vscodeServerState === 'running' ? 'text-emerald-400' :
+                vscodeServerState === 'connecting' ? 'text-yellow-400' :
+                vscodeServerState === 'error' ? 'text-red-400' : 'text-[#6b7280]'
+              }>
+                {vscodeServerState === 'running' ? '● Server' :
+                 vscodeServerState === 'connecting' ? '◌ Server…' :
+                 vscodeServerState === 'error' ? '● Server ✖' : ''}
+              </span>
+            )}
             <span>{activeCount} active</span>
             {issueCount > 0 && <span className="text-red-400">{issueCount} issues</span>}
           </div>

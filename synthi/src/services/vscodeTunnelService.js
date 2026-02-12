@@ -1,0 +1,343 @@
+/**
+ * VSCodeTunnelService
+ *
+ * Bridges the Service Worker (vscode-tunnel-sw.js) with VSCodeServerProxy
+ * using BroadcastChannel for communication, avoiding the need for the
+ * page to be "controlled" by the SW (eliminates controllerchange hang).
+ *
+ * Lifecycle:
+ *   1. attach(proxy)  - connects to a VSCodeServerProxy instance
+ *   2. register()     - registers the SW and starts listening on BroadcastChannel
+ *   3. dispose()      - cleans up
+ */
+
+const SW_PATH = '/vscode-tunnel-sw.js';
+const CHANNEL_NAME = 'vscode-tunnel';
+
+class VSCodeTunnelService {
+  constructor() {
+    /** @type {import('../extensions/bridge/VSCodeServerProxy').default | null} */
+    this.proxy = null;
+    this._registered = false;
+    this._channel = null;
+  }
+
+  /**
+   * Register the Service Worker and set up BroadcastChannel listener.
+   * No controllerchange wait — BroadcastChannel works without control.
+   * @returns {Promise<boolean>}
+   */
+  async register() {
+    if (this._registered) return true;
+
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+      console.warn('[VSCodeTunnel] Service Workers not supported');
+      return false;
+    }
+
+    try {
+      console.log('[VSCodeTunnel] Registering Service Worker...');
+      const reg = await navigator.serviceWorker.register(SW_PATH, {
+        scope: '/',
+        updateViaCache: 'none',  // always fetch fresh SW script
+      });
+      console.log('[VSCodeTunnel] SW registered, scope:', reg.scope);
+
+      // Force update to ensure latest SW code is used
+      try { await reg.update(); } catch (_) {}
+
+      // Wait for the SW to become active (but NOT for it to control this page)
+      const sw = reg.active || reg.installing || reg.waiting;
+      if (sw && sw.state !== 'activated') {
+        await new Promise((resolve) => {
+          const check = () => {
+            if (sw.state === 'activated') {
+              sw.removeEventListener('statechange', check);
+              resolve();
+            }
+          };
+          sw.addEventListener('statechange', check);
+          if (sw.state === 'activated') resolve();
+        });
+      }
+      console.log('[VSCodeTunnel] SW is active');
+
+      // Set up BroadcastChannel to receive proxy requests from SW
+      this._channel = new BroadcastChannel(CHANNEL_NAME);
+      this._channel.addEventListener('message', (event) => {
+        console.log('[VSCodeTunnel] BroadcastChannel message:', event.data?.type, event.data?.id);
+        this._onRequest(event.data);
+      });
+
+      // FALLBACK: also listen on navigator.serviceWorker.onmessage
+      // in case an older cached SW is still using client.postMessage
+      navigator.serviceWorker.addEventListener('message', (event) => {
+        const msg = event.data;
+        if (msg?.type === 'vscode-proxy-request') {
+          console.log('[VSCodeTunnel] FALLBACK: Got proxy request via SW postMessage, id:', msg.id);
+          this._onRequest(msg);
+        }
+      });
+
+      this._registered = true;
+      console.log('[VSCodeTunnel] BroadcastChannel + fallback listener ready');
+      return true;
+    } catch (err) {
+      console.error('[VSCodeTunnel] Registration failed:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Attach a VSCodeServerProxy to forward HTTP requests through.
+   * @param {import('../extensions/bridge/VSCodeServerProxy').default} proxy
+   */
+  attach(proxy) {
+    this.proxy = proxy;
+    console.log('[VSCodeTunnel] Proxy attached');
+  }
+
+  /**
+   * Handle proxy request from SW via BroadcastChannel.
+   */
+  async _onRequest(msg) {
+    if (!msg || msg.type !== 'vscode-proxy-request') return;
+
+    const { id, method, path, headers, body } = msg;
+    console.log('[VSCodeTunnel] Processing proxy request:', id, method, path);
+
+    if (!this.proxy) {
+      this._respond({
+        type: 'vscode-proxy-response',
+        id,
+        status: 503,
+        statusText: 'No proxy attached',
+        headers: {},
+        body: btoa('VSCodeServerProxy not available'),
+      });
+      return;
+    }
+
+    try {
+      // Strip accept-encoding so code-server returns uncompressed responses.
+      // Compressed bodies can't be inspected/injected browser-side.
+      const cleanHeaders = { ...(headers || {}) };
+      delete cleanHeaders['accept-encoding'];
+
+      const result = await this.proxy.proxyHttp({
+        method: method || 'GET',
+        path: path || '/',
+        headers: cleanHeaders,
+        body: body || null,
+      });
+
+      const rh = result.headers || {};
+
+      // Rewrite Location headers on redirects to stay within proxy prefix
+      if (rh['location'] && result.status >= 300 && result.status < 400) {
+        let loc = rh['location'];
+        // Strip any absolute origin (http://127.0.0.1:PORT)
+        try {
+          const locUrl = new URL(loc, 'http://127.0.0.1');
+          loc = locUrl.pathname + locUrl.search + locUrl.hash;
+        } catch (_) {}
+        // Ensure path goes through our proxy prefix
+        if (!loc.startsWith('/__vscode-proxy__')) {
+          rh['location'] = '/__vscode-proxy__' + (loc.startsWith('/') ? '' : '/') + loc;
+          console.log('[VSCodeTunnel] Rewrote redirect Location to:', rh['location']);
+        }
+      }
+
+      // Strip Content-Security-Policy so our injected WS shim script can execute
+      delete rh['content-security-policy'];
+      delete rh['content-security-policy-report-only'];
+
+      // Inject WebSocket shim into HTML responses so code-server routes WS
+      // through our postMessage tunnel instead of trying real WebSocket
+      const ct = rh['content-type'] || '';
+      if (ct.includes('text/html') && result.body) {
+        try {
+          const html = atob(result.body);
+          if (!html.includes('__synthiWsShim') && html.includes('<head')) {
+            const shimScript = '<script>' + VSCodeTunnelService._wsShimCode() + '</script>';
+            const injected = html.replace(/<head([^>]*)>/i, `<head$1>${shimScript}`);
+            result.body = btoa(injected);
+            console.log('[VSCodeTunnel] Injected WS shim into HTML response');
+          } else {
+            console.log('[VSCodeTunnel] HTML response - shim already present or no <head> found');
+          }
+        } catch (injectErr) {
+          console.warn('[VSCodeTunnel] WS shim injection failed:', injectErr);
+        }
+      }
+
+      this._respond({
+        type: 'vscode-proxy-response',
+        id,
+        status: result.status,
+        statusText: result.statusText,
+        headers: rh,
+        body: result.body,
+      });
+    } catch (err) {
+      console.error('[VSCodeTunnel] proxyHttp error:', err);
+      this._respond({
+        type: 'vscode-proxy-response',
+        id,
+        status: 502,
+        statusText: 'Proxy Error',
+        headers: {},
+        body: btoa(err.message || 'Unknown error'),
+      });
+    }
+  }
+
+  /**
+   * Send response back to SW via BroadcastChannel.
+   */
+  _respond(message) {
+    console.log('[VSCodeTunnel] Sending response, id:', message.id, 'status:', message.status);
+    if (this._channel) {
+      this._channel.postMessage(message);
+    }
+    // Also try sending via SW controller in case old SW is listening
+    try {
+      navigator.serviceWorker?.controller?.postMessage(message);
+    } catch (_) {}
+  }
+
+  /**
+   * Whether the tunnel is ready to serve requests.
+   */
+  get isReady() {
+    return this._registered && this.proxy != null;
+  }
+
+  dispose() {
+    if (this._channel) {
+      this._channel.close();
+      this._channel = null;
+    }
+    this.proxy = null;
+    this._registered = false;
+  }
+
+  /**
+   * Returns the WebSocket shim JavaScript to inject into code-server HTML.
+   * Overrides `window.WebSocket` so WS traffic goes through postMessage
+   * → parent page → VSCodeServerProxy → DataChannel → backend → code-server.
+   */
+  static _wsShimCode() {
+    return `
+(function(){
+  if(window.__synthiWsShim) return;
+  window.__synthiWsShim = true;
+
+  function TunnelWS(url, protocols){
+    var self=this;
+    this._tid=null;
+    this._url=url;
+    this.readyState=0;
+    this.bufferedAmount=0;
+    this.extensions='';
+    this.protocol=typeof protocols==='string'?protocols:(Array.isArray(protocols)&&protocols[0])||'';
+    this.binaryType='blob';
+    this.onopen=null;
+    this.onmessage=null;
+    this.onerror=null;
+    this.onclose=null;
+    this._lsn={};
+
+    var parsed;
+    try{parsed=new URL(url)}catch(e){parsed={pathname:'/',search:''}}
+    var wsPath=parsed.pathname+parsed.search;
+    this._path=wsPath;
+
+    window.parent.postMessage({type:'synthi-ws-connect',path:wsPath},'*');
+
+    var handler=function(evt){
+      var m=evt.data;
+      if(!m||typeof m.type!=='string')return;
+
+      if(m.type==='synthi-ws-connected'&&self._tid===null&&m.path===self._path){
+        self._tid=m.tunnelId;
+        self.readyState=1;
+        var oe=new Event('open');
+        if(self.onopen)self.onopen(oe);
+        self._fire('open',oe);
+        return;
+      }
+      if(self._tid===null)return;
+
+      if(m.type==='synthi-ws-data'&&m.tunnelId===self._tid){
+        var me;
+        if(m.binary){
+          var b=atob(m.data),a=new Uint8Array(b.length);
+          for(var i=0;i<b.length;i++)a[i]=b.charCodeAt(i);
+          me=new MessageEvent('message',{data:a.buffer});
+        }else{
+          me=new MessageEvent('message',{data:m.data});
+        }
+        if(self.onmessage)self.onmessage(me);
+        self._fire('message',me);
+        return;
+      }
+
+      if(m.type==='synthi-ws-close'&&m.tunnelId===self._tid){
+        self.readyState=3;
+        var ce=new CloseEvent('close',{code:m.code||1000,reason:''});
+        if(self.onclose)self.onclose(ce);
+        self._fire('close',ce);
+        window.removeEventListener('message',handler);
+        return;
+      }
+
+      if(m.type==='synthi-ws-error'&&m.tunnelId===self._tid){
+        var ee=new Event('error');
+        if(self.onerror)self.onerror(ee);
+        self._fire('error',ee);
+        return;
+      }
+    };
+    window.addEventListener('message',handler);
+  }
+
+  TunnelWS.CONNECTING=0;TunnelWS.OPEN=1;TunnelWS.CLOSING=2;TunnelWS.CLOSED=3;
+
+  TunnelWS.prototype.send=function(data){
+    if(this.readyState!==1)throw new DOMException('WebSocket not open','InvalidStateError');
+    var isBin=false,payload;
+    if(typeof data==='string'){payload=data}
+    else{isBin=true;var u8=new Uint8Array(data instanceof ArrayBuffer?data:data.buffer);
+      var s='';for(var i=0;i<u8.length;i++)s+=String.fromCharCode(u8[i]);payload=btoa(s);}
+    window.parent.postMessage({type:'synthi-ws-send',tunnelId:this._tid,data:payload,binary:isBin},'*');
+  };
+
+  TunnelWS.prototype.close=function(code){
+    if(this.readyState>=2)return;
+    this.readyState=2;
+    window.parent.postMessage({type:'synthi-ws-close',tunnelId:this._tid,code:code||1000},'*');
+  };
+
+  TunnelWS.prototype.addEventListener=function(t,fn){
+    if(!this._lsn[t])this._lsn[t]=[];this._lsn[t].push(fn);
+  };
+  TunnelWS.prototype.removeEventListener=function(t,fn){
+    if(!this._lsn[t])return;this._lsn[t]=this._lsn[t].filter(function(f){return f!==fn});
+  };
+  TunnelWS.prototype._fire=function(t,e){
+    var a=this._lsn[t]||[];for(var i=0;i<a.length;i++){try{a[i](e)}catch(x){console.error(x)}}
+  };
+
+  Object.defineProperty(TunnelWS.prototype,'url',{get:function(){return this._url}});
+
+  window.WebSocket=TunnelWS;
+  console.log('[synthi-ws-shim] WebSocket shim installed');
+})();
+`;
+  }
+}
+
+// Singleton
+const vscodeTunnelService = new VSCodeTunnelService();
+export default vscodeTunnelService;

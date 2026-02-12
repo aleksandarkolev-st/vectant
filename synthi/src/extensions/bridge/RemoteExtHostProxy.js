@@ -418,8 +418,8 @@ export class RemoteExtHostProxy {
   /** Max payload per DataChannel message (64KB is safe for all SCTP implementations) */
   static MAX_DC_MSG_SIZE = 64 * 1024;
 
-  /** Max buffered amount before we wait for drain (256KB) */
-  static MAX_BUFFERED = 256 * 1024;
+  /** Max buffered amount before we wait for drain (1MB — generous to avoid stalls) */
+  static MAX_BUFFERED = 1024 * 1024;
 
   /** Send a JSON message over the DataChannel, chunking if necessary */
   async _sendRaw(obj) {
@@ -452,7 +452,7 @@ export class RemoteExtHostProxy {
       // Use 16KB slices — even 2× worst-case expansion = 32KB + wrapper
       // overhead stays safely under the 64KB SCTP limit.
       const msgId = ++this._chunkMsgIdCounter;
-      const chunkSize = 23 * 1024; // 16KB — safe after double JSON escaping
+      const chunkSize = 16 * 1024; // 16KB — safe after double JSON escaping
       const total = Math.ceil(json.length / chunkSize);
 
       console.log(`[RemoteExtHostProxy] Chunking message (${json.length} chars) into ${total} chunks, msgId=${msgId}`);
@@ -499,6 +499,15 @@ export class RemoteExtHostProxy {
       // Set the low-water mark for the event
       this.channel.bufferedAmountLowThreshold = RemoteExtHostProxy.MAX_BUFFERED;
 
+      let pollTimer, hardTimer;
+
+      const cleanup = () => {
+        clearInterval(pollTimer);
+        clearTimeout(hardTimer);
+        this.channel?.removeEventListener('bufferedamountlow', onLow);
+        this.channel?.removeEventListener('close', onClose);
+      };
+
       const onLow = () => {
         cleanup();
         resolve();
@@ -508,17 +517,11 @@ export class RemoteExtHostProxy {
         reject(new Error('DataChannel closed during drain wait'));
       };
 
-      const cleanup = () => {
-        clearTimeout(pollTimer);
-        this.channel?.removeEventListener('bufferedamountlow', onLow);
-        this.channel?.removeEventListener('close', onClose);
-      };
-
       this.channel.addEventListener('bufferedamountlow', onLow, { once: true });
       this.channel.addEventListener('close', onClose, { once: true });
 
-      // Polling fallback in case the event doesn't fire (some browsers)
-      const pollTimer = setInterval(() => {
+      // Polling fallback in case the event doesn't fire (some browsers/webrtc-rs)
+      pollTimer = setInterval(() => {
         if (!this.channel || this.channel.readyState !== 'open') {
           cleanup();
           reject(new Error('DataChannel closed during drain wait'));
@@ -526,7 +529,14 @@ export class RemoteExtHostProxy {
           cleanup();
           resolve();
         }
-      }, 50);
+      }, 20);
+
+      // Hard timeout — don't hang forever if SCTP congestion never clears
+      hardTimer = setTimeout(() => {
+        console.warn(`[RemoteExtHostProxy] Buffer drain timeout (buffered=${this.channel?.bufferedAmount}), proceeding anyway`);
+        cleanup();
+        resolve(); // let send() attempt proceed; OperationError will be caught
+      }, 10000);
     });
   }
 
@@ -545,40 +555,54 @@ export class RemoteExtHostProxy {
    * that occurs when _sendRaw has to sub-chunk a large JSON payload.
    */
   async loadExtension(extensionId, code, manifest) {
-    const CODE_CHUNK_SIZE = 16 * 1024; // 16KB — safe after JSON escaping
+    const CHUNK_SIZE = 16 * 1024; // 16KB — safe after JSON escaping
+    let streamedCode = false;
+    let streamedManifest = false;
 
-    if (typeof code === 'string' && code.length > CODE_CHUNK_SIZE) {
-      const totalChunks = Math.ceil(code.length / CODE_CHUNK_SIZE);
+    // --- Stream large code as uploadCodeChunk events ---
+    if (typeof code === 'string' && code.length > CHUNK_SIZE) {
+      const totalChunks = Math.ceil(code.length / CHUNK_SIZE);
       console.log(
-        `[RemoteExtHostProxy] Streaming ${code.length} chars in ${totalChunks} chunks for ${extensionId}`
+        `[RemoteExtHostProxy] Streaming code: ${code.length} chars in ${totalChunks} chunks for ${extensionId}`
       );
-
       for (let i = 0; i < totalChunks; i++) {
-        const chunk = code.slice(i * CODE_CHUNK_SIZE, (i + 1) * CODE_CHUNK_SIZE);
-        const msg = createEvent('uploadCodeChunk', [
-          extensionId,
-          i,
-          totalChunks,
-          chunk,
-        ]);
+        const chunk = code.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+        const msg = createEvent('uploadCodeChunk', [extensionId, i, totalChunks, chunk]);
         msg.generation = this.generation;
         await this._sendRaw(msg);
       }
-
-      console.log(
-        `[RemoteExtHostProxy] All ${totalChunks} chunks sent, calling loadExtension for ${extensionId}`
-      );
-      // code=null tells the remote host to assemble from uploaded chunks
-      return this.request('loadExtension', [extensionId, null, manifest], 60000);
+      streamedCode = true;
     }
 
-    // Small code — send inline as before
-    const codeLen = typeof code === 'string' ? code.length : 0;
-    const timeout = Math.min(
-      60000,
-      20000 + Math.ceil(codeLen / (1024 * 1024)) * 5000
+    // --- Stream large manifest as uploadManifestChunk events ---
+    if (manifest && typeof manifest === 'object') {
+      const manifestJson = JSON.stringify(manifest);
+      if (manifestJson.length > CHUNK_SIZE) {
+        const totalChunks = Math.ceil(manifestJson.length / CHUNK_SIZE);
+        console.log(
+          `[RemoteExtHostProxy] Streaming manifest: ${manifestJson.length} chars in ${totalChunks} chunks for ${extensionId}`
+        );
+        for (let i = 0; i < totalChunks; i++) {
+          const chunk = manifestJson.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+          const msg = createEvent('uploadManifestChunk', [extensionId, i, totalChunks, chunk]);
+          msg.generation = this.generation;
+          await this._sendRaw(msg);
+        }
+        streamedManifest = true;
+      }
+    }
+
+    console.log(
+      `[RemoteExtHostProxy] Calling loadExtension RPC for ${extensionId}` +
+      ` (code: ${streamedCode ? 'streamed' : 'inline'}, manifest: ${streamedManifest ? 'streamed' : 'inline'})`
     );
-    return this.request('loadExtension', [extensionId, code, manifest], timeout);
+
+    // Send the final RPC — null for any fields that were pre-streamed
+    return this.request(
+      'loadExtension',
+      [extensionId, streamedCode ? null : code, streamedManifest ? null : manifest],
+      60000
+    );
   }
 
   activateExtension(extensionId) {

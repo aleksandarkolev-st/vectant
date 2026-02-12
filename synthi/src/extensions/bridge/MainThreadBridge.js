@@ -7,8 +7,7 @@
 
 import { WorkerProxy, getWorkerProxy } from './WorkerProxy.js';
 import { WorkerToMainMethods } from './MessageProtocol.js';
-import { RemoteExtHostProxy } from './RemoteExtHostProxy.js';
-import { fetchNodeCodeForExtension } from '../loader/ExtensionInstaller.js';
+import { VSCodeServerProxy } from './VSCodeServerProxy.js';
 
 /**
  * @typedef {Object} ExtensionInfo
@@ -64,18 +63,21 @@ export class MainThreadBridge {
     /** @type {Promise<void>|null} */
     this.restartPromise = null;
 
-    // ── Remote Extension Host ──────────────────────────────────
-    /** @type {RemoteExtHostProxy|null} */
-    this.remoteProxy = null;
-
-    /** @type {Set<string>} Extension IDs routed to the remote host */
-    this.remoteExtensions = new Set();
-
-    /** @type {boolean} */
-    this.remoteHandlersRegistered = false;
-
     /** @type {Function|null} Callback for extension state changes from rehydration */
     this.onExtensionStateChanged = null;
+
+    // ── VS Code Server (real Extension Host) ─────────────────
+    /** @type {VSCodeServerProxy|null} */
+    this.vscodeServerProxy = null;
+
+    /** @type {boolean} */
+    this.vscodeServerConnected = false;
+
+    /** @type {Set<string>} Extension IDs installed on the VS Code Server */
+    this.vscodeServerExtensions = new Set();
+
+    /** @type {Function|null} Callback when server disconnects */
+    this.onVSCodeServerDisconnected = null;
   }
 
   /**
@@ -101,47 +103,181 @@ export class MainThreadBridge {
     console.log('[MainThreadBridge] Extension system initialized');
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // VS Code Server (Real Extension Host) — Path A
+  // ═══════════════════════════════════════════════════════════════════════════
+
   /**
-   * Connect the remote Node.js extension host via a WebRTC DataChannel.
-   * Call this once the CompilerClient is connected.
+   * Connect to the VS Code Server Manager via a WebRTC DataChannel.
+   * The server manager handles downloading/starting the real VS Code Server
+   * and installing extensions into it.
    *
-   * @param {RTCDataChannel} channel - DataChannel created by compilerClient.createExtHostChannel()
+   * @param {RTCDataChannel} channel - DataChannel created for the server manager
    * @returns {Promise<void>}
    */
-  async connectRemoteHost(channel) {
-    if (this.remoteProxy) {
-      // If we already have a connected proxy, skip
-      if (this.remoteProxy.ready) {
-        console.warn('[MainThreadBridge] Remote host already connected and ready');
+  async connectVSCodeServer(channel) {
+    if (this.vscodeServerProxy) {
+      if (this.vscodeServerProxy.isReady()) {
+        console.warn('[MainThreadBridge] VS Code Server already connected');
         return;
       }
-      // If we have a proxy but it's still connecting or terminated,
-      // clean it up and try fresh
-      console.warn('[MainThreadBridge] Cleaning up stale remoteProxy (state:', this.remoteProxy.state, ')');
-      try { this.remoteProxy.terminate(); } catch (_) {}
-      this.remoteProxy = null;
-      this.remoteHandlersRegistered = false;
+      // Clean up stale proxy — use dispose() to keep DC open for reuse
+      try { this.vscodeServerProxy.dispose(); } catch (_) {}
+      this.vscodeServerProxy = null;
     }
 
-    console.log('[MainThreadBridge] connectRemoteHost: creating RemoteExtHostProxy, channel state:', channel.readyState, 'label:', channel.label);
-    this.remoteProxy = new RemoteExtHostProxy(channel);
-    this._setupRemoteEventHandlers();
+    console.log('[MainThreadBridge] connectVSCodeServer: creating VSCodeServerProxy');
+    this.vscodeServerProxy = new VSCodeServerProxy(channel);
+
+    // Wire events
+    this.vscodeServerProxy.on('serverStatus', (status, ...rest) => {
+      console.log(`[MainThreadBridge/vscode-server] Status: ${status}`, ...rest);
+      if (status === 'running') {
+        this.vscodeServerConnected = true;
+      } else if (status === 'stopped' || status === 'error') {
+        this.vscodeServerConnected = false;
+      }
+    });
+
+    this.vscodeServerProxy.on('extensionInstalled', (extensionId) => {
+      console.log(`[MainThreadBridge/vscode-server] Extension installed: ${extensionId}`);
+      this.vscodeServerExtensions.add(extensionId);
+      this.onExtensionStateChanged?.(extensionId, 'active');
+    });
+
+    this.vscodeServerProxy.on('extensionInstallFailed', (extensionId, error) => {
+      console.error(`[MainThreadBridge/vscode-server] Extension install failed: ${extensionId}:`, error);
+      this.onExtensionStateChanged?.(extensionId, 'crashed', `Server install failed: ${error}`);
+    });
+
+    this.vscodeServerProxy.on('disconnected', () => {
+      console.warn('[MainThreadBridge/vscode-server] Disconnected');
+      this.vscodeServerConnected = false;
+      this.vscodeServerProxy = null;
+
+      // Mark server-installed extensions as pending
+      for (const id of this.vscodeServerExtensions) {
+        this.onExtensionStateChanged?.(id, 'pending-remote');
+      }
+
+      this.onVSCodeServerDisconnected?.();
+    });
 
     try {
-      console.log('[MainThreadBridge] connectRemoteHost: waiting for remote host to signal ready (25s timeout)...');
-      await this.remoteProxy.waitForReady(25000);
-      console.log('[MainThreadBridge] Remote extension host connected');
+      await this.vscodeServerProxy.waitForReady(30000);
+      console.log('[MainThreadBridge] VS Code Server Manager connected');
 
-      // Re-route Node-only extensions that were loaded as stubs because the
-      // remote host wasn't available at restore time.
-      await this._rehydrateNodeOnlyExtensions();
+      // Wire contribution events from VS Code Server → UI
+      this._setupRemoteEventHandlers();
     } catch (err) {
-      console.error('[MainThreadBridge] Remote extension host failed to connect:', err);
-      try { this.remoteProxy.terminate(); } catch (_) {}
-      this.remoteProxy = null;
-      this.remoteHandlersRegistered = false;
+      console.error('[MainThreadBridge] VS Code Server Manager failed to connect:', err);
+      // dispose() keeps the DataChannel open so retries reuse the same DC
+      // and the Rust side doesn't kill & respawn the manager process.
+      try { this.vscodeServerProxy.dispose(); } catch (_) {}
+      this.vscodeServerProxy = null;
       throw err;
     }
+  }
+
+  /**
+   * Start the VS Code Server for a workspace.
+   * @param {string} slug - Workspace identifier
+   * @param {object} [options]
+   * @returns {Promise<{port: number, token: string}>}
+   */
+  async startVSCodeServer(slug, options = {}) {
+    if (!this.vscodeServerProxy) {
+      throw new Error('VS Code Server Manager not connected');
+    }
+    // Don't gate on isReady() — the proxy may have connected via getStatus
+    // probe without a workerReady event.  The RPC itself will timeout if
+    // the manager isn't actually running.
+    if (this.vscodeServerProxy.channel?.readyState !== 'open') {
+      throw new Error('VS Code Server DataChannel not open');
+    }
+    return this.vscodeServerProxy.startServer(slug, options);
+  }
+
+  /**
+   * Install a VSIX into the real VS Code Server.
+   * The server's Extension Host will load it automatically.
+   *
+   * @param {string} extensionId
+   * @param {string} vsixBase64 - Base64-encoded VSIX data
+   * @returns {Promise<{success: boolean, extensionId: string}>}
+   */
+  async installExtensionOnServer(extensionId, vsixBase64) {
+    if (!this.vscodeServerProxy?.isReady()) {
+      throw new Error('VS Code Server not connected');
+    }
+
+    const result = await this.vscodeServerProxy.installExtension(extensionId, vsixBase64);
+    if (result.success) {
+      this.vscodeServerExtensions.add(extensionId);
+    }
+    return result;
+  }
+
+  /**
+   * Install an extension from the marketplace into the VS Code Server.
+   * @param {string} extensionId - e.g. "dbaeumer.vscode-eslint"
+   * @returns {Promise<{success: boolean, extensionId: string}>}
+   */
+  async installMarketplaceExtensionOnServer(extensionId) {
+    if (!this.vscodeServerProxy?.isReady()) {
+      throw new Error('VS Code Server not connected');
+    }
+
+    const result = await this.vscodeServerProxy.installExtensionFromMarketplace(extensionId);
+    if (result.success) {
+      this.vscodeServerExtensions.add(extensionId);
+    }
+    return result;
+  }
+
+  /**
+   * Get connection info for the VS Code Server WebSocket endpoint.
+   * @returns {Promise<object|null>}
+   */
+  async getVSCodeServerConnectionInfo() {
+    if (!this.vscodeServerProxy?.isReady()) return null;
+    return this.vscodeServerProxy.getConnectionInfo();
+  }
+
+  /**
+   * Determine how a Node-only extension should be handled.
+   * Returns 'vscode-server' if the VS Code Server is available,
+   * or 'pending' if it's not connected yet.
+   *
+   * @param {object} manifest
+   * @returns {'local'|'vscode-server'|'pending'}
+   */
+  getExtensionHostTarget(manifest) {
+    // Browser extensions always run locally — unless too large for the worker
+    if (manifest.browser) {
+      const info = this.extensions.get(manifest.__extensionId || `${manifest.publisher}.${manifest.name}`);
+      const codeLen = info?.code?.length || 0;
+      if (codeLen <= 500_000) return 'local';
+    }
+
+    // Node-only or large extensions → VS Code Server only
+    if (manifest.main) {
+      if (this.vscodeServerProxy?.isReady() && this.vscodeServerConnected) {
+        return 'vscode-server';
+      }
+      return 'pending';
+    }
+
+    // Extensions with extensionKind: ['workspace'] preference
+    if (manifest.extensionKind) {
+      const kinds = Array.isArray(manifest.extensionKind) ? manifest.extensionKind : [manifest.extensionKind];
+      if (kinds.includes('workspace') && !kinds.includes('ui')) {
+        if (this.vscodeServerProxy?.isReady() && this.vscodeServerConnected) return 'vscode-server';
+        return 'pending';
+      }
+    }
+
+    return 'local';
   }
 
   /**
@@ -158,6 +294,7 @@ export class MainThreadBridge {
     for (const [id, info] of this.extensions) {
       if (info.remote) continue; // already on remote
       if (info.isActive) continue; // already active locally
+      if (this.vscodeServerExtensions.has(id)) continue; // already on VS Code Server
 
       // Eligible: Node-only extensions, OR large-bundle extensions with main entry
       const isNodeOnly = info.manifest?.main && !info.manifest?.browser;
@@ -167,52 +304,38 @@ export class MainThreadBridge {
     }
 
     if (toRehydrate.length === 0) return;
-    console.log(`[MainThreadBridge] Loading ${toRehydrate.length} Node-only extension(s) on remote host:`,
+    console.log(`[MainThreadBridge] Rehydrating ${toRehydrate.length} Node-only extension(s):`,
       toRehydrate.map(i => i.id).join(', '));
 
+    // ── Route to VS Code Server ───────────────────────────────
+    if (!this.vscodeServerProxy?.isReady()) {
+      console.warn('[MainThreadBridge] VS Code Server proxy not ready for rehydration — extensions remain pending');
+      return;
+    }
+    if (!this.vscodeServerConnected) {
+      console.warn('[MainThreadBridge] VS Code Server not yet started (vscodeServerConnected=false), cannot rehydrate yet');
+      return;
+    }
+
+    console.log('[MainThreadBridge] VS Code Server available — routing rehydrated extensions there');
     for (const info of toRehydrate) {
       try {
-        let nodeCode = info.manifest._nodeCode;
-
-        // If no nodeCode is cached, try to re-fetch from Open VSX
-        if (!nodeCode) {
-          console.log(`[MainThreadBridge] ${info.id}: no nodeCode cached, fetching from Open VSX...`);
-          nodeCode = await fetchNodeCodeForExtension(info.id, info.manifest);
-          if (nodeCode) {
-            info.manifest._nodeCode = nodeCode;
-          } else {
-            console.warn(`[MainThreadBridge] ${info.id}: could not fetch nodeCode, skipping`);
-            this.onExtensionStateChanged?.(info.id, 'crashed', 'No Node.js code available');
-            continue;
-          }
-        }
-
-        // Mark as remote
-        info.remote = true;
-        this.remoteExtensions.add(info.id);
-
-        // Load + activate on remote host with real Node.js code
         this.onExtensionStateChanged?.(info.id, 'activating');
-        await this.remoteProxy.loadExtension(info.id, nodeCode, info.manifest);
-        await this.remoteProxy.request('activateExtension', [info.id]);
-        info.isActive = true;
-        this.onExtensionStateChanged?.(info.id, 'active');
-        console.log(`[MainThreadBridge] ✓ ${info.id} loaded on remote host`);
-      } catch (err) {
-        const isTransport = this._isTransportError(err);
-        if (isTransport) {
-          // Transport failure (DC closed / reset) — the extension itself is fine.
-          // Undo remote marking so it's eligible for rehydration on the next
-          // remote host connection.
-          console.warn(`[MainThreadBridge] ${info.id}: transport error during remote load, will retry:`, err.message);
-          info.remote = false;
-          info.isActive = false;
-          this.remoteExtensions.delete(info.id);
-          this.onExtensionStateChanged?.(info.id, 'pending-remote');
+        const result = await this.installMarketplaceExtensionOnServer(info.id);
+        if (result.success) {
+          info.isActive = true;
+          this.onExtensionStateChanged?.(info.id, 'active');
+          console.log(`[MainThreadBridge] ✓ ${info.id} installed on VS Code Server`);
+
+          // Emit synthetic webview events for webview-type views
+          this._emitSyntheticWebviewEvents(info.id, info.manifest);
         } else {
-          console.warn(`[MainThreadBridge] Failed to load ${info.id} on remote host:`, err.message);
-          this.onExtensionStateChanged?.(info.id, 'crashed', err.message);
+          this.onExtensionStateChanged?.(info.id, 'pending-remote');
+          console.warn(`[MainThreadBridge] ${info.id}: VS Code Server install returned unsuccessful`);
         }
+      } catch (err) {
+        console.warn(`[MainThreadBridge] ${info.id}: VS Code Server install failed:`, err.message);
+        this.onExtensionStateChanged?.(info.id, 'pending-remote');
       }
     }
   }
@@ -235,154 +358,100 @@ export class MainThreadBridge {
   }
 
   /**
-   * Set up handlers for events from the remote extension host.
-   * Mirrors _setupEventHandlers but wired to this.remoteProxy.
+   * Wire VS Code Server proxy events to the contribution pipeline.
+   * Called after connectVSCodeServer succeeds.
    */
   _setupRemoteEventHandlers() {
-    if (this.remoteHandlersRegistered || !this.remoteProxy) return;
+    if (!this.vscodeServerProxy) return;
 
-    const proxy = this.remoteProxy;
-
-    // Command registration
-    proxy.on('registerCommand', (commandId, extensionId) => {
-      this.extensionCommands.add(commandId);
-      console.log(`[MainThreadBridge/remote] Command registered: ${commandId} (${extensionId})`);
-    });
-
-    proxy.on('unregisterCommand', (commandId) => {
-      this.extensionCommands.delete(commandId);
-    });
-
-    // Messages
-    proxy.on('showMessage', (type, message, options) => {
-      if (this.onShowMessage) {
-        this.onShowMessage(type, message, options);
-      } else {
-        if (type === 'error') console.error(message);
-        else if (type === 'warning') console.warn(message);
-        else console.log(message);
-      }
-    });
-
-    // Diagnostics
-    proxy.on('setDiagnostics', (uri, diagnostics, source) => {
-      if (this.onSetDiagnostics) {
-        this.onSetDiagnostics(uri, diagnostics, source);
-      }
-    });
-
-    // Webviews
-    proxy.on('createWebview', (viewId, viewType, title, extensionId) => {
-      if (this.onCreateWebview) {
-        this.onCreateWebview(viewId, viewType, title, { extensionId });
-      }
-      this._emitRemoteContribution?.('createWebview', { viewId, viewType, title, extensionId });
-    });
-
-    proxy.on('updateWebview', (viewId, html) => {
-      this._emitRemoteContribution?.('updateWebview', { viewId, html });
-    });
-
-    proxy.on('disposeWebview', (viewId) => {
-      this._emitRemoteContribution?.('disposeWebview', { viewId });
-    });
-
-    proxy.on('postWebviewMessage', (viewId, message) => {
-      this._emitRemoteContribution?.('postWebviewMessage', { viewId, message });
-    });
-
-    // Tree views
-    proxy.on('registerTreeView', (viewId, extensionId) => {
-      console.log(`[MainThreadBridge/remote] Tree view registered: ${viewId} by ${extensionId}`);
-      this._emitRemoteContribution?.('registerTreeView', { viewId, extensionId });
-    });
-
-    proxy.on('treeData', (viewId, data) => {
-      console.log(`[MainThreadBridge/remote] Tree data: ${viewId} (${data?.length || 0} items)`);
+    // Forward tree view data from VS Code Server → UI
+    this.vscodeServerProxy.on('treeData', (viewId, data) => {
+      console.log(`[MainThreadBridge/vscode-server] treeData for ${viewId} (${data?.length || 0} items)`);
       this._emitRemoteContribution?.('treeData', { viewId, data });
     });
 
-    // Status bar
-    proxy.on('setStatusBar', (text, timeout) => {
+    // Forward webview creation from VS Code Server → UI
+    this.vscodeServerProxy.on('createWebview', (viewId, viewType, title, opts) => {
+      console.log(`[MainThreadBridge/vscode-server] createWebview: ${viewId}`);
+      const extIdMatch = viewId.match(/^(.+?)\.(webview|webviewView)\./);
+      const extensionId = extIdMatch ? extIdMatch[1] : opts?.extensionId;
+      this._emitRemoteContribution?.('createWebview', { viewId, viewType, title, opts, extensionId });
+    });
+
+    // Forward webview HTML updates from VS Code Server → UI
+    this.vscodeServerProxy.on('updateWebview', (viewId, html) => {
+      this._emitRemoteContribution?.('updateWebview', { viewId, html });
+    });
+
+    // Forward webview disposal from VS Code Server → UI
+    this.vscodeServerProxy.on('disposeWebview', (viewId) => {
+      this._emitRemoteContribution?.('disposeWebview', { viewId });
+    });
+
+    // Forward status bar items from VS Code Server → UI
+    this.vscodeServerProxy.on('setStatusBar', (text, timeout) => {
       this._emitRemoteContribution?.('setStatusBar', { text, timeout });
     });
 
-    // Output channel
-    proxy.on('outputChannel', (name, line) => {
-      console.log(`[Ext/${name}] ${line}`);
-    });
-
-    // Open external URI
-    proxy.on('openExternal', (uri) => {
-      try { window.open(uri, '_blank'); } catch (_) {}
-    });
-
-    // Error event from the remote host process
-    proxy.on('error', (message) => {
-      console.error('[MainThreadBridge/remote] Extension host error:', message);
-    });
-
-    // DataChannel closed — the remote host is gone (e.g. WebRTC reset).
-    // Clean up so a new ext-host DC can be created on reconnect.
-    // IMPORTANT: We captured `proxy` above. If the bridge already replaced
-    // this.remoteProxy with a newer instance (reconnect in-flight), the
-    // stale proxy's disconnect must NOT tear down the replacement.
-    proxy.on('disconnected', () => {
-      if (this.remoteProxy && this.remoteProxy !== proxy) {
-        console.log('[MainThreadBridge/remote] Ignoring disconnect from replaced (stale) proxy');
-        return;
-      }
-      console.warn('[MainThreadBridge/remote] Remote extension host disconnected, cleaning up');
-      // Mark all remote-loaded extensions as pending-remote again
-      for (const [id, info] of this.extensions) {
-        if (info.remote && info.isActive) {
-          info.isActive = false;
-          info.remote = false;
-          this.remoteExtensions.delete(id);
-          this.onExtensionStateChanged?.(id, 'pending-remote');
-        }
-      }
-      // Tear down the dead proxy
-      try { this.remoteProxy?.terminate(); } catch (_) {}
-      this.remoteProxy = null;
-      this.remoteHandlersRegistered = false;
-      // Notify the hook so remoteHostConnectedRef gets reset
-      this.onRemoteDisconnected?.();
-    });
-
-    this.remoteHandlersRegistered = true;
+    console.log('[MainThreadBridge] VS Code Server event handlers wired');
   }
 
   /**
-   * Determine if an extension should run on the remote host.
-   * Returns true if the extension has a Node.js entry (main) but no browser entry,
-   * OR if it's explicitly marked as workspace-kind.
+   * After installing a Node-only extension on the VS Code Server, emit
+   * synthetic webview events for any webview-type views defined in the
+   * extension's manifest. This makes the UI show the webview panel (even if
+   * we can't populate it with real HTML from code-server's Extension Host yet).
+   *
+   * @param {string} extensionId
+   * @param {object} manifest
+   */
+  _emitSyntheticWebviewEvents(extensionId, manifest) {
+    if (!manifest?.contributes?.views) return;
+
+    for (const [containerId, views] of Object.entries(manifest.contributes.views)) {
+      for (const view of views) {
+        if (view.type === 'webview') {
+          const viewId = `${extensionId}.webviewView.${view.id}`;
+          console.log(`[MainThreadBridge] Emitting synthetic createWebview for ${viewId}`);
+          this._emitRemoteContribution?.('createWebview', {
+            viewId,
+            viewType: view.id,
+            title: view.name || view.id,
+            opts: {},
+            extensionId,
+          });
+
+          // Set a placeholder HTML indicating the extension runs on the server
+          const placeholderHtml = `
+            <html>
+            <body style="font-family: system-ui, sans-serif; color: #ccc; padding: 16px; text-align: center;">
+              <p style="font-size: 13px; margin-top: 40px;">
+                This view is provided by <strong>${manifest.displayName || extensionId}</strong>
+                running on the VS Code Server.
+              </p>
+              <p style="font-size: 11px; color: #888;">
+                Extension Host bridge integration pending.
+              </p>
+            </body>
+            </html>`;
+
+          this._emitRemoteContribution?.('updateWebview', {
+            viewId,
+            html: placeholderHtml,
+          });
+        }
+      }
+    }
+  }
+
+  /**
+   * Determine if an extension should run on a remote host (VS Code Server or
+   * legacy remote-ext-host).  Delegates to getExtensionHostTarget() so that
+   * routing logic is defined in exactly one place.
    */
   _shouldRunRemote(manifest) {
-    if (!this.remoteProxy) return false;
-
-    // If the extension has a browser entry, run it locally in the web worker
-    // UNLESS its code is too large for the worker to eval.
-    if (manifest.browser) {
-      // Check if this extension was flagged as too large
-      const info = this.extensions.get(manifest.__extensionId || `${manifest.publisher}.${manifest.name}`);
-      const codeLen = info?.code?.length || 0;
-      if (codeLen > 500_000 && manifest.main) {
-        return true; // route to remote — browser bundle is too large
-      }
-      return false;
-    }
-
-    // Node-only extensions: have "main" but no "browser"
-    if (manifest.main) return true;
-
-    // Extensions with extensionKind that prefers workspace
-    if (manifest.extensionKind) {
-      const kinds = Array.isArray(manifest.extensionKind) ? manifest.extensionKind : [manifest.extensionKind];
-      if (kinds.includes('workspace') && !kinds.includes('ui')) return true;
-    }
-
-    return false;
+    const target = this.getExtensionHostTarget(manifest);
+    return target !== 'local';
   }
 
   /**
@@ -531,59 +600,52 @@ export class MainThreadBridge {
       remote: false, // set below if routed to remote host
     });
 
-    // ── Route decision: local worker vs remote Node.js host ──
-    const useRemote = this._shouldRunRemote(manifest);
+    // ── Route decision: local worker vs VS Code Server ──
+    const hostTarget = this.getExtensionHostTarget(manifest);
     const isNodeOnly = manifest.main && !manifest.browser;
     const isTooLargeForWorker = code && code.length > 500_000 && manifest.main;
 
     // Node-only extensions OR extensions with huge browser bundles:
-    // just store info, don't load into the web worker.
-    // They'll be loaded when the remote host connects via _rehydrateNodeOnlyExtensions.
-    if ((isNodeOnly || isTooLargeForWorker) && !useRemote) {
+    // store info — they'll be installed on the VS Code Server
+    // via _rehydrateNodeOnlyExtensions when the server connects.
+    if (isNodeOnly || isTooLargeForWorker) {
+      if (hostTarget === 'vscode-server') {
+        // Server is ready — install immediately
+        console.log(`[MainThreadBridge] ${extensionId}: installing on VS Code Server`);
+        try {
+          const result = await this.installMarketplaceExtensionOnServer(extensionId);
+          if (result.success) {
+            const info = this.extensions.get(extensionId);
+            if (info) info.isActive = true;
+            return;
+          }
+        } catch (err) {
+          console.warn(`[MainThreadBridge] ${extensionId}: VS Code Server install failed:`, err.message);
+        }
+      }
       console.log(
         `[MainThreadBridge] ${extensionId}: ${isNodeOnly ? 'Node-only' : `bundle too large (${code.length} chars)`}, ` +
-        'stored (waiting for remote host)'
+        'stored (waiting for VS Code Server)'
       );
       return;
     }
 
-    const proxy = useRemote ? this.remoteProxy : this.workerProxy;
-    const label = useRemote ? 'remote' : 'worker';
+    const proxy = this.workerProxy;
+    const label = 'worker';
+    const codeForHost = code;
 
-    // For remote host, use the real Node.js code
-    const codeForHost = useRemote ? (manifest._nodeCode || code) : code;
-
-    if (useRemote) {
-      this.remoteExtensions.add(extensionId);
-      const info = this.extensions.get(extensionId);
-      if (info) info.remote = true;
-
-      if (!manifest._nodeCode) {
-        console.warn(
-          `[MainThreadBridge] ${extensionId}: routed to remote host but no nodeCode available. ` +
-          'Extension will run with passed code — re-install to get full functionality.'
-        );
-      }
-    }
-
-    // Load into the chosen host — if this times out, handle accordingly.
+    // Load into the worker — if this times out, handle accordingly.
     try {
       await proxy.loadExtension(extensionId, codeForHost, manifest);
     } catch (loadErr) {
       if (loadErr.message && loadErr.message.includes('timeout')) {
         console.error(
           `[MainThreadBridge] loadExtension timeout for ${extensionId} (${label}). ` +
-          'The extension\'s bundle hung during eval. ' +
-          (useRemote ? 'Remote host may need restart.' : 'Restarting worker.')
+          'The extension\'s bundle hung during eval. Restarting worker.'
         );
         this._markExtensionFailed(extensionId, `Load timeout: bundle hung during eval (${label})`);
-
-        if (!useRemote) {
-          // Restart worker to unblock remaining extensions
-          await this._restartWorker(extensionId, 'load_timeout');
-        }
-        // Bubble up so caller knows it failed
-        throw new Error(`Load timeout: ${extensionId} bundle hung during eval (${label}${useRemote ? '' : ', worker restarted'})`);
+        await this._restartWorker(extensionId, 'load_timeout');
+        throw new Error(`Load timeout: ${extensionId} bundle hung during eval (${label}, worker restarted)`);
       }
       throw loadErr;
     }
@@ -610,11 +672,10 @@ export class MainThreadBridge {
       return { success: true, activationTime: 0 };
     }
 
-    // Route to the correct proxy
-    const proxy = this.remoteExtensions.has(extensionId) ? this.remoteProxy : this.workerProxy;
-
+    // Route to the correct proxy (VS Code Server extensions are
+    // activated server-side, so only local worker extensions here)
     try {
-      return await proxy.activateExtension(extensionId);
+      return await this.workerProxy.activateExtension(extensionId);
     } catch (err) {
       if (err.code === 'ACTIVATION_TIMEOUT') {
         await this._handleActivationTimeout(extensionId, err);
@@ -635,8 +696,7 @@ export class MainThreadBridge {
     const info = this.extensions.get(extensionId);
     if (!info || !info.isActive) return;
 
-    const proxy = this.remoteExtensions.has(extensionId) ? this.remoteProxy : this.workerProxy;
-    await proxy.deactivateExtension(extensionId);
+    await this.workerProxy.deactivateExtension(extensionId);
     info.isActive = false;
   }
 
@@ -667,19 +727,6 @@ export class MainThreadBridge {
   async executeCommand(commandId, ...args) {
     if (!this.extensionCommands.has(commandId)) {
       throw new Error(`Unknown command: ${commandId}`);
-    }
-
-    // Try remote first if any remote extensions are loaded, then fall back to worker
-    if (this.remoteProxy && this.remoteExtensions.size > 0) {
-      try {
-        return await this.remoteProxy.executeCommand(commandId, ...args);
-      } catch (remoteErr) {
-        // If the remote host doesn't know this command, try the local worker
-        if (remoteErr.message && remoteErr.message.includes('Unknown command')) {
-          return this.workerProxy.executeCommand(commandId, ...args);
-        }
-        throw remoteErr;
-      }
     }
 
     return this.workerProxy.executeCommand(commandId, ...args);
@@ -740,11 +787,7 @@ export class MainThreadBridge {
     // Trigger onLanguage activation
     this.triggerActivation(`onLanguage:${document.languageId}`);
     
-    // Send to both worker and remote host
     this.workerProxy.notifyDocumentOpen(document);
-    if (this.remoteProxy && this.remoteExtensions.size > 0) {
-      this.remoteProxy.notifyDocumentOpen(document);
-    }
   }
 
   /**
@@ -755,9 +798,6 @@ export class MainThreadBridge {
    */
   notifyDocumentChange(uri, changes, version) {
     this.workerProxy.notifyDocumentChange(uri, changes, version);
-    if (this.remoteProxy && this.remoteExtensions.size > 0) {
-      this.remoteProxy.notifyDocumentChange(uri, changes, version);
-    }
   }
 
   /**
@@ -766,9 +806,6 @@ export class MainThreadBridge {
    */
   notifyDocumentClose(uri) {
     this.workerProxy.notifyDocumentClose(uri);
-    if (this.remoteProxy && this.remoteExtensions.size > 0) {
-      this.remoteProxy.notifyDocumentClose(uri);
-    }
   }
 
   /**
@@ -778,9 +815,6 @@ export class MainThreadBridge {
    */
   notifySelectionChange(uri, selections) {
     this.workerProxy.notifySelectionChange(uri, selections);
-    if (this.remoteProxy && this.remoteExtensions.size > 0) {
-      this.remoteProxy.notifySelectionChange(uri, selections);
-    }
   }
 
   /**
@@ -817,7 +851,7 @@ export class MainThreadBridge {
         activationEvents: info.activationEvents,
         commands,
         failedReason: info.failedReason || null,
-        remote: this.remoteExtensions.has(id),
+        remote: this.vscodeServerExtensions.has(id),
       });
     }
 
@@ -851,16 +885,18 @@ export class MainThreadBridge {
     // Terminate worker
     this.workerProxy.terminate();
 
-    // Terminate remote host
-    if (this.remoteProxy) {
-      this.remoteProxy.terminate();
-      this.remoteProxy = null;
+    // Terminate VS Code Server proxy
+    if (this.vscodeServerProxy) {
+      try { await this.vscodeServerProxy.stopServer(); } catch (_) {}
+      this.vscodeServerProxy.terminate();
+      this.vscodeServerProxy = null;
+      this.vscodeServerConnected = false;
     }
 
     this.extensions.clear();
     this.extensionCommands.clear();
     this.pendingActivations.clear();
-    this.remoteExtensions.clear();
+    this.vscodeServerExtensions.clear();
     this.initialized = false;
     this.workerUrl = null;
   }
@@ -933,8 +969,8 @@ export class MainThreadBridge {
           continue;
         }
 
-        // Skip extensions routed to the remote host
-        if (this.remoteExtensions.has(id)) continue;
+        // Skip extensions managed by VS Code Server
+        if (this.vscodeServerExtensions.has(id)) continue;
 
         try {
           // Skip Node-only extensions and large-bundle extensions — they don't belong in the worker

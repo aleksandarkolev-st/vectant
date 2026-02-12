@@ -16,6 +16,8 @@
 
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
+const Module = require('module');
 const readline = require('readline');
 const { EventEmitter } = require('events');
 
@@ -88,6 +90,9 @@ const webviewViewProviders = new Map();
 
 /** @type {Map<string, {chunks: Map<number,string>, total: number, created: number}>} */
 const pendingCodeUploads = new Map();
+
+/** @type {Map<string, {chunks: Map<number,string>, total: number, created: number}>} */
+const pendingManifestUploads = new Map();
 
 // ============================================================================
 // vscode API Types
@@ -433,18 +438,31 @@ function createVSCodeAPI(extensionId) {
         return panel;
       },
 
-      createOutputChannel(name) {
-        return {
+      createOutputChannel(name, optionsOrLang) {
+        // VS Code 1.74+ supports { log: true } → returns a LogOutputChannel
+        // with trace/debug/info/warn/error methods.  Many extensions rely on
+        // these, so we always provide them.
+        const ch = {
           name,
           _lines: [],
-          append(value) { this._lines.push(value); },
-          appendLine(value) { this._lines.push(value + '\n'); emit('outputChannel', name, value); },
-          clear() { this._lines = []; },
+          append(value) { ch._lines.push(value); },
+          appendLine(value) { ch._lines.push(value + '\n'); emit('outputChannel', name, value); },
+          clear() { ch._lines = []; },
           show() {},
           hide() {},
           dispose() {},
-          replace(value) { this._lines = [value]; },
+          replace(value) { ch._lines = [value]; },
+          // LogOutputChannel methods (VS Code >=1.74)
+          trace(...args) { ch.appendLine(`[trace] ${args.join(' ')}`); },
+          debug(...args) { ch.appendLine(`[debug] ${args.join(' ')}`); },
+          info(...args) { ch.appendLine(`[info] ${args.join(' ')}`); },
+          warn(...args) { ch.appendLine(`[warn] ${args.join(' ')}`); },
+          error(...args) { ch.appendLine(`[error] ${args.join(' ')}`); },
+          // logLevel property (LogOutputChannel)
+          logLevel: 2, // Info
+          onDidChangeLogLevel: (listener) => new Disposable(() => {}),
         };
+        return ch;
       },
 
       createStatusBarItem(alignmentOrId, priority) {
@@ -748,7 +766,56 @@ function createVSCodeAPI(extensionId) {
     },
   };
 
-  return { api, context };
+  // ---------------------------------------------------------------------------
+  // Wrap the API in a Proxy so that ANY property access that isn't explicitly
+  // defined still returns something usable.  This means extensions can do
+  // `class Foo extends vscode.Whatever` or `vscode.SomeEnum.Value` without
+  // crashing, even if we haven't manually shimmed that API surface yet.
+  // ---------------------------------------------------------------------------
+  const proxiedApi = new Proxy(api, {
+    get(target, prop, receiver) {
+      // Known property → return it
+      if (prop in target) return Reflect.get(target, prop, receiver);
+      // Symbols, toJSON, inspect, etc. → don't proxy
+      if (typeof prop === 'symbol') return undefined;
+      if (prop === 'toJSON' || prop === 'then' || prop === 'constructor') return undefined;
+
+      // Build a dynamic class that:
+      //  - Can be instantiated with `new vscode.X(...)`
+      //  - Can be used as a base class: `class Foo extends vscode.X {}`
+      //  - Has enum-style numeric statics: `vscode.X.SomeValue` → 0
+      const dynClass = class DynamicVSCodeStub {
+        constructor(...args) {
+          // Store constructor args as properties for basic data-holder classes
+          args.forEach((a, i) => { this[`_arg${i}`] = a; });
+        }
+      };
+      Object.defineProperty(dynClass, 'name', { value: String(prop) });
+
+      // Wrap the class in a Proxy so static property access (enum values)
+      // returns auto-incrementing integers: vscode.X.Foo → 0, vscode.X.Bar → 1
+      const enumCache = new Map();
+      let enumCounter = 0;
+      const proxiedClass = new Proxy(dynClass, {
+        get(cls, key) {
+          if (key in cls) return cls[key];
+          if (typeof key === 'symbol') return undefined;
+          if (key === 'prototype' || key === 'name' || key === 'length') return cls[key];
+          // Auto-generate enum-style numeric value
+          if (!enumCache.has(key)) {
+            enumCache.set(key, enumCounter++);
+          }
+          return enumCache.get(key);
+        }
+      });
+
+      // Cache it on the real target so the same object is returned every time
+      target[prop] = proxiedClass;
+      return proxiedClass;
+    }
+  });
+
+  return { api: proxiedApi, context };
 }
 
 // ============================================================================
@@ -762,9 +829,12 @@ async function loadExtension(extensionId, code, manifest) {
     loadedExtensions.delete(extensionId);
   }
 
+  process.stderr.write(`[remote-ext-host] loadExtension called: ${extensionId} (code=${code === null ? 'null' : typeof code + ':' + (code?.length || 0)}, manifest=${manifest === null ? 'null' : typeof manifest})\n`);
+
   // If code is null, assemble from previously uploaded chunks
   if (code === null || code === undefined) {
     const upload = pendingCodeUploads.get(extensionId);
+    process.stderr.write(`[remote-ext-host] Code upload status: ${upload ? upload.chunks.size + '/' + upload.total : 'NOT FOUND'}\n`);
     if (upload && upload.chunks.size === upload.total) {
       const parts = [];
       for (let i = 0; i < upload.total; i++) {
@@ -784,54 +854,116 @@ async function loadExtension(extensionId, code, manifest) {
     }
   }
 
+  // If manifest is null, assemble from previously uploaded manifest chunks
+  if (manifest === null || manifest === undefined) {
+    process.stderr.write(`[remote-ext-host] Manifest is null, checking uploaded chunks...\n`);
+    const mUpload = pendingManifestUploads.get(extensionId);
+    if (mUpload && mUpload.chunks.size === mUpload.total) {
+      const mParts = [];
+      for (let i = 0; i < mUpload.total; i++) {
+        mParts.push(mUpload.chunks.get(i) || '');
+      }
+      const manifestJson = mParts.join('');
+      pendingManifestUploads.delete(extensionId);
+      try {
+        manifest = JSON.parse(manifestJson);
+        process.stderr.write(
+          `[remote-ext-host] Assembled manifest from ${mUpload.total} chunks for ${extensionId}\n`
+        );
+      } catch (e) {
+        throw new Error(`Failed to parse assembled manifest for ${extensionId}: ${e.message}`);
+      }
+    } else {
+      const got = mUpload ? mUpload.chunks.size : 0;
+      const expected = mUpload ? mUpload.total : '?';
+      throw new Error(
+        `No complete uploaded manifest for ${extensionId} (got ${got}/${expected} chunks)`
+      );
+    }
+  }
+
   process.stderr.write(`[remote-ext-host] Loading: ${extensionId} (code length: ${code?.length || 0})\n`);
 
   const { api: vscode, context } = createVSCodeAPI(extensionId);
   context.extension.packageJSON = manifest;
 
   try {
-    const exports = {};
-    const module = { exports };
+    // ── Write extension to disk so Node.js loads it via the real module system ──
+    const safeId = extensionId.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const extDir = path.join(os.tmpdir(), 'synthi-ext-host', safeId);
+    fs.mkdirSync(extDir, { recursive: true });
+    const extFile = path.join(extDir, 'extension.js');
+    fs.writeFileSync(extFile, code, 'utf-8');
 
-    const shimRequire = (id) => {
-      if (id === 'vscode') return vscode;
-      // Use real Node.js require for everything else
-      try {
-        return require(id);
-      } catch (e) {
-        process.stderr.write(`[remote-ext-host] require('${id}') failed: ${e.message}\n`);
-        return {};
-      }
+    // Write a minimal package.json so Node module resolution works
+    fs.writeFileSync(
+      path.join(extDir, 'package.json'),
+      JSON.stringify({ name: safeId, version: '1.0.0', main: 'extension.js' }),
+    );
+
+    // Update context paths to point at the real directory
+    context.extensionPath = extDir;
+    context.extensionUri = Uri.file(extDir);
+    context.extension.extensionPath = extDir;
+    context.extension.extensionUri = Uri.file(extDir);
+
+    // ── Inject `require('vscode')` into the module cache ──
+    // This is exactly what VS Code's real extension host does — the
+    // `vscode` module isn't an npm package, it's provided by the host
+    // process and placed in the module cache.
+    const vscodeModulePath = require.resolve('vscode').catch?.(() => null) || 'vscode';
+    require.cache['vscode'] = {
+      id: 'vscode',
+      filename: 'vscode',
+      loaded: true,
+      exports: vscode,
+      parent: null,
+      children: [],
+      paths: [],
     };
 
-    // Evaluate extension code
-    const wrappedCode = `
-var global = globalThis;
-var window = globalThis;
-var setImmediate = globalThis.setImmediate || function(cb) { return setTimeout(cb, 0); };
-var clearImmediate = globalThis.clearImmediate || function(id) { return clearTimeout(id); };
-${code}
-`;
+    // Also hook Module._resolveFilename so `require('vscode')` works
+    // even from nested modules (the cache key alone isn't always enough).
+    const origResolve = Module._resolveFilename;
+    Module._resolveFilename = function (request, parent, isMain, options) {
+      if (request === 'vscode') return 'vscode';
+      return origResolve.call(this, request, parent, isMain, options);
+    };
 
-    const factory = new Function(
-      'vscode', 'exports', 'module', 'require',
-      'process', 'Buffer', '__dirname', '__filename',
-      wrappedCode
+    process.stderr.write(`[remote-ext-host] Loading ${extensionId} via require('${extFile}')\n`);
+    const loadStart = Date.now();
+
+    // Clear any stale cached version from a previous load
+    delete require.cache[require.resolve?.(extFile) || extFile];
+    delete require.cache[extFile];
+
+    // Load the extension through Node.js's real module system
+    const extensionModule = require(extFile);
+
+    process.stderr.write(
+      `[remote-ext-host] require() completed in ${Date.now() - loadStart}ms\n`,
     );
-    factory(vscode, exports, module, shimRequire, process, Buffer, '/extension', '/extension/extension.js');
 
-    const extensionModule = module.exports || exports;
+    // Restore original resolver (keep the cache entry for `vscode`)
+    Module._resolveFilename = origResolve;
 
     if (typeof extensionModule.activate !== 'function') {
       throw new Error('Extension must export an activate() function');
     }
 
-    loadedExtensions.set(extensionId, { module: extensionModule, manifest, vscode, context });
+    loadedExtensions.set(extensionId, {
+      module: extensionModule,
+      manifest,
+      vscode,
+      context,
+    });
 
     process.stderr.write(`[remote-ext-host] Loaded: ${extensionId}\n`);
     return { success: true, extensionId };
   } catch (err) {
-    process.stderr.write(`[remote-ext-host] Load failed for ${extensionId}: ${err.message}\n`);
+    process.stderr.write(
+      `[remote-ext-host] Load failed for ${extensionId}: ${err.message}\n${err.stack}\n`,
+    );
     throw err;
   }
 }
@@ -897,6 +1029,24 @@ function handleEvent(msg) {
       }
       break;
     }
+    case 'uploadManifestChunk': {
+      const [extensionId, chunkIndex, totalChunks, data] = args;
+      if (!pendingManifestUploads.has(extensionId)) {
+        pendingManifestUploads.set(extensionId, {
+          chunks: new Map(),
+          total: totalChunks,
+          created: Date.now(),
+        });
+      }
+      const mEntry = pendingManifestUploads.get(extensionId);
+      mEntry.chunks.set(chunkIndex, data);
+      if (mEntry.chunks.size === mEntry.total) {
+        process.stderr.write(
+          `[remote-ext-host] uploadManifestChunk ${extensionId}: ${mEntry.chunks.size}/${mEntry.total} (complete)\n`
+        );
+      }
+      break;
+    }
     default:
       break;
   }
@@ -918,6 +1068,7 @@ async function handleMessage(msg) {
   if (msg.type !== 'request') return;
 
   const { id, method, args = [] } = msg;
+  process.stderr.write(`[remote-ext-host] RPC request: ${method} (id=${id}, args count=${args.length})\n`);
 
   try {
     let result;
@@ -1021,6 +1172,12 @@ setInterval(() => {
     if (now - entry.created > 120000) {
       process.stderr.write(`[remote-ext-host] Dropping stale code upload for ${id}\n`);
       pendingCodeUploads.delete(id);
+    }
+  }
+  for (const [id, entry] of pendingManifestUploads) {
+    if (now - entry.created > 120000) {
+      process.stderr.write(`[remote-ext-host] Dropping stale manifest upload for ${id}\n`);
+      pendingManifestUploads.delete(id);
     }
   }
 }, 30000);

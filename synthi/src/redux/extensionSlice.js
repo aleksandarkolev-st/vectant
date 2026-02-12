@@ -204,10 +204,11 @@ const extensionSlice = createSlice({
 
     /** Update the lifecycle state of an extension */
     setExtensionState(state, action) {
-      const { id, extensionState, reason } = action.payload;
+      const { id, extensionState, reason, remote } = action.payload;
       const ext = state.extensions[id];
       if (!ext) return;
       ext.state = extensionState;
+      if (remote !== undefined) ext.remote = remote;
       if (extensionState === 'active') {
         ext.activationCount = (ext.activationCount || 0) + 1;
         ext.lastActiveTime = Date.now();

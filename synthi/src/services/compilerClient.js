@@ -638,20 +638,15 @@ export class CompilerClient {
                 this.emulatorInputChannel = this.pc.createDataChannel('emulator-input', { ordered: true });
                 // File-sync channel: pushes file create/edit/delete/rename to worker disk
                 this.fileSyncChannel = this.pc.createDataChannel('file-sync', { ordered: true });
-                // Remote extension host channel — created here (before the SDP offer)
-                // so it's part of the initial negotiation, avoiding unreliable DCEP
-                // in-band renegotiation that webrtc-rs doesn't handle well.
-                this.extHostChannel = this.pc.createDataChannel(`ext-host?slug=${this.slug || ''}`, { ordered: true });
-                this.extHostChannel.binaryType = 'arraybuffer';
 
-                // Buffer messages arriving before RemoteExtHostProxy attaches
-                // its own onmessage handler.  Without this, workerReady
-                // (sent by Node.js immediately on startup) can be silently
-                // dropped because no handler is registered yet.
-                this.extHostChannel._earlyMessages = [];
-                this.extHostChannel.onmessage = (evt) => {
-                    if (this.extHostChannel._earlyMessages) {
-                        this.extHostChannel._earlyMessages.push(evt.data);
+                // VS Code Server Manager channel — pre-created in SDP
+                // to avoid unreliable DCEP in-band negotiation.
+                this.vscodeServerChannel = this.pc.createDataChannel(`vscode-server?slug=${this.slug || ''}`, { ordered: true });
+                this.vscodeServerChannel.binaryType = 'arraybuffer';
+                this.vscodeServerChannel._earlyMessages = [];
+                this.vscodeServerChannel.onmessage = (evt) => {
+                    if (this.vscodeServerChannel._earlyMessages) {
+                        this.vscodeServerChannel._earlyMessages.push(evt.data);
                     }
                 };
                 
@@ -896,6 +891,28 @@ export class CompilerClient {
         this.extHostChannel = this.pc.createDataChannel(label, { ordered: true });
         this.extHostChannel.binaryType = 'arraybuffer';
         return this.extHostChannel;
+    }
+
+    /**
+     * Create a DataChannel for the VS Code Server Manager.
+     * The Rust worker will spawn `node vscode-server-manager.js` and pipe
+     * newline-delimited JSON over the channel.
+     *
+     * @returns {RTCDataChannel}
+     */
+    createVSCodeServerChannel() {
+        // Return the channel that was pre-created during connect() (part of SDP).
+        if (this.vscodeServerChannel && this.vscodeServerChannel.readyState !== 'closed') {
+            return this.vscodeServerChannel;
+        }
+        // Fallback: create on-demand
+        if (!this.pc || this.pc.connectionState !== 'connected') {
+            throw new Error('CompilerClient not connected');
+        }
+        const label = `vscode-server?slug=${this.slug || ''}`;
+        this.vscodeServerChannel = this.pc.createDataChannel(label, { ordered: true });
+        this.vscodeServerChannel.binaryType = 'arraybuffer';
+        return this.vscodeServerChannel;
     }
 
     /**
