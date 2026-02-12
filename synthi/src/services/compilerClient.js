@@ -75,10 +75,6 @@ export class CompilerClient {
         this._disconnectGraceTimer = null;
         this._DISCONNECT_GRACE_MS = 5000;
 
-        // Ext-host operation lock: when > 0, reconnect() will defer
-        // PC teardown until the ext-host finishes (up to a timeout).
-        this._extHostBusyCount = 0;
-
         
         this._handleTerminalInput = this._handleTerminalInput.bind(this);
         this._handleGuiInput = this._handleGuiInput.bind(this);
@@ -385,8 +381,8 @@ export class CompilerClient {
                     // Stop resending the SDP offer now that the PC is connected.
                     // Without this, the retry fires before the answer arrives,
                     // and webrtc-rs re-processes the duplicate offer, firing
-                    // on_data_channel again for the ext-host DC (kills the
-                    // working Node.js process).
+                    // on_data_channel again for the vscode-server DC (kills the
+                    // working VS Code Server process).
                     if (this._offerRetryInterval) {
                         clearInterval(this._offerRetryInterval);
                         this._offerRetryInterval = null;
@@ -530,9 +526,9 @@ export class CompilerClient {
                     // If the WebRTC PeerConnection is still connected, DON'T
                     // tear everything down.  The signaling WS is only needed
                     // for SDP exchange and ICE candidates — once the PC is
-                    // connected, DataChannels (LSP, ext-host, terminal, …)
+                    // connected, DataChannels (LSP, vscode-server, terminal, …)
                     // work independently.  Tearing down a healthy PC would
-                    // kill the LSP, ext-host, etc. for no reason and trigger
+                    // kill the LSP, vscode-server, etc. for no reason and trigger
                     // an unnecessary reconnect cycle.
                     if (this.pc && (this.pc.connectionState === 'connected' || this.pc.connectionState === 'connecting')) {
                         console.log('[CompilerClient] Signaling WS closed but WebRTC PC still alive (' + this.pc.connectionState + '), keeping channels');
@@ -890,21 +886,6 @@ export class CompilerClient {
         return this.vscodeServerChannel;
     }
 
-    /**
-     * Acquire ext-host busy lock. While held, reconnect() will wait
-     * (up to a timeout) before tearing down the PeerConnection.
-     */
-    acquireExtHostLock() {
-        this._extHostBusyCount++;
-    }
-
-    /**
-     * Release ext-host busy lock.
-     */
-    releaseExtHostLock() {
-        this._extHostBusyCount = Math.max(0, this._extHostBusyCount - 1);
-    }
-
     // ── File-sync helpers ──────────────────────────────────────────
     // These methods push file mutations from the browser to the worker's disk
     // so the LSP server sees newly created/edited/renamed/deleted files.
@@ -985,7 +966,7 @@ export class CompilerClient {
      * Lightweight reconnect: tears down the local PeerConnection and
      * signaling WebSocket, then re-establishes a new connection,
      * WITHOUT sending a "reset" to the worker.  This preserves the
-     * worker's vscode-server-manager and ext-host processes so LSP/
+     * worker's vscode-server-manager processes so LSP/
      * extensions survive transient network blips.
      *
      * Use `reconnect()` (hard reset) only when the emulator/build
@@ -1026,22 +1007,6 @@ export class CompilerClient {
 
     async reconnect() {
         console.log('[CompilerClient] Forcing reconnection to clear WebRTC state...');
-
-        // If the ext-host is in the middle of an operation (e.g. loading a
-        // large extension), wait briefly for it to finish before yanking the
-        // SCTP transport.  This prevents OperationError: Failure to send data.
-        if (this._extHostBusyCount > 0) {
-            console.log(`[CompilerClient] Waiting for ext-host operation to finish (busy=${this._extHostBusyCount})...`);
-            const waitStart = Date.now();
-            const EXT_HOST_WAIT_MS = 10000; // max 10s
-            while (this._extHostBusyCount > 0 && Date.now() - waitStart < EXT_HOST_WAIT_MS) {
-                await new Promise(r => setTimeout(r, 200));
-            }
-            if (this._extHostBusyCount > 0) {
-                console.warn('[CompilerClient] Ext-host operation did not finish in time, proceeding with reconnect');
-                this._extHostBusyCount = 0; // force-release
-            }
-        }
 
         // Cancel any pending disconnect grace timer
         if (this._disconnectGraceTimer) {
