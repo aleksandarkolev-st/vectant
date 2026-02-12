@@ -10,6 +10,11 @@ import { createLanguagesAPI } from './languages.js';
 import { createEnvAPI } from './env.js';
 import { createExtensionsAPI } from './extensions.js';
 import { createURI } from './uri.js';
+import { createDebugAPI } from './debug.js';
+import { createTasksAPI } from './tasks.js';
+import { createSCMAPI } from './scm.js';
+import { createAuthenticationAPI } from './authentication.js';
+import { createTerminalSupport } from './terminal.js';
 
 /**
  * Create the vscode API namespace for an extension
@@ -18,14 +23,30 @@ import { createURI } from './uri.js';
  * @returns {object}
  */
 export function createVSCodeAPI(extensionId, host) {
+  // Create terminal support (adds createTerminal to window + terminal events)
+  const terminalSupport = createTerminalSupport(extensionId, host);
+  const windowAPI = createWindowAPI(extensionId, host);
+
+  // Merge terminal methods into window API
+  windowAPI.createTerminal = terminalSupport.createTerminal;
+  Object.defineProperty(windowAPI, 'terminals', { get: () => terminalSupport.terminals });
+  Object.defineProperty(windowAPI, 'activeTerminal', { get: () => terminalSupport.activeTerminal });
+  windowAPI.onDidOpenTerminal = terminalSupport.onDidOpenTerminal;
+  windowAPI.onDidCloseTerminal = terminalSupport.onDidCloseTerminal;
+  windowAPI.onDidChangeActiveTerminal = terminalSupport.onDidChangeActiveTerminal;
+
   const vscode = {
     // === Namespaces ===
     commands: createCommandsAPI(extensionId, host),
     workspace: createWorkspaceAPI(extensionId, host),
-    window: createWindowAPI(extensionId, host),
+    window: windowAPI,
     languages: createLanguagesAPI(extensionId, host),
     env: createEnvAPI(extensionId, host),
     extensions: createExtensionsAPI(extensionId, host),
+    debug: createDebugAPI(extensionId, host),
+    tasks: createTasksAPI(extensionId, host),
+    scm: createSCMAPI(extensionId, host),
+    authentication: createAuthenticationAPI(extensionId, host),
 
     // === Classes ===
     Uri: createURI(),
@@ -57,6 +78,45 @@ export function createVSCodeAPI(extensionId, host) {
     EventEmitter: createEventEmitterClass(),
     Disposable: createDisposableClass(),
     TreeItem: createTreeItemClass(),
+
+    // === Task / Debug Classes ===
+    Task: createTaskClass(),
+    Task2: createTaskClass(),
+    ShellExecution: createShellExecutionClass(),
+    ProcessExecution: createProcessExecutionClass(),
+    CustomExecution: createCustomExecutionClass(),
+    TaskGroup: createTaskGroupEnum(),
+    TaskScope: { Global: 1, Workspace: 2 },
+    TaskRevealKind: { Always: 1, Silent: 2, Never: 3 },
+    TaskPanelKind: { Shared: 1, Dedicated: 2, New: 3 },
+    DebugAdapterExecutable: createDebugAdapterExecutableClass(),
+    DebugAdapterServer: createDebugAdapterServerClass(),
+    DebugAdapterInlineImplementation: createDebugAdapterInlineImplClass(),
+    Breakpoint: createBreakpointClass(),
+    SourceBreakpoint: createSourceBreakpointClass(),
+    FunctionBreakpoint: createFunctionBreakpointClass(),
+    InlayHint: createInlayHintClass(),
+    InlayHintLabelPart: createInlayHintLabelPartClass(),
+    InlayHintKind: { Type: 1, Parameter: 2 },
+    InlineCompletionItem: createInlineCompletionItemClass(),
+    InlineCompletionList: createInlineCompletionListClass(),
+    InlineCompletionTriggerKind: { Invoke: 0, Automatic: 1 },
+    FoldingRange: createFoldingRangeClass(),
+    SelectionRange: createSelectionRangeClass(),
+    CallHierarchyItem: createCallHierarchyItemClass(),
+    CallHierarchyIncomingCall: createCallHierarchyIncomingCallClass(),
+    CallHierarchyOutgoingCall: createCallHierarchyOutgoingCallClass(),
+    SemanticTokensLegend: createSemanticTokensLegendClass(),
+    SemanticTokensBuilder: createSemanticTokensBuilderClass(),
+    SemanticTokens: createSemanticTokensClass(),
+    DocumentDropEdit: createSimpleClass('DocumentDropEdit', ['insertText']),
+    ColorInformation: createSimpleClass('ColorInformation', ['range', 'color']),
+    ColorPresentation: createSimpleClass('ColorPresentation', ['label']),
+    DocumentLink: createSimpleClass('DocumentLink', ['range', 'target']),
+    LinkedEditingRanges: createSimpleClass('LinkedEditingRanges', ['ranges', 'wordPattern']),
+    TypeHierarchyItem: createSimpleClass('TypeHierarchyItem', ['kind', 'name', 'detail', 'uri', 'range', 'selectionRange']),
+    TerminalLink: createSimpleClass('TerminalLink', ['startIndex', 'length', 'tooltip']),
+    EvaluatableExpression: createSimpleClass('EvaluatableExpression', ['range', 'expression']),
 
     // === Enums ===
     DiagnosticSeverity: {
@@ -830,3 +890,300 @@ function createCodeActionKindEnum() {
 
   return CodeActionKind;
 }
+
+// ============================================================================
+// Task / Debug / Language Feature classes
+// ============================================================================
+
+function createTaskClass() {
+  return class Task {
+    constructor(definition, scope, name, source, execution, problemMatchers) {
+      // Handle both old (4-arg) and new (6-arg) signatures
+      if (typeof scope === 'string') {
+        // Old signature: Task(definition, name, source, execution, problemMatchers)
+        this.definition = definition;
+        this.name = scope;
+        this.source = name;
+        this.execution = source;
+        this.problemMatchers = execution;
+        this.scope = 2; // TaskScope.Workspace
+      } else {
+        this.definition = definition;
+        this.scope = scope;
+        this.name = name;
+        this.source = source;
+        this.execution = execution;
+        this.problemMatchers = problemMatchers;
+      }
+      this.group = undefined;
+      this.presentationOptions = {};
+      this.isBackground = false;
+      this.detail = undefined;
+      this.runOptions = {};
+    }
+  };
+}
+
+function createShellExecutionClass() {
+  return class ShellExecution {
+    constructor(commandLineOrCommand, argsOrOptions, options) {
+      if (typeof commandLineOrCommand === 'string' && !Array.isArray(argsOrOptions)) {
+        this.commandLine = commandLineOrCommand;
+        this.options = argsOrOptions;
+      } else {
+        this.command = commandLineOrCommand;
+        this.args = argsOrOptions || [];
+        this.options = options;
+      }
+    }
+  };
+}
+
+function createProcessExecutionClass() {
+  return class ProcessExecution {
+    constructor(process, argsOrOptions, options) {
+      this.process = process;
+      if (Array.isArray(argsOrOptions)) {
+        this.args = argsOrOptions;
+        this.options = options;
+      } else {
+        this.args = [];
+        this.options = argsOrOptions;
+      }
+    }
+  };
+}
+
+function createCustomExecutionClass() {
+  return class CustomExecution {
+    constructor(callback) {
+      this.callback = callback;
+    }
+  };
+}
+
+function createTaskGroupEnum() {
+  const TaskGroup = class {
+    constructor(id, label) {
+      this.id = id;
+      this._label = label;
+    }
+  };
+  TaskGroup.Clean = new TaskGroup('clean', 'Clean');
+  TaskGroup.Build = new TaskGroup('build', 'Build');
+  TaskGroup.Rebuild = new TaskGroup('rebuild', 'Rebuild');
+  TaskGroup.Test = new TaskGroup('test', 'Test');
+  return TaskGroup;
+}
+
+function createDebugAdapterExecutableClass() {
+  return class DebugAdapterExecutable {
+    constructor(command, args, options) {
+      this.command = command;
+      this.args = args || [];
+      this.options = options;
+    }
+  };
+}
+
+function createDebugAdapterServerClass() {
+  return class DebugAdapterServer {
+    constructor(port, host) {
+      this.port = port;
+      this.host = host;
+    }
+  };
+}
+
+function createDebugAdapterInlineImplClass() {
+  return class DebugAdapterInlineImplementation {
+    constructor(implementation) {
+      this.implementation = implementation;
+    }
+  };
+}
+
+function createBreakpointClass() {
+  return class Breakpoint {
+    constructor(enabled = true, condition, hitCondition, logMessage) {
+      this.enabled = enabled;
+      this.condition = condition;
+      this.hitCondition = hitCondition;
+      this.logMessage = logMessage;
+      this.id = `bp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    }
+  };
+}
+
+function createSourceBreakpointClass() {
+  const Breakpoint = createBreakpointClass();
+  return class SourceBreakpoint extends Breakpoint {
+    constructor(location, enabled, condition, hitCondition, logMessage) {
+      super(enabled, condition, hitCondition, logMessage);
+      this.location = location;
+    }
+  };
+}
+
+function createFunctionBreakpointClass() {
+  const Breakpoint = createBreakpointClass();
+  return class FunctionBreakpoint extends Breakpoint {
+    constructor(functionName, enabled, condition, hitCondition, logMessage) {
+      super(enabled, condition, hitCondition, logMessage);
+      this.functionName = functionName;
+    }
+  };
+}
+
+function createInlayHintClass() {
+  return class InlayHint {
+    constructor(position, label, kind) {
+      this.position = position;
+      this.label = label;
+      this.kind = kind;
+      this.paddingLeft = false;
+      this.paddingRight = false;
+      this.tooltip = undefined;
+      this.textEdits = undefined;
+    }
+  };
+}
+
+function createInlayHintLabelPartClass() {
+  return class InlayHintLabelPart {
+    constructor(value) {
+      this.value = value;
+      this.tooltip = undefined;
+      this.location = undefined;
+      this.command = undefined;
+    }
+  };
+}
+
+function createInlineCompletionItemClass() {
+  return class InlineCompletionItem {
+    constructor(insertText, range, command) {
+      this.insertText = insertText;
+      this.range = range;
+      this.command = command;
+      this.filterText = undefined;
+    }
+  };
+}
+
+function createInlineCompletionListClass() {
+  return class InlineCompletionList {
+    constructor(items) {
+      this.items = items;
+    }
+  };
+}
+
+function createFoldingRangeClass() {
+  return class FoldingRange {
+    constructor(start, end, kind) {
+      this.start = start;
+      this.end = end;
+      this.kind = kind;
+    }
+  };
+}
+
+function createSelectionRangeClass() {
+  return class SelectionRange {
+    constructor(range, parent) {
+      this.range = range;
+      this.parent = parent;
+    }
+  };
+}
+
+function createCallHierarchyItemClass() {
+  return class CallHierarchyItem {
+    constructor(kind, name, detail, uri, range, selectionRange) {
+      this.kind = kind;
+      this.name = name;
+      this.detail = detail;
+      this.uri = uri;
+      this.range = range;
+      this.selectionRange = selectionRange;
+      this.tags = undefined;
+    }
+  };
+}
+
+function createCallHierarchyIncomingCallClass() {
+  return class CallHierarchyIncomingCall {
+    constructor(item, fromRanges) {
+      this.from = item;
+      this.fromRanges = fromRanges;
+    }
+  };
+}
+
+function createCallHierarchyOutgoingCallClass() {
+  return class CallHierarchyOutgoingCall {
+    constructor(item, fromRanges) {
+      this.to = item;
+      this.fromRanges = fromRanges;
+    }
+  };
+}
+
+function createSemanticTokensLegendClass() {
+  return class SemanticTokensLegend {
+    constructor(tokenTypes, tokenModifiers = []) {
+      this.tokenTypes = tokenTypes;
+      this.tokenModifiers = tokenModifiers;
+    }
+  };
+}
+
+function createSemanticTokensBuilderClass() {
+  return class SemanticTokensBuilder {
+    constructor(legend) {
+      this._legend = legend;
+      this._data = [];
+      this._prevLine = 0;
+      this._prevChar = 0;
+    }
+
+    push(lineOrRange, charOrTokenType, lengthOrTokenModifiers, tokenType, tokenModifiers) {
+      if (typeof lineOrRange === 'number') {
+        // push(line, char, length, tokenType, tokenModifiers)
+        const deltaLine = lineOrRange - this._prevLine;
+        const deltaChar = deltaLine === 0 ? charOrTokenType - this._prevChar : charOrTokenType;
+        this._data.push(deltaLine, deltaChar, lengthOrTokenModifiers, tokenType, tokenModifiers || 0);
+        this._prevLine = lineOrRange;
+        this._prevChar = charOrTokenType;
+      }
+    }
+
+    build(resultId) {
+      return { resultId, data: new Uint32Array(this._data) };
+    }
+  };
+}
+
+function createSemanticTokensClass() {
+  return class SemanticTokens {
+    constructor(data, resultId) {
+      this.data = data;
+      this.resultId = resultId;
+    }
+  };
+}
+
+/**
+ * Generic class factory for simple data classes
+ */
+function createSimpleClass(name, fields) {
+  return class {
+    constructor(...args) {
+      for (let i = 0; i < fields.length && i < args.length; i++) {
+        this[fields[i]] = args[i];
+      }
+    }
+  };
+}
+
