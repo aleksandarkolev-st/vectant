@@ -6,7 +6,7 @@
  */
 
 import { WorkerProxy, getWorkerProxy } from './WorkerProxy.js';
-import { WorkerToMainMethods } from './MessageProtocol.js';
+import { WorkerToMainMethods, MainToWorkerMethodsExtended, createResponse } from './MessageProtocol.js';
 import { VSCodeServerProxy } from './VSCodeServerProxy.js';
 
 /**
@@ -66,6 +66,30 @@ export class MainThreadBridge {
     /** @type {Function|null} Callback for extension state changes from rehydration */
     this.onExtensionStateChanged = null;
 
+    /** @type {Function|null} Callback for showing quick pick UI */
+    this.onShowQuickPick = null;
+
+    /** @type {Function|null} Callback for showing input box UI */
+    this.onShowInputBox = null;
+
+    /** @type {Function|null} Callback for terminal creation */
+    this.onCreateTerminal = null;
+
+    /** @type {Function|null} Callback for debug session start */
+    this.onStartDebugSession = null;
+
+    /** @type {Function|null} Callback for task execution */
+    this.onExecuteTask = null;
+
+    /** @type {Function|null} Callback for FS operations from extensions */
+    this.onFSOperation = null;
+
+    /** @type {Function|null} Callback for configuration updates */
+    this.onConfigUpdate = null;
+
+    /** @type {import('./LanguageProviderBridge.js').LanguageProviderBridge|null} */
+    this.languageProviderBridge = null;
+
     // ── VS Code Server (real Extension Host) ─────────────────
     /** @type {VSCodeServerProxy|null} */
     this.vscodeServerProxy = null;
@@ -95,6 +119,9 @@ export class MainThreadBridge {
 
     // Set up event handlers before initializing worker
     this._setupEventHandlers();
+
+    // Set up request handlers for worker→main RPC calls (showQuickPick, FS, etc.)
+    this._setupRequestHandlers();
 
     // Initialize worker
     await this.workerProxy.init(workerUrl);
@@ -544,7 +571,233 @@ export class MainThreadBridge {
       this._handleMetrics(metrics);
     });
 
+    // ─── Round-trip UI requests (showQuickPick / showInputBox) ─────────
+    // These are 'request' type messages from the worker that expect a response.
+    // The WorkerProxy dispatches them as events, but we need to reply via
+    // the worker's postMessage with a response message.
+    proxy.on(WorkerToMainMethods.SHOW_QUICK_PICK, (...args) => {
+      // Worker sends this as a request (type: 'request'), handled here
+      // The original message ID is captured by the worker's request() method
+      // We handle the UI and respond via the standard response path
+    });
+
+    proxy.on(WorkerToMainMethods.SHOW_INPUT_BOX, (...args) => {
+      // Same as above — handled by the request path
+    });
+
+    // ─── File system operations from extensions ───────────────────────
+    proxy.on(WorkerToMainMethods.FS_READ_FILE, (...args) => {
+      // Handled via request path
+    });
+    proxy.on(WorkerToMainMethods.FS_WRITE_FILE, (...args) => {
+      // Handled via request path
+    });
+    proxy.on(WorkerToMainMethods.FS_STAT, (...args) => {
+      // Handled via request path
+    });
+    proxy.on(WorkerToMainMethods.FS_READ_DIR, (...args) => {
+      // Handled via request path
+    });
+    proxy.on(WorkerToMainMethods.FS_DELETE, (...args) => {
+      // Handled via request path
+    });
+    proxy.on(WorkerToMainMethods.FS_RENAME, (...args) => {
+      // Handled via request path
+    });
+
+    // ─── Output channel events ────────────────────────────────────────
+    proxy.on(WorkerToMainMethods.OUTPUT_APPEND, (channelName, text) => {
+      console.log(`[Output:${channelName}] ${text}`);
+    });
+    proxy.on(WorkerToMainMethods.OUTPUT_CLEAR, (channelName) => {
+      // UI should clear the output panel
+    });
+    proxy.on(WorkerToMainMethods.OUTPUT_SHOW, (channelName, preserveFocus) => {
+      // UI should show the output panel
+    });
+
+    // ─── Storage operations ───────────────────────────────────────────
+    proxy.on(WorkerToMainMethods.STORAGE_GET, (...args) => {
+      // Handled via request path
+    });
+    proxy.on(WorkerToMainMethods.STORAGE_SET, (...args) => {
+      // fire-and-forget
+    });
+
+    // ─── Debug namespace events ───────────────────────────────────────
+    proxy.on(WorkerToMainMethods.DEBUG_START_SESSION, (config) => {
+      if (this.onStartDebugSession) this.onStartDebugSession(config);
+    });
+    proxy.on(WorkerToMainMethods.DEBUG_STOP_SESSION, (sessionId) => {
+      console.log(`[MainThreadBridge] Debug session stop requested: ${sessionId}`);
+    });
+    proxy.on(WorkerToMainMethods.DEBUG_ADD_BREAKPOINT, (breakpoint) => {
+      console.log(`[MainThreadBridge] Debug breakpoint added:`, breakpoint);
+    });
+    proxy.on(WorkerToMainMethods.DEBUG_REMOVE_BREAKPOINT, (breakpoint) => {
+      console.log(`[MainThreadBridge] Debug breakpoint removed:`, breakpoint);
+    });
+    proxy.on(WorkerToMainMethods.DEBUG_REGISTER_PROVIDER, (type, extensionId) => {
+      console.log(`[MainThreadBridge] Debug config provider registered: ${type} by ${extensionId}`);
+    });
+
+    // ─── Task namespace events ────────────────────────────────────────
+    proxy.on(WorkerToMainMethods.TASK_REGISTER_PROVIDER, (type, extensionId) => {
+      console.log(`[MainThreadBridge] Task provider registered: ${type} by ${extensionId}`);
+    });
+    proxy.on(WorkerToMainMethods.TASK_EXECUTE, (task) => {
+      if (this.onExecuteTask) this.onExecuteTask(task);
+    });
+
+    // ─── SCM namespace events ─────────────────────────────────────────
+    proxy.on(WorkerToMainMethods.SCM_CREATE_SOURCE_CONTROL, (id, label, rootUri) => {
+      console.log(`[MainThreadBridge] SCM source control created: ${id} (${label})`);
+    });
+    proxy.on(WorkerToMainMethods.SCM_UPDATE, (id, update) => {
+      console.log(`[MainThreadBridge] SCM update: ${id}`);
+    });
+    proxy.on(WorkerToMainMethods.SCM_DISPOSE, (id) => {
+      console.log(`[MainThreadBridge] SCM disposed: ${id}`);
+    });
+
+    // ─── Terminal namespace events ────────────────────────────────────
+    proxy.on(WorkerToMainMethods.TERMINAL_CREATE, (terminalId, name, shellPath, shellArgs) => {
+      console.log(`[MainThreadBridge] Terminal created: ${name} (${terminalId})`);
+      if (this.onCreateTerminal) {
+        this.onCreateTerminal(terminalId, name, shellPath, shellArgs);
+      }
+    });
+    proxy.on(WorkerToMainMethods.TERMINAL_SEND_TEXT, (terminalId, text, addNewLine) => {
+      console.log(`[MainThreadBridge] Terminal send text: ${terminalId}`);
+    });
+    proxy.on(WorkerToMainMethods.TERMINAL_DISPOSE, (terminalId) => {
+      console.log(`[MainThreadBridge] Terminal disposed: ${terminalId}`);
+    });
+
+    // ─── Authentication namespace events ──────────────────────────────
+    proxy.on(WorkerToMainMethods.AUTH_REGISTER_PROVIDER, (providerId, extensionId) => {
+      console.log(`[MainThreadBridge] Auth provider registered: ${providerId} by ${extensionId}`);
+    });
+
+    // ─── Configuration write events ───────────────────────────────────
+    proxy.on(WorkerToMainMethods.CONFIG_UPDATE, (section, value, target) => {
+      console.log(`[MainThreadBridge] Config update: ${section} = ${JSON.stringify(value)}`);
+      if (this.onConfigUpdate) this.onConfigUpdate(section, value, target);
+    });
+
+    // ─── Tree view events ─────────────────────────────────────────────
+    proxy.on(WorkerToMainMethods.TREE_VIEW_REGISTER, (viewId, extensionId) => {
+      console.log(`[MainThreadBridge] Tree view registered: ${viewId} by ${extensionId}`);
+      // Already handled by index.js via proxy.on('registerTreeView')
+    });
+    proxy.on(WorkerToMainMethods.TREE_VIEW_UPDATE, (viewId, data) => {
+      // Already handled by index.js via proxy.on('treeData')
+    });
+    proxy.on(WorkerToMainMethods.TREE_VIEW_REVEAL, (viewId, element) => {
+      console.log(`[MainThreadBridge] Tree view reveal: ${viewId}`);
+    });
+
+    // ─── Status bar ──────────────────────────────────────────────────
+    proxy.on(WorkerToMainMethods.SET_STATUS_BAR, (text, tooltip, command) => {
+      // Already handled by index.js via proxy.on('setStatusBar')
+    });
+
+    // ─── Webview messages ─────────────────────────────────────────────
+    proxy.on(WorkerToMainMethods.POST_WEBVIEW_MESSAGE, (viewId, message) => {
+      // Route message to the webview iframe
+    });
+
     this.handlersRegistered = true;
+  }
+
+  /**
+   * Set up request handlers for worker→main RPC calls.
+   * These handle 'request' type messages from the worker that expect a response.
+   */
+  _setupRequestHandlers() {
+    const proxy = this.workerProxy;
+
+    // ─── Round-trip UI: showQuickPick ─────────────────────────────────
+    proxy.onRequest(WorkerToMainMethods.SHOW_QUICK_PICK, async (args) => {
+      const [items, options] = args;
+      if (this.onShowQuickPick) {
+        return await this.onShowQuickPick(items, options);
+      }
+      // Fallback: return first item or undefined
+      return items?.[0] || undefined;
+    });
+
+    // ─── Round-trip UI: showInputBox ──────────────────────────────────
+    proxy.onRequest(WorkerToMainMethods.SHOW_INPUT_BOX, async (args) => {
+      const [options] = args;
+      if (this.onShowInputBox) {
+        return await this.onShowInputBox(options);
+      }
+      return undefined;
+    });
+
+    // ─── Active editor request ────────────────────────────────────────
+    proxy.onRequest(WorkerToMainMethods.GET_ACTIVE_EDITOR, async () => {
+      // Return current editor metadata
+      // TODO: wire to MonacoBridge to get actual editor state
+      return null;
+    });
+
+    // ─── File system operations ───────────────────────────────────────
+    proxy.onRequest(WorkerToMainMethods.FS_READ_FILE, async (args) => {
+      if (this.onFSOperation) return await this.onFSOperation('readFile', args);
+      throw new Error('FS readFile not supported (no handler registered)');
+    });
+
+    proxy.onRequest(WorkerToMainMethods.FS_WRITE_FILE, async (args) => {
+      if (this.onFSOperation) return await this.onFSOperation('writeFile', args);
+      throw new Error('FS writeFile not supported (no handler registered)');
+    });
+
+    proxy.onRequest(WorkerToMainMethods.FS_STAT, async (args) => {
+      if (this.onFSOperation) return await this.onFSOperation('stat', args);
+      throw new Error('FS stat not supported (no handler registered)');
+    });
+
+    proxy.onRequest(WorkerToMainMethods.FS_READ_DIR, async (args) => {
+      if (this.onFSOperation) return await this.onFSOperation('readDir', args);
+      throw new Error('FS readDir not supported (no handler registered)');
+    });
+
+    proxy.onRequest(WorkerToMainMethods.FS_DELETE, async (args) => {
+      if (this.onFSOperation) return await this.onFSOperation('delete', args);
+      throw new Error('FS delete not supported (no handler registered)');
+    });
+
+    proxy.onRequest(WorkerToMainMethods.FS_RENAME, async (args) => {
+      if (this.onFSOperation) return await this.onFSOperation('rename', args);
+      throw new Error('FS rename not supported (no handler registered)');
+    });
+
+    // ─── Storage ──────────────────────────────────────────────────────
+    proxy.onRequest(WorkerToMainMethods.STORAGE_GET, async (args) => {
+      const { getStorageService } = await import('../services/StorageService.js');
+      const storage = getStorageService();
+      return storage.get(args[0] /* key */);
+    });
+
+    // ─── Auth session ─────────────────────────────────────────────────
+    proxy.onRequest(WorkerToMainMethods.AUTH_GET_SESSION, async (args) => {
+      // TODO: wire to real auth provider
+      return null;
+    });
+
+    // ─── Task execution ───────────────────────────────────────────────
+    proxy.onRequest(WorkerToMainMethods.TASK_EXECUTE, async (args) => {
+      if (this.onExecuteTask) return await this.onExecuteTask(args[0]);
+      throw new Error('Task execution not supported (no handler registered)');
+    });
+
+    // ─── Debug start ──────────────────────────────────────────────────
+    proxy.onRequest(WorkerToMainMethods.DEBUG_START_SESSION, async (args) => {
+      if (this.onStartDebugSession) return await this.onStartDebugSession(args[0], args[1]);
+      throw new Error('Debug not supported (no handler registered)');
+    });
   }
 
   /**
