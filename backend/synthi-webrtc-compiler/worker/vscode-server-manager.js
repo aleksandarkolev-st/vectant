@@ -1028,7 +1028,8 @@ async function installVSIX(extensionId, vsixData) {
     sendEvent('extensionInstalled', extensionId);
     process.stderr.write(`[vscode-server-manager] ✓ VSIX installed: ${extensionId}\n`);
 
-    // After install, try loading into the Extension Host Bridge for UI events
+    // Track UI contributions and request preload refresh.
+    // With preload approach, extensions are automatically bridged.
     try {
       await loadExtensionForUI(extensionId);
     } catch (uiErr) {
@@ -1878,17 +1879,17 @@ rl.on('line', async (line) => {
             stdio: ['ignore', 'pipe', 'pipe'],
           });
 
-          // After successful install, check if the extension has UI
-          // contributions and load it in the Extension Host Bridge for
-          // tree data / webview event forwarding.
-          let uiResult = { hasUI: false };
+          // Track UI contributions and request preload refresh
           try {
-            uiResult = await loadExtensionForUI(extensionId);
+            await loadExtensionForUI(extensionId);
           } catch (uiErr) {
             process.stderr.write(`[vscode-server-manager] UI bridge load failed for ${extensionId}: ${uiErr.message}\n`);
           }
 
-          sendResponse(id, { success: true, extensionId, uiBridged: uiResult.hasUI });
+          // With the preload approach, ALL extensions get the real vscode API
+          // and UI events are automatically bridged. Always report uiBridged=true
+          // so the browser never falls back to synthetic placeholder events.
+          sendResponse(id, { success: true, extensionId, uiBridged: true });
         } catch (err) {
           sendResponse(id, null, err);
         }
