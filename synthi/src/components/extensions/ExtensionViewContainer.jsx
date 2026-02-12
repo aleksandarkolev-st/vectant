@@ -14,7 +14,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { ChevronRight, ChevronDown, Box, Loader2, AlertTriangle, Globe, Server } from 'lucide-react';
 
 // ─── Tree view placeholder (until extension provides data) ───
-function TreeViewSection({ view, treeData, onRequestData }) {
+function TreeViewSection({ view, treeData, onRequestData, onExecuteCommand }) {
   const [collapsed, setCollapsed] = useState(false);
 
   return (
@@ -38,7 +38,7 @@ function TreeViewSection({ view, treeData, onRequestData }) {
           {treeData && treeData.length > 0 ? (
             <div className="space-y-0.5">
               {treeData.map((item, i) => (
-                <TreeItem key={item.id || i} item={item} depth={0} />
+                <TreeItem key={item.id || i} item={item} depth={0} onExecuteCommand={onExecuteCommand} />
               ))}
             </div>
           ) : (
@@ -60,19 +60,47 @@ function TreeViewSection({ view, treeData, onRequestData }) {
 }
 
 // ─── Tree item (recursive) ──────────────────────────────────
-function TreeItem({ item, depth }) {
-  const [expanded, setExpanded] = useState(false);
+function TreeItem({ item, depth, onExecuteCommand }) {
+  // collapsibleState: 0=None, 1=Collapsed, 2=Expanded (vs code TreeItemCollapsibleState)
   const hasChildren = item.children && item.children.length > 0;
+  const isCollapsible = hasChildren || item.collapsibleState === 1 || item.collapsibleState === 2;
+  const [expanded, setExpanded] = useState(item.collapsibleState === 2);
   const indent = depth * 16;
+
+  const handleClick = useCallback(() => {
+    if (isCollapsible) {
+      setExpanded(prev => !prev);
+    }
+    // If the item has a command, execute it
+    if (item.command?.command && onExecuteCommand) {
+      onExecuteCommand(item.command.command, item.command.arguments);
+    }
+  }, [isCollapsible, item.command, onExecuteCommand]);
+
+  // Render icon: supports codicon:xxx, URL paths, and data URIs
+  const renderIcon = () => {
+    if (!item.iconPath) return null;
+    if (typeof item.iconPath === 'string' && item.iconPath.startsWith('codicon:')) {
+      const iconId = item.iconPath.slice(8);
+      return (
+        <span
+          className={`codicon codicon-${iconId} shrink-0`}
+          style={{ fontSize: '14px', width: '14px', height: '14px', lineHeight: '14px' }}
+        />
+      );
+    }
+    return <img src={item.iconPath} alt="" className="w-3.5 h-3.5 shrink-0" />;
+  };
 
   return (
     <>
       <div
         className="flex items-center gap-1 py-0.5 px-1 rounded hover:bg-[#1a1b24] cursor-pointer text-[12px] text-[#e8eaed] transition-colors"
         style={{ paddingLeft: `${indent + 4}px` }}
-        onClick={() => hasChildren && setExpanded(!expanded)}
+        onClick={handleClick}
+        title={item.tooltip || undefined}
       >
-        {hasChildren ? (
+        {isCollapsible ? (
           expanded ? (
             <ChevronDown className="w-3 h-3 text-[#4a5060] shrink-0" />
           ) : (
@@ -81,9 +109,7 @@ function TreeItem({ item, depth }) {
         ) : (
           <span className="w-3 shrink-0" />
         )}
-        {item.iconPath && (
-          <img src={item.iconPath} alt="" className="w-3.5 h-3.5 shrink-0" />
-        )}
+        {renderIcon()}
         <span className="truncate">{item.label || item.id}</span>
         {item.description && (
           <span className="text-[#4a5060] text-[10px] truncate ml-1">{item.description}</span>
@@ -92,7 +118,7 @@ function TreeItem({ item, depth }) {
       {expanded && hasChildren && (
         <div>
           {item.children.map((child, i) => (
-            <TreeItem key={child.id || i} item={child} depth={depth + 1} />
+            <TreeItem key={child.id || i} item={child} depth={depth + 1} onExecuteCommand={onExecuteCommand} />
           ))}
         </div>
       )}
@@ -152,6 +178,7 @@ export default function ExtensionViewContainer({
   webviewPanels = [],
   webviewManager = null,
   extensions = {},
+  onExecuteCommand = null,
 }) {
   // extensions may be an array (from selectExtensionList) or an object map.
   // Normalise to find the extension info by its ID.
@@ -244,6 +271,7 @@ export default function ExtensionViewContainer({
                 key={view.id}
                 view={view}
                 treeData={treeDataMap[view.id]}
+                onExecuteCommand={onExecuteCommand}
               />
             );
           })}
