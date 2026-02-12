@@ -3199,7 +3199,7 @@ async fn wire_peer_channels(
                                                     // Without this, rapid bursts of large WS frames
                                                     // (350KB × many during initial connection) saturate
                                                     // the DataChannel and cause OperationError.
-                                                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                                                    tokio::time::sleep(std::time::Duration::from_millis(3)).await;
                                                 }
                                             } else {
                                                 if let Err(e) = dc_out.send_text(trimmed.to_string()).await {

@@ -155,9 +155,12 @@ export class VSCodeServerProxy {
     /** @type {string[]} */
     this._sendQueue = [];
     this._draining = false;
-    // DataChannel bufferedAmount threshold (128 KB).  When the buffer
+    // DataChannel bufferedAmount threshold (64 KB).  When the buffer
     // exceeds this, new sends are queued until it drains.
-    this._highWaterMark = 128 * 1024;
+    this._highWaterMark = 64 * 1024;
+
+    /** @type {number} Consecutive DC error count — only terminate after threshold */
+    this._consecutiveErrors = 0;
 
     this._wireChannel();
   }
@@ -189,12 +192,21 @@ export class VSCodeServerProxy {
     };
 
     ch.onerror = (err) => {
-      console.error('[VSCodeServerProxy] DataChannel error:', err);
-      this._rejectAllPending('DataChannel error');
-      this._rejectReady('DataChannel error');
-      this.state = 'terminated';
-      this.ready = false;
-      this._emit('error', err);
+      this._consecutiveErrors++;
+      console.warn(`[VSCodeServerProxy] DataChannel error #${this._consecutiveErrors}:`, err);
+
+      // SCTP congestion errors ("Failure to send data") are transient
+      // when the DC is flooded with incoming WS tunnel traffic during
+      // code-server startup.  Don't immediately terminate — the DC can
+      // recover once the burst subsides.
+      if (this._consecutiveErrors >= 5) {
+        console.error('[VSCodeServerProxy] Too many consecutive DC errors, terminating');
+        this._rejectAllPending('DataChannel error (persistent)');
+        this._rejectReady('DataChannel error');
+        this.state = 'terminated';
+        this.ready = false;
+        this._emit('error', err);
+      }
     };
 
     ch.onclose = () => {
@@ -448,8 +460,11 @@ export class VSCodeServerProxy {
 
     try {
       this.channel.send(data);
+      this._consecutiveErrors = 0; // Reset on successful send
     } catch (err) {
-      // If send fails (buffer full), queue the data for retry
+      // If send fails (buffer full / SCTP congestion), queue for retry
+      this._consecutiveErrors++;
+      console.warn(`[VSCodeServerProxy] send failed, queueing (errors: ${this._consecutiveErrors})`);
       this._sendQueue.push(data);
       this._ensureDrain();
     }
@@ -474,6 +489,8 @@ export class VSCodeServerProxy {
 
   /**
    * Set up the `bufferedamountlow` listener to drain the send queue.
+   * Also uses a polling timer as fallback in case `bufferedamountlow`
+   * events don't fire during SCTP congestion recovery.
    */
   _ensureDrain() {
     if (this._draining) return;
@@ -482,6 +499,18 @@ export class VSCodeServerProxy {
     this.channel.onbufferedamountlow = () => {
       this._drainQueue();
     };
+    // Fallback: poll every 100ms in case bufferedamountlow doesn't fire
+    if (!this._drainTimer) {
+      this._drainTimer = setInterval(() => {
+        if (this._sendQueue.length > 0 && this.channel.readyState === 'open') {
+          this._drainQueue();
+        }
+        if (this._sendQueue.length === 0) {
+          clearInterval(this._drainTimer);
+          this._drainTimer = null;
+        }
+      }, 100);
+    }
   }
 
   /**
@@ -499,10 +528,11 @@ export class VSCodeServerProxy {
       const data = this._sendQueue.shift();
       try {
         this.channel.send(data);
+        this._consecutiveErrors = 0;
       } catch (_) {
-        // channel failed, discard remaining
-        this._sendQueue.length = 0;
-        break;
+        // Re-queue and wait for next bufferedamountlow
+        this._sendQueue.unshift(data);
+        return;
       }
     }
     // All drained — remove listener
@@ -805,6 +835,10 @@ export class VSCodeServerProxy {
     if (this._heartbeatInterval) {
       clearInterval(this._heartbeatInterval);
       this._heartbeatInterval = null;
+    }
+    if (this._drainTimer) {
+      clearInterval(this._drainTimer);
+      this._drainTimer = null;
     }
     this._sendQueue.length = 0;
     this._draining = false;

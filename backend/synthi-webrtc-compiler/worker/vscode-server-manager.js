@@ -107,7 +107,7 @@ function createMessageId() {
 /** @type {{data: string, resolve?: Function}[]} */
 const _writeQueue = [];
 let _writing = false;
-const WRITE_PACE_MS = 2;  // small delay between queued writes
+const WRITE_PACE_MS = 12;  // delay between queued writes (controls DC throughput)
 
 function send(obj) {
   try {
@@ -993,6 +993,8 @@ function wsConnect(tunnelId, urlPath) {
               // Pause the socket while we pace-write a large frame
               socket.pause();
               await _sendWsEventStreamed(tunnelId, payload, false);
+              // Cooldown: let the Rust worker / browser drain before next frame
+              await new Promise(r => setTimeout(r, 30));
               socket.resume();
             } else {
               sendEvent('ws:data', tunnelId, payload);
@@ -1003,6 +1005,7 @@ function wsConnect(tunnelId, urlPath) {
             if (payload.length > 100000) {
               socket.pause();
               await _sendWsEventStreamed(tunnelId, payload, true);
+              await new Promise(r => setTimeout(r, 30));
               socket.resume();
             } else {
               sendEvent('ws:data', tunnelId, payload, 'binary');
