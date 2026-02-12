@@ -999,11 +999,16 @@ async function loadExtensionFromPath(extensionId, extensionPath) {
     throw new Error(`Failed to parse package.json for ${extensionId}: ${e.message}`);
   }
 
-  // Resolve the main entry point
+  // Resolve the main entry point (Node-style: try .js, /index.js)
   const mainEntry = manifest.main || 'extension.js';
-  const mainPath = path.resolve(extensionPath, mainEntry);
+  let mainPath = path.resolve(extensionPath, mainEntry);
   if (!fs.existsSync(mainPath)) {
-    throw new Error(`Main entry not found: ${mainPath}`);
+    if (fs.existsSync(mainPath + '.js')) {
+      mainPath = mainPath + '.js';
+    } else if (fs.existsSync(path.join(mainPath, 'index.js'))) {
+      mainPath = path.join(mainPath, 'index.js');
+    }
+    // If still not found, let require() try — it handles more resolution cases
   }
 
   const { api: vscode, context } = createVSCodeAPI(extensionId);
