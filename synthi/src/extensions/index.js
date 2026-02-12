@@ -29,7 +29,6 @@ export { WorkerProxy, createWorkerProxy, getWorkerProxy } from './bridge/WorkerP
 export { MainThreadBridge, createMainThreadBridge, getMainThreadBridge } from './bridge/MainThreadBridge.js';
 export { MonacoBridge } from './bridge/MonacoBridge.js';
 export { LanguageProviderBridge } from './bridge/LanguageProviderBridge.js';
-export { RemoteExtHostProxy } from './bridge/RemoteExtHostProxy.js';
 export { VSCodeServerProxy } from './bridge/VSCodeServerProxy.js';
 
 // VS Code API

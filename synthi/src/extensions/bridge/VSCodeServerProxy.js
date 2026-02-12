@@ -6,14 +6,15 @@
  * WebSocket tunnel to the real VS Code Server for Extension Host protocol.
  *
  * Two-layer architecture:
- *   1. **Control channel** — JSON-RPC over DataChannel (same interface as
- *      RemoteExtHostProxy) for managing the server lifecycle and VSIX installs.
+ *   1. **Control channel** — JSON-RPC over DataChannel for managing the
+ *      server lifecycle and VSIX installs.
  *   2. **Extension Host tunnel** — WebSocket-over-DataChannel to the real
  *      VS Code Server, giving the browser a genuine Extension Host connection.
  *
- * The control channel uses the same newline-delimited JSON protocol as
- * RemoteExtHostProxy so MainThreadBridge can use it interchangeably for
- * lifecycle operations (install, list, status).
+ * The control channel uses newline-delimited JSON protocol so
+ * MainThreadBridge can use it for lifecycle operations (install, list, status).
+ * ext-host-preload.js is injected into the real Extension Host via NODE_OPTIONS
+ * to wrap the genuine vscode API and relay events back through a TCP bridge.
  */
 
 import {
