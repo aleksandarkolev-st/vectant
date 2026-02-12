@@ -1934,6 +1934,24 @@ class GitService {
      */
     async ensureSessionWorktree(slug, userId, branch = null) {
         return this.withLock(slug, async () => {
+            // ── Lazy migration: upgrade legacy repos before creating worktrees
+            if (this.isLegacyRepo(slug)) {
+                console.log(`[GitService] ensureSessionWorktree: legacy repo for "${slug}", migrating…`);
+                await this._createMigrationBackup(slug);
+                try {
+                    await this._migrateToSessionStructure(slug);
+                    const valid = await this._validateMigration(slug);
+                    if (!valid) {
+                        throw new MigrationError(slug, 'Post-migration validation failed', 'validation');
+                    }
+                    this._cleanupMigrationBackup(slug);
+                } catch (e) {
+                    console.error(`[GitService] ensureSessionWorktree: migration failed, rolling back:`, e.message);
+                    try { await this._restoreMigrationBackup(slug); } catch (_) {}
+                    throw e instanceof MigrationError ? e : new MigrationError(slug, e.message, 'worktree-migration');
+                }
+            }
+
             const worktreePath = this.getSessionWorktreePath(slug, userId);
 
             // If worktree already exists, just return it
@@ -1953,10 +1971,18 @@ class GitService {
                 fs.mkdirSync(sessionsDir, { recursive: true });
             }
 
-            // Exclude sessions directory from git tracking
-            this._ensureLocalExcludes(mainRepoPath);
+            // For migrated repos, use the bare repo as the worktree source.
+            // For non-migrated repos, fall back to the main working tree.
+            const gitSourcePath = this.isMigratedRepo(slug)
+                ? this.getBarePath(slug)
+                : mainRepoPath;
 
-            const git = simpleGit(mainRepoPath);
+            // Exclude sessions directory from git tracking
+            if (!this.isMigratedRepo(slug)) {
+                this._ensureLocalExcludes(mainRepoPath);
+            }
+
+            const git = simpleGit(gitSourcePath);
 
             // Determine branch to use
             if (!branch) {
