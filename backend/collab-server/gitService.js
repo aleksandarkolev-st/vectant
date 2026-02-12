@@ -118,6 +118,14 @@ class RemoteNotConfiguredError extends GitError {
     }
 }
 
+class MigrationError extends GitError {
+    constructor(slug, message, phase = 'unknown') {
+        super(`Migration failed for ${slug}: ${message}`, 'MIGRATION_FAILED', { slug, phase });
+        this.slug = slug;
+        this.phase = phase;
+    }
+}
+
 // ===== Simple async mutex for per-repo locking =====
 class RepoLock {
     constructor() {
