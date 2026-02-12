@@ -1625,6 +1625,108 @@ class GitService {
         }
     }
 
+    /**
+     * Core migration: convert a legacy flat repo into bare + worktree structure.
+     *
+     * Steps:
+     *  1. Clone --bare from the legacy repo → repos/<slug>/_upstream.git
+     *  2. Preserve the original remote URL (if any) in the bare repo
+     *  3. Remove the legacy .git directory from the working tree
+     *  4. Re-attach the working tree as a git worktree of the bare repo
+     *  5. Write the .synthi-migrated marker
+     *
+     * MUST be called under the repo lock.  Caller handles backup/rollback.
+     *
+     * @param {string} slug
+     * @returns {Promise<{ barePath: string, worktreePath: string }>}
+     */
+    async _migrateToSessionStructure(slug) {
+        const repoPath = this.getRepoPath(slug);
+        const barePath = this.getBarePath(slug);
+        const legacyGitDir = path.join(repoPath, '.git');
+
+        console.log(`[Migration] ── Starting migration for "${slug}" ──`);
+        console.log(`[Migration]   Legacy repo: ${repoPath}`);
+        console.log(`[Migration]   Bare target: ${barePath}`);
+
+        // ── Step 1: Capture metadata from legacy repo ─────────────────────
+        const legacyGit = simpleGit(repoPath);
+
+        let currentBranch = 'main';
+        try {
+            const status = await legacyGit.status();
+            currentBranch = status.current || 'main';
+        } catch (_) {}
+
+        let remoteUrl = null;
+        try {
+            const remotes = await legacyGit.getRemotes(true);
+            const origin = remotes.find(r => r.name === 'origin');
+            if (origin && origin.refs && origin.refs.fetch) {
+                remoteUrl = origin.refs.fetch;
+            }
+        } catch (_) {}
+
+        console.log(`[Migration]   Branch: ${currentBranch}, Remote: ${remoteUrl || '(none)'}`);
+
+        // ── Step 2: Create bare clone from the legacy repo ────────────────
+        if (fs.existsSync(barePath)) {
+            fs.rmSync(barePath, { recursive: true, force: true });
+        }
+
+        try {
+            const git = simpleGit();
+            await git.clone(repoPath, barePath, ['--bare']);
+            console.log(`[Migration]   Bare clone created at: ${barePath}`);
+        } catch (e) {
+            throw new MigrationError(slug, `Bare clone failed: ${e.message}`, 'bare-clone');
+        }
+
+        // ── Step 3: Set the remote URL on the bare repo (if any) ──────────
+        if (remoteUrl) {
+            try {
+                const bareGit = simpleGit(barePath);
+                await bareGit.remote(['set-url', 'origin', remoteUrl]);
+                console.log(`[Migration]   Remote URL preserved: ${remoteUrl}`);
+            } catch (e) {
+                // Non-fatal — the remote can be re-added later
+                console.warn(`[Migration]   Failed to set remote URL: ${e.message}`);
+            }
+        }
+
+        // ── Step 4: Remove the legacy .git and re-attach as worktree ──────
+        try {
+            // Remove the old .git directory
+            fs.rmSync(legacyGitDir, { recursive: true, force: true });
+            console.log(`[Migration]   Removed legacy .git directory`);
+
+            // Register the existing working tree as a worktree of the bare repo
+            const bareGit = simpleGit(barePath);
+            await bareGit.raw(['worktree', 'add', '--detach', repoPath]);
+            console.log(`[Migration]   Re-attached as worktree: ${repoPath}`);
+
+            // Checkout the original branch in the worktree
+            const wtGit = simpleGit(repoPath);
+            try {
+                await wtGit.checkout(currentBranch);
+            } catch (_) {
+                // Branch might not exist as a local ref — try creating it
+                try {
+                    await wtGit.checkoutLocalBranch(currentBranch);
+                } catch (__) {}
+            }
+            console.log(`[Migration]   Checked out branch: ${currentBranch}`);
+        } catch (e) {
+            throw new MigrationError(slug, `Worktree re-attach failed: ${e.message}`, 'worktree-reattach');
+        }
+
+        // ── Step 5: Write migration marker ────────────────────────────────
+        this._writeMigrationMarker(slug);
+        console.log(`[Migration] ── Migration complete for "${slug}" ──`);
+
+        return { barePath, worktreePath: repoPath };
+    }
+
     // ── Worktree Factory (Session-based isolation) ────────────────────────
 
     /**
