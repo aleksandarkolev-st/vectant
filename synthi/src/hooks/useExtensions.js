@@ -202,6 +202,16 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       if (system.onContribution !== undefined) {
         system.onContribution = (type, payload) => {
           switch (type) {
+            case 'registerTreeView':
+              // Tree view registered by preload bridge or worker extension.
+              // The view definition is already in Redux from parseContributions;
+              // request a tree data refresh to populate it.
+              console.log(`[useExtensions] registerTreeView: ${payload.viewId}`);
+              if (systemRef.current?.bridge?.vscodeServerProxy?.isReady()) {
+                systemRef.current.bridge.vscodeServerProxy.request('refreshTreeData', payload.viewId)
+                  .catch(() => {});
+              }
+              break;
             case 'treeData':
               setTreeDataMap(prev => ({ ...prev, [payload.viewId]: payload.data }));
               break;
@@ -338,13 +348,10 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
         const result = await bridge.installMarketplaceExtensionOnServer(id);
         if (result.success) {
           dispatch(setExtensionState({ id, extensionState: 'active', remote: true }));
-          console.log(`[useExtensions] ✓ ${id} installed on VS Code Server via marketplace (uiBridged=${result.uiBridged})`);
-
-          // Only emit synthetic placeholder events if the Extension Host Bridge
-          // did NOT load this extension for live UI event forwarding.
-          if (!result.uiBridged) {
-            bridge._emitSyntheticWebviewEvents(id, info.manifest);
-          }
+          console.log(`[useExtensions] ✓ ${id} installed on VS Code Server via marketplace`);
+          // With the preload-based bridge, extensions get the real vscode API
+          // and UI events (tree data, webview HTML) are automatically forwarded.
+          // No synthetic placeholder events needed.
         } else {
           dispatch(setExtensionState({ id, extensionState: 'crashed', reason: result.error }));
         }
@@ -689,8 +696,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
           if (result.success) {
             dispatch(setExtensionState({ id, extensionState: 'active', remote: true }));
             console.log(`[useExtensions] ✓ ${id} installed on VS Code Server`);
-            // Emit synthetic webview events so webview-type views show content
-            system.bridge._emitSyntheticWebviewEvents(id, parsed);
+            // Preload bridge handles UI events automatically — no synthetic events needed
             return { success: true, vscodeServer: true };
           }
         } catch (serverErr) {
