@@ -396,8 +396,7 @@ class VSCodeTunnelService {
   .part.panel,
   .part.statusbar,
   .part.titlebar,
-  .part.auxiliarybar,
-  .part.activitybar {
+  .part.auxiliarybar {
     display: none !important;
     width: 0 !important;
     height: 0 !important;
@@ -406,12 +405,22 @@ class VSCodeTunnelService {
   /* Make sidebar fill the entire viewport */
   .part.sidebar {
     position: fixed !important;
+    left: 48px !important;
+    top: 0 !important;
+    width: calc(100vw - 48px) !important;
+    height: 100vh !important;
+    max-width: calc(100vw - 48px) !important;
+    z-index: 99999 !important;
+  }
+  /* Keep the activity bar visible so users can still switch containers if
+     the focus command doesn't activate the target view immediately. */
+  .part.activitybar {
+    position: fixed !important;
     left: 0 !important;
     top: 0 !important;
-    width: 100vw !important;
+    width: 48px !important;
     height: 100vh !important;
-    max-width: 100vw !important;
-    z-index: 99999 !important;
+    z-index: 100000 !important;
   }
   /* Ensure sidebar content layers are fully visible */
   .split-view-container,
