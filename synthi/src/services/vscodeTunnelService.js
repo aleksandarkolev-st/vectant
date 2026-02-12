@@ -106,16 +106,25 @@ class VSCodeTunnelService {
     const { id, method, path, headers, body } = msg;
     console.log('[VSCodeTunnel] Processing proxy request:', id, method, path);
 
-    if (!this.proxy) {
-      this._respond({
-        type: 'vscode-proxy-response',
-        id,
-        status: 503,
-        statusText: 'No proxy attached',
-        headers: {},
-        body: btoa('VSCodeServerProxy not available'),
-      });
-      return;
+    // Wait for the proxy to become ready (DataChannel open + workerReady)
+    if (!this.proxy || !this.proxy.ready || this.proxy.channel?.readyState !== 'open') {
+      // Brief wait: the proxy may still be connecting
+      const ready = await this._waitForProxy(8000);
+      if (!ready) {
+        const reason = !this.proxy ? 'No proxy attached'
+          : this.proxy.channel?.readyState !== 'open' ? `DataChannel ${this.proxy.channel?.readyState || 'missing'}`
+          : 'Server manager not ready';
+        console.warn('[VSCodeTunnel] Proxy not ready for request', id, '-', reason);
+        this._respond({
+          type: 'vscode-proxy-response',
+          id,
+          status: 503,
+          statusText: 'Service Unavailable',
+          headers: { 'retry-after': '2' },
+          body: btoa(`Tunnel not ready: ${reason}`),
+        });
+        return;
+      }
     }
 
     try {
@@ -208,9 +217,29 @@ class VSCodeTunnelService {
 
   /**
    * Whether the tunnel is ready to serve requests.
+   * Checks that the SW is registered, proxy is attached, AND the proxy's
+   * DataChannel is open with its server-manager marked ready.
    */
   get isReady() {
-    return this._registered && this.proxy != null;
+    return this._registered && this.proxy != null
+      && this.proxy.ready
+      && this.proxy.channel?.readyState === 'open';
+  }
+
+  /**
+   * Wait up to `timeout` ms for the proxy to be fully ready.
+   * @param {number} timeout
+   * @returns {Promise<boolean>}
+   */
+  async _waitForProxy(timeout) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      if (this.proxy && this.proxy.ready && this.proxy.channel?.readyState === 'open') {
+        return true;
+      }
+      await new Promise(r => setTimeout(r, 200));
+    }
+    return false;
   }
 
   dispose() {
@@ -274,7 +303,8 @@ class VSCodeTunnelService {
         if(m.binary){
           var b=atob(m.data),a=new Uint8Array(b.length);
           for(var i=0;i<b.length;i++)a[i]=b.charCodeAt(i);
-          me=new MessageEvent('message',{data:a.buffer});
+          var d=self.binaryType==='blob'?new Blob([a.buffer]):a.buffer;
+          me=new MessageEvent('message',{data:d});
         }else{
           me=new MessageEvent('message',{data:m.data});
         }

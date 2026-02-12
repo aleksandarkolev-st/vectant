@@ -56,17 +56,23 @@ export default function CodeServerPanel({
       }
       console.log('[CodeServerPanel] SW registered');
 
-      // Wait briefly for proxy to be attached (should already be)
+      // Wait for tunnel to be fully ready: SW registered + proxy attached +
+      // DataChannel open + server-manager workerReady received
       let attempts = 0;
-      while (!tunnelService.isReady && attempts < 20) {
+      while (!tunnelService.isReady && attempts < 40) {
         await new Promise(r => setTimeout(r, 250));
         if (cancelled) return;
         attempts++;
       }
 
       if (!tunnelService.isReady) {
+        const proxy = tunnelService.proxy;
+        const detail = !proxy ? 'Proxy not attached'
+          : proxy.channel?.readyState !== 'open' ? `DataChannel ${proxy.channel?.readyState || 'missing'}`
+          : !proxy.ready ? 'Server manager not ready'
+          : 'Unknown';
         setState('error');
-        setErrorMsg('VS Code Server proxy not ready. WebRTC may not be connected.');
+        setErrorMsg(`VS Code Server not ready: ${detail}. Check WebRTC connection.`);
         return;
       }
 
