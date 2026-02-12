@@ -2,13 +2,13 @@
 
 ## Overview
 
-This document describes the **Path A** implementation for running Node-only VS Code extensions: instead of executing VSIX code through a custom shimmed Node.js host (`remote-ext-host.js`), we delegate to a **real VS Code Server** (code-server) that provides a genuine Extension Host with full `vscode.*` API coverage.
+This document describes the **Path A** implementation for running Node-only VS Code extensions: we delegate to a **real VS Code Server** (code-server) that provides a genuine Extension Host with full `vscode.*` API coverage, with `ext-host-preload.js` injected via `NODE_OPTIONS` to wrap the real API and relay UI events back to the browser.
 
 ## The Problem
 
 VSIX extensions only run inside VS Code's Extension Host. The `vscode` module is injected by VS Code at runtime — it is **not** a normal Node module. Installing the npm package `vscode` does not fix runtime errors; it only provides typings.
 
-Our previous approach (`remote-ext-host.js`) tried to manually shim the `vscode` API, hook `require()`, and eval extension code. This works for trivial first-party extensions, but breaks for real marketplace extensions that rely on:
+Our previous approach (`remote-ext-host.js`, now deleted) tried to manually shim the `vscode` API, hook `require()`, and eval extension code. This worked for trivial first-party extensions, but broke for real marketplace extensions that rely on:
 
 - Deep API surfaces (`vscode.debug`, `vscode.tasks`, `vscode.scm`, etc.)
 - The real Extension Host Protocol (typed binary RPC)
@@ -26,16 +26,13 @@ Our previous approach (`remote-ext-host.js`) tried to manually shim the `vscode`
 │                             ├─ Simple commands                           │
 │                             └─ Lightweight web extensions                │
 │                                                                          │
-│  manifest.main ───────────► VS CODE SERVER (preferred)  ← Path A        │
+│  manifest.main ───────────► VS CODE SERVER                              │
 │  (Node-only)                ├─ Full vscode.* API                         │
 │                             ├─ Real Extension Host                       │
 │                             ├─ All marketplace extensions                │
+│                             ├─ ext-host-preload.js wraps real API        │
 │                             └─ Installed as real VSIX                    │
 │                                                                          │
-│  (fallback) ──────────────► CUSTOM REMOTE HOST (legacy)  ← Path C       │
-│                             ├─ Shimmed vscode API                        │
-│                             ├─ First-party extensions only               │
-│                             └─ Falls back if server unavailable          │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -45,8 +42,8 @@ Our previous approach (`remote-ext-host.js`) tried to manually shim the `vscode`
 
 ```
 backend/synthi-webrtc-compiler/worker/
-├── remote-ext-host.js           ← Legacy custom host (still used as fallback)
-└── vscode-server-manager.js     ← NEW: manages VS Code Server lifecycle
+├── vscode-server-manager.js     ← Manages VS Code Server lifecycle
+└── ext-host-preload.js          ← Injected into Extension Host via NODE_OPTIONS
 ```
 
 **vscode-server-manager.js** is a Node.js process spawned by the Rust WebRTC worker. It:
@@ -55,7 +52,9 @@ backend/synthi-webrtc-compiler/worker/
 2. **Starts** the server per-workspace (unique port per slug)
 3. **Installs** VSIX files into the server's extensions directory
 4. **Health-checks** the server and auto-restarts on crash
-5. Communicates via **newline-delimited JSON over stdin/stdout** (same protocol as remote-ext-host.js)
+5. **Injects** `ext-host-preload.js` into the Extension Host via `NODE_OPTIONS`
+6. **Runs a TCP bridge** for ext-host-preload.js to send events back
+7. Communicates via **newline-delimited JSON over stdin/stdout**
 
 The Rust worker spawns it when it receives a DataChannel with label `vscode-server?slug=...`.
 
@@ -63,14 +62,13 @@ The Rust worker spawns it when it receives a DataChannel with label `vscode-serv
 
 ```
 synthi/src/extensions/bridge/
-├── WorkerProxy.js               ← Local web worker proxy (unchanged)
-├── RemoteExtHostProxy.js        ← Legacy custom remote host proxy (unchanged)
-├── VSCodeServerProxy.js         ← NEW: proxy to vscode-server-manager
-└── MainThreadBridge.js          ← UPDATED: three-tier routing
+├── WorkerProxy.js               ← Local web worker proxy
+├── VSCodeServerProxy.js         ← Proxy to vscode-server-manager
+└── MainThreadBridge.js          ← Two-tier routing (local + server)
 ```
 
 **VSCodeServerProxy.js** provides:
-- JSON-RPC over DataChannel (same interface as RemoteExtHostProxy)
+- JSON-RPC over DataChannel for server lifecycle management
 - Server lifecycle management (start/stop)
 - VSIX installation (marketplace ID or base64 data)
 - Server connection info (for WebSocket tunnel to real Extension Host)
@@ -98,19 +96,19 @@ synthi/src/extensions/bridge/
 ┌────────────────────┐                        ┌──────────────┐
 │  useExtensions()   │                        │              │
 │  ├ initSystem()    │                        │  WebRTC      │
-│  ├ connectRemote() │─── DataChannel ──────► │  Worker      │──spawn──► remote-ext-host.js
-│  └ connectVSCode() │─── DataChannel ──────► │              │──spawn──► vscode-server-manager.js
+│  ├ connectVSCode() │─── DataChannel ──────► │  Worker      │──spawn──► vscode-server-manager.js
 │                    │                        │              │               │
 │  MainThreadBridge  │                        └──────────────┘               │
 │  ├ WorkerProxy     │◄── postMessage ──► Web Worker (hardened)              │
-│  ├ RemoteExtProxy  │◄── DataChannel ──► remote-ext-host.js                │
 │  └ VSCodeServerPxy │◄── DataChannel ──► vscode-server-manager.js          │
 │                    │                           │                           │
 │                    │     WebSocket tunnel       │     spawns               │
 │                    │◄─── (over DataChannel) ──► VS Code Server ◄──────────┘
 │                    │                            (code-server)
-└────────────────────┘                            └── Real Extension Host
-                                                      └── Full vscode.* API
+└────────────────────┘                            ├── Real Extension Host
+                                                  │   └── ext-host-preload.js
+                                                  │       └── TCP bridge → manager
+                                                  └── Full vscode.* API
 ```
 
 ## Extension Install Flow
@@ -120,17 +118,12 @@ synthi/src/extensions/bridge/
 VSIX → parseVSIX() → extract browser bundle → load in Web Worker → eval → activate
 ```
 
-### VS Code Server Extensions (Path A — preferred for Node-only)
+### VS Code Server Extensions (Path A)
 ```
 VSIX → parseVSIX() → detect Node-only → installMarketplaceExtensionOnServer(id)
   → vscode-server-manager → code-server --install-extension <id>
   → VS Code Server reloads → Extension Host activates it with full API
-```
-
-### Custom Remote Host Extensions (Legacy fallback)
-```
-VSIX → parseVSIX() → extract Node code → loadExtension on remote-ext-host.js
-  → write to /tmp → require() with shimmed vscode → activate (limited API)
+  → ext-host-preload.js wraps API and relays events via TCP bridge
 ```
 
 ## Configuration
@@ -150,17 +143,21 @@ Environment variables for the backend:
 The system degrades gracefully:
 
 1. **VS Code Server available** → Full extension support, marketplace install
-2. **Only custom remote host** → Limited shimmed API, first-party extensions
-3. **Neither available** → Extensions marked `pending-remote`, grammars/themes still work locally
-4. **Web-only extensions** → Always work in the local Web Worker regardless
+2. **Server unavailable** → Extensions marked `pending-remote`, grammars/themes still work locally
+3. **Web-only extensions** → Always work in the local Web Worker regardless
 
 ## What Changes for Existing Code
 
 ### No Breaking Changes
 - The existing Web Worker path is untouched
-- The existing remote-ext-host.js path still works as a fallback
 - All existing hooks, Redux state, and components remain compatible
 - IndexedDB persistence is unchanged
+
+### Removed (Legacy)
+- `remote-ext-host.js` — deleted (shimmed vscode API was fundamentally broken)
+- `RemoteExtHostProxy.js` — deleted (browser-side proxy for the old path)
+- `ext-host` DataChannel in Rust worker — replaced with deprecation stub
+- `createExtHostChannel()` in compilerClient — removed
 
 ### New Capabilities
 - Real marketplace extensions work out of the box
