@@ -191,6 +191,86 @@ fn extract_fingerprint(sdp: &str) -> Option<String> {
     None
 }
 
+/// Send data on a DataChannel with SCTP backpressure.
+/// Waits for `buffered_amount()` to drop below the threshold before sending,
+/// and retries on transient errors instead of breaking the forwarding loop.
+const DC_BUFFER_THRESHOLD: usize = 256 * 1024; // 256 KB
+const DC_BACKPRESSURE_POLL_MS: u64 = 10;
+const DC_SEND_MAX_RETRIES: u32 = 5;
+
+async fn dc_send_with_backpressure(
+    dc: &Arc<RTCDataChannel>,
+    data: &Bytes,
+    label: &str,
+) -> anyhow::Result<()> {
+    // Wait for the SCTP send buffer to drain below the threshold
+    let mut waited = 0u32;
+    while dc.buffered_amount().await > DC_BUFFER_THRESHOLD {
+        tokio::time::sleep(std::time::Duration::from_millis(DC_BACKPRESSURE_POLL_MS)).await;
+        waited += 1;
+        if waited % 100 == 0 {
+            eprintln!("[{}] backpressure: waited {}ms for DC buffer to drain (buffered={})",
+                label, waited as u64 * DC_BACKPRESSURE_POLL_MS, dc.buffered_amount().await);
+        }
+        // Safety valve: after 10s of waiting, give up
+        if waited > 1000 {
+            eprintln!("[{}] backpressure timeout after 10s, attempting send anyway", label);
+            break;
+        }
+    }
+
+    // Retry send on transient errors
+    let mut retries = 0u32;
+    loop {
+        match dc.send(data).await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                retries += 1;
+                if retries > DC_SEND_MAX_RETRIES {
+                    eprintln!("[{}] send failed after {} retries: {}", label, DC_SEND_MAX_RETRIES, e);
+                    return Err(anyhow::anyhow!("{}", e));
+                }
+                eprintln!("[{}] send error (retry {}/{}): {}", label, retries, DC_SEND_MAX_RETRIES, e);
+                // Exponential backoff: 20ms, 40ms, 80ms, 160ms, 320ms
+                tokio::time::sleep(std::time::Duration::from_millis(20 * (1 << (retries - 1)))).await;
+            }
+        }
+    }
+}
+
+async fn dc_send_text_with_backpressure(
+    dc: &Arc<RTCDataChannel>,
+    text: String,
+    label: &str,
+) -> anyhow::Result<()> {
+    // Wait for buffer to drain
+    let mut waited = 0u32;
+    while dc.buffered_amount().await > DC_BUFFER_THRESHOLD {
+        tokio::time::sleep(std::time::Duration::from_millis(DC_BACKPRESSURE_POLL_MS)).await;
+        waited += 1;
+        if waited > 1000 {
+            eprintln!("[{}] backpressure timeout after 10s, attempting send_text anyway", label);
+            break;
+        }
+    }
+
+    let mut retries = 0u32;
+    loop {
+        match dc.send_text(text.clone()).await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                retries += 1;
+                if retries > DC_SEND_MAX_RETRIES {
+                    eprintln!("[{}] send_text failed after {} retries: {}", label, DC_SEND_MAX_RETRIES, e);
+                    return Err(anyhow::anyhow!("{}", e));
+                }
+                eprintln!("[{}] send_text error (retry {}/{}): {}", label, retries, DC_SEND_MAX_RETRIES, e);
+                tokio::time::sleep(std::time::Duration::from_millis(20 * (1 << (retries - 1)))).await;
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     eprintln!("=== WORKER BUILD 2026-02-06-LSP-DEBUG ===");
@@ -2531,15 +2611,15 @@ async fn wire_peer_channels(
                                                             let chunks = make_chunks(&new_content, msg_id);
                                                             for chunk in chunks {
                                                                 let data = Bytes::from(chunk);
-                                                                if let Err(e) = dc_out.send(&data).await {
-                                                                    eprintln!("Failed to send chunk: {}", e);
+                                                                if let Err(e) = dc_send_with_backpressure(&dc_out, &data, "lsp").await {
+                                                                    eprintln!("[lsp] Failed to send chunk: {}", e);
                                                                     break;
                                                                 }
                                                             }
                                                         } else {
                                                             let data = Bytes::copy_from_slice(&new_content);
-                                                            if let Err(e) = dc_out.send(&data).await {
-                                                                eprintln!("Failed to send to WebRTC: {}", e);
+                                                            if let Err(e) = dc_send_with_backpressure(&dc_out, &data, "lsp").await {
+                                                                eprintln!("[lsp] Failed to send to WebRTC: {}", e);
                                                                 break;
                                                             }
                                                         }
@@ -2548,8 +2628,8 @@ async fn wire_peer_channels(
                                                     // Failed to parse JSON — send raw body
                                                     eprintln!("[LSP] Failed to parse JSON from stdout, forwarding raw bytes");
                                                     let data = Bytes::copy_from_slice(&buf);
-                                                    if let Err(e) = dc_out.send(&data).await {
-                                                        eprintln!("Failed to send raw bytes to WebRTC: {}", e);
+                                                    if let Err(e) = dc_send_with_backpressure(&dc_out, &data, "lsp").await {
+                                                        eprintln!("[lsp] Failed to send raw bytes to WebRTC: {}", e);
                                                         break;
                                                     }
                                                 }
@@ -2964,15 +3044,14 @@ async fn wire_peer_channels(
                                                 let chunks = make_chunks(data_bytes, msg_id);
                                                 for chunk in chunks {
                                                     let data = Bytes::from(chunk);
-                                                    if let Err(e) = dc_out.send(&data).await {
-                                                        eprintln!("[ext-host] chunk send error: {}", e);
+                                                    if let Err(e) = dc_send_with_backpressure(&dc_out, &data, "ext-host").await {
+                                                        eprintln!("[ext-host] chunk send failed permanently: {}", e);
                                                         break;
                                                     }
                                                 }
                                             } else {
-                                                if let Err(e) = dc_out.send_text(trimmed.to_string()).await {
-                                                    eprintln!("[ext-host] send error: {}", e);
-                                                    break;
+                                                if let Err(e) = dc_send_text_with_backpressure(&dc_out, trimmed.to_string(), "ext-host").await {
+                                                    eprintln!("[ext-host] send failed permanently: {}", e);
                                                 }
                                             }
                                         }
@@ -3191,20 +3270,16 @@ async fn wire_peer_channels(
                                                 println!("[vscode-server] Chunking large message: {} bytes → {} chunks", data_bytes.len(), chunks.len());
                                                 for chunk in chunks {
                                                     let data = Bytes::from(chunk);
-                                                    if let Err(e) = dc_out.send(&data).await {
-                                                        eprintln!("[vscode-server] chunk send error: {}", e);
+                                                    if let Err(e) = dc_send_with_backpressure(&dc_out, &data, "vscode-server").await {
+                                                        eprintln!("[vscode-server] chunk send failed permanently: {}", e);
+                                                        // Don't break the outer loop — just skip this message
                                                         break;
                                                     }
-                                                    // Pace chunk sends to prevent SCTP buffer overflow.
-                                                    // Without this, rapid bursts of large WS frames
-                                                    // (350KB × many during initial connection) saturate
-                                                    // the DataChannel and cause OperationError.
-                                                    tokio::time::sleep(std::time::Duration::from_millis(3)).await;
                                                 }
                                             } else {
-                                                if let Err(e) = dc_out.send_text(trimmed.to_string()).await {
-                                                    eprintln!("[vscode-server] send error: {}", e);
-                                                    break;
+                                                if let Err(e) = dc_send_text_with_backpressure(&dc_out, trimmed.to_string(), "vscode-server").await {
+                                                    eprintln!("[vscode-server] send failed permanently: {}", e);
+                                                    // Don't break — continue trying with next messages
                                                 }
                                             }
                                         }
