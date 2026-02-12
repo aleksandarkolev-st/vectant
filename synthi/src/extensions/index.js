@@ -28,6 +28,7 @@ export { createMessageId, createRequest, createResponse, createEvent, isValidMes
 export { WorkerProxy, createWorkerProxy, getWorkerProxy } from './bridge/WorkerProxy.js';
 export { MainThreadBridge, createMainThreadBridge, getMainThreadBridge } from './bridge/MainThreadBridge.js';
 export { MonacoBridge } from './bridge/MonacoBridge.js';
+export { LanguageProviderBridge } from './bridge/LanguageProviderBridge.js';
 export { RemoteExtHostProxy } from './bridge/RemoteExtHostProxy.js';
 export { VSCodeServerProxy } from './bridge/VSCodeServerProxy.js';
 
@@ -96,6 +97,7 @@ export async function initializeExtensionSystem(options) {
   // Import dynamically to support tree-shaking
   const { MainThreadBridge } = await import('./bridge/MainThreadBridge.js');
   const { MonacoBridge } = await import('./bridge/MonacoBridge.js');
+  const { LanguageProviderBridge } = await import('./bridge/LanguageProviderBridge.js');
   const { getStorageService } = await import('./services/StorageService.js');
   const { getWebviewManager } = await import('./webview/WebviewManager.js');
   const { getExtensionScheduler } = await import('./scheduler/ExtensionScheduler.js');
@@ -126,6 +128,7 @@ export async function initializeExtensionSystem(options) {
 
   // Connect Monaco bridge (only if editor provided)
   let monacoBridge = null;
+  let languageProviderBridge = null;
   if (editor) {
     monacoBridge = new MonacoBridge(bridge);
     // MonacoBridge.init() needs the monaco namespace and the editor instance.
@@ -133,6 +136,13 @@ export async function initializeExtensionSystem(options) {
     const monacoNs = (typeof window !== 'undefined' && window.monaco) ? window.monaco : null;
     if (monacoNs) {
       monacoBridge.init(monacoNs, editor);
+
+      // Initialize the Language Provider Bridge — this is the critical bridge
+      // that connects extension-registered language providers (in the worker)
+      // with Monaco editor language features (on the main thread).
+      languageProviderBridge = new LanguageProviderBridge(bridge);
+      languageProviderBridge.init(monacoNs);
+      bridge.languageProviderBridge = languageProviderBridge;
     }
   }
 
@@ -309,6 +319,7 @@ export async function initializeExtensionSystem(options) {
     dispose: () => {
       bridge.shutdown();
       if (monacoBridge) monacoBridge.dispose();
+      if (languageProviderBridge) languageProviderBridge.dispose();
       scheduler.stop();
       memory.stop();
       latencyMonitor.stop();
