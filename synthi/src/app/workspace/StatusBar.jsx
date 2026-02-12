@@ -6,7 +6,8 @@ import { selectCursorPosition } from '@/redux/uiSlice';
 import { selectActiveFile } from '@/redux/workspaceSlice';
 import { getMonacoLanguage } from '@/utils/languageMapper';
 import { useCollabStatus } from '@/hooks/useCollabStatus';
-import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff } from 'lucide-react';
+import { useCollabSession } from '@/hooks/useCollabSession';
+import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff, Radio, Users } from 'lucide-react';
 
 /**
  * StatusBar Component - Synthi styled bottom status bar
@@ -66,6 +67,7 @@ export default function StatusBar({
   
   // Aggregated collaboration WebSocket status
   const collabStatus = useCollabStatus();
+  const { role: sessionRole, guests, isHost, isGuest, session } = useCollabSession();
   const getCollabStyle = () => {
     switch (collabStatus) {
       case 'connected':
@@ -144,6 +146,29 @@ export default function StatusBar({
           <div className={`w-2 h-2 rounded-full ${collabStyle.dot}`} />
           <span className={`${collabStyle.textColor} font-semibold`}>{collabStyle.text}</span>
         </div>
+
+        {/* Session Sharing Indicator */}
+        {isHost && (
+          <>
+            <div className="w-px h-4 bg-[#1a1b24]"></div>
+            <div className="flex items-center gap-2 px-2.5 py-1 cursor-default" title={`Live session — ${guests.length} guest(s)`}>
+              <Radio className="w-3.5 h-3.5 text-[#ff5757]" strokeWidth={2} />
+              <span className="w-2 h-2 rounded-full bg-[#ff5757] animate-pulse" />
+              <span className="text-[#ff5757] font-semibold">LIVE</span>
+              <span className="text-[#5a6178] font-medium">{guests.length}</span>
+              <Users className="w-3.5 h-3.5 text-[#5a6178]" strokeWidth={2} />
+            </div>
+          </>
+        )}
+        {isGuest && (
+          <>
+            <div className="w-px h-4 bg-[#1a1b24]"></div>
+            <div className="flex items-center gap-2 px-2.5 py-1 cursor-default" title={`Connected to ${session?.hostName || 'Host'}'s session`}>
+              <Users className="w-3.5 h-3.5 text-[#fbbf24]" strokeWidth={2} />
+              <span className="text-[#fbbf24] font-semibold">Guest</span>
+            </div>
+          </>
+        )}
       </div>
       
       {/* Right Section - Better grouped */}
