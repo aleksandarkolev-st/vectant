@@ -249,6 +249,193 @@ function sendEvent(method, ...args) {
 }
 
 // ============================================================================
+// Extension Host Preload Bridge (TCP server)
+//
+// The ext-host-preload.js script runs inside code-server's Extension Host
+// process and connects back to this TCP server. It sends UI events (tree
+// provider registrations, tree data, webview HTML changes) as newline-
+// delimited JSON. We parse them and forward to the browser via stdout.
+// ============================================================================
+
+/** @type {net.Server|null} */
+let preloadBridgeServer = null;
+
+/** @type {number|null} TCP port the bridge listens on */
+let preloadBridgePort = null;
+
+/** @type {Set<net.Socket>} Connected preload clients */
+const preloadClients = new Set();
+
+/** @type {Map<string, object>} viewId → last known tree data */
+const preloadTreeCache = new Map();
+
+/**
+ * Start the TCP bridge server for ext-host-preload.js connections.
+ * Picks a random available port and stores it in preloadBridgePort.
+ *
+ * @returns {Promise<number>} The port the bridge is listening on
+ */
+function startPreloadBridge() {
+  return new Promise((resolve, reject) => {
+    if (preloadBridgeServer) {
+      resolve(preloadBridgePort);
+      return;
+    }
+
+    const server = net.createServer((socket) => {
+      process.stderr.write(`[preload-bridge] Client connected from Extension Host\n`);
+      preloadClients.add(socket);
+
+      let lineBuf = '';
+
+      socket.on('data', (chunk) => {
+        lineBuf += chunk.toString();
+        let newlineIdx;
+        while ((newlineIdx = lineBuf.indexOf('\n')) !== -1) {
+          const line = lineBuf.slice(0, newlineIdx).trim();
+          lineBuf = lineBuf.slice(newlineIdx + 1);
+          if (!line) continue;
+
+          try {
+            const msg = JSON.parse(line);
+            _handlePreloadMessage(msg);
+          } catch (e) {
+            process.stderr.write(`[preload-bridge] Parse error: ${e.message}\n`);
+          }
+        }
+      });
+
+      socket.on('close', () => {
+        process.stderr.write(`[preload-bridge] Client disconnected\n`);
+        preloadClients.delete(socket);
+      });
+
+      socket.on('error', (err) => {
+        process.stderr.write(`[preload-bridge] Socket error: ${err.message}\n`);
+        preloadClients.delete(socket);
+      });
+    });
+
+    server.listen(0, '127.0.0.1', () => {
+      preloadBridgePort = server.address().port;
+      preloadBridgeServer = server;
+      process.stderr.write(`[preload-bridge] TCP bridge listening on port ${preloadBridgePort}\n`);
+      resolve(preloadBridgePort);
+    });
+
+    server.on('error', (err) => {
+      process.stderr.write(`[preload-bridge] Server error: ${err.message}\n`);
+      reject(err);
+    });
+
+    // Don't let the bridge server keep the process alive on its own
+    server.unref();
+  });
+}
+
+/**
+ * Stop the preload bridge TCP server.
+ */
+function stopPreloadBridge() {
+  if (preloadBridgeServer) {
+    for (const client of preloadClients) {
+      try { client.destroy(); } catch (_) {}
+    }
+    preloadClients.clear();
+    try { preloadBridgeServer.close(); } catch (_) {}
+    preloadBridgeServer = null;
+    preloadBridgePort = null;
+    process.stderr.write(`[preload-bridge] TCP bridge stopped\n`);
+  }
+}
+
+/**
+ * Handle a message from the ext-host-preload.js script.
+ * These are UI events extracted from the real Extension Host.
+ *
+ * @param {object} msg
+ */
+function _handlePreloadMessage(msg) {
+  if (!msg || typeof msg !== 'object') return;
+
+  switch (msg.type) {
+    case 'treeProvider': {
+      // A tree data provider was registered
+      process.stderr.write(`[preload-bridge] Tree provider registered: ${msg.viewId} (ext: ${msg.extensionId})\n`);
+      sendEvent('registerTreeView', msg.viewId, msg.extensionId);
+      break;
+    }
+
+    case 'treeData': {
+      // Tree data resolved for a view
+      process.stderr.write(`[preload-bridge] Tree data for ${msg.viewId}: ${(msg.data || []).length} items\n`);
+      preloadTreeCache.set(msg.viewId, msg.data);
+      sendEvent('treeData', msg.viewId, msg.data);
+      break;
+    }
+
+    case 'webviewProvider': {
+      // A webview view provider was registered
+      process.stderr.write(`[preload-bridge] Webview provider registered: ${msg.viewType} (ext: ${msg.extensionId})\n`);
+      sendEvent('createWebview', msg.viewType, msg.viewType, msg.viewType, msg.extensionId);
+      break;
+    }
+
+    case 'webviewHtml': {
+      // Webview HTML content updated
+      process.stderr.write(`[preload-bridge] Webview HTML for ${msg.viewType}: ${(msg.html || '').length} chars\n`);
+      sendEvent('updateWebview', msg.viewType, msg.html);
+      break;
+    }
+
+    case 'webviewPanel': {
+      // A webview panel was created
+      process.stderr.write(`[preload-bridge] Webview panel: ${msg.viewId} (type: ${msg.viewType})\n`);
+      sendEvent('createWebview', msg.viewId, msg.viewType, msg.title, msg.extensionId);
+      break;
+    }
+
+    case 'webviewPanelHtml': {
+      // Webview panel HTML content updated
+      sendEvent('updateWebview', msg.viewId, msg.html);
+      break;
+    }
+
+    case 'command': {
+      // A command was registered
+      process.stderr.write(`[preload-bridge] Command registered: ${msg.commandId} (ext: ${msg.extensionId})\n`);
+      sendEvent('registerCommand', msg.commandId, msg.extensionId);
+      break;
+    }
+
+    case 'webviewDisposed': {
+      sendEvent('disposeWebview', msg.viewType || msg.viewId);
+      break;
+    }
+
+    default:
+      process.stderr.write(`[preload-bridge] Unknown message type: ${msg.type}\n`);
+  }
+}
+
+/**
+ * Send a message to all connected preload clients.
+ * Used to request tree data refresh, etc.
+ *
+ * @param {object} msg
+ */
+function sendToPreloadClients(msg) {
+  const json = JSON.stringify(msg) + '\n';
+  for (const client of preloadClients) {
+    try {
+      client.write(json);
+    } catch (e) {
+      process.stderr.write(`[preload-bridge] Write to client failed: ${e.message}\n`);
+    }
+  }
+}
+
+// ============================================================================
 // Server State
 // ============================================================================
 
