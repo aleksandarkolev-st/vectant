@@ -794,11 +794,24 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
 
   /**
    * Execute a command registered by an extension.
+   * Tries the local worker first; if the command isn't found locally,
+   * routes to the VS Code Server via the preload bridge.
    */
   const executeCommand = useCallback(async (commandId, ...args) => {
     const system = systemRef.current;
     if (!system) throw new Error('Extension host not ready');
-    return system.executeCommand(commandId, ...args);
+
+    // Try local execution first (commands registered in the web worker)
+    try {
+      return await system.executeCommand(commandId, ...args);
+    } catch (localErr) {
+      // If the command isn't registered locally, try the VS Code Server
+      if (system.bridge?.vscodeServerProxy?.isReady()) {
+        console.log(`[useExtensions] Command ${commandId} not local, routing to VS Code Server`);
+        return system.bridge.vscodeServerProxy.request('executeExtensionCommand', commandId, ...args);
+      }
+      throw localErr;
+    }
   }, []);
 
   /**

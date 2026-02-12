@@ -1755,6 +1755,7 @@ export default function EditorPage({ params }) {
                                         webviewPanels={extensionWebviewPanels}
                                         webviewManager={extensionWebviewManager}
                                         extensions={installedExtensions}
+                                        onExecuteCommand={executeExtensionCommand}
                                     />
                                 );
                             })() : (
