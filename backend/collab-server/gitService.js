@@ -266,12 +266,17 @@ class GitService {
      * Ensure internal artifacts are listed in .git/info/exclude so they
      * never appear in git status, even if a bug places them in the working tree.
      * Safe to call multiple times — only appends if the pattern is missing.
+     *
+     * For linked worktrees git reads info/exclude from the **commondir**
+     * (the bare repo), not the worktree gitdir, so we write to both
+     * locations to cover all cases.
      */
     _ensureLocalExcludes(repoPath) {
         try {
             // Resolve the actual git directory — handles both standard (.git dir)
             // and worktree (.git file pointing to gitdir)
             let gitDirPath = path.join(repoPath, '.git');
+            let commonDirPath = null;
             try {
                 const stat = fs.statSync(gitDirPath);
                 if (stat.isFile()) {
@@ -280,28 +285,48 @@ class GitService {
                     const match = content.match(/^gitdir:\s*(.+)$/m);
                     if (match) {
                         gitDirPath = path.resolve(repoPath, match[1].trim());
+                        // Read commondir to find the shared bare repo
+                        const commondirFile = path.join(gitDirPath, 'commondir');
+                        if (fs.existsSync(commondirFile)) {
+                            const rel = fs.readFileSync(commondirFile, 'utf8').trim();
+                            commonDirPath = path.resolve(gitDirPath, rel);
+                        }
                     }
                 }
             } catch (_) {
                 // Fall through — use the default .git path
             }
 
-            const excludePath = path.join(gitDirPath, 'info', 'exclude');
-            const infoDir = path.dirname(excludePath);
-            if (!fs.existsSync(infoDir)) fs.mkdirSync(infoDir, { recursive: true });
-
-            const existing = fs.existsSync(excludePath)
-                ? fs.readFileSync(excludePath, 'utf8')
-                : '';
-
             const patterns = ['.git-archive.tar.gz', '.synthi-migrated', '_upstream.git', 'sessions/'];
-            const toAppend = patterns.filter(p => !existing.includes(p));
-            if (toAppend.length > 0) {
-                const suffix = existing.endsWith('\n') || existing === '' ? '' : '\n';
-                fs.appendFileSync(excludePath, suffix + toAppend.join('\n') + '\n');
+
+            // Write exclude patterns to the gitDirPath (handles normal repos)
+            this._writeExcludePatterns(path.join(gitDirPath, 'info', 'exclude'), patterns);
+
+            // For worktrees, also write to the commondir (bare repo) —
+            // git reads info/exclude from commondir, not the worktree gitdir.
+            if (commonDirPath && commonDirPath !== gitDirPath) {
+                this._writeExcludePatterns(path.join(commonDirPath, 'info', 'exclude'), patterns);
             }
         } catch (e) {
             console.warn('[GitService] Failed to update .git/info/exclude:', e.message);
+        }
+    }
+
+    /**
+     * Helper: append exclude patterns to a git exclude file if missing.
+     */
+    _writeExcludePatterns(excludePath, patterns) {
+        const infoDir = path.dirname(excludePath);
+        if (!fs.existsSync(infoDir)) fs.mkdirSync(infoDir, { recursive: true });
+
+        const existing = fs.existsSync(excludePath)
+            ? fs.readFileSync(excludePath, 'utf8')
+            : '';
+
+        const toAppend = patterns.filter(p => !existing.includes(p));
+        if (toAppend.length > 0) {
+            const suffix = existing.endsWith('\n') || existing === '' ? '' : '\n';
+            fs.appendFileSync(excludePath, suffix + toAppend.join('\n') + '\n');
         }
     }
 
@@ -1794,21 +1819,45 @@ class GitService {
             fs.rmSync(legacyGitDir, { recursive: true, force: true });
             console.log(`[Migration]   Removed legacy .git directory`);
 
-            // Register the existing working tree as a worktree of the bare repo
+            // Manually wire the worktree links.
+            // `git worktree add` cannot be used because the working directory
+            // already exists (it contains user files + _upstream.git).
+            // Instead we create the admin entries by hand — this is the same
+            // structure that `git worktree add` would produce.
+            const wtName = 'main';
+            const wtAdminDir = path.join(barePath, 'worktrees', wtName);
+            fs.mkdirSync(wtAdminDir, { recursive: true });
+
+            // Get HEAD commit hash from bare repo
             const bareGit = simpleGit(barePath);
-            await bareGit.raw(['worktree', 'add', '--detach', repoPath]);
+            const headHash = (await bareGit.revparse(['HEAD'])).trim();
+
+            // Detach the bare repo's HEAD so the worktree can checkout the branch.
+            // Bare repos default to `ref: refs/heads/main` which blocks worktree checkout.
+            await bareGit.raw(['update-ref', '--no-deref', 'HEAD', headHash]);
+            console.log(`[Migration]   Detached bare HEAD to ${headHash.slice(0, 7)}`);
+
+            // gitdir file in the admin dir → points to the .git file in the worktree
+            const dotGitInWorktree = path.join(repoPath, '.git');
+            fs.writeFileSync(path.join(wtAdminDir, 'gitdir'), dotGitInWorktree + '\n');
+
+            // HEAD in the admin dir → symbolic ref to the branch
+            fs.writeFileSync(path.join(wtAdminDir, 'HEAD'), `ref: refs/heads/${currentBranch}\n`);
+
+            // commondir → relative path back to bare repo root
+            fs.writeFileSync(path.join(wtAdminDir, 'commondir'), '../..\n');
+
+            // .git FILE in the worktree → points to the admin dir
+            fs.writeFileSync(dotGitInWorktree, `gitdir: ${wtAdminDir}\n`);
             console.log(`[Migration]   Re-attached as worktree: ${repoPath}`);
 
-            // Checkout the original branch in the worktree
+            // Rebuild the index from HEAD so git recognises the working files.
+            // Without this, all tracked files show as "deleted" because the
+            // manually-wired worktree has no index file.
             const wtGit = simpleGit(repoPath);
-            try {
-                await wtGit.checkout(currentBranch);
-            } catch (_) {
-                // Branch might not exist as a local ref — try creating it
-                try {
-                    await wtGit.checkoutLocalBranch(currentBranch);
-                } catch (__) {}
-            }
+            await wtGit.reset(['HEAD']);
+            console.log(`[Migration]   Index rebuilt via git reset`);
+
             console.log(`[Migration]   Checked out branch: ${currentBranch}`);
         } catch (e) {
             throw new MigrationError(slug, `Worktree re-attach failed: ${e.message}`, 'worktree-reattach');
