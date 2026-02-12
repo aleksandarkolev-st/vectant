@@ -93,9 +93,19 @@ let pendingMessages = [];
 /** @type {boolean} */
 let connectionAttempted = false;
 
+/** @type {number} */
+let reconnectAttempts = 0;
+
+/** @type {number} Maximum reconnection attempts */
+const MAX_RECONNECT_ATTEMPTS = 5;
+
+/** @type {number} Base delay for exponential backoff (ms) */
+const RECONNECT_BASE_DELAY = 1000;
+
 /**
  * Connect to the vscode-server-manager's TCP bridge.
  * Non-blocking — if connection fails, extensions still work normally.
+ * Supports automatic reconnection with exponential backoff.
  */
 function connectBridge() {
   if (connectionAttempted) return;
@@ -105,6 +115,7 @@ function connectBridge() {
     log('Connected to bridge');
     bridgeSocket = socket;
     bridgeConnected = true;
+    reconnectAttempts = 0; // Reset on successful connection
 
     // Flush queued messages
     for (const msg of pendingMessages) {
@@ -145,12 +156,14 @@ function connectBridge() {
     logError(`Bridge connection error: ${err.message}`);
     bridgeConnected = false;
     bridgeSocket = null;
+    _scheduleReconnect();
   });
 
   socket.on('close', () => {
     log('Bridge connection closed');
     bridgeConnected = false;
     bridgeSocket = null;
+    _scheduleReconnect();
   });
 
   // Don't let the socket keep the process alive
@@ -158,15 +171,46 @@ function connectBridge() {
 }
 
 /**
+ * Schedule a reconnection attempt with exponential backoff.
+ */
+function _scheduleReconnect() {
+  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    log(`Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached — giving up`);
+    return;
+  }
+
+  const delay = RECONNECT_BASE_DELAY * Math.pow(2, reconnectAttempts);
+  reconnectAttempts++;
+  log(`Scheduling reconnect attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} in ${delay}ms`);
+
+  const timer = setTimeout(() => {
+    connectionAttempted = false;
+    connectBridge();
+  }, delay);
+
+  // Don't let the timer keep the process alive
+  if (timer.unref) timer.unref();
+}
+
+/**
  * Send a JSON message to the bridge. Queues if not yet connected.
+ * Queue is limited to prevent memory leaks if bridge never connects.
  * @param {object} msg
  */
 function bridgeSend(msg) {
-  const json = JSON.stringify(msg);
-  if (bridgeConnected && bridgeSocket) {
-    bridgeSocket.write(json + '\n');
-  } else {
-    pendingMessages.push(json);
+  try {
+    const json = JSON.stringify(msg);
+    if (bridgeConnected && bridgeSocket) {
+      bridgeSocket.write(json + '\n');
+    } else {
+      // Cap the queue at 500 messages to prevent unbounded memory growth
+      if (pendingMessages.length < 500) {
+        pendingMessages.push(json);
+      }
+    }
+  } catch (e) {
+    // Never let serialization errors bubble up to extension code
+    logError(`bridgeSend error: ${e.message}`);
   }
 }
 
@@ -186,6 +230,10 @@ let vsCodeWrapped = false;
 /**
  * Intercept Module._load to wrap the `vscode` module when it's first loaded.
  * All other modules pass through untouched.
+ *
+ * SAFETY: All wrapping is inside try/catch. If anything fails, the original
+ * module is returned unchanged — extensions work normally, just without
+ * UI observation.
  */
 Module._load = function (request, parent, isMain) {
   const result = originalLoad.apply(this, arguments);
@@ -193,8 +241,14 @@ Module._load = function (request, parent, isMain) {
   // Only intercept the 'vscode' module, and only once
   if (request === 'vscode' && !vsCodeWrapped && result && typeof result === 'object') {
     vsCodeWrapped = true;
-    log('Intercepted vscode module — wrapping API surfaces');
-    wrapVSCodeAPI(result);
+    try {
+      log('Intercepted vscode module — wrapping API surfaces');
+      wrapVSCodeAPI(result);
+    } catch (e) {
+      // CRITICAL: never crash the Extension Host
+      logError(`Failed to wrap vscode API (extensions will work, UI bridge disabled): ${e.message}`);
+      logError(e.stack || '');
+    }
   }
 
   return result;
