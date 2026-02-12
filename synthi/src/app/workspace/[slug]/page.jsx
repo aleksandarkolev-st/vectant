@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { use } from 'react';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent, selectFileCacheEntries } from '@/redux/workspaceSlice';
+import { fetchGitStatus } from '@/redux/gitSlice';
 import collabClient from '@/services/collabClient';
 import { 
     selectShowTerminal, 
@@ -334,6 +335,11 @@ export default function EditorPage({ params }) {
                 window.dispatchEvent(new CustomEvent('synthi:file-reverted', {
                     detail: { slug, filePaths },
                 }));
+            },
+            onGitStatusChanged: () => {
+                // Auto-flush wrote content to disk — refresh git status so
+                // Source Control panel updates without waiting for the poll.
+                dispatch(fetchGitStatus(slug));
             },
         });
         return teardown;

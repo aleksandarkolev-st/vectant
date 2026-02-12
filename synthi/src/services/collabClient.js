@@ -902,6 +902,11 @@ class CollabClient {
               handlers.onFileReverted(msg.filePaths || []);
             }
           }
+          if (msg.type === 'git-status-changed' && msg.slug === slug) {
+            if (typeof handlers.onGitStatusChanged === 'function') {
+              handlers.onGitStatusChanged(msg.filePath || null);
+            }
+          }
         } catch (_) {
           // Not JSON — ignore
         }
