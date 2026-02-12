@@ -296,7 +296,8 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
 
     } catch (err) {
       console.warn('[useExtensions] VS Code Server connection failed:', err.message);
-      setVscodeServerState('error');
+      // Set 'disconnected' (not 'error') so the auto-reconnect effect retries
+      setVscodeServerState('disconnected');
       // Non-fatal — extensions remain pending until VS Code Server connects
     } finally {
       connectingVSCodeServerRef.current = false;
@@ -551,6 +552,39 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       }
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ─── Auto-reconnect VS Code Server after disconnect ──────────
+  // When the DataChannel crashes (e.g. buffer overflow), the disconnect
+  // handler resets flags and sets state to 'disconnected'.  This effect
+  // detects that state and retries with exponential backoff.
+  const reconnectAttemptRef = useRef(0);
+
+  useEffect(() => {
+    if (vscodeServerState !== 'disconnected') {
+      // Reset attempt counter when we're not in disconnected state
+      if (vscodeServerState === 'running') reconnectAttemptRef.current = 0;
+      return;
+    }
+
+    const attempt = reconnectAttemptRef.current;
+    if (attempt >= 5) {
+      console.warn('[useExtensions] VS Code Server reconnect: giving up after 5 attempts');
+      return;
+    }
+
+    // Exponential backoff: 2s, 4s, 8s, 16s, 32s
+    const delay = Math.min(2000 * Math.pow(2, attempt), 32000);
+    console.log(`[useExtensions] VS Code Server disconnected, retrying in ${delay}ms (attempt ${attempt + 1}/5)`);
+
+    const timer = setTimeout(() => {
+      reconnectAttemptRef.current = attempt + 1;
+      connectVSCodeServer().catch((err) => {
+        console.warn('[useExtensions] VS Code Server reconnect failed:', err.message);
+      });
+    }, delay);
+
+    return () => clearTimeout(timer);
+  }, [vscodeServerState, connectVSCodeServer]);
 
   // ─── Reconnect Monaco when editor becomes available ──────────
   useEffect(() => {
