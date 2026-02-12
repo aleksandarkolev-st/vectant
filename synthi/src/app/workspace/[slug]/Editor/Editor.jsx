@@ -2041,16 +2041,23 @@ const EditorPanel = ({
                 console.log(`[LSP] Channel closed for ${backendLang}`);
                 completionDisposables.forEach(d => d.dispose());
                 changeDisposable.dispose();
-                // Clean up any pending debounce timer
-                if (_triggerDebounceTimer) {
-                    clearTimeout(_triggerDebounceTimer);
-                    _triggerDebounceTimer = null;
-                }
+                // Clean up any pending debounce timer.
+                // Guard with try/catch: Turbopack code-splitting can
+                // occasionally hoist this handler into a chunk where the
+                // `let` bindings from the parent .then() are absent.
+                try {
+                    if (typeof _triggerDebounceTimer !== 'undefined' && _triggerDebounceTimer) {
+                        clearTimeout(_triggerDebounceTimer);
+                        _triggerDebounceTimer = null;
+                    }
+                } catch (_) {}
                 // Dispose the CTS if a request was in-flight
-                if (_lastCompletionCts) {
-                    try { _lastCompletionCts.dispose(); } catch (_) {}
-                    _lastCompletionCts = null;
-                }
+                try {
+                    if (typeof _lastCompletionCts !== 'undefined' && _lastCompletionCts) {
+                        _lastCompletionCts.dispose();
+                        _lastCompletionCts = null;
+                    }
+                } catch (_) {}
 
                 // P2: Send shutdown→exit for a clean server shutdown
                 if (languageClient.isRunning()) {
