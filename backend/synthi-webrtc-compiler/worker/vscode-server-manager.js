@@ -818,7 +818,11 @@ function wsConnect(tunnelId, urlPath) {
     }
 
     const wsKey = crypto.randomBytes(16).toString('base64');
-    const reqPath = urlPath || '/';
+    let reqPath = urlPath || '/';
+    // Strip the /__vscode-proxy__ prefix that the browser-side shim includes
+    if (reqPath.startsWith('/__vscode-proxy__')) {
+      reqPath = reqPath.slice('/__vscode-proxy__'.length) || '/';
+    }
 
     const req = http.request({
       hostname: '127.0.0.1',
@@ -1090,6 +1094,9 @@ function proxyHttpRequest(reqData) {
 function getWsShimScript() {
   return `
 (function() {
+  if(window.__synthiWsShim) return;
+  window.__synthiWsShim = true;
+
   var RealWebSocket = window.WebSocket;
   var tunnelIdCounter = 0;
 
@@ -1139,11 +1146,12 @@ function getWsShimScript() {
       if (msg.type === 'synthi-ws-data' && msg.tunnelId === self._tunnelId) {
         var msgEvt;
         if (msg.binary) {
-          // Convert base64 to ArrayBuffer
+          // Convert base64 to ArrayBuffer, wrap in Blob if binaryType is 'blob'
           var binary = atob(msg.data);
           var bytes = new Uint8Array(binary.length);
           for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          msgEvt = new MessageEvent('message', { data: bytes.buffer });
+          var d = self.binaryType === 'blob' ? new Blob([bytes.buffer]) : bytes.buffer;
+          msgEvt = new MessageEvent('message', { data: d });
         } else {
           msgEvt = new MessageEvent('message', { data: msg.data });
         }
