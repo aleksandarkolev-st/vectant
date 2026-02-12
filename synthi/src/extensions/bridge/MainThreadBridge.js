@@ -403,6 +403,12 @@ export class MainThreadBridge {
   _setupRemoteEventHandlers() {
     if (!this.vscodeServerProxy) return;
 
+    // Forward tree view registration from VS Code Server → UI
+    this.vscodeServerProxy.on('registerTreeView', (viewId, extensionId) => {
+      console.log(`[MainThreadBridge/vscode-server] registerTreeView: ${viewId} (ext: ${extensionId})`);
+      this._emitRemoteContribution?.('registerTreeView', { viewId, extensionId });
+    });
+
     // Forward tree view data from VS Code Server → UI
     this.vscodeServerProxy.on('treeData', (viewId, data) => {
       console.log(`[MainThreadBridge/vscode-server] treeData for ${viewId} (${data?.length || 0} items)`);
@@ -413,8 +419,8 @@ export class MainThreadBridge {
     this.vscodeServerProxy.on('createWebview', (viewId, viewType, title, opts) => {
       console.log(`[MainThreadBridge/vscode-server] createWebview: ${viewId}`);
       const extIdMatch = viewId.match(/^(.+?)\.(webview|webviewView)\./);
-      const extensionId = extIdMatch ? extIdMatch[1] : opts?.extensionId;
-      this._emitRemoteContribution?.('createWebview', { viewId, viewType, title, opts, extensionId });
+      const extensionId = extIdMatch ? extIdMatch[1] : (typeof opts === 'object' ? opts?.extensionId : opts);
+      this._emitRemoteContribution?.('createWebview', { viewId, viewType, title, opts: typeof opts === 'object' ? opts : {}, extensionId });
     });
 
     // Forward webview HTML updates from VS Code Server → UI
@@ -435,12 +441,6 @@ export class MainThreadBridge {
     console.log('[MainThreadBridge] VS Code Server event handlers wired');
   }
 
-  /**
-   * After installing a Node-only extension on the VS Code Server, emit
-   * synthetic webview events for any webview-type views defined in the
-   * extension's manifest. This makes the UI show the webview panel (even if
-   * we can't populate it with real HTML from code-server's Extension Host yet).
-   *
   /**
    * @deprecated With the preload-based bridge, extensions get the real vscode API
    * and UI events are forwarded automatically. This method is retained only as a

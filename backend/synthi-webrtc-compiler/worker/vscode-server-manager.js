@@ -377,7 +377,7 @@ function _handlePreloadMessage(msg) {
     case 'webviewProvider': {
       // A webview view provider was registered
       process.stderr.write(`[preload-bridge] Webview provider registered: ${msg.viewType} (ext: ${msg.extensionId})\n`);
-      sendEvent('createWebview', msg.viewType, msg.viewType, msg.viewType, msg.extensionId);
+      sendEvent('createWebview', msg.viewType, msg.viewType, msg.viewType, { extensionId: msg.extensionId });
       break;
     }
 
@@ -391,7 +391,7 @@ function _handlePreloadMessage(msg) {
     case 'webviewPanel': {
       // A webview panel was created
       process.stderr.write(`[preload-bridge] Webview panel: ${msg.viewId} (type: ${msg.viewType})\n`);
-      sendEvent('createWebview', msg.viewId, msg.viewType, msg.title, msg.extensionId);
+      sendEvent('createWebview', msg.viewId, msg.viewType, msg.title, { extensionId: msg.extensionId });
       break;
     }
 

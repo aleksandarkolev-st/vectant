@@ -76,6 +76,33 @@ function logError(...args) {
 log(`Preload activated (PID=${process.pid}, bridge port=${BRIDGE_PORT})`);
 
 // ============================================================================
+// Extension ID Inference
+//
+// When wrapper functions are called (registerTreeDataProvider, etc.), we
+// infer the calling extension's ID from the call stack by looking for
+// paths inside the extensions directory.
+// ============================================================================
+
+/**
+ * Attempt to infer the calling extension's ID from the call stack.
+ * Looks for paths like `.../extensions/publisher.name-version/...`
+ *
+ * @returns {string|undefined}
+ */
+function _inferExtensionId() {
+  try {
+    const stack = new Error().stack || '';
+    // Match paths like /extensions/publisher.name-1.0.0/ or \extensions\publisher.name-1.0.0\
+    const match = stack.match(/[/\\]extensions[/\\]([^/\\]+?)-\d+[^/\\]*[/\\]/);
+    if (match) return match[1];
+    // Fallback: match any extensions/xxx/ pattern
+    const fallback = stack.match(/[/\\]extensions[/\\]([^/\\]+?)[/\\]/);
+    if (fallback) return fallback[1];
+  } catch (_) {}
+  return undefined;
+}
+
+// ============================================================================
 // TCP Bridge Connection
 // ============================================================================
 
@@ -108,7 +135,7 @@ const RECONNECT_BASE_DELAY = 1000;
  * Supports automatic reconnection with exponential backoff.
  */
 function connectBridge() {
-  if (connectionAttempted) return;
+  if (connectionAttempted || bridgeConnected) return;
   connectionAttempted = true;
 
   const socket = net.createConnection({ port: BRIDGE_PORT, host: '127.0.0.1' }, () => {
@@ -282,6 +309,38 @@ const TREE_MAX_DEPTH = 4;
 /** Maximum items per level */
 const TREE_MAX_ITEMS_PER_LEVEL = 200;
 
+/**
+ * Safely serialize command arguments to prevent JSON.stringify failures.
+ * Converts Uri objects to strings, strips circular refs and class instances.
+ *
+ * @param {any[]|undefined} args
+ * @returns {any[]|undefined}
+ */
+function _safeSerializeArgs(args) {
+  if (!args || !Array.isArray(args)) return undefined;
+  try {
+    // Test serialization first — fast path for simple args
+    JSON.stringify(args);
+    return args;
+  } catch (_) {
+    // Fallback: serialize individual args with replacer
+    return args.map(arg => {
+      try {
+        return JSON.parse(JSON.stringify(arg, (key, value) => {
+          if (typeof value === 'bigint') return String(value);
+          if (value && typeof value === 'object' && typeof value.toString === 'function' && value.scheme) {
+            // VS Code Uri object
+            return value.toString();
+          }
+          return value;
+        }));
+      } catch (_) {
+        return String(arg);
+      }
+    });
+  }
+}
+
 /** Debounce timer map to avoid hammering providers on rapid changes */
 const _treeResolveTimers = new Map();
 
@@ -426,7 +485,9 @@ function _serializeTreeItem(treeItem, element) {
     command: treeItem.command ? {
       command: treeItem.command.command,
       title: treeItem.command.title,
-      arguments: treeItem.command.arguments,
+      // Safe-serialize arguments: drop non-serializable values to prevent
+      // JSON.stringify failures that would silently lose the entire tree
+      arguments: _safeSerializeArgs(treeItem.command.arguments),
     } : undefined,
     children: [],
   };
@@ -481,10 +542,11 @@ function wrapRegisterTreeDataProvider(vscode) {
     const disposable = original.call(this, viewId, provider);
 
     // Track the provider for data extraction
-    trackedTreeProviders.set(viewId, { provider });
+    const extensionId = _inferExtensionId();
+    trackedTreeProviders.set(viewId, { provider, extensionId });
 
     // Notify bridge of the registration
-    bridgeSend({ type: 'treeProvider', viewId });
+    bridgeSend({ type: 'treeProvider', viewId, extensionId });
 
     // Subscribe to provider's change events to re-resolve data
     if (provider.onDidChangeTreeData) {
@@ -541,10 +603,11 @@ function wrapCreateTreeView(vscode) {
     // Track the provider if one was given
     const provider = options?.treeDataProvider;
     if (provider) {
-      trackedTreeProviders.set(viewId, { provider });
+      const extensionId = _inferExtensionId();
+      trackedTreeProviders.set(viewId, { provider, extensionId });
 
       // Notify bridge
-      bridgeSend({ type: 'treeProvider', viewId });
+      bridgeSend({ type: 'treeProvider', viewId, extensionId });
 
       // Subscribe to provider's change events
       if (provider.onDidChangeTreeData) {
@@ -600,10 +663,11 @@ function wrapWebviewProviders(vscode) {
         _interceptWebviewHtml(webviewView.webview, viewType);
 
         // Notify bridge
-        bridgeSend({ type: 'webviewProvider', viewType });
+        const extensionId = _inferExtensionId();
+        bridgeSend({ type: 'webviewProvider', viewType, extensionId });
 
         // Track
-        trackedWebviewProviders.set(viewType, { provider, webviewView });
+        trackedWebviewProviders.set(viewType, { provider, webviewView, extensionId });
 
         // Call original resolveWebviewView
         return provider.resolveWebviewView.call(provider, webviewView, context, token);
@@ -640,7 +704,8 @@ function wrapWebviewProviders(vscode) {
       _interceptWebviewHtml(panel.webview, viewId);
 
       // Notify bridge
-      bridgeSend({ type: 'webviewPanel', viewId, viewType, title });
+      const extensionId = _inferExtensionId();
+      bridgeSend({ type: 'webviewPanel', viewId, viewType, title, extensionId });
 
       // Track disposal
       panel.onDidDispose(() => {
@@ -726,7 +791,7 @@ function wrapCommands(vscode) {
     const disposable = original.call(this, commandId, callback, thisArg);
 
     // Notify bridge of command registration
-    bridgeSend({ type: 'command', commandId });
+    bridgeSend({ type: 'command', commandId, extensionId: _inferExtensionId() });
 
     return disposable;
   };
