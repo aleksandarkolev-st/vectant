@@ -2060,8 +2060,11 @@ class GitService {
             }
 
             try {
-                const mainRepoPath = this.getRepoPath(slug);
-                const git = simpleGit(mainRepoPath);
+                // Use bare repo for migrated repos, main working tree otherwise
+                const gitSourcePath = this.isMigratedRepo(slug)
+                    ? this.getBarePath(slug)
+                    : this.getRepoPath(slug);
+                const git = simpleGit(gitSourcePath);
                 await git.raw(['worktree', 'remove', '--force', worktreePath]);
                 console.log(`[GitService] Removed session worktree: ${worktreePath}`);
             } catch (e) {
