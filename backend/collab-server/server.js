@@ -270,6 +270,9 @@ class ValidatingPersistence {
             }
           }
           
+          // Notify frontends so Source Control refreshes immediately
+          broadcastGitStatusChanged(slug, filePath);
+          
           console.log(`[Collab AutoFlush] ${filePath} -> GCS + cache (${content.length} chars)`);
         } catch (e) {
           console.error(`[Collab AutoFlush] Failed to flush ${filePath}:`, e.message);
@@ -484,6 +487,31 @@ function broadcastFileTreeChanged(slug) {
     }
   });
   console.log(`[Collab] Broadcast file-tree-changed for slug ${slug}`);
+}
+
+/**
+ * Broadcast a git-status-changed event to notification WebSocket clients.
+ * Sent after auto-flush writes to disk so frontends can immediately refresh
+ * Source Control instead of waiting for the next poll or debounce timer.
+ * Debounced per-slug (500ms) to avoid spamming during rapid typing.
+ *
+ * @param {string} slug - workspace slug
+ * @param {string} [filePath] - optional file path that triggered the change
+ */
+const _gitStatusBroadcastTimers = new Map();
+function broadcastGitStatusChanged(slug, filePath) {
+  if (_gitStatusBroadcastTimers.has(slug)) {
+    clearTimeout(_gitStatusBroadcastTimers.get(slug));
+  }
+  _gitStatusBroadcastTimers.set(slug, setTimeout(() => {
+    _gitStatusBroadcastTimers.delete(slug);
+    const message = JSON.stringify({ type: 'git-status-changed', slug, filePath });
+    notifyWss.clients.forEach((ws) => {
+      if (ws.readyState === WebSocket.OPEN && ws._slug === slug) {
+        try { ws.send(message); } catch (_) {}
+      }
+    });
+  }, 500));
 }
 
 /**
@@ -1014,30 +1042,38 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'commit':
                     result = await gitService.commit(slug, data.message);
+                    broadcastGitStatusChanged(slug);
                     break;
                 case 'stage':
                     result = await gitService.stageFile(slug, data.filePath);
+                    broadcastGitStatusChanged(slug);
                     break;
                 case 'stage-all':
                     result = await gitService.stageAll(slug);
+                    broadcastGitStatusChanged(slug);
                     break;
                 case 'stage-lines':
                     result = await gitService.stageLines(slug, data.filePath, data.patch);
+                    broadcastGitStatusChanged(slug);
                     break;
                 case 'unstage':
                     result = await gitService.unstageFile(slug, data.filePath);
+                    broadcastGitStatusChanged(slug);
                     break;
                 case 'unstage-all':
                     result = await gitService.unstageAll(slug);
+                    broadcastGitStatusChanged(slug);
                     break;
                 case 'push':
                     result = await gitService.push(slug);
+                    broadcastGitStatusChanged(slug);
                     break;
                 case 'pull':
                     result = await gitService.pull(slug);
                     // Pull changes files on disk — invalidate all Yjs docs
                     await invalidateDocsForSlug(slug);
                     broadcastFileTreeChanged(slug);
+                    broadcastGitStatusChanged(slug);
                     break;
                 case 'discard':
                     result = await gitService.discardChange(slug, data.filePath);
@@ -1048,6 +1084,7 @@ const server = http.createServer(async (req, res) => {
                     // Notify clients to reset their editor models for the reverted file
                     broadcastFileReverted(slug, data.filePath ? [data.filePath] : []);
                     broadcastFileTreeChanged(slug);
+                    broadcastGitStatusChanged(slug);
                     break;
                 case 'discard-all':
                     result = await gitService.discardAll(slug);
@@ -1056,6 +1093,7 @@ const server = http.createServer(async (req, res) => {
                     // Notify clients to reset ALL editor models
                     broadcastFileReverted(slug, []);
                     broadcastFileTreeChanged(slug);
+                    broadcastGitStatusChanged(slug);
                     break;
                 // Merge conflict resolution
                 case 'resolve-ours':
