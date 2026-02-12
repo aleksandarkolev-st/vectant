@@ -968,6 +968,104 @@ async function loadExtension(extensionId, code, manifest) {
   }
 }
 
+/**
+ * Load an extension from its installed directory on disk.
+ * Unlike loadExtension(), this preserves the extension's full directory
+ * structure so multi-file extensions and relative requires work.
+ *
+ * @param {string} extensionId  e.g. "publisher.name"
+ * @param {string} extensionPath  Absolute path to the extension directory
+ * @returns {Promise<{success: boolean, extensionId: string}>}
+ */
+async function loadExtensionFromPath(extensionId, extensionPath) {
+  if (loadedExtensions.has(extensionId)) {
+    process.stderr.write(`[remote-ext-host] Re-loading from path: ${extensionId}\n`);
+    try { await deactivateExtension(extensionId); } catch (_) {}
+    loadedExtensions.delete(extensionId);
+  }
+
+  process.stderr.write(`[remote-ext-host] loadExtensionFromPath: ${extensionId} at ${extensionPath}\n`);
+
+  // Read manifest from the extension directory
+  const pkgPath = path.join(extensionPath, 'package.json');
+  if (!fs.existsSync(pkgPath)) {
+    throw new Error(`package.json not found at ${pkgPath}`);
+  }
+
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  } catch (e) {
+    throw new Error(`Failed to parse package.json for ${extensionId}: ${e.message}`);
+  }
+
+  // Resolve the main entry point
+  const mainEntry = manifest.main || 'extension.js';
+  const mainPath = path.resolve(extensionPath, mainEntry);
+  if (!fs.existsSync(mainPath)) {
+    throw new Error(`Main entry not found: ${mainPath}`);
+  }
+
+  const { api: vscode, context } = createVSCodeAPI(extensionId);
+  context.extension.packageJSON = manifest;
+  context.extensionPath = extensionPath;
+  context.extensionUri = Uri.file(extensionPath);
+  context.extension.extensionPath = extensionPath;
+  context.extension.extensionUri = Uri.file(extensionPath);
+
+  try {
+    // Inject `require('vscode')` into the module cache
+    require.cache['vscode'] = {
+      id: 'vscode',
+      filename: 'vscode',
+      loaded: true,
+      exports: vscode,
+      parent: null,
+      children: [],
+      paths: [],
+    };
+
+    const origResolve = Module._resolveFilename;
+    Module._resolveFilename = function (request, parent, isMain, options) {
+      if (request === 'vscode') return 'vscode';
+      return origResolve.call(this, request, parent, isMain, options);
+    };
+
+    process.stderr.write(`[remote-ext-host] Loading ${extensionId} from path: ${mainPath}\n`);
+    const loadStart = Date.now();
+
+    // Clear stale cache for the main file
+    try { delete require.cache[require.resolve(mainPath)]; } catch (_) {}
+
+    const extensionModule = require(mainPath);
+
+    process.stderr.write(
+      `[remote-ext-host] require() from path completed in ${Date.now() - loadStart}ms\n`,
+    );
+
+    Module._resolveFilename = origResolve;
+
+    if (typeof extensionModule.activate !== 'function') {
+      throw new Error('Extension must export an activate() function');
+    }
+
+    loadedExtensions.set(extensionId, {
+      module: extensionModule,
+      manifest,
+      vscode,
+      context,
+    });
+
+    process.stderr.write(`[remote-ext-host] Loaded from path: ${extensionId}\n`);
+    return { success: true, extensionId };
+  } catch (err) {
+    process.stderr.write(
+      `[remote-ext-host] Load from path failed for ${extensionId}: ${err.message}\n${err.stack}\n`,
+    );
+    throw err;
+  }
+}
+
 async function activateExtension(extensionId) {
   const ext = loadedExtensions.get(extensionId);
   if (!ext) throw new Error(`Extension ${extensionId} not loaded`);
@@ -1078,6 +1176,9 @@ async function handleMessage(msg) {
         break;
       case 'loadExtension':
         result = await loadExtension(...args);
+        break;
+      case 'loadExtensionFromPath':
+        result = await loadExtensionFromPath(...args);
         break;
       case 'activateExtension':
         result = await activateExtension(...args);

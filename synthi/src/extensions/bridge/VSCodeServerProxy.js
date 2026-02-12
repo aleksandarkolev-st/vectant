@@ -718,6 +718,17 @@ export class VSCodeServerProxy {
     return this.request('listExtensions');
   }
 
+  /**
+   * Load an already-installed extension into the Extension Host Bridge
+   * for live UI event forwarding (tree data, webview HTML).
+   *
+   * @param {string} extensionId - e.g. "publisher.name"
+   * @returns {Promise<{success: boolean, hasUI: boolean}>}
+   */
+  async loadExtensionForUI(extensionId) {
+    return this.request('loadExtensionForUI', [extensionId], 45000);
+  }
+
   // =========================================================================
   // HTTP Proxy (for embedding code-server UI)
   // =========================================================================

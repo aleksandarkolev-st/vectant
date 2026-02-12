@@ -701,6 +701,9 @@ function stopServer() {
 
     process.stderr.write('[vscode-server-manager] Stopping server...\n');
 
+    // Also stop the Extension Host Bridge
+    stopExtHostBridge();
+
     const killTimer = setTimeout(() => {
       try { serverProcess?.kill('SIGKILL'); } catch (_) {}
     }, 5000);
@@ -809,6 +812,13 @@ async function installVSIX(extensionId, vsixData) {
     sendEvent('extensionInstalled', extensionId);
     process.stderr.write(`[vscode-server-manager] ✓ VSIX installed: ${extensionId}\n`);
 
+    // After install, try loading into the Extension Host Bridge for UI events
+    try {
+      await loadExtensionForUI(extensionId);
+    } catch (uiErr) {
+      process.stderr.write(`[vscode-server-manager] UI bridge load after VSIX install failed: ${uiErr.message}\n`);
+    }
+
     return { success: true, extensionId };
 
   } catch (err) {
@@ -889,6 +899,305 @@ function listInstalledExtensions() {
   } catch (_) {
     return [];
   }
+}
+
+// ============================================================================
+// Extension Host Bridge
+//
+// Spawns remote-ext-host.js as a child process and loads UI extensions
+// (those with contributes.views or webview view providers) into it.
+// Events from the Extension Host (treeData, createWebview, updateWebview)
+// are forwarded through our own stdout → Rust worker → DataChannel → browser.
+// ============================================================================
+
+/** @type {import('child_process').ChildProcess|null} */
+let extHostProcess = null;
+
+/** @type {number} */
+let extHostMessageId = 0;
+
+/** @type {Map<number, {resolve: Function, reject: Function, timer: NodeJS.Timeout}>} */
+const extHostPendingRequests = new Map();
+
+/** @type {Set<string>} Extensions already loaded in the ext-host bridge */
+const extHostLoadedExtensions = new Set();
+
+/** @type {boolean} */
+let extHostReady = false;
+
+/**
+ * Start the Extension Host Bridge (remote-ext-host.js child process).
+ * Called once after code-server is ready.
+ */
+function startExtHostBridge() {
+  if (extHostProcess) return;
+
+  const scriptPath = path.join(__dirname, 'remote-ext-host.js');
+  if (!fs.existsSync(scriptPath)) {
+    process.stderr.write(`[ext-host-bridge] remote-ext-host.js not found at ${scriptPath}\n`);
+    return;
+  }
+
+  process.stderr.write('[ext-host-bridge] Starting Extension Host Bridge...\n');
+
+  extHostProcess = spawn(process.execPath, [scriptPath], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      // Provide the extensions dir so the child can find installed extensions
+      SYNTHI_EXTENSIONS_DIR: EXTENSIONS_DIR,
+    },
+  });
+
+  // Parse stdout from remote-ext-host.js (newline-delimited JSON)
+  const childRl = readline.createInterface({ input: extHostProcess.stdout, terminal: false });
+  childRl.on('line', (line) => {
+    if (!line.trim()) return;
+    try {
+      const msg = JSON.parse(line);
+      _handleExtHostMessage(msg);
+    } catch (e) {
+      process.stderr.write(`[ext-host-bridge] stdout parse error: ${e.message}\n`);
+    }
+  });
+
+  extHostProcess.stderr.on('data', (data) => {
+    process.stderr.write(`[ext-host-bridge] ${data}`);
+  });
+
+  extHostProcess.on('exit', (code, signal) => {
+    process.stderr.write(`[ext-host-bridge] Process exited: code=${code} signal=${signal}\n`);
+    extHostProcess = null;
+    extHostReady = false;
+    extHostLoadedExtensions.clear();
+    // Reject any pending requests
+    for (const [id, pending] of extHostPendingRequests) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error('Extension Host Bridge exited'));
+    }
+    extHostPendingRequests.clear();
+  });
+}
+
+/**
+ * Handle a message from the Extension Host child process.
+ * Events are forwarded to the browser; responses resolve pending RPC promises.
+ */
+function _handleExtHostMessage(msg) {
+  if (!msg || typeof msg !== 'object') return;
+
+  // Handle workerReady from the child
+  if (msg.type === 'event' && msg.method === 'workerReady') {
+    extHostReady = true;
+    process.stderr.write('[ext-host-bridge] Extension Host Bridge ready\n');
+    return;
+  }
+
+  // Forward events from the child → browser
+  // These include: treeData, createWebview, updateWebview, disposeWebview,
+  // registerCommand, registerTreeView, showMessage, etc.
+  if (msg.type === 'event') {
+    sendEvent(msg.method, ...(msg.args || []));
+    return;
+  }
+
+  // Handle RPC responses
+  if (msg.type === 'response') {
+    const pending = extHostPendingRequests.get(msg.id);
+    if (pending) {
+      extHostPendingRequests.delete(msg.id);
+      clearTimeout(pending.timer);
+      if (msg.error) {
+        pending.reject(new Error(msg.error.message || 'Extension Host Bridge error'));
+      } else {
+        pending.resolve(msg.result);
+      }
+    }
+    return;
+  }
+}
+
+/**
+ * Send an RPC request to the Extension Host child process.
+ *
+ * @param {string} method
+ * @param {any[]} [args]
+ * @param {number} [timeoutMs=30000]
+ * @returns {Promise<any>}
+ */
+function _extHostRequest(method, args = [], timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    if (!extHostProcess || !extHostReady) {
+      return reject(new Error('Extension Host Bridge not running'));
+    }
+
+    const id = ++extHostMessageId;
+    const timer = setTimeout(() => {
+      extHostPendingRequests.delete(id);
+      reject(new Error(`Extension Host Bridge request timeout: ${method}`));
+    }, timeoutMs);
+
+    extHostPendingRequests.set(id, { resolve, reject, timer });
+
+    const msg = JSON.stringify({
+      id,
+      type: 'request',
+      method,
+      args,
+      generation: 0,
+    }) + '\n';
+
+    try {
+      extHostProcess.stdin.write(msg);
+    } catch (err) {
+      extHostPendingRequests.delete(id);
+      clearTimeout(timer);
+      reject(err);
+    }
+  });
+}
+
+/**
+ * Wait for the Extension Host Bridge to become ready.
+ * @param {number} [timeout=10000]
+ * @returns {Promise<void>}
+ */
+function _waitForExtHostReady(timeout = 10000) {
+  if (extHostReady) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    const check = () => {
+      if (extHostReady) return resolve();
+      if (Date.now() - start > timeout) return reject(new Error('Extension Host Bridge ready timeout'));
+      setTimeout(check, 200);
+    };
+    check();
+  });
+}
+
+/**
+ * Check if an extension has UI contributions (views, webview views, tree data).
+ *
+ * @param {object} manifest - Extension package.json
+ * @returns {boolean}
+ */
+function _hasUIContributions(manifest) {
+  if (!manifest?.contributes) return false;
+  const c = manifest.contributes;
+  // Has view contributions
+  if (c.views && Object.keys(c.views).length > 0) return true;
+  // Has view containers
+  if (c.viewsContainers && Object.keys(c.viewsContainers).length > 0) return true;
+  // Has webview views (viewsWelcome doesn't count)
+  return false;
+}
+
+/**
+ * Read an extension's manifest from its directory in EXTENSIONS_DIR.
+ * Handles the various directory structures that code-server --install-extension
+ * produces (e.g. `publisher.name-version/package.json`).
+ *
+ * @param {string} extensionId
+ * @returns {{manifest: object, extDir: string}|null}
+ */
+function _readExtensionManifest(extensionId) {
+  // Try exact match first
+  let extDir = path.join(EXTENSIONS_DIR, extensionId);
+  let pkgPath = path.join(extDir, 'package.json');
+  if (fs.existsSync(pkgPath)) {
+    try {
+      return { manifest: JSON.parse(fs.readFileSync(pkgPath, 'utf8')), extDir };
+    } catch (_) {}
+  }
+
+  // code-server names directories as `publisher.name-version`
+  // Try finding a directory that starts with the extensionId
+  try {
+    const dirs = fs.readdirSync(EXTENSIONS_DIR);
+    for (const dir of dirs) {
+      if (dir.startsWith(extensionId) || dir.toLowerCase().startsWith(extensionId.toLowerCase())) {
+        extDir = path.join(EXTENSIONS_DIR, dir);
+        pkgPath = path.join(extDir, 'package.json');
+        if (fs.existsSync(pkgPath)) {
+          try {
+            return { manifest: JSON.parse(fs.readFileSync(pkgPath, 'utf8')), extDir };
+          } catch (_) {}
+        }
+      }
+    }
+  } catch (_) {}
+
+  return null;
+}
+
+/**
+ * Load a UI extension into the Extension Host Bridge.
+ * Reads the extension from EXTENSIONS_DIR and loads it in remote-ext-host.js.
+ *
+ * @param {string} extensionId
+ * @returns {Promise<{success: boolean, hasUI: boolean}>}
+ */
+async function loadExtensionForUI(extensionId) {
+  if (extHostLoadedExtensions.has(extensionId)) {
+    process.stderr.write(`[ext-host-bridge] ${extensionId} already loaded in bridge\n`);
+    return { success: true, hasUI: true };
+  }
+
+  const result = _readExtensionManifest(extensionId);
+  if (!result) {
+    process.stderr.write(`[ext-host-bridge] Cannot find manifest for ${extensionId}\n`);
+    return { success: false, hasUI: false };
+  }
+
+  const { manifest, extDir } = result;
+
+  // Check if this extension has UI contributions worth bridging
+  if (!_hasUIContributions(manifest)) {
+    process.stderr.write(`[ext-host-bridge] ${extensionId} has no UI contributions, skipping bridge\n`);
+    return { success: true, hasUI: false };
+  }
+
+  // Check it has a Node.js entry point
+  if (!manifest.main) {
+    process.stderr.write(`[ext-host-bridge] ${extensionId} has no main entry, skipping bridge\n`);
+    return { success: true, hasUI: false };
+  }
+
+  // Ensure the Extension Host Bridge is running
+  if (!extHostProcess) {
+    startExtHostBridge();
+    await _waitForExtHostReady();
+  } else if (!extHostReady) {
+    await _waitForExtHostReady();
+  }
+
+  try {
+    // Load extension from its installed directory
+    await _extHostRequest('loadExtensionFromPath', [extensionId, extDir], 30000);
+    // Activate it
+    await _extHostRequest('activateExtension', [extensionId], 15000);
+
+    extHostLoadedExtensions.add(extensionId);
+    process.stderr.write(`[ext-host-bridge] ✓ ${extensionId} loaded and activated in bridge\n`);
+    return { success: true, hasUI: true };
+  } catch (err) {
+    process.stderr.write(`[ext-host-bridge] Failed to load ${extensionId}: ${err.message}\n`);
+    return { success: false, hasUI: true, error: err.message };
+  }
+}
+
+/**
+ * Stop the Extension Host Bridge.
+ */
+function stopExtHostBridge() {
+  if (!extHostProcess) return;
+  process.stderr.write('[ext-host-bridge] Stopping Extension Host Bridge...\n');
+  try {
+    extHostProcess.kill('SIGTERM');
+  } catch (_) {}
+  extHostProcess = null;
+  extHostReady = false;
+  extHostLoadedExtensions.clear();
 }
 
 // ============================================================================
@@ -1525,7 +1834,30 @@ rl.on('line', async (line) => {
             timeout: 120000,
             stdio: ['ignore', 'pipe', 'pipe'],
           });
-          sendResponse(id, { success: true, extensionId });
+
+          // After successful install, check if the extension has UI
+          // contributions and load it in the Extension Host Bridge for
+          // tree data / webview event forwarding.
+          let uiResult = { hasUI: false };
+          try {
+            uiResult = await loadExtensionForUI(extensionId);
+          } catch (uiErr) {
+            process.stderr.write(`[vscode-server-manager] UI bridge load failed for ${extensionId}: ${uiErr.message}\n`);
+          }
+
+          sendResponse(id, { success: true, extensionId, uiBridged: uiResult.hasUI });
+        } catch (err) {
+          sendResponse(id, null, err);
+        }
+        break;
+      }
+
+      case 'loadExtensionForUI': {
+        // Explicitly load an already-installed extension into the UI bridge
+        const [extensionId] = args;
+        try {
+          const result = await loadExtensionForUI(extensionId);
+          sendResponse(id, result);
         } catch (err) {
           sendResponse(id, null, err);
         }

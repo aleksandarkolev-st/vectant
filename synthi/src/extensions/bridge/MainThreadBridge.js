@@ -248,7 +248,7 @@ export class MainThreadBridge {
   /**
    * Install an extension from the marketplace into the VS Code Server.
    * @param {string} extensionId - e.g. "dbaeumer.vscode-eslint"
-   * @returns {Promise<{success: boolean, extensionId: string}>}
+   * @returns {Promise<{success: boolean, extensionId: string, uiBridged?: boolean}>}
    */
   async installMarketplaceExtensionOnServer(extensionId) {
     if (!this.vscodeServerProxy?.isReady()) {
@@ -260,6 +260,20 @@ export class MainThreadBridge {
       this.vscodeServerExtensions.add(extensionId);
     }
     return result;
+  }
+
+  /**
+   * Load an already-installed extension into the Extension Host Bridge
+   * for live UI event forwarding (tree data, webview HTML).
+   *
+   * @param {string} extensionId
+   * @returns {Promise<{success: boolean, hasUI: boolean}>}
+   */
+  async loadExtensionForUI(extensionId) {
+    if (!this.vscodeServerProxy?.isReady()) {
+      throw new Error('VS Code Server not connected');
+    }
+    return this.vscodeServerProxy.loadExtensionForUI(extensionId);
   }
 
   /**
@@ -352,10 +366,13 @@ export class MainThreadBridge {
         if (result.success) {
           info.isActive = true;
           this.onExtensionStateChanged?.(info.id, 'active');
-          console.log(`[MainThreadBridge] ✓ ${info.id} installed on VS Code Server`);
+          console.log(`[MainThreadBridge] ✓ ${info.id} installed on VS Code Server (uiBridged=${result.uiBridged})`);
 
-          // Emit synthetic webview events for webview-type views
-          this._emitSyntheticWebviewEvents(info.id, info.manifest);
+          // Only emit synthetic placeholder events if the Extension Host Bridge
+          // did NOT load this extension for live UI event forwarding.
+          if (!result.uiBridged) {
+            this._emitSyntheticWebviewEvents(info.id, info.manifest);
+          }
         } else {
           this.onExtensionStateChanged?.(info.id, 'pending-remote');
           console.warn(`[MainThreadBridge] ${info.id}: VS Code Server install returned unsuccessful`);

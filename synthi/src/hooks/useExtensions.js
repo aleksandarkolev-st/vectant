@@ -338,10 +338,13 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
         const result = await bridge.installMarketplaceExtensionOnServer(id);
         if (result.success) {
           dispatch(setExtensionState({ id, extensionState: 'active', remote: true }));
-          console.log(`[useExtensions] ✓ ${id} installed on VS Code Server via marketplace`);
+          console.log(`[useExtensions] ✓ ${id} installed on VS Code Server via marketplace (uiBridged=${result.uiBridged})`);
 
-          // Emit synthetic webview events for the extension's webview views
-          bridge._emitSyntheticWebviewEvents(id, info.manifest);
+          // Only emit synthetic placeholder events if the Extension Host Bridge
+          // did NOT load this extension for live UI event forwarding.
+          if (!result.uiBridged) {
+            bridge._emitSyntheticWebviewEvents(id, info.manifest);
+          }
         } else {
           dispatch(setExtensionState({ id, extensionState: 'crashed', reason: result.error }));
         }
