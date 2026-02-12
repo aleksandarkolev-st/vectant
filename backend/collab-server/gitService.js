@@ -1779,6 +1779,76 @@ class GitService {
         return true;
     }
 
+    /**
+     * Orchestrator: lazily migrate a legacy repo to session structure.
+     *
+     * If the repo is already migrated, this is a fast no-op.
+     * If the repo is legacy, it performs a safe migration with backup/rollback.
+     *
+     * Thread-safe: uses the existing per-slug RepoLock.
+     * Idempotent: multiple calls are safe.
+     *
+     * @param {string} slug
+     * @returns {Promise<{ migrated: boolean, wasLegacy: boolean }>}
+     */
+    async ensureMigrated(slug) {
+        // Fast path: already migrated
+        if (this.isMigratedRepo(slug)) {
+            return { migrated: true, wasLegacy: false };
+        }
+
+        // Not legacy either — brand-new or doesn't exist yet
+        if (!this.isLegacyRepo(slug)) {
+            return { migrated: false, wasLegacy: false };
+        }
+
+        // ── Legacy repo detected — migrate under lock ────────────────────
+        const releaseLock = await repoLock.acquire(slug);
+        try {
+            // Double-check after acquiring lock (another caller may have migrated)
+            if (this.isMigratedRepo(slug)) {
+                return { migrated: true, wasLegacy: false };
+            }
+            if (!this.isLegacyRepo(slug)) {
+                return { migrated: false, wasLegacy: false };
+            }
+
+            console.log(`[Migration] Legacy repo detected for "${slug}", starting migration…`);
+
+            // 1. Backup
+            await this._createMigrationBackup(slug);
+
+            try {
+                // 2. Migrate
+                await this._migrateToSessionStructure(slug);
+
+                // 3. Validate
+                const valid = await this._validateMigration(slug);
+                if (!valid) {
+                    throw new MigrationError(slug, 'Post-migration validation failed', 'validation');
+                }
+
+                // 4. Cleanup backup on success
+                this._cleanupMigrationBackup(slug);
+
+                return { migrated: true, wasLegacy: true };
+            } catch (e) {
+                // Rollback on any failure
+                console.error(`[Migration] Migration failed for "${slug}", rolling back:`, e.message);
+                try {
+                    await this._restoreMigrationBackup(slug);
+                } catch (rollbackErr) {
+                    console.error(`[Migration] CRITICAL: Rollback also failed for "${slug}":`, rollbackErr.message);
+                    // At this point both migration and rollback failed.
+                    // The backup directory still exists for manual recovery.
+                }
+                throw e instanceof MigrationError ? e : new MigrationError(slug, e.message, 'unknown');
+            }
+        } finally {
+            releaseLock();
+        }
+    }
+
     // ── Worktree Factory (Session-based isolation) ────────────────────────
 
     /**
