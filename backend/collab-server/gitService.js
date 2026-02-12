@@ -1727,6 +1727,58 @@ class GitService {
         return { barePath, worktreePath: repoPath };
     }
 
+    /**
+     * Validate that a migrated repo is functional.
+     * Checks that the bare repo and main worktree are intact and operable.
+     *
+     * @param {string} slug
+     * @returns {Promise<boolean>}
+     */
+    async _validateMigration(slug) {
+        const repoPath = this.getRepoPath(slug);
+        const barePath = this.getBarePath(slug);
+
+        // 1. Bare repo must exist and be valid
+        if (!fs.existsSync(barePath)) {
+            console.error(`[Migration] Validation failed: bare repo missing at ${barePath}`);
+            return false;
+        }
+
+        try {
+            const bareGit = simpleGit(barePath);
+            // Verify it's a valid bare repo by listing branches
+            await bareGit.branch(['-a']);
+        } catch (e) {
+            console.error(`[Migration] Validation failed: bare repo not valid:`, e.message);
+            return false;
+        }
+
+        // 2. Worktree (.git file) must exist in the working tree
+        const gitFile = path.join(repoPath, '.git');
+        if (!fs.existsSync(gitFile)) {
+            console.error(`[Migration] Validation failed: .git file missing in worktree`);
+            return false;
+        }
+
+        // 3. Worktree must be functional (can run git status)
+        try {
+            const wtGit = simpleGit(repoPath);
+            await wtGit.status();
+        } catch (e) {
+            console.error(`[Migration] Validation failed: worktree not functional:`, e.message);
+            return false;
+        }
+
+        // 4. Migration marker must exist
+        if (!fs.existsSync(path.join(repoPath, '.synthi-migrated'))) {
+            console.error(`[Migration] Validation failed: migration marker missing`);
+            return false;
+        }
+
+        console.log(`[Migration] Validation passed for "${slug}"`);
+        return true;
+    }
+
     // ── Worktree Factory (Session-based isolation) ────────────────────────
 
     /**
