@@ -95,7 +95,13 @@ const fileHashCache = new Map(); // docName -> { hash, timestamp }
 // background indexer) but its contents are stale/partial.  On first access
 // per server lifetime we always call initRepo() which is idempotent (checks
 // for .git before re-initialising) and merges GCS contents via downloadGcsToRepo().
+// Keyed by "slug" for slug-level hydration and "slug:userId" for per-user repos.
 const hydratedSlugs = new Set();
+
+/** Build a hydration key — includes userId when present. */
+function hydrationKey(slug, userId) {
+  return userId ? `${slug}:${userId}` : slug;
+}
 
 /**
  * Compute MD5 hash of content for change detection
@@ -120,15 +126,24 @@ function parseDocName(docName) {
 }
 
 /**
- * Get the actual file content from disk
+ * Get the actual file content from disk.
+ * When userId is provided, reads from the per-user repo; otherwise falls
+ * back to the slug-level repo.
  */
-async function getActualFileContent(slug, filePath) {
+async function getActualFileContent(slug, filePath, userId) {
   try {
-    const repoPath = gitService.getRepoPath(slug);
+    const repoPath = gitService.getEffectiveRepoPath(slug, userId);
     const fullPath = path.join(repoPath, filePath);
     const content = await fsPromises.readFile(fullPath, 'utf8');
     return content;
   } catch (e) {
+    // If per-user path failed and we had a userId, try the slug-level fallback
+    if (userId) {
+      try {
+        const fallbackPath = path.join(gitService.getRepoPath(slug), filePath);
+        return await fsPromises.readFile(fallbackPath, 'utf8');
+      } catch (_) { /* fall through */ }
+    }
     console.log(`[Collab] Could not read file ${slug}/${filePath}:`, e.code || e.message);
     return null;
   }
@@ -242,18 +257,10 @@ class ValidatingPersistence {
             }
           }
 
-          // ── 2. Disk write (ephemeral cache — write if working tree exists on disk) ──
-          // Write to the shared slug-level path (backward compat)
-          const repoPath = gitService.getRepoPath(slug);
-          if (fs.existsSync(repoPath)) {
-            const fullPath = path.join(repoPath, filePath);
-            const dirPath = path.dirname(fullPath);
-            await fsPromises.mkdir(dirPath, { recursive: true });
-            await fsPromises.writeFile(fullPath, content, 'utf-8');
-          }
-
-          // Also write to all per-user repo working trees that exist on disk
-          // so each user's git status reflects the collaborative edits.
+          // ── 2. Disk write ──────────────────────────────────────────────
+          // Write to ALL per-user repo working trees first (primary target).
+          // Per-user repos are the source of truth for each user's git status.
+          let wroteAny = false;
           try {
             const userRepos = gitService.listUserRepos(slug);
             for (const { path: userRepoPath } of userRepos) {
@@ -261,9 +268,22 @@ class ValidatingPersistence {
                 const userFullPath = path.join(userRepoPath, filePath);
                 await fsPromises.mkdir(path.dirname(userFullPath), { recursive: true });
                 await fsPromises.writeFile(userFullPath, content, 'utf-8');
+                wroteAny = true;
               } catch (_) { /* non-fatal per user */ }
             }
           } catch (_) { /* non-fatal */ }
+
+          // Fallback: write to the slug-level repo if no per-user repos exist
+          // yet (e.g. during initial hydration before any user connects).
+          if (!wroteAny) {
+            const repoPath = gitService.getRepoPath(slug);
+            if (fs.existsSync(repoPath)) {
+              const fullPath = path.join(repoPath, filePath);
+              const dirPath = path.dirname(fullPath);
+              await fsPromises.mkdir(dirPath, { recursive: true });
+              await fsPromises.writeFile(fullPath, content, 'utf-8');
+            }
+          }
           
           // Update hash cache
           fileHashCache.set(docName, { hash: computeHash(content), timestamp: Date.now() });
@@ -655,13 +675,17 @@ const server = http.createServer(async (req, res) => {
     
     console.log(`[Collab] FILE-CONTENT request: slug=${slug}, path=${filePath}`);
     
+    // Extract optional userId for per-user repo support
+    const userId = req.headers['x-user-id'] || urlObj.searchParams.get('userId') || null;
+
     try {
       // Ensure repo exists and (when configured) hydrate from GCS before reading.
       // Use hydratedSlugs so we re-hydrate once per boot even if the dir exists.
-      if (!hydratedSlugs.has(slug)) {
+      const hKey = hydrationKey(slug, userId);
+      if (!hydratedSlugs.has(hKey)) {
         try {
-          await gitService.initRepo(slug, null);
-          hydratedSlugs.add(slug);
+          await gitService.initRepo(slug, null, userId);
+          hydratedSlugs.add(hKey);
         } catch (e) {
           if (gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
             console.warn('[Collab] FILE-CONTENT auto-init failed for slug:', slug, e?.message || e);
@@ -669,7 +693,7 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
-      const content = await getActualFileContent(slug, filePath);
+      const content = await getActualFileContent(slug, filePath, userId);
       if (content === null) {
         console.log(`[Collab] FILE-CONTENT: File not found: ${slug}/${filePath}`);
         res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -916,14 +940,22 @@ const server = http.createServer(async (req, res) => {
         // This avoids REPO_NOT_FOUND for fresh workspaces and allows the server to
         // hydrate from GCS automatically (when configured) without requiring a manual
         // "Initialize Git" click.
+
+            // ── Session permission enforcement ──────────────────────────
+            // Extract session context from headers/query and check permissions
+            const sessionId = req.headers['x-session-id'] || urlObj.searchParams.get('sessionId');
+            const userId    = req.headers['x-user-id']    || urlObj.searchParams.get('userId');
+
         // Use hydratedSlugs so we re-hydrate once per boot even when the dir already
         // exists with partial/stale content (e.g. .code_intel artifacts).
-        if (action !== 'clone' && !hydratedSlugs.has(slug)) {
+        const hKey = hydrationKey(slug, userId);
+        if (action !== 'clone' && !hydratedSlugs.has(hKey)) {
           try {
             // initRepo will mkdir the repo path, init .git, and (when configured)
             // pull the current workspace contents from GCS.
-            await gitService.initRepo(slug, null);
-            hydratedSlugs.add(slug);
+            // Pass userId so it also provisions the per-user working tree.
+            await gitService.initRepo(slug, null, userId);
+            hydratedSlugs.add(hKey);
           } catch (e) {
             // If init fails, continue so the normal handler can return a structured error.
             if (gcsSync && typeof gcsSync.isGcsConfigured === 'function' && gcsSync.isGcsConfigured()) {
@@ -931,11 +963,6 @@ const server = http.createServer(async (req, res) => {
             }
           }
         }
-
-            // ── Session permission enforcement ──────────────────────────
-            // Extract session context from headers/query and check permissions
-            const sessionId = req.headers['x-session-id'] || urlObj.searchParams.get('sessionId');
-            const userId    = req.headers['x-user-id']    || urlObj.searchParams.get('userId');
 
             if (sessionId && userId) {
               const permKey = require('./permissionMiddleware').GIT_ACTION_PERMISSIONS[action];
@@ -950,15 +977,26 @@ const server = http.createServer(async (req, res) => {
               }
             }
 
-            // ── Per-user repo provisioning ──────────────────────────────
-            // If userId is provided and the action operates on a repo, ensure
-            // the per-user working tree exists before proceeding.
-            if (userId && action !== 'clone' && action !== 'init') {
+            // ── Per-user repo provisioning (mandatory) ──────────────────
+            // Ensure the per-user working tree exists for EVERY action (incl.
+            // init/clone which now also call ensureUserRepo internally).
+            if (userId) {
               try {
                 await gitService.ensureUserRepo(slug, userId);
               } catch (e) {
-                console.warn(`[Collab] ensureUserRepo failed for ${slug}/${userId}:`, e.message);
-                // Non-fatal: operations will fall back to slug-level repo
+                // For non-clone/init actions this is a real error — the user
+                // cannot operate without an isolated repo.
+                if (action !== 'clone' && action !== 'init') {
+                  console.error(`[Collab] ensureUserRepo FAILED for ${slug}/${userId}:`, e.message);
+                  res.writeHead(500, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({
+                    error: 'user_repo_error',
+                    message: `Failed to provision per-user repo for ${userId}: ${e.message}`,
+                  }));
+                  return;
+                }
+                // For clone/init the slug-level repo may not exist yet — that's OK,
+                // those actions will provision the user repo themselves.
               }
             }
 
@@ -966,8 +1004,8 @@ const server = http.createServer(async (req, res) => {
 
             switch (action) {
                 case 'init':
-                    result = await gitService.initRepo(slug, data.remoteUrl);
-                    hydratedSlugs.add(slug);
+                    result = await gitService.initRepo(slug, data.remoteUrl, userId);
+                    hydratedSlugs.add(hydrationKey(slug, userId));
                     break;
                 case 'add-remote':
                     result = await gitService.addRemote(slug, data.name, data.url, userId);
@@ -979,8 +1017,8 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.getRemotes(slug, userId);
                     break;
                 case 'clone':
-                  result = await gitService.cloneRepo(slug, data.repoUrl, data.token);
-                  hydratedSlugs.add(slug);
+                  result = await gitService.cloneRepo(slug, data.repoUrl, data.token, userId);
+                  hydratedSlugs.add(hydrationKey(slug, userId));
                   // Save metadata locally
                   workspaceManager.addWorkspace(slug, data.repoUrl, data.owner, data.name);
 
