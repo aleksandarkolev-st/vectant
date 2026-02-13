@@ -49,7 +49,10 @@ export default function Dashboard() {
             
             const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/clone`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(session?.user?.id && { 'x-user-id': session.user.id }),
+                },
                 body: JSON.stringify({ 
                     repoUrl,
                     token: session?.accessToken,
