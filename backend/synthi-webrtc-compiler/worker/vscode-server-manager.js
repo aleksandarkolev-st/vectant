@@ -1311,6 +1311,40 @@ async function _triggerExtensionHostStartup(port, token) {
       // ── Protocol state machine ──────────────────────────────────
       let step = 'awaitSign';
       let recvBuf = head && head.length > 0 ? Buffer.from(head) : Buffer.alloc(0);
+      let firstMsgTime = 0;  // timestamp of first protocol message after connectionType request
+      let initDataSent = false;
+
+      // Helper: send init data + start KeepAlive loop.
+      // Called exactly once from whichever path first determines the EH
+      // has the socket.
+      function _doSendInitData(reason) {
+        if (initDataSent) return; // already sent
+        initDataSent = true;
+        process.stderr.write(`[vscode-server-manager] Sending init data (reason: ${reason})\n`);
+        _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port).then(() => {
+          process.stderr.write(`[vscode-server-manager] Extension Host init data sent successfully\n`);
+
+          // Start protocol KeepAlive: the EH's PersistentProtocol
+          // expects periodic KeepAlive (type 9) messages from the
+          // client, otherwise it considers the connection dead.
+          const keepAliveProtoInterval = setInterval(() => {
+            try {
+              const hdr = Buffer.alloc(13);
+              hdr[0] = 9; // ProtocolMessageType.KeepAlive
+              hdr.writeUInt32BE(nextMsgId++, 1);
+              hdr.writeUInt32BE(0, 5);  // ack
+              hdr.writeUInt32BE(0, 9);  // data length = 0
+              sendWSFrame(hdr);
+            } catch (_) {
+              clearInterval(keepAliveProtoInterval);
+            }
+          }, 5000);
+          if (keepAliveProtoInterval.unref) keepAliveProtoInterval.unref();
+          socket.on('close', () => clearInterval(keepAliveProtoInterval));
+        }).catch((initErr) => {
+          process.stderr.write(`[vscode-server-manager] Failed to send EH init data: ${initErr.message}\n`);
+        });
+      }
 
       // Step 2a: Send auth request
       sendWSFrame(makeControlMsg({
@@ -1376,34 +1410,68 @@ async function _triggerExtensionHostStartup(port, token) {
             process.stderr.write(`[vscode-server-manager] EH trigger: sent ExtensionHost connection request\n`);
           }
           else if (step === 'awaitOk') {
-            // The server may respond with type='ok', or simply start
-            // sending Extension Host data.  Either way the EH is running.
-            if (msg.type === 'ok' || msg.type === 'connectionType') {
-              process.stderr.write(`[vscode-server-manager] Extension Host connection established!\n`);
-              step = 'done';
-            } else if (msg.type === 'error') {
+            // CRITICAL TIMING ISSUE:
+            //
+            // The FIRST protocol message after connectionType=2 comes from
+            // code-server's OWN protocol handler (typically proto:7 = Pause).
+            // At this point, code-server has NOT yet forked the Extension Host.
+            // The socket is still owned by code-server's Node.js process.
+            //
+            // If we send init data NOW, it goes into code-server's TCP buffer.
+            // When code-server later passes the socket fd to the EH via IPC,
+            // any data already Read() by code-server's Node.js buffer is LOST.
+            // The EH never receives our init data and hangs forever.
+            //
+            // Strategy: Record the time of the first message. Transition to
+            // 'ehStarting'. Only send init data when we receive a SECOND
+            // protocol message ≥400ms later (which must be from the EH, not
+            // code-server), or after a 2s fallback timer.
+            if (msg.type === 'error') {
               process.stderr.write(`[vscode-server-manager] EH connection rejected: ${msg.reason || JSON.stringify(msg)}\n`);
               step = 'error';
             } else {
-              // Any other message while awaiting ok likely means
-              // the Extension Host has started and is sending data.
-              process.stderr.write(`[vscode-server-manager] Extension Host appears running (got ${msg.type || msg._protoType || 'data'})\n`);
-              step = 'done';
+              const trigger = msg.type || `proto:${msg._protoType}`;
+              firstMsgTime = Date.now();
+              step = 'ehStarting';
+              process.stderr.write(`[vscode-server-manager] Connection accepted (${trigger}) — waiting for EH process to take over socket before sending init data\n`);
             }
-
-            // ── Step 3: DO NOT send custom init data ──
-            // code-server handles IExtensionHostInitData delivery natively.
-            // It reads extension manifests from EXTENSIONS_DIR, constructs
-            // the init data, and sends it over the IPC socket to the EH
-            // process.  Sending a second init payload here would corrupt
-            // the PersistentProtocol stream because:
-            //   1. Our message arrives on the WebSocket, not the IPC socket
-            //   2. The EH process has already received init data from
-            //      code-server by the time our 2s delay fires
-            //   3. A duplicate Regular message is interpreted as RPC data,
-            //      not init data, causing deserialization failures
-            if (step === 'done') {
-              process.stderr.write(`[vscode-server-manager] Extension Host connection established — code-server will send init data natively\n`);
+          }
+          else if (step === 'ehStarting') {
+            // Wait for a message that arrives AFTER the EH has the socket.
+            const elapsed = Date.now() - firstMsgTime;
+            const trigger = msg.type || `proto:${msg._protoType}`;
+            if (elapsed >= 400) {
+              process.stderr.write(`[vscode-server-manager] EH has socket (${trigger}, ${elapsed}ms after first msg) — sending init data\n`);
+              _doSendInitData(`EH protocol message: ${trigger} after ${elapsed}ms`);
+              step = 'initSent';
+            } else {
+              process.stderr.write(`[vscode-server-manager] EH trigger: ${trigger} at +${elapsed}ms — too early, waiting for EH\n`);
+            }
+          }
+          else if (step === 'initSent') {
+            // After init data is sent, handle protocol messages from the EH
+            const trigger = msg.type || `proto:${msg._protoType}`;
+            if (msg._protoType === 1) {
+              // Regular message from EH — extension host is initializing
+              process.stderr.write(`[vscode-server-manager] EH sent Regular message (${msg._dataLen}b) — bootstrap progressing\n`);
+            } else if (msg._protoType === 6) {
+              // ReplayRequest — EH wants us to replay unacked messages
+              // Re-send init data if it was lost
+              process.stderr.write(`[vscode-server-manager] EH sent ReplayRequest — re-sending init data\n`);
+              initDataSent = false;
+              _doSendInitData(`ReplayRequest from EH`);
+            } else if (msg._protoType === 3) {
+              // Ack — protocol acknowledgment, no response needed
+            } else if (msg._protoType >= 7 && msg._protoType <= 9) {
+              // Pause/Resume/KeepAlive — respond with ack
+              try {
+                const ackHdr = Buffer.alloc(13);
+                ackHdr[0] = 3; // ProtocolMessageType.Ack
+                ackHdr.writeUInt32BE(nextMsgId++, 1);
+                ackHdr.writeUInt32BE(0, 5);
+                ackHdr.writeUInt32BE(0, 9);
+                sendWSFrame(ackHdr);
+              } catch (_) {}
             }
           }
         }
@@ -1415,6 +1483,16 @@ async function _triggerExtensionHostStartup(port, token) {
       socket.on('close', () => {
         process.stderr.write(`[vscode-server-manager] EH trigger socket closed (step=${step})\n`);
       });
+
+      // Fallback: if the EH hasn't been detected by 2s after connection
+      // acceptance, send init data anyway.
+      const readyFallbackTimer = setTimeout(() => {
+        if (step === 'ehStarting' && !initDataSent) {
+          _doSendInitData(`fallback timer (step=${step})`);
+          step = 'initSent';
+        }
+      }, 2000);
+      if (readyFallbackTimer.unref) readyFallbackTimer.unref();
 
       // Keep the socket alive — the Extension Host reads from it.
       // Resolve the promise so startServer() continues, but DO NOT
