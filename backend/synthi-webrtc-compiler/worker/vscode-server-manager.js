@@ -513,14 +513,16 @@ function _handlePreloadMessage(msg) {
       //
       // Fallback: if bootstrapState never fires (e.g. because Module._load
       // interception fails in ESM mode), start requesting providers after
-      // a generous timeout.
+      // a timeout.  With the api:'vscode' init data fix, bootstrap should
+      // complete within 5-10s; 20s gives ample margin.
       process.stderr.write(`[preload-bridge] Waiting for bootstrapState before requesting providers\n`);
       const _bootstrapFallbackTimer = setTimeout(() => {
         if (!_bootstrapStateReceived) {
-          process.stderr.write(`[preload-bridge] bootstrapState never received after 45s — requesting providers as fallback\n`);
+          process.stderr.write(`[preload-bridge] WARNING: bootstrapState not received after 20s — requesting providers as fallback\n`);
+          process.stderr.write(`[preload-bridge] This may indicate the api field in init data is not set to 'vscode' for installed extensions\n`);
           _startProviderDiscovery('fallback-timeout');
         }
-      }, 45000);
+      }, 20000);
       if (_bootstrapFallbackTimer.unref) _bootstrapFallbackTimer.unref();
       break;
     }
@@ -1307,14 +1309,22 @@ async function startServer(slug, options = {}) {
     // pipeline state.  This is invaluable for diagnosing why extensions
     // don't load — you can see at a glance which stages completed.
     const _startupSummaryTimer = setTimeout(() => {
+      const bootstrapStatus = _bootstrapStateReceived
+        ? 'received=true \u2713'
+        : 'received=false \u2717 (extensions may not have loaded — check api field in init data)';
+      const bridgeStatus = preloadClients.size > 0
+        ? `port=${preloadBridgePort || 'N/A'} clients=${preloadClients.size} \u2713`
+        : `port=${preloadBridgePort || 'N/A'} clients=0 \u2717 (preload may not have connected)`;
+      const deferredCount = _deferredWebviewResolutions.length;
       const lines = [
         `\n${'='.repeat(60)}`,
         `  SYNTHI Extension Host Startup Summary (${new Date().toISOString()})`,
         `${'='.repeat(60)}`,
         `  Server:     port=${port} state=${serverState} pid=${serverProcess?.pid || 'N/A'}`,
-        `  Bridge:     port=${preloadBridgePort || 'N/A'} clients=${preloadClients.size}`,
-        `  Bootstrap:  received=${_bootstrapStateReceived}`,
+        `  Bridge:     ${bridgeStatus}`,
+        `  Bootstrap:  ${bootstrapStatus}`,
         `  Extensions: scanned=${extHostLoadedExtensions.size} installed=${installedExtensions.size}`,
+        `  Deferred:   ${deferredCount} webview resolutions pending`,
         `  Workspace:  ${currentWorkspaceDir || '(none)'} slug=${currentSlug || '(none)'}`,
         `${'='.repeat(60)}\n`,
       ];
