@@ -936,6 +936,18 @@ const server = http.createServer(async (req, res) => {
               }
             }
 
+            // ── Per-user repo provisioning ──────────────────────────────
+            // If userId is provided and the action operates on a repo, ensure
+            // the per-user working tree exists before proceeding.
+            if (userId && action !== 'clone' && action !== 'init') {
+              try {
+                await gitService.ensureUserRepo(slug, userId);
+              } catch (e) {
+                console.warn(`[Collab] ensureUserRepo failed for ${slug}/${userId}:`, e.message);
+                // Non-fatal: operations will fall back to slug-level repo
+              }
+            }
+
             let result;
 
             switch (action) {
@@ -944,13 +956,13 @@ const server = http.createServer(async (req, res) => {
                     hydratedSlugs.add(slug);
                     break;
                 case 'add-remote':
-                    result = await gitService.addRemote(slug, data.name, data.url);
+                    result = await gitService.addRemote(slug, data.name, data.url, userId);
                     break;
                 case 'remove-remote':
-                    result = await gitService.removeRemote(slug, data.name);
+                    result = await gitService.removeRemote(slug, data.name, userId);
                     break;
                 case 'remotes':
-                    result = await gitService.getRemotes(slug);
+                    result = await gitService.getRemotes(slug, userId);
                     break;
                 case 'clone':
                   result = await gitService.cloneRepo(slug, data.repoUrl, data.token);
@@ -1026,57 +1038,57 @@ const server = http.createServer(async (req, res) => {
                   broadcastFileTreeChanged(slug);
                   break;
                 case 'status':
-                    result = await gitService.getStatus(slug);
+                    result = await gitService.getStatus(slug, userId);
                     break;
                 case 'branches':
-                    result = await gitService.getBranches(slug);
+                    result = await gitService.getBranches(slug, userId);
                     break;
                 case 'checkout':
-                    result = await gitService.checkout(slug, data.branch, data.create);
+                    result = await gitService.checkout(slug, data.branch, data.create, userId);
                     // Branch switch may change any file on disk — invalidate all Yjs docs
                     await invalidateDocsForSlug(slug);
                     broadcastFileTreeChanged(slug);
                     break;
                 case 'fetch':
-                    result = await gitService.fetch(slug);
+                    result = await gitService.fetch(slug, userId);
                     break;
                 case 'commit':
-                    result = await gitService.commit(slug, data.message);
+                    result = await gitService.commit(slug, data.message, userId);
                     broadcastGitStatusChanged(slug);
                     break;
                 case 'stage':
-                    result = await gitService.stageFile(slug, data.filePath);
+                    result = await gitService.stageFile(slug, data.filePath, userId);
                     broadcastGitStatusChanged(slug);
                     break;
                 case 'stage-all':
-                    result = await gitService.stageAll(slug);
+                    result = await gitService.stageAll(slug, userId);
                     broadcastGitStatusChanged(slug);
                     break;
                 case 'stage-lines':
-                    result = await gitService.stageLines(slug, data.filePath, data.patch);
+                    result = await gitService.stageLines(slug, data.filePath, data.patch, userId);
                     broadcastGitStatusChanged(slug);
                     break;
                 case 'unstage':
-                    result = await gitService.unstageFile(slug, data.filePath);
+                    result = await gitService.unstageFile(slug, data.filePath, userId);
                     broadcastGitStatusChanged(slug);
                     break;
                 case 'unstage-all':
-                    result = await gitService.unstageAll(slug);
+                    result = await gitService.unstageAll(slug, userId);
                     broadcastGitStatusChanged(slug);
                     break;
                 case 'push':
-                    result = await gitService.push(slug);
+                    result = await gitService.push(slug, userId);
                     broadcastGitStatusChanged(slug);
                     break;
                 case 'pull':
-                    result = await gitService.pull(slug);
+                    result = await gitService.pull(slug, userId);
                     // Pull changes files on disk — invalidate all Yjs docs
                     await invalidateDocsForSlug(slug);
                     broadcastFileTreeChanged(slug);
                     broadcastGitStatusChanged(slug);
                     break;
                 case 'discard':
-                    result = await gitService.discardChange(slug, data.filePath);
+                    result = await gitService.discardChange(slug, data.filePath, userId);
                     // File reverted on disk — invalidate its Yjs doc
                     if (data.filePath) {
                       await invalidateDocsForSlug(slug, [data.filePath]);
@@ -1087,7 +1099,7 @@ const server = http.createServer(async (req, res) => {
                     broadcastGitStatusChanged(slug);
                     break;
                 case 'discard-all':
-                    result = await gitService.discardAll(slug);
+                    result = await gitService.discardAll(slug, userId);
                     // All files reverted — invalidate all Yjs docs
                     await invalidateDocsForSlug(slug);
                     // Notify clients to reset ALL editor models
@@ -1097,84 +1109,84 @@ const server = http.createServer(async (req, res) => {
                     break;
                 // Merge conflict resolution
                 case 'resolve-ours':
-                    result = await gitService.resolveConflictOurs(slug, data.filePath);
+                    result = await gitService.resolveConflictOurs(slug, data.filePath, userId);
                     if (data.filePath) await invalidateDocsForSlug(slug, [data.filePath]);
                     break;
                 case 'resolve-theirs':
-                    result = await gitService.resolveConflictTheirs(slug, data.filePath);
+                    result = await gitService.resolveConflictTheirs(slug, data.filePath, userId);
                     if (data.filePath) await invalidateDocsForSlug(slug, [data.filePath]);
                     break;
                 case 'mark-resolved':
-                    result = await gitService.markResolved(slug, data.filePath);
+                    result = await gitService.markResolved(slug, data.filePath, userId);
                     break;
                 case 'abort-merge':
-                    result = await gitService.abortMerge(slug);
+                    result = await gitService.abortMerge(slug, userId);
                     await invalidateDocsForSlug(slug);
                     break;
                 case 'conflict-versions':
-                    result = await gitService.getConflictVersions(slug, data.filePath);
+                    result = await gitService.getConflictVersions(slug, data.filePath, userId);
                     break;
                 case 'diff':
-                    result = await gitService.getDiff(slug, data.filePath, { parsed: data.parsed });
+                    result = await gitService.getDiff(slug, data.filePath, { parsed: data.parsed, userId });
                     break;
                 case 'file-content':
-                    const fileContent = await gitService.getFileContent(slug, data.filePath, data.ref);
+                    const fileContent = await gitService.getFileContent(slug, data.filePath, data.ref, userId);
                     result = { content: fileContent };
                     break;
                 case 'log':
-                    result = await gitService.getLog(slug, { page: data.page, limit: data.limit });
+                    result = await gitService.getLog(slug, { page: data.page, limit: data.limit, userId });
                     break;
                 case 'unpushed':
                     const max = data && data.max ? parseInt(data.max, 10) : 50;
-                    result = await gitService.getUnpushedCommits(slug, max);
+                    result = await gitService.getUnpushedCommits(slug, max, userId);
                     break;
                 case 'incoming':
                     const incomingMax = data && data.max ? parseInt(data.max, 10) : 50;
-                    result = await gitService.getIncomingCommits(slug, incomingMax);
+                    result = await gitService.getIncomingCommits(slug, incomingMax, userId);
                     break;
                 case 'blame':
-                    result = await gitService.getBlame(slug, data.filePath);
+                    result = await gitService.getBlame(slug, data.filePath, userId);
                     break;
                 // Stash operations
                 case 'stash-list':
-                    result = await gitService.stashList(slug);
+                    result = await gitService.stashList(slug, userId);
                     break;
                 case 'stash-push':
-                    result = await gitService.stashPush(slug, data.message);
+                    result = await gitService.stashPush(slug, data.message, userId);
                     break;
                 case 'stash-pop':
-                    result = await gitService.stashPop(slug, data.index);
+                    result = await gitService.stashPop(slug, data.index, userId);
                     await invalidateDocsForSlug(slug);
                     broadcastFileTreeChanged(slug);
                     break;
                 case 'stash-apply':
-                    result = await gitService.stashApply(slug, data.index);
+                    result = await gitService.stashApply(slug, data.index, userId);
                     await invalidateDocsForSlug(slug);
                     broadcastFileTreeChanged(slug);
                     break;
                 case 'stash-drop':
-                    result = await gitService.stashDrop(slug, data.index);
+                    result = await gitService.stashDrop(slug, data.index, userId);
                     break;
                 case 'sync':
                     // Sync a single file
-                    await gitService.syncFile(slug, data.filePath, data.content);
+                    await gitService.syncFile(slug, data.filePath, data.content, userId);
                     result = { success: true };
                     break;
                 case 'files':
-                    result = await gitService.listFiles(slug);
+                    result = await gitService.listFiles(slug, userId);
                     break;
                 case 'files-meta':
                   // Metadata only (no content)
-                  result = { files: await gitService.listFilesMeta(slug) };
+                  result = { files: await gitService.listFilesMeta(slug, userId) };
                   // Kick off index build in background (non-blocking)
                   try {
-                    fileIndex.ensureIndex(slug, gitService.getRepoPath(slug)).catch(() => {});
+                    fileIndex.ensureIndex(slug, gitService.getEffectiveRepoPath(slug, userId)).catch(() => {});
                   } catch (_) {}
                   break;
                 case 'index-ensure':
                   // Non-blocking ensure; returns immediately with current status
                   try {
-                    fileIndex.ensureIndex(slug, gitService.getRepoPath(slug)).catch(() => {});
+                    fileIndex.ensureIndex(slug, gitService.getEffectiveRepoPath(slug, userId)).catch(() => {});
                   } catch (_) {}
                   result = fileIndex.getStatus(slug);
                   break;
@@ -1192,13 +1204,13 @@ const server = http.createServer(async (req, res) => {
                   result = fileIndex.getImports(slug, data.filePath || data.path || '');
                   break;
                 case 'file':
-                    const content = await gitService.readFile(slug, data.path);
+                    const content = await gitService.readFile(slug, data.path, userId);
                     result = { content };
                     break;
                 case 'file-hash':
                     // Get content hash for a file (for VFS validation)
                     try {
-                        const hashContent = await gitService.readFile(slug, data.path);
+                        const hashContent = await gitService.readFile(slug, data.path, userId);
                         const hashValue = computeHash(hashContent);
                         result = { hash: hashValue, path: data.path };
                     } catch (e) {
@@ -1206,7 +1218,7 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'write-file':
-                    await gitService.writeFile(slug, data.path, data.content);
+                    await gitService.writeFile(slug, data.path, data.content, userId);
                     result = { success: true };
                     broadcastFileTreeChanged(slug);
                     break;
@@ -1215,17 +1227,18 @@ const server = http.createServer(async (req, res) => {
                   // Payload shape: { files: [{ path, encoding: 'utf8'|'base64', content }] }
                   result = await gitService.writeFilesBatch(slug, data.files, {
                     syncToGcs: data.syncToGcs !== false,
+                    userId,
                   });
                   break;
                 case 'create-directory':
-                    await gitService.createDirectory(slug, data.path);
+                    await gitService.createDirectory(slug, data.path, userId);
                     result = { success: true };
                     broadcastFileTreeChanged(slug);
                     break;
                 case 'delete-item':
                     // Delete a file or folder from the workspace
                     console.log('[Collab] delete-item called for:', slug, data.path);
-                    result = await gitService.deleteItem(slug, data.path);
+                    result = await gitService.deleteItem(slug, data.path, userId);
                     console.log('[Collab] delete-item result:', result);
                     if (data.path) {
                       await invalidateDocsForSlug(slug, [data.path]);
@@ -1234,7 +1247,7 @@ const server = http.createServer(async (req, res) => {
                     break;
                 case 'rename-item':
                     // Rename / move a file or directory
-                    result = await gitService.renameItem(slug, data.oldPath, data.newPath);
+                    result = await gitService.renameItem(slug, data.oldPath, data.newPath, userId);
                     // Invalidate old path's Yjs doc (the file no longer exists at old path)
                     if (data.oldPath) {
                       await invalidateDocsForSlug(slug, [data.oldPath]);
