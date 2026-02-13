@@ -719,6 +719,126 @@ function downloadFile(url, dest) {
 }
 
 // ============================================================================
+// Extension Host Preload Injection
+//
+// VS Code / code-server strips NODE_OPTIONS from the Extension Host child
+// process environment.  This means --require ext-host-preload.js never
+// reaches the Extension Host.  To work around this we patch
+// extensionHostProcess.js (the Extension Host entrypoint) to require our
+// preload at the very top, before any extension code loads.
+// ============================================================================
+
+/**
+ * Patch code-server's extensionHostProcess.js to require our preload script.
+ * Uses begin/end markers so the injection block can be replaced on each
+ * restart with the current bridge port.
+ *
+ * @param {string} serverBinaryPath - Path to the code-server binary
+ * @param {string} preloadPath - Absolute path to ext-host-preload.js
+ * @param {number} bridgePort - TCP port for the preload bridge
+ * @returns {boolean} true if patching succeeded
+ */
+function _patchExtensionHostForPreload(serverBinaryPath, preloadPath, bridgePort) {
+  const BEGIN_MARKER = '/* SYNTHI_PRELOAD_BEGIN */';
+  const END_MARKER = '/* SYNTHI_PRELOAD_END */';
+
+  // Derive the code-server root from the binary.
+  // code-server standalone: /root/.synthi/vscode-server/bin/code-server
+  //   → root = /root/.synthi/vscode-server
+  // Symlinked: bin/code-server → ../lib/code-server-4.x.x/bin/code-server
+  //   → resolvedRoot = lib/code-server-4.x.x (go up 2)
+  //   → also check VSCODE_SERVER_DIR as primary root
+  let resolvedBinary = serverBinaryPath;
+  try {
+    resolvedBinary = fs.realpathSync(serverBinaryPath);
+  } catch (e) {
+    // Use original path
+  }
+
+  // Collect multiple root candidates to search
+  const rootCandidates = new Set();
+  // From original binary (e.g. /root/.synthi/vscode-server)
+  rootCandidates.add(path.dirname(path.dirname(serverBinaryPath)));
+  // From resolved binary (follows symlinks)
+  rootCandidates.add(path.dirname(path.dirname(resolvedBinary)));
+  // The configured VSCODE_SERVER_DIR
+  rootCandidates.add(VSCODE_SERVER_DIR);
+
+  // Search common paths for extensionHostProcess.js
+  const candidates = [];
+  for (const serverRoot of rootCandidates) {
+    candidates.push(
+      // Standalone code-server install (typical)
+      path.join(serverRoot, 'lib', 'vscode', 'out', 'vs', 'workbench', 'api', 'node', 'extensionHostProcess.js'),
+      // Code-server npm install
+      path.join(serverRoot, 'node_modules', 'code-server', 'lib', 'vscode', 'out', 'vs', 'workbench', 'api', 'node', 'extensionHostProcess.js'),
+      // VS Code Server (Remote SSH)
+      path.join(serverRoot, 'out', 'vs', 'workbench', 'api', 'node', 'extensionHostProcess.js'),
+    );
+  }
+
+  // Also try `find` on Linux for non-standard layouts
+  if (process.platform !== 'win32') {
+    for (const serverRoot of rootCandidates) {
+      try {
+        const found = execSync(
+          `find "${serverRoot}" -name "extensionHostProcess.js" -path "*/api/node/*" -maxdepth 8 2>/dev/null`,
+          { encoding: 'utf8', timeout: 5000 }
+        ).trim().split('\n').filter(Boolean);
+        for (const f of found) {
+          if (!candidates.includes(f)) candidates.push(f);
+        }
+      } catch (_) {}
+    }
+  }
+
+  // Build the injection block with the current bridge port
+  const escapedPath = preloadPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const injection = [
+    BEGIN_MARKER,
+    `try {`,
+    `  process.env.SYNTHI_EXT_BRIDGE_PORT = process.env.SYNTHI_EXT_BRIDGE_PORT || "${bridgePort}";`,
+    `  require("${escapedPath}");`,
+    `} catch (_e) {`,
+    `  process.stderr.write("[ext-host-preload] Injection failed: " + _e.message + "\\n");`,
+    `}`,
+    END_MARKER,
+    '',  // blank line separator
+  ].join('\n');
+
+  for (const candidate of candidates) {
+    if (!fs.existsSync(candidate)) continue;
+
+    try {
+      let content = fs.readFileSync(candidate, 'utf8');
+
+      // Remove existing injection block if present (port may have changed)
+      const beginIdx = content.indexOf(BEGIN_MARKER);
+      const endIdx = content.indexOf(END_MARKER);
+      if (beginIdx !== -1 && endIdx !== -1) {
+        const endOfBlock = endIdx + END_MARKER.length;
+        // Also remove trailing newline
+        const afterBlock = content[endOfBlock] === '\n' ? endOfBlock + 1 : endOfBlock;
+        content = content.slice(0, beginIdx) + content.slice(afterBlock);
+        process.stderr.write(`[vscode-server-manager] Removed stale preload injection from: ${candidate}\n`);
+      }
+
+      // Inject at the very top of the file
+      fs.writeFileSync(candidate, injection + content);
+      process.stderr.write(`[vscode-server-manager] Patched extensionHostProcess.js (bridge port ${bridgePort}): ${candidate}\n`);
+      return true;
+    } catch (e) {
+      process.stderr.write(`[vscode-server-manager] Failed to patch ${candidate}: ${e.message}\n`);
+    }
+  }
+
+  process.stderr.write(`[vscode-server-manager] WARNING: Could not find extensionHostProcess.js to patch\n`);
+  process.stderr.write(`[vscode-server-manager]   Searched roots: ${[...rootCandidates].join(', ')}\n`);
+  process.stderr.write(`[vscode-server-manager]   Candidates tried: ${candidates.length}\n`);
+  return false;
+}
+
+// ============================================================================
 // VS Code Server Lifecycle
 // ============================================================================
 
@@ -805,6 +925,14 @@ async function startServer(slug, options = {}) {
     const nodeOptions = bridgePort
       ? `${existingNodeOptions} --require "${preloadPath}"`.trim()
       : existingNodeOptions;
+
+    // ── Patch the Extension Host entrypoint ──
+    // VS Code's Extension Host launcher strips NODE_OPTIONS, so --require
+    // never reaches the Extension Host. We patch extensionHostProcess.js
+    // directly to require our preload script at the top of the file.
+    if (bridgePort) {
+      _patchExtensionHostForPreload(binary, preloadPath, bridgePort);
+    }
 
     process.stderr.write(`[vscode-server-manager] Starting: ${binary} ${args.join(' ')}\n`);
 
