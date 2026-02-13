@@ -275,6 +275,10 @@ Module._load = function (request, parent, isMain) {
     realVscodeApi = result;
     try {
       log('Intercepted vscode module — wrapping API surfaces');
+      log(`  vscode.window exists: ${!!result.window}`);
+      log(`  registerWebviewViewProvider exists: ${!!result.window?.registerWebviewViewProvider}`);
+      log(`  registerTreeDataProvider exists: ${!!result.window?.registerTreeDataProvider}`);
+      log(`  parent module: ${parent?.filename || 'unknown'}`);
       wrapVSCodeAPI(result);
     } catch (e) {
       // CRITICAL: never crash the Extension Host
@@ -285,6 +289,64 @@ Module._load = function (request, parent, isMain) {
 
   return result;
 };
+
+// ============================================================================
+// Fallback: Also hook Module._resolveFilename
+//
+// VS Code's Extension Host may use a custom module loader that intercepts
+// require('vscode') at a higher level than Module._load.  If Module._load
+// never sees request === 'vscode', we try to detect and wrap the module
+// by also hooking _resolveFilename and monitoring the module cache.
+// ============================================================================
+
+if (Module._resolveFilename) {
+  const originalResolveFilename = Module._resolveFilename;
+  Module._resolveFilename = function (request, parent, isMain, options) {
+    if (request === 'vscode' && !vsCodeWrapped) {
+      log(`Module._resolveFilename called for 'vscode' (parent: ${parent?.filename || 'unknown'})`);
+    }
+    return originalResolveFilename.apply(this, arguments);
+  };
+}
+
+// Periodic check: if Module._load never caught 'vscode', check the module
+// cache directly.  Some VS Code Extension Host versions pre-load the API
+// and add it to require.cache under a virtual path.
+let _cacheCheckAttempts = 0;
+const _cacheCheckInterval = setInterval(() => {
+  _cacheCheckAttempts++;
+  if (vsCodeWrapped || _cacheCheckAttempts > 30) {
+    clearInterval(_cacheCheckInterval);
+    if (!vsCodeWrapped) {
+      log('Module._load never intercepted vscode after 30 attempts — wrapping may not work');
+    }
+    return;
+  }
+
+  // Search the module cache for the vscode API
+  const cache = require.cache || {};
+  for (const key of Object.keys(cache)) {
+    const mod = cache[key];
+    if (mod && mod.exports && typeof mod.exports === 'object' && !vsCodeWrapped) {
+      const exp = mod.exports;
+      // Detect vscode API by duck-typing
+      if (exp.window && exp.commands && exp.workspace &&
+          typeof exp.window.registerWebviewViewProvider === 'function' &&
+          typeof exp.window.registerTreeDataProvider === 'function') {
+        vsCodeWrapped = true;
+        realVscodeApi = exp;
+        log(`Found vscode API in module cache via duck-typing: ${key}`);
+        try {
+          wrapVSCodeAPI(exp);
+        } catch (e) {
+          logError(`Failed to wrap cached vscode API: ${e.message}`);
+        }
+        clearInterval(_cacheCheckInterval);
+        return;
+      }
+    }
+  }
+}, 500);
 
 // ============================================================================
 // State: tracked providers

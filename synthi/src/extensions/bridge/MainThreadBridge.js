@@ -367,7 +367,9 @@ export class MainThreadBridge {
           info.isActive = true;
           this.onExtensionStateChanged?.(info.id, 'active');
           console.log(`[MainThreadBridge] ✓ ${info.id} installed on VS Code Server`);
-          // Preload bridge handles UI events automatically — no synthetic events needed
+          // Emit synthetic webview events so the sidebar shows content
+          // immediately while the preload bridge connects
+          this._emitSyntheticWebviewEvents(info.id, info.manifest);
         } else {
           this.onExtensionStateChanged?.(info.id, 'pending-remote');
           console.warn(`[MainThreadBridge] ${info.id}: VS Code Server install returned unsuccessful`);
@@ -457,13 +459,16 @@ export class MainThreadBridge {
   }
 
   /**
-   * @deprecated With the preload-based bridge, extensions get the real vscode API
-   * and UI events are forwarded automatically. This method is retained only as a
-   * fallback for edge cases where the preload bridge isn't connected yet.
-   *
    * After installing a Node-only extension on the VS Code Server, emit
    * synthetic webview events for any webview-type views defined in the
-   * extension's manifest.
+   * extension's manifest.  This creates the Redux entries and
+   * WebviewManager iframes immediately so the sidebar shows content
+   * instead of "Webview loading…".
+   *
+   * Uses viewType as viewId to match the convention used by the
+   * ext-host-preload bridge (which also uses viewType as the key).
+   * When the preload bridge later sends real HTML via updateWebview,
+   * the iframe is updated in-place.
    *
    * @param {string} extensionId
    * @param {object} manifest
@@ -474,8 +479,10 @@ export class MainThreadBridge {
     for (const [containerId, views] of Object.entries(manifest.contributes.views)) {
       for (const view of views) {
         if (view.type === 'webview') {
-          const viewId = `${extensionId}.webviewView.${view.id}`;
-          console.log(`[MainThreadBridge] Emitting synthetic createWebview for ${viewId}`);
+          // Use viewType (== view.id) as the viewId — matches what the
+          // ext-host-preload bridge sends in webviewProvider messages.
+          const viewId = view.id;
+          console.log(`[MainThreadBridge] Emitting synthetic createWebview for ${viewId} (ext: ${extensionId})`);
           this._emitRemoteContribution?.('createWebview', {
             viewId,
             viewType: view.id,
@@ -484,19 +491,24 @@ export class MainThreadBridge {
             extensionId,
           });
 
-          // Set a placeholder HTML — the view runs on code-server's
-          // Extension Host but we don't yet have a protocol bridge to
-          // forward its rendered HTML.  Show contextual guidance instead.
+          // Set a loading placeholder — the real HTML will arrive once
+          // the extension activates on code-server and the preload bridge
+          // relays the webview content.
           const displayName = manifest.displayName || extensionId;
           const placeholderHtml = `
             <html>
             <body style="font-family: system-ui, sans-serif; color: #9ba2b8; padding: 20px 16px; text-align: center; background: transparent;">
-              <p style="font-size: 12px; margin-top: 24px; color: #e8eaed;">
+              <div style="margin-top: 24px;">
+                <svg width="24" height="24" viewBox="0 0 24 24" style="animation: spin 1.5s linear infinite; margin: 0 auto;">
+                  <style>@keyframes spin { 100% { transform: rotate(360deg); } }</style>
+                  <circle cx="12" cy="12" r="10" stroke="#4a5060" stroke-width="2" fill="none" stroke-dasharray="40 60" />
+                </svg>
+              </div>
+              <p style="font-size: 12px; margin-top: 12px; color: #e8eaed;">
                 <strong>${displayName}</strong>
               </p>
               <p style="font-size: 11px; color: #6b7280; margin-top: 8px;">
-                This view is running on the remote extension host.
-                Use the tree views above to interact with the extension.
+                Connecting to remote extension host…
               </p>
             </body>
             </html>`;

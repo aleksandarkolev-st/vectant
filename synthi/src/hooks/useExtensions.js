@@ -349,9 +349,13 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
         if (result.success) {
           dispatch(setExtensionState({ id, extensionState: 'active', remote: true }));
           console.log(`[useExtensions] ✓ ${id} installed on VS Code Server via marketplace`);
-          // With the preload-based bridge, extensions get the real vscode API
-          // and UI events (tree data, webview HTML) are automatically forwarded.
-          // No synthetic placeholder events needed.
+          // Emit synthetic webview events from the manifest so that
+          // WebviewPanelEmbed mounts immediately with a placeholder.
+          // When the preload bridge sends real HTML, it updates in-place.
+          const extInfo = bridge.extensions.get(id);
+          if (extInfo?.manifest) {
+            bridge._emitSyntheticWebviewEvents(id, extInfo.manifest);
+          }
         } else {
           dispatch(setExtensionState({ id, extensionState: 'crashed', reason: result.error }));
         }
@@ -696,7 +700,10 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
           if (result.success) {
             dispatch(setExtensionState({ id, extensionState: 'active', remote: true }));
             console.log(`[useExtensions] ✓ ${id} installed on VS Code Server`);
-            // Preload bridge handles UI events automatically — no synthetic events needed
+            // Emit synthetic webview events from the manifest so that
+            // WebviewPanelEmbed mounts immediately with a placeholder.
+            // When the preload bridge sends real HTML, it updates in-place.
+            system.bridge._emitSyntheticWebviewEvents(id, parsed);
             return { success: true, vscodeServer: true };
           }
         } catch (serverErr) {
