@@ -1723,15 +1723,32 @@ async function _triggerExtensionHostStartup(port, token) {
             }
           }
           else if (step === 'ehStarting') {
-            // Wait for a message that arrives AFTER the EH has the socket.
-            const elapsed = Date.now() - firstMsgTime;
+            // Wait for the EH's Ready signal.
+            //
+            // VS Code's Extension Host protocol (extensionHostProtocol.ts)
+            // uses 1-byte payloads inside Regular (type 1) messages:
+            //   0x02 = MessageType.Ready    ("I'm ready for init data")
+            //   0x01 = MessageType.Initialized ("init data processed")
+            //
+            // The EH sends Resume (proto:8) + Ready (proto:1, data=0x02)
+            // in quick succession. PersistentProtocol batches them into
+            // a single WebSocket frame. We must detect the Ready byte.
+            //
+            // Resume (proto:8) is flow control — NOT a Ready signal.
             const trigger = msg.type || `proto:${msg._protoType}`;
-            if (elapsed >= 400) {
-              process.stderr.write(`[vscode-server-manager] EH has socket (${trigger}, ${elapsed}ms after first msg) — sending init data\n`);
-              _doSendInitData(`EH protocol message: ${trigger} after ${elapsed}ms`);
-              step = 'initSent';
+            if (msg._protoType === ProtoMsgType.Regular && msg._dataLen === 1 && msg._rawBuf) {
+              const readyByte = msg._rawBuf[0];
+              if (readyByte === 0x02) {
+                process.stderr.write(`[vscode-server-manager] EH sent Ready signal (0x02) — sending init data\n`);
+                _doSendInitData('EH Ready signal');
+                step = 'initSent';
+              } else {
+                process.stderr.write(`[vscode-server-manager] EH sent Regular 1-byte (0x${readyByte.toString(16)}) — not Ready, ignoring\n`);
+              }
+            } else if (msg._protoType === ProtoMsgType.Resume) {
+              process.stderr.write(`[vscode-server-manager] EH sent Resume (flow control) — waiting for Ready signal\n`);
             } else {
-              process.stderr.write(`[vscode-server-manager] EH trigger: ${trigger} at +${elapsed}ms — too early, waiting for EH\n`);
+              process.stderr.write(`[vscode-server-manager] EH trigger: ${trigger} while waiting for Ready\n`);
             }
           }
           else if (step === 'initSent') {
@@ -1771,14 +1788,16 @@ async function _triggerExtensionHostStartup(port, token) {
         process.stderr.write(`[vscode-server-manager] EH trigger socket closed (step=${step})\n`);
       });
 
-      // Fallback: if the EH hasn't been detected by 2s after connection
-      // acceptance, send init data anyway.
+      // Fallback: if we never receive the Ready signal within 5s
+      // (e.g. the 1-byte 0x02 message was somehow lost), send init
+      // data anyway to avoid hanging forever.
       const readyFallbackTimer = setTimeout(() => {
         if (step === 'ehStarting' && !initDataSent) {
-          _doSendInitData(`fallback timer (step=${step})`);
+          process.stderr.write(`[vscode-server-manager] Ready signal not received after 5s — sending init data via fallback\n`);
+          _doSendInitData(`fallback timer (no Ready signal after 5s)`);
           step = 'initSent';
         }
-      }, 2000);
+      }, 5000);
       if (readyFallbackTimer.unref) readyFallbackTimer.unref();
 
       // Keep the socket alive — the Extension Host reads from it.
