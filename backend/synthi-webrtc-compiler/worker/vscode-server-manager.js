@@ -1666,11 +1666,22 @@ async function _triggerExtensionHostStartup(port, token) {
             continue;
           }
 
-          const msg = parseOneProtocolMsg(frame.payload);
-          if (!msg) {
-            process.stderr.write(`[vscode-server-manager] EH trigger: rx unparseable frame (opcode=${frame.opcode}, ${frame.payload.length}b, hex=${frame.payload.slice(0, 20).toString('hex')})\n`);
-            continue;
-          }
+          // Parse ALL protocol messages from this frame's payload.
+          // PersistentProtocol's ProtocolWriter batches multiple messages
+          // into a single write (via setTimeout(0)), so a single WebSocket
+          // frame can contain e.g. [Resume(13b) + Ready(14b)] = 27 bytes.
+          // We must parse and handle ALL of them, not just the first.
+          let framePayload = frame.payload;
+          while (framePayload.length >= 13) {
+            const msg = parseOneProtocolMsg(framePayload);
+            if (!msg) {
+              if (framePayload.length >= 13) {
+                process.stderr.write(`[vscode-server-manager] EH trigger: rx unparseable data in frame (${framePayload.length}b remaining, hex=${framePayload.slice(0, 20).toString('hex')})\n`);
+              }
+              break;
+            }
+            const consumed = msg._consumed || 13;
+            framePayload = framePayload.slice(consumed);
 
           process.stderr.write(`[vscode-server-manager] EH trigger: rx ${JSON.stringify(msg).slice(0, 300)}\n`);
 
@@ -1752,6 +1763,7 @@ async function _triggerExtensionHostStartup(port, token) {
               } catch (_) {}
             }
           }
+          } // end inner while (multi-message parsing)
         }
       });
 
