@@ -129,6 +129,7 @@ function TreeItem({ item, depth, onExecuteCommand }) {
 // ─── Webview panel embed ────────────────────────────────────
 function WebviewPanelEmbed({ viewId, webviewManager }) {
   const containerRef = useRef(null);
+  const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
     if (!containerRef.current || !webviewManager) return;
@@ -138,6 +139,12 @@ function WebviewPanelEmbed({ viewId, webviewManager }) {
       instance.wrapper.style.display = 'block';
       instance.wrapper.style.position = 'relative';
       containerRef.current.appendChild(instance.wrapper);
+    } else if (retryCount < 10) {
+      // Instance might not exist yet — retry after a delay.
+      // This handles the race where Redux has the panel but
+      // WebviewManager hasn't created the iframe yet.
+      const timer = setTimeout(() => setRetryCount(c => c + 1), 500);
+      return () => clearTimeout(timer);
     }
 
     return () => {
@@ -149,7 +156,7 @@ function WebviewPanelEmbed({ viewId, webviewManager }) {
         }
       }
     };
-  }, [viewId, webviewManager]);
+  }, [viewId, webviewManager, retryCount]);
 
   return (
     <div
@@ -252,7 +259,10 @@ export default function ExtensionViewContainer({
             // Check if there's a runtime webview panel for this view
             const webviewPanel = webviewPanels.find(p => p.viewType === view.id);
 
-            if (view.type === 'webview' && webviewPanel) {
+            // Render as webview if: (a) manifest says type=webview AND we have a panel,
+            // OR (b) we have a panel regardless of manifest type (the extension registered
+            // a webview view provider for this view at runtime)
+            if (webviewPanel && (view.type === 'webview' || webviewPanel.viewId)) {
               return (
                 <div key={view.id} className="border-b border-[#1a1b24]">
                   <div className="px-3 py-2 text-[11px] font-semibold text-[#9ba2b8] uppercase tracking-wider">
