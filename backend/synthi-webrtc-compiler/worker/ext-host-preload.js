@@ -295,13 +295,16 @@ let _ipcReadySent = false;
 // Monitor outgoing process.send to detect when EH signals readiness
 const _origProcessSend = process.send ? process.send.bind(process) : null;
 if (_origProcessSend) {
+  let _ipcOutCount = 0;
   process.send = function synthiProcessSendMonitor(msg, handle, options, callback) {
     if (msg && typeof msg === 'object') {
+      _ipcOutCount++;
       if (msg.type === 'VSCODE_EXTHOST_IPC_READY') {
         _ipcReadySent = true;
         log('IPC OUT: Extension Host sent VSCODE_EXTHOST_IPC_READY → server should now send us the client socket');
-      } else {
-        log(`IPC OUT: type=${msg.type || JSON.stringify(msg).slice(0, 100)}`);
+      } else if (_ipcOutCount <= 5) {
+        // Only log first 5 outgoing IPC messages to avoid noise
+        log(`IPC OUT #${_ipcOutCount}: type=${msg.type || JSON.stringify(msg).slice(0, 100)}`);
       }
     }
     return _origProcessSend.apply(process, arguments);
@@ -480,21 +483,31 @@ log('Module.prototype.require hook installed (Module._load/_resolveFilename left
 
 // ---------------------------------------------------------------------------
 // Diagnostic: periodic status check (observation only, no recovery attempts)
+//
+// We log at 3 checkpoints: 10s, 30s, 60s.  Only the 60s checkpoint
+// logs full detail if the API hasn't been intercepted yet; the 10s and
+// 30s logs are one-liners to keep stderr manageable.
 // ---------------------------------------------------------------------------
+const _startedAt = Date.now();
 const _statusCheckDelays = [10000, 30000, 60000];
 for (const delay of _statusCheckDelays) {
   const timer = setTimeout(() => {
+    const elapsed = ((Date.now() - _startedAt) / 1000).toFixed(1);
     if (vsCodeWrapped) {
-      log(`Status at ${delay / 1000}s: API intercepted ✓ (${_wrappedApiCount} instances, ${trackedTreeProviders.size} trees, ${trackedWebviewProviders.size} webviews)`);
-    } else {
-      log(`Status at ${delay / 1000}s: vscode API NOT yet intercepted`);
+      log(`Status at ${elapsed}s: API intercepted ✓ (${_wrappedApiCount} instances, ${trackedTreeProviders.size} trees, ${trackedWebviewProviders.size} webviews)`);
+    } else if (delay >= 60000) {
+      // Full diagnostic dump only at the final checkpoint
+      log(`Status at ${elapsed}s: vscode API NOT yet intercepted — FULL DIAGNOSTIC:`);
       log(`  require hook calls: ${_requireHookCallCount}`);
       log(`  process.connected: ${process.connected}`);
       log(`  VSCODE_IPC_HOOK_EXTHOST: ${process.env.VSCODE_IPC_HOOK_EXTHOST || '(unset)'}`);
       log(`  IPC ready sent: ${_ipcReadySent}, socket received: ${_ipcReceivedSocket}`);
-      // Log whether globalThis factories are set
       log(`  _VSCODE_IMPORT_VSCODE_API: ${typeof globalThis._VSCODE_IMPORT_VSCODE_API}`);
       log(`  _VSCODE_API_IMPL_PROVIDER: ${typeof globalThis._VSCODE_API_IMPL_PROVIDER}`);
+      log(`  Module._cache keys: ${Object.keys(require.cache || {}).length}`);
+    } else {
+      // Brief one-liner at earlier checkpoints
+      log(`Status at ${elapsed}s: API not yet intercepted (require calls: ${_requireHookCallCount}, connected: ${process.connected})`);
     }
   }, delay);
   timer.unref();
