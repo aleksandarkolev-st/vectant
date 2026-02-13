@@ -555,8 +555,8 @@ async function clearDocumentPersistence(docName) {
 const server = http.createServer(async (req, res) => {
   // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-user-id, x-session-id');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
