@@ -79,6 +79,29 @@ function logError(...args) {
 log(`Preload activated (PID=${process.pid}, bridge port=${BRIDGE_PORT})`);
 
 // ============================================================================
+// ESM Loader Hook Registration
+//
+// Node.js 22+ supports module.register() for custom ESM loader hooks.
+// VS Code's ESM build loads extensions via dynamic import(), which
+// bypasses CJS Module._load hooks entirely.  Register our ESM hook
+// to intercept `import('vscode')` in ESM extensions.
+// ============================================================================
+
+try {
+  const nodeModule = require('module');
+  if (typeof nodeModule.register === 'function') {
+    const hookPath = require('path').join(__dirname, 'esm-vscode-hook.mjs');
+    const hookUrl = require('url').pathToFileURL(hookPath).href;
+    nodeModule.register(hookUrl);
+    log(`ESM loader hook registered: ${hookPath}`);
+  } else {
+    log('module.register() not available — ESM hook not installed');
+  }
+} catch (e) {
+  log(`ESM loader hook registration failed (non-fatal): ${e.message}`);
+}
+
+// ============================================================================
 // Extension ID Inference
 //
 // When wrapper functions are called (registerTreeDataProvider, etc.), we
