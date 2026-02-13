@@ -209,7 +209,9 @@ export async function initializeExtensionSystem(options) {
         onContribution?.('registerTreeView', payload);
         break;
       case 'createWebview':
-        // Create the actual webview DOM element (iframe) in the WebviewManager
+        // Create the actual webview DOM element (iframe) in the WebviewManager.
+        // If a synthetic placeholder already created one with this viewId,
+        // webviews.create() returns the existing instance (no-op).
         try {
           webviews.create(payload.viewId, payload.viewType, payload.title, payload.opts || {});
         } catch (err) {
@@ -222,16 +224,34 @@ export async function initializeExtensionSystem(options) {
         onContribution?.('disposeWebview', payload);
         break;
       case 'updateWebview': {
-        const instance = webviews.webviews.get(payload.viewId);
+        let instance = webviews.webviews.get(payload.viewId);
+
+        // Auto-create the WebviewManager instance if it doesn't exist yet.
+        // This handles the race where updateWebview arrives from the preload
+        // before the frontend's synthetic createWebview has been processed.
+        if (!instance && payload.html) {
+          console.log(`[Extension] updateWebview: auto-creating webview for ${payload.viewId}`);
+          try {
+            instance = webviews.create(payload.viewId, payload.viewId, payload.viewId, {});
+          } catch (err) {
+            console.warn(`[Extension] auto-create failed for ${payload.viewId}:`, err.message);
+          }
+        }
+
         if (instance && payload.html) {
-          console.log(`[Extension] updateWebview ${payload.viewId}: ${payload.html.length} chars`);
+          const isSyntheticPlaceholder = payload.html.length < 1200 && payload.html.includes('Connecting to remote');
+          if (isSyntheticPlaceholder) {
+            console.log(`[Extension] updateWebview ${payload.viewId}: placeholder (${payload.html.length} chars)`);
+          } else {
+            console.log(`[Extension] updateWebview ${payload.viewId}: real content (${payload.html.length} chars)`);
+          }
           instance.html = payload.html;
         } else if (!instance) {
           console.warn(`[Extension] updateWebview: no WebviewManager instance for ${payload.viewId}`);
-          // Try to find a close match (viewType might differ from viewId)
+          // Fuzzy match fallback — viewType may differ from viewId
           for (const [id, inst] of webviews.webviews) {
             if (id.includes(payload.viewId) || payload.viewId.includes(id)) {
-              console.log(`[Extension] updateWebview: found fuzzy match ${id} for ${payload.viewId}`);
+              console.log(`[Extension] updateWebview: fuzzy match ${id} for ${payload.viewId}`);
               inst.html = payload.html;
               break;
             }
@@ -243,6 +263,14 @@ export async function initializeExtensionSystem(options) {
       case 'setStatusBar':
         onContribution?.('setStatusBar', payload);
         break;
+      case 'providerList': {
+        // The preload bridge reports registered providers — log for diagnostics
+        const trees = payload.treeViews || payload[0] || [];
+        const wvs = payload.webviews || payload[1] || [];
+        console.log(`[Extension] providerList: ${trees.length} trees, ${wvs.length} webviews`);
+        onContribution?.('providerList', payload);
+        break;
+      }
       default:
         onContribution?.(type, payload);
     }
