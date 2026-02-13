@@ -1,5 +1,6 @@
 // src/services/api.js
 
+import { getSession } from 'next-auth/react';
 import SynthiException from "@/components/SynthiException";
 
 function languageFromExtension(ext) {
@@ -94,12 +95,30 @@ export class ApiClient {
         // All methods use the module-level COLLAB_SERVER_URL constant
     }
 
+    /**
+     * Build common headers for collab-server requests.
+     * Attaches x-user-id so the server routes to the per-user repo.
+     */
+    async _headers(extra = {}) {
+        const base = { ...extra };
+        try {
+            const session = await getSession();
+            const userId = session?.user?.id || session?.user?.email;
+            if (userId) base['x-user-id'] = userId;
+        } catch (_) {
+            // Non-fatal — server falls back to slug-level repo
+        }
+        return base;
+    }
+
     // READ
     async fetchFiles(slug) {
         // Always fetch from collab-server (disk-backed, authoritative source).
         // No GCS fallback — if collab-server is down, surface the error so the
         // user knows the system is unavailable rather than showing stale data.
-        const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/files-meta`);
+        const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/files-meta`, {
+            headers: await this._headers(),
+        });
         if (!res.ok) {
             throw new SynthiException(
                 `Failed to load workspace files (status ${res.status})`,
@@ -116,7 +135,7 @@ export class ApiClient {
     async ensureIndex(slug) {
         try {
             // Fire and forget; must not block UI.
-            fetch(`${COLLAB_SERVER_URL}/git/${slug}/index-ensure`).catch(() => {});
+            this._headers().then(h => fetch(`${COLLAB_SERVER_URL}/git/${slug}/index-ensure`, { headers: h })).catch(() => {});
         } catch (_) {
             // ignore
         }
@@ -128,7 +147,7 @@ export class ApiClient {
         // Prefer collab-server index
         try {
             const url = `${COLLAB_SERVER_URL}/git/${slug}/search?q=${encodeURIComponent(q)}`;
-            const res = await fetch(url, { signal: options.signal });
+            const res = await fetch(url, { headers: await this._headers(), signal: options.signal });
             if (res.ok) return await res.json();
         } catch (_) {
             // fall back
@@ -140,7 +159,7 @@ export class ApiClient {
     async fetchFileContent(slug, filePath, options = {}) {
         // Always fetch from collab-server (authoritative disk source).
         // No GCS fallback — prevents dual-source inconsistency.
-        const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/file?path=${encodeURIComponent(filePath)}`, { signal: options.signal });
+        const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/file?path=${encodeURIComponent(filePath)}`, { headers: await this._headers(), signal: options.signal });
         if (!res.ok) {
             throw new SynthiException(
                 `Failed to load file content (status ${res.status})`,
@@ -156,7 +175,7 @@ export class ApiClient {
 
     async fetchFileImports(slug, filePath, options = {}) {
         try {
-            const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/imports?path=${encodeURIComponent(filePath)}`, { signal: options.signal });
+            const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/imports?path=${encodeURIComponent(filePath)}`, { headers: await this._headers(), signal: options.signal });
             if (res.ok) return await res.json();
         } catch (_) {
             // fall back
@@ -174,7 +193,7 @@ export class ApiClient {
         // dual-source inconsistency.
         const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/sync`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: await this._headers({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ filePath, content }),
         });
         if (!res.ok) {
@@ -189,7 +208,7 @@ export class ApiClient {
             // Create directory via collab-server
             const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/create-directory`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: await this._headers({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({ path: fullPath }),
             });
             if (!res.ok) {
@@ -201,7 +220,7 @@ export class ApiClient {
             // Create an empty file via the write-file endpoint
             const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/write-file`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: await this._headers({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({ path: fullPath, content: '' }),
             });
             if (!res.ok) {
@@ -215,7 +234,7 @@ export class ApiClient {
     async renameItem(slug, oldPath, newPath) {
         const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/rename-item`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: await this._headers({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ oldPath, newPath }),
         });
         if (!res.ok) {
@@ -231,7 +250,7 @@ export class ApiClient {
 
         const res = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/delete-item`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: await this._headers({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ path: cleanPath }),
         });
         if (!res.ok) {
