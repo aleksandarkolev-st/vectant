@@ -917,20 +917,14 @@ async function startServer(slug, options = {}) {
       process.stderr.write(`[vscode-server-manager] Preload bridge start failed (non-fatal): ${bridgeErr.message}\n`);
     }
 
-    // Build NODE_OPTIONS to inject ext-host-preload.js into the Extension Host.
-    // The preload script uses SYNTHI_EXT_BRIDGE_PORT to connect back to us.
-    // It checks for VSCODE_IPC_HOOK_EXTHOST to ensure it only activates
-    // inside the Extension Host process, not code-server's main process.
-    const preloadPath = path.join(__dirname, 'ext-host-preload.js');
-    const existingNodeOptions = process.env.NODE_OPTIONS || '';
-    const nodeOptions = bridgePort
-      ? `${existingNodeOptions} --require "${preloadPath}"`.trim()
-      : existingNodeOptions;
-
     // ── Patch the Extension Host entrypoint ──
     // VS Code's Extension Host launcher strips NODE_OPTIONS, so --require
     // never reaches the Extension Host. We patch extensionHostProcess.js
     // directly to require our preload script at the top of the file.
+    // This is the ONLY injection mechanism — we deliberately do NOT set
+    // NODE_OPTIONS because it would load the preload in non-EH processes
+    // (code-server's main process, PTY host, etc.) causing false positives.
+    const preloadPath = path.join(__dirname, 'ext-host-preload.js');
     if (bridgePort) {
       _patchExtensionHostForPreload(binary, preloadPath, bridgePort);
     }
@@ -945,10 +939,8 @@ async function startServer(slug, options = {}) {
         VSCODE_SERVER_TOKEN: token,
         // Disable GPU (headless server)
         VSCODE_CLI_DISABLE_GPU: '1',
-        // Inject ext-host-preload.js into all Node child processes.
-        // The preload script self-guards to only activate in the Extension Host.
-        ...(nodeOptions ? { NODE_OPTIONS: nodeOptions } : {}),
         // Tell the preload script where our TCP bridge is listening
+        // (inherited by Extension Host child process via the env)
         ...(bridgePort ? { SYNTHI_EXT_BRIDGE_PORT: String(bridgePort) } : {}),
       },
     });
