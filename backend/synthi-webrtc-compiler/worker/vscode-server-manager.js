@@ -1699,22 +1699,10 @@ async function _triggerExtensionHostStartup(port, token) {
             process.stderr.write(`[vscode-server-manager] EH trigger: sent ExtensionHost connection request\n`);
           }
           else if (step === 'awaitOk') {
-            // CRITICAL TIMING ISSUE:
-            //
             // The FIRST protocol message after connectionType=2 comes from
             // code-server's OWN protocol handler (typically proto:7 = Pause).
-            // At this point, code-server has NOT yet forked the Extension Host.
-            // The socket is still owned by code-server's Node.js process.
-            //
-            // If we send init data NOW, it goes into code-server's TCP buffer.
-            // When code-server later passes the socket fd to the EH via IPC,
-            // any data already Read() by code-server's Node.js buffer is LOST.
-            // The EH never receives our init data and hangs forever.
-            //
-            // Strategy: Record the time of the first message. Transition to
-            // 'ehStarting'. Only send init data when we receive a SECOND
-            // protocol message ≥400ms later (which must be from the EH, not
-            // code-server), or after a 2s fallback timer.
+            // code-server then passes the raw socket to the EH process.
+            // The EH creates a FRESH PersistentProtocol on this socket.
             if (msg.type === 'error') {
               process.stderr.write(`[vscode-server-manager] EH connection rejected: ${msg.reason || JSON.stringify(msg)}\n`);
               step = 'error';
@@ -1722,7 +1710,16 @@ async function _triggerExtensionHostStartup(port, token) {
               const trigger = msg.type || `proto:${msg._protoType}`;
               firstMsgTime = Date.now();
               step = 'ehStarting';
-              process.stderr.write(`[vscode-server-manager] Connection accepted (${trigger}) — waiting for EH process to take over socket before sending init data\n`);
+
+              // CRITICAL: Reset protocol IDs for the new EH endpoint.
+              // code-server consumed our auth messages (IDs 1,2). The EH
+              // creates a fresh PersistentProtocol that expects incoming
+              // message IDs starting from 1. If we continue with ID 3+,
+              // PersistentProtocol detects a gap and buffers our messages
+              // without delivering them (causing ReplayRequest loops).
+              process.stderr.write(`[vscode-server-manager] Connection accepted (${trigger}) — resetting protocol IDs for EH endpoint\n`);
+              nextMsgId = 1;
+              lastReceivedMsgId = 0;
             }
           }
           else if (step === 'ehStarting') {
