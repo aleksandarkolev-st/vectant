@@ -1,12 +1,26 @@
+import { getSession } from 'next-auth/react';
+
 const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
 
 export const gitClient = {
     async request(slug, action, data = {}) {
+        const headers = {
+            'Content-Type': 'application/json',
+        };
+
+        // Attach authenticated user id for per-user repo isolation
+        try {
+            const session = await getSession();
+            if (session?.user?.id) {
+                headers['x-user-id'] = session.user.id;
+            }
+        } catch (_) {
+            // Non-fatal — request will fall back to slug-level repo
+        }
+
         const response = await fetch(`${COLLAB_SERVER_URL}/git/${slug}/${action}`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers,
             body: JSON.stringify(data),
         });
         let body = null;
