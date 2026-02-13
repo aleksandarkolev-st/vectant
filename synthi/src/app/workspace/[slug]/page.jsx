@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { use } from 'react';
+import { useSession } from 'next-auth/react';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, selectCurrentContent, selectFileCacheEntries } from '@/redux/workspaceSlice';
 import { fetchGitStatus } from '@/redux/gitSlice';
@@ -59,6 +60,7 @@ import { cn } from '@/lib/utils';
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
+    const { data: authSession } = useSession();
     
     // 1. Consume the slug parameter first (needed by hooks below)
     const { slug } = use(params);
@@ -322,6 +324,7 @@ export default function EditorPage({ params }) {
 
     // Subscribe to server-side file-tree-changed notifications so
     // all connected clients stay in sync when any teammate mutates the tree.
+    const authUserId = authSession?.user?.id || authSession?.user?.email || null;
     useEffect(() => {
         if (!slug) return;
         const teardown = collabClient.connectNotifications(slug, {
@@ -341,9 +344,9 @@ export default function EditorPage({ params }) {
                 // Source Control panel updates without waiting for the poll.
                 dispatch(fetchGitStatus(slug));
             },
-        });
+        }, authUserId);
         return teardown;
-    }, [slug, dispatch]);
+    }, [slug, dispatch, authUserId]);
 
     // 2. Consume global state directly via selectors
     const activeFile = useAppSelector(selectActiveFile);

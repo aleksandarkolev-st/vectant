@@ -2020,25 +2020,29 @@ const EditorPanel = ({
                                                         )}
                                                     </div>
 
-                                                    {/* Unsaved marker - coral dot with glow */}
-                                                    <span aria-hidden="true" className={`ml-auto w-2 h-2 rounded-full flex-shrink-0 transition-opacity shadow-[0_0_6px_rgba(255,107,107,0.6)] ${file.isUnsaved || (isActive && remoteUnsaved) ? '' : 'opacity-0'}`} style={{ backgroundColor: '#ff6b6b' }} />
-
-                                                    {/* Close button appears on hover (VSCode behavior) */}
-                                                    <button
-                                                        onClick={(e) => { e.stopPropagation(); dispatch(closeFile(file.path)); }}
-                                                        className={`flex items-center justify-center w-5 h-5 rounded-full transition-all duration-150 ${isActive ? 'text-[#f4f5f8]/80 hover:text-[#f4f5f8] hover:bg-[#3a857430]' : 'text-[#5a6178] hover:text-[#f4f5f8] hover:bg-[#1a1b24]'}`}
-                                                        aria-label={`Close ${file.name}`}
-                                                        style={{ opacity: 0 }}
-                                                    >
-                                                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="pointer-events-none">
-                                                            <path d="M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                                                            <path d="M6 6L18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                                                        </svg>
-                                                    </button>
-
-                                                    <style jsx>{`
-                                                            .group:hover button { opacity: 1 !important; }
-                                                        `}</style>
+                                                    {/* VSCode-style: unsaved dot and close button share the same slot.
+                                                        • When unsaved & not hovered → coral dot visible
+                                                        • When hovered (regardless of state) → close ✕ visible
+                                                        • When saved & not hovered → empty (reserving space) */}
+                                                    <div className="ml-auto w-5 h-5 flex-shrink-0 flex items-center justify-center relative">
+                                                        {/* Unsaved dot — hidden on group hover so the close ✕ takes over */}
+                                                        {(file.isUnsaved || (isActive && remoteUnsaved)) && (
+                                                            <Circle
+                                                                className="w-2.5 h-2.5 fill-[#ff6b6b] text-[#ff6b6b] drop-shadow-[0_0_4px_rgba(255,107,107,0.6)] group-hover:hidden"
+                                                            />
+                                                        )}
+                                                        {/* Close button — always in DOM for hover, hidden until group hover */}
+                                                        <button
+                                                            onClick={(e) => { e.stopPropagation(); dispatch(closeFile(file.path)); }}
+                                                            className={`absolute inset-0 items-center justify-center rounded-full transition-all duration-150 hidden group-hover:flex ${isActive ? 'text-[#f4f5f8]/80 hover:text-[#f4f5f8] hover:bg-[#3a857430]' : 'text-[#5a6178] hover:text-[#f4f5f8] hover:bg-[#1a1b24]'}`}
+                                                            aria-label={`Close ${file.name}`}
+                                                        >
+                                                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="pointer-events-none">
+                                                                <path d="M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                                                <path d="M6 6L18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                                            </svg>
+                                                        </button>
+                                                    </div>
                                                 </div>
                                             </div>
                                         );

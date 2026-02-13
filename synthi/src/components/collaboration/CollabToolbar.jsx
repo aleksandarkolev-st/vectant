@@ -6,7 +6,7 @@ import { useCollabSession } from '@/hooks/useCollabSession';
 import {
   Users, Link2, Copy, Check, X, Shield, ShieldOff,
   Terminal, GitBranch, FileEdit, FolderEdit, UserX,
-  Radio, RadioOff, ChevronDown, Bell, RefreshCw,
+  Radio, CircleOff, ChevronDown, Bell, RefreshCw,
   Share2, LogOut, Eye, Edit3, Plus
 } from 'lucide-react';
 import {
@@ -551,7 +551,7 @@ function SessionManagePanel({
           onClick={onTerminate}
           className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-[#ff575712] hover:bg-[#ff575720] border border-[#ff575730] rounded-lg text-[#ff5757] font-semibold text-xs transition-all"
         >
-          <RadioOff className="w-3.5 h-3.5" />
+          <CircleOff className="w-3.5 h-3.5" />
           Stop Sharing
         </button>
       </div>

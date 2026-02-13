@@ -905,12 +905,13 @@ class CollabClient {
    * @param {{ onFileTreeChanged?: Function }} handlers - event callbacks
    * @returns {Function} teardown function to close the connection
    */
-  connectNotifications(slug, handlers = {}) {
+  connectNotifications(slug, handlers = {}, userId = null) {
     if (!slug) return () => {};
 
     // Build ws(s) URL for /notifications
     const base = this.serverUrl.replace(/\/$/, '');
-    const url = `${base}/notifications?slug=${encodeURIComponent(slug)}`;
+    let url = `${base}/notifications?slug=${encodeURIComponent(slug)}`;
+    if (userId) url += `&userId=${encodeURIComponent(userId)}`;
 
     let ws;
     let reconnectTimer = null;
