@@ -1803,6 +1803,11 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
         extensions.push(extensionDesc);
         myExtensionIds.push({ value: extId });
 
+        // Validate extension has an entry point
+        if (!pkg.main && !pkg.browser) {
+          process.stderr.write(`[eh-init] Extension ${extId}: no main/browser field — may be theme-only\n`);
+        }
+
         process.stderr.write(`[eh-init] Extension: ${extId} (main: ${pkg.main || pkg.browser || 'none'})\n`);
       } catch (e) {
         // Skip dirs without valid package.json (e.g. extensions.json)
@@ -1925,6 +1930,24 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
   };
 
   // ── Send as PersistentProtocol Regular message ──
+  // Validate required fields before sending.  Missing fields cause
+  // the EH to silently hang during deserialization.
+  const requiredTopLevel = ['version', 'commit', 'parentPid', 'environment', 'workspace', 'extensions', 'telemetryInfo'];
+  for (const key of requiredTopLevel) {
+    if (initData[key] === undefined || initData[key] === null) {
+      process.stderr.write(`[eh-init] WARNING: init data missing required field '${key}'\n`);
+    }
+  }
+  if (!initData.extensions?.allExtensions || !Array.isArray(initData.extensions.allExtensions)) {
+    process.stderr.write(`[eh-init] WARNING: extensions.allExtensions is missing or not an array\n`);
+  }
+  if (!initData.extensions?.myExtensions || !Array.isArray(initData.extensions.myExtensions)) {
+    process.stderr.write(`[eh-init] WARNING: extensions.myExtensions is missing or not an array\n`);
+  }
+  if (!initData.workspace?.folders || !Array.isArray(initData.workspace.folders) || initData.workspace.folders.length === 0) {
+    process.stderr.write(`[eh-init] WARNING: workspace.folders is empty — VS Code may crash during init\n`);
+  }
+
   const initJson = JSON.stringify(initData);
   process.stderr.write(`[eh-init] Init data size: ${initJson.length} bytes, extensions: ${extensions.length}\n`);
   sendWSFrame(makeRegularMsg(initJson));
