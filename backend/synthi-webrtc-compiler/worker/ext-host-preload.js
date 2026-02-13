@@ -150,10 +150,13 @@ let connectionAttempted = false;
 let reconnectAttempts = 0;
 
 /** @type {number} Maximum reconnection attempts */
-const MAX_RECONNECT_ATTEMPTS = 5;
+const MAX_RECONNECT_ATTEMPTS = 10;
 
 /** @type {number} Base delay for exponential backoff (ms) */
 const RECONNECT_BASE_DELAY = 1000;
+
+/** @type {number} Maximum delay between reconnects (ms) */
+const RECONNECT_MAX_DELAY = 30000;
 
 /**
  * Connect to the vscode-server-manager's TCP bridge.
@@ -168,6 +171,7 @@ function connectBridge() {
     log('Connected to bridge');
     bridgeSocket = socket;
     bridgeConnected = true;
+    const wasReconnect = reconnectAttempts > 0;
     reconnectAttempts = 0; // Reset on successful connection
 
     // Flush queued messages
@@ -183,6 +187,21 @@ function connectBridge() {
       ppid: process.ppid,
       extHostEnv: !!process.env.VSCODE_IPC_HOOK_EXTHOST,
     });
+
+    // On reconnect, re-send current state so manager catches up
+    if (wasReconnect && vsCodeWrapped) {
+      log('Reconnect: re-sending bootstrapState and provider list');
+      bridgeSend({
+        type: 'bootstrapState',
+        complete: true,
+        method: 'reconnect',
+        wrappedCount: _wrappedApiCount,
+      });
+      // Immediately send current provider list
+      const treeViews = Array.from(trackedTreeProviders.keys());
+      const webviews = Array.from(trackedWebviewProviders.keys());
+      bridgeSend({ type: 'providerList', treeViews, webviews });
+    }
   });
 
   socket.setNoDelay(true);
@@ -233,7 +252,7 @@ function _scheduleReconnect() {
     return;
   }
 
-  const delay = RECONNECT_BASE_DELAY * Math.pow(2, reconnectAttempts);
+  const delay = Math.min(RECONNECT_BASE_DELAY * Math.pow(2, reconnectAttempts), RECONNECT_MAX_DELAY);
   reconnectAttempts++;
   log(`Scheduling reconnect attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} in ${delay}ms`);
 
