@@ -274,6 +274,9 @@ const preloadTreeCache = new Map();
 /** @type {boolean} Whether the bootstrapState message has been received from preload */
 let _bootstrapStateReceived = false;
 
+/** @type {string[]} Webview view types queued for resolution before bootstrap */
+const _deferredWebviewResolutions = [];
+
 /**
  * Trigger provider discovery with retried attempts.
  * Called once from either bootstrapState handler or the 45s fallback timer.
@@ -535,6 +538,24 @@ function _handlePreloadMessage(msg) {
         _bootstrapStateReceived = true;
         sendEvent('bootstrapState', true);
         _startProviderDiscovery('bootstrapState');
+
+        // Flush deferred webview resolution requests now that extensions are activating.
+        // Add a small delay to give providers time to register after activation.
+        if (_deferredWebviewResolutions.length > 0) {
+          process.stderr.write(`[preload-bridge] Flushing ${_deferredWebviewResolutions.length} deferred webview resolutions\n`);
+          const deferred = [..._deferredWebviewResolutions];
+          _deferredWebviewResolutions.length = 0;
+          for (const viewType of deferred) {
+            // Stagger resolution: 3s after bootstrap for first, then 5s, 10s retries
+            const delays = [3000, 5000, 10000];
+            for (const d of delays) {
+              const t = setTimeout(() => {
+                sendToPreloadClients({ action: 'resolveWebviewView', viewType });
+              }, d);
+              if (t.unref) t.unref();
+            }
+          }
+        }
       }
       break;
     }
@@ -1725,9 +1746,33 @@ async function _triggerExtensionHostStartup(port, token) {
       setTimeout(() => {
         if (step !== 'done' && step !== 'error') {
           process.stderr.write(`[vscode-server-manager] EH trigger: protocol timeout (step=${step}), continuing\n`);
+
+          // If init data was sent but bootstrapState was never received,
+          // the EH may not have processed it (e.g. lost in WebSocket framing,
+          // or the EH was still setting up PersistentProtocol).  Re-send init
+          // data as a recovery attempt.
+          if (initDataSent && !_bootstrapStateReceived) {
+            process.stderr.write(`[vscode-server-manager] bootstrapState not received — re-sending init data as recovery\n`);
+            initDataSent = false;
+            _doSendInitData(`protocol-timeout recovery (step=${step})`);
+          }
         }
         resolve();
-      }, 12000);
+      }, 20000);
+
+      // Secondary recovery: if after 60s bootstrapState still hasn't
+      // been received, make one final attempt to send init data.
+      // This handles cases where the EH takes a very long time to
+      // initialize (e.g. large extension sets, slow disk I/O).
+      const _lateRecoveryTimer = setTimeout(() => {
+        if (!_bootstrapStateReceived && !socket.destroyed) {
+          process.stderr.write(`[vscode-server-manager] 60s late recovery: bootstrapState still not received, re-sending init data\n`);
+          initDataSent = false;
+          _doSendInitData(`60s late recovery`);
+        }
+      }, 60000);
+      if (_lateRecoveryTimer.unref) _lateRecoveryTimer.unref();
+      socket.on('close', () => clearTimeout(_lateRecoveryTimer));
 
       // Periodic keepalive: send WebSocket ping every 30s
       const keepaliveInterval = setInterval(() => {
@@ -1815,7 +1860,13 @@ async function _sendExtensionHostInitData(sendWSFrame, makeRegularMsg, port) {
           activationEvents: pkg.activationEvents || ['*'],
           contributes: pkg.contributes || {},
           enabledApiProposals: pkg.enabledApiProposals || [],
-          api: pkg.api || 'none',
+          // CRITICAL: 'api' controls whether VS Code provides the 'vscode'
+          // module to this extension.  If set to 'none', the Extension Host
+          // never injects the API and require('vscode') is never called,
+          // which prevents the preload from intercepting it.
+          // Extensions with a main/browser entry point need 'vscode';
+          // theme-only extensions (no entry point) can use 'none'.
+          api: pkg.api || (pkg.main || pkg.browser ? 'vscode' : 'none'),
           targetPlatform: 'universal',
           isApplicationScoped: false,
           uuid: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'),
@@ -2159,11 +2210,19 @@ async function _autoLoadUIExtensions() {
               if (view.id) {
                 process.stderr.write(`[ext-scan]   View: ${view.id} (type: ${view.type || 'tree'}, container: ${container})\n`);
                 if (view.type === 'webview') {
-                  // Schedule webview resolution for later when the extension activates
+                  // Queue webview resolution — will be flushed after bootstrapState
+                  // is received, ensuring extensions have actually activated.
                   const viewType = view.id;
-                  setTimeout(() => {
-                    sendToPreloadClients({ action: 'resolveWebviewView', viewType });
-                  }, 10000); // 10s delay — extension needs time to activate
+                  if (_bootstrapStateReceived) {
+                    // Bootstrap already received — resolve after a short delay
+                    const t = setTimeout(() => {
+                      sendToPreloadClients({ action: 'resolveWebviewView', viewType });
+                    }, 3000);
+                    if (t.unref) t.unref();
+                  } else {
+                    _deferredWebviewResolutions.push(viewType);
+                    process.stderr.write(`[ext-scan]   Deferred webview resolution for ${viewType} (waiting for bootstrapState)\n`);
+                  }
                 }
               }
             }
