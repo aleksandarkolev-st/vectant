@@ -251,16 +251,21 @@ connectBridge();
 // ============================================================================
 // Module Interception
 //
-// VS Code's Extension Host (code-server) re-hooks Module._load AFTER our
-// preload runs.  Their hook intercepts `require('vscode')` and returns the
-// API directly, NEVER calling through to our hook.  To counter this:
+// VS Code's Extension Host (code-server 4.108+, ESM build) re-hooks
+// Module._load and Module._resolveFilename AFTER our preload runs — and
+// may do so MULTIPLE TIMES during the boot sequence.  The old polling
+// approach (check every 10ms for 3s) was too narrow: VS Code could
+// re-hook after the polling window closed, silently removing our wrapper.
 //
-// 1. We hook Module._load initially (catches pre-VS Code boot edge cases).
-// 2. We poll every 10ms to detect when VS Code re-hooks _load.
-// 3. When detected, we re-wrap on top of VS Code's hook — so require('vscode')
-//    goes through: our new wrapper → VS Code's hook → returns API → we wrap it.
-// 4. We tag each wrapper with __synthiHook to detect our own functions.
-// 5. We also duck-type the module cache as a belt-and-suspenders fallback.
+// New approach: use Object.defineProperty to install getter/setter traps
+// on Module._load and Module._resolveFilename.  Any time VS Code
+// assigns a new function to these properties, our setter captures it
+// and our getter returns a wrapper that intercepts require('vscode').
+// This is permanent — no polling, no timing windows.
+//
+// The vscode API is detected by duck-typing (must have window, commands,
+// workspace).  Once intercepted, we call wrapVSCodeAPI() to add
+// observation hooks for tree views and webview providers.
 // ============================================================================
 
 const Module = require('module');
@@ -296,84 +301,126 @@ function _tryWrapVscodeResult(result, source) {
   return true;
 }
 
-/**
- * Create a Module._load wrapper that wraps ANY underlying load function.
- * Tagged with __synthiHook so we can detect our own functions.
- */
-function _createLoadWrapper(underlyingLoad) {
-  function synthiModuleLoadHook(request, parent, isMain) {
-    const result = underlyingLoad.apply(this, arguments);
+// ---------------------------------------------------------------------------
+// Strategy 1: Object.defineProperty trap on Module._load
+//
+// Our getter always returns our wrapper function.  Our setter captures
+// whatever function VS Code assigns (so we delegate to it).  VS Code
+// thinks it replaced Module._load, but we're still in the call chain.
+// ---------------------------------------------------------------------------
+
+/** The "real" underlying _load function (VS Code's hook or Node's original) */
+let _underlyingLoad = realOriginalLoad;
+
+function _synthiModuleLoadProxy(request, parent, isMain) {
+  const result = _underlyingLoad.apply(this, arguments);
+  if (request === 'vscode' && !vsCodeWrapped) {
+    _tryWrapVscodeResult(result, `Module._load proxy (underlying: ${_underlyingLoad.name || 'anonymous'})`);
+  }
+  return result;
+}
+_synthiModuleLoadProxy.__synthiHook = true;
+
+let _loadTrapActive = false;
+try {
+  Object.defineProperty(Module, '_load', {
+    get() { return _synthiModuleLoadProxy; },
+    set(newLoad) {
+      if (newLoad && !newLoad.__synthiHook) {
+        log(`Module._load reassigned (by: ${newLoad.name || 'anonymous'}), captured via property trap`);
+        _underlyingLoad = newLoad;
+      }
+    },
+    configurable: true,
+    enumerable: true,
+  });
+  _loadTrapActive = true;
+  log('Module._load property trap installed');
+} catch (e) {
+  logError(`Module._load property trap failed: ${e.message} — falling back to direct hook`);
+  Module._load = function synthiFallbackLoadHook(request, parent, isMain) {
+    const result = realOriginalLoad.apply(this, arguments);
     if (request === 'vscode' && !vsCodeWrapped) {
-      _tryWrapVscodeResult(result, `Module._load (underlying: ${underlyingLoad.name || 'anonymous'})`);
+      _tryWrapVscodeResult(result, 'Module._load fallback hook');
     }
     return result;
-  }
-  synthiModuleLoadHook.__synthiHook = true;
-  return synthiModuleLoadHook;
+  };
+  Module._load.__synthiHook = true;
 }
 
-// Initial hook (will be active until VS Code re-hooks _load)
-Module._load = _createLoadWrapper(realOriginalLoad);
-
 // ---------------------------------------------------------------------------
-// Re-hook detection: VS Code's Extension Host will do
-//   const orig = Module._load;  Module._load = function(...) { ... };
-// This replaces our hook with theirs. We poll to detect this and re-wrap.
+// Strategy 2: Object.defineProperty trap on Module._resolveFilename
+//
+// When 'vscode' is resolved, we immediately check Module._cache for the
+// resolved path and try to wrap the cached module.  This catches the case
+// where VS Code pre-populates the cache so Module._load is never called.
 // ---------------------------------------------------------------------------
-let _rehookAttempts = 0;
-const MAX_REHOOK_ATTEMPTS = 300;  // 3 seconds at 10ms intervals
+let _underlyingResolveFilename = Module._resolveFilename;
 
-const _rehookInterval = setInterval(() => {
-  _rehookAttempts++;
-
-  // Stop polling once we've wrapped the API or exhausted attempts
-  if (vsCodeWrapped || _rehookAttempts > MAX_REHOOK_ATTEMPTS) {
-    clearInterval(_rehookInterval);
-    if (!vsCodeWrapped) {
-      log(`Module._load re-hook detection stopped after ${_rehookAttempts} attempts — vscode API not intercepted`);
-    }
-    return;
+function _synthiResolveFilenameProxy(request, parent, isMain, options) {
+  const resolved = _underlyingResolveFilename.apply(this, arguments);
+  if (request === 'vscode' && !vsCodeWrapped) {
+    log(`Module._resolveFilename: 'vscode' → ${resolved} (parent: ${parent?.filename || 'unknown'})`);
+    // Try the global cache immediately
+    try {
+      const cached = Module._cache?.[resolved];
+      if (cached && cached.exports) {
+        _tryWrapVscodeResult(cached.exports, `_resolveFilename cache hit (${resolved})`);
+      }
+    } catch (_) {}
   }
+  return resolved;
+}
 
-  // Check if Module._load is still our hook
-  if (!Module._load.__synthiHook) {
-    // VS Code (or something else) replaced our hook — re-wrap on top
-    const theirHook = Module._load;
-    log(`Module._load was re-hooked (by: ${theirHook.name || 'anonymous'}), re-wrapping on top`);
-    Module._load = _createLoadWrapper(theirHook);
-  }
-}, 10);
-
-// ---------------------------------------------------------------------------
-// Fallback: Also hook Module._resolveFilename for diagnostics
-// ---------------------------------------------------------------------------
-if (Module._resolveFilename) {
-  const originalResolveFilename = Module._resolveFilename;
+try {
+  Object.defineProperty(Module, '_resolveFilename', {
+    get() { return _synthiResolveFilenameProxy; },
+    set(newFn) {
+      if (newFn !== _synthiResolveFilenameProxy) {
+        log(`Module._resolveFilename reassigned — captured`);
+        _underlyingResolveFilename = newFn;
+      }
+    },
+    configurable: true,
+    enumerable: true,
+  });
+  log('Module._resolveFilename property trap installed');
+} catch (e) {
+  logError(`Module._resolveFilename trap failed: ${e.message}`);
+  // Fallback: simple overwrite
+  const origResolve = Module._resolveFilename;
   Module._resolveFilename = function (request, parent, isMain, options) {
+    const resolved = origResolve.apply(this, arguments);
     if (request === 'vscode' && !vsCodeWrapped) {
-      log(`Module._resolveFilename called for 'vscode' (parent: ${parent?.filename || 'unknown'})`);
+      try {
+        const cached = Module._cache?.[resolved];
+        if (cached?.exports) _tryWrapVscodeResult(cached.exports, '_resolveFilename fallback');
+      } catch (_) {}
     }
-    return originalResolveFilename.apply(this, arguments);
+    return resolved;
   };
 }
 
 // ---------------------------------------------------------------------------
-// Fallback 2: Duck-type the module cache
-// Some VS Code Extension Host versions pre-load the API and add it to
-// require.cache under a virtual path.
+// Strategy 3: Periodic scan of Module._cache
+//
+// Belt-and-suspenders: in case both traps are somehow bypassed, we also
+// periodically scan the global module cache for the vscode API shape.
+// Extended to 120s (240 attempts at 500ms).
 // ---------------------------------------------------------------------------
 let _cacheCheckAttempts = 0;
 const _cacheCheckInterval = setInterval(() => {
   _cacheCheckAttempts++;
-  if (vsCodeWrapped || _cacheCheckAttempts > 60) {
+  if (vsCodeWrapped || _cacheCheckAttempts > 240) {
     clearInterval(_cacheCheckInterval);
     if (!vsCodeWrapped) {
-      log('Module cache duck-typing gave up after 60 attempts');
+      log(`Module._cache duck-typing gave up after ${_cacheCheckAttempts} attempts (${_cacheCheckAttempts * 500 / 1000}s)`);
     }
     return;
   }
 
-  const cache = require.cache || {};
+  // Use Module._cache (global singleton) — require.cache might differ in ESM context
+  const cache = Module._cache || {};
   for (const key of Object.keys(cache)) {
     const mod = cache[key];
     if (mod && mod.exports && typeof mod.exports === 'object' && !vsCodeWrapped) {
@@ -381,7 +428,7 @@ const _cacheCheckInterval = setInterval(() => {
       if (exp.window && exp.commands && exp.workspace &&
           typeof exp.window.registerWebviewViewProvider === 'function' &&
           typeof exp.window.registerTreeDataProvider === 'function') {
-        _tryWrapVscodeResult(exp, `module cache duck-typing (key: ${key})`);
+        _tryWrapVscodeResult(exp, `Module._cache duck-typing (key: ${key})`);
         clearInterval(_cacheCheckInterval);
         return;
       }
