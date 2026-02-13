@@ -1280,6 +1280,27 @@ async function startServer(slug, options = {}) {
     });
 
     process.stderr.write(`[vscode-server-manager] Server ready on port ${port}\n`);
+
+    // ── Delayed startup summary ──
+    // After 15s, log a comprehensive one-shot summary of the entire
+    // pipeline state.  This is invaluable for diagnosing why extensions
+    // don't load — you can see at a glance which stages completed.
+    const _startupSummaryTimer = setTimeout(() => {
+      const lines = [
+        `\n${'='.repeat(60)}`,
+        `  SYNTHI Extension Host Startup Summary (${new Date().toISOString()})`,
+        `${'='.repeat(60)}`,
+        `  Server:     port=${port} state=${serverState} pid=${serverProcess?.pid || 'N/A'}`,
+        `  Bridge:     port=${preloadBridgePort || 'N/A'} clients=${preloadClients.size}`,
+        `  Bootstrap:  received=${_bootstrapStateReceived}`,
+        `  Extensions: scanned=${extHostLoadedExtensions.size} installed=${installedExtensions.size}`,
+        `  Workspace:  ${currentWorkspaceDir || '(none)'} slug=${currentSlug || '(none)'}`,
+        `${'='.repeat(60)}\n`,
+      ];
+      process.stderr.write(lines.join('\n'));
+    }, 15000);
+    if (_startupSummaryTimer.unref) _startupSummaryTimer.unref();
+
     return { port, token, workspaceDir };
 
   } catch (err) {
