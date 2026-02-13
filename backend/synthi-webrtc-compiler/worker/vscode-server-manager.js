@@ -456,39 +456,65 @@ function _handlePreloadMessage(msg) {
       // Preload client connected and identified itself
       process.stderr.write(`[preload-bridge] Hello from Extension Host (pid: ${msg.pid}, ppid: ${msg.ppid})\n`);
 
-      // Auto-scan and load all UI-contributing extensions
+      // Auto-scan extension manifests for UI contribution metadata.
+      // This only reads package.json files — it does NOT load or activate
+      // extensions.  We need to know which extensions have views/webviews
+      // so we can request data once they DO activate.
       _autoLoadUIExtensions().catch(err => {
         process.stderr.write(`[preload-bridge] Auto-load UI extensions failed: ${err.message}\n`);
       });
 
-      // Request provider list immediately, then retry with backoff.
-      // Extensions take time to activate and register providers, so the
-      // first few responses will likely be empty.  The retry schedule
-      // covers the typical 5-30s activation window.
-      sendToPreloadClients({ action: 'listProviders' });
-      sendToPreloadClients({ action: 'refreshAllTrees' });
-      const retryDelays = [3000, 6000, 12000, 20000, 35000, 60000];
-      for (const delay of retryDelays) {
-        const timer = setTimeout(() => {
-          process.stderr.write(`[preload-bridge] Retry provider discovery (${delay / 1000}s after hello)\n`);
-          sendToPreloadClients({ action: 'listProviders' });
-          sendToPreloadClients({ action: 'refreshAllTrees' });
-          // Also try resolving known webview views
-          for (const extId of extHostLoadedExtensions) {
-            const result = _readExtensionManifest(extId);
-            if (result?.manifest?.contributes?.views) {
-              const views = result.manifest.contributes.views;
-              for (const container of Object.keys(views)) {
-                for (const view of views[container]) {
-                  if (view.type === 'webview') {
-                    sendToPreloadClients({ action: 'resolveWebviewView', viewType: view.id });
+      // DO NOT request providers here.  Extensions haven't activated yet
+      // because VS Code's bootstrap hasn't finished registering the
+      // virtual 'vscode' module.  Requesting providers now always returns
+      // 0 trees, 0 webviews — it's pure noise.
+      //
+      // Provider requests are deferred to the 'bootstrapState' handler
+      // (below) which fires when the preload observes the first successful
+      // require('vscode') call.
+      process.stderr.write(`[preload-bridge] Waiting for bootstrapState before requesting providers\n`);
+      break;
+    }
+
+    case 'bootstrapState': {
+      // The preload's Module.prototype.require hook observed that
+      // require('vscode') returned a real API object.  This means
+      // VS Code's bootstrap completed and extensions are activating.
+      const complete = msg.complete;
+      const method = msg.method || 'unknown';
+      const wrappedCount = msg.wrappedCount || 0;
+      process.stderr.write(`[preload-bridge] Bootstrap state: complete=${complete}, method=${method}, wrapped=${wrappedCount}\n`);
+
+      if (complete) {
+        sendEvent('bootstrapState', true);
+
+        // NOW it's safe to request providers.  Extensions are activating
+        // and registering tree/webview providers.  We still need retries
+        // because activation is asynchronous — an extension may not have
+        // finished registering all its providers yet.
+        const retryDelays = [500, 3000, 8000, 20000];
+        for (const delay of retryDelays) {
+          const timer = setTimeout(() => {
+            process.stderr.write(`[preload-bridge] Provider discovery (${delay / 1000}s after bootstrap)\n`);
+            sendToPreloadClients({ action: 'listProviders' });
+            sendToPreloadClients({ action: 'refreshAllTrees' });
+            // Try resolving known webview views
+            for (const extId of extHostLoadedExtensions) {
+              const result = _readExtensionManifest(extId);
+              if (result?.manifest?.contributes?.views) {
+                const views = result.manifest.contributes.views;
+                for (const container of Object.keys(views)) {
+                  for (const view of views[container]) {
+                    if (view.type === 'webview') {
+                      sendToPreloadClients({ action: 'resolveWebviewView', viewType: view.id });
+                    }
                   }
                 }
               }
             }
-          }
-        }, delay);
-        if (timer.unref) timer.unref();
+          }, delay);
+          if (timer.unref) timer.unref();
+        }
       }
       break;
     }
