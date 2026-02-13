@@ -907,6 +907,9 @@ function wrapRegisterTreeDataProvider(vscode) {
     // Notify bridge of the registration
     bridgeSend({ type: 'treeProvider', viewId, extensionId });
 
+    // Immediately notify bridge of updated provider list
+    _sendProviderListUpdate();
+
     // Subscribe to provider's change events to re-resolve data
     if (provider.onDidChangeTreeData) {
       try {
@@ -967,6 +970,9 @@ function wrapCreateTreeView(vscode) {
 
       // Notify bridge
       bridgeSend({ type: 'treeProvider', viewId, extensionId });
+
+      // Immediately notify bridge of updated provider list
+      _sendProviderListUpdate();
 
       // Subscribe to provider's change events
       if (provider.onDidChangeTreeData) {
@@ -1048,6 +1054,16 @@ function wrapWebviewProviders(vscode) {
         bridgeSend({ type: 'webviewDisposed', viewType });
         return originalDispose();
       };
+
+      // Immediately notify bridge of updated provider list
+      _sendProviderListUpdate();
+
+      // Auto-resolve in headless mode: code-server never opens sidebar
+      // views, so resolveWebviewView is never called naturally.  Trigger
+      // it ourselves after a short delay to let the extension finish init.
+      setTimeout(() => {
+        _resolveWebviewViewHeadless(viewType);
+      }, 500);
 
       return disposable;
     };
@@ -1205,6 +1221,90 @@ function wrapCommands(vscode) {
 }
 
 // ============================================================================
+// Provider List Notification + Headless Webview Resolution
+// ============================================================================
+
+/**
+ * Send an updated provider list to the bridge immediately.
+ * Called whenever a new provider is registered so the browser
+ * doesn't have to wait for a periodic poll.
+ */
+function _sendProviderListUpdate() {
+  const treeViews = Array.from(trackedTreeProviders.keys());
+  const webviews = Array.from(trackedWebviewProviders.keys());
+  log(`Provider list updated: ${treeViews.length} trees, ${webviews.length} webviews`);
+  bridgeSend({ type: 'providerList', treeViews, webviews });
+}
+
+/**
+ * Resolve a webview view provider headlessly.  In code-server running
+ * without a visible sidebar, resolveWebviewView is never called by
+ * VS Code.  We create a mock WebviewView and call the provider ourselves
+ * so the extension generates its HTML which we relay to the browser.
+ *
+ * @param {string} viewType - The view identifier to resolve
+ */
+function _resolveWebviewViewHeadless(viewType) {
+  const entry = trackedWebviewProviders.get(viewType);
+  if (!entry || !entry.provider) {
+    log(`Cannot resolve webview headlessly: no provider for ${viewType}`);
+    return;
+  }
+
+  // If already resolved, re-send the HTML
+  if (entry.webviewView && entry.webviewView.webview) {
+    const html = entry.webviewView.webview.html;
+    if (html) {
+      log(`Re-sending existing HTML for ${viewType} (${html.length} chars)`);
+      bridgeSend({ type: 'webviewHtml', viewType, html });
+    }
+    return;
+  }
+
+  log(`Auto-resolving webview view headlessly: ${viewType}`);
+
+  try {
+    const mockWebview = _createMockWebview(viewType);
+    const mockWebviewView = {
+      webview: mockWebview,
+      viewType,
+      visible: true,
+      onDidChangeVisibility: { event: () => ({ dispose() {} }) },
+      onDidDispose: { event: () => ({ dispose() {} }) },
+      show: () => {},
+      title: undefined,
+      description: undefined,
+      badge: undefined,
+    };
+
+    // Intercept HTML before calling resolve
+    _interceptWebviewHtml(mockWebview, viewType);
+
+    // Update tracking
+    trackedWebviewProviders.set(viewType, { ...entry, webviewView: mockWebviewView });
+
+    // Call the provider's resolveWebviewView
+    const result = entry.provider.resolveWebviewView(
+      mockWebviewView,
+      {},
+      { isCancellationRequested: false, onCancellationRequested: { event: () => ({ dispose() {} }) } }
+    );
+
+    if (result && typeof result.then === 'function') {
+      result.then(() => {
+        log(`Webview view ${viewType} auto-resolved (async)`);
+      }).catch((err) => {
+        logError(`Auto-resolveWebviewView failed for ${viewType}: ${err.message}`);
+      });
+    } else {
+      log(`Webview view ${viewType} auto-resolved (sync)`);
+    }
+  } catch (e) {
+    logError(`Auto-resolveWebviewView error for ${viewType}: ${e.message}`);
+  }
+}
+
+// ============================================================================
 // Bridge Request Handler (incoming from vscode-server-manager)
 // ============================================================================
 
@@ -1256,67 +1356,9 @@ function _handleBridgeRequest(msg) {
     }
 
     case 'resolveWebviewView': {
-      // Resolve a webview view on demand.  Code-server runs headless so
-      // resolveWebviewView is never called naturally.  We create a mock
-      // WebviewView and call the provider ourselves.
+      // Resolve a webview view on demand — delegate to the shared function
       const { viewType } = msg;
-      const entry = trackedWebviewProviders.get(viewType);
-      if (!entry || !entry.provider) {
-        logError(`No tracked webview provider for: ${viewType}`);
-        break;
-      }
-
-      // If already resolved (has a webviewView), just re-send the current HTML
-      if (entry.webviewView && entry.webviewView.webview) {
-        const html = entry.webviewView.webview.html;
-        if (html) {
-          log(`Re-sending existing HTML for ${viewType} (${html.length} chars)`);
-          bridgeSend({ type: 'webviewHtml', viewType, html });
-        }
-        break;
-      }
-
-      log(`Resolving webview view on demand: ${viewType}`);
-
-      try {
-        // Create a mock WebviewView object that mimics VS Code's interface.
-        // The extension will set webview.html which we intercept.
-        const mockWebview = _createMockWebview(viewType);
-        const mockWebviewView = {
-          webview: mockWebview,
-          viewType,
-          visible: true,
-          onDidChangeVisibility: { event: () => ({ dispose() {} }) },
-          onDidDispose: { event: () => ({ dispose() {} }) },
-          show: () => {},
-          title: undefined,
-          description: undefined,
-          badge: undefined,
-        };
-
-        // Intercept HTML before calling resolve
-        _interceptWebviewHtml(mockWebview, viewType);
-
-        // Update tracking
-        trackedWebviewProviders.set(viewType, { ...entry, webviewView: mockWebviewView });
-
-        // Call the provider's resolveWebviewView
-        const result = entry.provider.resolveWebviewView(mockWebviewView, {}, { isCancellationRequested: false, onCancellationRequested: { event: () => ({ dispose() {} }) } });
-
-        // Handle async providers
-        if (result && typeof result.then === 'function') {
-          result.then(() => {
-            log(`Webview view ${viewType} resolved (async)`);
-            // HTML should have been sent via the interceptor
-          }).catch((err) => {
-            logError(`resolveWebviewView failed for ${viewType}: ${err.message}`);
-          });
-        } else {
-          log(`Webview view ${viewType} resolved (sync)`);
-        }
-      } catch (e) {
-        logError(`resolveWebviewView error for ${viewType}: ${e.message}`);
-      }
+      _resolveWebviewViewHeadless(viewType);
       break;
     }
 
