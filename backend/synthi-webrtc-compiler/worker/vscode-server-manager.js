@@ -455,20 +455,49 @@ function _handlePreloadMessage(msg) {
     case 'hello': {
       // Preload client connected and identified itself
       process.stderr.write(`[preload-bridge] Hello from Extension Host (pid: ${msg.pid}, ppid: ${msg.ppid})\n`);
+
+      // Auto-scan and load all UI-contributing extensions
+      _autoLoadUIExtensions().catch(err => {
+        process.stderr.write(`[preload-bridge] Auto-load UI extensions failed: ${err.message}\n`);
+      });
+
       // Request provider list immediately, then retry with backoff.
       // Extensions take time to activate and register providers, so the
       // first few responses will likely be empty.  The retry schedule
       // covers the typical 5-30s activation window.
       sendToPreloadClients({ action: 'listProviders' });
       sendToPreloadClients({ action: 'refreshAllTrees' });
-      const retryDelays = [3000, 6000, 12000, 20000, 35000];
+      const retryDelays = [3000, 6000, 12000, 20000, 35000, 60000];
       for (const delay of retryDelays) {
         const timer = setTimeout(() => {
           process.stderr.write(`[preload-bridge] Retry provider discovery (${delay / 1000}s after hello)\n`);
           sendToPreloadClients({ action: 'listProviders' });
           sendToPreloadClients({ action: 'refreshAllTrees' });
+          // Also try resolving known webview views
+          for (const extId of extHostLoadedExtensions) {
+            const result = _readExtensionManifest(extId);
+            if (result?.manifest?.contributes?.views) {
+              const views = result.manifest.contributes.views;
+              for (const container of Object.keys(views)) {
+                for (const view of views[container]) {
+                  if (view.type === 'webview') {
+                    sendToPreloadClients({ action: 'resolveWebviewView', viewType: view.id });
+                  }
+                }
+              }
+            }
+          }
         }, delay);
         if (timer.unref) timer.unref();
+      }
+      break;
+    }
+
+    case 'ipcState': {
+      // IPC state report from the preload script
+      process.stderr.write(`[preload-bridge] IPC state: readySent=${msg.readySent}, socketReceived=${msg.socketReceived}, socketType=${msg.socketType}\n`);
+      if (!msg.socketReceived) {
+        process.stderr.write(`[preload-bridge] WARNING: Extension Host did not receive client socket — EH initialization may be stalled\n`);
       }
       break;
     }
@@ -1673,6 +1702,83 @@ function startHealthChecks(port) {
       process.stderr.write('[vscode-server-manager] Health check timeout\n');
     });
   }, HEALTH_CHECK_INTERVAL);
+}
+
+// ============================================================================
+// Extension Auto-Discovery
+//
+// Scans EXTENSIONS_DIR for all installed extensions with UI contributions
+// and registers them for preload bridge tracking.  Called when the preload
+// client first connects (hello message).
+// ============================================================================
+
+/**
+ * Scan all installed extensions and load any with UI contributions.
+ * This ensures that when the Extension Host starts loading extensions,
+ * we're already tracking which ones have views/webview views.
+ *
+ * @returns {Promise<void>}
+ */
+async function _autoLoadUIExtensions() {
+  process.stderr.write(`[ext-scan] Auto-scanning extensions in ${EXTENSIONS_DIR}\n`);
+
+  let dirs;
+  try {
+    dirs = fs.readdirSync(EXTENSIONS_DIR);
+  } catch (e) {
+    process.stderr.write(`[ext-scan] Cannot read extensions dir: ${e.message}\n`);
+    return;
+  }
+
+  let uiExtCount = 0;
+
+  for (const dir of dirs) {
+    const pkgPath = path.join(EXTENSIONS_DIR, dir, 'package.json');
+    let pkg;
+    try {
+      pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    } catch (_) {
+      continue;
+    }
+
+    const extId = `${pkg.publisher || 'unknown'}.${pkg.name || dir}`;
+
+    // Check for UI contributions (views, viewsContainers, webview views)
+    const contributes = pkg.contributes || {};
+    const hasViews = contributes.views && Object.keys(contributes.views).length > 0;
+    const hasViewsContainers = contributes.viewsContainers && Object.keys(contributes.viewsContainers).length > 0;
+    const hasCommands = contributes.commands && contributes.commands.length > 0;
+
+    if (hasViews || hasViewsContainers) {
+      uiExtCount++;
+      process.stderr.write(`[ext-scan] UI extension: ${extId} (views: ${hasViews}, containers: ${hasViewsContainers}, main: ${pkg.main || '(none)'})\n`);
+
+      // Track it without waiting for the Extension Host to load it
+      if (!extHostLoadedExtensions.has(extId)) {
+        extHostLoadedExtensions.add(extId);
+
+        // Enumerate view IDs from the manifest for targeted webview resolution
+        if (contributes.views) {
+          for (const container of Object.keys(contributes.views)) {
+            for (const view of contributes.views[container]) {
+              if (view.id) {
+                process.stderr.write(`[ext-scan]   View: ${view.id} (type: ${view.type || 'tree'}, container: ${container})\n`);
+                if (view.type === 'webview') {
+                  // Schedule webview resolution for later when the extension activates
+                  const viewType = view.id;
+                  setTimeout(() => {
+                    sendToPreloadClients({ action: 'resolveWebviewView', viewType });
+                  }, 10000); // 10s delay — extension needs time to activate
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  process.stderr.write(`[ext-scan] Scan complete: ${dirs.length} extensions, ${uiExtCount} with UI contributions\n`);
 }
 
 // ============================================================================
