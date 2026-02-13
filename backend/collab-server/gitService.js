@@ -367,8 +367,8 @@ class GitService {
         }
     }
 
-    async initRepo(slug, remoteUrl) {
-        return this.withLock(slug, async () => {
+    async initRepo(slug, remoteUrl, userId) {
+        const initResult = await this.withLock(slug, async () => {
             // repoCache.acquire (inside withLock) already materialised files
             // from GCS if needed, so we only need to git-init if missing.
             const repoPath = this.getRepoPath(slug);
@@ -410,10 +410,18 @@ class GitService {
             this._ensureLocalExcludes(repoPath);
             return { success: true, path: repoPath };
         });
+
+        // ── Provision per-user working tree (outside slug-level lock) ────
+        if (userId) {
+            const userResult = await this.ensureUserRepo(slug, userId);
+            console.log(`[GitService] initRepo: per-user repo for ${slug}/${userId} (created=${userResult.created})`);
+        }
+
+        return initResult;
     }
 
-    async cloneRepo(slug, repoUrl, token) {
-        return this.withLock(slug, async () => {
+    async cloneRepo(slug, repoUrl, token, userId) {
+        const cloneResult = await this.withLock(slug, async () => {
             const repoPath = this.getRepoPath(slug);
 
             // ── Handle existing repo gracefully ───────────────────────────
@@ -502,6 +510,14 @@ class GitService {
             
             return { success: true, path: repoPath };
         });
+
+        // ── Provision per-user working tree (outside slug-level lock) ────
+        if (userId) {
+            const userResult = await this.ensureUserRepo(slug, userId);
+            console.log(`[GitService] cloneRepo: per-user repo for ${slug}/${userId} (created=${userResult.created})`);
+        }
+
+        return cloneResult;
     }
 
     async listWorkspaces() {
