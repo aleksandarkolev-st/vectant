@@ -205,9 +205,17 @@ pub async fn ensure_lsp_installed(lang: &str, workspace: &Path) -> Result<&'stat
             "npm install -g yaml-language-server 2>/dev/null || true",
         ]),
         "toml" => ("taplo", vec![
-            "cargo install taplo-cli --features lsp 2>/dev/null || \
-             curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-full-linux-x86_64.gz | \
-             gunzip > /usr/local/bin/taplo && chmod +x /usr/local/bin/taplo || true",
+            // Step 1: Try cargo install (preferred — builds from source)
+            "cargo install taplo-cli --features lsp 2>/dev/null || true",
+            // Step 2: If cargo failed, try downloading pre-built binary.
+            // Use a subshell with explicit error handling and chmod.
+            "command -v taplo >/dev/null 2>&1 || \
+             (curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-full-linux-x86_64.gz -o /tmp/taplo.gz && \
+              gunzip -f /tmp/taplo.gz && \
+              mv /tmp/taplo /usr/local/bin/taplo && \
+              chmod +x /usr/local/bin/taplo) || true",
+            // Step 3: Ensure executable bit is set even if a previous partial install left it without
+            "test -f /usr/local/bin/taplo && chmod +x /usr/local/bin/taplo 2>/dev/null || true",
         ]),
         "json" | "jsonc" => ("vscode-json-language-server", vec![
             "npm install -g vscode-langservers-extracted 2>/dev/null || true",
