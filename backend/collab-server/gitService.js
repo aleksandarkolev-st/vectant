@@ -157,15 +157,16 @@ class GitService {
     }
 
     // Helper to run operations with lock + repo cache acquire/release
-    async withLock(slug, operation) {
-        const releaseLock = await repoLock.acquire(slug);
+    async withLock(slug, operation, userId) {
+        const lockKey = userId ? `${slug}:${userId}` : slug;
+        const releaseLock = await repoLock.acquire(lockKey);
         try {
             // Ensure working tree is materialised before the operation
-            await repoCache.acquire(slug);
+            await repoCache.acquire(slug, userId);
             try {
                 return await operation();
             } finally {
-                repoCache.release(slug);
+                repoCache.release(slug, userId);
             }
         } finally {
             releaseLock();
@@ -245,23 +246,27 @@ class GitService {
      * Called after mutating git operations (commit, pull, checkout, clone).
      * Fire-and-forget — failures are logged but never thrown.
      */
-    _archiveGitAsync(slug) {
-        // For migrated repos, archive the bare repo directory.
-        // For legacy repos, archive the standard working tree.
-        const barePath = this.getBarePath(slug);
-        const repoPath = fs.existsSync(barePath) ? barePath : this.getRepoPath(slug);
-        gcsSync.archiveGitToGcs(slug, repoPath).catch((e) => {
-            console.warn(`[GitService] .git archive failed for ${slug}:`, e.message);
+    _archiveGitAsync(slug, userId) {
+        const repoPath = userId
+            ? this.getUserRepoPath(slug, userId)
+            : (() => {
+                // For migrated repos, archive the bare repo directory.
+                // For legacy repos, archive the standard working tree.
+                const barePath = this.getBarePath(slug);
+                return fs.existsSync(barePath) ? barePath : this.getRepoPath(slug);
+            })();
+        gcsSync.archiveGitToGcs(slug, repoPath, userId).catch((e) => {
+            console.warn(`[GitService] .git archive failed for ${slug}${userId ? '/' + userId : ''}:`, e.message);
         });
     }
 
-    isRepoExists(slug) {
-        const repoPath = this.getRepoPath(slug);
+    isRepoExists(slug, userId) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
         return fs.existsSync(repoPath);
     }
 
-    isRepoInitialized(slug) {
-        const repoPath = this.getRepoPath(slug);
+    isRepoInitialized(slug, userId) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
         const gitDir = path.join(repoPath, '.git');
         if (!fs.existsSync(gitDir)) return false;
 
@@ -274,8 +279,8 @@ class GitService {
         return false;
     }
 
-    getGit(slug) {
-        const repoPath = this.getRepoPath(slug);
+    getGit(slug, userId) {
+        const repoPath = this.getEffectiveRepoPath(slug, userId);
         if (!fs.existsSync(repoPath)) {
             throw new RepoNotFoundError(slug);
         }
