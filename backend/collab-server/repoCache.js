@@ -111,6 +111,10 @@ async function restoreGitArchive(slug, repoPath, userId) {
 
 // ── LRU Cache instance ──────────────────────────────────────────────────────
 
+/** Entries that must not be evicted are tracked separately so that the
+ *  LRU dispose callback can re-insert without triggering recursive eviction. */
+const _safeEntries = new Map();
+
 const cache = new LRUCache({
   max: config.REPO_CACHE_MAX,
   ttl: config.REPO_CACHE_TTL_MS,
@@ -121,10 +125,13 @@ const cache = new LRUCache({
   
   dispose: (entry, key) => {
     if (!entry) return;
-    // Safety: don't delete if refs > 0 or pinned
+    // Safety: don't delete if refs > 0 or pinned.
+    // Instead of re-inserting into the LRU (which can cause recursive
+    // eviction or get silently dropped), stash in a side-map and
+    // re-insert on the next `acquire` / `get`.
     if (entry.refs > 0 || entry.pinned) {
-      // Re-insert — the eviction was premature
-      cache.set(key, entry);
+      console.log(`[RepoCache] Refusing to evict in-use entry ${key} (refs=${entry.refs}, pinned=${entry.pinned})`);
+      _safeEntries.set(key, entry);
       return;
     }
     console.log(`[RepoCache] Evicting ${key} from cache, removing ${entry.repoPath}`);
@@ -154,6 +161,13 @@ const cache = new LRUCache({
 async function acquire(slug, userId) {
   const key = _cacheKey(slug, userId);
   let entry = cache.get(key);
+
+  // Check if the entry was rescued from eviction while in use
+  if (!entry && _safeEntries.has(key)) {
+    entry = _safeEntries.get(key);
+    _safeEntries.delete(key);
+    cache.set(key, entry);  // Re-insert into LRU
+  }
 
   if (entry) {
     // Already in cache — wait until it's materialised, bump ref
@@ -210,7 +224,7 @@ async function acquire(slug, userId) {
  */
 function release(slug, userId) {
   const key = _cacheKey(slug, userId);
-  const entry = cache.get(key);
+  const entry = cache.get(key) || _safeEntries.get(key);
   if (entry && entry.refs > 0) {
     entry.refs--;
   }
@@ -225,7 +239,7 @@ function release(slug, userId) {
  */
 function pin(slug, userId) {
   const key = _cacheKey(slug, userId);
-  const entry = cache.get(key);
+  const entry = cache.get(key) || _safeEntries.get(key);
   if (entry) entry.pinned = true;
 }
 
@@ -237,7 +251,7 @@ function pin(slug, userId) {
  */
 function unpin(slug, userId) {
   const key = _cacheKey(slug, userId);
-  const entry = cache.get(key);
+  const entry = cache.get(key) || _safeEntries.get(key);
   if (entry) entry.pinned = false;
 }
 

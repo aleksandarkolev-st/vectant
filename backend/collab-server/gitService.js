@@ -405,6 +405,9 @@ class GitService {
                 if (remoteUrl) {
                     await git.addRemote('origin', remoteUrl);
                 }
+                // Ensure HEAD exists so that downstream git operations
+                // (status, reset, etc.) don't fail with "no commits yet".
+                await git.commit('Initial commit', { '--allow-empty': null });
             }
             // Defense-in-depth: hide internal artifacts from git status
             this._ensureLocalExcludes(repoPath);
@@ -547,6 +550,19 @@ class GitService {
                 conflictedFiles: status.conflicted || []
             };
         } catch (e) {
+            // Gracefully handle repos that have no commits yet (orphan branch).
+            // This can happen if the initial commit failed or the repo was
+            // re-initialised without a seed commit.
+            const msg = e.message || '';
+            if (msg.includes('does not have any commits yet') || msg.includes('ambiguous argument \'HEAD\'')) {
+                console.warn(`[GitService] getStatus: repo ${slug}/${userId || ''} has no commits — returning empty status`);
+                return {
+                    not_added: [], created: [], deleted: [], modified: [],
+                    renamed: [], staged: [], conflicted: [],
+                    files: [], ahead: 0, behind: 0, current: 'main', tracking: null,
+                    hasConflicts: false, conflictedFiles: [],
+                };
+            }
             throw this.mapGitError(e, slug);
         }
     }
@@ -2265,6 +2281,11 @@ class GitService {
                 fs.mkdirSync(userRepoPath, { recursive: true });
                 const git = simpleGit(userRepoPath);
                 await git.init();
+                // Create an initial empty commit so that HEAD exists.
+                // Without this, `git status`, `git reset HEAD`, and other
+                // commands that reference HEAD fail with "does not have any
+                // commits yet".
+                await git.commit('Initial commit', { '--allow-empty': null });
                 console.log(`[GitService] Created fresh user repo for ${slug}/${userId}`);
                 this._ensureLocalExcludes(userRepoPath);
                 return { path: userRepoPath, created: true };

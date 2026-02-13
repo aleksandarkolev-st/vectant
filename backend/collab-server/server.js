@@ -59,6 +59,7 @@ const crypto = require('crypto');
 const gcsSync = require('./gcsSync');
 const config = require('./config');
 const gitService = require('./gitService');
+const repoCache = require('./repoCache');
 const sessionManager = require('./SessionManager');
 const { extractSessionContext, requireGitActionPermission, wsRequirePermission, wsDenyAction, wsAttachContext } = require('./permissionMiddleware');
 let fetchFunc = null;
@@ -265,6 +266,9 @@ class ValidatingPersistence {
             const userRepos = gitService.listUserRepos(slug);
             for (const { path: userRepoPath } of userRepos) {
               try {
+                // Guard: skip if the repo directory was evicted from the cache
+                // between the listUserRepos call and the write attempt.
+                if (!fs.existsSync(userRepoPath)) continue;
                 const userFullPath = path.join(userRepoPath, filePath);
                 await fsPromises.mkdir(path.dirname(userFullPath), { recursive: true });
                 await fsPromises.writeFile(userFullPath, content, 'utf-8');
@@ -1015,6 +1019,10 @@ const server = http.createServer(async (req, res) => {
             if (userId) {
               try {
                 await gitService.ensureUserRepo(slug, userId);
+                // Pin the per-user repo in the cache so it won't be evicted
+                // while this user is actively interacting with the workspace.
+                // Unpinning happens when the notification WS disconnects.
+                repoCache.pin(slug, userId);
               } catch (e) {
                 // For non-clone/init actions this is a real error — the user
                 // cannot operate without an isolated repo.
@@ -1498,13 +1506,25 @@ server.on('upgrade', (request, socket, head) => {
   if (pathname === '/notifications') {
     // Notification channel – lightweight JSON broadcasts
     notifyWss.handleUpgrade(request, socket, head, (ws) => {
-      // Extract slug from query string: /notifications?slug=<slug>
+      // Extract slug and userId from query string: /notifications?slug=<slug>&userId=<userId>
       const params = new URLSearchParams((request.url || '').split('?')[1] || '');
       ws._slug = params.get('slug') || '';
+      ws._userId = params.get('userId') || '';
       notifyWss.emit('connection', ws, request);
-      console.log(`[Collab] Notification client connected for slug: ${ws._slug}`);
+      console.log(`[Collab] Notification client connected for slug: ${ws._slug}, user: ${ws._userId}`);
       ws.on('close', () => {
-        console.log(`[Collab] Notification client disconnected for slug: ${ws._slug}`);
+        console.log(`[Collab] Notification client disconnected for slug: ${ws._slug}, user: ${ws._userId}`);
+        // Unpin this user's repo so the LRU cache can evict it when idle.
+        // Only unpin if no other notification clients remain for the same
+        // (slug, userId) pair (e.g. multiple browser tabs).
+        if (ws._slug && ws._userId) {
+          const stillActive = [...notifyWss.clients].some(
+            c => c !== ws && c.readyState === WebSocket.OPEN && c._slug === ws._slug && c._userId === ws._userId
+          );
+          if (!stillActive) {
+            repoCache.unpin(ws._slug, ws._userId);
+          }
+        }
       });
     });
   } else if (pathname === '/session-events') {
