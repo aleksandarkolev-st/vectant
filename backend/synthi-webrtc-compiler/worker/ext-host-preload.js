@@ -32,13 +32,27 @@
 
 'use strict';
 
+// Early prefix (before full logging is set up)
+const PREFIX_EARLY = '[ext-host-preload]';
+
 // ============================================================================
 // Guard: only activate inside VS Code's Extension Host process
 // ============================================================================
 
+// Pre-guard diagnostic — always log so we can confirm the file loaded
+process.stderr.write(`${PREFIX_EARLY} Loading (PID=${process.pid}, script=${__filename})\n`);
+process.stderr.write(`${PREFIX_EARLY}   SYNTHI_EXT_BRIDGE_PORT=${process.env.SYNTHI_EXT_BRIDGE_PORT || '(unset)'}\n`);
+process.stderr.write(`${PREFIX_EARLY}   SYNTHI_EXTENSION_HOST_CONFIRMED=${process.env.SYNTHI_EXTENSION_HOST_CONFIRMED || '(unset)'}\n`);
+process.stderr.write(`${PREFIX_EARLY}   VSCODE_IPC_HOOK_EXTHOST=${process.env.VSCODE_IPC_HOOK_EXTHOST ? 'set' : '(unset)'}\n`);
+process.stderr.write(`${PREFIX_EARLY}   VSCODE_PIPE_LOGGING=${process.env.VSCODE_PIPE_LOGGING || '(unset)'}\n`);
+
 // The Extension Host sets these env vars. If they're absent, we're in the
 // wrong process (e.g. code-server's main process, a terminal, a task runner).
+// SYNTHI_EXTENSION_HOST_CONFIRMED is set by our extensionHostProcess.js patch
+// so we know for certain we're in the Extension Host (even if VS Code hasn't
+// set its own env vars yet at this point in the boot sequence).
 const isExtensionHost = !!(
+  process.env.SYNTHI_EXTENSION_HOST_CONFIRMED === 'true' ||
   process.env.VSCODE_IPC_HOOK_EXTHOST ||
   process.env.VSCODE_HANDLES_UNCAUGHT_ERRORS ||
   process.env.VSCODE_NLS_CONFIG ||
@@ -50,12 +64,12 @@ const isExtensionHost = !!(
 const BRIDGE_PORT = parseInt(process.env.SYNTHI_EXT_BRIDGE_PORT || '0', 10);
 
 if (!isExtensionHost) {
-  // Not the Extension Host — do nothing
+  process.stderr.write(`${PREFIX_EARLY} Guard failed — not in Extension Host, skipping\n`);
   return;
 }
 
 if (!BRIDGE_PORT) {
-  // No bridge port configured — extensions run normally, no observation
+  process.stderr.write(`${PREFIX_EARLY} No bridge port configured, skipping\n`);
   return;
 }
 

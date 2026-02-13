@@ -798,6 +798,7 @@ function _patchExtensionHostForPreload(serverBinaryPath, preloadPath, bridgePort
     BEGIN_MARKER,
     `try {`,
     `  process.env.SYNTHI_EXT_BRIDGE_PORT = process.env.SYNTHI_EXT_BRIDGE_PORT || "${bridgePort}";`,
+    `  process.env.SYNTHI_EXTENSION_HOST_CONFIRMED = "true";`,
     `  require("${escapedPath}");`,
     `} catch (_e) {`,
     `  process.stderr.write("[ext-host-preload] Injection failed: " + _e.message + "\\n");`,
